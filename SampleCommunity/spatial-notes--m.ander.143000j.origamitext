@@ -1,0 +1,29 @@
+{
+  "author" : "Mark Anderson",
+  "body" : [
+    {
+      "heading" : 1,
+      "id" : "p1",
+      "text" : "Spatial Notes"
+    },
+    {
+      "id" : "p2",
+      "text" : "As the welcome note says, everything essential lives in the document itself [f.hegla.100000h#p2]. This is the revised version of this note — the original is superseded but never deleted, and citations to it resolve here."
+    }
+  ],
+  "created" : "2026-07-03T14:30:00Z",
+  "format" : "origami/0.1",
+  "id" : "m.ander.143000j",
+  "links" : [
+    {
+      "fragment" : "p2",
+      "rel" : "cites",
+      "to" : "f.hegla.100000h"
+    },
+    {
+      "rel" : "revises",
+      "to" : "m.ander.091500i"
+    }
+  ],
+  "title" : "Spatial Notes"
+}

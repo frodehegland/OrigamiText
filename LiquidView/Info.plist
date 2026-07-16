@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Origami Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>info.futuretextlab.origami-doc</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleName</key>
+	<string>Origami Text</string>
+	<key>CFBundleIconName</key>
+	<string>Ori-logo</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>info.futuretextlab.origamitext</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>origamitext</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Origami Document</string>
+			<key>UTTypeIdentifier</key>
+			<string>info.futuretextlab.origami-doc</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>origamitext</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

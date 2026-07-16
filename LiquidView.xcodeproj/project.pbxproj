@@ -6,20 +6,80 @@
 	objectVersion = 90;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		5FD00C7C3004E5CE00F5A4F0 /* Ori-logo.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FD00C7B3004E5CE00F5A4F0 /* Ori-logo.icon */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
-		000000000000000000000120 /* LiquidView.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiquidView.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000120 /* Origami Text.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Origami Text.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5FD00C7B3004E5CE00F5A4F0 /* Ori-logo.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "Ori-logo.icon"; sourceTree = "<group>"; };
+		5FD0137F3005785700F5A4F0 /* Origami Text Vision.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Origami Text Vision.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		5F2D74FE2FFFE3A1000E9DEC /* Exceptions for "LiquidView" folder in "LiquidView" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 000000000000000100000000 /* LiquidView */;
+		};
+		5FD0138D3005785700F5A4F0 /* Exceptions for "Origami Text Vision" folder in "Origami Text Vision" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 5FD0137E3005785700F5A4F0 /* Origami Text Vision */;
+		};
+		5FD0139B30057D5B00F5A4F0 /* Exceptions for "LiquidView" folder in "Origami Text Vision" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				DocumentRelation.swift,
+				FolderWatcher.swift,
+				KnowledgeSpaceView.swift,
+				LibraryIndex.swift,
+				LiquidAddress.swift,
+				LiquidDate.swift,
+				LiquidDoc.swift,
+				LiquidDocWriting.swift,
+				OrigamiVision.swift,
+				VisualMeta.swift,
+				ZZStructure.swift,
+			);
+			target = 5FD0137E3005785700F5A4F0 /* Origami Text Vision */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		000000000000000000000010 /* LiquidView */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5F2D74FE2FFFE3A1000E9DEC /* Exceptions for "LiquidView" folder in "LiquidView" target */,
+				5FD0139B30057D5B00F5A4F0 /* Exceptions for "LiquidView" folder in "Origami Text Vision" target */,
+			);
 			path = LiquidView;
+			sourceTree = "<group>";
+		};
+		5FD013803005785700F5A4F0 /* Origami Text Vision */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5FD0138D3005785700F5A4F0 /* Exceptions for "Origami Text Vision" folder in "Origami Text Vision" target */,
+			);
+			explicitFolders = (
+				Resources/Materials,
+			);
+			path = "Origami Text Vision";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		000000000000000130000000 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		5FD0137C3005785700F5A4F0 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
 			);
@@ -31,6 +91,8 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000010 /* LiquidView */,
+				5FD00C7B3004E5CE00F5A4F0 /* Ori-logo.icon */,
+				5FD013803005785700F5A4F0 /* Origami Text Vision */,
 				000000000000000000000020 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -38,7 +100,8 @@
 		000000000000000000000020 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000120 /* LiquidView.app */,
+				000000000000000000000120 /* Origami Text.app */,
+				5FD0137F3005785700F5A4F0 /* Origami Text Vision.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -61,7 +124,25 @@
 			);
 			name = LiquidView;
 			productName = MyApp;
-			productReference = 000000000000000000000120 /* LiquidView.app */;
+			productReference = 000000000000000000000120 /* Origami Text.app */;
+			productType = "com.apple.product-type.application";
+		};
+		5FD0137E3005785700F5A4F0 /* Origami Text Vision */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5FD0138E3005785700F5A4F0 /* Build configuration list for PBXNativeTarget "Origami Text Vision" */;
+			buildPhases = (
+				5FD0137B3005785700F5A4F0 /* Sources */,
+				5FD0137C3005785700F5A4F0 /* Frameworks */,
+				5FD0137D3005785700F5A4F0 /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				5FD013803005785700F5A4F0 /* Origami Text Vision */,
+			);
+			name = "Origami Text Vision";
+			productName = "Origami Text Vision";
+			productReference = 5FD0137F3005785700F5A4F0 /* Origami Text Vision.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -71,11 +152,14 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2630;
+				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					000000000000000100000000 = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					5FD0137E3005785700F5A4F0 = {
+						CreatedOnToolsVersion = 27.0;
 					};
 				};
 			};
@@ -94,6 +178,7 @@
 			projectRoot = "";
 			targets = (
 				000000000000000100000000 /* LiquidView */,
+				5FD0137E3005785700F5A4F0 /* Origami Text Vision */,
 			);
 		};
 /* End PBXProject section */
@@ -102,12 +187,23 @@
 		000000000000000140000000 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				5FD00C7C3004E5CE00F5A4F0 /* Ori-logo.icon in Resources */,
+			);
+		};
+		5FD0137D3005785700F5A4F0 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
 			);
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		000000000000000120000000 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		5FD0137B3005785700F5A4F0 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
 			);
@@ -250,18 +346,26 @@
 		000000000000000111000000 /* Debug configuration for PBXNativeTarget "LiquidView" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 9Q5N4A727S;
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LiquidView/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Origami Text";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -269,8 +373,8 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "devplaceholder.$(PROJECT_UNIQUE_VALUE:identifier).$(PRODUCT_NAME:identifier)";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = info.futuretextlab.origamitext;
+				PRODUCT_NAME = "Origami Text";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -287,18 +391,26 @@
 		000000000000000112000000 /* Release configuration for PBXNativeTarget "LiquidView" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 9Q5N4A727S;
 				ENABLE_APP_SANDBOX = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LiquidView/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Origami Text";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -306,8 +418,8 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "devplaceholder.$(PROJECT_UNIQUE_VALUE:identifier).$(PRODUCT_NAME:identifier)";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = info.futuretextlab.origamitext;
+				PRODUCT_NAME = "Origami Text";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -318,6 +430,69 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
+			};
+			name = Release;
+		};
+		5FD0138F3005785700F5A4F0 /* Debug configuration for PBXNativeTarget "Origami Text Vision" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9Q5N4A727S;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Origami Text";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = info.futuretextlab.origamitext;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = xros;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 7;
+			};
+			name = Debug;
+		};
+		5FD013903005785700F5A4F0 /* Release configuration for PBXNativeTarget "Origami Text Vision" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9Q5N4A727S;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Origami Text";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = info.futuretextlab.origamitext;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = xros;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
 		};
@@ -337,6 +512,14 @@
 			buildConfigurations = (
 				000000000000000111000000 /* Debug configuration for PBXNativeTarget "LiquidView" */,
 				000000000000000112000000 /* Release configuration for PBXNativeTarget "LiquidView" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		5FD0138E3005785700F5A4F0 /* Build configuration list for PBXNativeTarget "Origami Text Vision" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5FD0138F3005785700F5A4F0 /* Debug configuration for PBXNativeTarget "Origami Text Vision" */,
+				5FD013903005785700F5A4F0 /* Release configuration for PBXNativeTarget "Origami Text Vision" */,
 			);
 			defaultConfigurationName = Release;
 		};

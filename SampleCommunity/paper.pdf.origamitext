@@ -1,0 +1,12 @@
+{
+  "author" : "Frode Hegland",
+  "created" : "2026-07-01T11:00:00Z",
+  "format" : "origami/0.1",
+  "id" : "f.hegla.110000h",
+  "title" : "paper.pdf",
+  "wraps" : {
+    "file" : "paper.pdf",
+    "mediaType" : "application/pdf",
+    "sha256" : "64c67fc0db4be731f087cf2294682909c9ca7614196844de5ab622d40cc50b59"
+  }
+}

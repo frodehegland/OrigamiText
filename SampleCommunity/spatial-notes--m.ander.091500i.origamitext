@@ -1,0 +1,28 @@
+{
+  "attention" : [
+    "Frode Hegland"
+  ],
+  "author" : "Mark Anderson",
+  "body" : [
+    {
+      "heading" : 1,
+      "id" : "p1",
+      "text" : "Spatial Notes"
+    },
+    {
+      "id" : "p2",
+      "text" : "As the welcome note says, everything essential lives in the document itself [f.hegla.100000h#p2]. This note exists to show a citation you can click, and to be revised by a newer version of itself."
+    }
+  ],
+  "created" : "2026-07-02T09:15:00Z",
+  "format" : "origami/0.1",
+  "id" : "m.ander.091500i",
+  "links" : [
+    {
+      "fragment" : "p2",
+      "rel" : "cites",
+      "to" : "f.hegla.100000h"
+    }
+  ],
+  "title" : "Spatial Notes"
+}

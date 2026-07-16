@@ -1,0 +1,22 @@
+{
+  "author" : "Frode Hegland",
+  "body" : [
+    {
+      "heading" : 1,
+      "id" : "p1",
+      "text" : "Welcome"
+    },
+    {
+      "id" : "p2",
+      "text" : "This folder is a small community of Origami Documents. Every document is a single, human-readable JSON file that carries its own metadata — nothing essential lives anywhere else."
+    },
+    {
+      "id" : "p3",
+      "text" : "Click any citation to follow it; documents that cite each other appear in the Connections view. New versions never overwrite old ones: history only grows."
+    }
+  ],
+  "created" : "2026-07-01T10:00:00Z",
+  "format" : "origami/0.1",
+  "id" : "f.hegla.100000h",
+  "title" : "Welcome to the Origami Community"
+}
