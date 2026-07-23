@@ -122,6 +122,13 @@ final class ZZStructure {
         static let views = UUID(uuidString: "00000000-0000-7000-8000-00000000D005")!
         static let clones = UUID(uuidString: "00000000-0000-7000-8000-00000000D006")!
         static let userViews = UUID(uuidString: "00000000-0000-7000-8000-00000000D007")!
+        // Saved layouts: a layout cell binds its axes and anchor along
+        // these. Fixed UUIDs, like the rest, so layouts port across
+        // installs (agreed convention; see saveLayout).
+        static let axisX = UUID(uuidString: "00000000-0000-7000-8000-00000000D008")!
+        static let axisY = UUID(uuidString: "00000000-0000-7000-8000-00000000D009")!
+        static let axisZ = UUID(uuidString: "00000000-0000-7000-8000-00000000D010")!
+        static let anchor = UUID(uuidString: "00000000-0000-7000-8000-00000000D011")!
         /// Each system dimension's cell: same UUID with C in place of D.
         static func cellID(for dimensionID: UUID) -> UUID {
             UUID(uuidString: dimensionID.uuidString.replacingOccurrences(of: "D0", with: "C0"))!
@@ -427,6 +434,133 @@ final class ZZStructure {
             }
             previousUserView = enabled
         }
+
+        ensureLayoutDimensions()
+    }
+
+    /// The layout dimensions arrived after the first structures were
+    /// saved, so any structure lacking them gains them on load —
+    /// idempotent, and the same call bootstrap uses.
+    func ensureLayoutDimensions() {
+        let named: [(UUID, String)] = [
+            (System.axisX, "axis-x"), (System.axisY, "axis-y"),
+            (System.axisZ, "axis-z"), (System.anchor, "anchor"),
+        ]
+        for (id, name) in named where dimensions[id] == nil {
+            let cellID = System.cellID(for: id)
+            dimensions[id] = ZZDimension(id: id, namespace: "d", name: name,
+                                         dimensionCellID: cellID)
+            cells[cellID] = ZZCell(id: cellID, kind: .dimension(dimensionID: id))
+            try? link(System.cellID(for: System.dimensions), poswardTo: cellID,
+                      along: System.dimensions, splice: true)
+            try? file(dimensionCell: cellID, underNamespace: "d")
+        }
+    }
+
+    // MARK: Saved layouts
+
+    /// A saved arrangement, read back from its cell's links: the view
+    /// algorithm (the layout cell clones the view's cell), the axis
+    /// bindings, and the anchor to re-accurse.
+    struct ZZLayout: Identifiable {
+        let cellID: UUID
+        let viewKey: String
+        let axes: AxisBinding
+        let anchor: UUID?
+        var id: UUID { cellID }
+    }
+
+    /// The cell for a registered view algorithm.
+    func viewCell(forKey key: String) -> UUID? {
+        for (id, cell) in cells {
+            if case .view(let viewID) = cell.kind, viewID == key { return id }
+        }
+        return nil
+    }
+
+    /// Saves an arrangement as cells: a clone of the view cell, threaded
+    /// onto the d.user-views rank, whose d.axis-x/y/z and d.anchor links
+    /// record the binding. Each link points at a fresh clone of its
+    /// target — the sanctioned workaround for one-to-many, since two
+    /// layouts may bind the same dimension.
+    @discardableResult
+    func saveLayout(viewKey: String, axes: AxisBinding, anchor: UUID?) throws -> UUID {
+        guard let viewCellID = viewCell(forKey: viewKey) else { throw ZZError.unknownCell }
+        let layout = try makeClone(of: viewCellID)
+        if let seed = connections.keys.first(where: { $0.dimensionID == System.userViews })?.cellID,
+           seed != layout {
+            let tail = rank(through: seed, along: System.userViews).cells.last ?? seed
+            if tail != layout {
+                try link(tail, poswardTo: layout, along: System.userViews)
+            }
+        }
+        func bind(_ dimensionID: UUID?, along axis: UUID) throws {
+            guard let dimensionID, let dimension = dimensions[dimensionID] else { return }
+            let proxy = try makeClone(of: dimension.dimensionCellID)
+            try link(layout, poswardTo: proxy, along: axis)
+        }
+        try bind(axes.x, along: System.axisX)
+        try bind(axes.y, along: System.axisY)
+        try bind(axes.z, along: System.axisZ)
+        if let anchor, cells[anchor] != nil {
+            let proxy = try makeClone(of: anchor)
+            try link(layout, poswardTo: proxy, along: System.anchor)
+        }
+        return layout
+    }
+
+    /// Every saved layout in the structure: the clones that carry an
+    /// axis-x binding. Enumerated by scan, not by walking a rank, so a
+    /// deleted neighbor can never hide the rest.
+    func savedLayouts() -> [ZZLayout] {
+        func boundDimension(_ proxy: UUID?) -> UUID? {
+            guard let proxy,
+                  case .dimension(let dimensionID)? = cells[contentHead(of: proxy)]?.kind
+            else { return nil }
+            return dimensionID
+        }
+        var layouts: [ZZLayout] = []
+        for (id, cell) in cells {
+            guard case .clone = cell.kind,
+                  case .view(let key)? = cells[contentHead(of: id)]?.kind,
+                  let x = boundDimension(posward(of: id, along: System.axisX)),
+                  let y = boundDimension(posward(of: id, along: System.axisY))
+            else { continue }
+            let z = boundDimension(posward(of: id, along: System.axisZ))
+            let anchor = posward(of: id, along: System.anchor).map { contentHead(of: $0) }
+            layouts.append(ZZLayout(cellID: id, viewKey: key,
+                                    axes: AxisBinding(x: x, y: y, z: z),
+                                    anchor: anchor))
+        }
+        return layouts.sorted { $0.cellID.uuidString < $1.cellID.uuidString }
+    }
+
+    /// Removes a saved layout: its binding proxies and the layout cell
+    /// leave the structure, every rank they sat on healed.
+    func removeLayout(_ layoutID: UUID) {
+        guard case .clone? = cells[layoutID]?.kind else { return }
+        for axis in [System.axisX, System.axisY, System.axisZ, System.anchor] {
+            if let proxy = posward(of: layoutID, along: axis) {
+                unlink(layoutID, poswardFrom: proxy, along: axis)
+                excise(proxy)
+            }
+        }
+        excise(layoutID)
+    }
+
+    /// Removes a cell from every rank it sits on, joining its neighbors
+    /// so no rank is left broken; then the cell itself goes.
+    private func excise(_ cellID: UUID) {
+        for dimensionID in dimensionsByCell[cellID] ?? [] {
+            let before = negward(of: cellID, along: dimensionID)
+            let after = posward(of: cellID, along: dimensionID)
+            if let after { unlink(cellID, poswardFrom: after, along: dimensionID) }
+            if let before { unlink(before, poswardFrom: cellID, along: dimensionID) }
+            if let before, let after, before != after {
+                try? link(before, poswardTo: after, along: dimensionID)
+            }
+        }
+        cells[cellID] = nil
     }
 
     // MARK: Persistence (plain JSON; human-inspectable)
@@ -481,6 +615,7 @@ final class ZZStructure {
                     .insert(connection.dimensionID)
             }
             structure.verifyAndRepairMirrors()
+            structure.ensureLayoutDimensions()
         } else {
             try? structure.bootstrap()
             structure.save(to: url)
@@ -502,6 +637,76 @@ final class ZZStructure {
                 didRepairOnLoad = true
             }
         }
+    }
+}
+
+// MARK: - Layout exchange
+
+/// A layout as a file: the view algorithm, the axes (by dimension id AND
+/// qualified name, so it lands in structures that grew the same
+/// dimensions independently), and the anchor — by document address when
+/// the anchor is a document, since addresses are the identities that
+/// travel.
+nonisolated struct ZZLayoutArchive: Codable {
+    struct Axis: Codable {
+        let id: UUID
+        let name: String   // qualified, e.g. "user.person"
+    }
+    var format = "origami-zz-layout/1"
+    let view: String
+    let x: Axis
+    let y: Axis
+    var z: Axis?
+    var anchorDocument: String?
+    var anchorCell: UUID?
+}
+
+extension ZZStructure {
+    /// The current arrangement as an archive, ready to save as .zzlayout.
+    func layoutArchive(viewKey: String, axes: AxisBinding, anchor: UUID?) -> ZZLayoutArchive? {
+        func axis(_ id: UUID) -> ZZLayoutArchive.Axis? {
+            dimensions[id].map { ZZLayoutArchive.Axis(id: $0.id, name: $0.qualifiedName) }
+        }
+        guard let x = axis(axes.x), let y = axis(axes.y) else { return nil }
+        var archive = ZZLayoutArchive(view: viewKey, x: x, y: y)
+        archive.z = axes.z.flatMap(axis)
+        if let anchor {
+            if case .document(let documentID)? = cells[contentHead(of: anchor)]?.kind {
+                archive.anchorDocument = documentID
+            } else {
+                archive.anchorCell = anchor
+            }
+        }
+        return archive
+    }
+
+    /// Lands an archive in this structure: dimensions resolve by id, then
+    /// by qualified name, and are created when neither is known — the
+    /// layout must mean the same thing here as where it was made. A
+    /// document anchor gets its cell (created if the document has none
+    /// yet); an unknown cell anchor degrades to no anchor.
+    func resolveLayoutArchive(_ archive: ZZLayoutArchive) throws
+        -> (viewKey: String, axes: AxisBinding, anchor: UUID?) {
+        func resolve(_ axis: ZZLayoutArchive.Axis) throws -> UUID {
+            if dimensions[axis.id] != nil { return axis.id }
+            if let match = dimensions.values.first(where: { $0.qualifiedName == axis.name }) {
+                return match.id
+            }
+            let parts = axis.name.split(separator: ".", maxSplits: 1)
+            let namespace = parts.count == 2 ? String(parts[0]) : "user"
+            let name = parts.count == 2 ? String(parts[1]) : axis.name
+            return try addDimension(name: name, namespace: namespace).id
+        }
+        let x = try resolve(archive.x)
+        let y = try resolve(archive.y)
+        let z = try archive.z.map(resolve)
+        var anchor: UUID?
+        if let documentID = archive.anchorDocument {
+            anchor = cell(forDocument: documentID)
+        } else if let cellID = archive.anchorCell, cells[cellID] != nil {
+            anchor = cellID
+        }
+        return (archive.view, AxisBinding(x: x, y: y, z: z), anchor)
     }
 }
 

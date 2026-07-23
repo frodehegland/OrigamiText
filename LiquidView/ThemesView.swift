@@ -69,7 +69,6 @@ struct ThemesView: View {
                 }
             }
         }
-        .navigationTitle("Themes")
     }
 
     private var content: some View {

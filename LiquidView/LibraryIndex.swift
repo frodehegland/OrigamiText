@@ -100,8 +100,33 @@ nonisolated enum LibraryScanner {
         var unreadable: [UnreadableFile] = []
     }
 
+    /// The folder often lives in iCloud Drive: a file another device
+    /// wrote may exist here only as a hidden ".<name>.icloud"
+    /// placeholder, which the content scan (skipping hidden files)
+    /// never sees — and asking iCloud for the folder alone does not
+    /// reliably fetch its contents. So ask for every placeholder by
+    /// its real name; as files land, the folder watcher fires and the
+    /// next rescan reads them.
+    static func requestICloudDownloads(in folder: URL) {
+        try? FileManager.default.startDownloadingUbiquitousItem(at: folder)
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: nil,
+            options: [.skipsPackageDescendants]) else { return }
+        for case let url as URL in enumerator
+        where url.pathExtension.lowercased() == "icloud" {
+            // ".<name>.icloud" → "<name>", the item's logical URL.
+            var name = url.lastPathComponent
+            if name.hasPrefix(".") { name.removeFirst() }
+            name = String(name.dropLast(".icloud".count))
+            guard !name.isEmpty else { continue }
+            let real = url.deletingLastPathComponent().appendingPathComponent(name)
+            try? FileManager.default.startDownloadingUbiquitousItem(at: real)
+        }
+    }
+
     static func scan(folder: URL) -> Result {
         var result = Result()
+        requestICloudDownloads(in: folder)
         guard let enumerator = FileManager.default.enumerator(
             at: folder,
             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],

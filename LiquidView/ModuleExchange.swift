@@ -153,13 +153,61 @@ enum ModuleExchange {
 
     // MARK: Export
 
+    /// The one line that installs the module: its declaring type's
+    /// `.module` added to the array in `LibraryViewRegistry.modules`
+    /// (LibraryViewModule.swift), e.g. `HotParagraphsView.module,`.
+    static func registryLine(for archive: ModuleArchive) -> String {
+        "\(declaringType(of: archive)).module,"
+    }
+
+    /// The type whose `static let module` declares the view: the nearest
+    /// type declaration above that line in the source. Falls back to the
+    /// file's base name.
+    private nonisolated static func declaringType(of archive: ModuleArchive) -> String {
+        let fallback = (archive.fileName as NSString).deletingPathExtension
+        guard let moduleRange = archive.source.range(of: "static let module") else {
+            return fallback
+        }
+        let head = String(archive.source[..<moduleRange.lowerBound])
+        let pattern = "(?:struct|extension|enum|class)\\s+([A-Za-z_][A-Za-z0-9_]*)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return fallback }
+        let matches = regex.matches(in: head, range: NSRange(head.startIndex..., in: head))
+        guard let last = matches.last, let range = Range(last.range(at: 1), in: head) else {
+            return fallback
+        }
+        return String(head[range])
+    }
+
     /// Saves the module's Swift source — the file another user drops into
-    /// their Xcode project and registers with one line.
+    /// their Xcode project and registers with one line, spelled out (and
+    /// copyable) in the save dialog itself.
     static func exportSwiftFile(_ archive: ModuleArchive) {
+        let line = registryLine(for: archive)
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.swiftSource]
         panel.nameFieldStringValue = archive.fileName
-        panel.message = "The exported file goes into the Xcode project, plus one line in LibraryViewRegistry.modules."
+        panel.message = "Add this file to the Xcode project, then register it by adding the line below to the LibraryViewRegistry.modules array in LibraryViewModule.swift. Using an AI assistant in Xcode (Claude, ChatGPT)? Give it this file and say “please add this view module” — it does both steps."
+
+        let label = NSTextField(labelWithString: "Registry line for \(archive.name):")
+        let code = NSTextField(labelWithString: line)
+        code.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        code.isSelectable = true
+        let trampoline = ContextActionTrampoline {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(line, forType: .string)
+        }
+        let copy = NSButton(title: "Copy", target: trampoline,
+                            action: #selector(ContextActionTrampoline.fire(_:)))
+        let row = NSStackView(views: [label, code, copy])
+        row.orientation = .horizontal
+        row.spacing = 8
+        row.edgeInsets = NSEdgeInsets(top: 10, left: 20, bottom: 10, right: 20)
+        panel.accessoryView = row
+
+        // runModal is synchronous, so the trampoline lives through the
+        // panel's session by staying in this frame.
+        defer { _ = trampoline }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try? archive.source.data(using: .utf8)?.write(to: url, options: .atomic)
     }

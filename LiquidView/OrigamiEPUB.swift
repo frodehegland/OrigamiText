@@ -38,10 +38,20 @@ nonisolated enum OrigamiEPUBExporter {
         }
 
         struct DocumentInfo: Encodable {
+            enum CodingKeys: String, CodingKey {
+                case title, authors, date, identifier
+                case origamiID = "origami-id"
+                case abstract, keywords, isbn, doi
+            }
+
             let title: String
             let authors: [String]
             let date: String
             let identifier: String
+            /// The document's library address, carried openly so a
+            /// receiving Origami Text can keep the book's identity —
+            /// citations to it then resolve wherever it arrives.
+            let origamiID: String
             let abstract = ""
             let keywords: [String] = []
             let isbn = ""
@@ -333,7 +343,8 @@ nonisolated enum OrigamiEPUBExporter {
                 title: doc.title,
                 authors: [doc.displayAuthor],
                 date: documentDate(of: doc),
-                identifier: identifier(of: doc)),
+                identifier: identifier(of: doc),
+                origamiID: doc.id),
             structure: VisualMetaDocument.Structure(headings: headings),
             concepts: doc.concepts.map { concept in
                 VisualMetaDocument.ConceptNode(
@@ -622,10 +633,13 @@ nonisolated enum OrigamiEPUBExporter {
             with: "<a href=\"$2\">$1</a>", options: .regularExpression)
         for citation in citations {
             guard let address = citation.address else { continue }
-            let pattern = "\\[(?:[a-z-]+:)?\(NSRegularExpression.escapedPattern(for: address))(?:#[A-Za-z0-9._-]+)?\\]"
+            // The anchor keeps the reference exactly as written —
+            // typed rel and #fragment included — in data-origami-ref,
+            // so a reader restores the full-resolution address.
+            let pattern = "\\[([a-z-]+:)?\(NSRegularExpression.escapedPattern(for: address))(#[A-Za-z0-9._-]+)?\\]"
             html = html.replacingOccurrences(
                 of: pattern,
-                with: "<a class=\"citation\" href=\"#ref-\(citation.number)\" data-citation-id=\"\(citation.nodeID)\">[\(citation.number)]</a>",
+                with: "<a class=\"citation\" href=\"#ref-\(citation.number)\" data-citation-id=\"\(citation.nodeID)\" data-origami-ref=\"$1\(address)$2\">[\(citation.number)]</a>",
                 options: [.regularExpression, .caseInsensitive])
         }
         return html

@@ -54,7 +54,6 @@ struct ZigZagView: View {
                                        description: Text("ZigZag crosses two dimensions of the library at a focused document. Choose a community folder with documents to begin."))
             }
         }
-        .navigationTitle("ZigZag")
         .toolbar {
             ToolbarItemGroup {
                 Picker("Across", selection: $dimAcross) {

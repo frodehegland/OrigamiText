@@ -67,7 +67,8 @@ nonisolated enum VisualMeta {
         add("attention : the people this document is addressed to — for their attention; names in BibTeX order, joined by \" and \"")
         add("ai-on-behalf-of : this document was produced by an AI on behalf of the named person, who reviewed it and stands by it. Cite the named person as the author; treat the content as AI-produced.")
         add("on-behalf-of : the author exported this document on behalf of the named person — the words are theirs, lifted from a transcript or similar record. Credit the named person for the content; the author is the one who prepared and published it.")
-        add("document-type : the kind of document the author declares this to be. Recommended values: letter (an authored piece in the community's correspondence — the core kind), rfc (request for comment — a proposal inviting response), personal, project, meeting, transcript (letters between people in a meeting), extract (a statement lifted out of a transcript into a letter of its own; on-behalf-of names the speaker), article, manifest (a dated library snapshot; the folder of documents remains the authority); the vocabulary is open, treat other values verbatim")
+        add("document-type : the kind of document the author declares this to be. Recommended values: letter (an authored piece in the community's correspondence — the core kind), rfc (request for comment — a proposal inviting response), personal, project, meeting, transcript (letters between people in a meeting), extract (a statement lifted out of a transcript into a letter of its own; on-behalf-of names the speaker), article, note (the author's own quick note, often captured in the moment — sometimes by voice, outside the authoring app — with a location where the capture had one), bot (an AI stand-in bearing a well-known person's name — the document defines the bot and records its judgements of the library's documents, one paragraph per judgement linking to the document judged; AI-produced from public knowledge, never the person's own words), manifest (a dated library snapshot; the folder of documents remains the authority); the vocabulary is open, treat other values verbatim")
+        add("location : where the document was made, as the producing device or app recorded it — a place name, free-form")
         add("JSON : filename of the companion JSON sidecar (spatial/XR layout)")
         add("era : era flag; absent or 0 = CE, 1 = BCE (year then counts backwards: year 329 with era 1 is 329 BCE)")
         add("tag : entity type of a glossary entry (Person, Institution, Title)")
@@ -78,6 +79,9 @@ nonisolated enum VisualMeta {
 
         add(metaBlock(for: doc, identity: identity))
 
+        // Everything the document carries rides through — the appendix
+        // adds the metadata to the page, it never costs the structured
+        // fields (place, references, the knowledge layer).
         return LiquidDoc(format: doc.format,
                          id: doc.id,
                          title: doc.title,
@@ -91,6 +95,11 @@ nonisolated enum VisualMeta {
                          aiOnBehalf: doc.aiOnBehalf,
                          onBehalfOf: doc.onBehalfOf,
                          documentType: doc.documentType,
+                         location: doc.location,
+                         concepts: doc.concepts,
+                         layouts: doc.layouts,
+                         mapConnections: doc.mapConnections,
+                         references: doc.references,
                          fileURL: doc.fileURL)
     }
 
@@ -148,6 +157,9 @@ nonisolated enum VisualMeta {
         if let documentType = doc.documentType {
             fields.append("document-type = {\(escaped(documentType))}")
         }
+        if let location = doc.location {
+            fields.append("location = {\(escaped(location))}")
+        }
         if let identity, identity.matches(author: doc.author) {
             let personalTitle = identity.personalTitle.trimmingCharacters(in: .whitespaces)
             let orcid = identity.orcid.trimmingCharacters(in: .whitespaces)
@@ -190,6 +202,13 @@ nonisolated enum VisualMeta {
                   seen.insert(link.to).inserted else { continue }
             entries.append(injecting(address: link.to, into: bibtex))
         }
+        // External citation records travel too — verbatim; they have
+        // no library address to inject.
+        for reference in doc.references {
+            let bibtex = reference.bibtex.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !bibtex.isEmpty, seen.insert(reference.id).inserted else { continue }
+            entries.append(bibtex)
+        }
         guard !entries.isEmpty else { return nil }
         return """
         @{references-start}
@@ -215,6 +234,12 @@ nonisolated enum VisualMeta {
         let firstTitleWord = doc.title.split(separator: " ").first.map(String.init) ?? "untitled"
         let key = alphanumeric(lastName) + String(year) + alphanumeric(firstTitleWord)
         return key.isEmpty ? "untitled\(year)" : key
+    }
+
+    /// The one BibTeX value escaper for the whole app — importers
+    /// synthesizing records use it too, so escaping never drifts.
+    nonisolated static func bibtexEscaped(_ value: String) -> String {
+        escaped(value)
     }
 
     /// BibTeX value escaping — the full special set, every time. Other

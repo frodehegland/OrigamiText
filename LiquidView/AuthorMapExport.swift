@@ -163,7 +163,7 @@ struct ExportToXRSheet: View {
     private var people: [String] {
         var names: Set<String> = []
         for entry in model.index.byID.values {
-            names.insert(entry.doc.author)
+            names.insert(entry.doc.creditedAuthor)
             for paragraph in entry.doc.body ?? [] {
                 if let speaker = paragraph.speaker { names.insert(speaker) }
             }

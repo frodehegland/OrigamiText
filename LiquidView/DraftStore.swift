@@ -99,13 +99,15 @@ final class DraftStore {
     }
 
     @discardableResult
-    func create(author: String) throws -> LiquidDoc {
+    func create(author: String, documentType: String? = nil,
+                onBehalfOf: String? = nil) throws -> LiquidDoc {
         let created = Date.now
         let id = LiquidAddress.makeID(author: author, created: created) { candidate in
             self.documents.contains { $0.id == candidate }
         }
         let doc = LiquidDoc(format: LiquidDoc.knownFormat, id: id, title: "Untitled",
                             author: author, created: created, body: [], links: [], wraps: nil,
+                            onBehalfOf: onBehalfOf, documentType: documentType,
                             fileURL: fileURL(for: id))
         try save(doc)
         return doc
@@ -121,9 +123,20 @@ final class DraftStore {
         }
     }
 
+    /// Deletion goes by way of the Trash — a deleted draft or note is
+    /// recoverable there.
     func delete(_ doc: LiquidDoc) {
-        try? FileManager.default.removeItem(at: fileURL(for: doc.id))
+        try? FileManager.default.trashItem(at: fileURL(for: doc.id), resultingItemURL: nil)
         documents.removeAll { $0.id == doc.id }
+    }
+
+    /// Deletes a published copy the same way: the file goes to the Trash.
+    func trashPublished(_ doc: LiquidDoc) {
+        let url = publishedFolder
+            .appendingPathComponent(doc.id)
+            .appendingPathExtension(LiquidDoc.fileExtension)
+        try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        published.removeAll { $0.id == doc.id }
     }
 
     func fileURL(for id: String) -> URL {
@@ -143,6 +156,10 @@ final class DraftEditor {
     var bodyText: String { didSet { hasUnsavedChanges = true } }
     /// "For the attention of" — the people this document addresses.
     var attention: [String] { didSet { hasUnsavedChanges = true } }
+    /// Whose words this document carries when not the author's own —
+    /// set by lifting from a transcript, or by hand for pasted email
+    /// text and the like. Export declares it, per the convention.
+    var onBehalfOf: String? { didSet { hasUnsavedChanges = true } }
     /// Human-assigned date; nil means the document goes by its creation
     /// timestamp, which is never editable.
     var date: LiquidDate? { didSet { hasUnsavedChanges = true } }
@@ -166,6 +183,7 @@ final class DraftEditor {
         author = doc.author
         bodyText = doc.bodyEditingText
         attention = doc.attention
+        onBehalfOf = doc.onBehalfOf
         date = doc.date
     }
 
@@ -225,8 +243,15 @@ final class DraftEditor {
                          attention: attention,
                          date: date,
                          aiOnBehalf: original.aiOnBehalf,
-                         onBehalfOf: original.onBehalfOf,
+                         onBehalfOf: onBehalfOf?.trimmingCharacters(in: .whitespaces).isEmpty == false
+                             ? onBehalfOf?.trimmingCharacters(in: .whitespaces) : nil,
                          documentType: original.documentType,
+                         // The knowledge layer rides through editing
+                         // untouched — the editor edits words.
+                         concepts: original.concepts,
+                         layouts: original.layouts,
+                         mapConnections: original.mapConnections,
+                         references: original.references,
                          fileURL: original.fileURL)
     }
 

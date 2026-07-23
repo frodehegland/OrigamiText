@@ -47,7 +47,6 @@ struct TheDealView: View {
             }
         }
         .overlay(alignment: .bottom) { table }
-        .navigationTitle("The Deal")
         .onAppear { if hand.isEmpty { deal() } }
     }
 

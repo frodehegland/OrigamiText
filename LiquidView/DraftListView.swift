@@ -1,43 +1,81 @@
 import SwiftUI
 
-/// The "My Documents" list of editable drafts.
+/// What an authored list holds: the letters (and everything else that
+/// is not a transcript or a book), the transcripts, or the books —
+/// Outgoing, Transcripts, and Books each get their own Drafts and
+/// Sent/Published.
+enum AuthoredKind {
+    case letters, transcripts, books
+
+    @MainActor func includes(_ doc: LiquidDoc) -> Bool {
+        let isBook = doc.documentType == LiquidDoc.DocumentType.book.rawValue
+        switch self {
+        case .books: return isBook
+        case .transcripts: return !isBook && TranscriptsView.isTranscript(doc)
+        case .letters: return !isBook && !TranscriptsView.isTranscript(doc)
+        }
+    }
+}
+
+/// The editable drafts of one kind, letters or transcripts.
 struct DraftListView: View {
     @Environment(AppModel.self) private var model
+    var kind: AuthoredKind = .letters
 
     var body: some View {
-        let drafts = model.filteredDrafts
+        let drafts = model.filteredDrafts.filter { kind.includes($0) }
         List(selection: draftSelection) {
             ForEach(drafts) { doc in
                 DraftRow(doc: doc)
                     .tag(doc.id)
                     .contextMenu {
                         Button("Export…") { model.export(draft: doc) }
+                        Button("Export as EPUB…") { model.exportEPUB(doc) }
+                        Divider()
+                        DocumentFileActions(doc: doc)
                         Divider()
                         Button("Delete", role: .destructive) { model.deleteDraft(doc) }
                     }
             }
         }
-        .navigationTitle("My Documents")
         .toolbar {
-            ToolbarItem {
-                Button {
-                    model.newDraft()
-                } label: {
-                    Label("New Document", systemImage: "square.and.pencil")
+            if kind == .letters {
+                ToolbarItem {
+                    Button {
+                        model.newDraft()
+                    } label: {
+                        Label("New Document", systemImage: "square.and.pencil")
+                    }
+                    .help("New Document (⌘N)")
                 }
-                .help("New Document (⌘N)")
             }
         }
         .overlay {
             if drafts.isEmpty {
-                ContentUnavailableView {
-                    Label(model.searchText.isEmpty ? "No Documents Yet" : "No Results",
-                          systemImage: "square.and.pencil")
-                } description: {
-                    Text("Create a new document to start writing.")
-                } actions: {
-                    if model.searchText.isEmpty {
-                        Button("New Document") { model.newDraft() }
+                if kind == .books {
+                    ContentUnavailableView {
+                        Label(model.searchText.isEmpty ? "No Books Yet" : "No Results",
+                              systemImage: "books.vertical")
+                    } description: {
+                        Text("Begin a book with ⌘⇧B, or ctrl-click Drafts under Books.")
+                    }
+                } else if kind == .transcripts {
+                    ContentUnavailableView {
+                        Label(model.searchText.isEmpty ? "No Transcript Drafts" : "No Results",
+                              systemImage: "text.bubble")
+                    } description: {
+                        Text("Importing a meeting transcript starts a draft here, ready to correct and publish.")
+                    }
+                } else {
+                    ContentUnavailableView {
+                        Label(model.searchText.isEmpty ? "No Documents Yet" : "No Results",
+                              systemImage: "square.and.pencil")
+                    } description: {
+                        Text("Create a new document to start writing.")
+                    } actions: {
+                        if model.searchText.isEmpty {
+                            Button("New Document") { model.newDraft() }
+                        }
                     }
                 }
             }
@@ -56,13 +94,14 @@ struct DraftListView: View {
     }
 }
 
-/// Documents the user has published: the actual published copies,
-/// read-only, opened in the reader.
+/// Documents the user has published, of one kind: the actual published
+/// copies, read-only, opened in the reader.
 struct PublishedListView: View {
     @Environment(AppModel.self) private var model
+    var kind: AuthoredKind = .letters
 
     var body: some View {
-        let published = model.filteredPublished
+        let published = model.filteredPublished.filter { kind.includes($0) }
         List(selection: selection) {
             ForEach(published) { doc in
                 VStack(alignment: .leading, spacing: 2) {
@@ -74,18 +113,28 @@ struct PublishedListView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 2)
+                .listRowSeparator(.hidden)
                 .tag(doc.id)
                 .contextMenu {
                     Button("Copy to Cite") { model.copyCitation(doc: doc) }
                     Button("Export a Copy…") { model.exportDocument(doc) }
+                    Button("Export as EPUB…") { model.exportEPUB(doc) }
+                    Menu("File") {
+                        FileUnderMenuItems(doc: doc)
+                    }
+                    Button("Delete", role: .destructive) { model.deletePublished(doc) }
+                    Divider()
+                    DocumentFileActions(doc: doc)
                 }
             }
         }
-        .navigationTitle("Published")
         .overlay {
             if published.isEmpty {
                 ContentUnavailableView {
-                    Label(model.searchText.isEmpty ? "Nothing Published Yet" : "No Results",
+                    Label(model.searchText.isEmpty
+                          ? (kind == .transcripts ? "No Sent Transcripts"
+                             : kind == .books ? "No Published Books" : "Nothing Sent Yet")
+                          : "No Results",
                           systemImage: "paperplane")
                 } description: {
                     Text("Exporting a draft publishes it. Published documents are read-only.")
@@ -126,13 +175,15 @@ struct ArchivedListView: View {
                         .lineLimit(1)
                 }
                 .padding(.vertical, 2)
+                .listRowSeparator(.hidden)
                 .tag(doc.id)
                 .contextMenu {
                     Button("Un-Archive") { model.unarchiveDraft(doc) }
+                    Divider()
+                    DocumentFileActions(doc: doc)
                 }
             }
         }
-        .navigationTitle("Archived")
         .overlay {
             if archived.isEmpty {
                 ContentUnavailableView {
@@ -150,6 +201,8 @@ struct ArchivedListView: View {
 struct ArchivedDocumentView: View {
     @Environment(AppModel.self) private var model
     let doc: LiquidDoc
+    /// Flow: dense text broken open for reading — display only.
+    @State private var flowText = false
 
     var body: some View {
         ScrollView {
@@ -162,7 +215,8 @@ struct ArchivedDocumentView: View {
                     .foregroundStyle(.secondary)
                     .padding(.bottom, 16)
                 ForEach(doc.body ?? []) { paragraph in
-                    ParagraphView(paragraph: paragraph, isHighlighted: false)
+                    ParagraphView(paragraph: paragraph, isHighlighted: false,
+                                  flowed: flowText)
                 }
             }
             .frame(maxWidth: 620, alignment: .leading)
@@ -170,15 +224,22 @@ struct ArchivedDocumentView: View {
             .padding(24)
         }
         .safeAreaInset(edge: .bottom) {
-            Button("Un-Archive") { model.unarchiveDraft(doc) }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Return this document to Drafts, exactly as it left")
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(.bar)
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.snappy) { flowText.toggle() }
+                } label: {
+                    Label(flowText ? "Unflow" : "Flow", systemImage: "text.alignleft")
+                }
+                .help("Break dense text open while reading: sentences get their own lines, clauses break after commas, parentheses stand apart — the document itself is untouched")
+                Button("Un-Archive") { model.unarchiveDraft(doc) }
+                    .help("Return this document to Drafts, exactly as it left")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(.bar)
         }
-        .navigationTitle(doc.title)
     }
 }
 
@@ -205,5 +266,6 @@ private struct DraftRow: View {
                 .lineLimit(1)
         }
         .padding(.vertical, 2)
+        .listRowSeparator(.hidden)
     }
 }

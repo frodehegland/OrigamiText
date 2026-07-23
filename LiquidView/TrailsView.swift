@@ -527,7 +527,7 @@ struct TrailsView: View {
         .contextMenu {
             if isRead {
                 Button("Mark as Unread") {
-                    withAnimation(.snappy) { readIDs.remove(stop.id) }
+                    withAnimation(.snappy) { _ = readIDs.remove(stop.id) }
                     TrailProgress.save(trailID: trail.id, read: readIDs)
                 }
             }

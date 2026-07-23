@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import ImagePlayground
+import UniformTypeIdentifiers
 
 /// UserDefaults keys for user-facing settings.
 enum AppSettings {
@@ -11,33 +13,95 @@ enum AppSettings {
     static let authorORCIDKey = "authorORCID"
     static let authorAffiliationKey = "authorAffiliation"
     static let testAccountActiveKey = "testAccountActive"
+    static let shareGeneralLocationKey = "shareGeneralLocation"
     static let testAccountNameKey = "testAccountName"
     static let aiInsightsPromptKey = "aiInsightsPrompt"
     static let aiThemesPromptKey = "aiThemesPrompt"
     static let aiOpenQuestionsPromptKey = "aiOpenQuestionsPrompt"
     static let aiDisagreementsPromptKey = "aiDisagreementsPrompt"
     static let aiAgreementsPromptKey = "aiAgreementsPrompt"
+    static let aiPersonProfilePromptKey = "aiPersonProfilePrompt"
+    static let aiStrangerChallengePromptKey = "aiStrangerChallengePrompt"
+    static let aiStrangerSupportPromptKey = "aiStrangerSupportPrompt"
+    static let aiPersonProfilesEnabledKey = "aiPersonProfilesEnabled"
+    static let portraitStyleKey = "portraitStyle"
+    static let portraitPromptKey = "portraitPrompt"
+    static let portraitInstantProcessingKey = "portraitInstantProcessing"
+    static let readerLayoutStyleKey = "readerLayoutStyle"
+    static let readerHeaderColumnWidthKey = "readerHeaderColumnWidth"
+    static let connectionPortraitsKey = "connectionPortraits"
+}
+
+/// Where the reader puts a letter's title, byline, and controls.
+enum ReaderLayoutStyle: String, CaseIterable, Identifiable {
+    /// Above the text — the classic arrangement.
+    case topOfLetters = "Top of Letters"
+    /// Beside the text, leaving the reading view to the words alone.
+    case rightColumn = "Right Column"
+    var id: String { rawValue }
+}
+
+/// The Settings window's tabs, addressable so other parts of the app can
+/// open Settings onto a particular one.
+enum SettingsTab: Hashable {
+    case author, editor, layout, library, dialog, ai, modules, openSource
 }
 
 /// The app's Settings window (Origami Text → Settings…, ⌘,).
 struct SettingsView: View {
+    @Environment(AppModel.self) private var model
+
     var body: some View {
-        TabView {
+        @Bindable var model = model
+        TabView(selection: $model.settingsTab) {
             AuthorSettingsView()
                 .tabItem { Label("Author", systemImage: "person.text.rectangle") }
+                .tag(SettingsTab.author)
             EditorSettingsView()
                 .tabItem { Label("Editor", systemImage: "square.and.pencil") }
+                .tag(SettingsTab.editor)
+            LayoutSettingsView()
+                .tabItem { Label("Layout", systemImage: "sidebar.right") }
+                .tag(SettingsTab.layout)
             LibrarySettingsView()
                 .tabItem { Label("Library", systemImage: "books.vertical") }
+                .tag(SettingsTab.library)
+            SharingSettingsView()
+                .tabItem { Label("Dialog", systemImage: "bubble.left.and.bubble.right") }
+                .tag(SettingsTab.dialog)
             AISettingsView()
                 .tabItem { Label("AI", systemImage: "sparkles") }
+                .tag(SettingsTab.ai)
             ModulesSettingsView()
                 .tabItem { Label("View Modules", systemImage: "puzzlepiece.extension") }
-            FormatSettingsView()
-                .tabItem { Label("Format", systemImage: "doc.text") }
+                .tag(SettingsTab.modules)
+            OpenSourceSettingsView()
+                .tabItem { Label("Open Source", systemImage: "shippingbox") }
+                .tag(SettingsTab.openSource)
         }
-        .frame(width: 480)
+        .frame(width: 576)
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// How the reader arranges a letter around its text. The letter's
+/// identity and controls live in the column on the right, as in
+/// Knowledge Space; full screen alone puts the header with the words.
+private struct LayoutSettingsView: View {
+    @AppStorage(AppSettings.connectionPortraitsKey)
+    private var connectionPortraits = true
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Author portraits on connection cards", isOn: $connectionPortraits)
+            } footer: {
+                Text("Shows each author's portrait on the cards in the reading margins — the letters this one links to and the letters that link back.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -45,11 +109,24 @@ struct SettingsView: View {
 /// Visual-Meta self-citation of exported documents.
 private struct AuthorSettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.supportsImagePlayground) private var supportsImagePlayground
     @AppStorage(AppSettings.authorNameKey) private var name = ""
     @AppStorage(AppSettings.authorTitleKey) private var title = ""
     @AppStorage(AppSettings.authorORCIDKey) private var orcid = ""
     @AppStorage(AppSettings.authorAffiliationKey) private var affiliation = ""
+    @AppStorage(AppSettings.portraitStyleKey) private var portraitStyle = PortraitStyle.illustration.rawValue
+    @AppStorage(AppSettings.portraitPromptKey) private var portraitPrompt = PortraitStyle.defaultConcept
     @State private var muteName = ""
+
+    private var portraitsFooter: String {
+        if !supportsImagePlayground {
+            "Cartoon portraits need Apple Intelligence, which is not available on this Mac. Photos added to contact records are shown as-is."
+        } else if !model.portraits.supportsAutomaticGeneration {
+            "This Mac only allows cartoon portraits through the Image Playground window, so each is drawn from the contact record — this style and prompt are pre-set there. The original photos are never altered."
+        } else {
+            "Photos added to a contact record are turned into cartoon portraits, drawn on this Mac by Apple's Image Playground using this style and prompt. Changing the style re-draws every portrait from its original photo — the photos themselves are never altered."
+        }
+    }
 
     var body: some View {
         @Bindable var model = model
@@ -79,6 +156,40 @@ private struct AuthorSettingsView: View {
                 Text("Test Account")
             } footer: {
                 Text("While active, the app takes on this identity everywhere: new documents are authored by it, and the library bolds documents addressed to it. Name only — your title, ORCID, and affiliation are never attached. Switch off to return to yourself.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Picker("Cartoon style", selection: $portraitStyle) {
+                    ForEach(PortraitStyle.allCases) { style in
+                        Text(style.label).tag(style.rawValue)
+                    }
+                }
+                .onChange(of: portraitStyle) {
+                    model.portraits.restyleAllPortraits()
+                }
+                TextField("Portrait prompt", text: $portraitPrompt, axis: .vertical)
+                    .lineLimit(2...4)
+                if portraitPrompt != PortraitStyle.defaultConcept {
+                    Button("Reset Prompt to Default") {
+                        portraitPrompt = PortraitStyle.defaultConcept
+                    }
+                }
+                if model.portraits.isRestyling {
+                    ProgressView(value: Double(model.portraits.restyleDone),
+                                 total: Double(max(model.portraits.restyleTotal, 1))) {
+                        Text("Re-drawing portraits… \(model.portraits.restyleDone) of \(model.portraits.restyleTotal)")
+                            .font(.caption)
+                    }
+                } else if model.portraits.supportsAutomaticGeneration {
+                    Button("Redo All Portraits") {
+                        model.portraits.restyleAllPortraits()
+                    }
+                }
+            } header: {
+                Text("Contact Portraits")
+            } footer: {
+                Text(portraitsFooter)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -125,6 +236,10 @@ private struct AISettingsView: View {
     @AppStorage(AppSettings.aiOpenQuestionsPromptKey) private var questionsPrompt = OpenQuestions.defaultPrompt
     @AppStorage(AppSettings.aiDisagreementsPromptKey) private var disagreementsPrompt = Disagreements.defaultPrompt
     @AppStorage(AppSettings.aiAgreementsPromptKey) private var agreementsPrompt = Agreements.defaultPrompt
+    @AppStorage(AppSettings.aiPersonProfilePromptKey) private var personProfilePrompt = AuthorProfiles.defaultPrompt
+    @AppStorage(AppSettings.aiStrangerChallengePromptKey) private var strangerChallengePrompt = Stranger.defaultChallengePrompt
+    @AppStorage(AppSettings.aiStrangerSupportPromptKey) private var strangerSupportPrompt = Stranger.defaultSupportPrompt
+    @AppStorage(AppSettings.aiPersonProfilesEnabledKey) private var personProfilesEnabled = true
     @State private var selection = "AI Insights"
 
     private var prompt: Binding<String> {
@@ -133,6 +248,9 @@ private struct AISettingsView: View {
         case "Open Questions": $questionsPrompt
         case "Agreements": $agreementsPrompt
         case "Disagreements": $disagreementsPrompt
+        case "Person Profiles": $personProfilePrompt
+        case "The Stranger — Challenge": $strangerChallengePrompt
+        case "The Stranger — Support": $strangerSupportPrompt
         default: $insightsPrompt
         }
     }
@@ -143,6 +261,9 @@ private struct AISettingsView: View {
         case "Open Questions": OpenQuestions.defaultPrompt
         case "Agreements": Agreements.defaultPrompt
         case "Disagreements": Disagreements.defaultPrompt
+        case "Person Profiles": AuthorProfiles.defaultPrompt
+        case "The Stranger — Challenge": Stranger.defaultChallengePrompt
+        case "The Stranger — Support": Stranger.defaultSupportPrompt
         default: AIInsights.defaultPrompt
         }
     }
@@ -157,6 +278,12 @@ private struct AISettingsView: View {
             "Names where documents genuinely converge. An agreement survives only when at least two real documents hold the shared position — one document cannot agree with itself."
         case "Disagreements":
             "Names where documents genuinely pull apart. Each dispute keeps only sides grounded in real documents — both sides must survive or the dispute is dropped."
+        case "Person Profiles":
+            "Revises one person's profile from their new letters and statements — interests, concerns, temperament, way of writing. Runs continually as letters arrive, when enabled below."
+        case "The Stranger — Challenge":
+            "The Stranger in challenge mode: names what the community believes together but has never defended, with the strongest honest case against. Every finding is grounded in real document addresses or dropped."
+        case "The Stranger — Support":
+            "The Stranger in support mode: names what the community has right but undervalues. Every finding is grounded in real document addresses or dropped."
         default:
             "The AI Insights report. Citing documents by bracketed address makes the model's references live links."
         }
@@ -166,7 +293,9 @@ private struct AISettingsView: View {
         Form {
             Section {
                 Picker("Prompt", selection: $selection) {
-                    ForEach(["AI Insights", "Themes", "Open Questions", "Agreements", "Disagreements"], id: \.self) {
+                    ForEach(["AI Insights", "Themes", "Open Questions", "Agreements",
+                             "Disagreements", "Person Profiles",
+                             "The Stranger — Challenge", "The Stranger — Support"], id: \.self) {
                         Text($0)
                     }
                 }
@@ -184,14 +313,28 @@ private struct AISettingsView: View {
                     Button("Reset to Default") { prompt.wrappedValue = defaultValue }
                 }
             }
+            Section {
+                Toggle("Build person profiles continually", isOn: $personProfilesEnabled)
+            } footer: {
+                Text("As letters and transcripts arrive, the on-device model revises a profile of each author — interests, concerns, temperament, way of writing — shown on their card and page, and available to views. Each document is read once; nothing leaves this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }
 }
 
 /// Views are exchangeable modules — this tab explains how to write and
-/// share one, and lists what's installed.
+/// share one, and lists what's installed, each with a checkbox for
+/// whether it shows on the sidebar.
 private struct ModulesSettingsView: View {
+    @Environment(AppModel.self) private var model
+    @State private var xcodeExportID = LibraryViewRegistry.modules.first?.id ?? ""
+    @State private var origamiExportID = LibraryViewRegistry.modules.first?.id ?? ""
+    @State private var importedModules = ModuleExchange.importedArchives()
+    @State private var shareNote: String?
+    @State private var showsCreateGuide = false
 
     var body: some View {
         Form {
@@ -199,38 +342,183 @@ private struct ModulesSettingsView: View {
                 Text("Every view in the sidebar's Views section is a module: one Swift file anyone can write, share, and install. Views are how a community grows its own ways of seeing — the documents stay the same; the ways of looking multiply.")
                     .font(.callout)
             }
-            Section("Installed Views") {
-                ForEach(LibraryViewRegistry.modules) { module in
-                    LabeledContent {
-                        Text(module.id)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    } label: {
-                        Label(module.name, systemImage: module.systemImage)
+            Section {
+                // A fixed window of about five rows; the rest scroll.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(LibraryViewRegistry.modules) { module in
+                            HStack {
+                                Toggle(isOn: shown(module.id)) {
+                                    Label(module.name, systemImage: module.systemImage)
+                                }
+                                .toggleStyle(.checkbox)
+                                Spacer()
+                                Text(module.id)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 5)
+                            if module.id != LibraryViewRegistry.modules.last?.id {
+                                Divider()
+                            }
+                        }
                     }
                 }
+                .frame(height: 145)
+            } header: {
+                Text("Installed Views")
+            } footer: {
+                Text("Checked views appear in the sidebar's Views section; unchecking hides a view without uninstalling it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            shareSection
+            if !importedModules.isEmpty {
+                importedSection
             }
             Section {
-                Text("""
-                1.  Write a SwiftUI view in one file. Read the library through the environment model — the document index, backlinks, and the ready-made derivations in LibraryInsights. Navigate with the same calls every view uses: openInLibrary, open(doc, fragment:), openTranspointing.
-                2.  At the bottom of the file, declare a LibraryViewModule: an id, a sidebar name, an SF Symbol, and how to build its panes.
-                3.  Add that module to LibraryViewRegistry.modules — one line. The sidebar entry, selection, and routing follow automatically.
+                Button("Create Your Own…") { showsCreateGuide = true }
+            }
+        }
+        .formStyle(.grouped)
+        .sheet(isPresented: $showsCreateGuide) { createGuide }
+    }
 
-                To share a view, send the file. To install one, drop it into the project and add its registry line. The full contract is documented in LibraryViewModule.swift.
-                """)
-                .font(.callout)
-            } header: {
-                Text("Create Your Own")
-            } footer: {
+    /// Checked means on the sidebar.
+    private func shown(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { !model.isViewHidden(id) },
+            set: { model.setView(id, hidden: !$0) }
+        )
+    }
+
+    /// The module-writing recipe, shown on request rather than crowding
+    /// the settings pane.
+    private var createGuide: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Create Your Own View")
+                .font(.headline)
+            Text("""
+            1.  Write a SwiftUI view in one file. Read the library through the environment model — the document index, backlinks, and the ready-made derivations in LibraryInsights. Navigate with the same calls every view uses: openInLibrary, open(doc, fragment:), openTranspointing.
+            2.  At the bottom of the file, declare a LibraryViewModule: an id, a sidebar name, an SF Symbol, and how to build its panes.
+            3.  Add that module to LibraryViewRegistry.modules — one line. The sidebar entry, selection, and routing follow automatically.
+
+            To share a view, send the file. To install one, drop it into the project and add its registry line. The full contract is documented in LibraryViewModule.swift.
+            """)
+            .font(.callout)
+            HStack {
                 Button("Copy Starter Module") {
                     let pasteboard = NSPasteboard.general
                     pasteboard.clearContents()
                     pasteboard.setString(Self.starterTemplate, forType: .string)
                 }
                 .help("Puts a compilable starter view module on the clipboard")
+                Spacer()
+                Button("Done") { showsCreateGuide = false }
+                    .keyboardShortcut(.defaultAction)
             }
         }
-        .formStyle(.grouped)
+        .padding(20)
+        .frame(width: 440)
+    }
+
+    /// Sharing: a module leaves as a Swift file (for another user's Xcode
+    /// project) or as a .origamiview archive (for another user's Origami
+    /// Text), and either kind imports back here.
+    @ViewBuilder private var shareSection: some View {
+        Section {
+            Picker("For Xcode", selection: $xcodeExportID) {
+                ForEach(LibraryViewRegistry.modules) { module in
+                    Text(module.name).tag(module.id)
+                }
+            }
+            Button("Export Swift File…") {
+                export(id: xcodeExportID, asSwift: true)
+            }
+            Divider()
+            Picker("For Origami Text", selection: $origamiExportID) {
+                ForEach(LibraryViewRegistry.modules) { module in
+                    Text(module.name).tag(module.id)
+                }
+            }
+            Button("Export Origami View Module…") {
+                export(id: origamiExportID, asSwift: false)
+            }
+            Divider()
+            Button("Import Module…") { importModule() }
+            if let shareNote {
+                Text(shareNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Share")
+        } footer: {
+            Text("A Swift file goes into another user's Xcode project (plus one registry line). A .origamiview file imports straight into Origami Text: a module this build already contains becomes shareable from here; a new one is kept ready for its pass through Xcode.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Modules brought in with Import: running if this build contains
+    /// their code, otherwise held with their source ready to export.
+    private var importedSection: some View {
+        Section("Imported Modules") {
+            ForEach(importedModules) { archive in
+                LabeledContent {
+                    HStack(spacing: 10) {
+                        Text(ModuleExchange.isActive(archive) ? "Active" : "Awaiting build")
+                            .font(.caption)
+                            .foregroundStyle(ModuleExchange.isActive(archive)
+                                             ? AnyShapeStyle(.green) : AnyShapeStyle(.orange))
+                        Button("Export Swift File…") {
+                            ModuleExchange.exportSwiftFile(archive)
+                        }
+                        .controlSize(.small)
+                        Button(role: .destructive) {
+                            ModuleExchange.removeImported(archive)
+                            importedModules = ModuleExchange.importedArchives()
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .controlSize(.small)
+                    }
+                } label: {
+                    Label(archive.name, systemImage: archive.systemImage)
+                }
+            }
+        }
+    }
+
+    private func export(id: String, asSwift: Bool) {
+        guard let module = LibraryViewRegistry.module(id: id) else { return }
+        guard let archive = ModuleExchange.archive(for: module) else {
+            shareNote = "No source is available for “\(module.name)” in this build — regenerate ModuleSources.json."
+            return
+        }
+        shareNote = nil
+        if asSwift {
+            ModuleExchange.exportSwiftFile(archive)
+        } else {
+            ModuleExchange.exportOrigamiView(archive)
+        }
+    }
+
+    private func importModule() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [ModuleExchange.origamiViewType, .swiftSource]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a .origamiview module or a Swift view-module file."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let archive = try ModuleExchange.importModule(at: url)
+            importedModules = ModuleExchange.importedArchives()
+            shareNote = ModuleExchange.isActive(archive)
+                ? "“\(archive.name)” imported — its view is part of this build and running."
+                : "“\(archive.name)” imported — a new module runs after its Swift file is added to the Xcode project (export it from the list below)."
+        } catch {
+            shareNote = error.localizedDescription
+        }
     }
 
     private static let starterTemplate = """
@@ -257,7 +545,6 @@ private struct ModulesSettingsView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .navigationTitle("My View")
         }
     }
 
@@ -275,8 +562,10 @@ private struct ModulesSettingsView: View {
 }
 
 /// The documents that define the project — the format specification and
-/// the community announcement — bundled with the app and opened from here.
-private struct FormatSettingsView: View {
+/// the account of what has been built — bundled with the app and opened
+/// from here. This is the open-source doorway: everything needed to
+/// build a compatible app, in two Markdown files.
+private struct OpenSourceSettingsView: View {
     var body: some View {
         Form {
             Section {
@@ -287,7 +576,7 @@ private struct FormatSettingsView: View {
                     Button("Open") { open("ORIGAMI-TEXT-OVERVIEW") }
                 }
             } footer: {
-                Text("The complete .origamitext specification — self-contained, ready to hand to a person or an AI to build a compatible app — and the overview of what Origami Text does and why. Both open in your default Markdown app.")
+                Text("The complete .origamitext specification, self-contained, and the account of what Origami Text does and why. Both open in your default Markdown app. Together they should be enough for your own AI, in a coding environment such as Xcode, to produce an app such as this — apart from the community's views, which travel as modules.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

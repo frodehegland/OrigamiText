@@ -37,7 +37,6 @@ struct HotParagraphsView: View {
                 .buttonStyle(.plain)
             }
         }
-        .navigationTitle("Hot Paragraphs")
         .overlay {
             if hotParagraphs.isEmpty {
                 ContentUnavailableView {

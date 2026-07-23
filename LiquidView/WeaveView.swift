@@ -43,6 +43,16 @@ struct WeaveEdge {
     let to: Int
 }
 
+/// A text held to the wheel: its words at the hub, and threads to the
+/// knots it is kin to, each with a strength the drawing scales by and
+/// an optional tint — K. Nav colors them by stance toward the typed
+/// keyword. While a probe stands, every other thread falls dark grey:
+/// the wheel answers the keyword and nothing else.
+struct WeaveProbe {
+    let label: String
+    let threads: [(node: Int, strength: Double, tint: Color?)]
+}
+
 struct WeaveData {
     var nodes: [WeaveNode] = []
     var edges: [WeaveEdge] = []
@@ -52,7 +62,7 @@ struct WeaveData {
     static func build(from entries: [IndexEntry], backlinks: [String: [BacklinkRef]]) -> WeaveData {
         // Authors around the wheel, most prolific first; their documents
         // in creation order, so time runs along each author's arc.
-        let byAuthor = Dictionary(grouping: entries, by: { $0.doc.author })
+        let byAuthor = Dictionary(grouping: entries, by: { $0.doc.creditedAuthor })
         let authors = byAuthor.keys.sorted {
             (byAuthor[$0]?.count ?? 0, $1) > (byAuthor[$1]?.count ?? 0, $0)
         }
@@ -95,6 +105,14 @@ struct WeaveCanvas: View {
     /// Weave reuses the whole canvas under its own name.
     var title = "The Weave"
     var subtitle: String? = nil
+    /// A second family of threads, drawn brighter and dashed — K. Nav
+    /// lays its bridges over the wheel this way. The classic weaves
+    /// leave it empty and are unchanged.
+    var brightEdges: [WeaveEdge] = []
+    /// A probe at the hub: a text standing at the wheel's center with
+    /// threads of kinship out to the knots. K. Nav sets it on Enter; the
+    /// classic weaves leave it nil and are unchanged.
+    var probe: WeaveProbe? = nil
 
     /// Ambient turn: one revolution every four minutes.
     private static let ambientSpeed = (2 * Double.pi) / 240
@@ -135,10 +153,10 @@ struct WeaveCanvas: View {
             .onChange(of: geometry.size) { frameSize = geometry.size }
             .overlay(alignment: .center) { centerLabel }
         }
-        .navigationTitle(title)
     }
 
-    /// The wheel's center speaks: the hovered knot, or the weave itself.
+    /// The wheel's center speaks: the hovered knot, the probe held to
+    /// the wheel, or the weave itself.
     private var centerLabel: some View {
         VStack(spacing: 4) {
             if let hovered, data.nodes.indices.contains(hovered) {
@@ -149,6 +167,16 @@ struct WeaveCanvas: View {
                 Text(node.author)
                     .font(.caption)
                     .foregroundStyle(color(hue: node.hue, brightness: 0.95))
+            } else if let probe {
+                Text("“\(String(probe.label.prefix(90)))”")
+                    .font(.system(size: 15, design: .serif))
+                    .italic()
+                    .foregroundStyle(.white)
+                Text(probe.threads.isEmpty
+                     ? "no kinship found"
+                     : "\(probe.threads.count) kinship\(probe.threads.count == 1 ? "" : "s") in the weave")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.4))
             } else {
                 Text(title.uppercased())
                     .font(.system(size: 11, weight: .semibold))
@@ -219,6 +247,10 @@ struct WeaveCanvas: View {
         guard !data.nodes.isEmpty else { return }
         let t = date.timeIntervalSince(born)
         let connected = connectedSet()
+        // While a probe stands at the hub, every thread that is not the
+        // probe's falls dark grey — the wheel answers the keyword and
+        // nothing else.
+        let greyed = probe != nil
 
         // Threads first — they are the vital thing. Unhovered: a breathing
         // field; hovered: everything else falls dark and its threads flare
@@ -226,22 +258,92 @@ struct WeaveCanvas: View {
         for (i, edge) in data.edges.enumerated() {
             let isLit = hovered.map { edge.from == $0 || edge.to == $0 } ?? false
             if hovered != nil, !isLit {
-                strokeThread(edge, in: &context, size: size, at: date, opacity: 0.05, width: 0.6)
+                strokeThread(edge, in: &context, size: size, at: date, opacity: 0.05, width: 0.6,
+                             greyed: greyed)
             } else if !isLit {
-                let breath = 0.30 + 0.14 * sin(t * 0.7 + Double(i) * 1.3)
-                strokeThread(edge, in: &context, size: size, at: date, opacity: breath, width: 1.1)
+                let breath = greyed ? 0.16 : 0.30 + 0.14 * sin(t * 0.7 + Double(i) * 1.3)
+                strokeThread(edge, in: &context, size: size, at: date, opacity: breath, width: 1.1,
+                             greyed: greyed)
             }
         }
         if hovered != nil {
             context.drawLayer { layer in
                 layer.addFilter(.blur(radius: 5))
                 for edge in data.edges where edge.from == hovered || edge.to == hovered {
-                    strokeThread(edge, in: &layer, size: size, at: date, opacity: 0.9, width: 3.5)
+                    strokeThread(edge, in: &layer, size: size, at: date, opacity: 0.9, width: 3.5,
+                                 greyed: greyed)
                 }
             }
             for edge in data.edges where edge.from == hovered || edge.to == hovered {
-                strokeThread(edge, in: &context, size: size, at: date, opacity: 1, width: 1.4)
+                strokeThread(edge, in: &context, size: size, at: date, opacity: 1, width: 1.4,
+                             greyed: greyed)
             }
+        }
+
+        // The bright family — bridges: dashed, wider, resting brighter
+        // than the field, and flaring like any thread when an end is
+        // hovered. Under a probe they fall grey like everything else.
+        for (i, edge) in brightEdges.enumerated() {
+            let isLit = hovered.map { edge.from == $0 || edge.to == $0 } ?? false
+            if hovered != nil, !isLit {
+                strokeThread(edge, in: &context, size: size, at: date,
+                             opacity: 0.08, width: 0.8, dashed: true, greyed: greyed)
+            } else if !isLit {
+                let breath = greyed ? 0.2 : 0.5 + 0.18 * sin(t * 0.9 + Double(i) * 1.7)
+                strokeThread(edge, in: &context, size: size, at: date,
+                             opacity: breath, width: 1.7, dashed: true, greyed: greyed)
+            }
+        }
+        if hovered != nil {
+            context.drawLayer { layer in
+                layer.addFilter(.blur(radius: 6))
+                for edge in brightEdges where edge.from == hovered || edge.to == hovered {
+                    strokeThread(edge, in: &layer, size: size, at: date, opacity: 1, width: 4.5,
+                                 greyed: greyed)
+                }
+            }
+            for edge in brightEdges where edge.from == hovered || edge.to == hovered {
+                strokeThread(edge, in: &context, size: size, at: date,
+                             opacity: 1, width: 2, dashed: true, greyed: greyed)
+            }
+        }
+
+        // The probe's threads: from the hub out to its kin,
+        // strength-scaled, tinted by stance when one is known, flaring
+        // when their knot is hovered.
+        if let probe {
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            for thread in probe.threads {
+                guard data.nodes.indices.contains(thread.node) else { continue }
+                let p = position(of: thread.node, in: size, at: date)
+                let isLit = hovered == thread.node
+                let dimmedByHover = hovered != nil && !isLit
+                var path = Path()
+                path.move(to: center)
+                let mid = CGPoint(x: (center.x + p.x) / 2, y: (center.y + p.y) / 2)
+                path.addQuadCurve(to: p, control: CGPoint(x: mid.x, y: mid.y))
+                let tint = thread.tint ?? .white
+                let opacity = dimmedByHover ? 0.08 : 0.35 + 0.55 * thread.strength
+                let width = isLit ? 2.6 : 1.0 + 2.0 * thread.strength
+                if isLit {
+                    context.drawLayer { layer in
+                        layer.addFilter(.blur(radius: 5))
+                        layer.stroke(path, with: .color(tint.opacity(0.9)), lineWidth: 4)
+                    }
+                }
+                context.stroke(path, with: .color(tint.opacity(opacity)), lineWidth: width)
+            }
+            // The hub itself: a small breathing star where the words stand.
+            let pulse = 3.5 + 0.8 * sin(t * 1.4)
+            context.drawLayer { layer in
+                layer.addFilter(.blur(radius: 4))
+                layer.fill(Path(ellipseIn: CGRect(x: center.x - pulse - 2, y: center.y - pulse - 2,
+                                                  width: (pulse + 2) * 2, height: (pulse + 2) * 2)),
+                           with: .color(.white.opacity(0.7)))
+            }
+            context.fill(Path(ellipseIn: CGRect(x: center.x - pulse, y: center.y - pulse,
+                                                width: pulse * 2, height: pulse * 2)),
+                         with: .color(.white))
         }
 
         // The knots.
@@ -287,7 +389,8 @@ struct WeaveCanvas: View {
     }
 
     private func strokeThread(_ edge: WeaveEdge, in context: inout GraphicsContext,
-                              size: CGSize, at date: Date, opacity: Double, width: Double) {
+                              size: CGSize, at date: Date, opacity: Double, width: Double,
+                              dashed: Bool = false, greyed: Bool = false) {
         let a = position(of: edge.from, in: size, at: date)
         let b = position(of: edge.to, in: size, at: date)
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -298,18 +401,24 @@ struct WeaveCanvas: View {
         var path = Path()
         path.move(to: a)
         path.addQuadCurve(to: b, control: control)
+        let style = StrokeStyle(lineWidth: width, dash: dashed ? [6, 4] : [])
+        if greyed {
+            context.stroke(path, with: .color(Color(white: 0.3).opacity(opacity)), style: style)
+            return
+        }
         let fromColor = color(hue: data.nodes[edge.from].hue, brightness: 0.9, opacity: opacity)
         let toColor = color(hue: data.nodes[edge.to].hue, brightness: 0.9, opacity: opacity)
         context.stroke(path,
                        with: .linearGradient(Gradient(colors: [fromColor, toColor]),
                                              startPoint: a, endPoint: b),
-                       lineWidth: width)
+                       style: style)
     }
 
-    /// Which knots each knot touches, for neighbor lighting.
+    /// Which knots each knot touches, for neighbor lighting — the bright
+    /// family counts too.
     private func connectedSet() -> [Int: Set<Int>] {
         var map: [Int: Set<Int>] = [:]
-        for edge in data.edges {
+        for edge in data.edges + brightEdges {
             map[edge.from, default: []].insert(edge.to)
             map[edge.to, default: []].insert(edge.from)
         }

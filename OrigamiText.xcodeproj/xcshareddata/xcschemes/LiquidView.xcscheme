@@ -17,7 +17,7 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "000000000000000100000000"
                BuildableName = "Origami Text.app"
-               ReferencedContainer = "container:LiquidView.xcodeproj">
+               ReferencedContainer = "container:OrigamiText.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -46,7 +46,7 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "000000000000000100000000"
             BuildableName = "Origami Text.app"
-            ReferencedContainer = "container:LiquidView.xcodeproj">
+            ReferencedContainer = "container:OrigamiText.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -62,7 +62,7 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "000000000000000100000000"
             BuildableName = "Origami Text.app"
-            ReferencedContainer = "container:LiquidView.xcodeproj">
+            ReferencedContainer = "container:OrigamiText.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

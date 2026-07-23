@@ -1,4 +1,42 @@
 import SwiftUI
+import CoreLocation
+
+/// One-shot place finding for the desk, mirroring the phone's: the
+/// current location, reverse-geocoded to the most natural short name
+/// ("Wimbledon, London, United Kingdom"), per the format's location
+/// convention — a place name, never coordinates; the country comes
+/// last, and heads the Notes ▸ Locations sections. Runs only when
+/// Settings ▸ Dialog shares the general location.
+nonisolated final class PlaceFinder: NSObject, CLLocationManagerDelegate {
+    nonisolated(unsafe) var onPlace: (@MainActor (String) -> Void)?
+    private let manager = CLLocationManager()
+
+    func begin() {
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.requestWhenInUseAuthorization()
+        manager.requestLocation()
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last else { return }
+        Task {
+            guard let placemark = try? await CLGeocoder()
+                .reverseGeocodeLocation(location).first else { return }
+            let parts = [placemark.subLocality, placemark.locality, placemark.country]
+                .compactMap { $0 }
+            let place = parts.isEmpty
+                ? (placemark.name ?? placemark.administrativeArea ?? "")
+                : parts.joined(separator: ", ")
+            guard !place.isEmpty else { return }
+            await MainActor.run { [onPlace] in onPlace?(place) }
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        // No place, no field — the letter simply travels without one.
+    }
+}
 
 /// The record of every place the library's documents have carried —
 /// notes captured on the move, letters written from somewhere,
@@ -118,21 +156,31 @@ struct LocationView: View {
                     systemImage: "mappin.and.ellipse",
                     description: Text("Locations appear once notes, transcripts, or letters carry a place — notes captured on the move bring theirs along."))
             } else {
-                List {
-                    ForEach(places) { place in
-                        Section {
-                            if place.docs.isEmpty {
-                                Text("Nothing here now — the place is remembered.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                ForEach(place.docs, id: \.id) { doc in
-                                    row(for: doc)
+                ScrollViewReader { proxy in
+                    List {
+                        ForEach(places) { place in
+                            Section {
+                                if place.docs.isEmpty {
+                                    Text("Nothing here now — the place is remembered.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    ForEach(place.docs, id: \.id) { doc in
+                                        row(for: doc)
+                                    }
                                 }
+                            } header: {
+                                Label(place.name, systemImage: "mappin.and.ellipse")
+                                    .foregroundStyle(isHighlighted(place) ? Color.accentColor : Color.secondary)
+                                    .id(place.id)
                             }
-                        } header: {
-                            Label(place.name, systemImage: "mappin.and.ellipse")
                         }
+                    }
+                    // A document footer's Location menu arrives here:
+                    // scroll to the named place, marked in accent.
+                    .task(id: model.highlightedLocation) {
+                        guard let key = model.highlightedLocation?.lowercased() else { return }
+                        withAnimation(.snappy) { proxy.scrollTo(key, anchor: .top) }
                     }
                 }
             }
@@ -140,6 +188,11 @@ struct LocationView: View {
         // Fold in anything made since the last index change — desk
         // notes especially, which live outside the index.
         .task { model.recordLocations() }
+        .onDisappear { model.highlightedLocation = nil }
+    }
+
+    private func isHighlighted(_ place: Place) -> Bool {
+        model.highlightedLocation?.lowercased() == place.id
     }
 
     private func row(for doc: LiquidDoc) -> some View {
@@ -160,6 +213,7 @@ struct LocationView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .listRowSeparator(.hidden)
     }
 
     /// A note says only when — it is always its author's own; letters and

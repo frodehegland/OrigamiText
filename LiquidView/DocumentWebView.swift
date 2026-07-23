@@ -37,7 +37,6 @@ struct DocumentWebView: View {
                 )
             }
         }
-        .navigationTitle("Connections")
         .toolbar {
             ToolbarItem {
                 Picker("View", selection: $isOpenView) {

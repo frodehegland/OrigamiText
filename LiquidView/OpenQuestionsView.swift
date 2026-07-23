@@ -65,7 +65,6 @@ struct OpenQuestionsView: View {
                 }
             }
         }
-        .navigationTitle("Open Questions")
     }
 
     private var content: some View {

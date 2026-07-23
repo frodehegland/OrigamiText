@@ -76,6 +76,30 @@ final class LettersModel {
         }
     }
 
+    /// Who this author is on the record — the same identity the Mac
+    /// attaches at publish (Settings → Author there): personal title,
+    /// ORCID, affiliation, joining the letter's Visual-Meta only when
+    /// the letter's author is this user. Same defaults keys as the Mac.
+    var authorIdentity: AuthorIdentity {
+        let defaults = UserDefaults.standard
+        return AuthorIdentity(
+            name: authorName,
+            personalTitle: defaults.string(forKey: "authorTitle") ?? "",
+            orcid: defaults.string(forKey: "authorORCID") ?? "",
+            affiliation: defaults.string(forKey: "authorAffiliation") ?? "")
+    }
+
+    /// Remembers a newly typed name for this run, so attention and
+    /// "on behalf of" offer it again — the directory itself (People.json)
+    /// is edited on the Mac.
+    func noteKnownName(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+              !knownNames.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame })
+        else { return }
+        knownNames.append(trimmed)
+    }
+
     init() {
         restoreFolder()
         locationFinder.onPlace = { [weak self] place in
@@ -242,6 +266,7 @@ final class LettersModel {
     @discardableResult
     func publishLetter(title: String, bodyText: String,
                        attention: [String], onBehalfOf: String?,
+                       aiProduced: Bool = false,
                        date: LiquidDate?,
                        extraLinks: [LiquidDoc.Link],
                        references: [(id: String, bibtex: String)]) -> LiquidDoc? {
@@ -280,8 +305,9 @@ final class LettersModel {
                             fileURL: folderURL.appendingPathComponent(id))
         doc.attention = attention
         doc.onBehalfOf = onBehalfOf
+        doc.aiOnBehalf = aiProduced
         doc.references = references.map { LiquidDoc.Reference(id: $0.id, bibtex: $0.bibtex) }
-        let finished = VisualMeta.appendingAppendix(to: doc)
+        let finished = VisualMeta.appendingAppendix(to: doc, identity: authorIdentity)
         let named = LiquidDoc(format: finished.format,
                               id: finished.id,
                               title: finished.title,
@@ -297,6 +323,7 @@ final class LettersModel {
         var complete = named
         complete.attention = finished.attention
         complete.onBehalfOf = finished.onBehalfOf
+        complete.aiOnBehalf = finished.aiOnBehalf
         complete.references = finished.references
         do {
             try complete.jsonData().write(to: complete.fileURL, options: .atomic)
@@ -368,6 +395,7 @@ struct LettersHomeView: View {
     @State private var typedName = ""
     @State private var composing: LetterSeed?
     @State private var settingUp = false
+    @State private var editingIdentity = false
 
     private enum Box: String, CaseIterable {
         case inbox = "Inbox"
@@ -437,8 +465,12 @@ struct LettersHomeView: View {
                 typedName = model.authorName
                 namingSelf = true
             }
+            Button("Your Identity…") { editingIdentity = true }
         } message: {
             Text("Pick the folder your community shares, or say who you are — letters carry your name as their author.")
+        }
+        .sheet(isPresented: $editingIdentity) {
+            AuthorIdentitySheet()
         }
         .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { model.openFolder(url) }
@@ -540,6 +572,44 @@ struct LettersHomeView: View {
         let who = box == .inbox ? "\(doc.displayAuthor) · " : ""
         guard let location = doc.location else { return who + when }
         return "\(who)\(when) · \(location)"
+    }
+}
+
+// MARK: - Who you are on the record
+
+/// The author's standing identity, exactly as in the Mac's Settings →
+/// Author: personal title, ORCID, affiliation. Published letters carry
+/// these in their Visual-Meta — only when the letter's author is you —
+/// so a reader anywhere can cite you properly. Stored under the same
+/// defaults keys as the Mac.
+private struct AuthorIdentitySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("authorTitle") private var personalTitle = ""
+    @AppStorage("authorORCID") private var orcid = ""
+    @AppStorage("authorAffiliation") private var affiliation = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Personal title (Dr., Prof., …)", text: $personalTitle)
+                    TextField("ORCID", text: $orcid)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Affiliation", text: $affiliation)
+                } footer: {
+                    Text("Attached to letters you publish, in their Visual-Meta appendix — only when the letter's author is you. Leave blank what does not apply.")
+                }
+            }
+            .navigationTitle("Your Identity")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 

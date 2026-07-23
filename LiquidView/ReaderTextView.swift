@@ -27,6 +27,11 @@ struct ReaderTextView: NSViewRepresentable {
     /// the override is the reliable seam.
     final class ReaderNSTextView: NSTextView, NSMenuDelegate {
         var augmentMenu: ((NSMenu, Int) -> Void)?
+        /// The document and paragraph this text is read in — lets app-wide
+        /// commands (New Document with a live selection) cite what was
+        /// selected and attribute it to its transcript speaker.
+        var doc: LiquidDoc?
+        var paragraph: LiquidDoc.Paragraph?
 
         /// The reader's menu is entirely ours: no system items at all
         /// (keyboard shortcuts still work — ⌘C copies a selection).
@@ -79,19 +84,33 @@ struct ReaderTextView: NSViewRepresentable {
         context.coordinator.model = model
         context.coordinator.paragraph = paragraph
         context.coordinator.doc = doc
+        textView.doc = doc
+        textView.paragraph = paragraph
         context.coordinator.openURL = openURL
         textView.textStorage?.setAttributedString(renderedNSText())
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView textView: ReaderNSTextView,
                       context: Context) -> CGSize? {
-        guard let width = proposal.width, width.isFinite, width > 0,
-              let container = textView.textContainer,
+        guard let container = textView.textContainer,
               let layoutManager = textView.layoutManager else { return nil }
-        container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        // Stacks probe with zero, unspecified, and infinite widths before
+        // settling on one. Returning nil for those probes fell back to
+        // NSTextView's empty intrinsic size, and a cited paragraph (sharing
+        // an HStack with its badge) collapsed to a one-character column.
+        if proposal.width == 0 { return .zero }
+        if let width = proposal.width, width.isFinite, width > 0 {
+            container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+            layoutManager.ensureLayout(for: container)
+            let height = ceil(layoutManager.usedRect(for: container).height)
+            return CGSize(width: width, height: max(height, 1))
+        }
+        // Unspecified or unbounded width: the natural, unwrapped extent.
+        container.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                         height: CGFloat.greatestFiniteMagnitude)
         layoutManager.ensureLayout(for: container)
-        let height = ceil(layoutManager.usedRect(for: container).height)
-        return CGSize(width: width, height: max(height, 1))
+        let used = layoutManager.usedRect(for: container)
+        return CGSize(width: ceil(used.width), height: max(ceil(used.height), 1))
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }

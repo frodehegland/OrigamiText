@@ -17,8 +17,6 @@
 			</array>
 		</dict>
 	</array>
-	<key>CFBundleName</key>
-	<string>Origami Text</string>
 	<key>CFBundleIconName</key>
 	<string>Ori-logo</string>
 	<key>CFBundleURLTypes</key>

@@ -22,6 +22,46 @@ extension LiquidDoc {
         return slug.isEmpty ? "\(id).\(ext)" : "\(slug)--\(id).\(ext)"
     }
 
+    /// The Visual-Meta ecosystem file name — the full title, then the
+    /// identity key: "Title(Author-Name-2026-07-11T09_32_52Z).ext".
+    /// Author, title, and moment are all present, so the name stays
+    /// unique in practice and, as long as it is not renamed, the
+    /// deterministic address derives straight from it
+    /// (`identityKeyID(inFileName:)` is the inverse).
+    nonisolated func identityFileName(extension ext: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let stamp = formatter.string(from: created)
+            .replacingOccurrences(of: ":", with: "_")
+        let authorKey = author.split(separator: " ").joined(separator: "-")
+        // The title travels whole; only filesystem-hostile characters go.
+        var cleanTitle = title.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        if cleanTitle.isEmpty { cleanTitle = "Untitled" }
+        // Stay comfortably inside filename limits, identity key intact.
+        let identity = "(\(authorKey)-\(stamp))"
+        let room = 240 - identity.count - ext.count - 1
+        if cleanTitle.count > room { cleanTitle = String(cleanTitle.prefix(room)) }
+        return "\(cleanTitle)\(identity).\(ext)"
+    }
+
+    /// The deterministic address a Visual-Meta ecosystem file name
+    /// carries — "Title(Author-Name-2026-07-11T09_32_52Z).ext" — or nil
+    /// when the name has no identity key.
+    nonisolated static func identityKeyID(inFileName name: String) -> String? {
+        let pattern = "\\((.+?)-(\\d{4}-\\d{2}-\\d{2}T\\d{2}_\\d{2}_\\d{2}Z)\\)"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
+              let slugRange = Range(match.range(at: 1), in: name),
+              let stampRange = Range(match.range(at: 2), in: name),
+              let created = parseISO8601(
+                  name[stampRange].replacingOccurrences(of: "_", with: ":"))
+        else { return nil }
+        let author = name[slugRange].replacingOccurrences(of: "-", with: " ")
+        return LiquidAddress.makeID(author: author, created: created)
+    }
+
     /// Lowercased, hyphen-joined title words, whole words up to ~24
     /// characters. "Untitled" earns no slug.
     nonisolated static func fileSlug(from title: String) -> String {
@@ -133,7 +173,7 @@ extension LiquidDoc {
         let doc: LiquidDoc
         init(_ doc: LiquidDoc) { self.doc = doc }
 
-        enum CodingKeys: String, CodingKey { case format, id, title, author, created, date, body, links, wraps, attention, aiOnBehalf, onBehalfOf, documentType }
+        enum CodingKeys: String, CodingKey { case format, id, title, author, created, date, body, links, wraps, attention, aiOnBehalf, onBehalfOf, documentType, location, concepts, layouts, connections, references }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
@@ -167,6 +207,96 @@ extension LiquidDoc {
             }
             if let documentType = doc.documentType {
                 try container.encode(documentType, forKey: .documentType)
+            }
+            if let location = doc.location {
+                try container.encode(location, forKey: .location)
+            }
+            if !doc.concepts.isEmpty {
+                try container.encode(doc.concepts.map(OutputConcept.init), forKey: .concepts)
+            }
+            if !doc.layouts.isEmpty {
+                try container.encode(doc.layouts.map(OutputLayout.init), forKey: .layouts)
+            }
+            if !doc.mapConnections.isEmpty {
+                try container.encode(doc.mapConnections.map(OutputConnection.init), forKey: .connections)
+            }
+            if !doc.references.isEmpty {
+                try container.encode(doc.references.map(OutputReference.init), forKey: .references)
+            }
+        }
+    }
+
+    private nonisolated struct OutputReference: Encodable {
+        let reference: Reference
+        init(_ reference: Reference) { self.reference = reference }
+
+        enum CodingKeys: String, CodingKey { case id, bibtex }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(reference.id, forKey: .id)
+            try container.encode(reference.bibtex, forKey: .bibtex)
+        }
+    }
+
+    private nonisolated struct OutputConcept: Encodable {
+        let concept: Concept
+        init(_ concept: Concept) { self.concept = concept }
+
+        enum CodingKeys: String, CodingKey { case id, name, description, tag, citationIdentifiers, urls }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(concept.id, forKey: .id)
+            try container.encode(concept.name, forKey: .name)
+            if !concept.description.isEmpty {
+                try container.encode(concept.description, forKey: .description)
+            }
+            try container.encodeIfPresent(concept.tag, forKey: .tag)
+            if !concept.citationIdentifiers.isEmpty {
+                try container.encode(concept.citationIdentifiers, forKey: .citationIdentifiers)
+            }
+            if !concept.urls.isEmpty {
+                try container.encode(concept.urls, forKey: .urls)
+            }
+        }
+    }
+
+    private nonisolated struct OutputConnection: Encodable {
+        let connection: MapConnection
+        init(_ connection: MapConnection) { self.connection = connection }
+
+        enum CodingKeys: String, CodingKey { case from, to }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(connection.from, forKey: .from)
+            try container.encode(connection.to, forKey: .to)
+        }
+    }
+
+    private nonisolated struct OutputLayout: Encodable {
+        let layout: Layout
+        init(_ layout: Layout) { self.layout = layout }
+
+        enum CodingKeys: String, CodingKey { case index, name, positions, id }
+
+        struct OutputPosition: Encodable {
+            let id: String
+            let x: Double
+            let y: Double
+            let z: Double
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(layout.index, forKey: .index)
+            try container.encode(layout.name, forKey: .name)
+            try container.encode(layout.positions.map {
+                OutputPosition(id: $0.id, x: $0.x, y: $0.y, z: $0.z)
+            }, forKey: .positions)
+            if let sourceID = layout.sourceID {
+                try container.encode(sourceID, forKey: .id)
             }
         }
     }
@@ -300,3 +430,127 @@ extension LiquidDoc {
         return Set(body[start...].map(\.id))
     }
 }
+// MARK: - Bot documents
+
+/// A bot as an Origami document: the shelf lives in the community folder
+/// itself, one `.origamitext` document per bot, self-describing and
+/// readable by any Origami app — or person, or AI — that finds it. The
+/// document records who the bot stands in for and its judgements, one
+/// paragraph per judged document, each citing the document judged with a
+/// discourse link (supports, disagrees-with, cites) — so the bot takes
+/// its place in the document web, and syncs wherever the folder syncs.
+nonisolated enum BotDocument {
+
+    /// The `documentType` token; explained in the Visual-Meta field key.
+    static let documentType = "bot"
+
+    /// What a bot document declares about its bot. The document id is the
+    /// bot's identity — one bot, one address.
+    struct Identity: Sendable {
+        let id: String
+        let name: String
+        let years: String
+        let summary: String
+        let created: Date
+    }
+
+    /// One judgement, as read from or written to a bot document.
+    struct Judgement: Sendable {
+        let docID: String
+        let verdict: String   // agree | disagree | neutral
+        let reason: String
+    }
+
+    /// Verdict spelling on the page, and the discourse rel its link
+    /// carries — agreement supports, disagreement disagrees-with, and a
+    /// neutral reading is still a citation.
+    private static let verdicts: [(verdict: String, prefix: String, rel: String)] = [
+        ("agree", "Would agree — ", "supports"),
+        ("disagree", "Would disagree — ", "disagrees-with"),
+        ("neutral", "Neutral — ", "cites"),
+    ]
+
+    /// The bot document's file name — the standard slug--id convention.
+    static func fileName(title: String, id: String) -> String {
+        let slug = LiquidDoc.fileSlug(from: title)
+        let ext = LiquidDoc.fileExtension
+        return slug.isEmpty ? "\(id).\(ext)" : "\(slug)--\(id).\(ext)"
+    }
+
+    /// Builds the bot's document, ready for the Visual-Meta appendix and
+    /// serialization. Judgements are ordered by the judged document's id,
+    /// so the same shelf state always writes the same document.
+    static func build(identity: Identity, judgements: [Judgement], in folder: URL) -> LiquidDoc {
+        var paragraphs: [LiquidDoc.Paragraph] = []
+        var links: [LiquidDoc.Link] = []
+        var counter = 0
+        func add(_ text: String, heading: Int? = nil) {
+            counter += 1
+            paragraphs.append(LiquidDoc.Paragraph(id: "p\(counter)", heading: heading, text: text))
+        }
+        add(identity.years.isEmpty
+            ? "An AI stand-in for \(identity.name)."
+            : "An AI stand-in for \(identity.name) (\(identity.years)).")
+        if !identity.summary.isEmpty {
+            add(identity.summary)
+        }
+        add("This document is machine-written. It defines a bot — an AI stand-in bearing a well-known person's name, never mistaken for the person — and records the bot's judgements of this library's documents, one paragraph each, linking to the document judged. Every judgement is produced on-device from what is publicly known of the person's work and views; nothing here is the person's own words.")
+        if !judgements.isEmpty {
+            add("Judgements", heading: 2)
+            for judgement in judgements.sorted(by: { $0.docID < $1.docID }) {
+                guard let entry = verdicts.first(where: { $0.verdict == judgement.verdict })
+                else { continue }
+                add("\(entry.prefix)\(judgement.reason) [\(judgement.docID)]")
+                links.append(LiquidDoc.Link(to: judgement.docID, fragment: nil, rel: entry.rel))
+            }
+        }
+        let title = "\(identity.name) bot"
+        return LiquidDoc(format: LiquidDoc.knownFormat,
+                         id: identity.id,
+                         title: title,
+                         author: title,
+                         created: identity.created,
+                         body: paragraphs,
+                         links: links,
+                         wraps: nil,
+                         documentType: documentType,
+                         fileURL: folder.appendingPathComponent(fileName(title: title, id: identity.id)))
+    }
+
+    /// Reads a bot back from its document; nil when the document is not a
+    /// bot document. Tolerant of hand edits: identity comes from the
+    /// title and the stand-in line, judgements from their prefixes and
+    /// the address each paragraph cites.
+    static func parse(_ doc: LiquidDoc) -> (identity: Identity, judgements: [Judgement])? {
+        guard doc.documentType == documentType else { return nil }
+        let name = doc.title.hasSuffix(" bot") ? String(doc.title.dropLast(4)) : doc.title
+        let appendixIDs = doc.visualMetaParagraphIDs
+        var years = ""
+        var summary = ""
+        var judgements: [Judgement] = []
+        for paragraph in (doc.body ?? []) where !appendixIDs.contains(paragraph.id) {
+            let text = paragraph.displayText
+            if let entry = verdicts.first(where: { text.hasPrefix($0.prefix) }) {
+                guard let address = LiquidAddress.matches(in: text).last else { continue }
+                var reason = String(text.dropFirst(entry.prefix.count))
+                if let bracket = reason.range(of: " [", options: .backwards) {
+                    reason = String(reason[..<bracket.lowerBound])
+                }
+                judgements.append(Judgement(docID: address.id, verdict: entry.verdict, reason: reason))
+            } else if text.hasPrefix("An AI stand-in for ") {
+                if let open = text.range(of: "("),
+                   let close = text.range(of: ")", options: .backwards),
+                   open.upperBound < close.lowerBound {
+                    years = String(text[open.upperBound..<close.lowerBound])
+                }
+            } else if paragraph.heading == nil, summary.isEmpty, text != "---",
+                      !text.hasPrefix("This document is machine-written") {
+                summary = text
+            }
+        }
+        let identity = Identity(id: doc.id, name: name, years: years,
+                                summary: summary, created: doc.created)
+        return (identity, judgements)
+    }
+}
+

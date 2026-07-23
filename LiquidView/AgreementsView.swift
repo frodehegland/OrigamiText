@@ -67,7 +67,6 @@ struct AgreementsView: View {
                 }
             }
         }
-        .navigationTitle("Agreements")
     }
 
     private var content: some View {

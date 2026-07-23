@@ -1,5 +1,6 @@
 import SwiftUI
 import NaturalLanguage
+import FoundationModels
 
 // MARK: - The engine
 
@@ -66,6 +67,13 @@ nonisolated enum KNavEngine {
         var id: String { "\(a)↔\(b)" }
     }
 
+    /// A pair of units the run found tied at or above the threshold —
+    /// the weave presentation's strong threads.
+    struct Edge: Sendable {
+        let a: String
+        let b: String
+    }
+
     /// One run, whole: its parameters and everything found, so runs at
     /// different thresholds and seeds stand side by side (§4.6).
     struct Run: Identifiable, Sendable {
@@ -74,6 +82,7 @@ nonisolated enum KNavEngine {
         let unitCount: Int
         let clusters: [Cluster]
         let bridges: [Bridge]
+        let clusterEdges: [Edge]
         let note: String
     }
 
@@ -130,8 +139,16 @@ nonisolated enum KNavEngine {
                                         membership: clusterIndex, threshold: parameters.threshold)
         let bridges = findBridges(units: units, similarity: similarity,
                                   membership: clusterIndex, threshold: parameters.threshold)
+        var clusterEdges: [Edge] = []
+        outer: for i in 0..<n {
+            for j in (i + 1)..<n where similarity[i][j] >= parameters.threshold {
+                clusterEdges.append(Edge(a: units[i].id, b: units[j].id))
+                if clusterEdges.count >= 1200 { break outer }   // stay legible and fast
+            }
+        }
         return Run(parameters: parameters, unitCount: n,
-                   clusters: clusters, bridges: bridges, note: note)
+                   clusters: clusters, bridges: bridges,
+                   clusterEdges: clusterEdges, note: note)
     }
 
     // MARK: The similarity space
@@ -299,6 +316,24 @@ nonisolated enum KNavEngine {
     }
 }
 
+// MARK: - Keyword stances, as the model returns them
+
+/// One connected paragraph's stance toward the typed keyword, grounded
+/// by address before display like every AI view's output.
+@Generable
+nonisolated struct GeneratedKeywordStance {
+    @Guide(description: "The paragraph's address, copied exactly from its == line")
+    var address: String
+    @Guide(description: "The paragraph's stance toward the keyword", .anyOf(["positive", "negative", "neutral", "questions"]))
+    var stance: String
+}
+
+@Generable
+nonisolated struct GeneratedKeywordStances {
+    @Guide(description: "One stance for every paragraph given, in the order given")
+    var stances: [GeneratedKeywordStance]
+}
+
 // MARK: - The view
 
 /// K. Nav: the Knowledge Navigator diagnostic as a library view. Choose
@@ -312,7 +347,18 @@ nonisolated enum KNavEngine {
 struct KNavView: View {
     @Environment(AppModel.self) private var model
     @State private var mode: KNavEngine.Mode = .bridges
+    @State private var presentation: Presentation = .list
     @State private var threshold = 0.6
+
+    /// How a run is shown: the list carries the traces; the weave is
+    /// the wheel — paragraphs as knots of light grouped by document,
+    /// strong ties as the breathing field, and the bridges as bright
+    /// dashed threads. Hover a knot and its threads flare; drag to
+    /// spin; click a knot to read the paragraph in place.
+    private enum Presentation: String, CaseIterable {
+        case list = "List"
+        case weave = "Weave"
+    }
     @State private var sketch = false
     @State private var seed = 42
     @State private var runs: [KNavEngine.Run] = []
@@ -323,6 +369,42 @@ struct KNavView: View {
     /// Units by id, kept from the latest embedding so results resolve to
     /// text and documents.
     @State private var unitsByID: [String: KNavEngine.Unit] = [:]
+    /// The probe: the typed text, and its kinship to every compared
+    /// paragraph — shown at the hub of the weave with threads outward,
+    /// each colored by the paragraph's stance toward the keyword once
+    /// the on-device model has read it.
+    @State private var probeText = ""
+    @State private var probeResult: (text: String, threads: [(unitID: String, strength: Double, stance: ProbeStance?)])?
+    /// True while the on-device model is reading the connected
+    /// paragraphs for their stances; the threads stand white meanwhile.
+    @State private var stancesPending = false
+    /// A probe typed before any run exists waits for the run to finish.
+    @State private var pendingProbe: String?
+
+    /// A connected paragraph's stance toward the keyword, and the color
+    /// its thread takes: for the keyword green, against it red, merely
+    /// speaking of it blue, asking about it orange.
+    enum ProbeStance: String, Sendable {
+        case positive, negative, neutral, questions
+
+        var color: Color {
+            switch self {
+            case .positive: .green
+            case .negative: .red
+            case .neutral: .blue
+            case .questions: .orange
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .positive: "positive"
+            case .negative: "negative"
+            case .neutral: "neutral"
+            case .questions: "questions it"
+            }
+        }
+    }
 
     private var selectedRun: KNavEngine.Run? {
         runs.first { $0.id == selectedRunID } ?? runs.last
@@ -379,9 +461,119 @@ struct KNavView: View {
                     .controlSize(.small)
             }
             Spacer()
+            TextField("Hold a thought to the weave…", text: $probeText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 240)
+                .onSubmit(submitProbe)
+                .help("Press Return and your words stand at the hub of the weave, with threads of kinship out to the paragraphs closest to them — same on-device embedding, computed exactly. Submit empty to clear.")
+            Picker("Presentation", selection: $presentation) {
+                ForEach(Presentation.allCases, id: \.self) { Text($0.rawValue) }
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+            .labelsHidden()
+            .help("List carries the reasoning traces; Weave is the wheel — knots by document, strong ties as the field, bridges as bright dashed threads. Hover to flare, drag to spin, click a knot to read.")
         }
         .font(.callout)
         .padding(10)
+    }
+
+    // MARK: The probe
+
+    /// Return holds the typed words to the weave: they are embedded like
+    /// any paragraph and threaded to their nearest kin. An empty submit
+    /// clears the probe; a probe before any run waits for the first one.
+    private func submitProbe() {
+        let text = probeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            probeResult = nil
+            pendingProbe = nil
+            return
+        }
+        presentation = .weave
+        if unitsByID.isEmpty {
+            pendingProbe = text
+            if !isRunning { run() }
+            return
+        }
+        computeProbe(text)
+    }
+
+    private func computeProbe(_ text: String) {
+        let units = Array(unitsByID.values)
+        stancesPending = false
+        Task.detached(priority: .userInitiated) {
+            let seed = KNavEngine.Unit(id: "probe", docID: "", paragraphID: "",
+                                       docTitle: "", author: "", text: text)
+            guard let embedded = KNavEngine.embed([seed])?.first else {
+                await MainActor.run {
+                    errorText = "No on-device embedding is available for the probe."
+                }
+                return
+            }
+            // Kinship is always computed exactly — the probe is a reading
+            // aid, not part of the experiment's sketched arm.
+            let floor = 0.3
+            let threads = units
+                .map { (unitID: $0.id,
+                        similarity: KNavEngine.cosine(embedded.vector, $0.vector)) }
+                .filter { $0.similarity >= floor }
+                .sorted { $0.similarity > $1.similarity }
+                .prefix(12)
+                .map { (unitID: $0.unitID,
+                        strength: min(max(($0.similarity - floor) / 0.4, 0), 1),
+                        stance: ProbeStance?.none) }
+            let modelReady: Bool = {
+                if case .available = SystemLanguageModel.default.availability { return true }
+                return false
+            }()
+            await MainActor.run {
+                probeResult = (text: text, threads: Array(threads))
+                stancesPending = modelReady && !threads.isEmpty
+            }
+            // The stances: one grounded call over just the connected
+            // paragraphs — each thread colored by what its paragraph
+            // holds toward the keyword. Without Apple Intelligence the
+            // threads simply stay white; kinship alone is still honest.
+            guard modelReady, !threads.isEmpty else { return }
+            let byID = Dictionary(uniqueKeysWithValues: units.map { ($0.id, $0) })
+            var prompt = """
+            A reader typed a keyword over a library of documents. For each paragraph below, judge the paragraph's stance toward the keyword: "positive" when it speaks for it, supports it, or treats it favorably; "negative" when it speaks against it or treats it unfavorably; "questions" when it asks about, doubts, or challenges it; "neutral" when it merely mentions or relates to it without judgement. Each paragraph begins with a == line giving its address — copy addresses exactly. Judge every paragraph given, no others.
+
+            THE KEYWORD: \(text)
+
+            THE PARAGRAPHS:
+
+            """
+            for thread in threads {
+                guard let unit = byID[thread.unitID] else { continue }
+                prompt += "== [\(unit.id)]\n\(String(unit.text.prefix(400)))\n\n"
+            }
+            do {
+                let session = LanguageModelSession()
+                let response = try await session.respond(to: prompt,
+                                                         generating: GeneratedKeywordStances.self)
+                var stanceByID: [String: ProbeStance] = [:]
+                for judged in response.content.stances {
+                    let id = judged.address.trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
+                    if let stance = ProbeStance(rawValue: judged.stance) {
+                        stanceByID[id] = stance
+                    }
+                }
+                await MainActor.run {
+                    // A newer probe may have replaced this one meanwhile.
+                    guard probeResult?.text == text else { return }
+                    probeResult = (text: text, threads: threads.map {
+                        (unitID: $0.unitID, strength: $0.strength, stance: stanceByID[$0.unitID])
+                    })
+                    stancesPending = false
+                }
+            } catch {
+                await MainActor.run {
+                    if probeResult?.text == text { stancesPending = false }
+                }
+            }
+        }
     }
 
     /// Every run of the session, side by side — the comparison the
@@ -421,6 +613,159 @@ struct KNavView: View {
 
     @ViewBuilder
     private var results: some View {
+        if presentation == .weave, let run = selectedRun {
+            weave(for: run)
+        } else {
+            list
+        }
+    }
+
+    // MARK: The weave presentation
+
+    /// The run on the wheel: every compared paragraph a knot of light,
+    /// documents around the rim where the Weave puts authors, the strong
+    /// ties (≥ τ) as the breathing field, and the bridges — the point of
+    /// the tool — as the bright dashed threads joining distant arcs.
+    private func weave(for run: KNavEngine.Run) -> some View {
+        let built = weaveData(for: run)
+        var probe: WeaveProbe?
+        if let probeResult {
+            probe = WeaveProbe(
+                label: probeResult.text,
+                threads: probeResult.threads.compactMap { thread in
+                    built.indexByID[thread.unitID].map {
+                        (node: $0, strength: thread.strength, tint: thread.stance?.color)
+                    }
+                })
+        }
+        return WeaveCanvas(
+            data: built.data,
+            onOpen: { unitID in
+                if let unit = unitsByID[unitID],
+                   let doc = model.index.byID[unit.docID]?.doc {
+                    model.open(doc, fragment: unit.paragraphID)
+                }
+            },
+            title: "K. Nav",
+            subtitle: "\(built.data.nodes.count) paragraphs · \(built.data.edges.count) strong ties · \(built.bright.count) bridges — τ \(String(format: "%.2f", run.parameters.threshold))\(run.parameters.sketch ? " · seed \(run.parameters.seed)" : " · exact")",
+            brightEdges: built.bright,
+            probe: probe)
+        .overlay(alignment: .bottom) {
+            if probeResult != nil {
+                stanceLegend
+            }
+        }
+    }
+
+    /// What the probe's colors mean, standing where the Weave puts its
+    /// captions. White while stances are still being read.
+    private var stanceLegend: some View {
+        HStack(spacing: 12) {
+            if stancesPending {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("reading stances toward “\(String(probeText.prefix(24)))”…")
+            } else {
+                stanceSwatch(.positive)
+                stanceSwatch(.negative)
+                stanceSwatch(.neutral)
+                stanceSwatch(.questions)
+            }
+            HStack(spacing: 4) {
+                Rectangle()
+                    .fill(Color(white: 0.35))
+                    .frame(width: 14, height: 2)
+                Text("everything else")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.white.opacity(0.75))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.white.opacity(0.08), in: Capsule())
+        .padding(.bottom, 10)
+        .allowsHitTesting(false)
+    }
+
+    private func stanceSwatch(_ stance: ProbeStance) -> some View {
+        HStack(spacing: 4) {
+            Rectangle()
+                .fill(stance.color)
+                .frame(width: 14, height: 2)
+            Text(stance.label)
+        }
+    }
+
+    private func weaveData(for run: KNavEngine.Run) -> (data: WeaveData, bright: [WeaveEdge],
+                                                        indexByID: [String: Int]) {
+        // Documents around the wheel, their paragraphs in body order —
+        // time runs along each document's arc, as it does for the
+        // Weave's authors.
+        let units = unitsByID.values.sorted {
+            ($0.docTitle, paragraphNumber($0.paragraphID)) < ($1.docTitle, paragraphNumber($1.paragraphID))
+        }
+        var data = WeaveData()
+        var indexByID: [String: Int] = [:]
+        // Bridge participation makes the knot: bridges are what the
+        // wheel exists to show.
+        var weight: [String: Int] = [:]
+        for bridge in run.bridges {
+            weight[bridge.a, default: 0] += 4
+            weight[bridge.b, default: 0] += 4
+            weight[bridge.mediator, default: 0] += 2
+        }
+        for edge in run.clusterEdges {
+            weight[edge.a, default: 0] += 1
+            weight[edge.b, default: 0] += 1
+        }
+        let documents = Array(Set(units.map(\.docTitle))).sorted()
+        let hueByDocument = Dictionary(uniqueKeysWithValues: documents.enumerated().map {
+            ($1, Double($0) / Double(max(documents.count, 1)))
+        })
+        var arcStart = 0
+        var arcDocument: String?
+        for unit in units {
+            if unit.docTitle != arcDocument {
+                if let name = arcDocument, data.nodes.count > arcStart {
+                    data.authorArcs.append((String(name.prefix(22)),
+                                            hueByDocument[name] ?? 0,
+                                            arcStart...(data.nodes.count - 1)))
+                }
+                arcDocument = unit.docTitle
+                arcStart = data.nodes.count
+            }
+            indexByID[unit.id] = data.nodes.count
+            data.nodes.append(WeaveNode(id: unit.id,
+                                        title: String(unit.text.prefix(90)),
+                                        author: unit.docTitle,
+                                        weight: weight[unit.id] ?? 0,
+                                        hue: hueByDocument[unit.docTitle] ?? 0))
+        }
+        if let name = arcDocument, data.nodes.count > arcStart {
+            data.authorArcs.append((String(name.prefix(22)),
+                                    hueByDocument[name] ?? 0,
+                                    arcStart...(data.nodes.count - 1)))
+        }
+        for edge in run.clusterEdges {
+            guard let from = indexByID[edge.a], let to = indexByID[edge.b] else { continue }
+            data.edges.append(WeaveEdge(from: from, to: to))
+        }
+        var bright: [WeaveEdge] = []
+        for bridge in run.bridges {
+            guard let from = indexByID[bridge.a], let to = indexByID[bridge.b] else { continue }
+            bright.append(WeaveEdge(from: from, to: to))
+        }
+        return (data, bright, indexByID)
+    }
+
+    private func paragraphNumber(_ paragraphID: String) -> Int {
+        Int(paragraphID.drop(while: { !$0.isNumber })) ?? 0
+    }
+
+    // MARK: The list presentation
+
+    @ViewBuilder
+    private var list: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 if let errorText {
@@ -643,6 +988,12 @@ struct KNavView: View {
                 selectedRunID = run.id
                 unfurled = []
                 isRunning = false
+                // A thought held to the weave before the first run was
+                // waiting for these vectors.
+                if let waiting = pendingProbe {
+                    pendingProbe = nil
+                    computeProbe(waiting)
+                }
             }
         }
     }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import FoundationModels
 
 /// The emotion judgement as the on-device model returns it; ids are
@@ -24,10 +25,38 @@ struct DocumentDetailView: View {
     @State private var emotionsError: String?
     @State private var positiveParagraphs: Set<String>?
     @State private var negativeParagraphs: Set<String> = []
+    /// Flow: dense text broken open for reading — display only.
+    @State private var flowText = false
     @AppStorage(AppSettings.fullScreenContentWidthKey) private var fullScreenContentWidth = 760.0
     @AppStorage(AppSettings.hideVisualMetaKey) private var hideVisualMeta = false
+    @AppStorage(AppSettings.readerHeaderColumnWidthKey) private var headerColumnWidth = 250.0
+    @State private var headerColumnDragBase: Double?
+    /// Bot Check: the bot asked to comment on this document, its answer,
+    /// and the panel's presentation state.
+    @State private var botCheckBot: Bot?
+    @State private var botCheckStance: BotStance?
+    @State private var isBotChecking = false
+    @State private var showsBotCheck = false
+    /// Summary & Notes: the transcript's grounded summary, read from
+    /// its linked summary document — an ordinary Origami letter that
+    /// `summarizes` this transcript — or produced on demand by the
+    /// on-device model and saved as one.
+    @State private var transcriptSummary: TranscriptSummary?
+    @State private var transcriptSummaryDoc: LiquidDoc?
+    @State private var isSummarizing = false
+    @State private var summaryProgress = ""
+    @State private var summaryError: String?
+    @State private var summaryTask: Task<Void, Never>?
 
     private var doc: LiquidDoc { destination.doc }
+
+    private var layoutStyle: ReaderLayoutStyle {
+        // The window reads with the options column on the right, as in
+        // Knowledge Space. Full screen alone reads Top of Letters: the
+        // connection columns already flank the text there, and the
+        // header belongs with the words.
+        model.isFullScreen ? .topOfLetters : .rightColumn
+    }
 
     var body: some View {
         Group {
@@ -37,57 +66,432 @@ struct DocumentDetailView: View {
                 textBody
             }
         }
-        .navigationTitle(doc.title)
     }
 
+    /// Full screen flanks the reading column with the document's
+    /// neighborhood: what it links to on the left, what links to it on
+    /// the right.
     private var textBody: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    DocumentHeader(doc: doc, showsAuthoringActions: true)
-                        .contextMenu {
-                            Button("Copy to Cite") {
-                                model.copyCitation(doc: doc)
-                            }
-                            if !model.authorIdentity.matches(author: doc.author) {
-                                Divider()
-                                ForEach(DocumentRelation.discourseActions, id: \.self) { relation in
-                                    Button(relation.actionTitle ?? relation.rawValue) {
-                                        model.startDiscourse(relation, about: doc)
-                                    }
-                                }
-                            }
+        GeometryReader { geo in
+            // The header column yields to the text: whatever width it was
+            // dragged to, the letter itself keeps at least ~400pt.
+            let headerMax = max(180, geo.size.width - 420)
+            HStack(alignment: .top, spacing: 0) {
+                if model.isFullScreen {
+                    ReadingConnectionsColumn(doc: doc, direction: .outbound)
+                }
+                readerColumn
+                if layoutStyle == .rightColumn {
+                    headerColumnResizer(maxWidth: headerMax)
+                    headerColumn(width: min(CGFloat(headerColumnWidth), headerMax))
+                }
+                if model.isFullScreen {
+                    ReadingConnectionsColumn(doc: doc, direction: .inbound)
+                }
+            }
+        }
+    }
+
+    /// Title, byline, and its context menu — shared by both layouts.
+    private func headerBlock(compact: Bool) -> some View {
+        DocumentHeader(doc: doc, showsAuthoringActions: true, compact: compact)
+            .contextMenu {
+                Button("Copy to Cite") {
+                    model.copyCitation(doc: doc)
+                }
+                Button("Export as EPUB…") {
+                    model.exportEPUB(doc)
+                }
+                if !model.authorIdentity.matches(author: doc.author) {
+                    Divider()
+                    ForEach(DocumentRelation.discourseActions, id: \.self) { relation in
+                        Button(relation.actionTitle ?? relation.rawValue) {
+                            model.startDiscourse(relation, about: doc)
                         }
-                        .padding(.bottom, 8)
+                    }
+                }
+            }
+    }
+
+    /// The reading controls, shared by both layouts: mail verbs (Unread,
+    /// File) on the first line, reading aids (Emotions, Flow) on the
+    /// second.
+    private func readerControls(alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 8) {
+            if !model.authorIdentity.matches(author: doc.author) {
+                HStack(spacing: 8) {
+                    Button {
+                        model.markUnread(doc)
+                    } label: {
+                        Label("Unread", systemImage: "envelope.badge")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(model.isUnread(doc))
+                    .help("Mark this letter unread — its title goes bold again in the lists")
+                    Menu {
+                        FileUnderMenuItems(doc: doc)
+                    } label: {
+                        Label(model.folder(for: doc).map { "Filed: \($0)" } ?? "File",
+                              systemImage: "folder")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("File this document under a folder — Archived alone hides it from the library's other views")
+                }
+            }
+            HStack(spacing: 8) {
+                // Bot Check: a chosen bot comments on this document, in
+                // the same panel language as the Bot view. Others'
+                // letters only — one's own words need no bot's verdict.
+                if !model.bots.bots.isEmpty, !model.authorIdentity.matches(author: doc.author) {
+                    Menu {
+                        ForEach(model.bots.bots) { bot in
+                            Button(bot.displayName) { runBotCheck(bot) }
+                        }
+                    } label: {
+                        Label("Bot Check", systemImage: "brain.head.profile")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .disabled(isBotChecking)
+                    .help("Ask a bot whether the person it stands for would agree with this document")
+                    .popover(isPresented: $showsBotCheck, arrowEdge: .bottom) {
+                        botCheckPopover
+                    }
+                }
+                if isJudgingEmotions {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                if let emotionsError {
+                    Text(emotionsError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                Button {
+                    if positiveParagraphs != nil {
+                        withAnimation(.snappy) { showingEmotions.toggle() }
+                    } else {
+                        judgeEmotions()
+                    }
+                } label: {
+                    Label(showingEmotions ? "Hide Emotions" : "Emotions",
+                          systemImage: "theatermasks")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isJudgingEmotions || !emotionsAvailable)
+                .help(emotionsAvailable
+                      ? "Tint paragraphs by emotional tone: positive green, negative red — judged on this Mac, nothing leaves it"
+                      : "Requires Apple Intelligence")
+                Button {
+                    withAnimation(.snappy) { flowText.toggle() }
+                } label: {
+                    Label(flowText ? "Unflow" : "Flow", systemImage: "text.alignleft")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Break dense text open while reading: sentences get their own lines, clauses break after commas, parentheses stand apart — the document itself is untouched")
+            }
+        }
+    }
+
+    /// One bot's comment on the open document: cached instantly when the
+    /// bot has already read it, else judged now — and cached, so the Bot
+    /// view knows it too.
+    private func runBotCheck(_ bot: Bot) {
+        botCheckBot = bot
+        botCheckStance = nil
+        isBotChecking = true
+        showsBotCheck = true
+        let doc = doc
+        Task {
+            botCheckStance = await model.bots.check(doc, with: bot)
+            isBotChecking = false
+        }
+    }
+
+    /// The same panel language as the Bot view's hover card: the verdict
+    /// line in the verdict's color, the title, the reason in their voice.
+    @ViewBuilder
+    private var botCheckPopover: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let bot = botCheckBot {
+                if let stance = botCheckStance {
+                    Text(stance.verdictLine(for: bot))
+                        .font(.headline)
+                        .foregroundStyle(stance.color)
+                    Text(doc.title)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Text(stance.reason)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if isBotChecking {
                     HStack(spacing: 8) {
-                        Spacer()
-                        if isJudgingEmotions {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("\(bot.displayName) is reading…")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("\(bot.displayName) could not judge this — Apple Intelligence may be unavailable.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 400, alignment: .leading)
+    }
+
+    /// The column beside the reader, in Knowledge Space's language: the
+    /// letter's identity on top, then Action (Unread), File (the filing
+    /// folders with Archive and a new folder under a rule), and Reading
+    /// (Bot Check, Emotions, Flow) — leaving the reading view to the
+    /// words alone.
+    private func headerColumn(width: CGFloat) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                headerBlock(compact: true)
+                if !model.authorIdentity.matches(author: doc.author) {
+                    columnSection("Action") {
+                        Button {
+                            model.markUnread(doc)
+                        } label: {
+                            Text("Unread")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .disabled(model.isUnread(doc))
+                        .help("Mark this letter unread — its title goes bold again in the lists")
+                    }
+                    fileSection
+                }
+                readingSection
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: width)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// The filing folders as checkable buttons, with Archive and a new
+    /// folder quietly under a rule — Knowledge Space's File section.
+    private var fileSection: some View {
+        columnSection("File") {
+            ForEach(fileFolders, id: \.self) { folder in
+                filingButton(folder)
+            }
+            Divider()
+            HStack {
+                Button("Archive") {
+                    model.fileDocument(doc, under: AppModel.archivedFolderName)
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .help("File the letter away: it leaves the library's lists")
+                Spacer()
+                Button {
+                    model.fileInNewFolder(doc)
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("A new folder, with this letter filed in it")
+            }
+        }
+    }
+
+    /// The user's own folders: everything but Archived, which has its
+    /// own place under the rule.
+    private var fileFolders: [String] {
+        model.filingFolders.filter {
+            $0.caseInsensitiveCompare(AppModel.archivedFolderName) != .orderedSame
+        }
+    }
+
+    private func filingButton(_ folder: String) -> some View {
+        Button {
+            if model.folder(for: doc) == folder {
+                model.unfile(doc)
+            } else {
+                model.fileDocument(doc, under: folder)
+            }
+        } label: {
+            HStack {
+                Text(folder)
+                if model.folder(for: doc) == folder {
+                    Spacer(minLength: 4)
+                    Image(systemName: "checkmark")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The reading aids: a bot's verdict, emotional tinting, and flowed
+    /// text — display only, the letter itself untouched.
+    private var readingSection: some View {
+        columnSection("Reading") {
+            if TranscriptSummarizer.canSummarize(doc) {
+                Button {
+                    runTranscriptSummary()
+                } label: {
+                    HStack {
+                        Text(transcriptSummary == nil ? "Summary & Notes" : "Redo Summary & Notes")
+                        if isSummarizing {
+                            Spacer(minLength: 4)
                             ProgressView()
                                 .controlSize(.small)
                         }
-                        if let emotionsError {
-                            Text(emotionsError)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                        }
-                        Button {
-                            if positiveParagraphs != nil {
-                                withAnimation(.snappy) { showingEmotions.toggle() }
-                            } else {
-                                judgeEmotions()
-                            }
-                        } label: {
-                            Label(showingEmotions ? "Hide Emotions" : "Emotions",
-                                  systemImage: "theatermasks")
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(isJudgingEmotions || !emotionsAvailable)
-                        .help(emotionsAvailable
-                              ? "Tint paragraphs by emotional tone: positive green, negative red — judged on this Mac, nothing leaves it"
-                              : "Requires Apple Intelligence")
                     }
-                    .padding(.bottom, 16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .disabled(isSummarizing || !TranscriptSummarizer.isAvailable)
+                .help(TranscriptSummarizer.isAvailable
+                      ? "Summarize this transcript on this Mac — every note links back to the statements that produced it; nothing leaves this Mac"
+                      : "Requires Apple Intelligence")
+                if isSummarizing, !summaryProgress.isEmpty {
+                    Text(summaryProgress)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let summaryError {
+                    Text(summaryError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if transcriptSummary != nil, !isSummarizing {
+                    Button("Remove Summary") {
+                        if let transcriptSummaryDoc {
+                            model.removeTranscriptSummary(transcriptSummaryDoc)
+                        }
+                        transcriptSummaryDoc = nil
+                        transcriptSummary = nil
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .help("Trash the summary letter — the transcript itself is untouched")
+                }
+            }
+            if !model.bots.bots.isEmpty, !model.authorIdentity.matches(author: doc.author) {
+                Menu {
+                    ForEach(model.bots.bots) { bot in
+                        Button(bot.displayName) { runBotCheck(bot) }
+                    }
+                } label: {
+                    Text("Bot Check")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .disabled(isBotChecking)
+                .help("Ask a bot whether the person it stands for would agree with this document")
+                .popover(isPresented: $showsBotCheck, arrowEdge: .leading) {
+                    botCheckPopover
+                }
+            }
+            Button {
+                if positiveParagraphs != nil {
+                    withAnimation(.snappy) { showingEmotions.toggle() }
+                } else {
+                    judgeEmotions()
+                }
+            } label: {
+                HStack {
+                    Text(showingEmotions ? "Hide Emotions" : "Emotions")
+                    if isJudgingEmotions {
+                        Spacer(minLength: 4)
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .disabled(isJudgingEmotions || !emotionsAvailable)
+            .help(emotionsAvailable
+                  ? "Tint paragraphs by emotional tone: positive green, negative red — judged on this Mac, nothing leaves it"
+                  : "Requires Apple Intelligence")
+            Button {
+                withAnimation(.snappy) { flowText.toggle() }
+            } label: {
+                Text(flowText ? "Unflow" : "Flow")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .help("Break dense text open while reading: sentences get their own lines, clauses break after commas, parentheses stand apart — the document itself is untouched")
+            if let emotionsError {
+                Text(emotionsError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    /// A titled run of the column, Knowledge Space's section style.
+    private func columnSection(_ title: String,
+                               @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            content()
+        }
+    }
+
+    /// The seam between text and header column: drag it to resize the
+    /// column; the width is remembered across letters and launches.
+    private func headerColumnResizer(maxWidth: CGFloat) -> some View {
+        Divider()
+            .overlay {
+                Color.clear
+                    .frame(width: 9)
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        if inside {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture(coordinateSpace: .global)
+                            .onChanged { value in
+                                let base = headerColumnDragBase ?? headerColumnWidth
+                                headerColumnDragBase = base
+                                headerColumnWidth = min(max(base - value.translation.width, 180),
+                                                        min(maxWidth, 450))
+                            }
+                            .onEnded { _ in headerColumnDragBase = nil }
+                    )
+            }
+    }
+
+    private var readerColumn: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if layoutStyle == .topOfLetters {
+                        headerBlock(compact: false)
+                            .padding(.bottom, 8)
+                        HStack(spacing: 8) {
+                            Spacer()
+                            readerControls(alignment: .trailing)
+                        }
+                        .padding(.bottom, 16)
+                    }
+                    // The transcript's Summary & Notes, at the top of the
+                    // words it summarizes; every note links back down.
+                    if let summary = transcriptSummary {
+                        summaryBlock(summary)
+                            .padding(.bottom, 16)
+                    }
                     if model.index.retractedIDs.contains(doc.id) {
                         Label("This document has been retracted by its author.",
                               systemImage: "exclamationmark.octagon.fill")
@@ -109,8 +513,10 @@ struct DocumentDetailView: View {
                             }
                         }
                     }
+                    DocumentFooter(doc: doc)
                 }
-                .frame(maxWidth: model.isFullScreen ? CGFloat(fullScreenContentWidth) : 620,
+                .frame(maxWidth: model.isFullScreen ? CGFloat(fullScreenContentWidth)
+                                : layoutStyle == .rightColumn ? 960 : 620,
                        alignment: .leading)
                 .frame(maxWidth: .infinity)
                 .padding(24)
@@ -122,6 +528,17 @@ struct DocumentDetailView: View {
                 positiveParagraphs = nil
                 negativeParagraphs = []
                 emotionsError = nil
+                flowText = false
+                // A new document: any read in flight is abandoned, and
+                // the new transcript's linked summary (if any) shows.
+                summaryTask?.cancel()
+                isSummarizing = false
+                summaryProgress = ""
+                summaryError = nil
+                loadTranscriptSummary()
+            }
+            .onAppear {
+                loadTranscriptSummary()
             }
             .environment(\.openURL, OpenURLAction { url in
                 handleReaderURL(url)
@@ -143,7 +560,8 @@ struct DocumentDetailView: View {
                     sizeScale: isAppendix ? 0.5 : 1,
                     transcludeDocumentID: isAppendix ? nil : doc.id,
                     expandedTransclusionKeys: expandedTransclusions,
-                    liftSource: isAppendix ? nil : doc
+                    liftSource: isAppendix ? nil : doc,
+                    flowed: isAppendix ? false : flowText
                 )
                 .contextMenu {
                     ContextActionItems(target: .paragraph(paragraph, in: doc))
@@ -307,6 +725,121 @@ struct DocumentDetailView: View {
         return .clear
     }
 
+    // MARK: - Summary & Notes
+
+    /// The transcript's linked summary document, read back for display.
+    private func loadTranscriptSummary() {
+        if TranscriptSummarizer.canSummarize(doc),
+           let summaryDoc = model.transcriptSummaryDocument(for: doc) {
+            transcriptSummaryDoc = summaryDoc
+            transcriptSummary = TranscriptSummary.display(from: summaryDoc, transcriptID: doc.id)
+        } else {
+            transcriptSummaryDoc = nil
+            transcriptSummary = nil
+        }
+    }
+
+    /// One read of the transcript, narrated in the column while it
+    /// runs. The result is saved beside the transcript as an ordinary
+    /// linked document — shareable like anything else; the transcript
+    /// itself is never touched.
+    private func runTranscriptSummary() {
+        guard !isSummarizing else { return }
+        isSummarizing = true
+        summaryError = nil
+        summaryProgress = ""
+        let doc = doc
+        summaryTask = Task {
+            do {
+                let summary = try await TranscriptSummarizer.summarize(doc) { note in
+                    summaryProgress = note
+                }
+                let saved = model.saveTranscriptSummary(summary, for: doc)
+                if self.doc.id == doc.id {
+                    withAnimation(.snappy) {
+                        transcriptSummary = summary
+                        transcriptSummaryDoc = saved
+                    }
+                }
+            } catch is CancellationError {
+                // Navigated away mid-read; nothing to report.
+            } catch {
+                if self.doc.id == doc.id {
+                    summaryError = error.localizedDescription
+                }
+            }
+            if self.doc.id == doc.id {
+                isSummarizing = false
+                summaryProgress = ""
+            }
+        }
+    }
+
+    /// The summary as it reads at the top of the transcript: the
+    /// overview, then the notes, each with chips linking back to the
+    /// statements that produced it.
+    private func summaryBlock(_ summary: TranscriptSummary) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Summary & Notes")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                Spacer()
+                Text("AI, on this Mac · \(summary.generated.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if let overview = summary.overview {
+                Text(overview)
+                    .font(.system(size: 15, design: .serif))
+                    .textSelection(.enabled)
+            }
+            ForEach(summary.notes) { note in
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text("•")
+                        .foregroundStyle(.tertiary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(note.text)
+                            .font(.system(size: 14, design: .serif))
+                            .textSelection(.enabled)
+                        WrappingHStack(horizontalSpacing: 5, verticalSpacing: 4) {
+                            ForEach(note.sources, id: \.self) { source in
+                                summarySourceChip(source)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// One doorway back into the conversation: the speaker's name,
+    /// jumping to (and flashing) the statement the note came from.
+    private func summarySourceChip(_ paragraphID: String) -> some View {
+        let speaker = (doc.body ?? []).first { $0.id == paragraphID }?.speaker
+        return Button {
+            model.fragmentRequest = AppModel.FragmentRequest(
+                docID: doc.id, paragraphID: paragraphID, token: UUID())
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.system(size: 7))
+                Text(speaker ?? "statement")
+            }
+            .font(.caption2)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(.quaternary, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Jump to the statement this note came from")
+    }
+
     private func consumeFragmentRequest(with proxy: ScrollViewProxy) {
         guard let request = model.fragmentRequest, request.docID == doc.id else { return }
         model.fragmentRequest = nil
@@ -327,12 +860,73 @@ struct DocumentDetailView: View {
     }
 }
 
+/// A left-aligned flow: subviews run across like an HStack and wrap to
+/// the next line when the width runs out — so pill-button rows in the
+/// narrow reading column never crush their labels.
+struct WrappingHStack: Layout {
+    var horizontalSpacing: CGFloat = 8
+    var verticalSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(subviews, in: proposal.width ?? .infinity)
+        let width = proposal.width ?? rows.map(\.width).max() ?? 0
+        let height = rows.reduce(0) { $0 + $1.height }
+            + verticalSpacing * CGFloat(max(rows.count - 1, 0))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
+                       subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in arrange(subviews, in: bounds.width) {
+            var x = bounds.minX
+            for index in row.indices {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y + (row.height - size.height) / 2),
+                    proposal: .unspecified)
+                x += size.width + horizontalSpacing
+            }
+            y += row.height + verticalSpacing
+        }
+    }
+
+    private struct Row {
+        var indices: [Int] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func arrange(_ subviews: Subviews, in width: CGFloat) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(.unspecified)
+            let needed = row.indices.isEmpty
+                ? size.width
+                : row.width + horizontalSpacing + size.width
+            if !row.indices.isEmpty, needed > width {
+                rows.append(row)
+                row = Row()
+            }
+            row.width = row.indices.isEmpty ? size.width : row.width + horizontalSpacing + size.width
+            row.height = max(row.height, size.height)
+            row.indices.append(index)
+        }
+        if !row.indices.isEmpty { rows.append(row) }
+        return rows
+    }
+}
+
 struct DocumentHeader: View {
     @Environment(AppModel.self) private var model
     let doc: LiquidDoc
     /// True only in the main reader: own published documents offer
     /// Supersede and Follow Up where the byline would be.
     var showsAuthoringActions = false
+    /// The narrow Right Column layout: a smaller title, and byline items
+    /// stacked vertically — the header reads down, not across.
+    var compact = false
     @State private var showingRevisionDelta = false
     @State private var confirmingNotTranscript = false
 
@@ -340,7 +934,7 @@ struct DocumentHeader: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(doc.title)
-                    .font(.system(size: 32, design: .serif))
+                    .font(.system(size: compact ? 20 : 32, design: .serif))
                     .textSelection(.enabled)
                 if doc.hasUnfamiliarFormatVersion {
                     Image(systemName: "exclamationmark.triangle")
@@ -362,24 +956,45 @@ struct DocumentHeader: View {
     /// document carries: "Responding to <Original>" etc., each clickable.
     private var bylineRow: some View {
         let provenance = provenanceItems
-        return HStack(spacing: 10) {
+        // Across in the classic layout; down the narrow column in compact,
+        // where a horizontal row would crush every item into fragments.
+        let layout = compact
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 5))
+            : AnyLayout(HStackLayout(spacing: 10))
+        return layout {
             if model.authorIdentity.matches(author: doc.author) {
                 // Provenance never hides, even from the author: a document
                 // carrying someone else's words says so on its own byline.
                 if let onBehalfOf = doc.onBehalfOf {
                     Text("On behalf of \(onBehalfOf)")
                         .help("This document carries \(onBehalfOf)’s words; \(doc.author) published it on their behalf")
-                } else if provenance.isEmpty {
+                } else if provenance.isEmpty, !compact {
                     Text(" ")
                 }
+            } else if compact {
+                VStack(alignment: .leading, spacing: 2) {
+                    BylinePersonName(name: doc.displayAuthor)
+                    Text(doc.date?.displayText ?? doc.created.formatted(date: .long, time: .shortened))
+                        .textSelection(.enabled)
+                        .help(doc.date == nil ? "" : "Created \(doc.created.formatted(date: .long, time: .shortened))")
+                }
             } else {
-                Text("\(doc.displayAuthor) · \(doc.date?.displayText ?? doc.created.formatted(date: .long, time: .shortened))")
-                    .textSelection(.enabled)
-                    .help(doc.date == nil ? "" : "Created \(doc.created.formatted(date: .long, time: .shortened))")
+                HStack(spacing: 0) {
+                    BylinePersonName(name: doc.displayAuthor)
+                    Text(" · \(doc.date?.displayText ?? doc.created.formatted(date: .long, time: .shortened))")
+                        .textSelection(.enabled)
+                        .help(doc.date == nil ? "" : "Created \(doc.created.formatted(date: .long, time: .shortened))")
+                }
             }
             if !doc.attention.isEmpty {
-                Text("For the attention of \(doc.attention.joined(separator: ", "))")
-                    .lineLimit(1)
+                HStack(spacing: 0) {
+                    Text("For the attention of ")
+                    ForEach(Array(doc.attention.enumerated()), id: \.offset) { index, name in
+                        if index > 0 { Text(", ") }
+                        BylinePersonName(name: name)
+                    }
+                }
+                .lineLimit(1)
             }
             ForEach(provenance, id: \.link.to) { item in
                 Button {
@@ -443,6 +1058,16 @@ struct DocumentHeader: View {
                                       delta: RevisionDelta.between(old: previous, new: doc))
                 }
             }
+            // Reading someone else's letter, the reply is at hand: the
+            // same discourse verbs as the document context menu, pushed
+            // to the byline's right edge (its own line in the narrow
+            // column, where a Spacer would stretch the column instead).
+            if !model.authorIdentity.matches(author: doc.author) {
+                if !compact { Spacer(minLength: 12) }
+                ReplyMenu(doc: doc)
+                    .fixedSize()
+                    .controlSize(.small)
+            }
         }
         .font(.callout)
         .foregroundStyle(.secondary)
@@ -479,7 +1104,9 @@ struct DocumentHeader: View {
     }
 
     private var authoringActions: some View {
-        HStack(spacing: 8) {
+        // A flow, not a fixed row: in the narrow reading column the
+        // pills wrap to the next line instead of crushing their labels.
+        WrappingHStack(horizontalSpacing: 8, verticalSpacing: 6) {
             Button("Supersede") { model.supersede(doc) }
                 .help("Start a new version; this one becomes superseded (a revises link records it)")
             Button("Follow Up") { model.followUp(doc) }
@@ -535,10 +1162,68 @@ struct DocumentHeader: View {
     }
 }
 
+/// The author's name on a document byline. Control-click answers with the
+/// shared person actions — their profile; the record is edited from the
+/// profile itself. Resting the pointer on a name with a contact record
+/// floats that person's card: portrait, affiliation, and letters.
+struct BylinePersonName: View {
+    @Environment(AppModel.self) private var model
+    let name: String
+    @State private var showsCard = false
+    @State private var pointerInCard = false
+    @State private var hoverTask: Task<Void, Never>?
+
+    var body: some View {
+        Text(name)
+            .contextMenu {
+                ContextActionItems(target: .person(name: name))
+            }
+            .help("\(name) — control-click for their profile")
+            .onHover { inside in
+                guard model.people.person(named: name) != nil else { return }
+                if inside {
+                    scheduleCard(shows: true, after: 350)
+                } else {
+                    scheduleCard(shows: false, after: 300)
+                }
+            }
+            .popover(isPresented: $showsCard, arrowEdge: .bottom) {
+                if let person = model.people.person(named: name) {
+                    PersonHoverCard(person: person) {
+                        hoverTask?.cancel()
+                        showsCard = false
+                    }
+                    .onHover { inside in
+                        pointerInCard = inside
+                        if inside {
+                            hoverTask?.cancel()
+                        } else {
+                            scheduleCard(shows: false, after: 250)
+                        }
+                    }
+                }
+            }
+    }
+
+    /// The dwell before showing, and the grace period that lets the
+    /// pointer travel from the name onto the card without it vanishing.
+    private func scheduleCard(shows: Bool, after milliseconds: Int) {
+        hoverTask?.cancel()
+        hoverTask = Task {
+            try? await Task.sleep(for: .milliseconds(milliseconds))
+            guard !Task.isCancelled else { return }
+            if shows {
+                showsCard = true
+            } else if !pointerInCard {
+                showsCard = false
+            }
+        }
+    }
+}
+
 /// The attribution over a transcript statement — a name the system knows.
-/// Click for the person's page (their documents and everything they have
-/// said); control-click to open that page, see their contact record, or
-/// add them to People when they have none.
+/// Click for the person's profile (their documents and everything they
+/// have said); control-click for the same by menu.
 struct SpeakerLabel: View {
     @Environment(AppModel.self) private var model
     let name: String
@@ -546,7 +1231,6 @@ struct SpeakerLabel: View {
     /// When the label knows which statement it heads and in which document,
     /// the context menu offers lifting that statement into a new draft.
     var liftContext: (source: LiquidDoc, paragraph: LiquidDoc.Paragraph)? = nil
-    @State private var contactPerson: Person?
 
     var body: some View {
         Button {
@@ -559,25 +1243,13 @@ struct SpeakerLabel: View {
                 .foregroundStyle(.secondary)
         }
         .buttonStyle(.plain)
-        .help(model.people.person(named: name) == nil
-              ? "\(name) — click for their page; control-click to add them to People"
-              : "\(name) — click for their page")
+        .help("\(name) — click for their profile")
         .contextMenu {
             // Shared person actions, then paragraph actions (Lift among
-            // them), then this view's local sheet items.
+            // them). The record itself is edited from the profile.
             ContextActionItems(target: .person(name: name))
             if let liftContext {
                 ContextActionItems(target: .paragraph(liftContext.paragraph, in: liftContext.source))
-            }
-            if let known = model.people.person(named: name) {
-                Button("Contact Record…") { contactPerson = known }
-            } else {
-                Button("Add \(name) to People…") { contactPerson = Person(displayName: name) }
-            }
-        }
-        .sheet(item: $contactPerson) { person in
-            PersonFormView(person: person, heading: "Contact Record") { updated in
-                model.people.upsert(updated)
             }
         }
     }
@@ -663,6 +1335,9 @@ struct ParagraphView: View {
     /// The document this paragraph is read in; when present, a speaker's
     /// context menu can lift the statement into a new draft.
     var liftSource: LiquidDoc? = nil
+    /// Flow: break dense prose open for reading (sentences, clauses,
+    /// parentheses). Display only; headings are left alone.
+    var flowed = false
 
     var body: some View {
         if isRule {
@@ -716,6 +1391,9 @@ struct ParagraphView: View {
            let range = attributed.range(of: highlightedSpan, options: [.caseInsensitive, .diacriticInsensitive]) {
             attributed[range].backgroundColor = Color.yellow.opacity(0.85)
         }
+        if flowed, paragraph.effectiveHeading == nil {
+            attributed = FlowBreaker.flowed(attributed)
+        }
         return attributed
     }
 
@@ -726,5 +1404,48 @@ struct ParagraphView: View {
         case 3: 10
         default: 0
         }
+    }
+}
+
+/// Flow: dense prose broken open for reading. Whitespace runs become line
+/// breaks where the surrounding characters say a thought ends — a blank
+/// line after a sentence's period, a new line after an in-sentence comma,
+/// and around parentheses. Punctuation inside numbers and abbreviations
+/// stays put: a period breaks only between a letter and a following
+/// capital; a comma never breaks against a digit. The transform edits the
+/// composed AttributedString, so links and marks ride along untouched.
+nonisolated enum FlowBreaker {
+    static func flowed(_ attributed: AttributedString) -> AttributedString {
+        let text = Array(String(attributed.characters))
+        var replacements: [(start: Int, end: Int, breakText: String)] = []
+        var i = 0
+        while i < text.count {
+            guard text[i] == " " || text[i] == "\t" else { i += 1; continue }
+            var j = i
+            while j < text.count, text[j] == " " || text[j] == "\t" { j += 1 }
+            let before: Character = i > 0 ? text[i - 1] : "\n"
+            let beforePrev: Character = i > 1 ? text[i - 2] : "\n"
+            let after: Character = j < text.count ? text[j] : "\n"
+            let breakText: String? = if before == ".", beforePrev.isLetter, after.isUppercase {
+                "\n\n"   // a sentence ended; the next begins
+            } else if before == ",", !beforePrev.isNumber, !after.isNumber {
+                "\n"     // a clause ended
+            } else if before == ")" || after == "(" {
+                "\n"     // parentheses stand apart
+            } else {
+                nil
+            }
+            if let breakText {
+                replacements.append((start: i, end: j, breakText: breakText))
+            }
+            i = j
+        }
+        var result = attributed
+        for replacement in replacements.reversed() {
+            let start = result.index(result.startIndex, offsetByCharacters: replacement.start)
+            let end = result.index(result.startIndex, offsetByCharacters: replacement.end)
+            result.replaceSubrange(start..<end, with: AttributedString(replacement.breakText))
+        }
+        return result
     }
 }

@@ -103,7 +103,7 @@ enum ContextActionBuilder {
 
         case .person(let name):
             return [
-                ContextAction(id: "person-page", title: "Everything by \(name)",
+                ContextAction(id: "person-page", title: "Profile",
                               systemImage: "person.text.rectangle") {
                     model.openAuthorPage(named: name)
                 },
@@ -142,7 +142,7 @@ enum ContextActionBuilder {
             return actions
 
         case .document(let doc):
-            return [
+            var actions: [ContextAction] = [
                 ContextAction(id: "cite-doc", title: "Copy to Cite",
                               systemImage: "quote.closing") {
                     model.copyCitation(doc: doc)
@@ -151,7 +151,44 @@ enum ContextActionBuilder {
                               systemImage: "square.and.arrow.up") {
                     model.exportDocument(doc)
                 },
+                ContextAction(id: "export-epub", title: "Export as EPUB…",
+                              systemImage: "book.closed") {
+                    model.exportEPUB(doc)
+                },
+                ContextAction(id: "show-in-finder", title: "Show in Finder",
+                              systemImage: "folder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([doc.fileURL])
+                },
+                ContextAction(id: "copy-letter-file", title: "Copy Letter",
+                              systemImage: "doc.on.doc") {
+                    DocumentFileActions.copyFile(of: doc)
+                },
             ]
+            // Declaring a transcript: statements gain their structural
+            // speakers and the document its type, so lifting, speaker
+            // attribution, and Summary & Notes all know it. Always
+            // offered — a vanished option reads as a bug, and processing
+            // an already-attributed transcript is harmless: it simply
+            // attributes anything new.
+            actions.append(ContextAction(id: "process-transcript",
+                                         title: "Process Transcript",
+                                         systemImage: "text.bubble") {
+                model.processTranscript(doc)
+            })
+            // The reply family — the discourse verbs — on other people's
+            // documents: respond, extend, support, question, disagree,
+            // summarize. One list here, every surface at once.
+            if !model.authorIdentity.matches(author: doc.author) {
+                for relation in DocumentRelation.discourseActions {
+                    actions.append(ContextAction(
+                        id: "discourse-\(relation.rawValue)",
+                        title: relation.actionTitle ?? relation.rawValue,
+                        systemImage: "arrowshape.turn.up.left") {
+                        model.startDiscourse(relation, about: doc)
+                    })
+                }
+            }
+            return actions
 
         case .background:
             return [
@@ -197,6 +234,50 @@ enum ContextActionBuilder {
     }
 }
 
+/// The reply family as a labeled menu — the same discourse verbs the
+/// document context menu offers, for surfaces that want them under one
+/// visible "Reply" button. One verb list (DocumentRelation
+/// .discourseActions) feeds both, so additions appear everywhere at once.
+struct ReplyMenu: View {
+    @Environment(AppModel.self) private var model
+    let doc: LiquidDoc
+
+    var body: some View {
+        Menu {
+            ForEach(DocumentRelation.discourseActions, id: \.self) { relation in
+                Button(relation.actionTitle ?? relation.rawValue) {
+                    model.startDiscourse(relation, about: doc)
+                }
+            }
+        } label: {
+            Label("Reply", systemImage: "arrowshape.turn.up.left")
+        }
+        .help("Start a linked reply: respond, extend, support, question, disagree, or summarize")
+    }
+}
+
+/// The letter as a file — the verbs the Letters list taught, for any row
+/// menu: reveal the .origamitext in Finder, or copy the file itself for
+/// pasting anywhere.
+struct DocumentFileActions: View {
+    let doc: LiquidDoc
+
+    var body: some View {
+        Button("Show in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([doc.fileURL])
+        }
+        Button("Copy Letter") {
+            Self.copyFile(of: doc)
+        }
+    }
+
+    static func copyFile(of doc: LiquidDoc) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([doc.fileURL as NSURL])
+    }
+}
+
 /// Bridges a Swift closure to an NSMenuItem target/action pair.
 final class ContextActionTrampoline: NSObject {
     private let perform: @MainActor () -> Void
@@ -229,13 +310,18 @@ struct ContextActionItems: View {
 }
 
 extension AppModel {
-    /// Whether the name is known to the library as an author or speaker —
-    /// how plain selected words are recognised as a person.
+    /// Whether the name is known to the library as an author, a speaker,
+    /// or someone letters are addressed to — how plain selected words are
+    /// recognised as a person.
     func knowsAuthor(named name: String) -> Bool {
         let target = name.trimmingCharacters(in: .whitespaces)
         guard !target.isEmpty else { return false }
         return index.byID.values.contains {
             $0.doc.author.caseInsensitiveCompare(target) == .orderedSame
+                || $0.doc.creditedAuthor.caseInsensitiveCompare(target) == .orderedSame
+                || $0.doc.attention.contains { recipient in
+                    recipient.caseInsensitiveCompare(target) == .orderedSame
+                }
                 || ($0.doc.body ?? []).contains { paragraph in
                     paragraph.speaker?.caseInsensitiveCompare(target) == .orderedSame
                 }

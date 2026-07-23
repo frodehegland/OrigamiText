@@ -95,7 +95,6 @@ struct AIInsightsView: View {
                 }
             }
         }
-        .navigationTitle("AI Insights")
         // The model cites documents by address; clicking one leaves this
         // view for the reader, exactly as a human-written link would.
         .environment(\.openURL, OpenURLAction { url in

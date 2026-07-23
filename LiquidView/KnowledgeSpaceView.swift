@@ -28,10 +28,15 @@ nonisolated enum SpatialLayoutStore {
     }
 }
 
-/// A thread drawn between two cards, on the arrangement plane.
+/// A thread drawn between two cards, following them through the volume.
+/// Colors shade from one end to the other (the Weave's author-to-author
+/// threads); width carries weight (the Circle's document counts).
 struct SpatialCardConnection {
     let from: String
     let to: String
+    var fromColor: Color = .white.opacity(0.28)
+    var toColor: Color = .white.opacity(0.28)
+    var width: Double = 1.2
 }
 
 /// How a layout first arranges its cards on the z = 0 plane.
@@ -55,6 +60,7 @@ struct SpatialCardPlane<Item: Identifiable, CardFace: View, Extras: View>: View 
     private let connections: [SpatialCardConnection]
     private let resolveID: (String) -> String
     private let onOpen: ((Item) -> Void)?
+    private let onSelect: ((Item) -> Void)?
     private let cardFace: (Item) -> CardFace
     private let extraOrnament: () -> Extras
 
@@ -73,6 +79,7 @@ struct SpatialCardPlane<Item: Identifiable, CardFace: View, Extras: View>: View 
          connections: [SpatialCardConnection] = [],
          resolveID: @escaping (String) -> String = { $0 },
          onOpen: ((Item) -> Void)? = nil,
+         onSelect: ((Item) -> Void)? = nil,
          @ViewBuilder cardFace: @escaping (Item) -> CardFace,
          @ViewBuilder extraOrnament: @escaping () -> Extras) {
         self.layoutName = layoutName
@@ -82,6 +89,7 @@ struct SpatialCardPlane<Item: Identifiable, CardFace: View, Extras: View>: View 
         self.connections = connections
         self.resolveID = resolveID
         self.onOpen = onOpen
+        self.onSelect = onSelect
         self.cardFace = cardFace
         self.extraOrnament = extraOrnament
     }
@@ -89,7 +97,7 @@ struct SpatialCardPlane<Item: Identifiable, CardFace: View, Extras: View>: View 
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                connectionThreads(in: geometry.size)
+                connectionThreads
                 ForEach(items) { item in
                     card(for: item)
                         .hoverEffect()
@@ -97,6 +105,7 @@ struct SpatialCardPlane<Item: Identifiable, CardFace: View, Extras: View>: View 
                         .offset(z: positions[item.id]?.z ?? 0)
                         .gesture(drag(for: item.id))
                         .onTapGesture(count: 2) { onOpen?(item) }
+                        .onTapGesture { onSelect?(item) }
                 }
             }
             .onAppear {
@@ -206,21 +215,47 @@ struct SpatialCardPlane<Item: Identifiable, CardFace: View, Extras: View>: View 
 
     // MARK: Connections
 
-    /// Threads on the arrangement plane (their endpoints' cards may float
-    /// above or below — the thread marks the connection, the depth stays
-    /// the reader's).
-    private func connectionThreads(in size: CGSize) -> some View {
-        Canvas { context, _ in
-            for connection in connections {
-                let a = planePoint(for: connection.from, in: size)
-                let b = planePoint(for: connection.to, in: size)
-                var path = Path()
-                path.move(to: a)
-                path.addLine(to: b)
-                context.stroke(path, with: .color(.white.opacity(0.28)), lineWidth: 1.2)
+    /// Threads between cards, run through the volume in all three
+    /// dimensions: a card pulled toward you or pushed away keeps its
+    /// threads attached, meeting it at its true depth.
+    private var connectionThreads: some View {
+        ForEach(Array(connections.enumerated()), id: \.offset) { _, connection in
+            // Only between placed cards — never to a default point.
+            if let pa = positions[connection.from],
+               let pb = positions[connection.to] {
+                thread(connection, from: pa, to: pb)
             }
         }
-        .allowsHitTesting(false)
+    }
+
+    /// One thread: a capsule of the segment's true 3D length, laid along
+    /// the x-axis, rotated in one turn about the axis perpendicular to
+    /// both so its x-axis carries a → b, then placed at the midpoint.
+    /// All vectors are in view coordinates (x right, y down, z toward
+    /// the viewer) — the same frame rotation3DEffect rotates in, so the
+    /// cross/dot products line up with what it does.
+    @ViewBuilder
+    private func thread(_ connection: SpatialCardConnection,
+                        from pa: SIMD3<Double>, to pb: SIMD3<Double>) -> some View {
+        let d = pb - pa
+        let length = (d.x * d.x + d.y * d.y + d.z * d.z).squareRoot()
+        if length > 1 {
+            let u = d / length
+            let angle = acos(max(-1, min(1, u.x)))
+            // x̂ × u; for u ∥ x̂ any perpendicular axis serves (angle is
+            // 0 or π, and the capsule is symmetric about its length).
+            let raw = SIMD3<Double>(0, -u.z, u.y)
+            let axisLength = (raw.y * raw.y + raw.z * raw.z).squareRoot()
+            let axis = axisLength > 1e-6 ? raw / axisLength : SIMD3<Double>(0, 1, 0)
+            Capsule()
+                .fill(LinearGradient(colors: [connection.fromColor, connection.toColor],
+                                     startPoint: .leading, endPoint: .trailing))
+                .frame(width: length, height: max(connection.width, 1))
+                .rotation3DEffect(.radians(angle), axis: (x: axis.x, y: axis.y, z: axis.z))
+                .position(x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2)
+                .offset(z: (pa.z + pb.z) / 2)
+                .allowsHitTesting(false)
+        }
     }
 }
 
@@ -232,6 +267,7 @@ extension SpatialCardPlane where Extras == EmptyView {
          connections: [SpatialCardConnection] = [],
          resolveID: @escaping (String) -> String = { $0 },
          onOpen: ((Item) -> Void)? = nil,
+         onSelect: ((Item) -> Void)? = nil,
          @ViewBuilder cardFace: @escaping (Item) -> CardFace) {
         self.init(layoutName: layoutName,
                   items: items,
@@ -240,6 +276,7 @@ extension SpatialCardPlane where Extras == EmptyView {
                   connections: connections,
                   resolveID: resolveID,
                   onOpen: onOpen,
+                  onSelect: onSelect,
                   cardFace: cardFace,
                   extraOrnament: { EmptyView() })
     }
@@ -251,8 +288,9 @@ extension SpatialCardPlane where Extras == EmptyView {
 /// essentially 2D arrangement in a volume, where the hand can pull a card
 /// toward you or push it away in Z. Every document is a small card, title
 /// then author, readable from the front and the back. Links draw as
-/// threads on the arrangement plane. Double-tap a card to open the full
-/// article; pinch-drag to move it in all three dimensions.
+/// threads through the volume, staying attached to their cards at any
+/// depth. Double-tap a card to open the full article; pinch-drag to
+/// move it in all three dimensions.
 ///
 /// The mechanics — seeding, dragging, persistence — live in
 /// SpatialCardPlane above; this view supplies the documents, their card
@@ -264,11 +302,16 @@ struct KnowledgeSpaceView: View {
     @AppStorage("xrMaxTitleLines") private var maxTitleLines = 2
     @AppStorage("xrMaxAuthorLines") private var maxAuthorLines = 1
     @State private var showingSettings = false
+    /// The selected card: its threads brighten while the rest fall back,
+    /// so a document's relationships read at a glance. Tap again to
+    /// release.
+    @State private var selectedDocID: String?
 
     private var docs: [LiquidDoc] { model.index.timeline.map(\.doc) }
 
     /// Links as threads, with targets followed through revision chains —
-    /// an edit on the Mac does not break a thread.
+    /// an edit on the Mac does not break a thread. A selected card's
+    /// threads run bright; the rest fall back while it holds.
     private var connections: [SpatialCardConnection] {
         let ids = Set(docs.map(\.id))
         var result: [SpatialCardConnection] = []
@@ -276,7 +319,13 @@ struct KnowledgeSpaceView: View {
             for link in doc.links {
                 let target = model.index.latestRevision(of: LiquidAddress.canonical(link.to))
                 guard ids.contains(target), target != doc.id else { continue }
-                result.append(SpatialCardConnection(from: doc.id, to: target))
+                let isLit = selectedDocID.map { doc.id == $0 || target == $0 } ?? false
+                let dimmed = selectedDocID != nil && !isLit
+                let opacity = isLit ? 0.95 : (dimmed ? 0.06 : 0.28)
+                result.append(SpatialCardConnection(from: doc.id, to: target,
+                                                    fromColor: .white.opacity(opacity),
+                                                    toColor: .white.opacity(opacity),
+                                                    width: isLit ? 2 : 1.2))
             }
         }
         return result
@@ -289,6 +338,9 @@ struct KnowledgeSpaceView: View {
                          connections: connections,
                          resolveID: { model.index.latestRevision(of: $0) },
                          onOpen: { openWindow(id: "reader", value: $0.id) },
+                         onSelect: { doc in
+            selectedDocID = selectedDocID == doc.id ? nil : doc.id
+        },
                          cardFace: { doc in cardFace(for: doc) },
                          extraOrnament: {
             Button {
@@ -308,7 +360,8 @@ struct KnowledgeSpaceView: View {
     }
 
     private func cardFace(for doc: LiquidDoc) -> some View {
-        VStack(spacing: 5) {
+        let isSelected = doc.id == selectedDocID
+        return VStack(spacing: 5) {
             Text(doc.title)
                 .font(.system(size: 15, weight: .semibold, design: .serif))
                 .lineLimit(maxTitleLines)
@@ -322,6 +375,10 @@ struct KnowledgeSpaceView: View {
         .padding(.vertical, 10)
         .frame(width: 190)
         .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2.5)
+        )
     }
 
     // MARK: Settings

@@ -22,6 +22,14 @@ struct MarkdownTextEditor: NSViewRepresentable {
     /// Renders the shared context actions for a target (the view owning
     /// the model supplies this; the editor only names what was clicked).
     var contextMenuItems: ((ContextTarget) -> [NSMenuItem])?
+    /// Set true to hand the keyboard to the body text; flips back once
+    /// taken — how Tab in the title lands here.
+    var claimFocus: Binding<Bool>? = nil
+    /// Set to a 1-based paragraph number (the Nth non-empty line — the
+    /// same numbering parseBody assigns ids by) to scroll there and
+    /// flash it; resets once done. How a summary note points back at
+    /// the statement that produced it.
+    var revealParagraph: Binding<Int?>? = nil
 
     /// The menu is owned at the view level: on current SDKs the text
     /// system can build its menu without consulting the delegate hook, so
@@ -144,6 +152,17 @@ struct MarkdownTextEditor: NSViewRepresentable {
         if needsRestyle {
             context.coordinator.applyStyling()
         }
+        if claimFocus?.wrappedValue == true {
+            textView.window?.makeFirstResponder(textView)
+            // Reset outside the update pass.
+            let claimFocus = claimFocus
+            Task { @MainActor in claimFocus?.wrappedValue = false }
+        }
+        if let target = revealParagraph?.wrappedValue {
+            context.coordinator.reveal(nonEmptyLine: target)
+            let revealParagraph = revealParagraph
+            Task { @MainActor in revealParagraph?.wrappedValue = nil }
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -163,9 +182,69 @@ struct MarkdownTextEditor: NSViewRepresentable {
         /// The statement under the last right-click, held between building
         /// the menu and the menu item firing.
         private var pendingLiftStatement: String?
+        /// Where the last accepted edit landed, post-change — so restyling
+        /// touches only the paragraphs it could have altered instead of
+        /// the whole letter on every keystroke.
+        private var pendingEditedRange: NSRange?
 
         init(text: Binding<String>) {
             self.text = text
+        }
+
+        /// The hidden "# " marker of the paragraph containing `index`,
+        /// when markers are hidden and the paragraph is a heading: from
+        /// the first "#" through the following space — the same range
+        /// the styling collapses to nothing.
+        private func hiddenMarkerRange(containing index: Int, in string: NSString) -> NSRange? {
+            guard hideHeadingMarkers, string.length > 0 else { return nil }
+            let paragraph = string.paragraphRange(
+                for: NSRange(location: min(index, string.length), length: 0))
+            var cursor = paragraph.location
+            let end = NSMaxRange(paragraph)
+            while cursor < end,
+                  string.character(at: cursor) == 0x20 || string.character(at: cursor) == 0x09 {
+                cursor += 1
+            }
+            var level = 0
+            while cursor + level < end, level < 3, string.character(at: cursor + level) == 0x23 {
+                level += 1
+            }
+            guard level > 0, cursor + level < end,
+                  string.character(at: cursor + level) == 0x20 else { return nil }
+            return NSRange(location: cursor, length: level + 1)
+        }
+
+        /// The caret never rests inside a hidden marker — its characters
+        /// are invisible, so a caret there looks frozen and deletions
+        /// there seem to do nothing. A caret headed in snaps out: one
+        /// step back from the heading's visible start crosses to the
+        /// previous line's end in a single press; everything else lands
+        /// at the start of the heading's words.
+        func textView(_ textView: NSTextView,
+                      willChangeSelectionFromCharacterRanges oldRanges: [NSValue],
+                      toCharacterRanges newRanges: [NSValue]) -> [NSValue] {
+            guard hideHeadingMarkers else { return newRanges }
+            let string = textView.string as NSString
+            let oldLocation = oldRanges.first?.rangeValue.location
+            return newRanges.map { value in
+                var range = value.rangeValue
+                guard range.length == 0,
+                      let marker = hiddenMarkerRange(containing: range.location, in: string),
+                      range.location >= marker.location,
+                      range.location < NSMaxRange(marker)
+                else { return value }
+                let markerEnd = NSMaxRange(marker)
+                if range.location == markerEnd - 1, oldLocation == markerEnd,
+                   marker.location > 0 {
+                    // Arrow-left from the heading's visible start: past
+                    // the whole marker to the previous line's end.
+                    range.location = string.paragraphRange(
+                        for: NSRange(location: marker.location, length: 0)).location - 1
+                } else {
+                    range.location = markerEnd
+                }
+                return NSValue(range: range)
+            }
         }
 
         /// The editor's context menu, with "Lift to New" on transcript
@@ -211,10 +290,41 @@ struct MarkdownTextEditor: NSViewRepresentable {
             pendingLiftStatement = nil
         }
 
+        /// Scrolls to the Nth non-empty line — paragraph pN in the saved
+        /// document — and flashes it with the system's find indicator.
+        func reveal(nonEmptyLine target: Int) {
+            guard let textView, target > 0 else { return }
+            let string = textView.string as NSString
+            var count = 0
+            var location = 0
+            while location < string.length {
+                let lineRange = string.lineRange(for: NSRange(location: location, length: 0))
+                let line = string.substring(with: lineRange)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !line.isEmpty {
+                    count += 1
+                    if count == target {
+                        textView.scrollRangeToVisible(lineRange)
+                        textView.showFindIndicator(for: lineRange)
+                        return
+                    }
+                }
+                let next = NSMaxRange(lineRange)
+                if next <= location { break }
+                location = next
+            }
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let textView else { return }
             text.wrappedValue = textView.string
-            applyStyling()
+            let edited = pendingEditedRange
+            pendingEditedRange = nil
+            // Never restyle mid-composition: dead keys and CJK input hold
+            // marked text whose attributes a restyle would wipe. The
+            // change that ends the composition styles the result.
+            guard !textView.hasMarkedText() else { return }
+            applyStyling(in: edited)
         }
 
         /// Structured pastes become citations: Reader's "Copy Quote"/"Copy
@@ -225,6 +335,20 @@ struct MarkdownTextEditor: NSViewRepresentable {
                       shouldChangeTextIn affectedRange: NSRange,
                       replacementString: String?) -> Bool {
             guard let replacementString else { return true }
+            // Deleting into a hidden heading marker takes the whole
+            // marker in one press: backspace at the visible start of a
+            // heading unmakes the heading, instead of eating invisible
+            // characters one by one with nothing to show for it.
+            if replacementString.isEmpty, hideHeadingMarkers, affectedRange.length > 0 {
+                let string = textView.string as NSString
+                if let marker = hiddenMarkerRange(containing: affectedRange.location, in: string),
+                   NSIntersectionRange(affectedRange, marker).length > 0,
+                   !(affectedRange.location <= marker.location
+                     && NSMaxRange(affectedRange) >= NSMaxRange(marker)) {
+                    textView.insertText("", replacementRange: NSUnionRange(affectedRange, marker))
+                    return false
+                }
+            }
             let replacement: String?
             if let quote = ReaderQuoteParser.parse(replacementString) {
                 replacement = quote.draftText
@@ -242,7 +366,13 @@ struct MarkdownTextEditor: NSViewRepresentable {
                     }
                 }
             }
-            guard var transformed = replacement, !transformed.isEmpty else { return true }
+            guard var transformed = replacement, !transformed.isEmpty else {
+                // An ordinary edit: remember where it lands, so the
+                // restyle that follows touches only those paragraphs.
+                pendingEditedRange = NSRange(location: affectedRange.location,
+                                             length: (replacementString as NSString).length)
+                return true
+            }
             if affectedRange.location > 0 {
                 let existing = textView.string as NSString
                 let previous = existing.character(at: affectedRange.location - 1)
@@ -254,22 +384,33 @@ struct MarkdownTextEditor: NSViewRepresentable {
             return false
         }
 
-        /// Restyles the whole document: body serif everywhere, with heading
-        /// lines sized and bolded by their markdown prefix. Attribute-only
-        /// changes, so selection and undo state stay put.
-        func applyStyling() {
+        /// Restyles the edited paragraphs — or, given no range, the whole
+        /// document: body serif everywhere, with heading lines sized and
+        /// bolded by their markdown prefix. Attribute-only changes, so
+        /// selection and undo state stay put; per-paragraph scope, so a
+        /// keystroke never pays for the whole letter.
+        func applyStyling(in editedRange: NSRange? = nil) {
             guard let textView, let storage = textView.textStorage else { return }
             let string = storage.string as NSString
             let fullRange = NSRange(location: 0, length: string.length)
+            // Heading styling is a per-paragraph decision, so restyling
+            // the paragraphs the edit touched is always complete. The
+            // range is clamped by hand: a zero-length edit at the very
+            // end (a deletion there) must keep its position.
+            let target = editedRange.map { edited in
+                let location = min(edited.location, string.length)
+                let length = min(edited.length, string.length - location)
+                return string.paragraphRange(for: NSRange(location: location, length: length))
+            } ?? fullRange
 
             storage.beginEditing()
             storage.setAttributes([
                 .font: Self.bodyFont,
                 .foregroundColor: NSColor.labelColor,
                 .paragraphStyle: Self.paragraphStyle,
-            ], range: fullRange)
+            ], range: target)
 
-            string.enumerateSubstrings(in: fullRange, options: [.byParagraphs]) { substring, range, _, _ in
+            string.enumerateSubstrings(in: target, options: [.byParagraphs]) { substring, range, _, _ in
                 guard let substring else { return }
                 let trimmed = substring.trimmingCharacters(in: .whitespaces)
                 let level: Int

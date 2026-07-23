@@ -54,7 +54,18 @@ nonisolated enum TranscriptImporter {
         let name = String(match.name).trimmingCharacters(in: .whitespaces)
         // A colon deep into a sentence is prose, not attribution.
         guard name.count <= 40 else { return nil }
+        // A URL is not a speaker: "https://…" reads as name "https"
+        // with a statement beginning "//".
+        guard !match.statement.hasPrefix("//") else { return nil }
         return (name, String(match.statement).trimmingCharacters(in: .whitespaces))
+    }
+
+    /// The speaker named at the head of a statement — for processing an
+    /// existing document into a transcript: "Mark Anderson: …" gives
+    /// "Mark Anderson"; prose gives nil.
+    static func speakerName(inStatement text: String) -> String? {
+        guard let first = text.components(separatedBy: .newlines).first else { return nil }
+        return speakerMatch(in: first.trimmingCharacters(in: .whitespaces))?.name
     }
 
     /// Whether text reads as a transcript: most non-empty lines are

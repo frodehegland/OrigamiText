@@ -90,7 +90,6 @@ struct HealthDashboardView: View {
                 }
             }
         }
-        .navigationTitle("Health")
     }
 
     private func healthRow(entry: IndexEntry, detail: String, systemImage: String) -> some View {

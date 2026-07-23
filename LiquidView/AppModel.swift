@@ -5,13 +5,34 @@ import UniformTypeIdentifiers
 /// Library views are exchangeable modules: see LibraryViewModule.swift for
 /// the recipe. They appear here as `.view(id)`.
 enum SidebarItem: Hashable {
-    case allDocuments
-    case letters
+    // Received
+    case inbox
+    case filedReceived
+    // Dialog
+    case timeline
     case transcripts
     case extracts
-    case timeline
+    case filed
+    // Outgoing
     case drafts
     case published
+    case filedOutgoing
+    // Notes
+    case notes
+    case noteLocations
+    case notePeople
+    case filedNotes
+    // Transcripts
+    case transcriptDrafts
+    case transcriptsPublished
+    case transcriptExtracts
+    // Books
+    case bookDrafts
+    case booksPublished
+    case filedBooks
+    // Reachable by code, not from the sidebar: Everything as a reading
+    // context, and the drafts shelf.
+    case allDocuments
     case archived
     case view(String)
 }
@@ -44,7 +65,17 @@ final class AppModel {
         let token: UUID
     }
 
-    var sidebarSelection: SidebarItem? = .allDocuments
+    var sidebarSelection: SidebarItem? = .timeline {
+        didSet {
+            if oldValue != sidebarSelection { previousSidebarSelection = oldValue }
+        }
+    }
+    /// The selection before the current one — where ⌘W returns to when
+    /// it closes a just-opened editor instead of the window.
+    private var previousSidebarSelection: SidebarItem?
+    /// Which Settings tab is showing — settable, so the sidebar's Edit
+    /// can open Settings straight onto View Modules.
+    var settingsTab: SettingsTab = .author
     private(set) var history: [Destination] = []
     private(set) var historyPosition = -1
 
@@ -62,6 +93,8 @@ final class AppModel {
 
     var showLinksInspector = false
     var showXRExport = false
+    /// A blank contact record being created via File → New Author.
+    var newAuthor: Person?
     var searchText = ""
     var sortOrder: ListSortOrder = .byDate
     var showSuperseded = false
@@ -99,6 +132,11 @@ final class AppModel {
     // MARK: - Opening and following
 
     func open(_ doc: LiquidDoc, fragment: String? = nil, span: String? = nil) {
+        // Reading marks read — but only once the reader moves on.
+        // Marking at once would drop the letter out of Unread (and its
+        // bolding everywhere) while it is still being read.
+        commitPendingRead(except: doc)
+        if isUnread(doc) { pendingRead = doc }
         if current?.doc.id != doc.id {
             parallelDoc = nil   // navigation leaves parallel reading
             history = Array(history.prefix(historyPosition + 1))
@@ -107,6 +145,190 @@ final class AppModel {
         }
         deliverFragment(fragment, span: span, in: doc)
     }
+
+    // MARK: - Read state (InBox and Attention)
+
+    /// Documents the reader has opened, by id. The complement is "unread";
+    /// the user's own documents are never unread. Persisted across launches.
+    private(set) var readDocumentIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "readDocumentIDs") ?? [])
+
+    func isUnread(_ doc: LiquidDoc) -> Bool {
+        !authorIdentity.matches(author: doc.author) && !readDocumentIDs.contains(doc.id)
+    }
+
+    /// The letter being read but not yet marked so: the marking waits
+    /// until another document takes the reading pane, so an unread
+    /// letter does not vanish from the Unread list under the reader's
+    /// eyes. (Quitting mid-read leaves it unread — the conservative
+    /// answer.)
+    private var pendingRead: LiquidDoc?
+
+    private func commitPendingRead(except doc: LiquidDoc?) {
+        guard let pending = pendingRead, pending.id != doc?.id else { return }
+        pendingRead = nil
+        markRead(pending)
+    }
+
+    func markRead(_ doc: LiquidDoc) {
+        guard !authorIdentity.matches(author: doc.author),
+              readDocumentIDs.insert(doc.id).inserted else { return }
+        persistReadIDs()
+    }
+
+    /// The reader's "put it back": the letter stays unread until it is
+    /// opened again.
+    func markUnread(_ doc: LiquidDoc) {
+        // Unread by request must survive leaving the letter — cancel
+        // any waiting mark.
+        if pendingRead?.id == doc.id { pendingRead = nil }
+        guard readDocumentIDs.remove(doc.id) != nil else { return }
+        persistReadIDs()
+    }
+
+    private func persistReadIDs() {
+        UserDefaults.standard.set(Array(readDocumentIDs), forKey: "readDocumentIDs")
+    }
+
+    // MARK: - Filing
+
+    /// The one folder with special meaning: a document filed here leaves
+    /// the Timeline and the library's other lists. Every other folder is
+    /// just a place — its documents stay visible everywhere.
+    static let archivedFolderName = "Archived"
+
+    /// Where documents are filed: id → folder name. Filing is a private
+    /// judgement, persisted like read state — the files themselves never
+    /// move, the community folder being shared.
+    private(set) var filedFolders: [String: String] =
+        UserDefaults.standard.dictionary(forKey: "filedFolders") as? [String: String] ?? [:]
+
+    /// The folders offered for filing, user-extendable through New…;
+    /// Archived stays last.
+    private(set) var filingFolders: [String] =
+        UserDefaults.standard.stringArray(forKey: "filingFolders")
+            ?? ["Work", "Personal", "Archived"]
+
+    func folder(for doc: LiquidDoc) -> String? {
+        filedFolders[doc.id]
+    }
+
+    func isArchived(_ doc: LiquidDoc) -> Bool {
+        filedFolders[doc.id] == Self.archivedFolderName
+    }
+
+    func fileDocument(_ doc: LiquidDoc, under folder: String) {
+        filedFolders[doc.id] = folder
+        persistFiling()
+    }
+
+    func unfile(_ doc: LiquidDoc) {
+        guard filedFolders.removeValue(forKey: doc.id) != nil else { return }
+        persistFiling()
+    }
+
+    /// A new folder joins just above Archived, which keeps the last word.
+    func addFilingFolder(_ name: String) {
+        guard !filingFolders.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame })
+        else { return }
+        let index = filingFolders.firstIndex(of: Self.archivedFolderName) ?? filingFolders.endIndex
+        filingFolders.insert(name, at: index)
+        UserDefaults.standard.set(filingFolders, forKey: "filingFolders")
+    }
+
+    /// Asks for a new folder's name and files the document there.
+    func fileInNewFolder(_ doc: LiquidDoc) {
+        let alert = NSAlert()
+        alert.messageText = "New Folder"
+        alert.informativeText = "Name the folder to file “\(doc.title)” under."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        alert.accessoryView = field
+        alert.addButton(withTitle: "File")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        addFilingFolder(name)
+        // Filing under the offered spelling, when the name already
+        // existed in another case.
+        let folder = filingFolders.first { $0.caseInsensitiveCompare(name) == .orderedSame } ?? name
+        fileDocument(doc, under: folder)
+    }
+
+    private func persistFiling() {
+        UserDefaults.standard.set(filedFolders, forKey: "filedFolders")
+    }
+
+    // MARK: - Views on show
+
+    /// Sidebar views switched off in Edit Views, by module id. The
+    /// module stays installed — it just leaves the sidebar.
+    private(set) var hiddenViewIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "hiddenViewIDs") ?? [])
+
+    func isViewHidden(_ id: String) -> Bool {
+        hiddenViewIDs.contains(id)
+    }
+
+    func setView(_ id: String, hidden: Bool) {
+        if hidden {
+            hiddenViewIDs.insert(id)
+            // The view being read leaves the sidebar: land somewhere real.
+            if sidebarSelection == .view(id) { sidebarSelection = .timeline }
+        } else {
+            hiddenViewIDs.remove(id)
+        }
+        UserDefaults.standard.set(Array(hiddenViewIDs), forKey: "hiddenViewIDs")
+    }
+
+    /// A section's sidebar places, minus the views switched off.
+    func shownPlaces(of places: [SidebarPlace]) -> [SidebarPlace] {
+        places.filter { place in
+            if case .view(let id) = place.item { return !isViewHidden(id) }
+            return true
+        }
+    }
+
+    /// One-time migration: the old archived id sets become filings
+    /// under Archived.
+    private func migrateArchivedIDs() {
+        let defaults = UserDefaults.standard
+        var changed = false
+        for key in ["archivedLetterIDs", "archivedNoteIDs"] {
+            guard let ids = defaults.stringArray(forKey: key) else { continue }
+            for id in ids where filedFolders[id] == nil {
+                filedFolders[id] = Self.archivedFolderName
+                changed = true
+            }
+            defaults.removeObject(forKey: key)
+        }
+        if changed { persistFiling() }
+    }
+
+    /// Received ▸ Inbox: everything from someone else — the unread
+    /// first, then only the twenty most recently read; older read
+    /// documents fall away here (Dialog's timeline keeps them all).
+    /// The bots' InBox scope reads the same list.
+    var inboxEntries: [IndexEntry] {
+        let others = filteredEntries.filter { !authorIdentity.matches(author: $0.doc.author) }
+        let unread = others.filter { isUnread($0.doc) }
+        let read = others.filter { !isUnread($0.doc) }.prefix(20)
+        return unread + read
+    }
+
+    /// Bold on the sidebar's Inbox while anything unread waits.
+    var hasUnreadInbox: Bool {
+        inboxEntries.contains { isUnread($0.doc) }
+    }
+
+    /// Everything addressed for the user's attention, read or not.
+    var attentionEntries: [IndexEntry] {
+        filteredEntries.filter { entry in
+            entry.doc.attention.contains { authorIdentity.matches(author: $0) }
+        }
+    }
+
 
     // MARK: - Parallel reading (transpointing windows)
 
@@ -139,6 +361,20 @@ final class AppModel {
     func follow(to target: String, fragment: String?, rel: String?, span: String? = nil) {
         if let entry = resolve(target: target, rel: rel) {
             open(entry.doc, fragment: fragment, span: span)
+            return
+        }
+        // The community folder is authoritative, but a source can live on
+        // the user's own shelves — an extract lifted from a transcript
+        // still in Drafts or Published. A published copy reads like any
+        // document; a draft opens in its editor.
+        if let published = drafts.published.first(where: { $0.id == target }) {
+            sidebarSelection = .published
+            open(published, fragment: fragment, span: span)
+            return
+        }
+        if let draft = drafts.documents.first(where: { $0.id == target }) {
+            sidebarSelection = .drafts
+            editDraft(draft)
             return
         }
         // A person address ("f.hegla") opens that author's page.
@@ -228,22 +464,14 @@ final class AppModel {
     /// yields author and creation time, which determine the address.
     private nonisolated static func scanReaderLibrary(at url: URL) -> [String: URL] {
         var result: [String: URL] = [:]
-        let keyPattern = "\\((.+?)-(\\d{4}-\\d{2}-\\d{2}T\\d{2}_\\d{2}_\\d{2}Z)\\)"
-        guard let regex = try? NSRegularExpression(pattern: keyPattern),
-              let enumerator = FileManager.default.enumerator(
-                  at: url, includingPropertiesForKeys: nil,
-                  options: [.skipsHiddenFiles, .skipsPackageDescendants]
-              ) else { return result }
+        guard let enumerator = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return result }
         for case let fileURL as URL in enumerator where fileURL.pathExtension.lowercased() == "pdf" {
             let name = fileURL.deletingPathExtension().lastPathComponent
-            guard let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
-                  let slugRange = Range(match.range(at: 1), in: name),
-                  let stampRange = Range(match.range(at: 2), in: name),
-                  let created = LiquidDoc.parseISO8601(
-                      name[stampRange].replacingOccurrences(of: "_", with: ":"))
-            else { continue }
-            let author = name[slugRange].replacingOccurrences(of: "-", with: " ")
-            result[LiquidAddress.makeID(author: author, created: created)] = fileURL
+            guard let id = LiquidDoc.identityKeyID(inFileName: name) else { continue }
+            result[id] = fileURL
         }
         return result
     }
@@ -273,14 +501,39 @@ final class AppModel {
         open(doc, fragment: fragment)
     }
 
+    /// The place the Locations view should scroll to and mark — set by
+    /// a document footer's Location menu, cleared when the view closes.
+    var highlightedLocation: String?
+
+    /// Opens the Locations view on the named place.
+    func openLocations(highlighting place: String) {
+        highlightedLocation = place
+        sidebarSelection = .view("location")
+    }
+
+    /// The document the Timeline should scroll to — set by a document
+    /// footer's Timeline menu, consumed by the scroll.
+    var timelineRevealID: String?
+
+    /// Opens the Timeline scrolled to (and reading) this document.
+    func openTimeline(revealing doc: LiquidDoc) {
+        timelineRevealID = doc.id
+        sidebarSelection = .timeline
+        if index.byID[doc.id] != nil, current?.doc.id != doc.id {
+            open(doc)
+        }
+    }
+
     func goBack() {
         guard canGoBack else { return }
         historyPosition -= 1
+        commitPendingRead(except: current?.doc)
     }
 
     func goForward() {
         guard canGoForward else { return }
         historyPosition += 1
+        commitPendingRead(except: current?.doc)
     }
 
     // MARK: - External URLs and files
@@ -336,6 +589,7 @@ final class AppModel {
             saveBookmark(for: url)
         }
         index.setFolder(url)
+        shareContacts(into: url)
     }
 
     func chooseFolder() {
@@ -351,14 +605,36 @@ final class AppModel {
         _ = url.startAccessingSecurityScopedResource()
         securityScopedFolder = url
         index.setFolder(url)
+        shareContacts(into: url)
     }
 
+    // Write access matters: the folder carries the community's contact
+    // information (People.json) and the bots' documents, both written by
+    // this app.
     private func saveBookmark(for url: URL) {
         guard let data = try? url.bookmarkData(
-            options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+            options: [.withSecurityScope],
             includingResourceValuesForKeys: nil, relativeTo: nil
         ) else { return }
         UserDefaults.standard.set(data, forKey: Self.bookmarkKey)
+    }
+
+    /// Puts the contact directory into the community folder, where the
+    /// phone and the headset find it. The user's own record is added
+    /// first if the directory does not hold one yet — their name is the
+    /// one iOS most needs to offer.
+    private func shareContacts(into folder: URL) {
+        if people.person(named: authorName) == nil {
+            var me = Person(displayName: authorName)
+            let identity = authorIdentity
+            me.orcid = identity.orcid
+            me.affiliation = identity.affiliation
+            people.upsert(me)
+        }
+        people.attach(folder: folder)
+        if people.communityWriteFailed {
+            showNote("Contact information could not be written to the community folder — choose the folder again (File ▸ Choose Folder…) to renew write access.")
+        }
     }
 
     // MARK: - List filtering and sorting
@@ -369,13 +645,21 @@ final class AppModel {
         case .byTitle:
             entries.sort { $0.doc.title.localizedCaseInsensitiveCompare($1.doc.title) == .orderedAscending }
         case .byDate:
-            entries.sort { $0.doc.listedDate < $1.doc.listedDate }
+            entries.sort { $0.doc.listedDate > $1.doc.listedDate }
         }
         return entries
     }
 
+    /// Dialog ▸ Timeline: every letter to and from the user — the
+    /// community's letters plus the user's own published copies —
+    /// month by month, the newest on top.
     var timelineGroups: [(label: String, entries: [IndexEntry])] {
-        let entries = visibleEntries.sorted { $0.doc.listedDate < $1.doc.listedDate }
+        var letters = visibleEntries.filter { LettersListView.isLetter($0.doc) }
+        let seen = Set(letters.map(\.doc.id))
+        letters += drafts.published
+            .filter { LettersListView.isLetter($0) && !seen.contains($0.id) && !isArchived($0) }
+            .map { IndexEntry(doc: $0) }
+        let entries = letters.sorted { $0.doc.listedDate > $1.doc.listedDate }
         var groups: [(label: String, entries: [IndexEntry])] = []
         for entry in entries {
             let label = entry.doc.date?.monthYearText
@@ -392,6 +676,10 @@ final class AppModel {
     private var visibleEntries: [IndexEntry] {
         var entries = Array(index.byID.values)
         entries.removeAll { isMuted($0.doc.author) }
+        // Documents filed under Archived live in the Filed list alone;
+        // Everything and the timeline let them go. Any other folder is
+        // just a place — its documents stay.
+        entries.removeAll { isArchived($0.doc) }
         if !showSuperseded {
             let superseded = index.supersededIDs
             entries.removeAll { superseded.contains($0.id) }
@@ -413,6 +701,88 @@ final class AppModel {
 
     let drafts = DraftStore()
     let people = PersonDirectory()
+    /// What the library has taught the on-device model about each person,
+    /// revised as their letters arrive. See PersonProfiles.swift.
+    let profiles = PersonProfileStore()
+    /// Every place the library's notes, letters, and transcripts have
+    /// carried — kept even after the documents leave. See LocationView.swift.
+    let locations = LocationRecord()
+
+    /// The hook for views: a person's known personality, built on this
+    /// Mac from their letters, or nil while there is nothing yet. Any
+    /// view coloring people by character reads it from here.
+    func personality(for name: String) -> String? {
+        profiles.personality(for: name)
+    }
+
+    /// The continual pass: folds documents the profiles haven't seen into
+    /// their authors' profiles. Called whenever the library index changes;
+    /// costs nothing when there is nothing new.
+    func digestAuthorProfiles() {
+        profiles.digest(entries: Array(index.byID.values))
+    }
+
+    /// The bots' continual pass: every library change first refreshes the
+    /// shelf from the folder's bot documents, then lets each bot judge
+    /// the documents it has not yet seen. Superseded revisions, shelved
+    /// letters, and the bot documents themselves are left alone. See
+    /// BotsView.swift and BotDocument in LiquidDocWriting.swift.
+    func digestBots() {
+        bots.sync(entries: index.timeline, folder: index.folderURL)
+        let superseded = index.supersededIDs
+        let docs = index.byID.values.map(\.doc)
+            .filter { !superseded.contains($0.id) && !isArchived($0)
+                && $0.documentType != BotDocument.documentType }
+        bots.digestAll(documents: docs)
+    }
+
+    /// The places pass: folds the locations of notes (desk and folder),
+    /// letters, and transcripts into the permanent record of where the
+    /// library has been. Called whenever the library index changes.
+    func recordLocations() {
+        let noteType = LiquidDoc.DocumentType.note.rawValue
+        var docs = drafts.documents.filter { $0.documentType == noteType }
+        docs += index.byID.values.map(\.doc).filter {
+            $0.documentType == noteType
+                || LettersListView.isLetter($0)
+                || TranscriptsView.isTranscript($0)
+        }
+        locations.record(docs: docs)
+    }
+    let portraits = PersonPortraitStore()
+    /// Bots: famous people, living or dead, standing in the library as
+    /// readers. See BotsView.swift.
+    let bots = BotStore()
+    /// The letter post: published letters travel by Apple Mail, arriving
+    /// ones are filed into the community folder. See LetterPost.swift.
+    let letterPost = LetterPostStore()
+
+    init() {
+        letterPost.attach(self)
+        migrateArchivedIDs()
+        placeFinder.onPlace = { [weak self] place in
+            self?.currentPlace = place
+        }
+        refreshPlace()
+    }
+
+    /// The place this Mac last resolved — stamped onto a letter at
+    /// publication when Settings ▸ Dialog shares it. See PlaceFinder
+    /// in LocationView.swift.
+    private(set) var currentPlace: String?
+    private let placeFinder = PlaceFinder()
+
+    /// Settings ▸ Dialog ▸ Share General Location: on unless turned off.
+    var sharesGeneralLocation: Bool {
+        UserDefaults.standard.object(forKey: AppSettings.shareGeneralLocationKey) as? Bool ?? true
+    }
+
+    /// Asks for a fresh place, so the next publication carries it.
+    /// Never runs while sharing is off.
+    func refreshPlace() {
+        guard sharesGeneralLocation else { return }
+        placeFinder.begin()
+    }
     var draftEditor: DraftEditor?
     var selectedDraftID: String?
     var selectedArchivedID: String?
@@ -461,15 +831,115 @@ final class AppModel {
     }
 
     func newDraft() {
+        // Words selected in the document being read travel into the new
+        // document — captured before focus moves away. Selected in a
+        // transcript, they are lifted as an extract on the speaker's
+        // behalf; selected anywhere else they start a reply, the reader
+        // choosing its kind; with nothing selected there is nothing to
+        // ask — a new document is a Letter, the core kind.
+        let selection = readingSelection()
         saveDraftIfNeeded()
+        if let selection, let speaker = selection.speaker, let paragraph = selection.paragraph {
+            liftExtract(statement: selection.text, speaker: speaker,
+                        paragraph: paragraph, from: selection.doc)
+            return
+        }
+        if let selection {
+            guard let relation = askReplyKind(about: selection.doc) else { return }
+            startDiscourse(relation, about: selection.doc)
+            // The selected words arrive as a citation (§4).
+            draftEditor?.bodyText =
+                ContextActionBuilder.quote(selection.text, from: selection.doc) + "\n\n"
+            return
+        }
         do {
-            let doc = try drafts.create(author: authorName)
+            let doc = try drafts.create(author: authorName,
+                                        documentType: LiquidDoc.DocumentType.letter.rawValue)
             sidebarSelection = .drafts
             editDraft(doc)
         } catch {
             NSSound.beep()
             showNote("Could not create document: \(error.localizedDescription)")
         }
+    }
+
+    /// A new book: the long form begins like any draft, declared a book
+    /// from birth so it lives under Books.
+    func newBook() {
+        saveDraftIfNeeded()
+        do {
+            let doc = try drafts.create(author: authorName,
+                                        documentType: LiquidDoc.DocumentType.book.rawValue)
+            sidebarSelection = .bookDrafts
+            editDraft(doc)
+        } catch {
+            NSSound.beep()
+            showNote("Could not create book: \(error.localizedDescription)")
+        }
+    }
+
+    /// A new note on the desk: no questions asked, straight into the
+    /// editor. Notes made elsewhere (voice capture and other producers)
+    /// arrive through the folder instead.
+    func newNote() {
+        saveDraftIfNeeded()
+        do {
+            let doc = try drafts.create(author: authorName,
+                                        documentType: LiquidDoc.DocumentType.note.rawValue)
+            sidebarSelection = .notes
+            selectedNoteID = doc.id
+            editDraft(doc)
+        } catch {
+            NSSound.beep()
+            showNote("Could not create note: \(error.localizedDescription)")
+        }
+    }
+
+    /// The reply pop-up, shown only when words were selected: the new
+    /// document answers the one being read — in which manner? Nil means
+    /// the author thought better of it.
+    private func askReplyKind(about doc: LiquidDoc) -> DocumentRelation? {
+        let alert = NSAlert()
+        alert.messageText = "New Reply"
+        alert.informativeText = "The selected words travel into a reply to “\(doc.title)”. What kind of reply?"
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for relation in DocumentRelation.discourseActions {
+            popup.addItem(withTitle: relation.actionTitle ?? relation.rawValue)
+        }
+        popup.sizeToFit()
+        alert.accessoryView = popup
+        alert.window.initialFirstResponder = popup
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return DocumentRelation.discourseActions[popup.indexOfSelectedItem]
+    }
+
+    /// The live selection in the focused reader text view, with the
+    /// paragraph it sits in and — in a transcript — whose words these are:
+    /// the paragraph's own speaker, or the nearest attributed statement
+    /// above. Nil when nothing is selected or the focus is not on read
+    /// text, so plain ⌘N stays an empty document.
+    private func readingSelection() -> (text: String, doc: LiquidDoc,
+                                        paragraph: LiquidDoc.Paragraph?,
+                                        speaker: String?)? {
+        guard let textView = NSApp.keyWindow?.firstResponder
+                as? ReaderTextView.ReaderNSTextView,
+              let doc = textView.doc else { return nil }
+        let range = textView.selectedRange()
+        guard range.length > 0 else { return nil }
+        let text = (textView.string as NSString).substring(with: range)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        var speaker: String?
+        if let paragraph = textView.paragraph {
+            speaker = paragraph.speaker
+            if speaker == nil, let body = doc.body,
+               let index = body.firstIndex(where: { $0.id == paragraph.id }) {
+                speaker = body[..<index].reversed().compactMap(\.speaker).first
+            }
+        }
+        return (text, doc, textView.paragraph, speaker)
     }
 
     func editDraft(_ doc: LiquidDoc) {
@@ -498,6 +968,31 @@ final class AppModel {
         }
     }
 
+    /// ⌘W while writing: the just-opened editor closes instead of the
+    /// window. An untouched empty document is deleted — nothing worth
+    /// keeping is lost; anything with words is saved and stays in
+    /// Drafts. The view goes back one, to wherever the writer stood
+    /// before the document opened.
+    func closeEditor() {
+        guard let draftEditor else { return }
+        let doc = draftEditor.buildDocument()
+        let bodyIsEmpty = (doc.body ?? []).allSatisfy {
+            $0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let titleUnset = doc.title.trimmingCharacters(in: .whitespaces).isEmpty
+            || doc.title == "Untitled"
+        if bodyIsEmpty && titleUnset && doc.attention.isEmpty {
+            deleteDraft(draftEditor.original)
+        } else {
+            saveDraftIfNeeded()
+            self.draftEditor = nil
+            selectedDraftID = nil
+        }
+        if let previousSidebarSelection, previousSidebarSelection != sidebarSelection {
+            sidebarSelection = previousSidebarSelection
+        }
+    }
+
     func deleteDraft(_ doc: LiquidDoc) {
         drafts.delete(doc)
         if draftEditor?.docID == doc.id {
@@ -506,11 +1001,40 @@ final class AppModel {
         }
     }
 
-    /// Exports the open editor's live contents (saving first).
+    /// Deletes a note wherever it lives: the file — a desk note's or a
+    /// community-folder note's — goes to the Trash, recoverable there.
+    func deleteNote(_ doc: LiquidDoc) {
+        if drafts.documents.contains(where: { $0.id == doc.id }) {
+            deleteDraft(doc)
+            return
+        }
+        do {
+            try FileManager.default.trashItem(at: doc.fileURL, resultingItemURL: nil)
+            index.rescan()
+        } catch {
+            NSSound.beep()
+            showNote("Could not delete “\(doc.title)”: \(error.localizedDescription)")
+        }
+    }
+
+    /// Deletes a published copy: its file goes to the Trash. Copies the
+    /// letter post already delivered stay with their recipients.
+    func deletePublished(_ doc: LiquidDoc) {
+        drafts.trashPublished(doc)
+    }
+
+    /// Exports the open editor's live contents (saving first). ⌘⇧E
+    /// does the right thing for the kind: a book exports as an Origami
+    /// Text EPUB; everything else exports as .origamitext.
     func exportDraft() {
         guard let draftEditor else { return }
         saveDraftIfNeeded()
-        exportDocument(draftEditor.buildDocument())
+        let doc = draftEditor.buildDocument()
+        if doc.documentType == LiquidDoc.DocumentType.book.rawValue {
+            exportEPUB(doc)
+        } else {
+            exportDocument(doc)
+        }
     }
 
     func export(draft doc: LiquidDoc) {
@@ -521,7 +1045,54 @@ final class AppModel {
         }
     }
 
+    /// Exports the document as an Origami Text EPUB — the format's
+    /// EPUB 3 profile: one semantic HTML file, Visual-Meta in the
+    /// package and on the page. See OrigamiEPUB.swift.
+    func exportEPUB(_ doc: LiquidDoc) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.epub]
+        // The name carries the whole identity — full title, author, and
+        // moment — so it stays unique and, unrenamed, the address
+        // derives from it, exactly like the ecosystem's PDFs.
+        panel.nameFieldStringValue = doc.identityFileName(extension: "epub")
+        panel.canCreateDirectories = true
+        panel.message = "Export this document as an Origami Text EPUB — readable in any EPUB reader, its Visual-Meta carried within."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try OrigamiEPUBExporter.write(
+                doc: doc,
+                resolve: { [index] id in index.byID[LiquidAddress.canonical(id)]?.doc },
+                to: url)
+            // Exporting a draft as an EPUB publishes it, exactly as the
+            // .origamitext export does: the draft retires, and the
+            // published .origamitext copy (appendix and all) becomes
+            // the read-only record. Books never enter the letter post —
+            // they travel as EPUBs, by hand.
+            if drafts.documents.contains(where: { $0.id == doc.id }) {
+                let record = VisualMeta.appendingAppendix(to: doc, identity: authorIdentity)
+                try drafts.markPublished(draftID: doc.id, publishedDoc: record)
+                if draftEditor?.docID == doc.id {
+                    draftEditor = nil
+                    selectedDraftID = nil
+                }
+                if doc.documentType == LiquidDoc.DocumentType.book.rawValue {
+                    sidebarSelection = .booksPublished
+                }
+                if let published = drafts.published.first(where: { $0.id == doc.id }) {
+                    open(published)
+                }
+                showNote("Published “\(doc.title)” as an EPUB")
+            } else {
+                showNote("Exported “\(url.lastPathComponent)”")
+            }
+        } catch {
+            NSSound.beep()
+            showNote("EPUB export failed: \(error.localizedDescription)")
+        }
+    }
+
     func exportDocument(_ doc: LiquidDoc) {
+        refreshPlace()   // so the next publication has a fresh place
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType("info.futuretextlab.origami-doc") ?? .json]
         panel.nameFieldStringValue = doc.suggestedExportFileName
@@ -596,6 +1167,13 @@ final class AppModel {
             doc.onBehalfOf = nil
         }
         doc.documentType = typeControl.selectedSegment > 0 ? typeTokens[typeControl.selectedSegment - 1] : nil
+        // A letter carries the place it was written when the author
+        // shares it (Settings ▸ Dialog ▸ Share General Location) — a
+        // place name, never coordinates, per the format.
+        if doc.documentType == LiquidDoc.DocumentType.letter.rawValue,
+           doc.location == nil, sharesGeneralLocation {
+            doc.location = currentPlace
+        }
         do {
             // Shared copies carry their metadata on the page, as an appendix.
             let exportDoc = VisualMeta.appendingAppendix(to: doc, identity: authorIdentity)
@@ -613,6 +1191,8 @@ final class AppModel {
                     open(publishedDoc)
                 }
                 showNote("Published “\(doc.title)”")
+                // Publishing is what puts a letter in the post.
+                letterPost.notePublished(exportDoc)
             } else {
                 showNote("Exported “\(url.lastPathComponent)”")
             }
@@ -775,7 +1355,7 @@ final class AppModel {
         panel.canChooseDirectories = true   // .liquid packages show as folders if Author's type isn't registered
         panel.allowsMultipleSelection = false
         panel.treatsFilePackagesAsDirectories = false
-        panel.message = "Choose an Author document (.liquid), a Markdown file (.md), a Word document (.docx), a PDF with a text layer, or a meeting transcript (.txt or .rtf, speaker names before statements) to import."
+        panel.message = "Choose an Author document (.liquid), an Origami Text EPUB (.epub), a Markdown file (.md), a Word document (.docx), a PDF with a text layer, or a meeting transcript (.txt or .rtf, speaker names before statements) to import."
         panel.prompt = "Import"
         // Room to browse. The panel is user-resizable on its own — touching
         // its style mask breaks the sandboxed panel's dragging — and macOS
@@ -793,6 +1373,12 @@ final class AppModel {
             let body: [LiquidDoc.Paragraph]
             var date: LiquidDate?
             var documentType: String?
+            var concepts: [LiquidDoc.Concept] = []
+            var layouts: [LiquidDoc.Layout] = []
+            var mapConnections: [LiquidDoc.MapConnection] = []
+            var references: [LiquidDoc.Reference] = []
+            var importedLinks: [LiquidDoc.Link] = []
+            var preservedID: String?
             switch url.pathExtension.lowercased() {
             case "md", "markdown", "txt":
                 // A file that reads as a meeting transcript (speaker names
@@ -836,6 +1422,29 @@ final class AppModel {
                 title = result.title
                 author = result.author ?? authorName
                 body = result.body
+            case "epub":
+                // An Origami Text EPUB comes back whole: the body with
+                // its stable paragraph ids, and the Visual-Meta layer —
+                // concepts, citations (links and references), views,
+                // connections. It returns as a book, like its source.
+                let result = try OrigamiEPUBImporter.importDocument(at: url)
+                title = result.title
+                author = result.author ?? authorName
+                body = result.body
+                importedLinks = result.links
+                concepts = result.concepts
+                layouts = result.layouts
+                mapConnections = result.mapConnections
+                references = result.references
+                date = result.date.flatMap(LiquidDate.init(isoString:))
+                documentType = LiquidDoc.DocumentType.book.rawValue
+                // The EPUB names its origami address: the book keeps
+                // its identity here, so citations to it resolve. A
+                // stripped EPUB still yields it from the file name's
+                // identity key, PDF-style.
+                preservedID = result.origamiID
+                    ?? LiquidDoc.identityKeyID(
+                        inFileName: url.deletingPathExtension().lastPathComponent)
             case "pdf":
                 // Born-digital PDFs come across as paragraphs; a PDF
                 // carrying Visual-Meta supplies its own title, author,
@@ -850,11 +1459,33 @@ final class AppModel {
                 title = result.title
                 author = result.author ?? authorName
                 body = result.body
+                // The knowledge layer arrives with the words: glossary
+                // as concepts, the Map's arrangements as layouts, the
+                // citation store as BibTeX references.
+                concepts = result.concepts
+                layouts = result.layouts
+                mapConnections = result.mapConnections
+                references = result.references
+                // An Author document is the long form: it arrives as a
+                // book, drafts under Books, and publishes as an EPUB.
+                documentType = LiquidDoc.DocumentType.book.rawValue
             }
             let created = Date.now
-            let id = LiquidAddress.makeID(author: author, created: created) { candidate in
-                self.index.byID[candidate] != nil
-                    || self.drafts.documents.contains { $0.id == candidate }
+            // An arriving document that names its own address keeps it,
+            // unless something here already answers to it — then this
+            // import is a copy and mints a fresh identity.
+            let id: String
+            if let preservedID = preservedID.map(LiquidAddress.canonical),
+               LiquidAddress.isValid(preservedID),
+               index.byID[preservedID] == nil,
+               !drafts.documents.contains(where: { $0.id == preservedID }),
+               !drafts.published.contains(where: { $0.id == preservedID }) {
+                id = preservedID
+            } else {
+                id = LiquidAddress.makeID(author: author, created: created) { candidate in
+                    self.index.byID[candidate] != nil
+                        || self.drafts.documents.contains { $0.id == candidate }
+                }
             }
             let doc = LiquidDoc(format: LiquidDoc.knownFormat,
                                 id: id,
@@ -862,13 +1493,25 @@ final class AppModel {
                                 author: author,
                                 created: created,
                                 body: body,
-                                links: [],
+                                links: importedLinks,
                                 wraps: nil,
                                 date: date,
                                 documentType: documentType,
+                                concepts: concepts,
+                                layouts: layouts,
+                                mapConnections: mapConnections,
+                                references: references,
                                 fileURL: drafts.fileURL(for: id))
             try drafts.save(doc)
-            sidebarSelection = .drafts
+            // The draft opens where its kind lives on the sidebar.
+            switch documentType {
+            case LiquidDoc.DocumentType.book.rawValue:
+                sidebarSelection = .bookDrafts
+            case LiquidDoc.DocumentType.transcript.rawValue:
+                sidebarSelection = .transcriptDrafts
+            default:
+                sidebarSelection = .drafts
+            }
             editDraft(doc)
             let speakerNames = Set(body.compactMap(\.speaker))
             if speakerNames.isEmpty {
@@ -891,7 +1534,15 @@ final class AppModel {
     /// as a removable chip in the editor.
     func liftStatement(_ paragraph: LiquidDoc.Paragraph, from source: LiquidDoc) {
         guard let speaker = paragraph.speaker else { return }
-        let statement = paragraph.displayText
+        liftExtract(statement: paragraph.displayText, speaker: speaker,
+                    paragraph: paragraph, from: source)
+    }
+
+    /// The lift itself, for a whole statement or any selected span of one:
+    /// the words become the body of a new extract draft, cited back to
+    /// their paragraph, `onBehalfOf` the speaker.
+    func liftExtract(statement: String, speaker: String,
+                     paragraph: LiquidDoc.Paragraph, from source: LiquidDoc) {
         let author = authorName
         let isOwnWords = speaker.caseInsensitiveCompare(author) == .orderedSame
         let created = Date.now
@@ -966,15 +1617,15 @@ final class AppModel {
             for link in entry.doc.links {
                 guard let target = index.byID[link.to] else { continue }
                 if mine {
-                    credit(target.doc.author)
+                    credit(target.doc.creditedAuthor)
                 } else if authorIdentity.matches(author: target.doc.author) {
-                    credit(entry.doc.author)
+                    credit(entry.doc.creditedAuthor)
                 }
             }
             if mine {
                 entry.doc.attention.forEach(credit)
             } else if entry.doc.attention.contains(where: { authorIdentity.matches(author: $0) }) {
-                credit(entry.doc.author)
+                credit(entry.doc.creditedAuthor)
             }
         }
         var ranked = counts
@@ -1003,14 +1654,40 @@ final class AppModel {
         return mutedAuthors.contains { $0.caseInsensitiveCompare(trimmed) == .orderedSame }
     }
 
+    /// The note now selected in the Notes list.
+    var selectedNoteID: String?
+
+    /// Notes, newest first: the desk's own quick documents plus any notes
+    /// that arrived through the community folder — voice capture and
+    /// other producers write notes too.
+    var filteredNotes: [LiquidDoc] {
+        let noteType = LiquidDoc.DocumentType.note.rawValue
+        var seen: Set<String> = []
+        var notes: [LiquidDoc] = []
+        for doc in drafts.documents where doc.documentType == noteType {
+            if seen.insert(doc.id).inserted { notes.append(doc) }
+        }
+        for entry in index.timeline where entry.doc.documentType == noteType {
+            if seen.insert(entry.doc.id).inserted { notes.append(entry.doc) }
+        }
+        let sorted = notes.sorted { $0.listedDate > $1.listedDate }
+        guard !searchText.isEmpty else { return sorted }
+        return sorted.filter { matches($0) }
+    }
+
     var filteredDrafts: [LiquidDoc] {
-        let all = drafts.documents
+        // Notes keep their own place in the sidebar.
+        let all = drafts.documents.filter {
+            $0.documentType != LiquidDoc.DocumentType.note.rawValue
+        }
         guard !searchText.isEmpty else { return all }
         return all.filter { matches($0) }
     }
 
     var filteredPublished: [LiquidDoc] {
-        let all = drafts.published
+        // A shelved published letter shows in the Library's Archived
+        // list alone, like every archived document.
+        let all = drafts.published.filter { !isArchived($0) }
         guard !searchText.isEmpty else { return all }
         return all.filter { matches($0) }
     }
@@ -1078,6 +1755,168 @@ final class AppModel {
         }
     }
 
+    /// Declares a document a transcript and processes it as one: every
+    /// paragraph opening "Name: …" gains its structural speaker, and
+    /// the declared type — on the page and in the Visual-Meta appendix
+    /// both — becomes transcript, so lifting, speaker attribution, and
+    /// Summary & Notes all apply. The correction is written into the
+    /// document itself, like the type corrections the reader already
+    /// makes; everything else the document carries rides through.
+    func processTranscript(_ doc: LiquidDoc) {
+        let transcript = LiquidDoc.DocumentType.transcript.rawValue
+        let appendix = doc.visualMetaParagraphIDs
+        // Attribution follows the importer's principle: a name earns
+        // its statements by recurring — real conversation alternates —
+        // or by already being someone the community knows. A colon
+        // after a few words of prose ("The problem is this: …") does
+        // not make a speaker.
+        var nameCounts: [String: Int] = [:]
+        for paragraph in doc.body ?? []
+        where paragraph.heading == nil && !appendix.contains(paragraph.id) {
+            if let name = TranscriptImporter.speakerName(inStatement: paragraph.text) {
+                nameCounts[name, default: 0] += 1
+            }
+        }
+        let existingSpeakers = Set((doc.body ?? []).compactMap(\.speaker))
+        func qualifies(_ name: String) -> Bool {
+            (nameCounts[name] ?? 0) >= 2
+                || existingSpeakers.contains(name)
+                || people.person(named: name) != nil
+        }
+        var attributed = 0
+        let body: [LiquidDoc.Paragraph]? = doc.body.map { body in
+            body.map { paragraph in
+                var text = paragraph.text
+                if let oldType = doc.documentType, oldType != transcript,
+                   text.contains("document-type = {\(oldType)}") {
+                    text = text.replacingOccurrences(of: "document-type = {\(oldType)}",
+                                                     with: "document-type = {\(transcript)}")
+                }
+                var speaker = paragraph.speaker
+                if speaker == nil, paragraph.heading == nil, !appendix.contains(paragraph.id),
+                   let name = TranscriptImporter.speakerName(inStatement: text),
+                   qualifies(name) {
+                    speaker = name
+                    attributed += 1
+                }
+                return LiquidDoc.Paragraph(id: paragraph.id, heading: paragraph.heading,
+                                           text: text, speaker: speaker)
+            }
+        }
+        let updated = LiquidDoc(format: doc.format, id: doc.id, title: doc.title,
+                                author: doc.author, created: doc.created,
+                                body: body, links: doc.links, wraps: doc.wraps,
+                                attention: doc.attention, date: doc.date,
+                                aiOnBehalf: doc.aiOnBehalf, onBehalfOf: doc.onBehalfOf,
+                                documentType: transcript,
+                                location: doc.location,
+                                concepts: doc.concepts,
+                                layouts: doc.layouts,
+                                mapConnections: doc.mapConnections,
+                                references: doc.references,
+                                fileURL: doc.fileURL)
+        do {
+            try updated.jsonData().write(to: doc.fileURL, options: .atomic)
+            if drafts.documents.contains(where: { $0.id == doc.id })
+                || drafts.published.contains(where: { $0.id == doc.id })
+                || drafts.archived.contains(where: { $0.id == doc.id }) {
+                drafts.reload()
+            } else {
+                index.rescan()
+            }
+            refreshCurrent(with: updated)
+            showNote(attributed > 0
+                     ? "Processed “\(doc.title)” as a transcript — \(attributed) \(attributed == 1 ? "statement" : "statements") attributed"
+                     : "“\(doc.title)” is now a transcript")
+        } catch {
+            NSSound.beep()
+            showNote("Could not process the transcript: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Transcript summaries
+
+    /// Every document that `summarizes` this transcript — in the
+    /// library or on the desk.
+    private func summaryDocuments(for transcript: LiquidDoc) -> [LiquidDoc] {
+        (index.byID.values.map(\.doc) + drafts.documents).filter { doc in
+            doc.links.contains {
+                $0.rel == DocumentRelation.summarizes.rawValue
+                    && LiquidAddress.canonical($0.to) == transcript.id
+            }
+        }
+    }
+
+    /// The transcript's summary document, when one exists: the newest
+    /// document that `summarizes` it.
+    func transcriptSummaryDocument(for transcript: LiquidDoc) -> LiquidDoc? {
+        summaryDocuments(for: transcript).max { $0.created < $1.created }
+    }
+
+    /// Writes a summary beside its transcript as an ordinary linked
+    /// document: into the community folder (Visual-Meta appendix and
+    /// all) for a library transcript, or onto the desk as a draft for
+    /// a transcript still being prepared — publishable and shareable
+    /// like anything else. Redoing replaces: this author's earlier
+    /// summaries of the same transcript go to the Trash.
+    @discardableResult
+    func saveTranscriptSummary(_ summary: TranscriptSummary,
+                               for transcript: LiquidDoc) -> LiquidDoc? {
+        let author = authorName
+        guard !author.isEmpty else {
+            showNote("Set your name in Settings → Author first — the summary carries it.")
+            return nil
+        }
+        let id = LiquidAddress.makeID(author: author, created: summary.generated) { candidate in
+            self.index.byID[candidate] != nil
+                || self.drafts.documents.contains { $0.id == candidate }
+        }
+        let inLibrary = index.byID[transcript.id] != nil
+        let fileURL = inLibrary
+            ? transcript.fileURL.deletingLastPathComponent()
+                .appendingPathComponent(id)
+                .appendingPathExtension(LiquidDoc.fileExtension)
+            : drafts.fileURL(for: id)
+        var doc = summary.makeDocument(for: transcript, author: author,
+                                       id: id, fileURL: fileURL)
+        if inLibrary {
+            // Shared copies carry their metadata on the page.
+            doc = VisualMeta.appendingAppendix(to: doc, identity: authorIdentity)
+        }
+        let superseded = summaryDocuments(for: transcript)
+            .filter { authorIdentity.matches(author: $0.author) }
+        do {
+            try doc.jsonData().write(to: fileURL, options: .atomic)
+            for old in superseded where old.id != id {
+                try? FileManager.default.trashItem(at: old.fileURL, resultingItemURL: nil)
+            }
+            if inLibrary {
+                index.rescan()
+            } else {
+                drafts.reload()
+            }
+            showNote(inLibrary
+                     ? "Saved “\(doc.title)” into the library, linked to the transcript"
+                     : "Saved “\(doc.title)” to Drafts, linked to the transcript")
+            return doc
+        } catch {
+            NSSound.beep()
+            showNote("Could not save the summary: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Removes a summary document: its file goes to the Trash,
+    /// recoverable there like every other deletion.
+    func removeTranscriptSummary(_ doc: LiquidDoc) {
+        try? FileManager.default.trashItem(at: doc.fileURL, resultingItemURL: nil)
+        if drafts.documents.contains(where: { $0.id == doc.id }) {
+            drafts.reload()
+        } else {
+            index.rescan()
+        }
+    }
+
     /// Replaces the reader's current document in place (same id), so a
     /// correction shows immediately without a navigation step.
     private func refreshCurrent(with doc: LiquidDoc) {
@@ -1129,12 +1968,16 @@ final class AppModel {
                           copyBody: false)
     }
 
-    /// Resolves a title from anywhere the document might live: the
-    /// community index, the published shelf, or drafts.
+    /// Resolves a document from anywhere it might live: the community
+    /// index, the published shelf, or drafts.
+    func document(for id: String) -> LiquidDoc? {
+        index.byID[id]?.doc
+            ?? drafts.published.first(where: { $0.id == id })
+            ?? drafts.documents.first(where: { $0.id == id })
+    }
+
     func title(for id: String) -> String? {
-        index.byID[id]?.doc.title
-            ?? drafts.published.first(where: { $0.id == id })?.title
-            ?? drafts.documents.first(where: { $0.id == id })?.title
+        document(for: id)?.title
     }
 
     /// Starts a fresh, unlinked document from this content.
@@ -1217,10 +2060,77 @@ final class AppModel {
 
     var authorSummaries: [AuthorSummary] {
         var summaries = LibraryInsights.authors(byID: index.byID)
+        // Names answering to the same contact record read as one author:
+        // a merged record's aliases fold its other spellings in, letters
+        // and connections combined under the record's display name.
+        var order: [String] = []
+        var groups: [String: (display: String, members: [AuthorSummary])] = [:]
+        for summary in summaries {
+            let person = people.person(named: summary.name)
+            let key = person.map { "person:\($0.localID)" } ?? "name:\(summary.name.lowercased())"
+            if groups[key] == nil {
+                order.append(key)
+                groups[key] = (person?.displayName ?? summary.name, [])
+            }
+            groups[key]?.members.append(summary)
+        }
+        summaries = order.compactMap { key -> AuthorSummary? in
+            guard let group = groups[key] else { return nil }
+            if group.members.count == 1, group.members[0].name == group.display {
+                return group.members[0]
+            }
+            return Self.combinedSummary(group.members, name: group.display)
+        }
+        // Everyone in People is an author: records without documents yet
+        // (File → New Author) follow the document-derived authors, so a
+        // newly added person is visible immediately.
+        let known = Set(summaries.map { $0.name.lowercased() })
+        let recordOnly = people.people
+            .filter { !$0.displayName.isEmpty && !known.contains($0.displayName.lowercased()) }
+            .map { AuthorSummary(name: $0.displayName, entries: [], cites: [], citedBy: []) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        summaries.append(contentsOf: recordOnly)
         if !searchText.isEmpty {
             summaries = summaries.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
         }
         return summaries
+    }
+
+    /// Several spellings of one person, read as a single author: their
+    /// letters interleaved by date, their citation counts summed.
+    private static func combinedSummary(_ members: [AuthorSummary],
+                                        name: String) -> AuthorSummary {
+        let entries = members.flatMap(\.entries).sorted { $0.doc.created < $1.doc.created }
+        func combine(_ lists: [[AuthorLinkCount]]) -> [AuthorLinkCount] {
+            var counts: [String: Int] = [:]
+            for item in lists.flatMap({ $0 }) {
+                counts[item.name, default: 0] += item.count
+            }
+            return counts.map { AuthorLinkCount(name: $0.key, count: $0.value) }
+                .sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
+        }
+        return AuthorSummary(name: name,
+                             entries: entries,
+                             cites: combine(members.map(\.cites)),
+                             citedBy: combine(members.map(\.citedBy)))
+    }
+
+    /// Applies an approved merge of two contact records: the originals
+    /// leave the directory, the approved card stands, and a portrait
+    /// the absorbed record had follows when the surviving one has none.
+    func approveMergedPerson(_ merged: Person, replacing originals: [Person]) {
+        if portraits.original(for: merged.localID) == nil,
+           let donor = originals.first(where: {
+               $0.localID != merged.localID && portraits.original(for: $0.localID) != nil
+           }),
+           let photo = portraits.original(for: donor.localID) {
+            portraits.adoptPhoto(photo, for: merged.localID)
+        }
+        for original in originals {
+            people.remove(original)
+        }
+        people.upsert(merged)
+        showNote("Merged into “\(merged.displayName)” — every name on the record answers to it now")
     }
 
     var hotParagraphs: [HotParagraph] {

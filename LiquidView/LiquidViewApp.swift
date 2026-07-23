@@ -16,7 +16,9 @@ struct LiquidViewApp: App {
                     model.restoreFolderAccess()
                     model.restoreReaderLibrary()
                 }
+                .background(TabBarRemover())
         }
+        .defaultSize(width: 1120, height: 640)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Origami Text") { showAboutPanel() }
@@ -24,6 +26,12 @@ struct LiquidViewApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Document") { model.newDraft() }
                     .keyboardShortcut("n", modifiers: .command)
+                Button("New Note") { model.newNote() }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("New Book") { model.newBook() }
+                    .keyboardShortcut("b", modifiers: [.command, .shift])
+                Button("New Author") { model.newAuthor = Person() }
+                    .keyboardShortcut("n", modifiers: [.command, .option])
             }
             CommandGroup(after: .newItem) {
                 Button("Import…") { model.importDocumentFile() }
@@ -37,9 +45,18 @@ struct LiquidViewApp: App {
             CommandGroup(replacing: .saveItem) {
                 // Replacing .saveItem also removes the system Close item,
                 // so it is restored here — Settings and every other window
-                // need ⌘W.
-                Button("Close") { NSApp.keyWindow?.performClose(nil) }
-                    .keyboardShortcut("w", modifiers: .command)
+                // need ⌘W. In the main window with a just-opened document
+                // being written, ⌘W closes that editor and goes back one
+                // instead of taking the whole window with it.
+                Button("Close") {
+                    if model.draftEditor != nil,
+                       let key = NSApp.keyWindow, key == NSApp.mainWindow {
+                        model.closeEditor()
+                    } else {
+                        NSApp.keyWindow?.performClose(nil)
+                    }
+                }
+                .keyboardShortcut("w", modifiers: .command)
                 Divider()
                 Button("Save") { model.saveDraft() }
                     .keyboardShortcut("s", modifiers: .command)
@@ -48,6 +65,8 @@ struct LiquidViewApp: App {
                     .keyboardShortcut("e", modifiers: [.command, .shift])
                     .disabled(model.draftEditor == nil)
             }
+            // The window toolbar is bare, as in Knowledge Space — these
+            // menu items are where its former controls live on.
             CommandGroup(after: .windowArrangement) {
                 Button("Library") { model.showLibrary() }
                     .keyboardShortcut("l", modifiers: .command)
@@ -59,6 +78,13 @@ struct LiquidViewApp: App {
                 }
                 .keyboardShortcut("l", modifiers: [.option, .command])
                 Divider()
+                Picker("Sort By", selection: Bindable(model).sortOrder) {
+                    ForEach(ListSortOrder.allCases) { order in
+                        Text(order.rawValue).tag(order)
+                    }
+                }
+                Toggle("Show Superseded", isOn: Bindable(model).showSuperseded)
+                Divider()
             }
             CommandMenu("Go") {
                 Button("Back") { model.goBack() }
@@ -67,6 +93,18 @@ struct LiquidViewApp: App {
                 Button("Forward") { model.goForward() }
                     .keyboardShortcut("]", modifiers: .command)
                     .disabled(!model.canGoForward)
+                Divider()
+                Menu("Read in Parallel") {
+                    if model.parallelDoc != nil {
+                        Button("Exit Parallel Reading") { model.exitParallel() }
+                        Divider()
+                    }
+                    ForEach(model.parallelCandidates) { entry in
+                        Button(entry.doc.title) { model.enterParallel(with: entry.doc) }
+                    }
+                }
+                .disabled(model.current == nil
+                          || (model.parallelCandidates.isEmpty && model.parallelDoc == nil))
             }
         }
 
@@ -110,6 +148,26 @@ struct LiquidViewApp: App {
     }
 }
 
+/// Disallowing automatic tabbing (see AppDelegate) stops new tabs, but a
+/// tab bar the user once showed is restored with the window and would still
+/// appear. This reaches the hosting window to disallow tabbing outright and
+/// fold away any tab bar that came back with restored state.
+private struct TabBarRemover: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            window.tabbingMode = .disallowed
+            if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
+                window.toggleTabBar(nil)
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
 /// Receives documents double-clicked in Finder, buffering any that arrive
 /// before the SwiftUI scene has handed over the model.
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -117,6 +175,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pending: [URL] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // One window is the app: window tabs would only duplicate it, so
+        // the tab bar (and its + button) never appears.
+        NSWindow.allowsAutomaticWindowTabbing = false
+
         // Handled here rather than via menu shortcuts so they work even when
         // a text view has focus (text views claim keys like ⌘L for
         // themselves before the menu sees them).

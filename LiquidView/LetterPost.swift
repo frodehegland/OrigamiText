@@ -22,8 +22,12 @@ import AppKit
 extension AppSettings {
     static let letterPostCarrierKey = "letterPostCarrier"
     static let letterPostSendTimingKey = "letterPostSendTiming"
-    /// Minutes from midnight for the daily send.
+    /// Minutes from midnight for the scheduled send.
     static let letterPostSendTimeKey = "letterPostSendTime"
+    /// Calendar weekday (1 = Sunday … 7 = Saturday) for the weekly send.
+    static let letterPostSendWeekdayKey = "letterPostSendWeekday"
+    /// Day of the month (1–28, so every month has it) for the monthly send.
+    static let letterPostSendMonthDayKey = "letterPostSendMonthDay"
     /// Minutes between checks for arriving letters; 0 means only manually.
     static let letterPostReceiveIntervalKey = "letterPostReceiveInterval"
     static let letterPostPendingKey = "letterPostPendingSends"
@@ -48,8 +52,15 @@ enum LetterCarrier: String, CaseIterable, Identifiable {
 enum LetterSendTiming: String, CaseIterable, Identifiable {
     case immediately = "When published"
     case daily = "Daily at a set time"
+    case weekly = "Weekly on a set day"
+    case monthly = "Monthly on a set day"
     case manually = "Only manually"
     var id: String { rawValue }
+
+    /// The cadences that carry a set time (and possibly a set day).
+    var isScheduled: Bool {
+        self == .daily || self == .weekly || self == .monthly
+    }
 
     static var current: LetterSendTiming {
         LetterSendTiming(rawValue: UserDefaults.standard.string(forKey: AppSettings.letterPostSendTimingKey) ?? "")
@@ -131,7 +142,37 @@ enum MailCarrier {
         return result.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
+    /// Mail must already be running before it can be scripted: a
+    /// sandboxed app's Apple events do not launch their target — they
+    /// fail with -600, "Application isn't running". NSWorkspace may
+    /// launch it, though, so bring Mail up quietly and wait for it.
+    private static func ensureMailIsRunning() throws {
+        let bundleID = "com.apple.mail"
+        func isRunning() -> Bool {
+            !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
+        }
+        if isRunning() { return }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            throw CarrierError(message: "Mail could not be found on this Mac.")
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        // Wait for Mail to come up — scripting it too early fails the
+        // same way as not launching it at all.
+        let deadline = Date.now.addingTimeInterval(15)
+        while !isRunning(), Date.now < deadline {
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        guard isRunning() else {
+            throw CarrierError(message: "Mail did not start in time — open Mail and try again.")
+        }
+        // A just-launched Mail needs a breath before it answers events.
+        Thread.sleep(forTimeInterval: 1.5)
+    }
+
     private static func run(script source: String) throws -> String {
+        try ensureMailIsRunning()
         guard let script = NSAppleScript(source: source) else {
             throw CarrierError(message: "The Mail script could not be built.")
         }
@@ -143,6 +184,9 @@ enum MailCarrier {
             let number = errorInfo[NSAppleScript.errorNumber] as? Int
             if number == -1743 {
                 throw CarrierError(message: "macOS declined: allow Origami Text to control Mail in System Settings → Privacy & Security → Automation.")
+            }
+            if number == -600 {
+                throw CarrierError(message: "Mail was not reachable — open Mail, then try again.")
             }
             throw CarrierError(message: message)
         }
@@ -241,14 +285,16 @@ final class LetterPostStore {
     }
 
     /// To: the people the letter is for the attention of; CC: the rest of
-    /// the People directory — everyone with an email address except the
-    /// author themselves. With no attention names, everyone is To.
+    /// the People directory — everyone with an email address whose record
+    /// keeps them in the letter distribution, except the author
+    /// themselves. With no attention names, everyone is To.
     private func recipients(for doc: LiquidDoc) -> (to: [String], cc: [String]) {
         guard let model else { return ([], []) }
         let attention = Set(doc.attention.map { $0.lowercased() })
         var to: [String] = []
         var cc: [String] = []
         for person in model.people.people {
+            guard person.isInLetterDistribution else { continue }
             guard let email = person.emails.first(where: { !$0.isEmpty }) else { continue }
             guard !model.authorIdentity.matches(author: person.displayName) else { continue }
             if attention.contains(person.displayName.lowercased()) {
@@ -312,16 +358,15 @@ final class LetterPostStore {
         guard LetterCarrier.current == .appleMail else { return }
         let defaults = UserDefaults.standard
 
-        if LetterSendTiming.current == .daily, !pendingSendIDs.isEmpty {
-            let minutes = defaults.object(forKey: AppSettings.letterPostSendTimeKey) as? Int ?? 17 * 60
-            let now = Date.now
-            let calendar = Calendar.current
-            let nowMinutes = calendar.component(.hour, from: now) * 60
-                + calendar.component(.minute, from: now)
-            let lastDay = defaults.object(forKey: AppSettings.letterPostLastDailySendKey) as? Date
-            let firedToday = lastDay.map { calendar.isDate($0, inSameDayAs: now) } ?? false
-            if nowMinutes >= minutes, !firedToday {
-                defaults.set(now, forKey: AppSettings.letterPostLastDailySendKey)
+        // Scheduled sending fires when the most recent scheduled moment
+        // has passed with no send since — so a moment missed while the
+        // app was closed catches up at the next launch.
+        if LetterSendTiming.current.isScheduled, !pendingSendIDs.isEmpty,
+           let due = lastScheduledMoment(before: .now) {
+            let lastSend = defaults.object(forKey: AppSettings.letterPostLastDailySendKey) as? Date
+                ?? .distantPast
+            if lastSend < due {
+                defaults.set(Date.now, forKey: AppSettings.letterPostLastDailySendKey)
                 sendPending()
             }
         }
@@ -332,6 +377,52 @@ final class LetterPostStore {
             if Date.now.timeIntervalSince(last) >= Double(interval) * 60 {
                 checkForLetters()
             }
+        }
+    }
+
+    /// The most recent moment the schedule called for, on or before the
+    /// given date: today/the chosen weekday/the chosen day of the month,
+    /// at the set time — stepped back one day/week/month when that moment
+    /// is still ahead.
+    private func lastScheduledMoment(before now: Date) -> Date? {
+        let defaults = UserDefaults.standard
+        let minutes = defaults.object(forKey: AppSettings.letterPostSendTimeKey) as? Int ?? 17 * 60
+        let calendar = Calendar.current
+
+        func at(_ day: Date) -> Date? {
+            calendar.date(bySettingHour: minutes / 60, minute: minutes % 60,
+                          second: 0, of: day)
+        }
+
+        switch LetterSendTiming.current {
+        case .daily:
+            guard let today = at(now) else { return nil }
+            return today <= now ? today
+                : calendar.date(byAdding: .day, value: -1, to: today)
+        case .weekly:
+            let weekday = defaults.object(forKey: AppSettings.letterPostSendWeekdayKey) as? Int ?? 2
+            for daysBack in 0...7 {
+                guard let day = calendar.date(byAdding: .day, value: -daysBack, to: now),
+                      calendar.component(.weekday, from: day) == weekday,
+                      let moment = at(day) else { continue }
+                if moment <= now { return moment }
+            }
+            return nil
+        case .monthly:
+            let monthDay = defaults.object(forKey: AppSettings.letterPostSendMonthDayKey) as? Int ?? 1
+            var components = calendar.dateComponents([.year, .month], from: now)
+            components.day = monthDay
+            if let thisMonth = calendar.date(from: components), let moment = at(thisMonth),
+               moment <= now {
+                return moment
+            }
+            guard let previousMonth = calendar.date(byAdding: .month, value: -1, to: now) else { return nil }
+            components = calendar.dateComponents([.year, .month], from: previousMonth)
+            components.day = monthDay
+            guard let day = calendar.date(from: components) else { return nil }
+            return at(day)
+        case .immediately, .manually:
+            return nil
         }
     }
 
@@ -349,7 +440,10 @@ struct SharingSettingsView: View {
     @AppStorage(AppSettings.letterPostCarrierKey) private var carrier = LetterCarrier.off.rawValue
     @AppStorage(AppSettings.letterPostSendTimingKey) private var sendTiming = LetterSendTiming.immediately.rawValue
     @AppStorage(AppSettings.letterPostSendTimeKey) private var sendTimeMinutes = 17 * 60
+    @AppStorage(AppSettings.letterPostSendWeekdayKey) private var sendWeekday = 2
+    @AppStorage(AppSettings.letterPostSendMonthDayKey) private var sendMonthDay = 1
     @AppStorage(AppSettings.letterPostReceiveIntervalKey) private var receiveInterval = 30
+    @AppStorage(AppSettings.shareGeneralLocationKey) private var shareLocation = true
 
     private var mailChosen: Bool { carrier == LetterCarrier.appleMail.rawValue }
 
@@ -368,6 +462,17 @@ struct SharingSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section {
+                Toggle("Share General Location", isOn: $shareLocation)
+                    .onChange(of: shareLocation) {
+                        if shareLocation { model.refreshPlace() }
+                    }
+            } footer: {
+                Text("A published letter carries the place it was written — a general place name, like “Wimbledon, London”, never coordinates. Notes always carry theirs.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if mailChosen {
                 Section("Sending") {
                     Picker("Send published letters", selection: $sendTiming) {
@@ -375,7 +480,21 @@ struct SharingSettingsView: View {
                             Text(timing.rawValue).tag(timing.rawValue)
                         }
                     }
-                    if sendTiming == LetterSendTiming.daily.rawValue {
+                    if sendTiming == LetterSendTiming.weekly.rawValue {
+                        Picker("Send on", selection: $sendWeekday) {
+                            ForEach(1...7, id: \.self) { weekday in
+                                Text(Calendar.current.weekdaySymbols[weekday - 1]).tag(weekday)
+                            }
+                        }
+                    }
+                    if sendTiming == LetterSendTiming.monthly.rawValue {
+                        Picker("Send on day", selection: $sendMonthDay) {
+                            ForEach(1...28, id: \.self) { day in
+                                Text("\(day)").tag(day)
+                            }
+                        }
+                    }
+                    if LetterSendTiming(rawValue: sendTiming)?.isScheduled == true {
                         DatePicker("Send at", selection: sendTimeBinding,
                                    displayedComponents: .hourAndMinute)
                     }
@@ -421,7 +540,7 @@ struct SharingSettingsView: View {
         .formStyle(.grouped)
     }
 
-    /// The daily hour as a date, stored as minutes from midnight.
+    /// The scheduled hour as a date, stored as minutes from midnight.
     private var sendTimeBinding: Binding<Date> {
         Binding(
             get: {

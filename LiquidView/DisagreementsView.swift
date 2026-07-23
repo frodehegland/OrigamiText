@@ -77,7 +77,6 @@ struct DisagreementsView: View {
                 }
             }
         }
-        .navigationTitle("Disagreements")
     }
 
     private var content: some View {

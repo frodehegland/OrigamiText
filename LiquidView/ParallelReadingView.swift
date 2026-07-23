@@ -7,6 +7,8 @@ struct ParallelReadingView: View {
     @Environment(AppModel.self) private var model
     let leftDoc: LiquidDoc
     let rightDoc: LiquidDoc
+    /// Flow: dense text broken open for reading — display only, both sides.
+    @State private var flowText = false
 
     private var connections: [ParallelConnection] {
         ParallelReading.connections(left: leftDoc, right: rightDoc)
@@ -16,10 +18,12 @@ struct ParallelReadingView: View {
         let connections = connections
         HStack(spacing: 0) {
             ParallelColumnView(doc: leftDoc, anchorPrefix: "L",
-                               highlights: highlights(for: connections, side: .left))
+                               highlights: highlights(for: connections, side: .left),
+                               flowed: flowText)
             Divider()
             ParallelColumnView(doc: rightDoc, anchorPrefix: "R",
-                               highlights: highlights(for: connections, side: .right))
+                               highlights: highlights(for: connections, side: .right),
+                               flowed: flowText)
         }
         .overlayPreferenceValue(ParagraphAnchorKey.self) { anchors in
             BeamLayer(connections: connections, anchors: anchors)
@@ -32,6 +36,14 @@ struct ParallelReadingView: View {
         .toolbar {
             ToolbarItem {
                 Button {
+                    withAnimation(.snappy) { flowText.toggle() }
+                } label: {
+                    Label(flowText ? "Unflow" : "Flow", systemImage: "text.alignleft")
+                }
+                .help("Break dense text open while reading: sentences get their own lines, clauses break after commas, parentheses stand apart — the documents themselves are untouched")
+            }
+            ToolbarItem {
+                Button {
                     model.exitParallel()
                 } label: {
                     Label("Exit Parallel Reading", systemImage: "xmark.circle")
@@ -39,7 +51,6 @@ struct ParallelReadingView: View {
                 .help("Return to single-document reading")
             }
         }
-        .navigationTitle("\(leftDoc.title) ⟷ \(rightDoc.title)")
     }
 
     private func highlights(for connections: [ParallelConnection],
@@ -113,6 +124,7 @@ struct ParallelColumnView: View {
     let doc: LiquidDoc
     let anchorPrefix: String
     let highlights: [String: Color]
+    var flowed = false
 
     var body: some View {
         ScrollView {
@@ -125,7 +137,8 @@ struct ParallelColumnView: View {
 
                 if let body = doc.body {
                     ForEach(body) { paragraph in
-                        ParagraphView(paragraph: paragraph, isHighlighted: false)
+                        ParagraphView(paragraph: paragraph, isHighlighted: false,
+                                      flowed: flowed)
                             .background(
                                 (highlights[paragraph.id] ?? .clear).opacity(0.10),
                                 in: RoundedRectangle(cornerRadius: 5)

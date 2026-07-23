@@ -1,5 +1,20 @@
 import SwiftUI
 
+extension DocumentRelation {
+    /// The discourse colour: connected titles in the reading margins are
+    /// tinted by how the documents relate. Nil keeps the default label
+    /// colour (cites, summarizes, and relations without a hue yet).
+    var titleColor: Color? {
+        switch self {
+        case .disagreesWith: Color(red: 0.55, green: 0.05, blue: 0.05)   // dark red
+        case .extends, .supports: Color(red: 0.0, green: 0.5, blue: 0.1) // green
+        case .questions: Color(red: 0.9, green: 0.5, blue: 0.0)          // orange
+        case .respondsTo: Color(red: 0.35, green: 0.1, blue: 0.5)        // dark purple
+        default: nil
+        }
+    }
+}
+
 /// The margins of full-screen reading: on the left, the documents this one
 /// links to; on the right, the documents that link back to it. Each card is
 /// a doorway — click to travel there through the same follow path as the
@@ -7,6 +22,7 @@ import SwiftUI
 /// so the reading column stays centered.
 struct ReadingConnectionsColumn: View {
     @Environment(AppModel.self) private var model
+    @AppStorage(AppSettings.connectionPortraitsKey) private var showPortraits = true
     let doc: LiquidDoc
     let direction: Direction
 
@@ -25,6 +41,9 @@ struct ReadingConnectionsColumn: View {
         let fragment: String?
         let rel: String?
         let inLibrary: Bool
+        /// The relation for the title tint. Kept apart from `rel`, which
+        /// feeds `follow` and stays nil on inbound cards.
+        let relation: DocumentRelation?
     }
 
     var body: some View {
@@ -57,21 +76,28 @@ struct ReadingConnectionsColumn: View {
         Button {
             model.follow(to: connection.id, fragment: connection.fragment, rel: connection.rel)
         } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(connection.title)
-                    .font(.callout.weight(.medium))
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(3)
-                if let author = connection.author {
-                    Text(author)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            HStack(alignment: .top, spacing: 8) {
+                if showPortraits, let author = connection.author {
+                    PersonAvatarView(name: author, size: 28)
                 }
-                if let caption = connection.caption {
-                    Text(caption)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(connection.title)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(connection.relation?.titleColor.map(AnyShapeStyle.init)
+                                         ?? AnyShapeStyle(.primary))
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(3)
+                    if let author = connection.author {
+                        Text(author)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    if let caption = connection.caption {
+                        Text(caption)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -85,37 +111,50 @@ struct ReadingConnectionsColumn: View {
               : "\(connection.id) is not in the library")
     }
 
-    /// One card per connected document, first mention wins. Outbound cards
-    /// keep the link's fragment so travel lands on the cited paragraph;
-    /// inbound fragments name a paragraph of this document, so those open
-    /// at the top of the citing document instead.
+    /// One card per connected document, first mention wins — except the
+    /// relation: a responding letter carries a plain citation link AND a
+    /// "responds-to" link, and whichever named relation exists is the one
+    /// the card wears (tint and caption), not whichever came first.
     private var connections: [Connection] {
         var seen: Set<String> = []
         switch direction {
         case .outbound:
+            var namedRel: [String: String] = [:]
+            for link in doc.links where namedRel[link.to] == nil {
+                if let rel = link.rel { namedRel[link.to] = rel }
+            }
             return doc.links.compactMap { link in
                 guard link.to != doc.id, !LiquidAddress.isPersonAddress(link.to),
                       seen.insert(link.to).inserted else { return nil }
                 let title = model.title(for: link.to)
+                let rel = namedRel[link.to]
                 return Connection(id: link.to,
                                   title: title ?? link.to,
-                                  author: model.index.byID[link.to]?.doc.displayAuthor,
-                                  caption: caption(for: link.rel),
+                                  author: model.document(for: link.to)?.displayAuthor,
+                                  caption: caption(for: rel),
                                   fragment: link.fragment,
                                   rel: link.rel,
-                                  inLibrary: title != nil)
+                                  inLibrary: title != nil,
+                                  relation: DocumentRelation.from(rel: rel))
             }
         case .inbound:
-            return (model.index.backlinks[doc.id] ?? []).compactMap { ref in
+            let refs = model.index.backlinks[doc.id] ?? []
+            var namedRel: [String: String] = [:]
+            for ref in refs where namedRel[ref.fromID] == nil {
+                if let rel = ref.rel { namedRel[ref.fromID] = rel }
+            }
+            return refs.compactMap { ref in
                 guard ref.fromID != doc.id, seen.insert(ref.fromID).inserted,
                       let entry = model.index.byID[ref.fromID] else { return nil }
+                let rel = namedRel[ref.fromID]
                 return Connection(id: ref.fromID,
                                   title: entry.doc.title,
                                   author: entry.doc.displayAuthor,
-                                  caption: caption(for: ref.rel),
+                                  caption: caption(for: rel),
                                   fragment: nil,
                                   rel: nil,
-                                  inLibrary: true)
+                                  inLibrary: true,
+                                  relation: DocumentRelation.from(rel: rel))
             }
         }
     }

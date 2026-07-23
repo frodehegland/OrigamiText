@@ -427,6 +427,10 @@ struct StrangerView: View {
             add(reading.question)
         }
         let title = reading.mode == .challenge ? "A Stranger's Challenge" : "A Stranger's Support"
+        // The standard slug--id file name convention.
+        let slug = LiquidDoc.fileSlug(from: title)
+        let ext = LiquidDoc.fileExtension
+        let fileName = slug.isEmpty ? "\(id).\(ext)" : "\(slug)--\(id).\(ext)"
         var doc = LiquidDoc(format: LiquidDoc.knownFormat,
                             id: id,
                             title: title,
@@ -434,9 +438,9 @@ struct StrangerView: View {
                             created: created,
                             body: paragraphs,
                             links: links,
-                            wraps: nil)
+                            wraps: nil,
+                            fileURL: folder.appendingPathComponent(fileName))
         doc.aiOnBehalf = true
-        doc.fileURL = folder.appendingPathComponent(doc.suggestedExportFileName)
         let finished = VisualMeta.appendingAppendix(to: doc)
         do {
             try finished.jsonData().write(to: finished.fileURL, options: .atomic)

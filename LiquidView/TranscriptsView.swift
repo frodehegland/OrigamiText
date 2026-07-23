@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Every meeting transcript in one place — library documents, drafts, and
 /// published copies — sorted by meeting date. Clicking a row opens the
@@ -60,19 +61,23 @@ struct TranscriptsView: View {
         }
     }
 
+    @State private var selection: String?
+
     var body: some View {
         let rows = rows
-        List {
-            ForEach(rows) { row in
-                Button {
-                    open(row)
-                } label: {
-                    rowLabel(row)
+        // Click to select (and open), ctrl-click for options — the same
+        // contract as every other list.
+        List(rows, selection: $selection) { row in
+            rowLabel(row)
+                .tag(row.doc.id)
+                .contextMenu {
+                    ContextActionItems(target: .document(row.doc))
                 }
-                .buttonStyle(.plain)
-            }
         }
-        .navigationTitle("Transcripts")
+        .onChange(of: selection) {
+            guard let selection, let row = rows.first(where: { $0.doc.id == selection }) else { return }
+            open(row)
+        }
         .overlay {
             if rows.isEmpty {
                 ContentUnavailableView {
@@ -118,6 +123,7 @@ struct TranscriptsView: View {
         }
         .padding(.vertical, 3)
         .contentShape(Rectangle())
+        .listRowSeparator(.hidden)
         .help(row.origin == .draft
               ? "Open this transcript in the draft editor"
               : "Read this transcript — right-click a speaker's name to lift a statement into a new document")
@@ -125,13 +131,14 @@ struct TranscriptsView: View {
 
     private func open(_ row: Row) {
         switch row.origin {
-        case .library:
-            model.openInLibrary(row.doc)
-        case .published:
-            model.sidebarSelection = .published
+        case .library, .published:
+            // Reading keeps its place: the Transcripts list stays, the
+            // transcript opens beside it.
             model.open(row.doc)
         case .draft:
-            model.sidebarSelection = .drafts
+            // Editing has a reason to move: the editor lives in the
+            // drafts context — Transcripts ▸ Drafts, staying in the family.
+            model.sidebarSelection = .transcriptDrafts
             model.editDraft(row.doc)
         }
     }
@@ -185,18 +192,21 @@ struct ExtractsListView: View {
             .flatMap { model.title(for: $0) }
     }
 
+    @State private var selection: String?
+
     var body: some View {
         let rows = rows
-        List(rows) { row in
-            Button {
-                open(row)
-            } label: {
+        // Click to select (and open), ctrl-click for options — the same
+        // contract as every other list.
+        List(rows, selection: $selection) { row in
+            Group {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "quote.opening")
                         .foregroundStyle(.secondary)
                         .padding(.top, 3)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(row.doc.title)
+                            .fontWeight(model.isUnread(row.doc) ? .bold : .regular)
                             .lineLimit(2)
                         Text("\(row.doc.displayAuthor) · \(row.doc.listedDateText)")
                             .font(.caption)
@@ -222,9 +232,16 @@ struct ExtractsListView: View {
                 .padding(.vertical, 3)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .listRowSeparator(.hidden)
+            .tag(row.doc.id)
+            .contextMenu {
+                ContextActionItems(target: .document(row.doc))
+            }
         }
-        .navigationTitle("Extracts")
+        .onChange(of: selection) {
+            guard let selection, let row = rows.first(where: { $0.doc.id == selection }) else { return }
+            open(row)
+        }
         .overlay {
             if rows.isEmpty {
                 ContentUnavailableView {
@@ -239,10 +256,8 @@ struct ExtractsListView: View {
 
     private func open(_ row: Row) {
         switch row.origin {
-        case .library:
-            model.openInLibrary(row.doc)
-        case .published:
-            model.sidebarSelection = .published
+        case .library, .published:
+            // Reading keeps its place; only editing moves the selection.
             model.open(row.doc)
         case .draft:
             model.sidebarSelection = .drafts
@@ -255,72 +270,171 @@ struct ExtractsListView: View {
 /// before types existed — an undeclared document that doesn't read as a
 /// transcript is, in this community's terms, a letter. Letters are the
 /// core kind; transcripts are letters between people in a meeting.
+/// Which filings a Filed list shows: everything (Dialog), only what
+/// others sent (Received), only the user's own hand (Outgoing), or the
+/// books (Books). Notes keep their own Filed, under Notes.
+enum FiledScope {
+    case all, received, outgoing, books
+}
+
 struct LettersListView: View {
     @Environment(AppModel.self) private var model
+    @State private var selection: Set<String> = []
+    var scope: FiledScope = .all
 
-    private static func isLetter(_ doc: LiquidDoc) -> Bool {
+    static func isLetter(_ doc: LiquidDoc) -> Bool {
         // Extracts are letters too — lifted ones, with a known origin.
         if doc.documentType == LiquidDoc.DocumentType.letter.rawValue
             || doc.documentType == LiquidDoc.DocumentType.extract.rawValue { return true }
         return doc.documentType == nil && !doc.isSidecar && !TranscriptsView.isTranscript(doc)
     }
 
-    private var letters: [LiquidDoc] {
+    /// Every filed document, by folder, in the filing menu's order.
+    /// A folder that survives only in old filings still appears, after
+    /// the offered ones. Desk notes join through the drafts store.
+    private var folders: [(name: String, docs: [LiquidDoc])] {
         var seen: Set<String> = []
-        var letters: [LiquidDoc] = []
-        for doc in model.index.byID.values.map(\.doc) + model.drafts.published
-        where Self.isLetter(doc) && seen.insert(doc.id).inserted {
-            letters.append(doc)
-        }
-        if !model.searchText.isEmpty {
-            letters = letters.filter {
-                $0.title.localizedCaseInsensitiveContains(model.searchText)
-                    || $0.displayAuthor.localizedCaseInsensitiveContains(model.searchText)
-                    || ($0.body ?? []).contains { $0.text.localizedCaseInsensitiveContains(model.searchText) }
+        var byFolder: [String: [LiquidDoc]] = [:]
+        let source = model.index.byID.values.map(\.doc) + model.drafts.published
+            + model.drafts.documents
+        for doc in source where seen.insert(doc.id).inserted {
+            guard let folder = model.folder(for: doc), inScope(doc) else { continue }
+            if model.searchText.isEmpty
+                || doc.title.localizedCaseInsensitiveContains(model.searchText)
+                || doc.displayAuthor.localizedCaseInsensitiveContains(model.searchText)
+                || (doc.body ?? []).contains(where: { $0.text.localizedCaseInsensitiveContains(model.searchText) }) {
+                byFolder[folder, default: []].append(doc)
             }
         }
-        return letters.sorted { $0.listedDate > $1.listedDate }
+        // Every offered folder shows, holding documents or not — a
+        // folder is a place before it is a list. Folders surviving only
+        // in old filings join in, and Archived keeps the last word.
+        var names = model.filingFolders.filter { $0 != AppModel.archivedFolderName }
+        names += byFolder.keys.filter { !model.filingFolders.contains($0) }.sorted()
+        names.append(AppModel.archivedFolderName)
+        return names.map { name in
+            (name, byFolder[name, default: []].sorted { $0.listedDate > $1.listedDate })
+        }
+    }
+
+    /// Whether a filing belongs to this list. Notes and books never
+    /// join the letter scopes — each kind files under its own section.
+    private func inScope(_ doc: LiquidDoc) -> Bool {
+        let type = doc.documentType
+        let isNote = type == LiquidDoc.DocumentType.note.rawValue
+        let isBook = type == LiquidDoc.DocumentType.book.rawValue
+        switch scope {
+        case .all:
+            return true
+        case .received:
+            return !isNote && !isBook && !model.authorIdentity.matches(author: doc.author)
+        case .outgoing:
+            return !isNote && !isBook && model.authorIdentity.matches(author: doc.author)
+        case .books:
+            return isBook
+        }
     }
 
     var body: some View {
-        let letters = letters
-        List(letters) { doc in
-            Button {
-                if model.index.byID[doc.id] != nil {
-                    model.openInLibrary(doc)
-                } else {
-                    model.sidebarSelection = .published
-                    model.open(doc)
-                }
-            } label: {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "envelope")
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 3)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(doc.title)
-                            .lineLimit(2)
-                        Text("\(doc.displayAuthor) · \(doc.listedDateText)")
+        let folders = folders
+        let allDocs = folders.flatMap(\.docs)
+        List(selection: $selection) {
+            ForEach(folders, id: \.name) { folder in
+                Section {
+                    if folder.docs.isEmpty {
+                        Text("Nothing filed here yet.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
                     }
+                    ForEach(folder.docs, id: \.id) { doc in
+                        row(for: doc)
+                            .tag(doc.id)
+                    }
+                } header: {
+                    Label(folder.name,
+                          systemImage: folder.name == AppModel.archivedFolderName
+                              ? "archivebox" : "folder")
                 }
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
         }
-        .navigationTitle("Letters")
-        .overlay {
-            if letters.isEmpty {
-                ContentUnavailableView {
-                    Label(model.searchText.isEmpty ? "No Letters" : "No Results",
-                          systemImage: "envelope")
-                } description: {
-                    Text("Letters are the community's core documents — exporting a draft declares it a letter unless you choose otherwise.")
+        .contextMenu(forSelectionType: String.self) { ids in
+            let selected = allDocs.filter { ids.contains($0.id) }
+            if selected.count == 1, let doc = selected.first {
+                Menu("File") {
+                    FileUnderMenuItems(doc: doc)
+                }
+                Divider()
+                // One document answers with the app-wide document menu —
+                // cite, file, and the reply family, same as every row.
+                ContextActionItems(target: .document(doc))
+            } else if !selected.isEmpty {
+                Button("Unfile \(selected.count) Documents") {
+                    for doc in selected { model.unfile(doc) }
+                }
+                Divider()
+                let urls = selected.map(\.fileURL)
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting(urls)
+                }
+                Button("Copy \(urls.count) Documents") {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.writeObjects(urls.map { $0 as NSURL })
                 }
             }
+        } primaryAction: { ids in
+            guard ids.count == 1, let doc = allDocs.first(where: { ids.contains($0.id) }) else { return }
+            open(doc)
+        }
+        // Click to select (and open), as in every other list; ⌘-clicking
+        // a second document builds a selection for Copy without opening.
+        .onChange(of: selection) {
+            guard selection.count == 1, let id = selection.first,
+                  let doc = allDocs.first(where: { $0.id == id }) else { return }
+            model.open(doc)
+        }
+        .overlay {
+            if folders.isEmpty {
+                ContentUnavailableView {
+                    Label(model.searchText.isEmpty ? "Nothing Filed" : "No Results",
+                          systemImage: "folder")
+                } description: {
+                    Text("File a letter or note from its context menu — under Work, Personal, a folder of your own, or Archived, which alone hides its documents from the other views.")
+                }
+            }
+        }
+    }
+
+    private func row(for doc: LiquidDoc) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: doc.documentType == LiquidDoc.DocumentType.note.rawValue
+                  ? "note.text" : "envelope")
+                .foregroundStyle(.secondary)
+                .padding(.top, 3)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(doc.title)
+                    .fontWeight(model.isUnread(doc) ? .bold : .regular)
+                    .lineLimit(2)
+                Text("\(doc.displayAuthor) · \(doc.listedDateText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 3)
+        .listRowSeparator(.hidden)
+    }
+
+    private func open(_ doc: LiquidDoc) {
+        if doc.documentType == LiquidDoc.DocumentType.note.rawValue {
+            // A note reads at home, in its Notes list — a filed one in
+            // Notes ▸ Filed, since Archived leaves the timeline. The
+            // note reader needs that context; plain reading below
+            // keeps its place.
+            model.sidebarSelection = model.folder(for: doc) != nil ? .filedNotes : .notes
+            model.selectedNoteID = doc.id
+        } else {
+            model.open(doc)
         }
     }
 }

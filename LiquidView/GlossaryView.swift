@@ -296,8 +296,9 @@ struct GlossaryView: View {
     // MARK: Finding the term
 
     /// Whole-word, case-insensitive: "link" finds Link and links' but
-    /// not blinked.
-    private nonisolated static func matcher(for term: String) -> NSRegularExpression? {
+    /// not blinked. Glossary Space matches with the same rule, so the
+    /// two views always agree on where a term is spoken.
+    nonisolated static func matcher(for term: String) -> NSRegularExpression? {
         let escaped = NSRegularExpression.escapedPattern(for: term)
         return try? NSRegularExpression(pattern: "\\b\(escaped)", options: [.caseInsensitive])
     }

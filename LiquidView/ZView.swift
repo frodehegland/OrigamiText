@@ -41,7 +41,6 @@ struct ZView: View {
                 startState
             }
         }
-        .navigationTitle("Z")
         .toolbar {
             ToolbarItem {
                 Button {

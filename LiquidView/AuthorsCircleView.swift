@@ -193,7 +193,7 @@ struct AuthorsCircleView: View {
 
     /// Everyone with documents in the visible library, most prolific first.
     private var authors: [AuthorNode] {
-        let byAuthor = Dictionary(grouping: model.filteredEntries, by: { $0.doc.author })
+        let byAuthor = Dictionary(grouping: model.filteredEntries, by: { $0.doc.creditedAuthor })
         return byAuthor
             .map { AuthorNode(name: $0.key, documents: $0.value.count) }
             .sorted { ($0.documents, $1.name) > ($1.documents, $0.name) }
@@ -205,7 +205,7 @@ struct AuthorsCircleView: View {
     private var allEdges: [Edge] {
         let entries = model.filteredEntries
         let authorOf: [String: String] = Dictionary(
-            uniqueKeysWithValues: entries.map { ($0.doc.id, $0.doc.author) })
+            uniqueKeysWithValues: entries.map { ($0.doc.id, $0.doc.creditedAuthor) })
         var docsByPair: [String: (from: String, to: String, docs: [LiquidDoc])] = [:]
         for entry in entries {
             let doc = entry.doc

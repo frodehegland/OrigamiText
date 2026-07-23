@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import FoundationModels
 
 /// What a composer opens on: blank for New Letter, or seeded by the
 /// reply family with a title, the discourse link it will carry, and the
@@ -33,13 +34,17 @@ struct LetterComposerView: View {
     @State private var onBehalfOf: String?
     @State private var date: LiquidDate?
     @State private var references: [(id: String, bibtex: String)] = []
-    @State private var namingAttention = false
-    @State private var typedAttention = ""
+    @State private var choosingAttention = false
     @State private var namingOnBehalf = false
     @State private var typedOnBehalf = ""
     @State private var choosingDate = false
     @State private var confirmingDiscard = false
     @State private var seeded = false
+    /// Produced by AI on the author's behalf — the Mac declares this at
+    /// export; the phone declares it here, before publishing.
+    @State private var aiProduced = false
+    @State private var isSuggestingTitle = false
+    @State private var suggestNote: String?
     @FocusState private var titleFocused: Bool
 
     private var isEmpty: Bool {
@@ -47,12 +52,59 @@ struct LetterComposerView: View {
             && bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var suggestAvailable: Bool {
+        if case .available = SystemLanguageModel.default.availability { return true }
+        return false
+    }
+
+    /// One ask of the on-device model, as on the Mac; the reply is
+    /// trimmed to a single clean line and becomes the title.
+    private func suggestTitle() {
+        let text = String(bodyText.prefix(4000))
+        isSuggestingTitle = true
+        Task {
+            do {
+                let session = LanguageModelSession()
+                let response = try await session.respond(
+                    to: "Generate a title for this text. Reply with the title alone.\n\n\(text)")
+                let suggested = response.content
+                    .components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .first { !$0.isEmpty }?
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'‘’.")) ?? ""
+                if !suggested.isEmpty {
+                    title = suggested
+                } else {
+                    suggestNote = "The model offered no title."
+                }
+            } catch {
+                suggestNote = "Could not suggest a title: \(error.localizedDescription)"
+            }
+            isSuggestingTitle = false
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 8) {
-                TextField("Title", text: $title)
-                    .font(.system(size: 24, design: .serif))
-                    .focused($titleFocused)
+                HStack(spacing: 10) {
+                    TextField("Title", text: $title)
+                        .font(.system(size: 24, design: .serif))
+                        .focused($titleFocused)
+                    // Pasted text, no title yet: the on-device model can
+                    // offer one. The button leaves once a title exists.
+                    if title.trimmingCharacters(in: .whitespaces).isEmpty
+                        && !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if isSuggestingTitle {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else if suggestAvailable {
+                            Button("Suggest") { suggestTitle() }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                        }
+                    }
+                }
                 if let linkedTitle = seed.linkedTitle, let rel = seed.link?.rel,
                    let relation = DocumentRelation.from(rel: rel), let label = relation.bylineLabel {
                     Text("\(label) “\(linkedTitle)” — the connection travels with the letter.")
@@ -60,6 +112,13 @@ struct LetterComposerView: View {
                         .foregroundStyle(.secondary)
                 }
                 bylineBar
+                // Provenance is never a surprise: an AI-produced letter
+                // says so before it is published, as at export on the Mac.
+                if aiProduced {
+                    Text("Produced by AI on behalf of \(model.authorName) — declared in the letter and its Visual-Meta.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Divider()
                 MarkdownTextView(text: $bodyText) { id, bibtex in
                     if !references.contains(where: { $0.id == id }) {
@@ -94,20 +153,31 @@ struct LetterComposerView: View {
             .sheet(isPresented: $choosingDate) {
                 LetterDateSheet(date: $date)
             }
-            .alert("For the Attention Of", isPresented: $namingAttention) {
-                TextField("Name", text: $typedAttention)
-                Button("Add") { addAttention(typedAttention) }
-                Button("Cancel", role: .cancel) {}
+            .sheet(isPresented: $choosingAttention) {
+                AttentionPickerSheet(knownNames: model.knownNames, attention: $attention) { name in
+                    model.noteKnownName(name)
+                }
             }
             .alert("On Behalf Of", isPresented: $namingOnBehalf) {
                 TextField("Name", text: $typedOnBehalf)
+                ForEach(model.knownNames, id: \.self) { name in
+                    Button(name) { onBehalfOf = name }
+                }
                 Button("Set") {
                     let trimmed = typedOnBehalf.trimmingCharacters(in: .whitespaces)
                     onBehalfOf = trimmed.isEmpty ? nil : trimmed
+                    if let onBehalfOf { model.noteKnownName(onBehalfOf) }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("The author remains \(model.authorName); the letter declares whose words it carries.")
+            }
+            .alert("Suggest a Title", isPresented: Binding(
+                get: { suggestNote != nil },
+                set: { if !$0 { suggestNote = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(suggestNote ?? "")
             }
             .onAppear(perform: seedOnce)
         }
@@ -133,6 +203,8 @@ struct LetterComposerView: View {
                             namingOnBehalf = true
                         }
                         Button("Remove “On Behalf Of”") { self.onBehalfOf = nil }
+                        Divider()
+                        Toggle("Produced by AI", isOn: $aiProduced)
                     }
                 } else {
                     Menu(model.authorName) {
@@ -140,6 +212,8 @@ struct LetterComposerView: View {
                             typedOnBehalf = ""
                             namingOnBehalf = true
                         }
+                        Divider()
+                        Toggle("Produced by AI", isOn: $aiProduced)
                     }
                 }
                 Text("·")
@@ -149,15 +223,8 @@ struct LetterComposerView: View {
                     Text(date?.displayText ?? Date.now.formatted(date: .abbreviated, time: .omitted))
                 }
                 Text("·")
-                Menu("Attention of") {
-                    ForEach(model.knownNames, id: \.self) { name in
-                        Button(name) { addAttention(name) }
-                    }
-                    if !model.knownNames.isEmpty { Divider() }
-                    Button("New…") {
-                        typedAttention = ""
-                        namingAttention = true
-                    }
+                Button("Attention of") {
+                    choosingAttention = true
                 }
                 ForEach(attention, id: \.self) { name in
                     Button {
@@ -180,18 +247,13 @@ struct LetterComposerView: View {
         }
     }
 
-    private func addAttention(_ name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, !attention.contains(trimmed) else { return }
-        attention.append(trimmed)
-    }
-
     private func publish() {
         let published = model.publishLetter(
             title: title,
             bodyText: bodyText,
             attention: attention,
             onBehalfOf: onBehalfOf,
+            aiProduced: aiProduced,
             date: date,
             extraLinks: seed.link.map { [$0] } ?? [],
             references: references)
@@ -199,6 +261,93 @@ struct LetterComposerView: View {
         // On failure the composer stays open; the reason is in
         // model.lastError, shown by the home view's alert after dismiss —
         // so surface it here too.
+    }
+}
+
+// MARK: - For the attention of
+
+/// Addressing the letter: the community's names as a checklist — check
+/// every reader it is for, several at once — and a field for a name the
+/// folder does not know yet.
+private struct AttentionPickerSheet: View {
+    let knownNames: [String]
+    @Binding var attention: [String]
+    /// Called for a newly typed name, so it is offered again next time.
+    var onNewName: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var newName = ""
+
+    /// The community's names, plus anyone already addressed who is not
+    /// among them, so every choice stays visible and uncheckable.
+    private var candidates: [String] {
+        var names = knownNames
+        for name in attention
+        where !names.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+            names.append(name)
+        }
+        return names
+    }
+
+    private func isChosen(_ name: String) -> Bool {
+        attention.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    private func toggle(_ name: String) {
+        if isChosen(name) {
+            attention.removeAll { $0.caseInsensitiveCompare(name) == .orderedSame }
+        } else {
+            attention.append(name)
+        }
+    }
+
+    private func addNew() {
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        if !isChosen(trimmed) { attention.append(trimmed) }
+        onNewName(trimmed)
+        newName = ""
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(candidates, id: \.self) { name in
+                        Button {
+                            toggle(name)
+                        } label: {
+                            HStack {
+                                Text(name)
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                if isChosen(name) {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.tint)
+                                }
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Address this letter for their attention — readable by anyone, and recorded in its Visual-Meta.")
+                }
+                Section("New") {
+                    HStack {
+                        TextField("Name", text: $newName)
+                            .onSubmit(addNew)
+                        Button("Add") { addNew() }
+                            .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+            }
+            .navigationTitle("For the Attention Of")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 
@@ -390,12 +539,25 @@ private struct MarkdownTextView: UIViewRepresentable {
             storage.addAttribute(.font, value: Self.bodyFont, range: full)
             storage.addAttribute(.foregroundColor, value: UIColor.label, range: full)
             let nsText = storage.string as NSString
+            // The Mac's preference, honored here: heading markers are
+            // invisible while their line is styled, or dimmed when shown.
+            let hideMarkers = UserDefaults.standard.object(forKey: "hideHeadingMarkers") as? Bool ?? true
             var location = 0
             while location < nsText.length {
                 let lineRange = nsText.lineRange(for: NSRange(location: location, length: 0))
                 let line = nsText.substring(with: lineRange)
-                if let font = Self.headingFont(for: line) {
-                    storage.addAttribute(.font, value: font, range: lineRange)
+                if let level = Self.headingLevel(for: line) {
+                    storage.addAttribute(.font, value: Self.headingFont(level: level), range: lineRange)
+                    let markerRange = NSRange(location: lineRange.location, length: level + 1)
+                    if hideMarkers {
+                        storage.addAttributes([
+                            .font: Self.hiddenMarkerFont,
+                            .foregroundColor: UIColor.clear,
+                        ], range: markerRange)
+                    } else {
+                        storage.addAttribute(.foregroundColor, value: UIColor.tertiaryLabel,
+                                             range: markerRange)
+                    }
                 }
                 location = NSMaxRange(lineRange)
                 if location == 0 { break }
@@ -404,13 +566,25 @@ private struct MarkdownTextView: UIViewRepresentable {
             textView.selectedRange = selected
         }
 
-        private static func headingFont(for line: String) -> UIFont? {
+        // Near-zero size collapses the marker's width so hidden markers
+        // don't leave a gap in front of the heading.
+        private static let hiddenMarkerFont = UIFont.systemFont(ofSize: 0.1)
+
+        private static func headingLevel(for line: String) -> Int? {
+            if line.hasPrefix("### ") { return 3 }
+            if line.hasPrefix("## ") { return 2 }
+            if line.hasPrefix("# ") { return 1 }
+            return nil
+        }
+
+        private static func headingFont(level: Int) -> UIFont {
             let size: CGFloat
             let weight: UIFont.Weight
-            if line.hasPrefix("### ") { size = 19; weight = .semibold }
-            else if line.hasPrefix("## ") { size = 22; weight = .bold }
-            else if line.hasPrefix("# ") { size = 25; weight = .bold }
-            else { return nil }
+            switch level {
+            case 1: size = 25; weight = .bold
+            case 2: size = 22; weight = .bold
+            default: size = 19; weight = .semibold
+            }
             let base = UIFont.systemFont(ofSize: size, weight: weight)
             let descriptor = base.fontDescriptor.withDesign(.serif) ?? base.fontDescriptor
             return UIFont(descriptor: descriptor, size: size)

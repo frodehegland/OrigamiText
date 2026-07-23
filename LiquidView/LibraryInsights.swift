@@ -182,7 +182,7 @@ nonisolated enum LibraryInsights {
         }
         return result.sorted { lhs, rhs in
             if lhs.citations.count != rhs.citations.count { return lhs.citations.count > rhs.citations.count }
-            return lhs.doc.listedDate < rhs.doc.listedDate
+            return lhs.doc.listedDate > rhs.doc.listedDate
         }
     }
 
@@ -215,17 +215,17 @@ nonisolated enum LibraryInsights {
 
         var docsByAuthor: [String: [IndexEntry]] = [:]
         for entry in byID.values {
-            docsByAuthor[normalized(entry.doc.author), default: []].append(entry)
+            docsByAuthor[normalized(entry.doc.creditedAuthor), default: []].append(entry)
         }
 
         // from-author -> to-author -> count; revisions of one's own work
         // are versioning, not citation.
         var citations: [String: [String: Int]] = [:]
         for entry in byID.values {
-            let from = normalized(entry.doc.author)
+            let from = normalized(entry.doc.creditedAuthor)
             for link in entry.doc.links where link.rel != "revises" {
                 guard let target = byID[link.to] else { continue }
-                citations[from, default: [:]][normalized(target.doc.author), default: 0] += 1
+                citations[from, default: [:]][normalized(target.doc.creditedAuthor), default: 0] += 1
             }
         }
 
@@ -240,7 +240,7 @@ nonisolated enum LibraryInsights {
                     }
                     .sorted { $0.count > $1.count }
                 return AuthorSummary(name: name,
-                                     entries: entries.sorted { $0.doc.listedDate < $1.doc.listedDate },
+                                     entries: entries.sorted { $0.doc.listedDate > $1.doc.listedDate },
                                      cites: cites,
                                      citedBy: citedBy)
             }

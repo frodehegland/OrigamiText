@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 /// zzStructure Dimensional Navigation (per Eric's brief): a cursor-centric
 /// view over the zz layer woven across library documents. The accursed
@@ -30,7 +32,6 @@ struct ZZNavigatorView: View {
             Divider()
             canvas
         }
-        .navigationTitle("zzStructure")
         .toolbar {
             ToolbarItemGroup {
                 Picker("View", selection: $viewKey) {
@@ -57,6 +58,8 @@ struct ZZNavigatorView: View {
                     Label("New Dimension", systemImage: "slider.horizontal.3")
                 }
                 .help("Create a user dimension — it joins the d.dimensions ring")
+
+                layoutsMenu
             }
         }
         .sheet(isPresented: $showingNewDimension) { newDimensionSheet }
@@ -295,6 +298,122 @@ struct ZZNavigatorView: View {
     }
 
     // MARK: Weaving
+
+    // MARK: Layouts
+
+    /// Saved layouts are cells in the structure (a clone of the view cell
+    /// with axis and anchor links), so they persist with the weave and
+    /// travel inside it. Export/Import move a single layout as a small
+    /// .zzlayout file between structures.
+    private var layoutsMenu: some View {
+        let layouts = store.savedLayouts()
+        return Menu {
+            Button("Save Current Layout") { saveCurrentLayout() }
+            if !layouts.isEmpty {
+                Divider()
+                ForEach(layouts) { layout in
+                    Button(layoutLabel(layout)) { apply(layout) }
+                }
+                Divider()
+                Menu("Delete Layout") {
+                    ForEach(layouts) { layout in
+                        Button(layoutLabel(layout), role: .destructive) {
+                            store.removeLayout(layout.cellID)
+                            store.save()
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button("Export Layout…") { exportLayout() }
+            Button("Import Layout…") { importLayout() }
+        } label: {
+            Label("Layouts", systemImage: "squareshape.split.3x3")
+        }
+        .help("Keep, restore, and exchange arrangements: view, axes, and anchor")
+    }
+
+    /// "H-view · user.person × user.marriage @ <anchor>".
+    private func layoutLabel(_ layout: ZZStructure.ZZLayout) -> String {
+        let view = ZZViewRegistry.all.first { $0.key == layout.viewKey }?.displayName
+            ?? layout.viewKey
+        let x = store.dimensions[layout.axes.x]?.qualifiedName ?? "?"
+        let y = store.dimensions[layout.axes.y]?.qualifiedName ?? "?"
+        var text = "\(view) · \(x) × \(y)"
+        if let z = layout.axes.z, let name = store.dimensions[z]?.qualifiedName {
+            text += " × \(name)"
+        }
+        if let anchor = layout.anchor {
+            text += " @ \(label(for: anchor))"
+        }
+        return text
+    }
+
+    private func apply(_ layout: ZZStructure.ZZLayout) {
+        withAnimation(.spring(duration: 0.32)) {
+            viewKey = layout.viewKey
+            axes = layout.axes
+            if let anchor = layout.anchor, store.cells[anchor] != nil {
+                accursedID = anchor
+            }
+        }
+    }
+
+    private func saveCurrentLayout() {
+        do {
+            try store.saveLayout(viewKey: viewKey, axes: axes, anchor: accursedID)
+            store.save()
+            model.showNote("Layout saved — it lives in the structure and travels with it")
+        } catch {
+            model.showNote("Could not save layout: \(error.localizedDescription)")
+        }
+    }
+
+    private static let layoutFileType = UTType(filenameExtension: "zzlayout",
+                                               conformingTo: .json) ?? .json
+
+    private func exportLayout() {
+        guard let archive = store.layoutArchive(viewKey: viewKey, axes: axes,
+                                                anchor: accursedID) else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [Self.layoutFileType]
+        panel.nameFieldStringValue = "Layout.zzlayout"
+        panel.message = "The current arrangement — view, axes, anchor — as a file another structure can import."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(archive) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// Importing both applies the arrangement and saves it as a layout
+    /// cell, so it appears in this menu from now on.
+    private func importLayout() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [Self.layoutFileType, .json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let archive = try JSONDecoder().decode(ZZLayoutArchive.self, from: data)
+            guard archive.format.hasPrefix("origami-zz-layout/") else {
+                model.showNote("This file is not a zz layout.")
+                return
+            }
+            let resolved = try store.resolveLayoutArchive(archive)
+            try store.saveLayout(viewKey: resolved.viewKey, axes: resolved.axes,
+                                 anchor: resolved.anchor)
+            store.save()
+            withAnimation(.spring(duration: 0.32)) {
+                viewKey = resolved.viewKey
+                axes = resolved.axes
+                if let anchor = resolved.anchor { accursedID = anchor }
+            }
+        } catch {
+            model.showNote("Could not import layout: \(error.localizedDescription)")
+        }
+    }
 
     /// A document joins the structure: it gets a cell (or is found), and —
     /// when a cell is accursed — is linked posward of it along X. Splice

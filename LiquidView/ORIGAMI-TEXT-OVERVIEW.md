@@ -44,11 +44,18 @@
 - **People are first-class**: a local directory with ORCID search anchors names to canonical academic identities. Muting is local and private — who you decline to hear is never written into the shared record.
 - **Imports meet writers where they are**: Markdown, Word (.docx/.doc), and Author (.liquid) documents become drafts.
 
+## Capture and the letter post
+
+- **Notes are captured in the moment**: an iPhone companion takes them by voice or by hand, names them from their first four words, stamps the place they were made (a place name, never coordinates), and writes them straight into the shared folder as ordinary documents (`documentType: note`). The Mac and the headset read them the moment the folder syncs.
+- **Letters travel by the letter post**: published letters go out through scripted Apple Mail — the author's existing accounts do the carrying, and no password or server ever touches the app — and arriving `.origamitext` attachments are saved into the community folder automatically. The carrier is a pluggable seam; Mail is simply the first.
+- **Filing is a private judgement**: any document files under Work, Personal, a folder of your own, or Archived — the one folder that hides its documents from the timeline and the library's lists. Like muting and read-state, filing is local and never written into the shared record.
+
 ## AI that reads with you — entirely on your Mac
 
 - Four views written by the **on-device model** (Apple Intelligence): an **Insights report** on what the community is thinking; the **Themes** threading the conversation; the **Open Questions** nobody has settled; the **Disagreements**, each with its two sides named.
 - **No text ever leaves the Mac.** The model reads documents' text, never their metadata; every claim it makes is verified against the index before display.
 - **The prompts are yours**: every AI view's prompt is editable in Settings.
+- **Bots stand in for known thinkers**: created from a name, identified by the on-device model, each bot judges the library's documents as its person might — agree, disagree, neutral, with the reason in their voice. A bot is itself a document (`documentType: bot`) in the shared folder, its judgements on the record like everything else, and never mistakable for the person: the name always says "bot".
 
 ## Built to be extended by the community
 

@@ -39,6 +39,10 @@ nonisolated enum OrigamiEPUBImporter {
         let date: String?
         /// The publication identifier (urn:uuid:…), for provenance.
         let identifier: String?
+        /// The document's original origami address, when the EPUB
+        /// carries one — the receiving library may keep it, so
+        /// citations to the book resolve wherever it arrives.
+        let origamiID: String?
         let body: [LiquidDoc.Paragraph]
         var links: [LiquidDoc.Link] = []
         var concepts: [LiquidDoc.Concept] = []
@@ -81,7 +85,7 @@ nonisolated enum OrigamiEPUBImporter {
         // citations (an origamitext:// URL names their address) become
         // links again; external records become references.
         var addressByCitationID: [String: String] = [:]
-        var links: [LiquidDoc.Link] = []
+        var bibtexByAddress: [String: String] = [:]
         var references: [LiquidDoc.Reference] = []
         for citation in dictionaries(visualMeta?["citations"]) {
             guard let citationID = citation["id"] as? String else { continue }
@@ -90,8 +94,7 @@ nonisolated enum OrigamiEPUBImporter {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let address = urls.lazy.compactMap(originalAddress(fromOpenURL:)).first {
                 addressByCitationID[citationID] = address
-                links.append(LiquidDoc.Link(to: address, fragment: nil, rel: "cites",
-                                            bibtex: bibtex))
+                if let bibtex, !bibtex.isEmpty { bibtexByAddress[address] = bibtex }
             } else if let bibtex, !bibtex.isEmpty {
                 references.append(LiquidDoc.Reference(id: citationID, bibtex: bibtex))
             }
@@ -132,12 +135,32 @@ nonisolated enum OrigamiEPUBImporter {
         let body = try bodyParagraphs(fromXHTML: html,
                                       addressByCitationID: addressByCitationID)
 
+        // Links come back the way they were made: derived from the
+        // restored body text — rels, fragments, and quoted spans
+        // included — then given their BibTeX from the citation pool.
+        // Pool citations the body never mentions still count.
+        var links = LiquidDoc.detectedLinks(in: body).map { link -> LiquidDoc.Link in
+            guard link.bibtex == nil, let bibtex = bibtexByAddress[link.to] else { return link }
+            var enriched = link
+            enriched.bibtex = bibtex
+            return enriched
+        }
+        for (address, bibtex) in bibtexByAddress.sorted(by: { $0.key < $1.key })
+        where !links.contains(where: { $0.to == address }) {
+            links.append(LiquidDoc.Link(to: address, fragment: nil, rel: "cites", bibtex: bibtex))
+        }
+        for address in addressByCitationID.values.sorted()
+        where bibtexByAddress[address] == nil && !links.contains(where: { $0.to == address }) {
+            links.append(LiquidDoc.Link(to: address, fragment: nil, rel: "cites", bibtex: nil))
+        }
+
         let document = visualMeta?["document"] as? [String: Any]
         return ImportResult(
             title: document?["title"] as? String ?? title ?? "Untitled",
             author: (document?["authors"] as? [String])?.first ?? creator,
             date: document?["date"] as? String ?? date,
             identifier: document?["identifier"] as? String ?? identifier,
+            origamiID: document?["origami-id"] as? String,
             body: body,
             links: links,
             concepts: concepts,
@@ -297,8 +320,12 @@ nonisolated enum OrigamiEPUBImporter {
                     out += content
                 case "a":
                     if inner.attributes["class"] == "citation" {
-                        if let citationID = inner.attributes["data-citation-id"],
-                           let address = addressByCitationID[citationID] {
+                        if let reference = inner.attributes["data-origami-ref"],
+                           !reference.isEmpty {
+                            // Full resolution: rel and #fragment intact.
+                            out += "[\(reference)]"
+                        } else if let citationID = inner.attributes["data-citation-id"],
+                                  let address = addressByCitationID[citationID] {
                             out += "[\(address)]"
                         } else {
                             out += content

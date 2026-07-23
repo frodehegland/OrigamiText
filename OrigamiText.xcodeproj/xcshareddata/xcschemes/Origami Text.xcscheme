@@ -15,9 +15,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "5FD0137E3005785700F5A4F0"
-               BuildableName = "Origami Text Vision.app"
-               ReferencedContainer = "container:LiquidView.xcodeproj">
+               BlueprintIdentifier = "5FA61252300CE184002F8851"
+               BuildableName = "Origami Text.app"
+               ReferencedContainer = "container:OrigamiText.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -28,6 +28,28 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
+      <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "5FA6125E300CE184002F8851"
+               BuildableName = "Origami TextTests.xctest"
+               ReferencedContainer = "container:OrigamiText.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "5FA61268300CE184002F8851"
+               BuildableName = "Origami TextUITests.xctest"
+               ReferencedContainer = "container:OrigamiText.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -44,9 +66,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "5FD0137E3005785700F5A4F0"
-            BuildableName = "Origami Text Vision.app"
-            ReferencedContainer = "container:LiquidView.xcodeproj">
+            BlueprintIdentifier = "5FA61252300CE184002F8851"
+            BuildableName = "Origami Text.app"
+            ReferencedContainer = "container:OrigamiText.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -60,9 +82,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "5FD0137E3005785700F5A4F0"
-            BuildableName = "Origami Text Vision.app"
-            ReferencedContainer = "container:LiquidView.xcodeproj">
+            BlueprintIdentifier = "5FA61252300CE184002F8851"
+            BuildableName = "Origami Text.app"
+            ReferencedContainer = "container:OrigamiText.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

@@ -6,7 +6,16 @@ struct ContentView: View {
     /// Full screen keeps a doorway: hovering the left edge slides the
     /// sidebar in as an overlay; moving away lets it fade.
     @State private var showsPeekSidebar = false
+    /// Clicking a sidebar item in the peek unfolds a second column listing
+    /// its contents, so other documents can be opened without leaving
+    /// full screen.
+    @State private var showsPeekList = false
     @State private var peekHideTask: Task<Void, Never>?
+    /// Every column, always: with the toolbar bare there is no sidebar
+    /// toggle, so a collapse (a stray drag of the seam, or the split
+    /// view's own narrow-window behavior) would have no way back. Any
+    /// change away from all columns is snapped straight back.
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
 
     var body: some View {
         @Bindable var model = model
@@ -15,6 +24,9 @@ struct ContentView: View {
             // honor detail-only column visibility, so hiding means swapping.
             if model.isFullScreen || model.isListHidden {
                 detailPane
+                    // The empty state sizes to its text; the peek must
+                    // anchor to the window, so the pane is stretched first.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(alignment: .leading) {
                         if model.isFullScreen {
                             peekSidebar
@@ -23,21 +35,31 @@ struct ContentView: View {
             } else if LibraryViewRegistry.module(for: model.sidebarSelection)?.hidesDocumentList == true {
                 // Whole-library views keep the sidebar — the way to every
                 // other place — and give the canvas the list column's room.
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
+                        .toolbar(removing: .sidebarToggle)
                 } detail: {
                     detailPane
                 }
             } else {
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
+                        .toolbar(removing: .sidebarToggle)
                 } content: {
                     listPane
-                        .navigationSplitViewColumnWidth(min: 90, ideal: 120, max: 200)
+                        .navigationSplitViewColumnWidth(min: 120, ideal: 195, max: 600)
+                        // Find sits framed at the foot of the letters
+                        // list, as in Knowledge Space; the top stays bare.
+                        .safeAreaInset(edge: .bottom, spacing: 0) { findBar }
                 } detail: {
                     detailPane
                 }
-                .searchable(text: $model.searchText, prompt: "Title, author, or text")
+            }
+        }
+        // The sidebar is protected: whatever collapsed it, it comes back.
+        .onChange(of: columnVisibility) {
+            if columnVisibility != .all {
+                columnVisibility = .all
             }
         }
         // The catch-all: a ctrl-click on no text at all still answers.
@@ -46,75 +68,35 @@ struct ContentView: View {
         .contextMenu {
             ContextActionItems(target: .background)
         }
+        // Continual profile building: every index change (a new letter,
+        // an import, a rescan) offers the undigested documents to the
+        // on-device model. See PersonProfiles.swift.
+        .task(id: model.index.timeline) {
+            model.digestAuthorProfiles()
+            // Bots read the same way profiles build: continually, each
+            // new letter judged as it arrives.
+            model.digestBots()
+            // And the record of places grows the same way. See
+            // LocationRecord in LocationView.swift.
+            model.recordLocations()
+        }
         .inspector(isPresented: $model.showLinksInspector) {
             LinksInspectorView()
         }
         .sheet(isPresented: $model.showXRExport) {
             ExportToXRSheet()
         }
-        .toolbar {
-            ToolbarItemGroup(placement: .navigation) {
-                Button {
-                    model.toggleListColumn()
-                } label: {
-                    Label(model.isListHidden ? "Show List" : "Hide List",
-                          systemImage: "rectangle.lefthalf.inset.filled")
-                }
-                .help("Show or hide the document list")
-
-                Button {
-                    model.goBack()
-                } label: {
-                    Label("Back", systemImage: "chevron.backward")
-                }
-                .disabled(!model.canGoBack)
-                .help("Back (⌘[)")
-
-                Button {
-                    model.goForward()
-                } label: {
-                    Label("Forward", systemImage: "chevron.forward")
-                }
-                .disabled(!model.canGoForward)
-                .help("Forward (⌘])")
-            }
-            ToolbarItemGroup {
-                Menu {
-                    Picker("Sort By", selection: $model.sortOrder) {
-                        ForEach(ListSortOrder.allCases) { order in
-                            Text(order.rawValue).tag(order)
-                        }
-                    }
-                    Divider()
-                    Toggle("Show Superseded", isOn: $model.showSuperseded)
-                } label: {
-                    Label("View Options", systemImage: "arrow.up.arrow.down")
-                }
-                .help("Sorting and visibility options")
-
-                Menu {
-                    if model.parallelDoc != nil {
-                        Button("Exit Parallel Reading") { model.exitParallel() }
-                        Divider()
-                    }
-                    ForEach(model.parallelCandidates) { entry in
-                        Button(entry.doc.title) { model.enterParallel(with: entry.doc) }
-                    }
-                } label: {
-                    Label("Read in Parallel", systemImage: "rectangle.split.2x1")
-                }
-                .disabled(model.current == nil
-                          || (model.parallelCandidates.isEmpty && model.parallelDoc == nil))
-                .help("Read a connected document side by side, with visible connections")
-
-                Button {
-                    model.showLinksInspector.toggle()
-                } label: {
-                    Label("Links", systemImage: "link")
-                }
-                .help("Show the links panel (⌥⌘L)")
+        .sheet(item: $model.newAuthor) { person in
+            PersonFormView(person: person, heading: "New Author") { saved in
+                model.people.upsert(saved)
+                model.showNote("Added \(saved.displayName) to People")
             }
         }
+        // The toolbar stays bare, as in Knowledge Space: no title over
+        // the columns, no controls — Back/Forward, sorting, parallel
+        // reading, and the links panel live in the menu bar; Find sits
+        // at the foot of the letters list.
+        .toolbar(removing: .title)
         .overlay(alignment: .bottom) {
             if let note = model.transientNote {
                 Text(note)
@@ -127,12 +109,17 @@ struct ContentView: View {
             }
         }
         .animation(.default, value: model.transientNote)
-        .toolbar(model.isFullScreen ? .hidden : .automatic, for: .windowToolbar)
+        // The window toolbar stays available in full screen: macOS tucks
+        // it away with the menu bar, and mousing to the top edge brings
+        // it back — carrying the right toolbar's commands.
+        .toolbar(.automatic, for: .windowToolbar)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in
             model.enterFullScreenLayout()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
             model.exitFullScreenLayout()
+            showsPeekSidebar = false
+            showsPeekList = false
         }
         .environment(\.openURL, OpenURLAction { url in
             // origamitext:// links clicked inside documents navigate in-app,
@@ -149,34 +136,114 @@ struct ContentView: View {
     /// edge summons the sidebar as a floating panel — the same gesture the
     /// system menu bar teaches at the top edge — and it fades once the
     /// pointer moves on.
+    /// With nothing open, full screen has nothing to focus on and the peek
+    /// is the only way anywhere — so it stays, list unfolded, no hover
+    /// gesture required. Opening a document unpins it. A whole-library
+    /// view (Bots, the Weave, Attentions…) counts as open: it fills the
+    /// detail pane with no document being current, and the peek must fade.
+    private var peekIsPinned: Bool {
+        model.isFullScreen && model.current == nil && model.draftEditor == nil
+            && LibraryViewRegistry.module(for: model.sidebarSelection)?.hidesDocumentList != true
+    }
+
     private var peekSidebar: some View {
         HStack(spacing: 0) {
-            if showsPeekSidebar {
-                SidebarView()
-                    .scrollContentBackground(.hidden)
-                    .frame(width: 220)
-                    .background(.regularMaterial)
-                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0,
-                                                      bottomTrailingRadius: 12, topTrailingRadius: 12))
-                    .shadow(radius: 8, x: 2, y: 0)
-                    .onHover { inside in
-                        inside ? cancelPeekHide() : schedulePeekHide()
-                    }
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-            }
-            Color.clear
-                .frame(width: 16)
-                .contentShape(Rectangle())
-                .onHover { inside in
-                    if inside {
-                        cancelPeekHide()
-                        withAnimation(.easeOut(duration: 0.2)) { showsPeekSidebar = true }
-                    } else {
-                        schedulePeekHide()
+            if showsPeekSidebar || peekIsPinned {
+                HStack(spacing: 0) {
+                    peekSidebarList
+                        .scrollContentBackground(.hidden)
+                        .frame(width: 220)
+                    if (showsPeekList || peekIsPinned) && peekSelectionHasList {
+                        Divider()
+                        listPane
+                            .scrollContentBackground(.hidden)
+                            .frame(width: 240)
                     }
                 }
+                .frame(maxHeight: .infinity)
+                .background(.regularMaterial)
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0,
+                                                  bottomTrailingRadius: 12, topTrailingRadius: 12))
+                .shadow(radius: 8, x: 2, y: 0)
+                .background(HoverSensor { inside in
+                    inside ? cancelPeekHide() : schedulePeekHide()
+                })
+                .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+            HoverSensor { inside in
+                if inside {
+                    cancelPeekHide()
+                    withAnimation(.easeOut(duration: 0.2)) { showsPeekSidebar = true }
+                } else {
+                    schedulePeekHide()
+                }
+            }
+            .frame(width: 16)
         }
         .frame(maxHeight: .infinity)
+        // Opening something from the peek list hands the room back to it.
+        .onChange(of: model.current?.doc.id) { dismissPeek() }
+        .onChange(of: model.draftEditor?.docID) { dismissPeek() }
+        .onChange(of: model.selectedArchivedID) { dismissPeek() }
+    }
+
+    /// The peek's own sidebar: the same places as the split-view sidebar,
+    /// but as explicit buttons — List selection swallows repeat clicks, and
+    /// here every click must answer by unfolding the contents column.
+    private var peekSidebarList: some View {
+        List {
+            ForEach(SidebarCatalog.sections, id: \.title) { section in
+                if section.title.isEmpty {
+                    // Inbox stands alone, as in the split-view sidebar.
+                    Section {
+                        peekRows(of: section)
+                    }
+                } else {
+                    Section(section.title) {
+                        peekRows(of: section)
+                    }
+                }
+            }
+        }
+    }
+
+    private func peekRows(of section: (title: String, places: [SidebarPlace])) -> some View {
+        ForEach(model.shownPlaces(of: section.places)) { place in
+            Button {
+                model.sidebarSelection = place.item
+                revealPeekListIfAvailable()
+            } label: {
+                Label(place.name, systemImage: place.systemImage)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .listRowBackground(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(model.sidebarSelection == place.item
+                          ? AnyShapeStyle(.selection) : AnyShapeStyle(.clear))
+            )
+        }
+    }
+
+    /// Whole-library views have no contents list to unfold; everything
+    /// else answers a click with the same list the split view would show.
+    private var peekSelectionHasList: Bool {
+        LibraryViewRegistry.module(for: model.sidebarSelection)?.hidesDocumentList != true
+    }
+
+    private func revealPeekListIfAvailable() {
+        guard showsPeekSidebar, peekSelectionHasList else { return }
+        withAnimation(.easeOut(duration: 0.2)) { showsPeekList = true }
+    }
+
+    private func dismissPeek() {
+        guard showsPeekSidebar else { return }
+        peekHideTask?.cancel()
+        withAnimation(.easeOut(duration: 0.25)) {
+            showsPeekSidebar = false
+            showsPeekList = false
+        }
     }
 
     /// A short grace period, so the pointer can travel from the edge strip
@@ -186,7 +253,10 @@ struct ContentView: View {
         peekHideTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.25)) { showsPeekSidebar = false }
+            withAnimation(.easeOut(duration: 0.25)) {
+                showsPeekSidebar = false
+                showsPeekList = false
+            }
         }
     }
 
@@ -194,11 +264,57 @@ struct ContentView: View {
         peekHideTask?.cancel()
     }
 
+    /// Find, framed at the foot of the letters list — it narrows the
+    /// list to matching title, author, or text — with New Document
+    /// beside it, the visible twin of ⌘N now that the toolbar is bare.
+    private var findBar: some View {
+        @Bindable var model = model
+        return HStack(spacing: 8) {
+            HStack(spacing: 5) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Find", text: $model.searchText)
+                    .textFieldStyle(.plain)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 7).fill(.background))
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(.quaternary))
+            Button {
+                model.newDraft()
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("New Document (⌘N)")
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+    }
+
     @ViewBuilder private var listPane: some View {
-        if model.sidebarSelection == .drafts {
-            DraftListView()
+        if model.sidebarSelection == .notes {
+            NotesListView()
+        } else if model.sidebarSelection == .noteLocations {
+            NotesByLocationView()
+        } else if model.sidebarSelection == .notePeople {
+            NotesByPeopleView()
+        } else if model.sidebarSelection == .filedNotes {
+            NotesFiledView()
+        } else if model.sidebarSelection == .drafts {
+            DraftListView(kind: .letters)
+        } else if model.sidebarSelection == .transcriptDrafts {
+            DraftListView(kind: .transcripts)
         } else if model.sidebarSelection == .published {
-            PublishedListView()
+            PublishedListView(kind: .letters)
+        } else if model.sidebarSelection == .transcriptsPublished {
+            PublishedListView(kind: .transcripts)
+        } else if model.sidebarSelection == .bookDrafts {
+            DraftListView(kind: .books)
+        } else if model.sidebarSelection == .booksPublished {
+            PublishedListView(kind: .books)
         } else if model.sidebarSelection == .archived {
             ArchivedListView()
         } else if model.index.folderURL == nil {
@@ -211,8 +327,18 @@ struct ContentView: View {
             }
         } else {
             switch model.sidebarSelection {
-            case .letters:
+            case .inbox:
+                InboxListView()
+            case .filedReceived:
+                LettersListView(scope: .received)
+            case .filed:
                 LettersListView()
+            case .filedOutgoing:
+                LettersListView(scope: .outgoing)
+            case .filedBooks:
+                LettersListView(scope: .books)
+            case .transcriptExtracts:
+                ExtractsListView()
             case .transcripts:
                 TranscriptsView()
             case .extracts:
@@ -232,7 +358,25 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var detailPane: some View {
-        if model.sidebarSelection == .archived {
+        if let selection = model.sidebarSelection,
+           [.notes, .noteLocations, .notePeople, .filedNotes].contains(selection) {
+            if let id = model.selectedNoteID,
+               let editor = model.draftEditor, editor.docID == id {
+                // A desk note opens straight into the editor.
+                DraftEditorView(editor: editor)
+                    .id(id)
+            } else if let id = model.selectedNoteID,
+                      let doc = model.filteredNotes.first(where: { $0.id == id }) {
+                NoteReadingView(doc: doc)
+                    .id(doc.id)
+            } else {
+                ContentUnavailableView(
+                    "No Note Selected",
+                    systemImage: "note.text",
+                    description: Text("Select a note, or create one — notes made by voice arrive here through the community folder.")
+                )
+            }
+        } else if model.sidebarSelection == .archived {
             if let doc = model.drafts.archived.first(where: { $0.id == model.selectedArchivedID }) {
                 ArchivedDocumentView(doc: doc)
                     .id(doc.id)
@@ -243,7 +387,8 @@ struct ContentView: View {
                     description: Text("Select an archived document to read it or return it to Drafts.")
                 )
             }
-        } else if model.sidebarSelection == .drafts {
+        } else if model.sidebarSelection == .drafts || model.sidebarSelection == .transcriptDrafts
+                    || model.sidebarSelection == .bookDrafts {
             if let editor = model.draftEditor {
                 DraftEditorView(editor: editor)
                     .id(editor.docID)
@@ -272,3 +417,37 @@ struct ContentView: View {
         }
     }
 }
+/// AppKit-backed hover detection. SwiftUI's `onHover` is unreliable on
+/// fully transparent views on macOS — transparent pixels can fall out of
+/// hit-testing — and the full-screen doorway must never miss. A real
+/// NSTrackingArea is geometric: it fires no matter what is drawn.
+private struct HoverSensor: NSViewRepresentable {
+    let onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> TrackingView {
+        let view = TrackingView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ view: TrackingView, context: Context) {
+        view.onChange = onChange
+    }
+
+    final class TrackingView: NSView {
+        var onChange: ((Bool) -> Void)?
+
+        override func updateTrackingAreas() {
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(
+                rect: .zero,
+                options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                owner: self, userInfo: nil))
+            super.updateTrackingAreas()
+        }
+
+        override func mouseEntered(with event: NSEvent) { onChange?(true) }
+        override func mouseExited(with event: NSEvent) { onChange?(false) }
+    }
+}
+
