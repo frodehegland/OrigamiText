@@ -666,23 +666,34 @@ final class AppModel {
                          fileURL: Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true))
     }
 
-    /// Opens an EPUB in the faithful WebView reader: the package is unpacked
-    /// into the app container (once per identity), then paper.html is shown
-    /// as authored. The book is remembered in the reader's library, so it
-    /// lists in the Inbox (when authored by someone else) and reopens later.
-    func openEPUBFile(at url: URL) {
+    /// Unpacks an EPUB into the app container (once per identity) and remembers
+    /// it in the reader's library, so it appears in the Files list — without
+    /// opening it in the reader. Reused by the open path and by the community
+    /// folder scan. Already-imported, still-unpacked books are reused as-is,
+    /// so a rescan never re-unpacks. Returns the record, or nil on failure.
+    @discardableResult
+    func importEPUB(at url: URL) -> EPUBRecord? {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        do {
-            // A stable folder per EPUB identity, so reopening reuses it and
-            // two different books never collide.
-            let name = url.deletingPathExtension().lastPathComponent
-            let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
-            let safe = identity.replacingOccurrences(of: "/", with: "_")
-                .replacingOccurrences(of: ":", with: "_")
-            let directory = Self.epubsRoot.appendingPathComponent(safe, isDirectory: true)
-            let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: directory)
 
+        // A stable folder per EPUB identity, so reopening reuses it and two
+        // different books never collide.
+        let name = url.deletingPathExtension().lastPathComponent
+        let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
+        let safe = identity.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        let directory = Self.epubsRoot.appendingPathComponent(safe, isDirectory: true)
+
+        // Already known and still on disk? Keep the existing record — no
+        // re-unpack, and its read/unread state is preserved.
+        if let existing = epubRecords.first(where: { $0.folder == safe }),
+           FileManager.default.fileExists(atPath:
+                directory.appendingPathComponent(existing.contentSubpath).path) {
+            return existing
+        }
+
+        do {
+            let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: directory)
             // The Visual-Meta gives the book its identity, author, and date.
             let meta = try? OrigamiEPUBImporter.importDocument(at: url)
             let bookID = meta?.origamiID ?? identity
@@ -695,20 +706,20 @@ final class AppModel {
             epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
             epubRecords.insert(record, at: 0)
             persistEPUBRecords()
-
-            openEPUB = OpenEPUB(id: safe, title: unpacked.title,
-                                content: unpacked.content, base: unpacked.base)
-            markRead(epubListingDoc(record))
-            let equationCount = meta?.equations.count ?? 0
-            if equationCount > 0 {
-                showNote("Opened “\(unpacked.title)” — \(equationCount) equation\(equationCount == 1 ? "" : "s")")
-            } else {
-                showNote("Opened “\(unpacked.title)”")
-            }
+            return record
         } catch {
             NSSound.beep()
-            showNote("Could not open “\(url.lastPathComponent)”: \(error.localizedDescription)")
+            showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
+            return nil
         }
+    }
+
+    /// Opens an EPUB in the faithful WebView reader: imports it (unpacking as
+    /// needed), then shows paper.html as authored. Opening marks it read.
+    func openEPUBFile(at url: URL) {
+        guard let record = importEPUB(at: url) else { return }
+        openStoredEPUB(record)
+        showNote("Opened “\(record.title)”")
     }
 
     /// Reopens a remembered EPUB from its unpacked folder in the container.
@@ -882,11 +893,27 @@ final class AppModel {
 
     private static let bookmarkKey = "communityFolderBookmark"
     private var securityScopedFolder: URL?
+    #if os(macOS)
+    /// Watches the community folder for EPUBs arriving (an export from Author,
+    /// or an iCloud sync landing) so the Files list stays current live.
+    private var epubFolderWatcher: FolderWatcher?
+    #endif
 
     func restoreFolderAccess() {
-        // EPUB-only: the community folder of `.origamitext` (JSON) documents
-        // is no longer indexed or listed, so nothing is restored or scanned
-        // on launch. Reading is around EPUBs and their Visual-Meta.
+        // Restore the chosen community folder on launch: reopen its
+        // security scope, re-establish the index and the EPUB watch, and scan
+        // for EPUBs already sitting in it (typically an iCloud folder the
+        // community publishes into).
+        guard securityScopedFolder == nil,
+              let data = UserDefaults.standard.data(forKey: Self.bookmarkKey) else { return }
+        var isStale = false
+        guard let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope],
+                                 relativeTo: nil, bookmarkDataIsStale: &isStale),
+              url.startAccessingSecurityScopedResource() else { return }
+        securityScopedFolder = url
+        index.setFolder(url)
+        watchCommunityFolderForEPUBs(url)
+        scanCommunityFolderForEPUBs()
     }
 
     func chooseFolder() {
@@ -894,7 +921,7 @@ final class AppModel {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Choose the community folder containing Origami Documents (.origamitext)."
+        panel.message = "Choose the folder your community publishes EPUBs into — typically an iCloud folder."
         panel.prompt = "Choose"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         saveBookmark(for: url)
@@ -903,6 +930,37 @@ final class AppModel {
         securityScopedFolder = url
         index.setFolder(url)
         shareContacts(into: url)
+        watchCommunityFolderForEPUBs(url)
+        scanCommunityFolderForEPUBs()
+    }
+
+    /// Watches the community folder and rescans it for EPUBs when its contents
+    /// change (a new export, an iCloud download completing).
+    private func watchCommunityFolderForEPUBs(_ folder: URL) {
+        #if os(macOS)
+        epubFolderWatcher?.stop()
+        epubFolderWatcher = FolderWatcher(url: folder) { [weak self] in
+            Task { @MainActor in self?.scanCommunityFolderForEPUBs() }
+        }
+        #endif
+    }
+
+    /// Imports every EPUB found in the community folder into the Files list.
+    /// New books arrive unread (bold) until opened; ones already imported are
+    /// left untouched. iCloud placeholders are nudged to download, and the
+    /// folder watch rescans once they land.
+    func scanCommunityFolderForEPUBs() {
+        guard let folder = index.folderURL else { return }
+        LibraryScanner.requestICloudDownloads(in: folder)
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return }
+        for case let url as URL in enumerator
+        where url.pathExtension.lowercased() == "epub" {
+            importEPUB(at: url)
+        }
     }
 
     // Write access matters: the folder carries the community's contact

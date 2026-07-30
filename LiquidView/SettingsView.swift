@@ -665,9 +665,13 @@ private struct LibrarySettingsView: View {
                         .truncationMode(.middle)
                         .foregroundStyle(.secondary)
                 }
-                Button("Choose Community Folder…") { model.chooseFolder() }
+                HStack {
+                    Button("Choose Community Folder…") { model.chooseFolder() }
+                    Button("Rescan for EPUBs") { model.scanCommunityFolderForEPUBs() }
+                        .disabled(model.index.folderURL == nil)
+                }
             } footer: {
-                Text("The shared folder of Origami Documents that is the library — typically an iCloud folder your community publishes into. The folder of documents is the library; choosing a different folder changes what the whole app shows.")
+                Text("The shared folder your community publishes EPUBs into — typically an iCloud folder. EPUBs found here appear in the Files list (unread ones in bold). New exports and iCloud downloads are picked up automatically; use Rescan if one has not appeared yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
