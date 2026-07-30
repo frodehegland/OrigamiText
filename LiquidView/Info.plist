@@ -6,19 +6,19 @@
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>Origami Document</string>
+			<string>EPUB</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
-			<string>Owner</string>
+			<string>Alternate</string>
 			<key>LSItemContentTypes</key>
 			<array>
-				<string>info.futuretextlab.origami-doc</string>
+				<string>org.idpf.epub-container</string>
 			</array>
 		</dict>
 	</array>
 	<key>CFBundleIconName</key>
-	<string>Ori-logo</string>
+	<string>Ori-logo-2</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

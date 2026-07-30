@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 /// A quotation copied with Reader's "Copy Quote" from a PDF carrying
 /// Visual-Meta: curly-quoted text, an attribution line, and a locator line
@@ -114,5 +115,120 @@ nonisolated enum ReaderQuoteParser {
         }
 
         return ReaderQuote(quote: quote, author: author, title: title, page: page, created: created)
+    }
+}
+
+// MARK: - Copy as Quote: the three-flavour citation clipboard
+
+/// One "Copy as Quote" citation. Written to the clipboard in three flavours
+/// (private JSON, HTML hyperlink, clean plain text) so the same command is a
+/// clean citation in Word and a full-fidelity link in Origami Text / Author.
+nonisolated struct OrigamiCitation: Codable, Sendable {
+    /// The target document's address.
+    var to: String
+    /// The paragraph id within the target, when the cite is paragraph- or
+    /// span-scoped.
+    var fragment: String?
+    /// Link kind; defaults to `cites`.
+    var rel: String?
+    /// The quoted words (a selection) or the document title (a whole-doc cite)
+    /// — what appears in quotation marks.
+    var quotedText: String
+    var author: String
+    var year: String
+    /// The citation's BibTeX, when known — carried for full provenance.
+    var bibtex: String?
+
+    /// The address as written in the body: `to` or `to#fragment`.
+    var address: String { to + (fragment.map { "#\($0)" } ?? "") }
+
+    /// The `origamitext://` URL used in the HTML hyperlink flavour.
+    var url: String { "origamitext://open/\(address)" }
+
+    /// The clean, visible sentence — no machine token — for Word and plain text:
+    /// “Quoted” (Author, Year).
+    var displaySentence: String { "“\(quotedText)” (\(author), \(year))" }
+
+    /// The form inserted into an Origami/Author draft: the sentence plus the
+    /// bracketed address, so the editor makes a span-scoped `cites` link on
+    /// save (the quotation before the address becomes the span).
+    var insertionText: String { "\(displaySentence) [\(address)]" }
+}
+
+/// Reads and writes "Copy as Quote" on the general pasteboard, in three
+/// flavours. Readers take the richest available: private JSON → HTML
+/// hyperlink → plain text.
+@MainActor
+enum CitationClipboard {
+    /// The private pasteboard type carrying the full citation as JSON.
+    static let typeName = "info.futuretextlab.origami-citation"
+    static var type: NSPasteboard.PasteboardType { .init(typeName) }
+
+    static func write(_ citation: OrigamiCitation) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(citation.displaySentence, forType: .string)
+        pasteboard.setString(html(for: citation), forType: .html)
+        if let data = try? JSONEncoder().encode(citation) {
+            pasteboard.setData(data, forType: type)
+        }
+    }
+
+    /// The full citation on the clipboard, if any — private JSON first, then
+    /// the HTML hyperlink. `matchingPlainText`, when given, gates on the
+    /// pasteboard's plain string equalling the just-inserted text, so a
+    /// citation is only consumed on an actual paste of it, never mid-typing.
+    static func read(matchingPlainText plain: String? = nil) -> OrigamiCitation? {
+        let pasteboard = NSPasteboard.general
+        if let plain {
+            let current = pasteboard.string(forType: .string)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard current == plain.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        }
+        if let data = pasteboard.data(forType: type),
+           let citation = try? JSONDecoder().decode(OrigamiCitation.self, from: data) {
+            return citation
+        }
+        if let html = pasteboard.string(forType: .html) {
+            return fromHTML(html)
+        }
+        return nil
+    }
+
+    static func html(for citation: OrigamiCitation) -> String {
+        "<a href=\"\(citation.url)\">\(htmlEscaped(citation.displaySentence))</a>"
+    }
+
+    /// Recovers a citation from an HTML hyperlink whose href is an
+    /// `origamitext://` URL — the lossy fallback (no BibTeX); the link's
+    /// visible text is the quote.
+    private static func fromHTML(_ html: String) -> OrigamiCitation? {
+        guard let expression = try? NSRegularExpression(
+            pattern: "<a[^>]*href=\"origamitext://open/([^\"#]+)(?:#([^\"]+))?\"[^>]*>(.*?)</a>",
+            options: [.dotMatchesLineSeparators, .caseInsensitive]),
+              let match = expression.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let toRange = Range(match.range(at: 1), in: html) else { return nil }
+        let to = String(html[toRange])
+        let fragment = Range(match.range(at: 2), in: html).map { String(html[$0]) }
+        let visible = Range(match.range(at: 3), in: html)
+            .map { htmlStripped(String(html[$0])) } ?? ""
+        return OrigamiCitation(to: to, fragment: fragment, rel: "cites",
+                               quotedText: visible, author: "", year: "", bibtex: nil)
+    }
+
+    private static func htmlEscaped(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    private static func htmlStripped(_ text: String) -> String {
+        text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

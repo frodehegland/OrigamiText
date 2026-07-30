@@ -27,6 +27,10 @@ enum AppSettings {
     static let portraitStyleKey = "portraitStyle"
     static let portraitPromptKey = "portraitPrompt"
     static let portraitInstantProcessingKey = "portraitInstantProcessing"
+    static let verifyCrossrefKey = "verifyReferencesCrossref"
+    static let readerThemeKey = "readerTheme"
+    static let readerBodyFontKey = "readerBodyFont"
+    static let readerHeadingFontKey = "readerHeadingFont"
     static let readerLayoutStyleKey = "readerLayoutStyle"
     static let readerHeaderColumnWidthKey = "readerHeaderColumnWidth"
     static let connectionPortraitsKey = "connectionPortraits"
@@ -44,7 +48,7 @@ enum ReaderLayoutStyle: String, CaseIterable, Identifiable {
 /// The Settings window's tabs, addressable so other parts of the app can
 /// open Settings onto a particular one.
 enum SettingsTab: Hashable {
-    case author, editor, layout, library, dialog, ai, modules, openSource
+    case author, editor, reading, layout, library, dialog, ai, modules, openSource
 }
 
 /// The app's Settings window (Origami Text → Settings…, ⌘,).
@@ -60,6 +64,9 @@ struct SettingsView: View {
             EditorSettingsView()
                 .tabItem { Label("Editor", systemImage: "square.and.pencil") }
                 .tag(SettingsTab.editor)
+            ReadingSettingsView()
+                .tabItem { Label("Reading", systemImage: "book") }
+                .tag(SettingsTab.reading)
             LayoutSettingsView()
                 .tabItem { Label("Layout", systemImage: "sidebar.right") }
                 .tag(SettingsTab.layout)
@@ -97,6 +104,61 @@ private struct LayoutSettingsView: View {
                 Toggle("Author portraits on connection cards", isOn: $connectionPortraits)
             } footer: {
                 Text("Shows each author's portrait on the cards in the reading margins — the letters this one links to and the letters that link back.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// Reading: how EPUBs are presented — the theme (background and text
+/// colours), which follows light and dark mode.
+private struct ReadingSettingsView: View {
+    @AppStorage(AppSettings.readerThemeKey)
+    private var readerTheme = ReaderTheme.highContrast.rawValue
+    @AppStorage(AppSettings.readerBodyFontKey)
+    private var bodyFont = ReaderStyle.defaultBodyFont
+    @AppStorage(AppSettings.readerHeadingFontKey)
+    private var headingFont = ReaderStyle.defaultHeadingFont
+
+    private let families = NSFontManager.shared.availableFontFamilies.sorted()
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Theme", selection: $readerTheme) {
+                    ForEach(ReaderTheme.allCases) { theme in
+                        Text(theme.displayName).tag(theme.rawValue)
+                    }
+                }
+                .pickerStyle(.inline)
+            } header: {
+                Text("Theme")
+            } footer: {
+                Text("The page's background and text colours when reading an EPUB. Text colour applies to headings too; themes follow light and dark mode.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Picker("Body", selection: $bodyFont) {
+                    ForEach(families, id: \.self) { family in
+                        Text(family).font(.custom(family, size: 13)).tag(family)
+                    }
+                }
+                Picker("Headings", selection: $headingFont) {
+                    ForEach(families, id: \.self) { family in
+                        Text(family).font(.custom(family, size: 13)).tag(family)
+                    }
+                }
+                Button("Reset to Times / Georgia") {
+                    bodyFont = ReaderStyle.defaultBodyFont
+                    headingFont = ReaderStyle.defaultHeadingFont
+                }
+            } header: {
+                Text("Fonts")
+            } footer: {
+                Text("Any font installed on this Mac. Defaults are Times for body and Georgia for headings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -644,6 +706,7 @@ private struct LibrarySettingsView: View {
 private struct EditorSettingsView: View {
     @AppStorage(AppSettings.hideHeadingMarkersKey) private var hideHeadingMarkers = true
     @AppStorage(AppSettings.fullScreenContentWidthKey) private var fullScreenContentWidth = 760.0
+    @AppStorage(AppSettings.verifyCrossrefKey) private var verifyCrossref = true
 
     var body: some View {
         Form {
@@ -651,6 +714,15 @@ private struct EditorSettingsView: View {
                 Toggle("Hide # heading markers while editing", isOn: $hideHeadingMarkers)
             } footer: {
                 Text("Heading lines keep their #, ##, or ### in the saved document; this only hides the markers in the editor. When shown, markers appear dimmed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Verify references with Crossref", isOn: $verifyCrossref)
+            } header: {
+                Text("Reference verification")
+            } footer: {
+                Text("Preflight checks each reference before export against these services and shows what they return so you can correct titles, authors, years, and DOIs. Crossref is a free scholarly metadata service (api.crossref.org); queries send only the reference's title and authors.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -30,6 +30,17 @@ enum SidebarItem: Hashable {
     case bookDrafts
     case booksPublished
     case filedBooks
+    // Files: opened EPUBs, all or by folder
+    case epubsAll
+    case epubFolder(String)
+    // Views: ways into the opened EPUBs by who and what they hold.
+    // Authors is automatic (the authors of record); People and Concepts
+    // are user-curated buckets, added the way folders are.
+    case authors
+    case people
+    case person(String)
+    case concepts
+    case concept(String)
     // Reachable by code, not from the sidebar: Everything as a reading
     // context, and the drafts shelf.
     case allDocuments
@@ -65,7 +76,7 @@ final class AppModel {
         let token: UUID
     }
 
-    var sidebarSelection: SidebarItem? = .timeline {
+    var sidebarSelection: SidebarItem? = .epubsAll {
         didSet {
             if oldValue != sidebarSelection { previousSidebarSelection = oldValue }
         }
@@ -93,6 +104,12 @@ final class AppModel {
 
     var showLinksInspector = false
     var showXRExport = false
+    /// The EPUB currently open in the faithful WebView reader, if any. When
+    /// set, the detail pane renders it; navigating anywhere else clears it.
+    var openEPUB: OpenEPUB?
+    /// The reader's most recent text selection, reported by the Step 0
+    /// bridge. The seam for select-and-act and reading-as-making.
+    var lastEPUBSelection: String?
     /// A blank contact record being created via File → New Author.
     var newAuthor: Person?
     var searchText = ""
@@ -132,6 +149,7 @@ final class AppModel {
     // MARK: - Opening and following
 
     func open(_ doc: LiquidDoc, fragment: String? = nil, span: String? = nil) {
+        openEPUB = nil   // opening a library document leaves the EPUB reader
         // Reading marks read — but only once the reader moves on.
         // Marking at once would drop the letter out of Unread (and its
         // bolding everywhere) while it is still being read.
@@ -314,7 +332,30 @@ final class AppModel {
         let others = filteredEntries.filter { !authorIdentity.matches(author: $0.doc.author) }
         let unread = others.filter { isUnread($0.doc) }
         let read = others.filter { !isUnread($0.doc) }.prefix(20)
-        return unread + read
+        var result = Array(unread) + Array(read)
+        // Opened EPUBs authored by someone else join the inbox, newest
+        // first, without duplicating anything the index already holds. When
+        // there are none from others, the inbox is empty.
+        for entry in epubEntries
+        where !isOwnAuthor(entry.doc.author)
+            && !result.contains(where: { $0.id == entry.id }) {
+            result.insert(entry, at: 0)
+        }
+        return result
+    }
+
+    /// Whether an author name is the user's own, tolerant of middle names
+    /// and initials — "Frode Hegland" recognises "Frode Alexander Hegland"
+    /// and vice versa, so a book the user wrote never lands in their inbox.
+    private func isOwnAuthor(_ name: String) -> Bool {
+        if authorIdentity.matches(author: name) { return true }
+        func tokens(_ string: String) -> Set<String> {
+            Set(string.lowercased().split { !$0.isLetter }.map(String.init))
+        }
+        let mine = tokens(authorName)
+        let theirs = tokens(name)
+        guard !mine.isEmpty, !theirs.isEmpty else { return false }
+        return mine.isSubset(of: theirs) || theirs.isSubset(of: mine)
     }
 
     /// Bold on the sidebar's Inbox while anything unread waits.
@@ -557,19 +598,284 @@ final class AppModel {
     }
 
     func openFile(at url: URL) {
+        // Origami Text is an EPUB reader now: an EPUB opens in the faithful
+        // WebView reader; anything else (including native JSON documents) is
+        // declined.
+        guard url.pathExtension.lowercased() == "epub" else {
+            NSSound.beep()
+            showNote("Origami Text opens EPUB files.")
+            return
+        }
+        openEPUBFile(at: url)
+    }
+
+    // MARK: - EPUB library (opened EPUBs, remembered internally)
+
+    /// The root under the app container where opened EPUBs are unpacked and
+    /// the library manifest lives.
+    private static var epubsRoot: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("EPUBs", isDirectory: true)
+    }
+
+    private static var epubManifestURL: URL {
+        epubsRoot.appendingPathComponent("library.json")
+    }
+
+    /// Every EPUB the user has opened, newest first. Persisted internally —
+    /// no `.origamitext` is written.
+    private(set) var epubRecords: [EPUBRecord] = AppModel.loadEPUBRecords()
+
+    private static func loadEPUBRecords() -> [EPUBRecord] {
+        guard let data = try? Data(contentsOf: epubManifestURL),
+              let records = try? JSONDecoder().decode([EPUBRecord].self, from: data)
+        else { return [] }
+        return records.sorted { $0.openedAt > $1.openedAt }
+    }
+
+    private func persistEPUBRecords() {
+        try? FileManager.default.createDirectory(at: Self.epubsRoot, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(epubRecords) {
+            try? data.write(to: Self.epubManifestURL, options: .atomic)
+        }
+    }
+
+    /// The opened EPUBs as library entries, for the lists that show them.
+    var epubEntries: [IndexEntry] {
+        epubRecords.map { IndexEntry(doc: epubListingDoc($0)) }
+    }
+
+    /// An opened EPUB is unread until it has been opened in the reader —
+    /// the Files list shows unread records bold. The user's own authored
+    /// EPUBs are never unread.
+    func isUnread(_ record: EPUBRecord) -> Bool {
+        isUnread(epubListingDoc(record))
+    }
+
+    /// A lightweight library document standing for an opened EPUB — metadata
+    /// only (no body); the words live in the rendered page.
+    private func epubListingDoc(_ record: EPUBRecord) -> LiquidDoc {
+        let created = record.dateISO.flatMap(LiquidDoc.parseISO8601) ?? record.openedAt
+        return LiquidDoc(format: LiquidDoc.knownFormat, id: record.id, title: record.title,
+                         author: record.author, created: created, body: [], links: [], wraps: nil,
+                         date: record.dateISO.flatMap(LiquidDate.init(isoString:)),
+                         documentType: LiquidDoc.DocumentType.book.rawValue,
+                         fileURL: Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true))
+    }
+
+    /// Opens an EPUB in the faithful WebView reader: the package is unpacked
+    /// into the app container (once per identity), then paper.html is shown
+    /// as authored. The book is remembered in the reader's library, so it
+    /// lists in the Inbox (when authored by someone else) and reopens later.
+    func openEPUBFile(at url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
-            let data = try Data(contentsOf: url)
-            let doc = try LiquidDoc.decode(data: data, fileURL: url)
-            // Prefer the indexed copy so backlinks and revision state stay consistent.
-            if let entry = index.byID[doc.id], entry.doc.fileURL == doc.fileURL {
-                open(entry.doc)
+            // A stable folder per EPUB identity, so reopening reuses it and
+            // two different books never collide.
+            let name = url.deletingPathExtension().lastPathComponent
+            let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
+            let safe = identity.replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: ":", with: "_")
+            let directory = Self.epubsRoot.appendingPathComponent(safe, isDirectory: true)
+            let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: directory)
+
+            // The Visual-Meta gives the book its identity, author, and date.
+            let meta = try? OrigamiEPUBImporter.importDocument(at: url)
+            let bookID = meta?.origamiID ?? identity
+            let contentSubpath = unpacked.content.path
+                .replacingOccurrences(of: directory.path + "/", with: "")
+            let record = EPUBRecord(id: bookID, title: unpacked.title,
+                                    author: meta?.author ?? "Unknown",
+                                    dateISO: meta?.date, folder: safe,
+                                    contentSubpath: contentSubpath, openedAt: .now)
+            epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
+            epubRecords.insert(record, at: 0)
+            persistEPUBRecords()
+
+            openEPUB = OpenEPUB(id: safe, title: unpacked.title,
+                                content: unpacked.content, base: unpacked.base)
+            markRead(epubListingDoc(record))
+            let equationCount = meta?.equations.count ?? 0
+            if equationCount > 0 {
+                showNote("Opened “\(unpacked.title)” — \(equationCount) equation\(equationCount == 1 ? "" : "s")")
             } else {
-                open(doc)
+                showNote("Opened “\(unpacked.title)”")
             }
         } catch {
             NSSound.beep()
             showNote("Could not open “\(url.lastPathComponent)”: \(error.localizedDescription)")
         }
+    }
+
+    /// Reopens a remembered EPUB from its unpacked folder in the container.
+    func openStoredEPUB(_ record: EPUBRecord) {
+        let base = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+        let content = base.appendingPathComponent(record.contentSubpath)
+        guard FileManager.default.fileExists(atPath: content.path) else {
+            NSSound.beep()
+            showNote("“\(record.title)” is no longer unpacked — open the EPUB file again.")
+            return
+        }
+        openEPUB = OpenEPUB(id: record.folder, title: record.title, content: content, base: base)
+        markRead(epubListingDoc(record))
+    }
+
+    // MARK: - Filing opened EPUBs
+
+    /// Folders the user has made for filing opened EPUBs. "All" is implicit
+    /// (every opened EPUB); these are the named folders below it.
+    private(set) var epubFolders: [String] =
+        UserDefaults.standard.stringArray(forKey: "epubFolders") ?? []
+
+    /// Which folder each opened EPUB is filed under, by record id.
+    private(set) var epubFiling: [String: String] =
+        (UserDefaults.standard.dictionary(forKey: "epubFiling") as? [String: String]) ?? [:]
+
+    func addEPUBFolder(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+              !epubFolders.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame })
+        else { return }
+        epubFolders.append(trimmed)
+        UserDefaults.standard.set(epubFolders, forKey: "epubFolders")
+    }
+
+    func fileEPUB(_ id: String, under folder: String) {
+        epubFiling[id] = folder
+        UserDefaults.standard.set(epubFiling, forKey: "epubFiling")
+    }
+
+    func unfileEPUB(_ id: String) {
+        guard epubFiling.removeValue(forKey: id) != nil else { return }
+        UserDefaults.standard.set(epubFiling, forKey: "epubFiling")
+    }
+
+    /// The folder an opened EPUB is filed under, if any.
+    func epubFolder(for id: String) -> String? { epubFiling[id] }
+
+    /// Opened EPUBs, all of them or just those filed under `folder`.
+    func epubRecords(inFolder folder: String?) -> [EPUBRecord] {
+        guard let folder else { return epubRecords }
+        return epubRecords.filter { epubFiling[$0.id] == folder }
+    }
+
+    // MARK: - Views (Authors, People, Concepts)
+
+    /// The distinct authors of the opened EPUBs, alphabetically — the
+    /// "Authors" view. Built from the records' author of record; nothing
+    /// the user has to curate.
+    var epubAuthors: [String] {
+        let names = Set(epubRecords.map(\.author)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty })
+        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// The opened EPUBs by a given author of record.
+    func epubRecords(byAuthor author: String) -> [EPUBRecord] {
+        epubRecords.filter { $0.author.caseInsensitiveCompare(author) == .orderedSame }
+    }
+
+    /// People the user is tracking across the library — added by hand the
+    /// way folders are. (Automatic extraction of names from the EPUBs is a
+    /// later step; these are the user's own for now.)
+    private(set) var viewPeople: [String] =
+        UserDefaults.standard.stringArray(forKey: "viewPeople") ?? []
+
+    /// Concepts the user is tracking across the library — added by hand,
+    /// like folders and people. (Pulling concepts out of the EPUBs is a
+    /// later step.)
+    private(set) var viewConcepts: [String] =
+        UserDefaults.standard.stringArray(forKey: "viewConcepts") ?? []
+
+    func addPerson(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+              !viewPeople.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame })
+        else { return }
+        viewPeople.append(trimmed)
+        viewPeople.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        UserDefaults.standard.set(viewPeople, forKey: "viewPeople")
+    }
+
+    func removePerson(_ name: String) {
+        guard let index = viewPeople.firstIndex(where: { $0.caseInsensitiveCompare(name) == .orderedSame })
+        else { return }
+        viewPeople.remove(at: index)
+        UserDefaults.standard.set(viewPeople, forKey: "viewPeople")
+    }
+
+    func addConcept(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+              !viewConcepts.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame })
+        else { return }
+        viewConcepts.append(trimmed)
+        viewConcepts.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        UserDefaults.standard.set(viewConcepts, forKey: "viewConcepts")
+    }
+
+    func removeConcept(_ name: String) {
+        guard let index = viewConcepts.firstIndex(where: { $0.caseInsensitiveCompare(name) == .orderedSame })
+        else { return }
+        viewConcepts.remove(at: index)
+        UserDefaults.standard.set(viewConcepts, forKey: "viewConcepts")
+    }
+
+    /// Asks for a person's name and adds them to the People view.
+    func promptNewPerson() {
+        guard let name = promptForName(title: "Add Person",
+                                       message: "Name a person to track across the library.",
+                                       placeholder: "Person’s name") else { return }
+        addPerson(name)
+    }
+
+    /// Asks for a concept and adds it to the Concepts view.
+    func promptNewConcept() {
+        guard let name = promptForName(title: "Add Concept",
+                                       message: "Name a concept to track across the library.",
+                                       placeholder: "Concept") else { return }
+        addConcept(name)
+    }
+
+    /// A one-field naming sheet, shared by the People and Concepts adders —
+    /// the same modal the folder adder uses.
+    private func promptForName(title: String, message: String, placeholder: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.placeholderString = placeholder
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
+    }
+
+    /// Asks for a folder name and adds it — optionally filing an EPUB there
+    /// straightaway (used by "New Folder…" in a record's File Under menu).
+    func promptNewEPUBFolder(fileAfter id: String? = nil) {
+        let alert = NSAlert()
+        alert.messageText = "New Folder"
+        alert.informativeText = "Name a folder to file EPUBs under."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.placeholderString = "Folder name"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        addEPUBFolder(name)
+        if let id { fileEPUB(id, under: name) }
     }
 
     // MARK: - Community folder access
@@ -578,18 +884,9 @@ final class AppModel {
     private var securityScopedFolder: URL?
 
     func restoreFolderAccess() {
-        guard index.folderURL == nil,
-              let data = UserDefaults.standard.data(forKey: Self.bookmarkKey) else { return }
-        var isStale = false
-        guard let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope],
-                                 relativeTo: nil, bookmarkDataIsStale: &isStale),
-              url.startAccessingSecurityScopedResource() else { return }
-        securityScopedFolder = url
-        if isStale {
-            saveBookmark(for: url)
-        }
-        index.setFolder(url)
-        shareContacts(into: url)
+        // EPUB-only: the community folder of `.origamitext` (JSON) documents
+        // is no longer indexed or listed, so nothing is restored or scanned
+        // on launch. Reading is around EPUBs and their Visual-Meta.
     }
 
     func chooseFolder() {
@@ -944,6 +1241,7 @@ final class AppModel {
 
     func editDraft(_ doc: LiquidDoc) {
         guard draftEditor?.docID != doc.id else { return }
+        openEPUB = nil   // editing leaves the EPUB reader
         saveDraftIfNeeded()
         draftEditor = DraftEditor(doc: doc)
         selectedDraftID = doc.id
@@ -1029,19 +1327,16 @@ final class AppModel {
     func exportDraft() {
         guard let draftEditor else { return }
         saveDraftIfNeeded()
-        let doc = draftEditor.buildDocument()
-        if doc.documentType == LiquidDoc.DocumentType.book.rawValue {
-            exportEPUB(doc)
-        } else {
-            exportDocument(doc)
-        }
+        // Origami Text authors to EPUB — the format's distributable form —
+        // regardless of the draft's internal kind.
+        exportEPUB(draftEditor.buildDocument())
     }
 
     func export(draft doc: LiquidDoc) {
         if draftEditor?.docID == doc.id {
             exportDraft()
         } else {
-            exportDocument(doc)
+            exportEPUB(doc)
         }
     }
 
@@ -1347,6 +1642,25 @@ final class AppModel {
         }
     }
 
+    /// The File ▸ Open… command. Presents an Open panel for any supported
+    /// file: a native Origami Document opens in place, while an EPUB, PDF,
+    /// Word, Markdown, or transcript file imports into a new draft. Routing
+    /// (open vs. import) is decided by `openFile(at:)`.
+    func openDocumentFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.treatsFilePackagesAsDirectories = false
+        panel.allowedContentTypes = [.epub]
+        panel.message = "Open an EPUB to read it."
+        panel.prompt = "Open"
+        panel.setContentSize(NSSize(width: 450, height: 600))
+        NSApp.activate()
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls { openFile(at: url) }
+    }
+
     /// Imports an Author (.liquid) document, a Markdown (.md) file, or a
     /// Word (.docx/.doc) file as a new draft, ready to edit and export as .origamitext.
     func importDocumentFile() {
@@ -1355,18 +1669,41 @@ final class AppModel {
         panel.canChooseDirectories = true   // .liquid packages show as folders if Author's type isn't registered
         panel.allowsMultipleSelection = false
         panel.treatsFilePackagesAsDirectories = false
-        panel.message = "Choose an Author document (.liquid), an Origami Text EPUB (.epub), a Markdown file (.md), a Word document (.docx), a PDF with a text layer, or a meeting transcript (.txt or .rtf, speaker names before statements) to import."
+        // Keep this short: NSOpenPanel lays the message out on one line and
+        // grows the window to fit it, then won't shrink below that width.
+        panel.message = "Import a Word, Markdown, PDF, or transcript file."
         panel.prompt = "Import"
         // Room to browse. The panel is user-resizable on its own — touching
         // its style mask breaks the sandboxed panel's dragging — and macOS
         // remembers the size and sidebar width the user leaves it with.
-        panel.setContentSize(NSSize(width: 900, height: 600))
+        panel.setContentSize(NSSize(width: 450, height: 600))
         // The sidebar (Favorites and locations) is out of reach: the
         // system panel takes its width from Finder's preference domain
         // (FK_SidebarWidth2 in com.apple.finder), which a sandboxed app
         // cannot write. Users widen it by dragging the divider; macOS
         // keeps it system-wide.
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        importFile(at: url)
+    }
+
+    /// Extensions the importer understands. Anything else opened or dropped
+    /// is treated as a native Origami Document and decoded (see `openFile`).
+    static let importableExtensions: Set<String> = [
+        "epub", "pdf", "doc", "docx", "md", "markdown", "txt", "rtf", "rtfd", "liquid"
+    ]
+
+    /// Imports one file into a new draft — an Origami Text EPUB, a PDF with
+    /// a text layer, a Word or Markdown file, a plain-text or RTF meeting
+    /// transcript, or an Author document. Shared by the Import… panel, files
+    /// opened from Finder or dropped on the app icon, and files dropped into
+    /// the window.
+    func importFile(at url: URL) {
+        // Files arriving by Finder-open or drag carry their sandbox access
+        // as a security-scoped resource; the Import… panel grants access a
+        // different way, so starting it here is harmless there and necessary
+        // for the open/drop paths.
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let title: String
             let author: String
@@ -1377,6 +1714,8 @@ final class AppModel {
             var layouts: [LiquidDoc.Layout] = []
             var mapConnections: [LiquidDoc.MapConnection] = []
             var references: [LiquidDoc.Reference] = []
+            var tables: [LiquidDoc.Table] = []
+            var assets: [LiquidDoc.Asset] = []
             var importedLinks: [LiquidDoc.Link] = []
             var preservedID: String?
             switch url.pathExtension.lowercased() {
@@ -1422,6 +1761,7 @@ final class AppModel {
                 title = result.title
                 author = result.author ?? authorName
                 body = result.body
+                assets = result.assets
             case "epub":
                 // An Origami Text EPUB comes back whole: the body with
                 // its stable paragraph ids, and the Visual-Meta layer —
@@ -1436,6 +1776,8 @@ final class AppModel {
                 layouts = result.layouts
                 mapConnections = result.mapConnections
                 references = result.references
+                tables = result.tables
+                assets = result.assets
                 date = result.date.flatMap(LiquidDate.init(isoString:))
                 documentType = LiquidDoc.DocumentType.book.rawValue
                 // The EPUB names its origami address: the book keeps
@@ -1501,6 +1843,8 @@ final class AppModel {
                                 layouts: layouts,
                                 mapConnections: mapConnections,
                                 references: references,
+                                tables: tables,
+                                assets: assets,
                                 fileURL: drafts.fileURL(for: id))
             try drafts.save(doc)
             // The draft opens where its kind lives on the sidebar.
@@ -2161,11 +2505,11 @@ final class AppModel {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
-        let address = doc.id + (paragraphID.map { "#\($0)" } ?? "")
-        let citation = "“\(doc.title)” (\(doc.author), \(year)) [\(address)]"
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(citation, forType: .string)
+        // Three flavours: clean plain text and an HTML hyperlink for Word and
+        // elsewhere; a private JSON for full fidelity back in Origami/Author.
+        CitationClipboard.write(OrigamiCitation(
+            to: doc.id, fragment: paragraphID, rel: "cites",
+            quotedText: doc.title, author: doc.displayAuthor, year: year, bibtex: nil))
         showNote("Citation copied — paste it into a draft to cite")
     }
 

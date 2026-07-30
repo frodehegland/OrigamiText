@@ -4,8 +4,29 @@ import AppKit
 /// Markdown-aware editing view: heading lines (`# `, `## `, `### `) display
 /// larger and bold as you type, while the underlying text stays plain
 /// markdown. Wraps NSTextView so styling can be reapplied per keystroke.
+/// An image inserted into the editor's text for an `![alt](asset:id)`
+/// marker. It carries the exact marker so the body serializes back to plain
+/// markdown — the text stays the source of truth.
+final class MarkdownImageAttachment: NSTextAttachment {
+    let marker: String
+    init(marker: String, image: NSImage) {
+        self.marker = marker
+        super.init(data: nil, ofType: nil)
+        self.image = image
+        // Scale wide images down to the text measure; keep aspect.
+        let maxWidth: CGFloat = 460
+        let size = image.size
+        let scale = size.width > maxWidth && size.width > 0 ? maxWidth / size.width : 1
+        bounds = CGRect(x: 0, y: 0, width: size.width * scale, height: size.height * scale)
+    }
+    required init?(coder: NSCoder) { marker = ""; super.init(coder: coder) }
+}
+
 struct MarkdownTextEditor: NSViewRepresentable {
     @Binding var text: String
+    /// Resolved images for `asset:` markers, keyed by asset id. Markers
+    /// whose image is here render inline; the rest stay as text.
+    var images: [String: NSImage] = [:]
     var hideHeadingMarkers = true
     /// Called when a pasted citation carries a full record:
     /// (derived address, BibTeX).
@@ -120,36 +141,35 @@ struct MarkdownTextEditor: NSViewRepresentable {
         textView.drawsBackground = false
         scrollView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 20, height: 12)
-        textView.string = text
         context.coordinator.textView = textView
+        context.coordinator.images = images
         context.coordinator.hideHeadingMarkers = hideHeadingMarkers
         context.coordinator.onReference = onReference
         context.coordinator.speakers = speakers
         context.coordinator.onLiftStatement = onLiftStatement
         context.coordinator.contextDoc = contextDoc
         context.coordinator.contextMenuItems = contextMenuItems
-        context.coordinator.applyStyling()
+        context.coordinator.setContent(text)
         return scrollView
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? NSTextView else { return }
         context.coordinator.textView = textView
+        context.coordinator.images = images
         context.coordinator.onReference = onReference
         context.coordinator.speakers = speakers
         context.coordinator.onLiftStatement = onLiftStatement
         context.coordinator.contextDoc = contextDoc
         context.coordinator.contextMenuItems = contextMenuItems
-        var needsRestyle = false
-        if context.coordinator.hideHeadingMarkers != hideHeadingMarkers {
-            context.coordinator.hideHeadingMarkers = hideHeadingMarkers
-            needsRestyle = true
-        }
-        if textView.string != text {
-            textView.string = text
-            needsRestyle = true
-        }
-        if needsRestyle {
+        let headingMarkerToggleChanged = context.coordinator.hideHeadingMarkers != hideHeadingMarkers
+        context.coordinator.hideHeadingMarkers = hideHeadingMarkers
+        // Rebuild only when the model's markdown actually differs from what
+        // the editor holds (serialized back from any inline images) — so a
+        // SwiftUI refresh never clobbers the caret or the user's edits.
+        if context.coordinator.serializedMarkdown() != text {
+            context.coordinator.setContent(text)
+        } else if headingMarkerToggleChanged {
             context.coordinator.applyStyling()
         }
         if claimFocus?.wrappedValue == true {
@@ -173,6 +193,7 @@ struct MarkdownTextEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         private let text: Binding<String>
         weak var textView: NSTextView?
+        var images: [String: NSImage] = [:]
         var hideHeadingMarkers = true
         var onReference: ((String, String) -> Void)?
         var speakers: [String] = []
@@ -189,6 +210,53 @@ struct MarkdownTextEditor: NSViewRepresentable {
 
         init(text: Binding<String>) {
             self.text = text
+        }
+
+        // MARK: - Inline images ↔ markdown
+
+        /// Replaces the editor's contents with `markdown`, rendering each
+        /// `![alt](asset:id)` line whose image is known as an inline image
+        /// (the rest stays text), then styles it.
+        func setContent(_ markdown: String) {
+            guard let storage = textView?.textStorage else { return }
+            storage.setAttributedString(attributedContent(from: markdown))
+            applyStyling()
+        }
+
+        private func attributedContent(from markdown: String) -> NSAttributedString {
+            let result = NSMutableAttributedString()
+            let lines = markdown.components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() {
+                if let reference = LiquidDoc.imageReference(in: line),
+                   let image = images[reference.id] {
+                    let attachment = MarkdownImageAttachment(marker: line, image: image)
+                    result.append(NSAttributedString(attachment: attachment))
+                } else {
+                    result.append(NSAttributedString(string: line))
+                }
+                if index < lines.count - 1 {
+                    result.append(NSAttributedString(string: "\n"))
+                }
+            }
+            return result
+        }
+
+        /// The current contents as markdown — inline images turned back into
+        /// their `![alt](asset:id)` markers. This is what the body binding
+        /// carries, so images never corrupt the source text.
+        func serializedMarkdown() -> String {
+            guard let storage = textView?.textStorage else { return text.wrappedValue }
+            let nsString = storage.string as NSString
+            var out = ""
+            storage.enumerateAttribute(.attachment,
+                                       in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                if let attachment = value as? MarkdownImageAttachment {
+                    out += attachment.marker
+                } else {
+                    out += nsString.substring(with: range)
+                }
+            }
+            return out
         }
 
         /// The hidden "# " marker of the paragraph containing `index`,
@@ -317,7 +385,9 @@ struct MarkdownTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView else { return }
-            text.wrappedValue = textView.string
+            // Serialize so inline images become their markers again, not the
+            // attachment placeholder character.
+            text.wrappedValue = serializedMarkdown()
             let edited = pendingEditedRange
             pendingEditedRange = nil
             // Never restyle mid-composition: dead keys and CJK input hold
@@ -350,7 +420,15 @@ struct MarkdownTextEditor: NSViewRepresentable {
                 }
             }
             let replacement: String?
-            if let quote = ReaderQuoteParser.parse(replacementString) {
+            // A "Copy as Quote" citation on the clipboard: take the richest
+            // flavour (private JSON, else the HTML hyperlink) and insert the
+            // native bracketed form so it becomes a span-scoped cites link.
+            if let citation = CitationClipboard.read(matchingPlainText: replacementString) {
+                replacement = citation.insertionText
+                if let bibtex = citation.bibtex, !bibtex.isEmpty {
+                    onReference?(citation.address, bibtex)
+                }
+            } else if let quote = ReaderQuoteParser.parse(replacementString) {
                 replacement = quote.draftText
                 if let id = quote.derivedID, let bibtex = quote.synthesizedBibTeX {
                     onReference?(id, bibtex)
@@ -404,13 +482,15 @@ struct MarkdownTextEditor: NSViewRepresentable {
             } ?? fullRange
 
             storage.beginEditing()
-            storage.setAttributes([
-                .font: Self.bodyFont,
-                .foregroundColor: NSColor.labelColor,
-                .paragraphStyle: Self.paragraphStyle,
-            ], range: target)
-
             string.enumerateSubstrings(in: target, options: [.byParagraphs]) { substring, range, _, _ in
+                // Leave inline-image paragraphs untouched — a bulk restyle
+                // would strip the attachment and lose the picture.
+                if self.hasAttachment(in: range, storage: storage) { return }
+                storage.setAttributes([
+                    .font: Self.bodyFont,
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: Self.paragraphStyle,
+                ], range: range)
                 guard let substring else { return }
                 let trimmed = substring.trimmingCharacters(in: .whitespaces)
                 let level: Int
@@ -441,6 +521,16 @@ struct MarkdownTextEditor: NSViewRepresentable {
                 }
             }
             storage.endEditing()
+        }
+
+        /// Whether `range` contains a text attachment (an inline image).
+        private func hasAttachment(in range: NSRange, storage: NSTextStorage) -> Bool {
+            guard range.length > 0 else { return false }
+            var found = false
+            storage.enumerateAttribute(.attachment, in: range) { value, _, stop in
+                if value != nil { found = true; stop.pointee = true }
+            }
+            return found
         }
 
         // MARK: - Typography (matches the reading view)

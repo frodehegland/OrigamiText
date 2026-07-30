@@ -173,7 +173,7 @@ extension LiquidDoc {
         let doc: LiquidDoc
         init(_ doc: LiquidDoc) { self.doc = doc }
 
-        enum CodingKeys: String, CodingKey { case format, id, title, author, created, date, body, links, wraps, attention, aiOnBehalf, onBehalfOf, documentType, location, concepts, layouts, connections, references }
+        enum CodingKeys: String, CodingKey { case format, id, title, author, created, date, body, links, wraps, attention, aiOnBehalf, onBehalfOf, documentType, location, concepts, layouts, connections, references, tables, assets }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
@@ -223,6 +223,56 @@ extension LiquidDoc {
             if !doc.references.isEmpty {
                 try container.encode(doc.references.map(OutputReference.init), forKey: .references)
             }
+            if !doc.tables.isEmpty {
+                try container.encode(doc.tables.map(OutputTable.init), forKey: .tables)
+            }
+            if !doc.assets.isEmpty {
+                try container.encode(doc.assets.map(OutputAsset.init), forKey: .assets)
+            }
+        }
+    }
+
+    private nonisolated struct OutputAsset: Encodable {
+        let asset: Asset
+        init(_ asset: Asset) { self.asset = asset }
+
+        enum CodingKeys: String, CodingKey { case id, filename, mediaType, dataBase64, alt }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(asset.id, forKey: .id)
+            try container.encode(asset.filename, forKey: .filename)
+            try container.encode(asset.mediaType, forKey: .mediaType)
+            try container.encode(asset.dataBase64, forKey: .dataBase64)
+            try container.encodeIfPresent(asset.alt, forKey: .alt)
+        }
+    }
+
+    private nonisolated struct OutputTable: Encodable {
+        let table: Table
+        init(_ table: Table) { self.table = table }
+
+        enum CodingKeys: String, CodingKey { case identifier, rowCount, columnCount, cells }
+
+        struct OutputCell: Encodable {
+            let cell: Table.Cell
+            init(_ cell: Table.Cell) { self.cell = cell }
+
+            enum CodingKeys: String, CodingKey { case value, formula }
+
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                try container.encode(cell.value, forKey: .value)
+                try container.encodeIfPresent(cell.formula, forKey: .formula)
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(table.identifier, forKey: .identifier)
+            try container.encode(table.rowCount, forKey: .rowCount)
+            try container.encode(table.columnCount, forKey: .columnCount)
+            try container.encode(table.cells.map { $0.map(OutputCell.init) }, forKey: .cells)
         }
     }
 
@@ -305,7 +355,7 @@ extension LiquidDoc {
         let paragraph: Paragraph
         init(_ paragraph: Paragraph) { self.paragraph = paragraph }
 
-        enum CodingKeys: String, CodingKey { case id, heading, text, speaker }
+        enum CodingKeys: String, CodingKey { case id, heading, text, speaker, tableID }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
@@ -313,6 +363,7 @@ extension LiquidDoc {
             try container.encodeIfPresent(paragraph.heading, forKey: .heading)
             try container.encode(paragraph.text, forKey: .text)
             try container.encodeIfPresent(paragraph.speaker, forKey: .speaker)
+            try container.encodeIfPresent(paragraph.tableID, forKey: .tableID)
         }
     }
 

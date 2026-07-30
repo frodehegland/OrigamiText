@@ -49,6 +49,14 @@ nonisolated enum OrigamiEPUBImporter {
         var layouts: [LiquidDoc.Layout] = []
         var mapConnections: [LiquidDoc.MapConnection] = []
         var references: [LiquidDoc.Reference] = []
+        /// Live tables, keyed by identifier to the body's table paragraphs.
+        var tables: [LiquidDoc.Table] = []
+        /// Mathematics in the document (§8.2): from the Visual-Meta
+        /// equations block when present, else a body scan of `math[id]`.
+        var equations: [EquationEntry] = []
+        /// Images recovered from the body's `<figure>/<img>`, referenced by
+        /// `![alt](asset:id)` markers in the body.
+        var assets: [LiquidDoc.Asset] = []
     }
 
     static func importDocument(at url: URL) throws -> ImportResult {
@@ -132,8 +140,47 @@ nonisolated enum OrigamiEPUBImporter {
             return LiquidDoc.MapConnection(from: from, to: to)
         }
 
-        let body = try bodyParagraphs(fromXHTML: html,
-                                      addressByCitationID: addressByCitationID)
+        // Live tables: the Visual-Meta `tables` array is the raw source
+        // (values and formulas both). The body's <table> elements only
+        // supply placement (their data-table-id links here).
+        let tables: [LiquidDoc.Table] = dictionaries(visualMeta?["tables"]).compactMap { raw in
+            guard let identifier = raw["identifier"] as? String, !identifier.isEmpty else { return nil }
+            let cellRows = raw["cells"] as? [[[String: Any]]] ?? []
+            let cells: [[LiquidDoc.Table.Cell]] = cellRows.map { row in
+                row.map { cell in
+                    LiquidDoc.Table.Cell(value: cell["value"] as? String ?? "",
+                                         formula: cell["formula"] as? String)
+                }
+            }
+            return LiquidDoc.Table(
+                identifier: identifier,
+                rowCount: (raw["rowCount"] as? NSNumber)?.intValue ?? cells.count,
+                columnCount: (raw["columnCount"] as? NSNumber)?.intValue ?? (cells.first?.count ?? 0),
+                cells: cells)
+        }
+
+        // Mathematics: prefer a Visual-Meta equations block, fall back to a
+        // scan of the content document's `math[id]` elements. MathML in the
+        // body renders natively in the reader; this index powers citing and
+        // copying equations.
+        let equationHref = joinedPath(opfDirectory, contentHref)
+        let equations = EquationIndex.build(visualMetaText: html,
+                                            contentHTML: html,
+                                            contentHref: equationHref).entries
+
+        // Resolve an image `src` (relative to the content document) to its
+        // bytes in the package, so figures import as assets.
+        let contentDir = (equationHref as NSString).deletingLastPathComponent
+        let resolveImage: (String) -> Data? = { src in
+            let full = joinedPath(contentDir, src)
+            return zip.entry(full)
+                ?? zip.entry(src)
+                ?? zip.entries.first { $0.key.hasSuffix("/\((src as NSString).lastPathComponent)") }?.value
+        }
+
+        let (body, bodyAssets) = try bodyParagraphs(fromXHTML: html,
+                                                    addressByCitationID: addressByCitationID,
+                                                    resolveImage: resolveImage)
 
         // Links come back the way they were made: derived from the
         // restored body text — rels, fragments, and quoted spans
@@ -166,7 +213,50 @@ nonisolated enum OrigamiEPUBImporter {
             concepts: concepts,
             layouts: layouts,
             mapConnections: mapConnections,
-            references: references)
+            references: references,
+            tables: tables,
+            equations: equations,
+            assets: bodyAssets)
+    }
+
+    /// Unpacks the EPUB to `directory` (replacing whatever is there) and
+    /// returns the content document (paper.html) on disk, the package base
+    /// a WebView may read from, and the document title. This is the
+    /// faithful-render path: the reader loads paper.html directly, so its
+    /// relative images and style.css resolve from the base.
+    struct Unpacked: Sendable {
+        let content: URL
+        let base: URL
+        let title: String
+    }
+
+    static func unpack(at url: URL, into directory: URL) throws -> Unpacked {
+        let zip = try ZipReader(data: try Data(contentsOf: url))
+        let fileManager = FileManager.default
+        try? fileManager.removeItem(at: directory)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        for (name, data) in zip.entries {
+            // Directory placeholders carry no bytes; refuse any name that
+            // would escape the unpack directory.
+            guard !name.isEmpty, !name.hasSuffix("/"),
+                  !name.split(separator: "/").contains("..") else { continue }
+            let destination = directory.appendingPathComponent(name)
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+            try data.write(to: destination)
+        }
+
+        let opfPath = containerRootFile(in: zip) ?? "package.opf"
+        let opfDirectory = (opfPath as NSString).deletingLastPathComponent
+        guard let opfData = zip.entry(opfPath) else { throw OrigamiEPUBImportError.corruptContainer }
+        let opf = String(decoding: opfData, as: UTF8.self)
+        guard let href = spineContentHref(in: opf) else { throw OrigamiEPUBImportError.missingContent }
+
+        let content = directory.appendingPathComponent(joinedPath(opfDirectory, href))
+        let title = firstTagText(in: opf, tag: "dc:title")
+            ?? url.deletingPathExtension().lastPathComponent
+        return Unpacked(content: content, base: directory, title: title)
     }
 
     // MARK: Package plumbing
@@ -190,13 +280,20 @@ nonisolated enum OrigamiEPUBImporter {
         directory.isEmpty ? name : "\(directory)/\(name)"
     }
 
-    /// The embedded Visual-Meta copy, when the package file is gone:
-    /// the JSON between the payload script's tags.
+    /// The embedded Visual-Meta copy, when the package file is gone: the
+    /// JSON between the payload script's tags, with the CDATA wrapper (and
+    /// any split guard) stripped so it decodes.
     private static func embeddedVisualMeta(in html: String) -> Data? {
         guard let open = html.range(of: "id=\"visual-meta-payload\">"),
               let close = html.range(of: "</script>", range: open.upperBound..<html.endIndex)
         else { return nil }
-        return Data(html[open.upperBound..<close.lowerBound].utf8)
+        // Undo the export's CDATA wrapping. Removing both markers also
+        // reconstitutes any "]]>" the exporter split across sections.
+        let payload = String(html[open.upperBound..<close.lowerBound])
+            .replacingOccurrences(of: "<![CDATA[", with: "")
+            .replacingOccurrences(of: "]]>", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return Data(payload.utf8)
     }
 
     /// "origamitext://open/f.hegla.093252x" → "f.hegla.093252x".
@@ -242,13 +339,17 @@ nonisolated enum OrigamiEPUBImporter {
     /// with the export's inline forms folded back into the format's
     /// text conventions.
     private static func bodyParagraphs(fromXHTML html: String,
-                                       addressByCitationID: [String: String]) throws -> [LiquidDoc.Paragraph] {
+                                       addressByCitationID: [String: String],
+                                       resolveImage: (String) -> Data?)
+        throws -> (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset]) {
         let root = try XMLTree.parse(Data(html.utf8))
         guard let main = root.firstDescendant(named: "main") else {
             throw OrigamiEPUBImportError.missingContent
         }
 
         var paragraphs: [LiquidDoc.Paragraph] = []
+        var assets: [LiquidDoc.Asset] = []
+        var assetOrdinal = 0
         var fallbackOrdinal = 0
 
         func visit(_ element: XMLTree.Element) {
@@ -264,6 +365,48 @@ nonisolated enum OrigamiEPUBImporter {
                 for child in element.elements { visit(child) }
             case "hr":
                 paragraphs.append(LiquidDoc.Paragraph(id: stableID(), heading: nil, text: "---"))
+            case "figure", "img":
+                // A figure/image comes back as an asset plus an
+                // `![alt](asset:id)` marker paragraph — the same form the
+                // exporter reads, so authoring round-trips.
+                let image = element.name == "img" ? element : element.firstDescendant(named: "img")
+                guard let image, let src = image.attributes["src"], !src.isEmpty else {
+                    for child in element.elements { visit(child) }
+                    return
+                }
+                let alt = image.attributes["alt"] ?? ""
+                let paragraphID = stableID()
+                if let data = resolveImage(src), !data.isEmpty {
+                    assetOrdinal += 1
+                    let assetID = "img\(assetOrdinal)"
+                    let name = (src as NSString).lastPathComponent
+                    let ext = (name as NSString).pathExtension.lowercased()
+                    assets.append(LiquidDoc.Asset(
+                        id: assetID,
+                        filename: name.isEmpty ? "\(assetID).png" : name,
+                        mediaType: WordImporter.mediaType(forExtension: ext),
+                        dataBase64: data.base64EncodedString(),
+                        alt: alt.isEmpty ? nil : alt))
+                    paragraphs.append(LiquidDoc.Paragraph(
+                        id: paragraphID, heading: nil, text: "![\(alt)](asset:\(assetID))"))
+                } else {
+                    // Bytes missing: keep the reference visible rather than
+                    // dropping the image silently.
+                    paragraphs.append(LiquidDoc.Paragraph(
+                        id: paragraphID, heading: nil, text: "![\(alt)](\(src))"))
+                }
+            case "table":
+                // The table stands in the flow as its own element: the
+                // paragraph keeps the position address (its `id`), points
+                // at the Table pool by `data-table-id`, and carries a
+                // pipe-table rendering of the computed cell values so a
+                // reader without table support loses nothing.
+                var paragraph = LiquidDoc.Paragraph(
+                    id: stableID(), heading: nil,
+                    text: tableFallbackText(of: element))
+                paragraph.tableID = element.attributes["data-table-id"]
+                    ?? element.attributes["id"]
+                paragraphs.append(paragraph)
             case "h2", "h3", "h4":
                 let text = inlineText(of: element, addressByCitationID: addressByCitationID)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -290,7 +433,7 @@ nonisolated enum OrigamiEPUBImporter {
             }
         }
         for child in main.elements { visit(child) }
-        return paragraphs
+        return (paragraphs, assets)
     }
 
     /// One element's text with the inline conventions restored: strong
@@ -341,6 +484,27 @@ nonisolated enum OrigamiEPUBImporter {
             }
         }
         return out
+    }
+
+    /// A GFM pipe-table rendering of a `<table>`'s computed cell values —
+    /// leading and trailing pipes on every row — used as the plain-text
+    /// fallback carried on the table's placeholder paragraph.
+    private static func tableFallbackText(of table: XMLTree.Element) -> String {
+        var rows: [String] = []
+        func collectRows(_ element: XMLTree.Element) {
+            for child in element.elements {
+                if child.name == "tr" {
+                    let cells = child.elements
+                        .filter { $0.name == "td" || $0.name == "th" }
+                        .map { $0.plainText.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    rows.append("| " + cells.joined(separator: " | ") + " |")
+                } else {
+                    collectRows(child)
+                }
+            }
+        }
+        collectRows(table)
+        return rows.joined(separator: "\n")
     }
 }
 

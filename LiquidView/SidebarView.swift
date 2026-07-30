@@ -11,10 +11,16 @@ struct SidebarPlace: Identifiable {
 }
 
 enum SidebarCatalog {
-    /// What has arrived for the user: the inbox — unread first and bold.
-    /// It stands alone under the app's name, no section heading over it.
+    /// The whole left column now that Origami Text is an EPUB reader: the
+    /// Files shelf of opened EPUBs, with unread ones shown bold in the list
+    /// (there is no separate Inbox). Everything else — the JSON "digital
+    /// letters" views (Authors, Filed, Extracts, Drafts, Sent, Timeline,
+    /// Books, Transcripts, Notes, and the Views modules) — is obsolete and
+    /// gone; new views will be built fresh against the EPUB + Visual-Meta.
+    /// The full-screen peek still needs a way back to the library, so it
+    /// lists "All".
     static let received: [SidebarPlace] = [
-        SidebarPlace(name: "Inbox", systemImage: "tray", item: .inbox),
+        SidebarPlace(name: "All", systemImage: "tray.full", item: .epubsAll),
     ]
 
     /// The conversation itself: every letter to and from the user, the
@@ -59,18 +65,16 @@ enum SidebarCatalog {
     ]
 
     static var views: [SidebarPlace] {
-        LibraryViewRegistry.modules.map {
-            SidebarPlace(name: $0.name, systemImage: $0.systemImage, item: .view($0.id))
-        }
+        LibraryViewRegistry.modules
+            // Authors is promoted to the top list, so it does not repeat here.
+            .filter { $0.id != "authors" }
+            .map { SidebarPlace(name: $0.name, systemImage: $0.systemImage, item: .view($0.id)) }
     }
 
     static var sections: [(title: String, places: [SidebarPlace])] {
-        // Notes is hidden while the notes work moves to the Knowledge
-        // Space app — restore the ("Notes", notes) entry to bring it back.
-        // The untitled first section renders without a heading.
-        [("", received), ("Dialog", dialog), ("Outgoing", outgoing),
-         ("Transcripts", transcripts), ("Books", books),
-         ("Views", views)]
+        // Just Inbox now; the Files shelf is rendered separately in the
+        // sidebar body. The JSON-era section arrays above are retired.
+        [("", received)]
     }
 }
 
@@ -85,23 +89,12 @@ struct SidebarView: View {
     var body: some View {
         @Bindable var model = model
         List(selection: $model.sidebarSelection) {
-            ForEach(SidebarCatalog.sections, id: \.title) { section in
-                if section.title.isEmpty {
-                    // Inbox stands alone under the app's name — no
-                    // heading, nothing to fold.
-                    Section {
-                        rows(of: section)
-                    }
-                } else {
-                    // Finder-style: the header carries a reveal triangle,
-                    // and a folded section keeps its contents out of sight.
-                    Section(isExpanded: isExpanded(section.title)) {
-                        rows(of: section)
-                    } header: {
-                        Text(section.title)
-                    }
-                }
-            }
+            // The Files shelf of opened EPUBs ("All", the user's folders,
+            // and a "+"), then the authoring shelf. There is no Inbox:
+            // unread EPUBs simply show bold in the Files list.
+            filesSection
+            viewsSection
+            authorSection
         }
         .listStyle(.sidebar)
         // The app's name stands over the list, above Received — as
@@ -123,9 +116,115 @@ struct SidebarView: View {
         .navigationSplitViewColumnWidth(min: 180, ideal: 195)
     }
 
+    /// The authoring shelf: drafts written or imported here, which export
+    /// as Origami Text EPUBs. Origami Text is a reader first, but until
+    /// there is other software that writes the format, it lets people
+    /// author too (import Word, edit, export EPUB).
+    @ViewBuilder
+    private var authorSection: some View {
+        Section {
+            Label("Drafts", systemImage: "square.and.pencil")
+                .tag(SidebarItem.drafts)
+            Button {
+                model.newDraft()
+            } label: {
+                Label("New", systemImage: "plus")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            Button {
+                model.importDocumentFile()
+            } label: {
+                Label("Import", systemImage: "square.and.arrow.down")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        } header: {
+            Text("Production")
+        }
+    }
+
+    /// Ways into the opened EPUBs by who and what they hold: Authors (the
+    /// authors of record, automatic), then People and Concepts — user-curated
+    /// buckets added the way folders are. How names and concepts are pulled
+    /// from the EPUBs is a later step; for now People and Concepts hold what
+    /// the user adds.
+    @ViewBuilder
+    private var viewsSection: some View {
+        Section(isExpanded: isExpanded("Views")) {
+            Label("Authors", systemImage: "person.2")
+                .tag(SidebarItem.authors)
+
+            Label("People", systemImage: "person.crop.circle")
+                .tag(SidebarItem.people)
+            ForEach(model.viewPeople, id: \.self) { name in
+                Label(name, systemImage: "person")
+                    .tag(SidebarItem.person(name))
+                    .contextMenu {
+                        Button("Remove") { model.removePerson(name) }
+                    }
+            }
+            Button {
+                model.promptNewPerson()
+            } label: {
+                Label("Add Person", systemImage: "plus")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+
+            Label("Concepts", systemImage: "lightbulb")
+                .tag(SidebarItem.concepts)
+            ForEach(model.viewConcepts, id: \.self) { name in
+                Label(name, systemImage: "tag")
+                    .tag(SidebarItem.concept(name))
+                    .contextMenu {
+                        Button("Remove") { model.removeConcept(name) }
+                    }
+            }
+            Button {
+                model.promptNewConcept()
+            } label: {
+                Label("Add Concept", systemImage: "plus")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        } header: {
+            Text("Views")
+        }
+    }
+
+    /// The Files shelf: "All" opened EPUBs, the user's folders, and a "+"
+    /// to add another folder.
+    @ViewBuilder
+    private var filesSection: some View {
+        Section(isExpanded: isExpanded("Files")) {
+            Label("All", systemImage: "tray.full")
+                .tag(SidebarItem.epubsAll)
+            ForEach(model.epubFolders, id: \.self) { folder in
+                Label(folder, systemImage: "folder")
+                    .tag(SidebarItem.epubFolder(folder))
+            }
+            Button {
+                model.promptNewEPUBFolder()
+            } label: {
+                Label("Add Folder", systemImage: "plus")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        } header: {
+            Text("Files")
+        }
+    }
+
     @ViewBuilder
     private func rows(of section: (title: String, places: [SidebarPlace])) -> some View {
-        ForEach(model.shownPlaces(of: section.places)) { place in
+        // Only the Views section is user-curated; the top places (Inbox,
+        // Authors, Filed, Extracts) always show, even if their view module
+        // is toggled off in Settings.
+        let places = section.title == "Views"
+            ? model.shownPlaces(of: section.places)
+            : section.places
+        ForEach(places) { place in
             Label(place.name, systemImage: place.systemImage)
                 .fontWeight(place.item == .inbox && model.hasUnreadInbox
                             ? .bold : .regular)

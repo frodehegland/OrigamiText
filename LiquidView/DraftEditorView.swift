@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import FoundationModels
 
 /// Basic draft editor: title and author fields plus a plain-text body where
@@ -19,6 +21,7 @@ struct DraftEditorView: View {
     @State private var showDatePopover = false
     @State private var contactPerson: Person?
     @State private var showOnBehalfPopover = false
+    @State private var showPreflight = false
     @State private var onBehalfDraft = ""
     @State private var isSuggestingTitle = false
     /// Summary & Notes for a transcript draft — the same engine as the
@@ -262,6 +265,85 @@ struct DraftEditorView: View {
         }
         .buttonStyle(.plain)
         .help("Scroll to the statement this note came from")
+    }
+
+    /// Picks one or more images from disk and appends each to the draft as
+    /// an `![](asset:id)` marker paragraph; the bytes travel in the
+    /// document and export into the EPUB's `content/images/`.
+    private func insertImages() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.image]
+        panel.message = "Choose an image to add to the document."
+        panel.prompt = "Insert"
+        NSApp.activate()
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let data = try? Data(contentsOf: url), !data.isEmpty else { continue }
+            editor.insertImage(data: data, suggestedName: url.lastPathComponent)
+        }
+    }
+
+    /// The draft's images as NSImages keyed by asset id, for the editor to
+    /// render `asset:` markers inline.
+    private var editorImages: [String: NSImage] {
+        var result: [String: NSImage] = [:]
+        for asset in editor.assets {
+            if let data = asset.data, let image = NSImage(data: data) { result[asset.id] = image }
+        }
+        return result
+    }
+
+    /// The images the body currently references, in order — resolved from
+    /// the draft's assets by the `![alt](asset:id)` markers.
+    private var referencedImages: [LiquidDoc.Asset] {
+        let assetsByID = Dictionary(editor.assets.map { ($0.id, $0) },
+                                    uniquingKeysWith: { first, _ in first })
+        return editor.bodyText.components(separatedBy: .newlines).compactMap { line in
+            guard let reference = LiquidDoc.imageReference(in: line) else { return nil }
+            return assetsByID[reference.id]
+        }
+    }
+
+    /// A live preview strip of the draft's images, beneath the editor —
+    /// the plain-text body shows the `![…](asset:…)` marker, and this
+    /// shows what it resolves to. Empty documents show nothing.
+    @ViewBuilder
+    private var imageStrip: some View {
+        let images = referencedImages
+        if !images.isEmpty {
+            Divider()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(Array(images.enumerated()), id: \.offset) { _, asset in
+                        VStack(spacing: 4) {
+                            if let data = asset.data, let image = NSImage(data: data) {
+                                Image(nsImage: image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxHeight: 96)
+                                    .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary))
+                            } else {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(.quaternary)
+                                    .frame(width: 96, height: 96)
+                                    .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+                            }
+                            Text(asset.alt?.isEmpty == false ? asset.alt! : asset.filename)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .frame(maxWidth: 140)
+                        }
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 8)
+            }
+            .frame(maxHeight: 130)
+        }
     }
 
     /// The draft's speakers in order of first appearance (transcripts).
@@ -602,6 +684,7 @@ struct DraftEditorView: View {
             .padding([.horizontal, .top], 24)
 
             MarkdownTextEditor(text: $editor.bodyText,
+                               images: editorImages,
                                hideHeadingMarkers: hideHeadingMarkers,
                                onReference: { address, bibtex in
                                    editor.registerReference(address: address, bibtex: bibtex)
@@ -620,13 +703,31 @@ struct DraftEditorView: View {
                 .padding(.horizontal, 4)
                 .padding(.vertical, 4)
 
+            imageStrip
+
             Divider()
-            Text("One paragraph per line. Start a line with #, ##, or ### for a heading.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 6)
+            HStack(spacing: 10) {
+                Text("One paragraph per line. Start a line with #, ##, or ### for a heading.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    showPreflight = true
+                } label: {
+                    Label("Preflight References…", systemImage: "checkmark.seal")
+                }
+                .controlSize(.small)
+                .help("Verify this document's references before export")
+                Button {
+                    insertImages()
+                } label: {
+                    Label("Insert Image…", systemImage: "photo.badge.plus")
+                }
+                .controlSize(.small)
+                .help("Add an image to the document — it exports into the EPUB")
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 6)
             // Transcript drafts archive from their options column.
             if !isTranscriptDraft {
                 Button("Archive") { model.archiveDraft(editor.original) }
@@ -640,6 +741,11 @@ struct DraftEditorView: View {
         // Full screen is a focus mode: keep the writing at a readable measure.
         .frame(maxWidth: model.isFullScreen ? CGFloat(fullScreenContentWidth) : .infinity)
         .frame(maxWidth: .infinity)
+        .sheet(isPresented: $showPreflight) {
+            PreflightView(doc: editor.buildDocument()) { id, bibtex in
+                editor.applyReferenceCorrection(id: id, bibtex: bibtex)
+            }
+        }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -809,6 +915,292 @@ private struct DateAssignmentPopover: View {
             month = parts.month ?? 1
             day = parts.day ?? 1
             precision = .day
+        }
+    }
+}
+
+// MARK: - Preflight (reference verification before export)
+
+/// Verifies every reference in a document against the enabled services
+/// (Crossref, …) and holds the per-reference comparison the UI edits.
+@MainActor @Observable final class PreflightModel {
+    enum Status: Equatable { case pending, checking, verified, differs, notFound, unavailable }
+
+    struct Item: Identifiable {
+        let id: String                 // reference id (a link's target, or an external reference id)
+        let type: String
+        let key: String
+        var current: [String: String]  // full BibTeX field dict, edited in place
+        var candidate: [String: String]?
+        var status: Status
+        var title: String { current["title"] ?? candidate?["title"] ?? key }
+    }
+
+    /// The fields shown in the comparison, in this order, when either side has them.
+    static let comparedFields = ["title", "author", "year", "journal", "publisher", "doi", "url"]
+
+    private(set) var items: [Item]
+    private(set) var touchedIDs: Set<String> = []
+    private(set) var isRunning = false
+    private let verifiers: [any ReferenceVerifier]
+
+    init(doc: LiquidDoc) {
+        verifiers = ReferenceVerification.enabledVerifiers
+        var items: [Item] = []
+        var seen: Set<String> = []
+        func add(id: String, bibtex: String) {
+            guard !seen.contains(id), let entry = BibTeXParser.first(bibtex) else { return }
+            seen.insert(id)
+            items.append(Item(id: id, type: entry.type, key: entry.key,
+                              current: entry.fields, candidate: nil, status: .pending))
+        }
+        for reference in doc.references { add(id: reference.id, bibtex: reference.bibtex) }
+        for link in doc.links { if let bibtex = link.bibtex { add(id: link.to, bibtex: bibtex) } }
+        self.items = items
+    }
+
+    var canVerify: Bool { !verifiers.isEmpty }
+
+    func run() async {
+        guard canVerify else {
+            for index in items.indices { items[index].status = .unavailable }
+            return
+        }
+        isRunning = true
+        defer { isRunning = false }
+        for index in items.indices {
+            items[index].status = .checking
+            var found: [String: String]?
+            for verifier in verifiers {
+                if let result = await verifier.lookup(fields: items[index].current) {
+                    found = result
+                    break
+                }
+            }
+            if let found {
+                items[index].candidate = found
+                items[index].status = Self.status(current: items[index].current, candidate: found)
+            } else {
+                items[index].status = .notFound
+            }
+        }
+    }
+
+    /// Differs when title/author/year disagree, or the found record has a
+    /// DOI the reference lacks; otherwise verified.
+    private static func status(current: [String: String], candidate: [String: String]) -> Status {
+        func norm(_ s: String) -> String {
+            s.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+                .map(String.init).joined()
+        }
+        for key in ["title", "author", "year"] {
+            let a = current[key] ?? "", b = candidate[key] ?? ""
+            if !a.isEmpty, !b.isEmpty, norm(a) != norm(b) { return .differs }
+        }
+        if (current["doi"] ?? "").isEmpty, !(candidate["doi"] ?? "").isEmpty { return .differs }
+        return .verified
+    }
+
+    /// Copies a found field into the current reference.
+    func use(field: String, itemID: String) {
+        guard let index = items.firstIndex(where: { $0.id == itemID }),
+              let value = items[index].candidate?[field], !value.isEmpty else { return }
+        items[index].current[field] = value
+        touchedIDs.insert(itemID)
+    }
+
+    /// Copies every field the found record offers into the current reference.
+    func useAll(itemID: String) {
+        guard let index = items.firstIndex(where: { $0.id == itemID }),
+              let candidate = items[index].candidate else { return }
+        for (key, value) in candidate where !value.isEmpty { items[index].current[key] = value }
+        touchedIDs.insert(itemID)
+    }
+
+    /// The corrected BibTeX for an item, for writing back to the draft.
+    func bibtex(itemID: String) -> String? {
+        guard let item = items.first(where: { $0.id == itemID }) else { return nil }
+        return BibTeXWriter.write(type: item.type, key: item.key, fields: item.current)
+    }
+}
+
+/// Preflight — reference verification before export. The document's
+/// references on the right, what a service (Crossref) found on the left, and
+/// a button on each field to move the found value into the reference.
+struct PreflightView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var model: PreflightModel
+    @State private var selectedID: String?
+    /// Called for each corrected reference: (reference id, new BibTeX).
+    let onApply: (String, String) -> Void
+
+    init(doc: LiquidDoc, onApply: @escaping (String, String) -> Void) {
+        _model = State(initialValue: PreflightModel(doc: doc))
+        self.onApply = onApply
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            if model.items.isEmpty {
+                ContentUnavailableView("No References",
+                                       systemImage: "text.book.closed",
+                                       description: Text("This document cites no external references to verify."))
+                    .frame(maxHeight: .infinity)
+            } else {
+                HSplitView {
+                    referenceList
+                        .frame(minWidth: 220, idealWidth: 260)
+                    detail
+                        .frame(minWidth: 420, maxWidth: .infinity)
+                }
+            }
+            Divider()
+            footer
+        }
+        .frame(width: 860, height: 560)
+        .task { await model.run() }
+    }
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Preflight").font(.headline)
+                Text(model.canVerify
+                     ? "Checking references against Crossref before export."
+                     : "No verification service is on — enable one in Settings ▸ Editor.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if model.isRunning { ProgressView().controlSize(.small) }
+            Button("Recheck") { Task { await model.run() } }
+                .disabled(model.isRunning || !model.canVerify)
+        }
+        .padding(14)
+    }
+
+    private var referenceList: some View {
+        List(model.items, selection: $selectedID) { item in
+            HStack(spacing: 8) {
+                statusIcon(item.status)
+                Text(item.title).lineLimit(2)
+            }
+            .tag(item.id)
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        if let id = selectedID ?? model.items.first?.id,
+           let item = model.items.first(where: { $0.id == id }) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        statusLabel(item.status)
+                        Spacer()
+                        Button("Use All Found") { model.useAll(itemID: item.id) }
+                            .disabled(item.candidate == nil)
+                    }
+                    HStack {
+                        Text("Found (Crossref)").font(.caption).bold()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Spacer().frame(width: 44)
+                        Text("Current reference").font(.caption).bold()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    ForEach(fieldRows(for: item), id: \.self) { field in
+                        fieldRow(field, item: item)
+                        Divider()
+                    }
+                }
+                .padding(14)
+            }
+        } else {
+            Text("Select a reference.").foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func fieldRows(for item: PreflightModel.Item) -> [String] {
+        PreflightModel.comparedFields.filter { field in
+            !(item.current[field] ?? "").isEmpty || !((item.candidate?[field]) ?? "").isEmpty
+        }
+    }
+
+    private func fieldRow(_ field: String, item: PreflightModel.Item) -> some View {
+        let found = item.candidate?[field] ?? ""
+        let current = item.current[field] ?? ""
+        let differs = !found.isEmpty && found.caseInsensitiveCompare(current) != .orderedSame
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(field.capitalized).font(.caption2).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 8) {
+                Text(found.isEmpty ? "—" : found)
+                    .foregroundStyle(found.isEmpty ? .secondary : .primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    model.use(field: field, itemID: item.id)
+                } label: {
+                    Image(systemName: "arrow.right")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!differs)
+                .help("Use the found \(field) in this reference")
+                .frame(width: 36)
+                Text(current.isEmpty ? "—" : current)
+                    .foregroundStyle(current.isEmpty ? .secondary : .primary)
+                    .fontWeight(differs ? .semibold : .regular)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            let issues = model.items.filter { $0.status == .differs }.count
+            if issues > 0 {
+                Label("\(issues) with differences", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+            } else if !model.items.isEmpty, !model.isRunning {
+                Label("No issues found", systemImage: "checkmark.seal").font(.caption).foregroundStyle(.green)
+            }
+            Spacer()
+            Button("Cancel") { dismiss() }
+            Button("Apply Corrections") {
+                for id in model.touchedIDs {
+                    if let bibtex = model.bibtex(itemID: id) { onApply(id, bibtex) }
+                }
+                dismiss()
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(model.touchedIDs.isEmpty)
+        }
+        .padding(14)
+    }
+
+    @ViewBuilder
+    private func statusIcon(_ status: PreflightModel.Status) -> some View {
+        switch status {
+        case .pending: Image(systemName: "circle").foregroundStyle(.secondary)
+        case .checking: ProgressView().controlSize(.small)
+        case .verified: Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+        case .differs: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        case .notFound: Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+        case .unavailable: Image(systemName: "wifi.slash").foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func statusLabel(_ status: PreflightModel.Status) -> some View {
+        switch status {
+        case .pending: Label("Not checked", systemImage: "circle").foregroundStyle(.secondary)
+        case .checking: Label("Checking…", systemImage: "clock").foregroundStyle(.secondary)
+        case .verified: Label("Verified", systemImage: "checkmark.seal.fill").foregroundStyle(.green)
+        case .differs: Label("Differences found", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        case .notFound: Label("Not found", systemImage: "questionmark.circle").foregroundStyle(.secondary)
+        case .unavailable: Label("Verification off", systemImage: "wifi.slash").foregroundStyle(.secondary)
         }
     }
 }

@@ -28,6 +28,209 @@ struct DocumentListView: View {
     }
 }
 
+/// The Files shelf: opened EPUBs, all of them or one folder's worth. Rows
+/// reopen the rendered page; a context menu files them into folders.
+struct EPUBLibraryListView: View {
+    @Environment(AppModel.self) private var model
+    /// nil = All opened EPUBs; otherwise just this folder's.
+    var folder: String?
+
+    var body: some View {
+        let records = model.epubRecords(inFolder: folder)
+        List {
+            ForEach(records) { record in
+                Button {
+                    model.openStoredEPUB(record)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(record.title)
+                            .fontWeight(model.isUnread(record) ? .bold : .regular)
+                            .lineLimit(2)
+                        HStack(spacing: 6) {
+                            Text(record.author)
+                            if let filed = model.epubFolder(for: record.id), folder == nil {
+                                Text("· \(filed)")
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Menu("File Under") {
+                        ForEach(model.epubFolders, id: \.self) { name in
+                            Button(name) { model.fileEPUB(record.id, under: name) }
+                        }
+                        if !model.epubFolders.isEmpty { Divider() }
+                        Button("New Folder…") { model.promptNewEPUBFolder(fileAfter: record.id) }
+                    }
+                    if model.epubFolder(for: record.id) != nil {
+                        Button("Remove from Folder") { model.unfileEPUB(record.id) }
+                    }
+                }
+            }
+        }
+        .overlay {
+            if records.isEmpty {
+                ContentUnavailableView {
+                    Label(folder == nil ? "No EPUBs Yet" : "Empty Folder",
+                          systemImage: "books.vertical")
+                } description: {
+                    Text(folder == nil
+                         ? "Open an EPUB (⌘O) or drag one in, and it appears here."
+                         : "File EPUBs into “\(folder ?? "")” from the All list's context menu.")
+                }
+            }
+        }
+    }
+}
+
+/// One opened-EPUB row: title (bold while unread), author, and filed
+/// folder. Reused by the Files shelf and the Views lists.
+struct EPUBRecordRow: View {
+    @Environment(AppModel.self) private var model
+    let record: EPUBRecord
+    /// When shown inside a folder or author group, the redundant subtitle
+    /// line can be dropped.
+    var showsSubtitle: Bool = true
+
+    var body: some View {
+        Button {
+            model.openStoredEPUB(record)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(record.title)
+                    .fontWeight(model.isUnread(record) ? .bold : .regular)
+                    .lineLimit(2)
+                if showsSubtitle {
+                    Text(record.author)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Views ▸ Authors: the opened EPUBs grouped under their author of record,
+/// alphabetically. Automatic — nothing the user curates.
+struct AuthorsListView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let authors = model.epubAuthors
+        List {
+            ForEach(authors, id: \.self) { author in
+                Section(author) {
+                    ForEach(model.epubRecords(byAuthor: author)) { record in
+                        EPUBRecordRow(record: record, showsSubtitle: false)
+                    }
+                }
+            }
+        }
+        .overlay {
+            if authors.isEmpty {
+                ContentUnavailableView {
+                    Label("No Authors Yet", systemImage: "person.2")
+                } description: {
+                    Text("Open an EPUB and its author appears here.")
+                }
+            }
+        }
+    }
+}
+
+/// Views ▸ People: the people the user is tracking. Automatic extraction of
+/// names from the EPUBs is a later step; for now this lists what the user
+/// has added (with “Add Person” in the sidebar).
+struct PeopleListView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        List {
+            ForEach(model.viewPeople, id: \.self) { name in
+                Label(name, systemImage: "person")
+                    .tag(SidebarItem.person(name))
+                    .contextMenu {
+                        Button("Remove") { model.removePerson(name) }
+                    }
+            }
+        }
+        .overlay {
+            if model.viewPeople.isEmpty {
+                ContentUnavailableView {
+                    Label("No People Yet", systemImage: "person.crop.circle")
+                } description: {
+                    Text("Add people with “Add Person” in the sidebar. Pulling names out of the EPUBs automatically is a later step.")
+                }
+            }
+        }
+    }
+}
+
+/// Views ▸ a single person. Where the documents that mention this person
+/// will gather once name extraction is added.
+struct PersonListView: View {
+    let name: String
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(name, systemImage: "person")
+        } description: {
+            Text("Documents mentioning \(name) will gather here once names are pulled from the EPUBs.")
+        }
+    }
+}
+
+/// Views ▸ Concepts: the concepts the user is tracking. Pulling concepts
+/// out of the EPUBs is a later step; this lists what the user has added.
+struct ConceptsListView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        List {
+            ForEach(model.viewConcepts, id: \.self) { name in
+                Label(name, systemImage: "tag")
+                    .tag(SidebarItem.concept(name))
+                    .contextMenu {
+                        Button("Remove") { model.removeConcept(name) }
+                    }
+            }
+        }
+        .overlay {
+            if model.viewConcepts.isEmpty {
+                ContentUnavailableView {
+                    Label("No Concepts Yet", systemImage: "lightbulb")
+                } description: {
+                    Text("Add concepts with “Add Concept” in the sidebar. Pulling concepts out of the EPUBs automatically is a later step.")
+                }
+            }
+        }
+    }
+}
+
+/// Views ▸ a single concept. Where the documents that contain this concept
+/// will gather once concept extraction is added.
+struct ConceptListView: View {
+    let name: String
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(name, systemImage: "tag")
+        } description: {
+            Text("Documents containing \(name) will gather here once concepts are pulled from the EPUBs.")
+        }
+    }
+}
+
 /// Received ▸ Inbox: everything from other people — the unread on top,
 /// bold; the recently read below, plain, only the last twenty (Dialog's
 /// timeline keeps them all). A letter being read stays put until the
@@ -35,6 +238,8 @@ struct DocumentListView: View {
 /// user's attention.
 struct InboxListView: View {
     @Environment(AppModel.self) private var model
+    /// Highlighted while a file is dragged over the inbox to be imported.
+    @State private var isDropTargeted = false
 
     var body: some View {
         let entries = model.inboxEntries
@@ -59,8 +264,24 @@ struct InboxListView: View {
                     Label(model.searchText.isEmpty ? "Nothing Received" : "No Results",
                           systemImage: "tray")
                 } description: {
-                    Text("Letters and other documents from the community arrive here — unread in bold, the recently read below them.")
+                    Text("Letters and other documents from the community arrive here — unread in bold, the recently read below them. Drop an EPUB here to import it.")
                 }
+            }
+        }
+        // Drop an EPUB (or other importable file) onto the inbox to import
+        // it into a new draft.
+        .dropDestination(for: URL.self) { urls, _ in
+            let epubs = urls.filter { $0.pathExtension.lowercased() == "epub" }
+            guard !epubs.isEmpty else { return false }
+            for url in epubs { model.openFile(at: url) }
+            return true
+        } isTargeted: { isDropTargeted = $0 }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .padding(4)
+                    .allowsHitTesting(false)
             }
         }
     }
@@ -273,6 +494,10 @@ extension AppModel {
                     // Dialog's timeline carries the user's own published
                     // copies too; they read like any document.
                     self.open(published)
+                } else if let record = self.epubRecords.first(where: { $0.id == id }) {
+                    // An opened EPUB listed in the inbox reopens its
+                    // rendered page rather than the native reader.
+                    self.openStoredEPUB(record)
                 }
             }
         )

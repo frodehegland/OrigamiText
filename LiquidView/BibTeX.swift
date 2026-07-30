@@ -183,6 +183,9 @@ nonisolated enum BibTeXParser {
         return BibTeXEntry(type: type, key: key, fields: fields, raw: raw)
     }
 
+    /// Parses the first entry, or nil.
+    static func first(_ text: String) -> BibTeXEntry? { parse(text).first }
+
     /// Strips residual braces and LaTeX-isms, and heals line wraps.
     private static func cleaned(_ value: String) -> String {
         value
@@ -192,5 +195,138 @@ nonisolated enum BibTeXParser {
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+}
+
+// MARK: - Reference verification (Preflight)
+
+/// Serializes a field dictionary back into a BibTeX entry, preserving the
+/// entry's type and key. The common fields lead, in a stable order, then any
+/// others alphabetically, so a verified reference reads cleanly.
+nonisolated enum BibTeXWriter {
+    private static let leading = ["title", "author", "year", "journal", "booktitle",
+                                  "container-title", "publisher", "volume", "number",
+                                  "pages", "doi", "url"]
+
+    static func write(type: String, key: String, fields: [String: String]) -> String {
+        let type = type.isEmpty ? "article" : type
+        let key = key.isEmpty ? "ref" : key
+        let present = fields.filter { !$0.value.trimmingCharacters(in: .whitespaces).isEmpty }
+        let ordered = leading.filter { present[$0] != nil }
+            + present.keys.filter { !leading.contains($0) }.sorted()
+        let lines = ordered.map { name in
+            "  \(name) = {\(escape(present[name] ?? ""))}"
+        }
+        return "@\(type){\(key),\n\(lines.joined(separator: ",\n"))\n}"
+    }
+
+    private static func escape(_ value: String) -> String {
+        // The BibTeX specials, backslash first, matching the house rule.
+        var out = value.replacingOccurrences(of: "\\", with: "\\textbackslash{}")
+        for (character, escaped) in [("&", "\\&"), ("%", "\\%"), ("#", "\\#"),
+                                     ("$", "\\$"), ("_", "\\_")] {
+            out = out.replacingOccurrences(of: character, with: escaped)
+        }
+        return out
+    }
+}
+
+/// A reference verification service. Given the reference's own fields, it
+/// returns the fields it finds, or nil when it can't match.
+protocol ReferenceVerifier: Sendable {
+    var id: String { get }
+    var name: String { get }
+    func lookup(fields: [String: String]) async -> [String: String]?
+}
+
+/// Crossref (api.crossref.org): free scholarly metadata, no key. Matches by
+/// DOI when present, otherwise by a bibliographic query of title + authors.
+nonisolated struct CrossrefVerifier: ReferenceVerifier {
+    let id = "crossref"
+    let name = "Crossref"
+
+    func lookup(fields: [String: String]) async -> [String: String]? {
+        let doi = (fields["doi"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "https://doi.org/", with: "")
+        if !doi.isEmpty, let work = await fetchByDOI(doi) { return work }
+        let title = fields["title"] ?? ""
+        guard !title.isEmpty else { return nil }
+        return await queryBibliographic(title: title, authors: fields["author"] ?? "")
+    }
+
+    private func fetchByDOI(_ doi: String) async -> [String: String]? {
+        guard let encoded = doi.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "https://api.crossref.org/works/\(encoded)") else { return nil }
+        guard let message = await message(from: url) else { return nil }
+        return Self.fields(fromWork: message)
+    }
+
+    private func queryBibliographic(title: String, authors: String) async -> [String: String]? {
+        var components = URLComponents(string: "https://api.crossref.org/works")
+        let query = ([title, authors].filter { !$0.isEmpty }).joined(separator: " ")
+        components?.queryItems = [
+            URLQueryItem(name: "query.bibliographic", value: query),
+            URLQueryItem(name: "rows", value: "1"),
+        ]
+        guard let url = components?.url,
+              let message = await message(from: url),
+              let items = message["items"] as? [[String: Any]],
+              let first = items.first else { return nil }
+        return Self.fields(fromWork: first)
+    }
+
+    /// GETs a Crossref URL and returns the `message` object.
+    private func message(from url: URL) async -> [String: Any]? {
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        // Crossref's "polite pool" asks callers to identify themselves.
+        request.setValue("OrigamiText/1.0 (mailto:frode@hegland.com)",
+                         forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return json["message"] as? [String: Any]
+    }
+
+    /// Maps a Crossref work object to comparable BibTeX-style fields.
+    private static func fields(fromWork work: [String: Any]) -> [String: String] {
+        var result: [String: String] = [:]
+        if let titles = work["title"] as? [String], let title = titles.first, !title.isEmpty {
+            result["title"] = title
+        }
+        if let authors = work["author"] as? [[String: Any]] {
+            let names = authors.compactMap { person -> String? in
+                let given = (person["given"] as? String) ?? ""
+                let family = (person["family"] as? String) ?? (person["name"] as? String) ?? ""
+                let name = "\(given) \(family)".trimmingCharacters(in: .whitespaces)
+                return name.isEmpty ? nil : name
+            }
+            if !names.isEmpty { result["author"] = names.joined(separator: " and ") }
+        }
+        if let issued = work["issued"] as? [String: Any],
+           let parts = issued["date-parts"] as? [[Int]], let year = parts.first?.first {
+            result["year"] = String(year)
+        }
+        if let containers = work["container-title"] as? [String], let journal = containers.first, !journal.isEmpty {
+            result["journal"] = journal
+        }
+        if let publisher = work["publisher"] as? String, !publisher.isEmpty {
+            result["publisher"] = publisher
+        }
+        if let doi = work["DOI"] as? String, !doi.isEmpty { result["doi"] = doi }
+        if let urlString = work["URL"] as? String, !urlString.isEmpty { result["url"] = urlString }
+        return result
+    }
+}
+
+/// The verifiers the user has enabled in Settings.
+@MainActor
+enum ReferenceVerification {
+    static var enabledVerifiers: [any ReferenceVerifier] {
+        var verifiers: [any ReferenceVerifier] = []
+        if UserDefaults.standard.object(forKey: AppSettings.verifyCrossrefKey) as? Bool ?? true {
+            verifiers.append(CrossrefVerifier())
+        }
+        return verifiers
     }
 }

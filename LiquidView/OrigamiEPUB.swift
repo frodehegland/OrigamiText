@@ -17,6 +17,20 @@ import Foundation
 /// re-exports. Citations carry three mutually consistent encodings
 /// generated from one internal model: the visible reference text,
 /// `data-bibtex`, and `data-csl-json`.
+nonisolated enum OrigamiEPUBExportError: LocalizedError {
+    /// A generated XHTML document is not well-formed — export is refused so
+    /// a broken EPUB (one that shows the reader an error page) never ships.
+    case malformedContent(file: String, line: Int, column: Int, detail: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .malformedContent(file, line, column, detail):
+            "The exported \(file) was not valid XML (line \(line), column \(column): \(detail)). "
+                + "This is a bug in Origami Text — please report it; the document was not exported."
+        }
+    }
+}
+
 nonisolated enum OrigamiEPUBExporter {
 
     // MARK: The Visual-Meta document (spec §4)
@@ -376,8 +390,28 @@ nonisolated enum OrigamiEPUBExporter {
         let visualMetaData = try encoder.encode(visualMeta)
         let visualMetaText = String(decoding: visualMetaData, as: UTF8.self)
 
+        // Images the body actually references become files in the package
+        // and items in the manifest; the markers become <figure><img>.
+        let assetsByID = Dictionary(doc.assets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var referencedAssets: [LiquidDoc.Asset] = []
+        var seenAssetIDs: Set<String> = []
+        for element in body {
+            guard let reference = LiquidDoc.imageReference(in: element.paragraph.text),
+                  let asset = assetsByID[reference.id],
+                  seenAssetIDs.insert(asset.id).inserted else { continue }
+            referencedAssets.append(asset)
+        }
+
         let html = paperHTML(doc: doc, body: body, citations: citations,
-                             stableID: stableID, visualMetaText: visualMetaText)
+                             stableID: stableID, visualMetaText: visualMetaText,
+                             assetsByID: assetsByID)
+        let nav = navHTML(doc: doc, headings: headings)
+
+        // Self-check: the content documents are served as XHTML, so a stray
+        // unescaped character would show the reader an error page. Refuse to
+        // ship one — validate before writing anything.
+        try assertWellFormed(html, file: "content/paper.html")
+        try assertWellFormed(nav, file: "content/nav.html")
 
         var zip = ZipWriter()
         // The mimetype must be the first entry, uncompressed — every
@@ -385,10 +419,13 @@ nonisolated enum OrigamiEPUBExporter {
         // writer honest and small.
         zip.add("mimetype", Data("application/epub+zip".utf8))
         zip.add("META-INF/container.xml", Data(containerXML.utf8))
-        zip.add("package.opf", Data(packageOPF(doc: doc).utf8))
+        zip.add("package.opf", Data(packageOPF(doc: doc, images: referencedAssets).utf8))
         zip.add("content/paper.html", Data(html.utf8))
-        zip.add("content/nav.html", Data(navHTML(doc: doc, headings: headings).utf8))
+        zip.add("content/nav.html", Data(nav.utf8))
         zip.add("content/style.css", Data(styleCSS.utf8))
+        for asset in referencedAssets {
+            if let data = asset.data { zip.add("content/images/\(asset.filename)", data) }
+        }
         zip.add("visual-meta.json", visualMetaData)
         try zip.finished().write(to: url, options: .atomic)
     }
@@ -513,7 +550,8 @@ nonisolated enum OrigamiEPUBExporter {
     private static func paperHTML(doc: LiquidDoc, body: [AddressedElement],
                                   citations: [Citation],
                                   stableID: (AddressedElement) -> String,
-                                  visualMetaText: String) -> String {
+                                  visualMetaText: String,
+                                  assetsByID: [String: LiquidDoc.Asset]) -> String {
         var lines: [String] = []
         lines.append("""
         <?xml version="1.0" encoding="UTF-8"?>
@@ -542,7 +580,8 @@ nonisolated enum OrigamiEPUBExporter {
                 lines.append("<section>")
                 sectionOpen = true
             }
-            var html = self.element(for: element, citations: citations, stableID: stableID)
+            var html = self.element(for: element, citations: citations,
+                                    stableID: stableID, assetsByID: assetsByID)
             for name in pendingConcepts {
                 if let wrapped = wrappingFirstOccurrence(of: name, in: html) {
                     html = wrapped
@@ -569,12 +608,20 @@ nonisolated enum OrigamiEPUBExporter {
             lines.append("</section>")
         }
 
+        // The JSON payload is wrapped in CDATA: paper.html is served as
+        // XHTML, where <script> content is parsed, so a bare & or < in the
+        // Visual-Meta (e.g. a heading "Further reading & resources") would
+        // otherwise break well-formedness. Any literal "]]>" in the JSON is
+        // split so it cannot close the section early.
+        let safePayload = visualMetaText.replacingOccurrences(of: "]]>", with: "]]]]><![CDATA[>")
         lines.append("""
         <section id="visual-meta">
         <h2>Visual-Meta</h2>
         <p>@visual-meta-start</p>
         <script type="application/json" id="visual-meta-payload">
-        \(visualMetaText)
+        <![CDATA[
+        \(safePayload)
+        ]]>
         </script>
         <p>@visual-meta-end</p>
         </section>
@@ -597,10 +644,18 @@ nonisolated enum OrigamiEPUBExporter {
     /// heading's Map-node UUID when the concept pool knows it.
     private static func element(for element: AddressedElement,
                                 citations: [Citation],
-                                stableID: (AddressedElement) -> String) -> String {
+                                stableID: (AddressedElement) -> String,
+                                assetsByID: [String: LiquidDoc.Asset]) -> String {
         let paragraph = element.paragraph
         let trimmed = paragraph.text.trimmingCharacters(in: .whitespaces)
         let anchors = "id=\"\(element.address)\" data-id=\"\(escaped(stableID(element)))\""
+        // An image marker `![alt](asset:id)` becomes a <figure><img>, its
+        // bytes written alongside as content/images/<file>.
+        if let reference = LiquidDoc.imageReference(in: paragraph.text),
+           let asset = assetsByID[reference.id] {
+            let alt = reference.alt.isEmpty ? (asset.alt ?? "") : reference.alt
+            return "<figure \(anchors)><img src=\"images/\(attributeEscaped(asset.filename))\" alt=\"\(attributeEscaped(alt))\" /></figure>"
+        }
         if trimmed.count >= 3, trimmed.allSatisfy({ $0 == "-" }) {
             return "<hr \(anchors) />"
         }
@@ -667,6 +722,22 @@ nonisolated enum OrigamiEPUBExporter {
             .replacingOccurrences(of: ">", with: "&gt;")
     }
 
+    /// Throws unless `xhtml` is well-formed XML — the guarantee that an
+    /// exported content document never shows the reader an XML error page.
+    /// Uses `XMLParser` (Foundation, every platform), which reports the
+    /// offending line and column on failure.
+    private static func assertWellFormed(_ xhtml: String, file: String) throws {
+        let parser = XMLParser(data: Data(xhtml.utf8))
+        parser.shouldResolveExternalEntities = false
+        if !parser.parse() {
+            throw OrigamiEPUBExportError.malformedContent(
+                file: file,
+                line: parser.lineNumber,
+                column: parser.columnNumber,
+                detail: parser.parserError?.localizedDescription ?? "not well-formed")
+        }
+    }
+
     private static func attributeEscaped(_ text: String) -> String {
         escaped(text)
             .replacingOccurrences(of: "\"", with: "&quot;")
@@ -712,10 +783,13 @@ nonisolated enum OrigamiEPUBExporter {
         """
     }
 
-    private static func packageOPF(doc: LiquidDoc) -> String {
+    private static func packageOPF(doc: LiquidDoc, images: [LiquidDoc.Asset]) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         let modified = formatter.string(from: Date())
+        let imageItems = images.enumerated().map { index, asset in
+            "        <item id=\"img\(index + 1)\" href=\"content/images/\(attributeEscaped(asset.filename))\" media-type=\"\(asset.mediaType)\"/>"
+        }.joined(separator: "\n")
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" xml:lang="en">
@@ -732,6 +806,7 @@ nonisolated enum OrigamiEPUBExporter {
             <item id="nav" href="content/nav.html" media-type="application/xhtml+xml" properties="nav"/>
             <item id="css" href="content/style.css" media-type="text/css"/>
             <item id="visual-meta" href="visual-meta.json" media-type="application/json"/>
+        \(imageItems)
           </manifest>
           <spine>
             <itemref idref="paper"/>

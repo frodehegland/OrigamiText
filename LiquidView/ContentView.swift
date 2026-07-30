@@ -136,15 +136,10 @@ struct ContentView: View {
     /// edge summons the sidebar as a floating panel — the same gesture the
     /// system menu bar teaches at the top edge — and it fades once the
     /// pointer moves on.
-    /// With nothing open, full screen has nothing to focus on and the peek
-    /// is the only way anywhere — so it stays, list unfolded, no hover
-    /// gesture required. Opening a document unpins it. A whole-library
-    /// view (Bots, the Weave, Attentions…) counts as open: it fills the
-    /// detail pane with no document being current, and the peek must fade.
-    private var peekIsPinned: Bool {
-        model.isFullScreen && model.current == nil && model.draftEditor == nil
-            && LibraryViewRegistry.module(for: model.sidebarSelection)?.hidesDocumentList != true
-    }
+    /// In full screen the sidebar is always hover-summoned — it never
+    /// pins open. The reading area stays clear until the pointer visits
+    /// the left edge.
+    private var peekIsPinned: Bool { false }
 
     private var peekSidebar: some View {
         HStack(spacing: 0) {
@@ -194,7 +189,7 @@ struct ContentView: View {
         List {
             ForEach(SidebarCatalog.sections, id: \.title) { section in
                 if section.title.isEmpty {
-                    // Inbox stands alone, as in the split-view sidebar.
+                    // The library's "All" stands alone at the top.
                     Section {
                         peekRows(of: section)
                     }
@@ -208,7 +203,10 @@ struct ContentView: View {
     }
 
     private func peekRows(of section: (title: String, places: [SidebarPlace])) -> some View {
-        ForEach(model.shownPlaces(of: section.places)) { place in
+        let places = section.title == "Views"
+            ? model.shownPlaces(of: section.places)
+            : section.places
+        return ForEach(places) { place in
             Button {
                 model.sidebarSelection = place.item
                 revealPeekListIfAvailable()
@@ -295,7 +293,21 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var listPane: some View {
-        if model.sidebarSelection == .notes {
+        if model.sidebarSelection == .epubsAll {
+            EPUBLibraryListView(folder: nil)
+        } else if case .epubFolder(let folder)? = model.sidebarSelection {
+            EPUBLibraryListView(folder: folder)
+        } else if model.sidebarSelection == .authors {
+            AuthorsListView()
+        } else if case .person(let name)? = model.sidebarSelection {
+            PersonListView(name: name)
+        } else if model.sidebarSelection == .people {
+            PeopleListView()
+        } else if case .concept(let name)? = model.sidebarSelection {
+            ConceptListView(name: name)
+        } else if model.sidebarSelection == .concepts {
+            ConceptsListView()
+        } else if model.sidebarSelection == .notes {
             NotesListView()
         } else if model.sidebarSelection == .noteLocations {
             NotesByLocationView()
@@ -317,14 +329,6 @@ struct ContentView: View {
             PublishedListView(kind: .books)
         } else if model.sidebarSelection == .archived {
             ArchivedListView()
-        } else if model.index.folderURL == nil {
-            ContentUnavailableView {
-                Label("No Community Folder", systemImage: "folder.badge.questionmark")
-            } description: {
-                Text("Choose a folder of Origami Documents to begin.")
-            } actions: {
-                Button("Choose Folder…") { model.chooseFolder() }
-            }
         } else {
             switch model.sidebarSelection {
             case .inbox:
@@ -358,7 +362,13 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var detailPane: some View {
-        if let selection = model.sidebarSelection,
+        if let epub = model.openEPUB {
+            // A faithfully-rendered EPUB overrides the rest of the detail
+            // pane; its own bar names it, toggles the Visual-Meta, and
+            // gives the way back.
+            EPUBReaderScreen(book: epub) { model.openEPUB = nil }
+                .id(epub.id)
+        } else if let selection = model.sidebarSelection,
            [.notes, .noteLocations, .notePeople, .filedNotes].contains(selection) {
             if let id = model.selectedNoteID,
                let editor = model.draftEditor, editor.docID == id {

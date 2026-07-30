@@ -39,33 +39,11 @@ struct LibraryViewModule: Identifiable {
 /// The installed views, in sidebar order.
 @MainActor
 enum LibraryViewRegistry {
-    static let modules: [LibraryViewModule] = [
-        DocumentWebView.module,
-        WeaveView.module,
-        AuthorsCircleView.module,
-        LocationView.module,
-        AttentionsView.module,
-        BotsView.module,
-        StrangerView.module,
-        TrailsView.module,
-        GeometriesView.module,
-        GlossaryView.module,
-        GlossarySpaceView.module,
-        KNavView.module,
-        LiftWeaveView.module,
-        AuthorListView.module,
-        HotParagraphsView.module,
-        AIInsightsView.module,
-        ThemesView.module,
-        OpenQuestionsView.module,
-        AgreementsView.module,
-        DisagreementsView.module,
-        TheDealView.module,
-        ZView.module,
-        ZigZagView.module,
-        ZZNavigatorView.module,
-        HealthDashboardView.module,
-    ]
+    // The JSON "digital letters" view modules are obsolete (EPUB-only
+    // pivot). Emptied here so nothing surfaces them; the view files are
+    // being removed and new views will be built fresh against EPUB +
+    // Visual-Meta.
+    static let modules: [LibraryViewModule] = []
 
     static func module(id: String) -> LibraryViewModule? {
         modules.first { $0.id == id }

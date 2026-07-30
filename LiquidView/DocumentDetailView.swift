@@ -556,6 +556,9 @@ struct DocumentDetailView: View {
                 ParagraphView(
                     paragraph: paragraph,
                     isHighlighted: highlightedParagraphID == paragraph.id,
+                    table: paragraph.tableID.flatMap { id in
+                        doc.tables.first { $0.identifier == id }
+                    },
                     highlightedSpan: highlightedParagraphID == paragraph.id ? highlightedSpan : nil,
                     sizeScale: isAppendix ? 0.5 : 1,
                     transcludeDocumentID: isAppendix ? nil : doc.id,
@@ -1324,6 +1327,9 @@ private struct RevisionDeltaView: View {
 struct ParagraphView: View {
     let paragraph: LiquidDoc.Paragraph
     let isHighlighted: Bool
+    /// When this paragraph stands for a table (`paragraph.tableID`), the
+    /// resolved grid — rendered instead of the pipe-table fallback text.
+    var table: LiquidDoc.Table? = nil
     /// Span scope: when arriving by a span-scoped link, the exact words
     /// get a stronger mark than the paragraph's flash.
     var highlightedSpan: String? = nil
@@ -1343,6 +1349,10 @@ struct ParagraphView: View {
         if isRule {
             Divider()
                 .padding(.vertical, 10)
+        } else if let table {
+            TableReaderView(table: table, sizeScale: sizeScale)
+                .padding(.top, 8 * sizeScale)
+                .padding(.bottom, 8 * sizeScale)
         } else {
             VStack(alignment: .leading, spacing: 2) {
                 if let speaker = paragraph.speaker {
@@ -1404,6 +1414,50 @@ struct ParagraphView: View {
         case 3: 10
         default: 0
         }
+    }
+}
+
+/// A live table, read-only: the producer's pre-computed cell values in a
+/// bordered grid, the first row treated as a header. Formulas travel in the
+/// model (`LiquidDoc.Table.Cell.formula`) for a future editable path; here
+/// the shown value is what the producer computed.
+struct TableReaderView: View {
+    let table: LiquidDoc.Table
+    var sizeScale: CGFloat = 1
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+            ForEach(Array(table.cells.enumerated()), id: \.offset) { rowIndex, row in
+                GridRow {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                        Text(cell.value)
+                            .font(.system(size: 14 * sizeScale))
+                            .fontWeight(rowIndex == 0 ? .semibold : .regular)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 9 * sizeScale)
+                            .padding(.vertical, 6 * sizeScale)
+                            .background(rowIndex == 0 ? Color.secondary.opacity(0.08) : Color.clear)
+                            .overlay(alignment: .bottom) {
+                                Rectangle()
+                                    .fill(Color.secondary.opacity(0.2))
+                                    .frame(height: 0.5)
+                            }
+                            .overlay(alignment: .trailing) {
+                                Rectangle()
+                                    .fill(Color.secondary.opacity(0.2))
+                                    .frame(width: 0.5)
+                            }
+                    }
+                }
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(Color.secondary.opacity(0.3), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

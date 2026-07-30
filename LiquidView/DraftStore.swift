@@ -167,12 +167,64 @@ final class DraftEditor {
 
     var docID: String { original.id }
 
+    /// The document's image assets, for the editor's preview and export.
+    /// Mutable so images can be inserted while editing.
+    private(set) var assets: [LiquidDoc.Asset]
+
+    /// Adds an image to the document and appends a `![alt](asset:id)`
+    /// marker paragraph to the body, returning the asset's id. The bytes
+    /// live in the draft (base64), so nothing external needs to persist.
+    @discardableResult
+    func insertImage(data: Data, suggestedName: String?, alt: String? = nil) -> String {
+        let ext = Self.imageExtension(name: suggestedName, data: data)
+        let assetID = "img-\(UUID().uuidString.prefix(8).lowercased())"
+        let filename = "\(assetID).\(ext)"
+        assets.append(LiquidDoc.Asset(
+            id: assetID, filename: filename,
+            mediaType: WordImporter.mediaType(forExtension: ext),
+            dataBase64: data.base64EncodedString(),
+            alt: (alt?.isEmpty ?? true) ? nil : alt))
+        let marker = "![\(alt ?? "")](asset:\(assetID))"
+        if bodyText.isEmpty {
+            bodyText = marker
+        } else {
+            let separator = bodyText.hasSuffix("\n\n") ? "" : (bodyText.hasSuffix("\n") ? "\n" : "\n\n")
+            bodyText += separator + marker
+        }
+        hasUnsavedChanges = true
+        return assetID
+    }
+
+    /// The file extension for an inserted image: from its name, else
+    /// sniffed from the bytes' magic number, defaulting to png.
+    private static func imageExtension(name: String?, data: Data) -> String {
+        if let name {
+            let ext = (name as NSString).pathExtension.lowercased()
+            if !ext.isEmpty { return ext }
+        }
+        let bytes = [UInt8](data.prefix(4))
+        if bytes.count >= 3, bytes[0] == 0xFF, bytes[1] == 0xD8, bytes[2] == 0xFF { return "jpeg" }
+        if bytes.count >= 4, bytes[0] == 0x89, bytes[1] == 0x50, bytes[2] == 0x4E, bytes[3] == 0x47 { return "png" }
+        if bytes.count >= 3, bytes[0] == 0x47, bytes[1] == 0x49, bytes[2] == 0x46 { return "gif" }
+        return "png"
+    }
+
     /// BibTeX records from pasted citations, keyed by derived address;
     /// attached to their links on save (the link carries its provenance).
     private(set) var pendingReferences: [String: String] = [:]
 
     func registerReference(address: String, bibtex: String) {
         pendingReferences[address] = bibtex
+        hasUnsavedChanges = true
+    }
+
+    /// Corrected BibTeX from Preflight, keyed by reference id (a link's
+    /// target address or an external reference's id). Applied in
+    /// `buildDocument`.
+    private(set) var referenceOverrides: [String: String] = [:]
+
+    func applyReferenceCorrection(id: String, bibtex: String) {
+        referenceOverrides[id] = bibtex
         hasUnsavedChanges = true
     }
     var createdText: String { original.created.formatted(date: .long, time: .shortened) }
@@ -185,6 +237,7 @@ final class DraftEditor {
         attention = doc.attention
         onBehalfOf = doc.onBehalfOf
         date = doc.date
+        assets = doc.assets
     }
 
     func addAttention(_ name: String) {
@@ -232,6 +285,18 @@ final class DraftEditor {
             linked.bibtex = bibtex
             return linked
         }
+        // Preflight edits: replace a link's or reference's BibTeX by id.
+        if !referenceOverrides.isEmpty {
+            links = links.map { link in
+                guard let bibtex = referenceOverrides[link.to] else { return link }
+                var edited = link
+                edited.bibtex = bibtex
+                return edited
+            }
+        }
+        let references = original.references.map { reference in
+            referenceOverrides[reference.id].map { LiquidDoc.Reference(id: reference.id, bibtex: $0) } ?? reference
+        }
         return LiquidDoc(format: original.format,
                          id: original.id,
                          title: title.trimmingCharacters(in: .whitespaces).isEmpty ? "Untitled" : title,
@@ -251,12 +316,17 @@ final class DraftEditor {
                          concepts: original.concepts,
                          layouts: original.layouts,
                          mapConnections: original.mapConnections,
-                         references: original.references,
+                         references: references,
+                         // Image assets ride through editing; the body's
+                         // `![alt](asset:id)` markers are plain text and
+                         // survive re-parsing.
+                         assets: assets,
                          fileURL: original.fileURL)
     }
 
     func markSaved(_ doc: LiquidDoc) {
         original = doc
+        assets = doc.assets
         hasUnsavedChanges = false
     }
 }

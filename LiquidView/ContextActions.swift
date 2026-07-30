@@ -84,7 +84,10 @@ enum ContextActionBuilder {
             if let doc {
                 actions.append(ContextAction(id: "copy-quote", title: "Copy as Quote",
                                              systemImage: "quote.opening") {
-                    copyToPasteboard(quote(trimmed, from: doc))
+                    let year = doc.date?.yearText ?? doc.created.formatted(.dateTime.year())
+                    CitationClipboard.write(OrigamiCitation(
+                        to: doc.id, fragment: nil, rel: "cites",
+                        quotedText: trimmed, author: doc.displayAuthor, year: year, bibtex: nil))
                 })
             }
             // The selected words as a person: offered when the library

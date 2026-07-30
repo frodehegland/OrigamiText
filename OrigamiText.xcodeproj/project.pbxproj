@@ -7,8 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		5FF0B711300AD85B008BC4AC /* Ori-logo.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FF0B710300AD85B008BC4AC /* Ori-logo.icon */; };
-		5FF0B712300AD85B008BC4AC /* Ori-logo.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FF0B710300AD85B008BC4AC /* Ori-logo.icon */; };
+		5FAFC90C301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
+		5FAFC90D301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
+		5FAFC90E301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -33,8 +34,8 @@
 		5FA61253300CE184002F8851 /* Origami Text.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Origami Text.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		5FA6125F300CE184002F8851 /* Origami TextTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Origami TextTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		5FA61269300CE184002F8851 /* Origami TextUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Origami TextUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "Ori-logo-2.icon"; sourceTree = "<group>"; };
 		5FD0137F3005785700F5A4F0 /* Origami Text Vision.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Origami Text Vision.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		5FF0B710300AD85B008BC4AC /* Ori-logo.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "Ori-logo.icon"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -166,10 +167,10 @@
 			children = (
 				000000000000000000000010 /* LiquidView */,
 				5FD013803005785700F5A4F0 /* Origami Text Vision */,
-				5FF0B710300AD85B008BC4AC /* Ori-logo.icon */,
 				5FA61254300CE184002F8851 /* Origami Text */,
 				5FA61262300CE184002F8851 /* Origami TextTests */,
 				5FA6126C300CE184002F8851 /* Origami TextUITests */,
+				5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */,
 				000000000000000000000020 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -341,12 +342,13 @@
 		000000000000000140000000 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
-				5FF0B712300AD85B008BC4AC /* Ori-logo.icon in Resources */,
+				5FAFC90D301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */,
 			);
 		};
 		5FA61251300CE184002F8851 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				5FAFC90C301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */,
 			);
 		};
 		5FA6125D300CE184002F8851 /* Resources */ = {
@@ -362,7 +364,7 @@
 		5FD0137D3005785700F5A4F0 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
-				5FF0B711300AD85B008BC4AC /* Ori-logo.icon in Resources */,
+				5FAFC90E301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */
@@ -544,7 +546,8 @@
 		000000000000000111000000 /* Debug configuration for PBXNativeTarget "LiquidView" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo";
+				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo-2";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				AUTOMATION_APPLE_EVENTS = YES;
 				CODE_SIGN_ENTITLEMENTS = LiquidView/OrigamiText.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -612,7 +615,8 @@
 		000000000000000112000000 /* Release configuration for PBXNativeTarget "LiquidView" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo";
+				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo-2";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				AUTOMATION_APPLE_EVENTS = YES;
 				CODE_SIGN_ENTITLEMENTS = LiquidView/OrigamiText.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -680,8 +684,9 @@
 		5FA61270300CE184002F8851 /* Debug configuration for PBXNativeTarget "Origami Text" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo-2";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 9Q5N4A727S;
@@ -719,8 +724,9 @@
 		5FA61271300CE184002F8851 /* Release configuration for PBXNativeTarget "Origami Text" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo-2";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 9Q5N4A727S;
@@ -849,8 +855,9 @@
 		5FD0138F3005785700F5A4F0 /* Debug configuration for PBXNativeTarget "Origami Text Vision" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo-2";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 9Q5N4A727S;
@@ -880,8 +887,9 @@
 		5FD013903005785700F5A4F0 /* Release configuration for PBXNativeTarget "Origami Text Vision" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo-2";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 9Q5N4A727S;

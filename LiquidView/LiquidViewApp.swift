@@ -34,6 +34,8 @@ struct LiquidViewApp: App {
                     .keyboardShortcut("n", modifiers: [.command, .option])
             }
             CommandGroup(after: .newItem) {
+                Button("Open…") { model.openDocumentFile() }
+                    .keyboardShortcut("o", modifiers: .command)
                 Button("Import…") { model.importDocumentFile() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
                 Button("Export to XR (Author Map)…") { model.showXRExport = true }
