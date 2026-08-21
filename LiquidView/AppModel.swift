@@ -722,8 +722,138 @@ final class AppModel {
         showNote("Opened “\(record.title)”")
     }
 
+    // MARK: - Cross-document quote links (live + transclusion)
+
+    /// A paragraph the reader should scroll to and flash after the next EPUB
+    /// finishes loading — set when a cross-document link is followed.
+    var pendingReaderFragment: String?
+
+    /// The opened EPUB whose address (its Origami id, or the identity of its
+    /// unpacked folder) matches — how an `origamitext://open/<address>` link
+    /// resolves to a book already in the library.
+    func epubRecord(forAddress address: String) -> EPUBRecord? {
+        let canonical = LiquidAddress.canonical(address)
+        return epubRecords.first { $0.id == canonical }
+            ?? epubRecords.first { $0.id == address }
+            ?? epubRecords.first { $0.folder == address || $0.folder == canonical }
+    }
+
+    /// Follows a cross-document quote link: opens the target book in the
+    /// reader and, when the link named a paragraph, scrolls to it once the
+    /// page has loaded. The "live" half of a quote link.
+    func openEPUB(address: String, fragment: String?) {
+        guard let record = epubRecord(forAddress: address) else {
+            showNote("That document is not in your library yet.")
+            return
+        }
+        openStoredEPUB(record)
+        // Set after opening: openStoredEPUB clears any stale fragment, and the
+        // reader is (re)built reading this one for the book it just opened.
+        pendingReaderFragment = (fragment?.isEmpty == false) ? fragment : nil
+    }
+
+    /// The transcluded source of a quote link: the plain text of the named
+    /// paragraph in the target book, read from its unpacked content document.
+    /// The inline-expansion half of a quote link. Nil when the target is not
+    /// in the library, or the paragraph cannot be found.
+    func transcludedText(forAddress address: String, fragment: String?) -> String? {
+        guard let fragment, !fragment.isEmpty,
+              let record = epubRecord(forAddress: address) else { return nil }
+        let content = Self.epubsRoot
+            .appendingPathComponent(record.folder, isDirectory: true)
+            .appendingPathComponent(record.contentSubpath)
+        guard let html = try? String(contentsOf: content, encoding: .utf8) else { return nil }
+        return Self.elementText(in: html, matchingID: fragment)
+    }
+
+    /// Pulls the readable text of the block whose `id` or `data-id` is `id`
+    /// out of a content document. A pragmatic paragraph-level extractor: it
+    /// finds the opening tag carrying the id and returns its content up to the
+    /// matching close tag, tags stripped and the common entities decoded.
+    private static func elementText(in html: String, matchingID id: String) -> String? {
+        let escaped = NSRegularExpression.escapedPattern(for: id)
+        let pattern = "<(p|li|h[1-6]|blockquote|figure|td|th)\\b[^>]*\\b(?:id|data-id)=\"\(escaped)\"[^>]*>(.*?)</\\1>"
+        guard let expression = try? NSRegularExpression(
+            pattern: pattern, options: [.dotMatchesLineSeparators, .caseInsensitive]),
+              let match = expression.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let innerRange = Range(match.range(at: 2), in: html) else { return nil }
+        let inner = String(html[innerRange])
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#10;", with: "\n")
+            .replacingOccurrences(of: "&#160;", with: " ")
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+        let collapsed = inner.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        return collapsed.isEmpty ? nil : collapsed
+    }
+
+    // MARK: - Glossary of the open book (Show Definition)
+
+    /// The open book's defined concepts, keyed by lowercased name — loaded
+    /// lazily from its Visual-Meta (the package's `visual-meta.json`, else
+    /// the copy embedded in the content document) and cached per book.
+    private var glossaryCache: (bookID: String, byName: [String: (name: String, description: String)])?
+
+    /// The glossary entry the selected text names, if the open book defines
+    /// one: the selection is trimmed of whitespace and surrounding
+    /// quotes/punctuation and matched case-insensitively against the
+    /// concepts' names. Nil when no book is open or the term is not defined.
+    func glossaryDefinition(matching text: String) -> (name: String, description: String)? {
+        guard let book = openEPUB else { return nil }
+        let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "“”\"'‘’.,;:!?()[]"))
+            .lowercased()
+        guard !key.isEmpty, key.count <= 100 else { return nil }
+        if glossaryCache?.bookID != book.id {
+            glossaryCache = (book.id, Self.loadGlossary(content: book.content, base: book.base))
+        }
+        return glossaryCache?.byName[key]
+    }
+
+    /// Reads an unpacked book's defined terms, from either carrier: the
+    /// Visual-Meta `concepts` (this app's exports — the package's
+    /// `visual-meta.json`, else the copy embedded in the content document),
+    /// and Author's `origami.json` `glossary` (phrase/entry pairs, next to
+    /// the content document).
+    private static func loadGlossary(content: URL, base: URL)
+        -> [String: (name: String, description: String)] {
+        var byName: [String: (name: String, description: String)] = [:]
+        func add(_ name: String?, _ description: String?) {
+            guard let name = name?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
+                  let description = description?
+                      .trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty
+            else { return }
+            byName[name.lowercased()] = (name, description)
+        }
+        let visualMeta = (try? Data(contentsOf: base.appendingPathComponent("visual-meta.json")))
+            ?? (try? String(contentsOf: content, encoding: .utf8))
+                .flatMap(OrigamiEPUBImporter.embeddedVisualMeta(in:))
+        if let visualMeta,
+           let object = (try? JSONSerialization.jsonObject(with: visualMeta)) as? [String: Any],
+           let concepts = object["concepts"] as? [[String: Any]] {
+            for concept in concepts where (concept["tag"] as? String) != "heading" {
+                add(concept["name"] as? String, concept["description"] as? String)
+            }
+        }
+        let origamiURL = content.deletingLastPathComponent()
+            .appendingPathComponent("origami.json")
+        if let data = try? Data(contentsOf: origamiURL),
+           let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let glossary = object["glossary"] as? [String: [String: Any]] {
+            for node in glossary.values {
+                add(node["phrase"] as? String, node["entry"] as? String)
+            }
+        }
+        return byName
+    }
+
     /// Reopens a remembered EPUB from its unpacked folder in the container.
     func openStoredEPUB(_ record: EPUBRecord) {
+        pendingReaderFragment = nil   // a plain open scrolls to the top
         let base = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
         let content = base.appendingPathComponent(record.contentSubpath)
         guard FileManager.default.fileExists(atPath: content.path) else {
@@ -731,8 +861,181 @@ final class AppModel {
             showNote("“\(record.title)” is no longer unpacked — open the EPUB file again.")
             return
         }
-        openEPUB = OpenEPUB(id: record.folder, title: record.title, content: content, base: base)
+        // The whole spine, re-derived from the unpacked package so books
+        // remembered before chapters existed gain them without a manifest
+        // migration. A plain chaptered book reads whole; an Origami-profile
+        // book has a single spine document, as before.
+        let spine = OrigamiEPUBImporter.spine(inUnpackedFolder: base)
+        let chapters = (spine?.chapters ?? []).map { base.appendingPathComponent($0) }
+        openEPUB = OpenEPUB(id: record.folder, title: record.title, content: content, base: base,
+                            chapters: chapters.isEmpty ? [content] : chapters,
+                            nav: spine?.nav.map { base.appendingPathComponent($0) })
         markRead(epubListingDoc(record))
+    }
+
+    // MARK: - Reading positions (where the reader left each book)
+
+    /// Where the reader left a book: the chapter subpath and the scroll
+    /// fraction within it. Nil until the book has been read.
+    func readingPosition(forFolder folder: String) -> (chapter: String?, fraction: Double)? {
+        guard let stored = UserDefaults.standard.dictionary(forKey: "readingPosition:" + folder)
+        else { return nil }
+        return (stored["chapter"] as? String, stored["fraction"] as? Double ?? 0)
+    }
+
+    func saveReadingPosition(forFolder folder: String, chapter: String, fraction: Double) {
+        UserDefaults.standard.set(["chapter": chapter, "fraction": fraction],
+                                  forKey: "readingPosition:" + folder)
+    }
+
+    // MARK: - Annotations (the reader's highlights and comments)
+
+    /// Sidecars live in one folder beside the unpacked books, keyed by book
+    /// address, so a re-unpack never loses a reader's notes. The book itself
+    /// is never modified — the book is the author's; the annotations are
+    /// the reader's.
+    static var annotationsRoot: URL {
+        epubsRoot.appendingPathComponent("Annotations", isDirectory: true)
+    }
+
+    /// Bumped whenever the open book's annotations change, so the reader
+    /// repaints its highlights.
+    private(set) var annotationsStamp = 0
+
+    /// The address a book's annotations are filed under: its Origami id
+    /// when its record is known, else its unpack folder name.
+    private func annotationAddress(forBook book: OpenEPUB) -> String {
+        epubRecords.first { $0.folder == book.id }?.id ?? book.id
+    }
+
+    /// Every annotation on the given book, oldest first.
+    func annotations(forBook book: OpenEPUB) -> [WebAnnotation] {
+        AnnotationStore.load(for: annotationAddress(forBook: book), in: Self.annotationsRoot)
+    }
+
+    /// Highlights the selection in the open book.
+    func addHighlight(on selection: ReaderSelection) {
+        addAnnotation(motivation: WebAnnotation.Motivation.highlighting, note: nil, on: selection)
+    }
+
+    /// Attaches the reader's comment to the selection in the open book.
+    func addComment(_ note: String, on selection: ReaderSelection) {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        addAnnotation(motivation: WebAnnotation.Motivation.commenting, note: trimmed, on: selection)
+    }
+
+    private func addAnnotation(motivation: String, note: String?, on selection: ReaderSelection) {
+        guard let book = openEPUB, !selection.text.isEmpty else { return }
+        // The anchoring ladder, most robust first: the enclosing element's
+        // stable id, then the exact words with disambiguating context.
+        var selectors: [WebAnnotation.Selector] = []
+        if let fragment = selection.fragment, !fragment.isEmpty {
+            selectors.append(.fragment(value: fragment,
+                                       conformsTo: WebAnnotation.fragmentConformsTo))
+        }
+        selectors.append(.quote(exact: selection.text,
+                                prefix: selection.prefix?.isEmpty == false ? selection.prefix : nil,
+                                suffix: selection.suffix?.isEmpty == false ? selection.suffix : nil))
+        let address = annotationAddress(forBook: book)
+        let annotation = WebAnnotation(
+            motivation: motivation,
+            body: note.map { WebAnnotation.TextualBody(value: $0) },
+            target: WebAnnotation.Target(source: "origamitext://open/" + address,
+                                         selectors: selectors))
+        var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        all.append(annotation)
+        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
+    /// Removes one annotation from the open book's sidecar.
+    func removeAnnotation(id: String) {
+        guard let book = openEPUB else { return }
+        let address = annotationAddress(forBook: book)
+        var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        all.removeAll { $0.id == id }
+        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
+    // MARK: - The native reading styles' document
+
+    /// The open book as a structured Origami document — the body the
+    /// native reading styles (Scroll, Horizontal, Focus, Outline,
+    /// Transcript) read, re-imported from the unpacked package and
+    /// cached per book. Nil when the package cannot be read back.
+    private var readingDocCache: (bookID: String, doc: LiquidDoc)?
+
+    func readingDoc(forBook book: OpenEPUB) -> LiquidDoc? {
+        if let cached = readingDocCache, cached.bookID == book.id {
+            return cached.doc
+        }
+        guard let result = try? OrigamiEPUBImporter.importDocument(inUnpackedFolder: book.base)
+        else { return nil }
+        let record = epubRecords.first { $0.folder == book.id }
+        let address = record?.id ?? result.origamiID ?? book.id
+        let created = (record?.dateISO ?? result.date).flatMap(LiquidDoc.parseISO8601)
+            ?? record?.openedAt ?? .now
+        var doc = LiquidDoc(format: LiquidDoc.knownFormat,
+                            id: address,
+                            title: result.title,
+                            author: result.author ?? record?.author ?? "Unknown",
+                            created: created,
+                            body: result.body,
+                            links: result.links,
+                            wraps: nil,
+                            fileURL: book.base)
+        doc.date = (record?.dateISO ?? result.date).flatMap(LiquidDate.init(isoString:))
+        doc.documentType = LiquidDoc.DocumentType.book.rawValue
+        doc.concepts = result.concepts
+        doc.layouts = result.layouts
+        doc.mapConnections = result.mapConnections
+        doc.references = result.references
+        doc.tables = result.tables
+        doc.assets = result.assets
+        readingDocCache = (book.id, doc)
+        return doc
+    }
+
+    // MARK: Annotations for the native reader (doc-based, same sidecars)
+
+    /// The document's annotations — the same sidecar the WebView reader
+    /// writes, keyed by the book's address (`doc.id`).
+    func annotations(for doc: LiquidDoc) -> [WebAnnotation] {
+        _ = annotationsStamp
+        return AnnotationStore.load(for: doc.id, in: Self.annotationsRoot)
+    }
+
+    func addHighlight(to doc: LiquidDoc, paragraphID: String, exact: String? = nil) {
+        let annotation = WebAnnotation(
+            motivation: WebAnnotation.Motivation.highlighting,
+            target: AnnotationAnchor.target(in: doc, paragraphID: paragraphID, exact: exact))
+        appendAnnotation(annotation, for: doc)
+    }
+
+    func addComment(_ text: String, to doc: LiquidDoc, paragraphID: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let annotation = WebAnnotation(
+            motivation: WebAnnotation.Motivation.commenting,
+            body: WebAnnotation.TextualBody(value: trimmed),
+            target: AnnotationAnchor.target(in: doc, paragraphID: paragraphID))
+        appendAnnotation(annotation, for: doc)
+    }
+
+    func removeAnnotation(_ annotation: WebAnnotation, for doc: LiquidDoc) {
+        var all = AnnotationStore.load(for: doc.id, in: Self.annotationsRoot)
+        all.removeAll { $0.id == annotation.id }
+        AnnotationStore.save(all, for: doc.id, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
+    private func appendAnnotation(_ annotation: WebAnnotation, for doc: LiquidDoc) {
+        var all = AnnotationStore.load(for: doc.id, in: Self.annotationsRoot)
+        all.append(annotation)
+        AnnotationStore.save(all, for: doc.id, in: Self.annotationsRoot)
+        annotationsStamp += 1
     }
 
     // MARK: - Filing opened EPUBs

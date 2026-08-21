@@ -2,8 +2,10 @@ import SwiftUI
 import AppKit
 
 /// Markdown-aware editing view: heading lines (`# `, `## `, `### `) display
-/// larger and bold as you type, while the underlying text stays plain
-/// markdown. Wraps NSTextView so styling can be reapplied per keystroke.
+/// larger and bold as you type, and inline emphasis (`**bold**`, `*italic*`,
+/// `***both***`, and the `_` forms) renders with the words styled and the
+/// markers hidden — while the underlying text stays plain markdown. Wraps
+/// NSTextView so styling can be reapplied per keystroke.
 /// An image inserted into the editor's text for an `![alt](asset:id)`
 /// marker. It carries the exact marker so the body serializes back to plain
 /// markdown — the text stays the source of truth.
@@ -282,6 +284,44 @@ struct MarkdownTextEditor: NSViewRepresentable {
             return NSRange(location: cursor, length: level + 1)
         }
 
+        /// One parsed emphasis run's geometry, in document coordinates.
+        private struct EmphasisRun {
+            let match: NSRange     // the whole `**words**`
+            let content: NSRange   // just the words
+            let opening: NSRange
+            let closing: NSRange
+        }
+
+        /// The hidden emphasis-marker pairs of the paragraph containing
+        /// `index` — the same matches the styling hides, so the caret and
+        /// deletion handling below agree exactly with what is invisible.
+        private func emphasisRuns(inParagraphContaining index: Int, in string: NSString) -> [EmphasisRun] {
+            guard hideHeadingMarkers, string.length > 0 else { return [] }
+            let paragraph = string.paragraphRange(
+                for: NSRange(location: min(index, string.length), length: 0))
+            let text = string.substring(with: paragraph)
+            guard text.contains("*") || text.contains("_") else { return [] }
+            var runs: [EmphasisRun] = []
+            let full = NSRange(location: 0, length: (text as NSString).length)
+            for pattern in Self.emphasisPatterns {
+                for match in pattern.matches(in: text, range: full) {
+                    let marker = match.range(at: 1)
+                    let content = match.range(at: 2)
+                    let offset = paragraph.location
+                    runs.append(EmphasisRun(
+                        match: NSRange(location: offset + match.range.location,
+                                       length: match.range.length),
+                        content: NSRange(location: offset + content.location,
+                                         length: content.length),
+                        opening: NSRange(location: offset + marker.location,
+                                         length: marker.length),
+                        closing: NSRange(location: offset + NSMaxRange(match.range) - marker.length,
+                                         length: marker.length)))
+                }
+            }
+            return runs
+        }
+
         /// The caret never rests inside a hidden marker — its characters
         /// are invisible, so a caret there looks frozen and deletions
         /// there seem to do nothing. A caret headed in snaps out: one
@@ -296,22 +336,35 @@ struct MarkdownTextEditor: NSViewRepresentable {
             let oldLocation = oldRanges.first?.rangeValue.location
             return newRanges.map { value in
                 var range = value.rangeValue
-                guard range.length == 0,
-                      let marker = hiddenMarkerRange(containing: range.location, in: string),
-                      range.location >= marker.location,
-                      range.location < NSMaxRange(marker)
-                else { return value }
-                let markerEnd = NSMaxRange(marker)
-                if range.location == markerEnd - 1, oldLocation == markerEnd,
-                   marker.location > 0 {
-                    // Arrow-left from the heading's visible start: past
-                    // the whole marker to the previous line's end.
-                    range.location = string.paragraphRange(
-                        for: NSRange(location: marker.location, length: 0)).location - 1
-                } else {
-                    range.location = markerEnd
+                guard range.length == 0 else { return value }
+                if let marker = hiddenMarkerRange(containing: range.location, in: string),
+                   range.location >= marker.location,
+                   range.location < NSMaxRange(marker) {
+                    let markerEnd = NSMaxRange(marker)
+                    if range.location == markerEnd - 1, oldLocation == markerEnd,
+                       marker.location > 0 {
+                        // Arrow-left from the heading's visible start: past
+                        // the whole marker to the previous line's end.
+                        range.location = string.paragraphRange(
+                            for: NSRange(location: marker.location, length: 0)).location - 1
+                    } else {
+                        range.location = markerEnd
+                    }
+                    return NSValue(range: range)
                 }
-                return NSValue(range: range)
+                // Hidden emphasis markers: a caret strictly inside one snaps
+                // to the edge it was headed for — its characters are
+                // invisible, so both edges look the same and a caret between
+                // them would seem frozen.
+                for run in emphasisRuns(inParagraphContaining: range.location, in: string) {
+                    for marker in [run.opening, run.closing]
+                    where range.location > marker.location && range.location < NSMaxRange(marker) {
+                        let movingLeft = (oldLocation ?? 0) >= NSMaxRange(marker)
+                        range.location = movingLeft ? marker.location : NSMaxRange(marker)
+                        return NSValue(range: range)
+                    }
+                }
+                return value
             }
         }
 
@@ -418,6 +471,20 @@ struct MarkdownTextEditor: NSViewRepresentable {
                     textView.insertText("", replacementRange: NSUnionRange(affectedRange, marker))
                     return false
                 }
+                // Deleting into a hidden emphasis marker removes the pair in
+                // one press: the words stay, unemphasized — instead of eating
+                // invisible asterisks with nothing to show for it.
+                for run in emphasisRuns(inParagraphContaining: affectedRange.location, in: string) {
+                    let hitsMarker = NSIntersectionRange(affectedRange, run.opening).length > 0
+                        || NSIntersectionRange(affectedRange, run.closing).length > 0
+                    let coversWholeRun = affectedRange.location <= run.match.location
+                        && NSMaxRange(affectedRange) >= NSMaxRange(run.match)
+                    if hitsMarker, !coversWholeRun {
+                        textView.insertText(string.substring(with: run.content),
+                                            replacementRange: run.match)
+                        return false
+                    }
+                }
             }
             let replacement: String?
             // A "Copy as Quote" citation on the clipboard: take the richest
@@ -501,26 +568,82 @@ struct MarkdownTextEditor: NSViewRepresentable {
                 } else if trimmed.hasPrefix("# ") {
                     level = 1
                 } else {
-                    return
+                    level = 0
                 }
-                storage.addAttribute(.font, value: Self.headingFonts[level - 1], range: range)
+                if level > 0 {
+                    storage.addAttribute(.font, value: Self.headingFonts[level - 1], range: range)
 
-                // The "# " marker itself: invisible when hidden, dimmed when shown.
-                var leadingWhitespace = 0
-                for scalar in substring.unicodeScalars {
-                    if scalar == " " || scalar == "\t" { leadingWhitespace += 1 } else { break }
+                    // The "# " marker itself: invisible when hidden, dimmed when shown.
+                    var leadingWhitespace = 0
+                    for scalar in substring.unicodeScalars {
+                        if scalar == " " || scalar == "\t" { leadingWhitespace += 1 } else { break }
+                    }
+                    let markerRange = NSRange(location: range.location + leadingWhitespace, length: level + 1)
+                    if self.hideHeadingMarkers {
+                        storage.addAttributes([
+                            .font: Self.hiddenMarkerFont,
+                            .foregroundColor: NSColor.clear,
+                        ], range: markerRange)
+                    } else {
+                        storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: markerRange)
+                    }
                 }
-                let markerRange = NSRange(location: range.location + leadingWhitespace, length: level + 1)
-                if self.hideHeadingMarkers {
-                    storage.addAttributes([
-                        .font: Self.hiddenMarkerFont,
-                        .foregroundColor: NSColor.clear,
-                    ], range: markerRange)
-                } else {
-                    storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: markerRange)
-                }
+                self.applyInlineEmphasis(to: substring, at: range, storage: storage)
             }
             storage.endEditing()
+        }
+
+        // Inline emphasis, both markdown spellings: a run of 1–3 markers
+        // hugging the words (no space inside), closed by the same run.
+        // Word and Markdown imports arrive in the `*` form; hand-written
+        // markdown may use `_`, which must not fire inside snake_case.
+        private static let emphasisPatterns: [NSRegularExpression] = [
+            "(?<!\\*)(\\*{1,3})(?![\\s*])(.+?)(?<!\\s)\\1(?!\\*)",
+            "(?<![\\w_])(_{1,3})(?![\\s_])(.+?)(?<!\\s)\\1(?![\\w_])",
+        ].compactMap { try? NSRegularExpression(pattern: $0) }
+
+        /// Renders inline markdown emphasis in one paragraph: the marked
+        /// words get the bold/italic variant of whatever font they already
+        /// wear (so emphasis inside a heading keeps the heading size, and
+        /// `_nested_` inside `**bold**` compounds), and the markers vanish
+        /// once parsed — invisible like the heading markers, dimmed when
+        /// markers are shown. Attribute-only, like the rest of the styling:
+        /// the text remains plain markdown.
+        private func applyInlineEmphasis(to paragraph: String, at range: NSRange,
+                                         storage: NSTextStorage) {
+            guard paragraph.contains("*") || paragraph.contains("_") else { return }
+            let ns = paragraph as NSString
+            let full = NSRange(location: 0, length: ns.length)
+            for pattern in Self.emphasisPatterns {
+                for match in pattern.matches(in: paragraph, range: full) {
+                    let marker = match.range(at: 1)
+                    let content = match.range(at: 2)
+                    let bold = marker.length >= 2
+                    let italic = marker.length == 1 || marker.length == 3
+                    let contentRange = NSRange(location: range.location + content.location,
+                                               length: content.length)
+                    let existing = storage.attribute(.font, at: contentRange.location,
+                                                     effectiveRange: nil) as? NSFont ?? Self.bodyFont
+                    storage.addAttribute(.font,
+                                         value: Self.emphasisFont(from: existing, bold: bold, italic: italic),
+                                         range: contentRange)
+                    for markerRange in [
+                        NSRange(location: range.location + marker.location, length: marker.length),
+                        NSRange(location: range.location + NSMaxRange(match.range) - marker.length,
+                                length: marker.length),
+                    ] {
+                        if self.hideHeadingMarkers {
+                            storage.addAttributes([
+                                .font: Self.hiddenMarkerFont,
+                                .foregroundColor: NSColor.clear,
+                            ], range: markerRange)
+                        } else {
+                            storage.addAttribute(.foregroundColor,
+                                                 value: NSColor.tertiaryLabelColor, range: markerRange)
+                        }
+                    }
+                }
+            }
         }
 
         /// Whether `range` contains a text attachment (an inline image).
@@ -560,6 +683,15 @@ struct MarkdownTextEditor: NSViewRepresentable {
                 return serif
             }
             return base
+        }
+
+        /// `base` with bold/italic traits added — same face, same size.
+        private static func emphasisFont(from base: NSFont, bold: Bool, italic: Bool) -> NSFont {
+            var traits = base.fontDescriptor.symbolicTraits
+            if bold { traits.insert(.bold) }
+            if italic { traits.insert(.italic) }
+            let descriptor = base.fontDescriptor.withSymbolicTraits(traits)
+            return NSFont(descriptor: descriptor, size: base.pointSize) ?? base
         }
     }
 }

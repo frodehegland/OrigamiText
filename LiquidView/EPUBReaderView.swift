@@ -1,14 +1,20 @@
 import SwiftUI
 import WebKit
 
-/// One open EPUB, rendered faithfully from its own content document.
-/// `content` is paper.html on disk; `base` is the unpacked package root the
-/// WebView is allowed to read, so relative images and style.css resolve.
+/// One open EPUB, rendered faithfully from its own content documents.
+/// `content` is the first spine document (paper.html) on disk; `base` is the
+/// unpacked package root the WebView is allowed to read, so relative images
+/// and style.css resolve. A plain chaptered book carries its whole spine in
+/// `chapters`, in reading order, and the reader pages through them; an
+/// Origami-profile book has one. `nav` is the EPUB navigation document,
+/// when the book names one — the table of contents.
 struct OpenEPUB: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
     let content: URL
     let base: URL
+    var chapters: [URL] = []
+    var nav: URL? = nil
 }
 
 /// A remembered EPUB in the reader's library: enough to list it (title,
@@ -39,6 +45,30 @@ struct EPUBElementRef: Hashable, Sendable {
     let kind: String
     let id: String
     let text: String
+}
+
+/// A text selection in the rendered page, carrying the W3C anchoring
+/// ladder's raw material: the enclosing element's stable id (`data-id` or
+/// `id`) and up to 32 characters of disambiguating context either side.
+/// This is what a new highlight or comment is anchored to.
+struct ReaderSelection: Identifiable, Hashable, Sendable {
+    let text: String
+    let fragment: String?
+    let prefix: String?
+    let suffix: String?
+    var id: String { (fragment ?? "") + "·" + text }
+}
+
+/// One annotation as the page script paints it: resolved from the sidecar's
+/// W3C selectors to the fields the JavaScript ladder needs — the stable
+/// element id first, the exact words as fallback.
+struct PaintedAnnotation: Hashable, Sendable {
+    let id: String
+    let fragment: String?
+    let exact: String
+    let note: String?
+    /// "highlight" or "comment" — picks the highlight tint.
+    let kind: String
 }
 
 /// A reading theme: the page's background and text colours, applied as CSS
@@ -88,8 +118,10 @@ enum ReaderTheme: String, CaseIterable, Identifiable, Sendable {
 }
 
 /// Assembles the full CSS the reader injects: links in the body colour
-/// (never browser blue), the user's chosen body and heading fonts, then the
-/// theme's colours. One string so theme and fonts switch together, live.
+/// (never browser blue), the user's chosen body and heading fonts, images
+/// scaled to the text column (a natural-size image would overflow it,
+/// glaringly in full screen), then the theme's colours. One string so theme
+/// and fonts switch together, live.
 enum ReaderStyle {
     static let defaultBodyFont = "Times New Roman"
     static let defaultHeadingFont = "Georgia"
@@ -99,6 +131,10 @@ enum ReaderStyle {
         a, a:link, a:visited { color: inherit; }
         body { font-family: \(family(bodyFont, fallback: "'Times New Roman', Times, serif")); }
         h1, h2, h3, h4, h5, h6 { font-family: \(family(headingFont, fallback: "Georgia, serif")); }
+        dfn { font-style: inherit; border-bottom: none; }
+        a[role="doc-glossref"], a[data-glossary-id] { text-decoration: none; cursor: text; }
+        img { max-width: 100%; height: auto; }
+        figure { margin-left: 0; margin-right: 0; }
         \(theme.css)
         """
     }
@@ -116,11 +152,18 @@ struct EPUBReaderScreen: View {
     @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
     @AppStorage(AppSettings.readerBodyFontKey) private var bodyFont = ReaderStyle.defaultBodyFont
     @AppStorage(AppSettings.readerHeadingFontKey) private var headingFont = ReaderStyle.defaultHeadingFont
+    /// The foot's mode words: Faithful is the WebView rendering; the
+    /// rest are the native reading styles (OrigamiReadingView).
+    @AppStorage("readerMode") private var readerModeRaw = EPUBReaderMode.faithful.rawValue
     @Environment(AppModel.self) private var model
     let book: OpenEPUB
     var onClose: () -> Void
 
     private var theme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
+
+    private var readerMode: EPUBReaderMode {
+        EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
+    }
 
     /// Windowed reading is always High Contrast with the default fonts; the
     /// chosen theme and fonts apply only in full screen — the focused
@@ -134,16 +177,85 @@ struct EPUBReaderScreen: View {
                                theme: .highContrast)
     }
 
+    // MARK: Chapters (the whole spine, for plain chaptered books)
+
+    @State private var chapterIndex = 0
+    /// Bumped per table-of-contents jump so the same fragment can be
+    /// revisited; the view scrolls when the stamp changes.
+    @State private var requestedFragment: String?
+    @State private var fragmentStamp = 0
+    /// The scroll fraction to restore once, when reopening where the
+    /// reader left off.
+    @State private var initialFraction: Double?
+    @State private var showsContents = false
+    @State private var tocEntries: [OrigamiEPUBImporter.TOCEntry] = []
+    /// The selection a comment is being written for; non-nil shows the sheet.
+    @State private var commentSelection: ReaderSelection?
+
+    private var chapters: [URL] {
+        book.chapters.isEmpty ? [book.content] : book.chapters
+    }
+
+    private var currentContent: URL {
+        chapters[max(0, min(chapterIndex, chapters.count - 1))]
+    }
+
+    /// A content URL as the folder-relative subpath the importer and the
+    /// reading-position store both speak.
+    private func subpath(of url: URL) -> String {
+        url.path.replacingOccurrences(of: book.base.path + "/", with: "")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Full focus (full screen) is bare: just the page. The title
-            // bar and Close return when the window is not full screen.
+            // bar, contents, chapter stepping, and Close return when the
+            // window is not full screen.
             if !model.isFullScreen {
                 HStack(spacing: 10) {
                     Text(book.title)
                         .font(.headline)
                         .lineLimit(1)
                     Spacer()
+                    // The contents and chapter stepping belong to the
+                    // faithful rendering; the native styles carry their
+                    // own contents in the foot bar.
+                    if readerMode == .faithful {
+                        Button {
+                            if tocEntries.isEmpty { loadContents() }
+                            showsContents = true
+                        } label: {
+                            Label("Contents", systemImage: "list.bullet")
+                        }
+                        .help("Table of contents")
+                        .popover(isPresented: $showsContents) {
+                            ReaderContentsList(entries: tocEntries,
+                                               currentSubpath: subpath(of: currentContent)) { entry in
+                                showsContents = false
+                                open(entry)
+                            }
+                        }
+                        if chapters.count > 1 {
+                            Button {
+                                step(by: -1)
+                            } label: {
+                                Label("Previous Chapter", systemImage: "chevron.left")
+                            }
+                            .disabled(chapterIndex == 0)
+                            .help("Previous chapter")
+                            Text("\(chapterIndex + 1) / \(chapters.count)")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                            Button {
+                                step(by: 1)
+                            } label: {
+                                Label("Next Chapter", systemImage: "chevron.right")
+                            }
+                            .disabled(chapterIndex >= chapters.count - 1)
+                            .help("Next chapter")
+                        }
+                    }
                     Button {
                         onClose()
                     } label: {
@@ -151,24 +263,155 @@ struct EPUBReaderScreen: View {
                     }
                     .help("Close this EPUB")
                 }
+                .labelStyle(.iconOnly)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
                 Divider()
             }
-            EPUBReaderView(
-                book: book,
-                css: readerCSS,
-                // Step 0 substrate: for now, clicking a semantic element
-                // names it and selecting text records the selection. Real
-                // behaviours (furl/unfurl, stretchtext, select-and-act) plug
-                // in here next.
-                onActivate: { ref in
-                    model.showNote("\(ref.kind.capitalized)\(ref.id.isEmpty ? "" : " · \(ref.id)")")
-                },
-                onSelect: { text in
-                    model.lastEPUBSelection = text
-                },
-                onCopyQuote: { text in copyAsQuote(text) })
+            if readerMode == .faithful {
+                faithfulReader
+            } else if let doc = model.readingDoc(forBook: book) {
+                // A native reading style over the book's structured
+                // body — the OrigamiReadingView carries the foot bar,
+                // the folding, and the Aa menu itself.
+                OrigamiReadingView(doc: doc)
+                    .id(book.id)
+            } else {
+                // The package would not read back as a structured
+                // document: the faithful rendering stands.
+                faithfulReader
+            }
+        }
+        .sheet(item: $commentSelection) { selection in
+            ReaderCommentSheet(selection: selection) { note in
+                model.addComment(note, on: selection)
+            }
+        }
+        .task(id: book.id) {
+            // A fresh book: start where the reader left off — unless it was
+            // opened by following a quote link, in which case land on the
+            // linked paragraph's chapter instead.
+            chapterIndex = 0
+            requestedFragment = nil
+            initialFraction = nil
+            tocEntries = []
+            if let fragment = model.pendingReaderFragment, !fragment.isEmpty {
+                if chapters.count > 1, let index = chapterIndex(containing: fragment) {
+                    chapterIndex = index
+                }
+                return
+            }
+            guard let position = model.readingPosition(forFolder: book.id) else { return }
+            if let stored = position.chapter,
+               let index = chapters.firstIndex(where: { subpath(of: $0) == stored }) {
+                chapterIndex = index
+            }
+            if position.fraction > 0.01 { initialFraction = position.fraction }
+        }
+    }
+
+    /// The faithful rendering: the EPUB's own pages in the WebView, the
+    /// mode words at the foot so the native styles are one click away.
+    private var faithfulReader: some View {
+        EPUBReaderView(
+            book: book,
+            css: readerCSS,
+            content: currentContent,
+            chapterIndex: chapterIndex,
+            chapterCount: chapters.count,
+            onChapterStep: { delta in step(by: delta) },
+            annotations: paintedAnnotations,
+            annotationsStamp: model.annotationsStamp,
+            onHighlight: { selection in model.addHighlight(on: selection) },
+            onAddComment: { selection in commentSelection = selection },
+            onRemoveAnnotation: { id in model.removeAnnotation(id: id) },
+            // Step 0 substrate: for now, clicking a semantic element
+            // names it and selecting text records the selection. Real
+            // behaviours (furl/unfurl, select-and-act) plug in here next.
+            onActivate: { ref in
+                model.showNote("\(ref.kind.capitalized)\(ref.id.isEmpty ? "" : " · \(ref.id)")")
+            },
+            onSelect: { text in
+                model.lastEPUBSelection = text
+            },
+            onCopyQuote: { text in copyAsQuote(text) },
+            glossaryDefinition: { text in model.glossaryDefinition(matching: text) },
+            onFollowLink: { address, fragment in
+                model.openEPUB(address: address, fragment: fragment)
+            },
+            resolveTransclusion: { address, fragment in
+                model.transcludedText(forAddress: address, fragment: fragment)
+            },
+            initialFragment: model.pendingReaderFragment,
+            requestedFragment: requestedFragment,
+            fragmentStamp: fragmentStamp,
+            initialScrollFraction: initialFraction,
+            onProgress: { fraction in
+                model.saveReadingPosition(forFolder: book.id,
+                                          chapter: subpath(of: currentContent),
+                                          fraction: fraction)
+            })
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            // The same foot the native styles carry, mode words only —
+            // clicking Scroll (or any other) leaves the faithful page.
+            ReadingFootBar()
+        }
+    }
+
+    /// The open book's sidecar annotations, flattened to what the page
+    /// script paints: the stable fragment id, the exact words, the note.
+    private var paintedAnnotations: [PaintedAnnotation] {
+        _ = model.annotationsStamp   // repaint when annotations change
+        return model.annotations(forBook: book).map { annotation in
+            var fragment: String?
+            var exact = ""
+            for selector in annotation.target.selectors {
+                switch selector {
+                case .fragment(let value, _): fragment = fragment ?? value
+                case .quote(let words, _, _): if exact.isEmpty { exact = words }
+                case .position: break
+                }
+            }
+            return PaintedAnnotation(
+                id: annotation.id,
+                fragment: fragment,
+                exact: exact,
+                note: annotation.body?.value,
+                kind: annotation.motivation == WebAnnotation.Motivation.commenting
+                    ? "comment" : "highlight")
+        }
+    }
+
+    private func step(by delta: Int) {
+        let next = chapterIndex + delta
+        guard chapters.indices.contains(next) else { return }
+        chapterIndex = next
+        requestedFragment = nil
+        initialFraction = nil
+    }
+
+    private func loadContents() {
+        let spine = OrigamiEPUBImporter.BookSpine(
+            chapters: chapters.map { subpath(of: $0) },
+            nav: book.nav.map { subpath(of: $0) })
+        tocEntries = OrigamiEPUBImporter.tocEntries(inUnpackedFolder: book.base, spine: spine)
+    }
+
+    private func open(_ entry: OrigamiEPUBImporter.TOCEntry) {
+        if let index = chapters.firstIndex(where: { subpath(of: $0) == entry.subpath }) {
+            chapterIndex = index
+        }
+        initialFraction = nil
+        requestedFragment = entry.fragment
+        fragmentStamp += 1
+    }
+
+    /// The chapter whose content document carries the element — how a quote
+    /// link lands in the right chapter of a plain chaptered book.
+    private func chapterIndex(containing fragment: String) -> Int? {
+        chapters.firstIndex { url in
+            guard let html = try? String(contentsOf: url, encoding: .utf8) else { return false }
+            return html.contains("id=\"\(fragment)\"") || html.contains("data-id=\"\(fragment)\"")
         }
     }
 
@@ -202,6 +445,26 @@ struct EPUBReaderView: NSViewRepresentable {
     /// The reader styling (link colour, fonts, theme colours) as one CSS
     /// string, injected over the EPUB's own stylesheet.
     var css: String = ""
+    /// The content document to render — the current chapter. Defaults to
+    /// the book's first spine document.
+    var content: URL? = nil
+    /// Where the current chapter sits in the spine, for the in-page
+    /// Previous/Next buttons a chaptered book gets at the page's end.
+    var chapterIndex: Int = 0
+    var chapterCount: Int = 1
+    /// The reader stepped chapters from within the page (±1).
+    var onChapterStep: (Int) -> Void = { _ in }
+    /// The book's annotations, painted over the words with the CSS Custom
+    /// Highlight API — the page's DOM is never modified.
+    var annotations: [PaintedAnnotation] = []
+    /// Bumped when annotations change, so the painting re-runs.
+    var annotationsStamp: Int = 0
+    /// "Highlight" was chosen from the context menu, on this selection.
+    var onHighlight: (ReaderSelection) -> Void = { _ in }
+    /// "Add Comment…" was chosen from the context menu, on this selection.
+    var onAddComment: (ReaderSelection) -> Void = { _ in }
+    /// The reader asked to remove an annotation (from its click-popover).
+    var onRemoveAnnotation: (String) -> Void = { _ in }
     /// A semantic element was clicked (Step 0 bridge).
     var onActivate: (EPUBElementRef) -> Void = { _ in }
     /// The reader's text selection changed (empty string when cleared).
@@ -209,12 +472,35 @@ struct EPUBReaderView: NSViewRepresentable {
     /// "Copy as Quote" was chosen from the page's context menu, carrying the
     /// selected text. The screen builds the citation from the book's metadata.
     var onCopyQuote: (String) -> Void = { _ in }
+    /// Resolves selected text to the open book's glossary entry (name and
+    /// description), for the context menu's "Show Definition".
+    var glossaryDefinition: (String) -> (name: String, description: String)? = { _ in nil }
+    /// A cross-document quote link was clicked — its target address and the
+    /// paragraph fragment, if any. The "live" half of a quote link.
+    var onFollowLink: (_ address: String, _ fragment: String?) -> Void = { _, _ in }
+    /// Resolves a quote link to its source passage for inline transclusion.
+    var resolveTransclusion: (_ address: String, _ fragment: String?) -> String? = { _, _ in nil }
+    /// A paragraph to scroll to and flash once this book finishes loading —
+    /// set when the reader was opened by following a quote link.
+    var initialFragment: String? = nil
+    /// A fragment to scroll to on demand (a table-of-contents jump); the
+    /// stamp distinguishes repeated jumps to the same fragment.
+    var requestedFragment: String? = nil
+    var fragmentStamp: Int = 0
+    /// The scroll fraction to restore once the first page finishes loading —
+    /// reopening where the reader left off.
+    var initialScrollFraction: Double? = nil
+    /// The page's scroll position changed (throttled), as a 0–1 fraction —
+    /// the reading-position memory's feed.
+    var onProgress: (Double) -> Void = { _ in }
 
     /// The message channel name the injected bridge posts to.
     private static let bridgeName = "origami"
 
     /// Installs the document scripts: theme + appendix-hide before paint,
-    /// then the metadata toggle button and the Step 0 semantic bridge.
+    /// then the metadata toggle button, the stretchtext toggler (before the
+    /// bridge, so a marker click never doubles as a Step 0 activation), the
+    /// Step 0 semantic bridge, and the quote-link enhancer.
     private static func installUserScripts(into controller: WKUserContentController, themeCSS: String) {
         controller.addUserScript(WKUserScript(source: themeScript(css: themeCSS),
                                               injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -222,7 +508,20 @@ struct EPUBReaderView: NSViewRepresentable {
                                               injectionTime: .atDocumentStart, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: toggleButtonScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        controller.addUserScript(WKUserScript(source: glossaryScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        controller.addUserScript(WKUserScript(source: stretchtextScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        // The annotation script's click listener must register before the
+        // bridge's, so a click on a highlight opens its popover instead of
+        // doubling as a Step 0 activation.
+        controller.addUserScript(WKUserScript(source: annotationScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: bridgeScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        controller.addUserScript(WKUserScript(source: quoteLinkScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        controller.addUserScript(WKUserScript(source: progressScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
     }
 
@@ -237,29 +536,89 @@ struct EPUBReaderView: NSViewRepresentable {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         let webView = ReaderWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = false
+        webView.navigationDelegate = context.coordinator
         // The subclass owns the page's context menu; it calls back through
         // the coordinator so the latest closure (and book) is always used.
         webView.onCopyQuote = { [weak coordinator = context.coordinator] text in
             coordinator?.onCopyQuote(text)
         }
+        webView.resolveDefinition = { [weak coordinator = context.coordinator] text in
+            coordinator?.glossaryDefinition(text)
+        }
+        webView.onHighlight = { [weak coordinator = context.coordinator] selection in
+            coordinator?.onHighlight(selection)
+        }
+        webView.onAddComment = { [weak coordinator = context.coordinator] selection in
+            coordinator?.onAddComment(selection)
+        }
+        webView.onRemoveAnnotation = { [weak coordinator = context.coordinator] id in
+            coordinator?.onRemoveAnnotation(id)
+        }
         context.coordinator.webView = webView
+        context.coordinator.pendingFragment = initialFragment
+        context.coordinator.pendingScrollFraction = initialScrollFraction
+        if initialScrollFraction != nil { context.coordinator.restoredBookID = book.id }
+        context.coordinator.handledFragmentStamp = fragmentStamp
         load(into: webView, context: context)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        context.coordinator.onActivate = onActivate
-        context.coordinator.onSelect = onSelect
-        context.coordinator.onCopyQuote = onCopyQuote
-        if context.coordinator.loadedID != book.id {
-            context.coordinator.themeCSS = css
+        let coordinator = context.coordinator
+        coordinator.onActivate = onActivate
+        coordinator.onSelect = onSelect
+        coordinator.onCopyQuote = onCopyQuote
+        coordinator.glossaryDefinition = glossaryDefinition
+        coordinator.onFollowLink = onFollowLink
+        coordinator.resolveTransclusion = resolveTransclusion
+        coordinator.onHighlight = onHighlight
+        coordinator.onAddComment = onAddComment
+        coordinator.onRemoveAnnotation = onRemoveAnnotation
+        coordinator.onChapterStep = onChapterStep
+        coordinator.onProgress = onProgress
+        coordinator.annotations = annotations
+        coordinator.chapterIndex = chapterIndex
+        coordinator.chapterCount = chapterCount
+        if coordinator.loadedID != (content ?? book.content).path {
+            coordinator.themeCSS = css
+            // A chapter change scrolls to the TOC's fragment; a book change
+            // to the quote link's. A restored position applies once, to the
+            // first page of a freshly opened book.
+            coordinator.pendingFragment = requestedFragment ?? initialFragment
+            coordinator.pendingScrollFraction =
+                coordinator.openedBookID == book.id ? nil : initialScrollFraction
+            coordinator.handledFragmentStamp = fragmentStamp
             load(into: webView, context: context)
             return
         }
+        // The restored reading position can arrive after the first load
+        // (the screen's task sets it asynchronously): apply it once, live
+        // when the page is up, at load's end otherwise.
+        if let fraction = initialScrollFraction, coordinator.restoredBookID != book.id {
+            coordinator.restoredBookID = book.id
+            if coordinator.finishedLoadID == coordinator.loadedID {
+                webView.evaluateJavaScript(
+                    "if (window.origamiScrollToFraction) window.origamiScrollToFraction(\(fraction));")
+            } else {
+                coordinator.pendingScrollFraction = fraction
+            }
+        }
+        // A table-of-contents jump within the loaded chapter: scroll live.
+        if fragmentStamp != coordinator.handledFragmentStamp {
+            coordinator.handledFragmentStamp = fragmentStamp
+            if let fragment = requestedFragment, !fragment.isEmpty {
+                coordinator.scrollToFragment(fragment, in: webView)
+            }
+        }
+        // Annotations changed while the page is up: repaint, no reload.
+        if annotationsStamp != coordinator.paintedStamp {
+            coordinator.paintedStamp = annotationsStamp
+            coordinator.paintAnnotations(in: webView)
+        }
         // A theme or font change: re-inject the style live, no reload, so the
         // reader's scroll position holds.
-        if context.coordinator.themeCSS != css {
-            context.coordinator.themeCSS = css
+        if coordinator.themeCSS != css {
+            coordinator.themeCSS = css
             let controller = webView.configuration.userContentController
             controller.removeAllUserScripts()
             Self.installUserScripts(into: controller, themeCSS: css)
@@ -270,18 +629,52 @@ struct EPUBReaderView: NSViewRepresentable {
     private func load(into webView: WKWebView, context: Context) {
         context.coordinator.onActivate = onActivate
         context.coordinator.onSelect = onSelect
-        context.coordinator.loadedID = book.id
-        webView.loadFileURL(book.content, allowingReadAccessTo: book.base)
+        context.coordinator.annotations = annotations
+        context.coordinator.paintedStamp = annotationsStamp
+        context.coordinator.chapterIndex = chapterIndex
+        context.coordinator.chapterCount = chapterCount
+        context.coordinator.openedBookID = book.id
+        context.coordinator.loadedID = (content ?? book.content).path
+        webView.loadFileURL(content ?? book.content, allowingReadAccessTo: book.base)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    final class Coordinator: NSObject, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var loadedID: String?
+        /// The book the current load belongs to — a chapter step within one
+        /// book keeps it, so the restored scroll position applies only once.
+        var openedBookID: String?
         var themeCSS: String = ""
         var onActivate: (EPUBElementRef) -> Void = { _ in }
         var onSelect: (String) -> Void = { _ in }
         var onCopyQuote: (String) -> Void = { _ in }
+        var glossaryDefinition: (String) -> (name: String, description: String)? = { _ in nil }
+        var onFollowLink: (_ address: String, _ fragment: String?) -> Void = { _, _ in }
+        var resolveTransclusion: (_ address: String, _ fragment: String?) -> String? = { _, _ in nil }
+        var onHighlight: (ReaderSelection) -> Void = { _ in }
+        var onAddComment: (ReaderSelection) -> Void = { _ in }
+        var onRemoveAnnotation: (String) -> Void = { _ in }
+        var onChapterStep: (Int) -> Void = { _ in }
+        var onProgress: (Double) -> Void = { _ in }
+        /// A paragraph to scroll to after the current load finishes, consumed
+        /// once. Set when this book was opened by following a quote link.
+        var pendingFragment: String?
+        /// A scroll fraction to restore after the current load finishes,
+        /// consumed once — reopening where the reader left off.
+        var pendingScrollFraction: Double?
+        /// The book whose stored position has been applied (or scheduled),
+        /// so a restore happens once per opened book.
+        var restoredBookID: String?
+        /// The load that has actually finished, vs `loadedID` which is set
+        /// when a load starts.
+        var finishedLoadID: String?
+        var handledFragmentStamp = 0
+        /// What the page paints, kept current so a fresh load repaints.
+        var annotations: [PaintedAnnotation] = []
+        var paintedStamp = 0
+        var chapterIndex = 0
+        var chapterCount = 1
         weak var webView: ReaderWebView?
 
         func userContentController(_ controller: WKUserContentController,
@@ -298,10 +691,183 @@ struct EPUBReaderView: NSViewRepresentable {
                 // The subclass reads this when the page's menu opens, to
                 // decide whether to offer "Copy as Quote".
                 webView?.selectedText = text
+                // And the full anchoring ladder, for "Highlight" and
+                // "Add Comment…" — the enclosing element's stable id plus
+                // disambiguating context either side of the words.
+                webView?.currentSelection = text.isEmpty ? nil : ReaderSelection(
+                    text: text,
+                    fragment: (body["fragment"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                    prefix: (body["prefix"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                    suffix: (body["suffix"] as? String).flatMap { $0.isEmpty ? nil : $0 })
                 onSelect(text)
+            case "annotation":
+                // A click on a painted highlight: show its popover (the
+                // comment's words, and the way to remove it).
+                guard let id = body["id"] as? String, let webView else { return }
+                let note = (body["note"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                let x = (body["x"] as? NSNumber)?.doubleValue ?? 0
+                let y = (body["y"] as? NSNumber)?.doubleValue ?? 0
+                webView.showAnnotation(id: id, note: note, at: NSPoint(x: x, y: y))
+            case "chapterStep":
+                if let delta = (body["delta"] as? NSNumber)?.intValue { onChapterStep(delta) }
+            case "progress":
+                if let fraction = (body["fraction"] as? NSNumber)?.doubleValue {
+                    onProgress(min(1, max(0, fraction)))
+                }
+            case "transclude":
+                // The reader asked for the source passage of a quote link.
+                // Prefer the live source paragraph; fall back to the quoted
+                // words carried in the link itself (its `q` query), so a
+                // whole-document link with no fragment still unfurls.
+                guard let reqID = body["reqId"] as? String else { return }
+                let link = Self.parseOrigamiURL(body["href"] as? String)
+                let text = resolveTransclusion(link.address, link.fragment)
+                    ?? link.quote
+                let payload = text ?? "The quoted document is not in your library."
+                let encoded = Self.jsStringLiteral(payload)
+                let reqLiteral = Self.jsStringLiteral(reqID)
+                webView?.evaluateJavaScript("window.origamiInsertTransclusion(\(reqLiteral), \(encoded));")
             default:
                 break
             }
+        }
+
+        // MARK: Navigation: quote links live, external links to the browser
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            guard let url = navigationAction.request.url else {
+                decisionHandler(.allow); return
+            }
+            let scheme = url.scheme?.lowercased()
+            if scheme == "origamitext" {
+                let link = Self.parseOrigamiURL(url.absoluteString)
+                if !link.address.isEmpty { onFollowLink(link.address, link.fragment) }
+                decisionHandler(.cancel); return
+            }
+            // A clicked web link opens in the user's browser, not in the reader.
+            if (scheme == "http" || scheme == "https"), navigationAction.navigationType == .linkActivated {
+                NSWorkspace.shared.open(url)
+                decisionHandler(.cancel); return
+            }
+            decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            finishedLoadID = loadedID
+            if let fragment = pendingFragment, !fragment.isEmpty {
+                pendingFragment = nil
+                pendingScrollFraction = nil
+                scrollToFragment(fragment, in: webView)
+            } else if let fraction = pendingScrollFraction {
+                pendingScrollFraction = nil
+                webView.evaluateJavaScript(
+                    "if (window.origamiScrollToFraction) window.origamiScrollToFraction(\(fraction));")
+            }
+            paintAnnotations(in: webView)
+            injectChapterFooter(in: webView)
+        }
+
+        /// Scrolls the loaded page to the element and flashes it once.
+        func scrollToFragment(_ fragment: String, in webView: WKWebView) {
+            let id = Self.jsStringLiteral(fragment)
+            webView.evaluateJavaScript("""
+            (function(){
+              var key = \(id);
+              // A target inside a collapsed stretchtext region: unfold it
+              // first, or the scroll would land on a display:none element.
+              if (window.origamiRevealStretchtext) { window.origamiRevealStretchtext(key); }
+              var el = document.getElementById(key) || document.querySelector('[data-id="' + key + '"]');
+              if (!el) return;
+              el.scrollIntoView({block:'center'});
+              var prior = el.style.backgroundColor;
+              el.style.transition = 'background-color 1.2s';
+              el.style.backgroundColor = 'rgba(255,214,10,0.45)';
+              setTimeout(function(){ el.style.backgroundColor = prior; }, 1600);
+            })();
+            """)
+        }
+
+        /// Paints the book's annotations over the loaded page. Anchors that
+        /// belong to other chapters simply find nothing here and stay
+        /// unpainted — no chapter bookkeeping needed.
+        func paintAnnotations(in webView: WKWebView) {
+            let list = annotations.map { annotation -> [String: Any] in
+                var item: [String: Any] = ["id": annotation.id,
+                                           "exact": annotation.exact,
+                                           "kind": annotation.kind]
+                if let fragment = annotation.fragment { item["fragment"] = fragment }
+                if let note = annotation.note { item["note"] = note }
+                return item
+            }
+            guard let data = try? JSONSerialization.data(withJSONObject: list),
+                  var json = String(data: data, encoding: .utf8) else { return }
+            json = json.replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+                .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+            webView.evaluateJavaScript(
+                "if (window.origamiPaintAnnotations) window.origamiPaintAnnotations(\(json));")
+        }
+
+        /// Appends the in-page chapter controls to a chaptered book: a
+        /// centered "‹ Previous · Next ›" footer at the document's end, so
+        /// paging works in full screen too, where the chrome bar is gone.
+        private func injectChapterFooter(in webView: WKWebView) {
+            guard chapterCount > 1 else { return }
+            let hasPrevious = chapterIndex > 0
+            let hasNext = chapterIndex < chapterCount - 1
+            webView.evaluateJavaScript("""
+            (function(){
+              if (document.getElementById('origami-chapter-nav')) return;
+              var bridge = window.webkit && window.webkit.messageHandlers
+                && window.webkit.messageHandlers.origami;
+              if (!bridge) return;
+              var nav = document.createElement('div');
+              nav.id = 'origami-chapter-nav';
+              nav.style.cssText = 'display:flex;justify-content:center;gap:1.5em;'
+                + 'margin:3em auto 2em;font:inherit;';
+              function button(label, delta){
+                var b = document.createElement('button');
+                b.type = 'button';
+                b.textContent = label;
+                b.style.cssText = 'padding:0.4em 1.2em;font:inherit;cursor:pointer;'
+                  + 'border:1px solid currentColor;border-radius:6px;'
+                  + 'background:transparent;color:inherit;opacity:0.7;';
+                b.addEventListener('click', function(){
+                  bridge.postMessage({event:'chapterStep', delta: delta});
+                });
+                return b;
+              }
+              if (\(hasPrevious)) nav.appendChild(button('\u{2039} Previous Chapter', -1));
+              if (\(hasNext)) nav.appendChild(button('Next Chapter \u{203A}', 1));
+              document.body.appendChild(nav);
+            })();
+            """)
+        }
+
+        /// Splits `origamitext://open/<address>?q=<quote>#<fragment>` into its
+        /// parts: the target address, the paragraph fragment, and the quoted
+        /// words the link carries (the `q` query), if any.
+        static func parseOrigamiURL(_ string: String?) -> (address: String, fragment: String?, quote: String?) {
+            guard let string, let url = URL(string: string),
+                  url.scheme?.lowercased() == "origamitext",
+                  let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  components.host?.lowercased() == "open"
+            else { return ("", nil, nil) }
+            let address = String(components.path.drop(while: { $0 == "/" }))
+            let quote = components.queryItems?.first(where: { $0.name == "q" })?.value
+            return (address, components.fragment, quote?.isEmpty == false ? quote : nil)
+        }
+
+        /// A safely-quoted JavaScript string literal.
+        static func jsStringLiteral(_ string: String) -> String {
+            let escaped = string
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "\n", with: "\\n")
+                .replacingOccurrences(of: "\r", with: "")
+                .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+                .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+            return "\"\(escaped)\""
         }
     }
 
@@ -353,6 +919,127 @@ struct EPUBReaderView: NSViewRepresentable {
     })();
     """
 
+    /// Glossary terms are not links. Author exports them as anchors
+    /// (`a[epub:type="glossref"]` into the backmatter glossary), and this
+    /// app's own EPUBs as `<dfn>` — either way the reader shows plain body
+    /// text (see the `dfn`/glossref rules in `ReaderStyle.css`) and a click
+    /// goes nowhere: the definition is reached by selecting the words and
+    /// choosing Show Definition from the context menu.
+    private static let glossaryScript = """
+    (function(){
+      document.addEventListener('click', function(e){
+        var a = e.target.closest
+          ? e.target.closest('a[data-glossary-id], a[role="doc-glossref"]') : null;
+        if (a) e.preventDefault();
+      }, true);
+    })();
+    """
+
+    /// Author's stretchtext (§ "Do Not Expand ››"): a contracted span ships
+    /// as an `a.ot-stretchtext` marker in the running text plus a hidden
+    /// `aside.ot-stretchtext-content` directly after the enclosing block.
+    /// This script makes the marker a live toggle: click (or Space/Enter —
+    /// the anchor is `role="button"`) unfolds the aside in place with a
+    /// brief fade and swaps the glyph `››` → `‹‹`; again folds it back.
+    /// The document is never modified — the `hidden` attribute is the only
+    /// state, per-session. `origamiRevealStretchtext(id)` is the shared
+    /// unfold-before-landing helper: in-page links (footnote back-refs) and
+    /// fragment arrivals whose target sits inside a collapsed region expand
+    /// it first, and a future search lands hits the same way. It must run
+    /// before the Step 0 bridge so a marker click is a toggle, not an
+    /// element activation.
+    private static let stretchtextScript = """
+    (function(){
+      if (!document.querySelector('a.ot-stretchtext')) return;
+
+      // Fallback styling, in case the package's origami.css is absent.
+      // `[hidden]` presence is the contract — the exporter writes
+      // hidden="hidden", and non-Origami readers show just the marker.
+      var style = document.getElementById('origami-stretchtext-style') || document.createElement('style');
+      style.id = 'origami-stretchtext-style';
+      style.textContent =
+        'a.ot-stretchtext{text-decoration:none;cursor:pointer;opacity:0.7;}'
+        + 'a.ot-stretchtext:hover{opacity:1;}'
+        + 'a.ot-stretchtext[aria-expanded="true"]{opacity:1;}'
+        + 'aside.ot-stretchtext-content{margin:0.5em 0 0.5em 1em;border-left:2px solid;padding-left:0.75em;}'
+        + 'aside.ot-stretchtext-content[hidden]{display:none;}';
+      (document.head || document.documentElement).appendChild(style);
+
+      function asideFor(a){
+        var id = a.getAttribute('aria-controls')
+          || (a.getAttribute('href') || '').replace(/^#/, '');
+        return id ? document.getElementById(id) : null;
+      }
+      function anchorFor(aside){
+        return document.querySelector('a.ot-stretchtext[aria-controls="' + aside.id + '"]')
+          || document.querySelector('a.ot-stretchtext[href="#' + aside.id + '"]');
+      }
+      function expand(a, aside){
+        if (!aside.hasAttribute('hidden')) return;
+        aside.removeAttribute('hidden');
+        if (a) {
+          // Keep the original marker text (image contractions read
+          // "‹‹ ImageName ››", not just "››") to restore on collapse.
+          a.dataset.otMarker = a.textContent;
+          a.textContent = '‹‹';
+          a.setAttribute('aria-expanded', 'true');
+        }
+        aside.style.opacity = '0';
+        aside.style.transition = 'opacity 0.18s ease-out';
+        requestAnimationFrame(function(){ aside.style.opacity = '1'; });
+        setTimeout(function(){ aside.style.transition = ''; aside.style.opacity = ''; }, 250);
+      }
+      function collapse(a, aside){
+        if (aside.hasAttribute('hidden')) return;
+        aside.setAttribute('hidden', 'hidden');
+        if (a) {
+          a.textContent = a.dataset.otMarker || '››';
+          a.setAttribute('aria-expanded', 'false');
+        }
+      }
+      // Unfolds the collapsed region containing the element with `id` (or
+      // `data-id` id), so navigation and search never land on a hidden
+      // target. True when something was expanded.
+      window.origamiRevealStretchtext = function(id){
+        var el = document.getElementById(id) || document.querySelector('[data-id="' + id + '"]');
+        if (!el) return false;
+        var aside = el.closest('aside.ot-stretchtext-content');
+        if (!aside || !aside.hasAttribute('hidden')) return false;
+        expand(anchorFor(aside), aside);
+        return true;
+      };
+
+      document.addEventListener('click', function(e){
+        var a = e.target.closest ? e.target.closest('a.ot-stretchtext') : null;
+        if (a) {
+          // A toggle, never a navigation — and never a Step 0 activation.
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          var aside = asideFor(a);
+          if (!aside) return;
+          if (aside.hasAttribute('hidden')) expand(a, aside); else collapse(a, aside);
+          return;
+        }
+        // Any in-page link whose target sits inside a collapsed region
+        // (footnote back-references): unfold first, then let the default
+        // jump land on a now-visible target.
+        var link = e.target.closest ? e.target.closest('a[href^="#"]') : null;
+        if (link) window.origamiRevealStretchtext(link.getAttribute('href').slice(1));
+      }, true);
+
+      // Space activates the marker, per role="button" (Enter already
+      // produces a click on an anchor, so only Space needs help).
+      document.addEventListener('keydown', function(e){
+        if (e.key !== ' ' && e.key !== 'Spacebar') return;
+        var a = e.target.closest ? e.target.closest('a.ot-stretchtext') : null;
+        if (!a) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        a.click();
+      }, true);
+    })();
+    """
+
     /// The Step 0 bridge. One delegated click listener classifies the
     /// nearest semantic ancestor by the format's own markup and posts its
     /// kind + id to Swift; a mouseup listener reports any non-empty text
@@ -367,7 +1054,9 @@ struct EPUBReaderView: NSViewRepresentable {
           if (tag === 'a' && (el.className || '').indexOf('citation') >= 0)
             return {kind:'citation', id: el.getAttribute('data-origami-ref')
               || el.getAttribute('data-citation-id') || el.id || ''};
-          if (tag === 'dfn') return {kind:'concept', id: el.id || ''};
+          // dfn (glossary terms) intentionally not classified: terms read
+          // as plain text — the definition is reached by selecting the
+          // words and choosing Show Definition, never by a link-like click.
           if (/^h[1-6]$/.test(tag) && el.id) return {kind:'heading', id: el.id};
           if ((tag === 'p' || tag === 'li') && el.id) return {kind:'paragraph', id: el.id};
           el = el.parentElement;
@@ -384,11 +1073,213 @@ struct EPUBReaderView: NSViewRepresentable {
         bridge.postMessage({event:'activate', kind:info.kind, id:info.id, text:text});
       }, true);
       document.addEventListener('mouseup', function(){
-        var sel = window.getSelection ? String(window.getSelection()) : '';
         // Report every mouseup, empty included, so the native "Copy as
-        // Quote" item appears only while text is actually selected.
-        bridge.postMessage({event:'selection', text: sel.trim().slice(0, 500)});
+        // Quote" item appears only while text is actually selected. A real
+        // selection also carries its anchoring ladder: the enclosing
+        // element's stable id and up to 32 characters of context either
+        // side — what a highlight or comment is anchored to.
+        var sel = window.getSelection ? window.getSelection() : null;
+        var raw = sel ? String(sel) : '';
+        var info = {event:'selection', text: raw.trim().slice(0, 500),
+                    fragment:'', prefix:'', suffix:''};
+        if (sel && !sel.isCollapsed && raw) {
+          var node = sel.anchorNode;
+          var el = node ? (node.nodeType === 1 ? node : node.parentElement) : null;
+          var host = el && el.closest ? el.closest('[data-id], [id]') : null;
+          if (host) info.fragment = host.getAttribute('data-id') || host.id || '';
+          var context = (host || document.body || {textContent:''}).textContent || '';
+          var at = context.indexOf(raw);
+          if (at >= 0) {
+            info.prefix = context.slice(Math.max(0, at - 32), at);
+            info.suffix = context.slice(at + raw.length, at + raw.length + 32);
+          }
+        }
+        bridge.postMessage(info);
       }, false);
+    })();
+    """
+
+    /// The annotation painter. `origamiPaintAnnotations(list)` resolves each
+    /// annotation with the format's anchoring ladder — the stable element id
+    /// first, the exact words within it, a document-wide text search as the
+    /// re-anchoring fallback — and paints matches with the CSS Custom
+    /// Highlight API, so the page's DOM is never modified. A click on a
+    /// painted range reports the annotation to Swift (its popover); the
+    /// listener registers before the Step 0 bridge's, so the click never
+    /// doubles as an element activation.
+    private static let annotationScript = """
+    (function(){
+      var style = document.getElementById('origami-annotation-style') || document.createElement('style');
+      style.id = 'origami-annotation-style';
+      style.textContent =
+        '::highlight(origami-highlight){background-color:rgba(255,214,10,0.45);}'
+        + '::highlight(origami-comment){background-color:rgba(255,159,10,0.45);}';
+      (document.head || document.documentElement).appendChild(style);
+
+      var painted = [];
+
+      // The exact words within a container, found across its text nodes
+      // (formatting splits them), case-insensitively — the format's span rule.
+      function findRange(container, exact){
+        if (!container || !exact) return null;
+        var walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        var nodes = [], full = '';
+        while (walker.nextNode()) {
+          nodes.push({node: walker.currentNode, start: full.length});
+          full += walker.currentNode.data;
+        }
+        var at = full.toLowerCase().indexOf(exact.toLowerCase());
+        if (at < 0) return null;
+        var end = at + exact.length;
+        var range = document.createRange();
+        var started = false;
+        for (var i = 0; i < nodes.length; i++) {
+          var n = nodes[i], len = n.node.data.length;
+          if (!started && at >= n.start && at <= n.start + len) {
+            range.setStart(n.node, at - n.start);
+            started = true;
+          }
+          if (started && end >= n.start && end <= n.start + len) {
+            range.setEnd(n.node, end - n.start);
+            return range.collapsed ? null : range;
+          }
+        }
+        return null;
+      }
+
+      window.origamiPaintAnnotations = function(list){
+        if (typeof Highlight === 'undefined' || !CSS.highlights) return;
+        painted = [];
+        var highlights = new Highlight(), comments = new Highlight();
+        (list || []).forEach(function(a){
+          var host = a.fragment
+            ? (document.getElementById(a.fragment)
+               || document.querySelector('[data-id="' + a.fragment + '"]'))
+            : null;
+          // The ladder: words in their element, words anywhere, whole
+          // element when the words are gone — degrade, never break.
+          var range = findRange(host, a.exact)
+            || findRange(document.body, a.exact);
+          if (!range && host) {
+            range = document.createRange();
+            range.selectNodeContents(host);
+          }
+          if (!range) return;
+          (a.kind === 'comment' ? comments : highlights).add(range);
+          painted.push({id: a.id, kind: a.kind, note: a.note || '', range: range});
+        });
+        CSS.highlights.set('origami-highlight', highlights);
+        CSS.highlights.set('origami-comment', comments);
+      };
+
+      var bridge = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.origami;
+      document.addEventListener('click', function(e){
+        if (!bridge || !painted.length || !document.caretRangeFromPoint) return;
+        // A click that is really a selection gesture is not an annotation tap.
+        var sel = window.getSelection ? window.getSelection() : null;
+        if (sel && !sel.isCollapsed) return;
+        var caret = document.caretRangeFromPoint(e.clientX, e.clientY);
+        if (!caret) return;
+        for (var i = 0; i < painted.length; i++) {
+          var p = painted[i];
+          try {
+            if (p.range.comparePoint(caret.startContainer, caret.startOffset) === 0) {
+              e.preventDefault();
+              e.stopImmediatePropagation();
+              bridge.postMessage({event:'annotation', id: p.id, kind: p.kind,
+                                  note: p.note, x: e.clientX, y: e.clientY});
+              return;
+            }
+          } catch (err) {}
+        }
+      }, true);
+    })();
+    """
+
+    /// The reading-position feed: reports the page's scroll fraction
+    /// (throttled) so the reader can reopen where it left off, and the
+    /// restore half, `origamiScrollToFraction`.
+    private static let progressScript = """
+    (function(){
+      var bridge = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.origami;
+      window.origamiScrollToFraction = function(f){
+        var h = document.documentElement.scrollHeight - window.innerHeight;
+        window.scrollTo(0, Math.max(0, h * f));
+      };
+      if (!bridge) return;
+      var timer = null;
+      window.addEventListener('scroll', function(){
+        if (timer) return;
+        timer = setTimeout(function(){
+          timer = null;
+          var h = document.documentElement.scrollHeight - window.innerHeight;
+          var f = h > 0 ? (window.scrollY / h) : 0;
+          bridge.postMessage({event:'progress', fraction: Math.max(0, Math.min(1, f))});
+        }, 400);
+      }, {passive: true});
+    })();
+    """
+
+    /// The quote-link enhancer. Every `origamitext://` anchor is a live link
+    /// (a solid-underlined `(Author, Year)` — clicking it opens the target,
+    /// handled by the navigation delegate) followed by a `[]` control that
+    /// unfurls the quoted source *inline*, stretchtext-style, between the
+    /// brackets. `origamiInsertTransclusion` is the callback Swift evaluates
+    /// with the resolved passage.
+    private static let quoteLinkScript = """
+    (function(){
+      var bridge = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.origami;
+
+      var style = document.getElementById('origami-quote-style') || document.createElement('style');
+      style.id = 'origami-quote-style';
+      style.textContent =
+        'a.origami-quote{text-decoration:none;cursor:pointer;}'
+        + 'a.origami-quote:hover{text-decoration:underline;}'
+        + '.origami-stretch{cursor:pointer;opacity:0.7;font-style:normal;}'
+        + '.origami-stretch::before{content:"[";font-style:normal;}'
+        + '.origami-stretch::after{content:"]";font-style:normal;}'
+        + '.origami-stretch.expanded{opacity:1;font-style:italic;}';
+      (document.head || document.documentElement).appendChild(style);
+
+      var links = document.querySelectorAll('a[href^="origamitext://"]');
+      Array.prototype.forEach.call(links, function(a, i){
+        a.classList.add('origami-quote');
+        a.setAttribute('data-oq', i);
+        // The stretchtext control: renders as "[]" collapsed, "[source]" open.
+        var stretch = document.createElement('span');
+        stretch.className = 'origami-stretch';
+        stretch.setAttribute('data-oq', i);
+        stretch.setAttribute('role', 'button');
+        stretch.title = 'Show the quoted source';
+        stretch.addEventListener('click', function(e){
+          e.preventDefault(); e.stopPropagation();
+          if (stretch.classList.contains('expanded')) {
+            stretch.classList.remove('expanded');
+            stretch.textContent = '';
+            return;
+          }
+          var cached = stretch.getAttribute('data-text');
+          if (cached !== null) {
+            stretch.textContent = cached;
+            stretch.classList.add('expanded');
+          } else if (bridge) {
+            bridge.postMessage({event:'transclude', href:a.getAttribute('href'), reqId:'oq' + i});
+          }
+        });
+        a.insertAdjacentElement('afterend', stretch);
+      });
+
+      window.origamiInsertTransclusion = function(reqId, text){
+        var i = reqId.replace('oq', '');
+        var stretch = document.querySelector('.origami-stretch[data-oq="' + i + '"]');
+        if (!stretch) return;
+        stretch.setAttribute('data-text', text);
+        stretch.textContent = text;
+        stretch.classList.add('expanded');
+      };
     })();
     """
 }
@@ -402,8 +1293,28 @@ final class ReaderWebView: WKWebView {
     /// The page's current selection, kept current by the Step 0 bridge's
     /// mouseup reports (see `bridgeScript`).
     var selectedText: String = ""
+    /// The selection with its anchoring ladder (enclosing element id and
+    /// context), for "Highlight" and "Add Comment…". Nil when nothing is
+    /// selected.
+    var currentSelection: ReaderSelection?
     /// Invoked with the selected text when "Copy as Quote" is chosen.
     var onCopyQuote: (String) -> Void = { _ in }
+    /// Invoked when "Highlight" is chosen on the current selection.
+    var onHighlight: (ReaderSelection) -> Void = { _ in }
+    /// Invoked when "Add Comment…" is chosen on the current selection.
+    var onAddComment: (ReaderSelection) -> Void = { _ in }
+    /// Invoked when Remove is chosen in an annotation's popover.
+    var onRemoveAnnotation: (String) -> Void = { _ in }
+    /// Resolves selected text to the open book's glossary entry, when the
+    /// words are a defined concept — what puts "Show Definition" on the menu.
+    var resolveDefinition: (String) -> (name: String, description: String)? = { _ in nil }
+    /// The entry and click point held between building the menu and the
+    /// "Show Definition" item firing.
+    private var pendingDefinition: (name: String, description: String)?
+    private var menuLocation: NSPoint = .zero
+    /// The definition popover, retained while shown (transient: it closes
+    /// itself on any outside click).
+    private var definitionPopover: NSPopover?
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         // Take full ownership: drop everything WebKit proposes (Reload,
@@ -416,12 +1327,39 @@ final class ReaderWebView: WKWebView {
 
         let text = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty {
+            // Selected words the book's glossary defines: the definition
+            // leads the menu and pops up in place (glossary terms are
+            // deliberately not links — this is the way to a definition).
+            menuLocation = convert(event.locationInWindow, from: nil)
+            if let entry = resolveDefinition(text) {
+                pendingDefinition = entry
+                addItem(to: menu, title: "Show Definition", action: #selector(showDefinition(_:)))
+            }
+            // The reader's own marks: a highlight, or a comment anchored to
+            // the words — stored in the book's sidecar, never in the book.
+            if currentSelection != nil {
+                addItem(to: menu, title: "Highlight", action: #selector(highlightSelection(_:)))
+                addItem(to: menu, title: "Add Comment…", action: #selector(commentOnSelection(_:)))
+            }
             addItem(to: menu, title: "Copy as Quote", action: #selector(copyAsQuote(_:)))
             addItem(to: menu, title: "Copy", action: #selector(copySelection(_:)))
         }
         // With no selection the menu is intentionally empty, so nothing
         // extraneous appears. New commands (Define, Copy Link, Add to
         // Concepts, …) go here.
+    }
+
+    @objc private func showDefinition(_ sender: Any?) {
+        guard let entry = pendingDefinition else { return }
+        pendingDefinition = nil
+        definitionPopover?.close()
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(
+            rootView: GlossaryDefinitionPopup(name: entry.name, definition: entry.description))
+        definitionPopover = popover
+        let anchor = NSRect(x: menuLocation.x - 2, y: menuLocation.y - 2, width: 4, height: 4)
+        popover.show(relativeTo: anchor, of: self, preferredEdge: .maxY)
     }
 
     private func addItem(to menu: NSMenu, title: String, action: Selector) {
@@ -434,9 +1372,167 @@ final class ReaderWebView: WKWebView {
         onCopyQuote(selectedText.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    @objc private func highlightSelection(_ sender: Any?) {
+        guard let selection = currentSelection else { return }
+        onHighlight(selection)
+    }
+
+    @objc private func commentOnSelection(_ sender: Any?) {
+        guard let selection = currentSelection else { return }
+        onAddComment(selection)
+    }
+
+    /// Shows a clicked annotation's popover at the page point the click
+    /// landed on: the comment's words (highlights have none) and Remove.
+    func showAnnotation(id: String, note: String?, at pagePoint: NSPoint) {
+        definitionPopover?.close()
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(
+            rootView: AnnotationPopup(note: note) { [weak self, weak popover] in
+                popover?.close()
+                self?.onRemoveAnnotation(id)
+            })
+        definitionPopover = popover
+        let anchor = NSRect(x: pagePoint.x - 2, y: pagePoint.y - 2, width: 4, height: 4)
+        popover.show(relativeTo: anchor, of: self, preferredEdge: .maxY)
+    }
+
     /// Plain "Copy" of the current selection — WebKit's own copy, so rich
     /// text and formatting come along, not just the plain string.
     @objc private func copySelection(_ sender: Any?) {
         evaluateJavaScript("document.execCommand('copy')")
+    }
+}
+
+/// The table of contents, in the reader's Contents popover: the book's own
+/// navigation when it carries one, its headings or chapters otherwise. The
+/// entry being read is marked.
+private struct ReaderContentsList: View {
+    let entries: [OrigamiEPUBImporter.TOCEntry]
+    let currentSubpath: String
+    var onOpen: (OrigamiEPUBImporter.TOCEntry) -> Void
+
+    var body: some View {
+        Group {
+            if entries.isEmpty {
+                Text("This book carries no table of contents.")
+                    .foregroundStyle(.secondary)
+                    .padding(20)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(entries) { entry in
+                            Button {
+                                onOpen(entry)
+                            } label: {
+                                HStack {
+                                    Text(entry.label)
+                                        .lineLimit(2)
+                                    Spacer()
+                                    if entry.subpath == currentSubpath && entry.fragment == nil {
+                                        Image(systemName: "book")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 8)
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+        }
+        .frame(width: 320)
+        .frame(maxHeight: 420)
+    }
+}
+
+/// The Add Comment sheet: the quoted words over a field for the reader's
+/// own, saved into the book's annotation sidecar.
+private struct ReaderCommentSheet: View {
+    let selection: ReaderSelection
+    var onSave: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var note = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Comment")
+                .font(.headline)
+            Text("“\(selection.text)”")
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+            TextEditor(text: $note)
+                .font(.body)
+                .frame(minHeight: 90)
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(.quaternary))
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    onSave(note)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+}
+
+/// A clicked annotation's pop-up: the comment's words (a plain highlight
+/// has none) and the way to remove the mark.
+private struct AnnotationPopup: View {
+    let note: String?
+    var onRemove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let note, !note.isEmpty {
+                Text(note)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Highlight")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+            }
+            Button(role: .destructive) {
+                onRemove()
+            } label: {
+                Label("Remove", systemImage: "trash")
+            }
+        }
+        .padding(14)
+        .frame(width: 300, alignment: .leading)
+    }
+}
+
+/// The Show Definition pop-up: the concept's name over its glossary
+/// description, sized for reading in place.
+private struct GlossaryDefinitionPopup: View {
+    let name: String
+    let definition: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(name)
+                .font(.headline)
+            Text(definition)
+                .font(.body)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(width: 320, alignment: .leading)
     }
 }

@@ -47,7 +47,7 @@ nonisolated enum MarkdownImporter {
             }
         }
         func standsAlone(_ line: String) -> Bool {
-            LiquidDoc.markdownHeading(in: line) != nil
+            heading(in: line) != nil
                 || (line.count >= 3 && line.allSatisfy { $0 == "-" })
                 || line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("> ")
         }
@@ -76,11 +76,23 @@ nonisolated enum MarkdownImporter {
 
         var paragraphs: [LiquidDoc.Paragraph] = []
         for block in blocks {
-            let markdown = LiquidDoc.markdownHeading(in: block)
+            let markdown = heading(in: block)
             paragraphs.append(LiquidDoc.Paragraph(id: "p\(paragraphs.count + 1)",
                                                   heading: markdown?.level,
                                                   text: markdown?.text ?? block))
         }
         return ImportResult(title: title, author: frontAuthor, body: paragraphs)
+    }
+
+    /// A markdown ATX heading of any depth: `#`–`###` as they are, `####`
+    /// and deeper clamped to level 3 — the format's deepest level — so a
+    /// deep heading still renders as a heading, not literal hashes.
+    private static func heading(in line: String) -> (level: Int, text: String)? {
+        if let markdown = LiquidDoc.markdownHeading(in: line) { return markdown }
+        let hashes = line.prefix(while: { $0 == "#" })
+        guard (4...6).contains(hashes.count) else { return nil }
+        let text = line.dropFirst(hashes.count).trimmingCharacters(in: .whitespaces)
+        guard line.dropFirst(hashes.count).first == " ", !text.isEmpty else { return nil }
+        return (3, text)
     }
 }

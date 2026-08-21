@@ -27,7 +27,8 @@ nonisolated enum WordImporter {
         // silently drops images, so read them from the .docx zip directly
         // and splice them back in as attachments on their own lines.
         let rich = NSMutableAttributedString(attributedString: base)
-        if url.pathExtension.lowercased() == "docx", let docxData = try? Data(contentsOf: url) {
+        let docxData: Data? = url.pathExtension.lowercased() == "docx" ? try? Data(contentsOf: url) : nil
+        if let docxData {
             WordImageRecovery.insertImages(from: docxData, into: rich)
         }
 
@@ -83,6 +84,20 @@ nonisolated enum WordImporter {
             for id in paragraphImages {
                 blocks.append((nil, "![](asset:\(id))"))
             }
+        }
+
+        // Pages exports hyperlinks as Word HYPERLINK fields, which AppKit's
+        // .docx reader silently drops (only relationship-based links survive,
+        // which is why a Word paste worked but a Pages one did not). Recover
+        // our citation links straight from the OOXML and splice the address in
+        // as `[address]`, exactly as the relationship links already are.
+        if let docxData {
+            let citations = WordFieldLinks.hyperlinkFields(inDocx: docxData)
+                .compactMap { field -> (text: String, address: String)? in
+                    guard let address = origamiAddress(fromURL: field.url) else { return nil }
+                    return (field.text, address)
+                }
+            if !citations.isEmpty { blocks = injectingAddresses(citations, into: blocks) }
         }
 
         // Word's Title property, else a leading level-1 heading, else the
@@ -177,12 +192,35 @@ nonisolated enum WordImporter {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// The Origami address inside an `origamitext://open/<address>` URL, or nil.
+    /// The Origami address inside a citation hyperlink — either the in-app
+    /// `origamitext://open/…` or the https identity carrier a Word/Pages paste
+    /// leaves behind. Returns `to` plus any `#fragment`, with the `?q=` quote
+    /// payload stripped (the body citation is just the address). Nil when the
+    /// URL is not one of ours.
     private static func origamiAddress(fromURL url: String) -> String? {
-        let prefix = "origamitext://open/"
-        guard url.hasPrefix(prefix) else { return nil }
-        let address = String(url.dropFirst(prefix.count))
-        return address.isEmpty ? nil : address
+        guard let link = CitationClipboard.parse(href: url) else { return nil }
+        return link.to + (link.fragment.map { "#\($0)" } ?? "")
+    }
+
+    /// Splices `[address]` after the display text of each recovered field
+    /// hyperlink, so the draft editor makes it a `cites` link — the same shape
+    /// the relationship-based links already produce. Each link is applied to
+    /// the first block that still carries its bare display text.
+    private static func injectingAddresses(_ citations: [(text: String, address: String)],
+                                           into blocks: [(heading: Int?, text: String)]) -> [(heading: Int?, text: String)] {
+        var blocks = blocks
+        for citation in citations {
+            let display = citation.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !display.isEmpty else { continue }
+            for index in blocks.indices {
+                guard let range = blocks[index].text.range(of: display) else { continue }
+                // Don't double up if an address already trails this occurrence.
+                if blocks[index].text[range.upperBound...].hasPrefix(" [") { continue }
+                blocks[index].text.replaceSubrange(range, with: "\(display) [\(citation.address)]")
+                break
+            }
+        }
+        return blocks
     }
 
     private static func plainText(for range: NSRange, in rich: NSAttributedString) -> String {
@@ -351,6 +389,64 @@ nonisolated enum WordImageRecovery {
             }
         }
         return ends
+    }
+}
+
+/// Recovers HYPERLINK fields from a `.docx`'s OOXML — the form Pages (and
+/// Word, for some links) writes and which AppKit's reader drops. Handles both
+/// complex fields (`fldChar` begin/separate/end with `instrText`) and simple
+/// fields (`w:fldSimple`), returning each link's visible text and URL.
+nonisolated enum WordFieldLinks {
+
+    static func hyperlinkFields(inDocx data: Data) -> [(text: String, url: String)] {
+        guard let zip = DocxZip(data: data),
+              let xmlData = zip.read("word/document.xml"),
+              let xml = String(data: xmlData, encoding: .utf8) else { return [] }
+        return fields(in: xml, pattern: complexPattern) + fields(in: xml, pattern: simplePattern)
+    }
+
+    // Complex field: … fldCharType="begin" … instrText ` HYPERLINK "url" ` …
+    // fldCharType="separate" <result runs> fldCharType="end". Quotes in the
+    // instruction are usually escaped as &quot; but may be literal.
+    private static let complexPattern =
+        "fldCharType=\"begin\".*?HYPERLINK\\s+(?:&quot;|\")([^&\"]+)(?:&quot;|\").*?fldCharType=\"separate\"(.*?)fldCharType=\"end\""
+
+    // Simple field: <w:fldSimple w:instr=' HYPERLINK &quot;url&quot; '> runs </w:fldSimple>
+    private static let simplePattern =
+        "<w:fldSimple[^>]*w:instr=\"[^\"]*HYPERLINK\\s+&quot;([^&]+)&quot;[^\"]*\"[^>]*>(.*?)</w:fldSimple>"
+
+    private static func fields(in xml: String, pattern: String) -> [(text: String, url: String)] {
+        guard let expression = try? NSRegularExpression(
+            pattern: pattern, options: [.dotMatchesLineSeparators, .caseInsensitive]) else { return [] }
+        var out: [(text: String, url: String)] = []
+        for match in expression.matches(in: xml, range: NSRange(xml.startIndex..., in: xml)) {
+            guard let urlRange = Range(match.range(at: 1), in: xml),
+                  let bodyRange = Range(match.range(at: 2), in: xml) else { continue }
+            let url = xmlDecoded(String(xml[urlRange]))
+            let text = displayText(inRunXML: String(xml[bodyRange]))
+            if !url.isEmpty, !text.isEmpty { out.append((text, url)) }
+        }
+        return out
+    }
+
+    /// The concatenated `<w:t>` text within a field's result runs.
+    private static func displayText(inRunXML runXML: String) -> String {
+        guard let expression = try? NSRegularExpression(
+            pattern: "<w:t[^>]*>(.*?)</w:t>", options: [.dotMatchesLineSeparators]) else { return "" }
+        var text = ""
+        for match in expression.matches(in: runXML, range: NSRange(runXML.startIndex..., in: runXML)) {
+            if let range = Range(match.range(at: 1), in: runXML) { text += runXML[range] }
+        }
+        return xmlDecoded(text).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func xmlDecoded(_ string: String) -> String {
+        string.replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&apos;", with: "'")
     }
 }
 

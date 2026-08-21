@@ -88,6 +88,9 @@ struct LiquidViewApp: App {
                 Toggle("Show Superseded", isOn: Bindable(model).showSuperseded)
                 Divider()
             }
+            // The reading's View-menu verbs: fold/unfold (⌘−/⌘+) and
+            // the type (⇧⌘±, ⌥⌘±) — answered by the front reading.
+            ReadingCommands()
             CommandMenu("Go") {
                 Button("Back") { model.goBack() }
                     .keyboardShortcut("[", modifiers: .command)

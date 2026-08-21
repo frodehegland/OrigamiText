@@ -59,13 +59,54 @@ nonisolated enum OrigamiEPUBImporter {
         var assets: [LiquidDoc.Asset] = []
     }
 
+    /// One package, readable either way: the EPUB's ZIP, or its files
+    /// already unpacked on disk. The structured import reads through
+    /// this so a remembered book can be re-read without its .epub.
+    struct PackageSource {
+        /// The named entry's bytes, or nil.
+        let entry: (String) -> Data?
+        /// The first entry whose name ends with the suffix.
+        let entryWithSuffix: (String) -> Data?
+    }
+
     static func importDocument(at url: URL) throws -> ImportResult {
         let zip = try ZipReader(data: try Data(contentsOf: url))
+        return try importDocument(from: PackageSource(
+            entry: { zip.entry($0) },
+            entryWithSuffix: { suffix in
+                zip.entries.first { $0.key.hasSuffix(suffix) }?.value
+            }))
+    }
 
+    /// The structured import over an already-unpacked package folder —
+    /// how the native reading styles get their document without the
+    /// original .epub file.
+    static func importDocument(inUnpackedFolder folder: URL) throws -> ImportResult {
+        let fileManager = FileManager.default
+        var names: [String] = []
+        if let enumerator = fileManager.enumerator(at: folder,
+                                                   includingPropertiesForKeys: [.isRegularFileKey]) {
+            for case let file as URL in enumerator
+            where (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                names.append(file.path.replacingOccurrences(of: folder.path + "/", with: ""))
+            }
+        }
+        return try importDocument(from: PackageSource(
+            entry: { name in try? Data(contentsOf: folder.appendingPathComponent(name)) },
+            entryWithSuffix: { suffix in
+                names.first { $0.hasSuffix(suffix) }
+                    .flatMap { try? Data(contentsOf: folder.appendingPathComponent($0)) }
+            }))
+    }
+
+    private static func importDocument(from source: PackageSource) throws -> ImportResult {
         // container.xml names the package document; be tolerant when
         // the container is odd but the profile's layout holds.
-        let opfPath = containerRootFile(in: zip) ?? "package.opf"
-        guard let opfData = zip.entry(opfPath) else { throw OrigamiEPUBImportError.corruptContainer }
+        let opfPath = source.entry("META-INF/container.xml")
+            .map { String(decoding: $0, as: UTF8.self) }
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") }
+            ?? "package.opf"
+        guard let opfData = source.entry(opfPath) else { throw OrigamiEPUBImportError.corruptContainer }
         let opf = String(decoding: opfData, as: UTF8.self)
         let opfDirectory = (opfPath as NSString).deletingLastPathComponent
 
@@ -76,14 +117,14 @@ nonisolated enum OrigamiEPUBImporter {
 
         // The spine's first itemref names the content document.
         guard let contentHref = spineContentHref(in: opf),
-              let contentData = zip.entry(joinedPath(opfDirectory, contentHref))
-                  ?? zip.entry(contentHref)
+              let contentData = source.entry(joinedPath(opfDirectory, contentHref))
+                  ?? source.entry(contentHref)
         else { throw OrigamiEPUBImportError.missingContent }
         let html = String(decoding: contentData, as: UTF8.self)
 
         // Visual-Meta: the package file first, the embedded copy second.
-        let visualMetaData = zip.entry("visual-meta.json")
-            ?? zip.entries.first { $0.key.hasSuffix("visual-meta.json") }?.value
+        let visualMetaData = source.entry("visual-meta.json")
+            ?? source.entryWithSuffix("visual-meta.json")
             ?? embeddedVisualMeta(in: html)
         let visualMeta = visualMetaData.flatMap {
             (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
@@ -173,14 +214,54 @@ nonisolated enum OrigamiEPUBImporter {
         let contentDir = (equationHref as NSString).deletingLastPathComponent
         let resolveImage: (String) -> Data? = { src in
             let full = joinedPath(contentDir, src)
-            return zip.entry(full)
-                ?? zip.entry(src)
-                ?? zip.entries.first { $0.key.hasSuffix("/\((src as NSString).lastPathComponent)") }?.value
+            return source.entry(full)
+                ?? source.entry(src)
+                ?? source.entryWithSuffix("/\((src as NSString).lastPathComponent)")
         }
 
-        let (body, bodyAssets) = try bodyParagraphs(fromXHTML: html,
-                                                    addressByCitationID: addressByCitationID,
-                                                    resolveImage: resolveImage)
+        // The Origami profile is one semantic content document; a plain
+        // EPUB (no Origami metadata) is often many — one per chapter —
+        // so those read whole: every spine document in order, paragraph
+        // and asset ids prefixed per chapter so they stay unique, and
+        // images kept within a budget so a picture-heavy book does not
+        // balloon the document (the markers stay visible regardless).
+        var body: [LiquidDoc.Paragraph]
+        var bodyAssets: [LiquidDoc.Asset]
+        let spineHrefs = spineContentHrefs(in: opf)
+        if visualMeta == nil, spineHrefs.count > 1 {
+            body = []
+            bodyAssets = []
+            var imageBudget = 12_000_000
+            for (index, href) in spineHrefs.enumerated() {
+                guard let data = source.entry(joinedPath(opfDirectory, href))
+                        ?? source.entry(href) else { continue }
+                let chapterDir = (joinedPath(opfDirectory, href) as NSString)
+                    .deletingLastPathComponent
+                let resolve: (String) -> Data? = { src in
+                    let full = joinedPath(chapterDir, src)
+                    guard let bytes = source.entry(full)
+                            ?? source.entry(src)
+                            ?? source.entryWithSuffix("/\((src as NSString).lastPathComponent)"),
+                          bytes.count <= imageBudget else { return nil }
+                    imageBudget -= bytes.count
+                    return bytes
+                }
+                guard let (part, partAssets) = try? bodyParagraphs(
+                    fromXHTML: String(decoding: data, as: UTF8.self),
+                    addressByCitationID: [:],
+                    resolveImage: resolve,
+                    idPrefix: "s\(index + 1)-") else { continue }
+                body += part
+                bodyAssets += partAssets
+            }
+            guard !body.isEmpty else { throw OrigamiEPUBImportError.missingContent }
+        } else {
+            let (part, partAssets) = try bodyParagraphs(fromXHTML: html,
+                                                        addressByCitationID: addressByCitationID,
+                                                        resolveImage: resolveImage)
+            body = part
+            bodyAssets = partAssets
+        }
 
         // Links come back the way they were made: derived from the
         // restored body text — rels, fragments, and quoted spans
@@ -280,10 +361,146 @@ nonisolated enum OrigamiEPUBImporter {
         directory.isEmpty ? name : "\(directory)/\(name)"
     }
 
+    // MARK: The whole spine (carried over from Knowledge Space)
+
+    /// Every spine itemref's content document, in reading order — the
+    /// chapters of a plain, multi-document EPUB. Origami-profile books have
+    /// one; a chaptered book has many, and the reader pages through them.
+    private static func spineContentHrefs(in opf: String) -> [String] {
+        var hrefByID: [String: String] = [:]
+        for item in captures(in: opf, pattern: "<item\\s[^>]*>") {
+            guard let id = firstCapture(in: item, pattern: "\\sid=\"([^\"]+)\""),
+                  let href = firstCapture(in: item, pattern: "href=\"([^\"]+)\"")
+            else { continue }
+            hrefByID[id] = href
+        }
+        return captures(in: opf, pattern: "<itemref[^>]*idref=\"([^\"]+)\"")
+            .compactMap { hrefByID[$0] }
+    }
+
+    /// The EPUB 3 navigation document's href, when the manifest names one
+    /// (`properties="nav"`).
+    private static func navHref(in opf: String) -> String? {
+        for item in captures(in: opf, pattern: "<item\\s[^>]*>") {
+            guard let properties = firstCapture(in: item, pattern: "properties=\"([^\"]+)\""),
+                  properties.split(separator: " ").contains("nav")
+            else { continue }
+            return firstCapture(in: item, pattern: "href=\"([^\"]+)\"")
+        }
+        return nil
+    }
+
+    /// Every match's first capture group (the whole match when the
+    /// pattern has none), in order.
+    private static func captures(in text: String, pattern: String) -> [String] {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let ns = text as NSString
+        return expression.matches(in: text,
+                                  range: NSRange(location: 0, length: ns.length)).map { match in
+            let index = match.numberOfRanges > 1 ? 1 : 0
+            return ns.substring(with: match.range(at: index))
+        }
+    }
+
+    /// A book's reading order and navigation, re-derived from its unpacked
+    /// folder — so remembered books gain chapters without a manifest
+    /// migration. `chapters` are folder-relative subpaths in spine order;
+    /// `nav` is the EPUB navigation document's subpath, when the book has one.
+    struct BookSpine: Sendable {
+        let chapters: [String]
+        let nav: String?
+    }
+
+    static func spine(inUnpackedFolder folder: URL) -> BookSpine? {
+        let containerURL = folder.appendingPathComponent("META-INF/container.xml")
+        let opfSubpath = (try? String(contentsOf: containerURL, encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") }
+            ?? "package.opf"
+        let opfURL = folder.appendingPathComponent(opfSubpath)
+        guard let opf = try? String(contentsOf: opfURL, encoding: .utf8) else { return nil }
+        let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
+        let chapters = spineContentHrefs(in: opf).map { joinedPath(opfDirectory, $0) }
+        let nav = navHref(in: opf).map { joinedPath(opfDirectory, $0) }
+        guard !chapters.isEmpty else { return nil }
+        return BookSpine(chapters: chapters, nav: nav)
+    }
+
+    // MARK: Table of contents
+
+    /// One table-of-contents entry: the label to show, the chapter it lives
+    /// in (folder-relative subpath), and the fragment within it, if any.
+    struct TOCEntry: Identifiable, Hashable, Sendable {
+        let label: String
+        let subpath: String
+        let fragment: String?
+        var id: String { subpath + "#" + (fragment ?? "") + "·" + label }
+    }
+
+    /// The book's table of contents: the EPUB navigation document's `toc`
+    /// list when the book carries one; otherwise the content documents'
+    /// own headings (single-document books), or one entry per chapter
+    /// titled by its first heading or `<title>` (plain chaptered books).
+    static func tocEntries(inUnpackedFolder folder: URL, spine: BookSpine) -> [TOCEntry] {
+        if let nav = spine.nav,
+           let html = try? String(contentsOf: folder.appendingPathComponent(nav), encoding: .utf8) {
+            let navDirectory = (nav as NSString).deletingLastPathComponent
+            // Prefer the toc <nav>; fall back to every anchor in the file.
+            let scope = firstCapture(
+                in: html,
+                pattern: "(?s)<nav[^>]*epub:type=\"toc\"[^>]*>(.*?)</nav>") ?? html
+            var entries: [TOCEntry] = []
+            for anchor in captures(in: scope, pattern: "(?s)<a\\s[^>]*href=\"[^\"]+\"[^>]*>.*?</a>") {
+                guard let href = firstCapture(in: anchor, pattern: "href=\"([^\"]+)\""),
+                      let inner = firstCapture(in: anchor, pattern: "(?s)<a[^>]*>(.*?)</a>")
+                else { continue }
+                let label = xmlUnescaped(inner
+                    .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !label.isEmpty, !href.hasPrefix("http") else { continue }
+                let parts = href.split(separator: "#", maxSplits: 1)
+                let file = parts.first.map(String.init) ?? ""
+                let fragment = parts.count > 1 ? String(parts[1]) : nil
+                let subpath = file.isEmpty
+                    ? (spine.chapters.first ?? "")
+                    : joinedPath(navDirectory, file.removingPercentEncoding ?? file)
+                entries.append(TOCEntry(label: label, subpath: subpath, fragment: fragment))
+            }
+            if !entries.isEmpty { return entries }
+        }
+        // No navigation document: build the contents from the words.
+        if spine.chapters.count == 1, let only = spine.chapters.first {
+            guard let html = try? String(contentsOf: folder.appendingPathComponent(only),
+                                         encoding: .utf8) else { return [] }
+            return captures(in: html, pattern: "(?s)<h[1-3]\\b[^>]*\\bid=\"[^\"]+\"[^>]*>.*?</h[1-3]>")
+                .compactMap { heading in
+                    guard let id = firstCapture(in: heading, pattern: "id=\"([^\"]+)\""),
+                          let inner = firstCapture(in: heading, pattern: "(?s)>(.*)<") else { return nil }
+                    let label = xmlUnescaped(inner
+                        .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    return label.isEmpty ? nil : TOCEntry(label: label, subpath: only, fragment: id)
+                }
+        }
+        return spine.chapters.enumerated().map { index, subpath in
+            let html = try? String(contentsOf: folder.appendingPathComponent(subpath),
+                                   encoding: .utf8)
+            let label = html.flatMap { text in
+                (firstCapture(in: text, pattern: "(?s)<h[1-2]\\b[^>]*>(.*?)</h[1-2]>")
+                    ?? firstCapture(in: text, pattern: "(?s)<title[^>]*>(.*?)</title>"))
+                    .map { xmlUnescaped($0.replacingOccurrences(of: "<[^>]+>", with: "",
+                                                                options: .regularExpression)) }
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .flatMap { $0.isEmpty ? nil : $0 }
+            }
+            return TOCEntry(label: label ?? "Chapter \(index + 1)", subpath: subpath, fragment: nil)
+        }
+    }
+
     /// The embedded Visual-Meta copy, when the package file is gone: the
     /// JSON between the payload script's tags, with the CDATA wrapper (and
-    /// any split guard) stripped so it decodes.
-    private static func embeddedVisualMeta(in html: String) -> Data? {
+    /// any split guard) stripped so it decodes. (Internal: the reader's
+    /// glossary lookup reads the same payload from an unpacked book.)
+    static func embeddedVisualMeta(in html: String) -> Data? {
         guard let open = html.range(of: "id=\"visual-meta-payload\">"),
               let close = html.range(of: "</script>", range: open.upperBound..<html.endIndex)
         else { return nil }
@@ -340,10 +557,14 @@ nonisolated enum OrigamiEPUBImporter {
     /// text conventions.
     private static func bodyParagraphs(fromXHTML html: String,
                                        addressByCitationID: [String: String],
-                                       resolveImage: (String) -> Data?)
+                                       resolveImage: (String) -> Data?,
+                                       idPrefix: String = "")
         throws -> (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset]) {
         let root = try XMLTree.parse(Data(html.utf8))
-        guard let main = root.firstDescendant(named: "main") else {
+        // The Origami profile wraps the flow in <main>; a plain EPUB's
+        // chapters write their content straight into <body>.
+        guard let main = root.firstDescendant(named: "main")
+                ?? root.firstDescendant(named: "body") else {
             throw OrigamiEPUBImportError.missingContent
         }
 
@@ -352,17 +573,46 @@ nonisolated enum OrigamiEPUBImporter {
         var assetOrdinal = 0
         var fallbackOrdinal = 0
 
-        func visit(_ element: XMLTree.Element) {
-            let headingLevels = ["h2": 1, "h3": 2, "h4": 3]
+        func visit(_ element: XMLTree.Element, stretchID: String? = nil) {
+            // <h2> is the profile's top rank; a plain book's <h1>
+            // chapter titles read at the same rank, its deeper ranks
+            // one step finer each.
+            let headingLevels = ["h1": 1, "h2": 1, "h3": 2, "h4": 3, "h5": 3, "h6": 3]
             let stableID: () -> String = {
                 fallbackOrdinal += 1
-                return element.attributes["data-id"]
+                return idPrefix + (element.attributes["data-id"]
                     ?? element.attributes["id"]
-                    ?? "p\(fallbackOrdinal)"
+                    ?? "p\(fallbackOrdinal)")
             }
             switch element.name {
             case "section", "div", "article":
-                for child in element.elements { visit(child) }
+                for child in element.elements { visit(child, stretchID: stretchID) }
+            case "aside":
+                // The export's stretchtext detail: the toggled anchor in
+                // the host paragraph is chrome, but the aside's content
+                // stays foldable — its paragraphs carry the block's id.
+                if (element.attributes["class"] ?? "").contains("ot-stretchtext-content") {
+                    let blockID = element.attributes["id"].map { idPrefix + $0 } ?? stableID()
+                    for child in element.elements { visit(child, stretchID: blockID) }
+                } else if (element.attributes["epub:type"] ?? "").contains("footnote")
+                    || (element.attributes["role"] ?? "").contains("doc-footnote") {
+                    // An inline note (a footnote aside): its words are
+                    // the note's, not the flow's — filed under the
+                    // aside's own id, where the host paragraph's
+                    // dagger points.
+                    if let id = element.attributes["id"] {
+                        let text = element.elements
+                            .map { inlineText(of: $0, addressByCitationID: addressByCitationID) }
+                            .joined(separator: " ")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !text.isEmpty {
+                            paragraphs.append(LiquidDoc.Paragraph(
+                                id: idPrefix + id, heading: nil, text: text))
+                        }
+                    }
+                } else {
+                    for child in element.elements { visit(child, stretchID: stretchID) }
+                }
             case "hr":
                 paragraphs.append(LiquidDoc.Paragraph(id: stableID(), heading: nil, text: "---"))
             case "figure", "img":
@@ -371,14 +621,14 @@ nonisolated enum OrigamiEPUBImporter {
                 // exporter reads, so authoring round-trips.
                 let image = element.name == "img" ? element : element.firstDescendant(named: "img")
                 guard let image, let src = image.attributes["src"], !src.isEmpty else {
-                    for child in element.elements { visit(child) }
+                    for child in element.elements { visit(child, stretchID: stretchID) }
                     return
                 }
                 let alt = image.attributes["alt"] ?? ""
                 let paragraphID = stableID()
                 if let data = resolveImage(src), !data.isEmpty {
                     assetOrdinal += 1
-                    let assetID = "img\(assetOrdinal)"
+                    let assetID = "\(idPrefix)img\(assetOrdinal)"
                     let name = (src as NSString).lastPathComponent
                     let ext = (name as NSString).pathExtension.lowercased()
                     assets.append(LiquidDoc.Asset(
@@ -407,17 +657,18 @@ nonisolated enum OrigamiEPUBImporter {
                 paragraph.tableID = element.attributes["data-table-id"]
                     ?? element.attributes["id"]
                 paragraphs.append(paragraph)
-            case "h2", "h3", "h4":
+            case "h1", "h2", "h3", "h4", "h5", "h6":
                 let text = inlineText(of: element, addressByCitationID: addressByCitationID)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return }
                 paragraphs.append(LiquidDoc.Paragraph(
                     id: stableID(), heading: headingLevels[element.name], text: text))
-            case "p":
+            case "p", "blockquote":
                 let text = inlineText(of: element, addressByCitationID: addressByCitationID)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return }
                 var paragraph = LiquidDoc.Paragraph(id: stableID(), heading: nil, text: text)
+                paragraph.stretchID = stretchID
                 // The exporter marks attribution with a speaker strong;
                 // the name also leads the text, per the format.
                 if let first = element.elements.first,
@@ -428,8 +679,18 @@ nonisolated enum OrigamiEPUBImporter {
                     }
                 }
                 paragraphs.append(paragraph)
+            case "li":
+                // A plain book's list items read as bulleted paragraphs —
+                // never dropped with their container.
+                let text = inlineText(of: element, addressByCitationID: addressByCitationID)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return }
+                var paragraph = LiquidDoc.Paragraph(id: stableID(), heading: nil,
+                                                    text: "\u{2022} " + text)
+                paragraph.stretchID = stretchID
+                paragraphs.append(paragraph)
             default:
-                for child in element.elements { visit(child) }
+                for child in element.elements { visit(child, stretchID: stretchID) }
             }
         }
         for child in main.elements { visit(child) }

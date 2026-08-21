@@ -153,6 +153,14 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         /// so a reader without table support (or the raw editor) still
         /// shows the values; a reader with support renders the grid.
         var tableID: String? = nil
+        /// The stretchtext block this paragraph folds into, when it is
+        /// contracted detail rather than running text — consecutive
+        /// paragraphs sharing an id fold together behind one `»` toggle.
+        /// Recovered from the EPUB's `aside.ot-stretchtext-content`.
+        var stretchID: String? = nil
+        /// Where this paragraph came from (a transcription's page, a
+        /// speaker's turn), when the document says.
+        var provenance: String? = nil
     }
 
     /// One live table: a row-major grid of cells, each a pre-computed
@@ -233,6 +241,13 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     struct Reference: Identifiable, Hashable, Sendable {
         let id: String
         var bibtex: String
+        /// The citation's display text as the author wrote it inline —
+        /// "(Hegland 2025)" — carried by the EPUB import so the reader
+        /// can show citations as written.
+        var citedAs: String? = nil
+        /// The entry's number in the source's visible reference list,
+        /// when the file carries one — the numbered citation styles use it.
+        var number: Int? = nil
     }
 
     /// A Defined Concept: one node in the document's glossary. Ids are

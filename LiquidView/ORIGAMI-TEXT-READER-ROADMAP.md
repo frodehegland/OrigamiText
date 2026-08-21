@@ -23,6 +23,84 @@ bibtex), `concepts` (glossary), `layouts`+`mapConnections` (xyz map), `reference
 (CSL/BibTeX), `tables` (live `LATable`), and `equations` (`OrigamiMath`). The semantics
 exist on both sides; they are simply not wired to each other.
 
+## Cross-document quote links — on-disk schema (the interop contract)
+
+A quote link (a "Copy as Quote" passage that cites/transcludes another document)
+is carried two ways in an Origami EPUB, redundantly, so any reader can act on it:
+
+1. **Body anchor** — the quoted words wrapped in an `origamitext://` link:
+
+   ```html
+   <a href="origamitext://open/<TARGET_ORIGAMI_ID>#<TARGET_NODE_ID>">
+     "quoted words" (Author, Year)
+   </a>
+   ```
+
+   `TARGET_ORIGAMI_ID` is the target document's stable id (its Visual-Meta
+   `document.origami-id`, i.e. the reader's `EPUBRecord.id`). The `#fragment`
+   is the target paragraph's `id` or `data-id`; omit it for a whole-document
+   cite.
+
+2. **Visual-Meta `links` array** — the machine index of the same link:
+
+   ```json
+   "links": [
+     { "to": "<TARGET_ORIGAMI_ID>", "fragment": "<TARGET_NODE_ID>",
+       "rel": "transcludes" | "cites",
+       "quotedText": "the quoted words",
+       "from": "<local node id, optional>" }
+   ]
+   ```
+
+**Reader behaviour (implemented in `EPUBReaderView`):** every `origamitext://`
+anchor is styled as a live link and given a `⤵` control. Clicking the link
+opens the target book and scrolls to the fragment (`AppModel.openEPUB(address:
+fragment:)`); the `⤵` control transcludes the source paragraph inline
+(`AppModel.transcludedText(forAddress:fragment:)`). Both require the target to
+be in the library (opened or in the community folder).
+
+**Next (Author side):** `OrigamiTextExporter` must emit both forms on export
+from a persisted Copy-as-Quote link. Today it emits neither — see the diagnosis
+of the Socrates/Origami sample pair.
+
+## Stretchtext (`››`) — on-disk schema and reader behaviour
+
+Author's contracted text, exported with "Do Not Expand ››" (Author commit
+`ee2feaf4`, `OrigamiTextExporter.swift` is the format source of truth), ships
+two ways in the EPUB:
+
+1. **Body** — an inline marker anchor in the running text, and the hidden
+   content in an `<aside>` directly after the enclosing block:
+
+   ```html
+   <p id="P-…">Visible text <a class="ot-stretchtext" role="button"
+      aria-expanded="false" aria-controls="st-ABC123" href="#st-ABC123">››</a> …</p>
+   <aside class="ot-stretchtext-content" id="st-ABC123" hidden="hidden">
+     <p>…</p><h3>…</h3><p>…</p>
+   </aside>
+   ```
+
+   The `hidden` attribute's **presence** is the state (the exporter writes
+   XHTML-style `hidden="hidden"`). Interior headings carry no ids and are not
+   in `nav.xhtml`; stretchtext never nests.
+
+2. **origami.json** — a `stretchtext` array (`[{ "id": "st-…", "anchor":
+   "P-…" }]`, absent when the document has none), for search/navigation;
+   not needed to toggle.
+
+**Reader behaviour (implemented in `EPUBReaderView`, `stretchtextScript`):**
+clicking the marker (or Space/Enter — it is `role="button"`) toggles the
+aside's `hidden` attribute in place, never navigates, and keeps
+`aria-expanded` in sync; the glyph swaps `››` → `‹‹` (the original marker
+text is restored on collapse — image contractions read `‹‹ Name ››`), with a
+~180 ms fade on unfold. State is per-session only; the document is never
+modified. `window.origamiRevealStretchtext(id)` unfolds the collapsed region
+containing any element id/`data-id` — in-page links (footnote back-refs) and
+quote-link fragment arrivals call it before scrolling, and full-text search
+should land hits the same way. Import already keeps aside content
+(`OrigamiEPUBImporter.bodyParagraphs` recurses through unknown blocks), so
+the digest over the full spine text holds.
+
 ## Step 0 — The semantic bridge (enabler, not on the original list)
 
 Inject the parsed element‑id/type map into the page and add a `WKScriptMessageHandler`,

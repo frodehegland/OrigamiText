@@ -617,6 +617,7 @@ nonisolated enum OrigamiEPUBExporter {
         lines.append("""
         <section id="visual-meta">
         <h2>Visual-Meta</h2>
+        <p>The following is the metadata for this document, presented here for robust, long term preservation.</p>
         <p>@visual-meta-start</p>
         <script type="application/json" id="visual-meta-payload">
         <![CDATA[
@@ -825,6 +826,8 @@ nonisolated enum OrigamiEPUBExporter {
     h3 { font-size: 1.2em; }
     h4 { font-size: 1.05em; }
     .speaker { font-weight: bold; }
+    figure { margin-left: 0; margin-right: 0; }
+    figure img { max-width: 100%; height: auto; }
     a.citation { text-decoration: none; }
     dfn { font-style: normal; border-bottom: 0.08em dotted #999999; }
     #references li { margin-bottom: 0.6em; }
