@@ -42,7 +42,7 @@ nonisolated enum OrigamiEPUBExporter {
     private struct VisualMetaDocument: Encodable {
         enum CodingKeys: String, CodingKey {
             case info = "visual-meta"
-            case document, structure, concepts, citations, map
+            case document, structure, concepts, citations, map, tables
         }
 
         struct Info: Encodable {
@@ -136,12 +136,26 @@ nonisolated enum OrigamiEPUBExporter {
             let views: [View]
         }
 
+        /// One live table: values and formulas both, so the reader's
+        /// grid recomputes — the same shape the importer reads back.
+        struct TableNode: Encodable {
+            struct Cell: Encodable {
+                let value: String
+                let formula: String?
+            }
+            let identifier: String
+            let rowCount: Int
+            let columnCount: Int
+            let cells: [[Cell]]
+        }
+
         let info: Info
         let document: DocumentInfo
         let structure: Structure
         let concepts: [ConceptNode]
         let citations: [CitationNode]
         let map: Map
+        let tables: [TableNode]
     }
 
     /// A JSON fragment JSONEncoder can carry — used for the CSL object,
@@ -383,7 +397,17 @@ nonisolated enum OrigamiEPUBExporter {
                         nodes: layout.positions.map {
                             VisualMetaDocument.Map.View.Position(ref: $0.id, x: $0.x, y: $0.y, z: $0.z)
                         })
-                }))
+                }),
+            tables: doc.tables.map { table in
+                VisualMetaDocument.TableNode(
+                    identifier: table.identifier,
+                    rowCount: table.rowCount,
+                    columnCount: table.columnCount,
+                    cells: table.cells.map { row in
+                        row.map { VisualMetaDocument.TableNode.Cell(value: $0.value,
+                                                                    formula: $0.formula) }
+                    })
+            })
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -573,23 +597,60 @@ nonisolated enum OrigamiEPUBExporter {
         // Defined concepts get their first occurrence wrapped in <dfn>
         // (spec C5) — the definition itself lives only in the JSON.
         var pendingConcepts = doc.concepts.filter { $0.tag != "heading" }.map(\.name)
+        let tablesByID = Dictionary(doc.tables.map { ($0.identifier, $0) },
+                                    uniquingKeysWith: { first, _ in first })
         var sectionOpen = false
+        // Stretchtext ships as Author writes it: the contracted detail —
+        // consecutive paragraphs sharing a stretchID — wrapped in a
+        // hidden <aside class="ot-stretchtext-content">, with the »»
+        // marker anchor riding at the end of the host paragraph before
+        // it. Plain readers show just the marker; Origami readers (and
+        // this app's own WebView script) make it a live fold.
+        var openStretchID: String?
+        func closeStretch() {
+            if openStretchID != nil {
+                lines.append("</aside>")
+                openStretchID = nil
+            }
+        }
         for element in body {
+            let stretchID = element.paragraph.stretchID
+            if stretchID != openStretchID { closeStretch() }
             if element.opensSection {
+                closeStretch()
                 if sectionOpen { lines.append("</section>") }
                 lines.append("<section>")
                 sectionOpen = true
             }
             var html = self.element(for: element, citations: citations,
-                                    stableID: stableID, assetsByID: assetsByID)
+                                    stableID: stableID, assetsByID: assetsByID,
+                                    tablesByID: tablesByID)
             for name in pendingConcepts {
                 if let wrapped = wrappingFirstOccurrence(of: name, in: html) {
                     html = wrapped
                     pendingConcepts.removeAll { $0 == name }
                 }
             }
+            if let stretchID, stretchID != openStretchID {
+                let escapedID = attributeEscaped(stretchID)
+                let marker = "<a class=\"ot-stretchtext\" href=\"#\(escapedID)\""
+                    + " role=\"button\" aria-controls=\"\(escapedID)\""
+                    + " aria-expanded=\"false\">\u{00BB}\u{00BB}</a>"
+                // The toggle rides inline at the end of the paragraph the
+                // stretch follows — where Author writes it. A stretch with
+                // no host paragraph carries the marker on a line of its own.
+                if let lastIndex = lines.indices.last, lines[lastIndex].hasSuffix("</p>") {
+                    lines[lastIndex] = String(lines[lastIndex].dropLast("</p>".count))
+                        + " " + marker + "</p>"
+                } else {
+                    lines.append("<p>\(marker)</p>")
+                }
+                lines.append("<aside class=\"ot-stretchtext-content\" id=\"\(escapedID)\" hidden=\"hidden\">")
+                openStretchID = stretchID
+            }
             lines.append(html)
         }
+        closeStretch()
         if sectionOpen { lines.append("</section>") }
         lines.append("</main>")
 
@@ -646,7 +707,8 @@ nonisolated enum OrigamiEPUBExporter {
     private static func element(for element: AddressedElement,
                                 citations: [Citation],
                                 stableID: (AddressedElement) -> String,
-                                assetsByID: [String: LiquidDoc.Asset]) -> String {
+                                assetsByID: [String: LiquidDoc.Asset],
+                                tablesByID: [String: LiquidDoc.Table] = [:]) -> String {
         let paragraph = element.paragraph
         let trimmed = paragraph.text.trimmingCharacters(in: .whitespaces)
         let anchors = "id=\"\(element.address)\" data-id=\"\(escaped(stableID(element)))\""
@@ -656,6 +718,19 @@ nonisolated enum OrigamiEPUBExporter {
            let asset = assetsByID[reference.id] {
             let alt = reference.alt.isEmpty ? (asset.alt ?? "") : reference.alt
             return "<figure \(anchors)><img src=\"images/\(attributeEscaped(asset.filename))\" alt=\"\(attributeEscaped(alt))\" /></figure>"
+        }
+        // A live table renders as a real grid, its `data-table-id` tying
+        // the placement to the Visual-Meta tables entry (values and
+        // formulas) so the import recovers it whole; the paragraph's
+        // pipe-text stays behind only for readers without table support.
+        if let tableID = paragraph.tableID, let table = tablesByID[tableID] {
+            let rows = table.cells.enumerated().map { rowIndex, row -> String in
+                let tag = rowIndex == 0 && table.cells.count > 1 ? "th" : "td"
+                let cells = row.map { "<\(tag)>\(escaped($0.value))</\(tag)>" }.joined()
+                return "<tr>\(cells)</tr>"
+            }
+            return "<table \(anchors) data-table-id=\"\(attributeEscaped(table.identifier))\">"
+                + rows.joined() + "</table>"
         }
         if trimmed.count >= 3, trimmed.allSatisfy({ $0 == "-" }) {
             return "<hr \(anchors) />"
@@ -687,8 +762,33 @@ nonisolated enum OrigamiEPUBExporter {
         html = html.replacingOccurrences(
             of: "\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)",
             with: "<a href=\"$2\">$1</a>", options: .regularExpression)
+        // Note tokens become dagger anchors, their href carrying the
+        // note's stable id: [inote:] the in-place stretchtext kind
+        // (class ot-inline-note), [note:] the plain endnote mark. Both
+        // point at the Notes paragraphs the body closes with; the
+        // importer reads the fragment back into the same token.
+        html = html.replacingOccurrences(
+            of: "\\[inote:([A-Za-z0-9._:-]+)\\]",
+            with: "<a class=\"ot-inline-note\" role=\"doc-noteref\" href=\"#$1\">\u{2021}</a>",
+            options: .regularExpression)
+        html = html.replacingOccurrences(
+            of: "\\[note:([A-Za-z0-9._:-]+)\\]",
+            with: "<a role=\"doc-noteref\" href=\"#$1\">\u{2021}</a>",
+            options: .regularExpression)
         for citation in citations {
-            guard let address = citation.address else { continue }
+            guard let address = citation.address else {
+                // An external reference, cited by its BibTeX key — the
+                // LaTeX import's `[cite:key]` tokens. The anchor is the
+                // profile's numbered marker, linked to the References
+                // entry, its key carried in data-citation-id so a
+                // re-import recovers the token.
+                let pattern = "\\[cite:\(NSRegularExpression.escapedPattern(for: citation.nodeID))\\]"
+                html = html.replacingOccurrences(
+                    of: pattern,
+                    with: "<a class=\"citation\" href=\"#ref-\(citation.number)\" data-citation-id=\"\(attributeEscaped(citation.nodeID))\">[\(citation.number)]</a>",
+                    options: .regularExpression)
+                continue
+            }
             // The anchor keeps the reference exactly as written —
             // typed rel and #fragment included — in data-origami-ref,
             // so a reader restores the full-resolution address.
@@ -698,6 +798,10 @@ nonisolated enum OrigamiEPUBExporter {
                 with: "<a class=\"citation\" href=\"#ref-\(citation.number)\" data-citation-id=\"\(citation.nodeID)\" data-origami-ref=\"$1\(address)$2\">[\(citation.number)]</a>",
                 options: [.regularExpression, .caseInsensitive])
         }
+        // A cite token whose key the pool does not know degrades to the
+        // bracketed key — legible, and honest about the gap.
+        html = html.replacingOccurrences(of: "\\[cite:([^\\]]+)\\]", with: "[$1]",
+                                         options: .regularExpression)
         return html
     }
 

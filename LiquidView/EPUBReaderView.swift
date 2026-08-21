@@ -342,6 +342,7 @@ struct EPUBReaderScreen: View {
             resolveTransclusion: { address, fragment in
                 model.transcludedText(forAddress: address, fragment: fragment)
             },
+            resolveEndnote: { id in model.endnoteText(inBook: book, id: id) },
             initialFragment: model.pendingReaderFragment,
             requestedFragment: requestedFragment,
             fragmentStamp: fragmentStamp,
@@ -480,6 +481,9 @@ struct EPUBReaderView: NSViewRepresentable {
     var onFollowLink: (_ address: String, _ fragment: String?) -> Void = { _, _ in }
     /// Resolves a quote link to its source passage for inline transclusion.
     var resolveTransclusion: (_ address: String, _ fragment: String?) -> String? = { _, _ in nil }
+    /// Resolves an endnote dagger's id to the note's words — Author's
+    /// inline notes as stretchtext, unfolding in place.
+    var resolveEndnote: (String) -> String? = { _ in nil }
     /// A paragraph to scroll to and flash once this book finishes loading —
     /// set when the reader was opened by following a quote link.
     var initialFragment: String? = nil
@@ -509,6 +513,12 @@ struct EPUBReaderView: NSViewRepresentable {
         controller.addUserScript(WKUserScript(source: toggleButtonScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: glossaryScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        // The endnote daggers' listener must register before the
+        // stretchtext script's in-page-link handler, so a dagger click
+        // unfolds its note instead of jumping (or navigating away to
+        // the backmatter chapter).
+        controller.addUserScript(WKUserScript(source: endnoteScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: stretchtextScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -571,6 +581,7 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.glossaryDefinition = glossaryDefinition
         coordinator.onFollowLink = onFollowLink
         coordinator.resolveTransclusion = resolveTransclusion
+        coordinator.resolveEndnote = resolveEndnote
         coordinator.onHighlight = onHighlight
         coordinator.onAddComment = onAddComment
         coordinator.onRemoveAnnotation = onRemoveAnnotation
@@ -652,6 +663,7 @@ struct EPUBReaderView: NSViewRepresentable {
         var glossaryDefinition: (String) -> (name: String, description: String)? = { _ in nil }
         var onFollowLink: (_ address: String, _ fragment: String?) -> Void = { _, _ in }
         var resolveTransclusion: (_ address: String, _ fragment: String?) -> String? = { _, _ in nil }
+        var resolveEndnote: (String) -> String? = { _ in nil }
         var onHighlight: (ReaderSelection) -> Void = { _ in }
         var onAddComment: (ReaderSelection) -> Void = { _ in }
         var onRemoveAnnotation: (String) -> Void = { _ in }
@@ -714,6 +726,17 @@ struct EPUBReaderView: NSViewRepresentable {
                 if let fraction = (body["fraction"] as? NSNumber)?.doubleValue {
                     onProgress(min(1, max(0, fraction)))
                 }
+            case "endnote":
+                // A dagger asked for its note's words: resolve the id
+                // its href carries and unfold them in place.
+                guard let reqID = body["reqId"] as? String,
+                      let webView else { return }
+                let href = body["href"] as? String ?? ""
+                let id = href.firstIndex(of: "#")
+                    .map { String(href[href.index(after: $0)...]) } ?? href
+                let text = resolveEndnote(id) ?? "The note could not be found."
+                webView.evaluateJavaScript(
+                    "window.origamiInsertEndnote(\(Self.jsStringLiteral(reqID)), \(Self.jsStringLiteral(text)));")
             case "transclude":
                 // The reader asked for the source passage of a quote link.
                 // Prefer the live source paragraph; fall back to the quoted
@@ -932,6 +955,66 @@ struct EPUBReaderView: NSViewRepresentable {
           ? e.target.closest('a[data-glossary-id], a[role="doc-glossref"]') : null;
         if (a) e.preventDefault();
       }, true);
+    })();
+    """
+
+    /// The endnote daggers, made stretchtext: a click on a noteref
+    /// anchor (`role="doc-noteref"`, `epub:type="noteref"`, or Author's
+    /// `a.ot-inline-note`) unfolds the note's words in place — [ the
+    /// words ] after the mark — instead of jumping to the appendix (or,
+    /// worse, navigating the reader off to the backmatter chapter).
+    /// A second click folds them back. The words come from Swift
+    /// (`origamiInsertEndnote`), which finds the note by its id in any
+    /// of the book's chapters.
+    private static let endnoteScript = """
+    (function(){
+      var bridge = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.origami;
+
+      var style = document.getElementById('origami-endnote-style') || document.createElement('style');
+      style.id = 'origami-endnote-style';
+      style.textContent =
+        '.origami-note-inline{font-style:italic;opacity:0.85;}'
+        + '.origami-note-inline::before{content:" [";font-style:normal;}'
+        + '.origami-note-inline::after{content:"]";font-style:normal;}';
+      (document.head || document.documentElement).appendChild(style);
+
+      function isDagger(a){
+        if (!a) return false;
+        if (a.classList && a.classList.contains('ot-inline-note')) return true;
+        if ((a.getAttribute('role') || '').indexOf('doc-noteref') >= 0) return true;
+        if ((a.getAttribute('epub:type') || '').indexOf('noteref') >= 0) return true;
+        return false;
+      }
+
+      var pending = {};
+      var counter = 0;
+      document.addEventListener('click', function(e){
+        var a = e.target.closest ? e.target.closest('a') : null;
+        if (!isDagger(a)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        var open = a.nextElementSibling;
+        if (open && open.classList && open.classList.contains('origami-note-inline')) {
+          open.remove();   // a second click folds the note back
+          return;
+        }
+        if (!bridge) return;
+        counter += 1;
+        var reqId = 'note' + counter;
+        pending[reqId] = a;
+        bridge.postMessage({event:'endnote', href: a.getAttribute('href') || '', reqId: reqId});
+      }, true);
+
+      window.origamiInsertEndnote = function(reqId, text){
+        var a = pending[reqId];
+        delete pending[reqId];
+        if (!a) return;
+        var span = document.createElement('span');
+        span.className = 'origami-note-inline';
+        span.textContent = text;
+        a.insertAdjacentElement('afterend', span);
+      };
     })();
     """
 

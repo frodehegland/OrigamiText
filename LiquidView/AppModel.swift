@@ -599,14 +599,58 @@ final class AppModel {
 
     func openFile(at url: URL) {
         // Origami Text is an EPUB reader now: an EPUB opens in the faithful
-        // WebView reader; anything else (including native JSON documents) is
-        // declined.
-        guard url.pathExtension.lowercased() == "epub" else {
+        // WebView reader; a LaTeX project (zip or bare .tex) becomes an
+        // EPUB first — the reverse of Author's LaTeX export. Anything else
+        // (including native JSON documents) is declined.
+        switch url.pathExtension.lowercased() {
+        case "epub":
+            openEPUBFile(at: url)
+        case "zip", "tex":
+            importLaTeX(at: url)
+        default:
             NSSound.beep()
-            showNote("Origami Text opens EPUB files.")
-            return
+            showNote("Origami Text opens EPUB files (and imports LaTeX).")
         }
-        openEPUBFile(at: url)
+    }
+
+    // MARK: - LaTeX import (the reverse of Author's LaTeX export)
+
+    /// A zipped LaTeX project (Author's export: main.tex, references.bib,
+    /// figures/) or a bare .tex file, turned into an EPUB: the source is
+    /// parsed into the document model, written through the Origami EPUB
+    /// exporter, and filed into the reader's library — then opened.
+    func importLaTeX(at url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let result = url.pathExtension.lowercased() == "tex"
+                ? try LaTeXImporter.importTeXFile(at: url)
+                : try LaTeXImporter.importArchive(at: url)
+            let created = Date.now
+            let author = result.author ?? authorName
+            let id = LiquidAddress.makeID(author: author, created: created)
+            var doc = LiquidDoc(format: LiquidDoc.knownFormat, id: id,
+                                title: result.title, author: author,
+                                created: created, body: result.body,
+                                links: [], wraps: nil,
+                                fileURL: FileManager.default.temporaryDirectory)
+            doc.documentType = LiquidDoc.DocumentType.book.rawValue
+            doc.references = result.references
+            doc.tables = result.tables
+            doc.assets = result.assets
+            // Through the exporter and straight back in: the EPUB is the
+            // document; the .tex was only ever a carrier.
+            let epubURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(id + ".epub")
+            try OrigamiEPUBExporter.write(doc: doc, resolve: { _ in nil }, to: epubURL)
+            defer { try? FileManager.default.removeItem(at: epubURL) }
+            guard let record = importEPUB(at: epubURL) else { return }
+            openStoredEPUB(record)
+            showNote("Imported \u{201C}\(result.title)\u{201D} from LaTeX")
+        } catch {
+            NSSound.beep()
+            showNote("Could not import LaTeX: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - EPUB library (opened EPUBs, remembered internally)
@@ -770,9 +814,17 @@ final class AppModel {
     /// out of a content document. A pragmatic paragraph-level extractor: it
     /// finds the opening tag carrying the id and returns its content up to the
     /// matching close tag, tags stripped and the common entities decoded.
-    private static func elementText(in html: String, matchingID id: String) -> String? {
+    private static func elementText(in html: String, matchingIDSuffix id: String) -> String? {
         let escaped = NSRegularExpression.escapedPattern(for: id)
-        let pattern = "<(p|li|h[1-6]|blockquote|figure|td|th)\\b[^>]*\\b(?:id|data-id)=\"\(escaped)\"[^>]*>(.*?)</\\1>"
+        return elementText(in: html, idPattern: "[^\"]*-\(escaped)")
+    }
+
+    private static func elementText(in html: String, matchingID id: String) -> String? {
+        elementText(in: html, idPattern: NSRegularExpression.escapedPattern(for: id))
+    }
+
+    private static func elementText(in html: String, idPattern: String) -> String? {
+        let pattern = "<(p|li|h[1-6]|blockquote|figure|td|th|aside)\\b[^>]*\\b(?:id|data-id)=\"\(idPattern)\"[^>]*>(.*?)</\\1>"
         guard let expression = try? NSRegularExpression(
             pattern: pattern, options: [.dotMatchesLineSeparators, .caseInsensitive]),
               let match = expression.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
@@ -789,6 +841,28 @@ final class AppModel {
         let collapsed = inner.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }.joined(separator: " ")
         return collapsed.isEmpty ? nil : collapsed
+    }
+
+    /// An endnote's words, found by the id its dagger points at — in the
+    /// loaded chapter or any other (Author files endnotes in
+    /// backmatter.xhtml; its footnote asides carry their own ids). The
+    /// faithful reader unfolds this in place instead of navigating away.
+    func endnoteText(inBook book: OpenEPUB, id: String) -> String? {
+        let chapters = book.chapters.isEmpty ? [book.content] : book.chapters
+        for chapter in chapters {
+            guard let html = try? String(contentsOf: chapter, encoding: .utf8),
+                  let text = Self.elementText(in: html, matchingID: id) else { continue }
+            return text
+        }
+        // A re-exported chaptered book prefixes its ids per chapter
+        // (s2-en-1) while the dagger still carries the document's own
+        // (en-1) — the suffix bridges the two.
+        for chapter in chapters {
+            guard let html = try? String(contentsOf: chapter, encoding: .utf8),
+                  let text = Self.elementText(in: html, matchingIDSuffix: id) else { continue }
+            return text
+        }
+        return nil
     }
 
     // MARK: - Glossary of the open book (Show Definition)
@@ -2032,7 +2106,7 @@ final class AppModel {
         panel.treatsFilePackagesAsDirectories = false
         // Keep this short: NSOpenPanel lays the message out on one line and
         // grows the window to fit it, then won't shrink below that width.
-        panel.message = "Import a Word, Markdown, PDF, or transcript file."
+        panel.message = "Import a Word, Markdown, PDF, transcript, or LaTeX (zip/.tex) file."
         panel.prompt = "Import"
         // Room to browse. The panel is user-resizable on its own — touching
         // its style mask breaks the sandboxed panel's dragging — and macOS
@@ -2050,7 +2124,8 @@ final class AppModel {
     /// Extensions the importer understands. Anything else opened or dropped
     /// is treated as a native Origami Document and decoded (see `openFile`).
     static let importableExtensions: Set<String> = [
-        "epub", "pdf", "doc", "docx", "md", "markdown", "txt", "rtf", "rtfd", "liquid"
+        "epub", "pdf", "doc", "docx", "md", "markdown", "txt", "rtf", "rtfd", "liquid",
+        "zip", "tex"
     ]
 
     /// Imports one file into a new draft — an Origami Text EPUB, a PDF with
@@ -2080,6 +2155,11 @@ final class AppModel {
             var importedLinks: [LiquidDoc.Link] = []
             var preservedID: String?
             switch url.pathExtension.lowercased() {
+            case "zip", "tex":
+                // A LaTeX project becomes an EPUB in the library, not a
+                // draft — the reverse of Author's LaTeX export.
+                importLaTeX(at: url)
+                return
             case "md", "markdown", "txt":
                 // A file that reads as a meeting transcript (speaker names
                 // before statements) keeps its attributions structurally.

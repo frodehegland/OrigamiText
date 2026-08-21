@@ -562,6 +562,12 @@ struct OrigamiReadingView: View {
             || sections.contains { $0.heading?.id == fragment }
         guard mine else { return false }
         model.pendingReaderFragment = nil
+        // A target inside a folded stretch block: unfold it first, or the
+        // scroll would land on nothing — the WebView reader's
+        // origamiRevealStretchtext, natively.
+        if let stretchID = (doc.body ?? []).first(where: { $0.id == fragment })?.stretchID {
+            openStretch.insert(stretchID)
+        }
         if readerMode == .horizontal || readerMode == .focus {
             if let page = horizontalPages.firstIndex(where: { page in
                 page.contains { section in

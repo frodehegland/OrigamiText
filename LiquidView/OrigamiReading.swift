@@ -736,9 +736,13 @@ nonisolated enum OrigamiReading {
     }
 
     /// The endnote a dagger reveals: the body paragraph carrying the
-    /// note's id (the import files endnotes under a Notes heading).
+    /// note's id (the import files endnotes under a Notes heading). A
+    /// chaptered book's import prefixes ids per chapter (s2-en-1) while
+    /// the dagger's href carries the document's own (en-1) — the suffix
+    /// match bridges the two.
     static func endnote(withID id: String, in doc: LiquidDoc) -> LiquidDoc.Paragraph? {
         doc.body?.first { $0.id == id }
+            ?? doc.body?.first { $0.id.hasSuffix("-" + id) }
     }
 
     /// `[note:id]` tokens as markdown daggers on the note scheme.

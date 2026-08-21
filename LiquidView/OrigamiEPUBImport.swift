@@ -227,6 +227,7 @@ nonisolated enum OrigamiEPUBImporter {
         // balloon the document (the markers stay visible regardless).
         var body: [LiquidDoc.Paragraph]
         var bodyAssets: [LiquidDoc.Asset]
+        var capturedFootnotes: [(id: String, text: String)] = []
         let spineHrefs = spineContentHrefs(in: opf)
         if visualMeta == nil, spineHrefs.count > 1 {
             body = []
@@ -246,21 +247,56 @@ nonisolated enum OrigamiEPUBImporter {
                     imageBudget -= bytes.count
                     return bytes
                 }
-                guard let (part, partAssets) = try? bodyParagraphs(
+                guard let (part, partAssets, partFootnotes) = try? bodyParagraphs(
                     fromXHTML: String(decoding: data, as: UTF8.self),
                     addressByCitationID: [:],
                     resolveImage: resolve,
                     idPrefix: "s\(index + 1)-") else { continue }
                 body += part
                 bodyAssets += partAssets
+                capturedFootnotes += partFootnotes
             }
             guard !body.isEmpty else { throw OrigamiEPUBImportError.missingContent }
         } else {
-            let (part, partAssets) = try bodyParagraphs(fromXHTML: html,
-                                                        addressByCitationID: addressByCitationID,
-                                                        resolveImage: resolveImage)
+            let (part, partAssets, partFootnotes) = try bodyParagraphs(
+                fromXHTML: html,
+                addressByCitationID: addressByCitationID,
+                resolveImage: resolveImage)
             body = part
             bodyAssets = partAssets
+            capturedFootnotes = partFootnotes
+        }
+
+        // Endnotes travel in the metadata (the body only carries their
+        // daggers); they return as a Notes section closing the body,
+        // each note under its stable id. Inline notes (footnote asides)
+        // join them: their metadata rides in `footnotes`, their words
+        // were captured from the body's asides — either way each files
+        // under the id its dagger points at, so the reveal works the
+        // same for both kinds.
+        var notes = dictionaries(visualMeta?["endnotes"]).enumerated()
+            .compactMap { offset, node -> LiquidDoc.Paragraph? in
+                guard let text = (node["text"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                      !text.isEmpty else { return nil }
+                return LiquidDoc.Paragraph(id: node["id"] as? String ?? "en-\(offset + 1)",
+                                           heading: nil, text: text)
+            }
+        var notedIDs = Set(notes.map(\.id))
+        for node in dictionaries(visualMeta?["footnotes"]) {
+            guard let id = node["id"] as? String,
+                  let text = (node["text"] as? String)?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty, notedIDs.insert(id).inserted else { continue }
+            notes.append(LiquidDoc.Paragraph(id: id, heading: nil, text: text))
+        }
+        for footnote in capturedFootnotes where notedIDs.insert(footnote.id).inserted {
+            notes.append(LiquidDoc.Paragraph(id: footnote.id, heading: nil,
+                                             text: footnote.text))
+        }
+        if !notes.isEmpty {
+            body.append(LiquidDoc.Paragraph(id: "notes", heading: 1, text: "Notes"))
+            body.append(contentsOf: notes)
         }
 
         // Links come back the way they were made: derived from the
@@ -559,7 +595,8 @@ nonisolated enum OrigamiEPUBImporter {
                                        addressByCitationID: [String: String],
                                        resolveImage: (String) -> Data?,
                                        idPrefix: String = "")
-        throws -> (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset]) {
+        throws -> (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset],
+                   footnotes: [(id: String, text: String)]) {
         let root = try XMLTree.parse(Data(html.utf8))
         // The Origami profile wraps the flow in <main>; a plain EPUB's
         // chapters write their content straight into <body>.
@@ -570,6 +607,7 @@ nonisolated enum OrigamiEPUBImporter {
 
         var paragraphs: [LiquidDoc.Paragraph] = []
         var assets: [LiquidDoc.Asset] = []
+        var footnotes: [(id: String, text: String)] = []
         var assetOrdinal = 0
         var fallbackOrdinal = 0
 
@@ -596,19 +634,21 @@ nonisolated enum OrigamiEPUBImporter {
                     for child in element.elements { visit(child, stretchID: blockID) }
                 } else if (element.attributes["epub:type"] ?? "").contains("footnote")
                     || (element.attributes["role"] ?? "").contains("doc-footnote") {
-                    // An inline note (a footnote aside): its words are
-                    // the note's, not the flow's — filed under the
-                    // aside's own id, where the host paragraph's
-                    // dagger points.
+                    // An inline note (Author's footnote aside): its
+                    // words are the note's, not the flow's. Kept under
+                    // the aside's own id, where the host paragraph's
+                    // noteref dagger points — filed with the endnotes
+                    // after the body, never inlined as a stray
+                    // paragraph.
                     if let id = element.attributes["id"] {
                         let text = element.elements
-                            .map { inlineText(of: $0, addressByCitationID: addressByCitationID) }
+                            .map {
+                                collapsedLineBreaks(inlineText(
+                                    of: $0, addressByCitationID: addressByCitationID))
+                            }
                             .joined(separator: " ")
                             .trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !text.isEmpty {
-                            paragraphs.append(LiquidDoc.Paragraph(
-                                id: idPrefix + id, heading: nil, text: text))
-                        }
+                        if !text.isEmpty { footnotes.append((idPrefix + id, text)) }
                     }
                 } else {
                     for child in element.elements { visit(child, stretchID: stretchID) }
@@ -694,7 +734,16 @@ nonisolated enum OrigamiEPUBImporter {
             }
         }
         for child in main.elements { visit(child) }
-        return (paragraphs, assets)
+        return (paragraphs, assets, footnotes)
+    }
+
+    /// The current export writes one paragraph across several source
+    /// lines; the line breaks fold back into single spaces. The older
+    /// export's single-line text passes through untouched.
+    private static func collapsedLineBreaks(_ text: String) -> String {
+        guard text.contains("\n") || text.contains("\r") else { return text }
+        return text.replacingOccurrences(of: #"\s*[\r\n]+\s*"#, with: " ",
+                                         options: .regularExpression)
     }
 
     /// One element's text with the inline conventions restored: strong
@@ -723,7 +772,36 @@ nonisolated enum OrigamiEPUBImporter {
                 case "dfn":
                     out += content
                 case "a":
-                    if inner.attributes["class"] == "citation" {
+                    if (inner.attributes["class"] ?? "").contains("ot-stretchtext") {
+                        // The stretchtext marker (»/‹‹) is the export's
+                        // chrome, never the words — the readers draw
+                        // their own toggle from the aside's stretchID.
+                        break
+                    }
+                    if (inner.attributes["class"] ?? "").contains("ot-inline-note") {
+                        // An inline note travelling as stretchtext
+                        // (Author's Stretchtext export): the mark folds
+                        // the note's words open in place — [] — while
+                        // the words themselves are filed with the
+                        // endnotes, where the token's id finds them.
+                        // The ‡ the anchor shows plain readers is
+                        // chrome here, not content.
+                        if let href = inner.attributes["href"],
+                           let hash = href.firstIndex(of: "#") {
+                            out += "[inote:\(href[href.index(after: hash)...])]"
+                        }
+                    } else if (inner.attributes["epub:type"] ?? "").contains("noteref")
+                        || (inner.attributes["role"] ?? "").contains("doc-noteref") {
+                        // The endnote's mark: a token carrying the
+                        // note's id, rendered at reading time as a
+                        // clickable dagger that reveals the note.
+                        if let href = inner.attributes["href"],
+                           let hash = href.firstIndex(of: "#") {
+                            out += "[note:\(href[href.index(after: hash)...])]"
+                        } else {
+                            out += content
+                        }
+                    } else if inner.attributes["class"] == "citation" {
                         if let reference = inner.attributes["data-origami-ref"],
                            !reference.isEmpty {
                             // Full resolution: rel and #fragment intact.
@@ -731,6 +809,13 @@ nonisolated enum OrigamiEPUBImporter {
                         } else if let citationID = inner.attributes["data-citation-id"],
                                   let address = addressByCitationID[citationID] {
                             out += "[\(address)]"
+                        } else if let citationID = inner.attributes["data-citation-id"],
+                                  !citationID.isEmpty {
+                            // An external reference, cited by key: the
+                            // token the readers resolve to the reader's
+                            // citation style, backed by the reference
+                            // pool — never the export's frozen [n].
+                            out += "[cite:\(citationID)]"
                         } else {
                             out += content
                         }
@@ -858,7 +943,9 @@ private final class XMLTree: NSObject, XMLParserDelegate {
 /// A minimal ZIP reader: the central directory drives extraction, and
 /// stored and deflated entries both open — our own EPUBs are stored,
 /// but EPUBs from other writers usually deflate.
-private struct ZipReader {
+// Internal, not private: the LaTeX importer reads its zipped project
+// through the same minimal reader.
+struct ZipReader {
 
     private(set) var entriesByName: [String: Data] = [:]
 
