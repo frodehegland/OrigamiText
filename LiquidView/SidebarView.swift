@@ -18,9 +18,9 @@ enum SidebarCatalog {
     /// Books, Transcripts, Notes, and the Views modules) — is obsolete and
     /// gone; new views will be built fresh against the EPUB + Visual-Meta.
     /// The full-screen peek still needs a way back to the library, so it
-    /// lists the Timeline — every book, newest first.
+    /// lists Chronological — every book, newest first.
     static let received: [SidebarPlace] = [
-        SidebarPlace(name: "Timeline", systemImage: "clock", item: .epubsTimeline),
+        SidebarPlace(name: "Chronological", systemImage: "clock", item: .epubsTimeline),
     ]
 
     /// The conversation itself: every letter to and from the user, the
@@ -121,7 +121,7 @@ struct SidebarView: View {
     /// Whether the sidebar shows a row for this place.
     private func hasRow(for item: SidebarItem) -> Bool {
         switch item {
-        case .epubsInbox, .epubsTimeline, .epubsAlphabetical,
+        case .epubsTopOfPile, .epubsTimeline, .epubsAlphabetical,
              .epubJournals, .epubsSetAside, .authors, .people, .concepts:
             true
         case .epubFolder(let name):
@@ -215,23 +215,23 @@ struct SidebarView: View {
         }
     }
 
-    /// The Library shelf: the ways through the opened EPUBs — Inbox
-    /// (unread), Timeline (every book, newest first — the home list),
-    /// Alphabetical, and the journals or proceedings they are part of —
-    /// then the user's folders, the books set aside, and a "+" to add
-    /// another folder. Every place carries its count on the right;
-    /// Timeline and Alphabetical can narrow to unread from their
-    /// context menus.
+    /// The Library shelf: the ways through the opened EPUBs — Top of
+    /// Pile (the pinned books), Chronological (every book, newest
+    /// first — the home list), Alphabetical, and the journals or
+    /// proceedings they are part of — then the user's folders, the
+    /// books set aside, and a "+" to add another folder. Every place
+    /// carries its count on the right; Chronological and Alphabetical
+    /// can narrow to unread from their context menus.
     @ViewBuilder
     private var librarySection: some View {
         let shown = model.epubRecords(inFolder: nil)
         Section(isExpanded: isExpanded("Library")) {
             // The badge sits INSIDE the tag: a badge applied over the
             // tag hides it from the List, and the row stops selecting.
-            Label("Inbox", systemImage: "tray")
-                .badge(shown.filter { model.isUnread($0) }.count)
-                .tag(SidebarItem.epubsInbox)
-            Label("Timeline", systemImage: "clock")
+            Label("Top of Pile", systemImage: "pin")
+                .badge(shown.filter { model.isTopOfPile($0) }.count)
+                .tag(SidebarItem.epubsTopOfPile)
+            Label("Chronological", systemImage: "clock")
                 .badge(timelineUnreadOnly
                        ? shown.filter { model.isUnread($0) }.count : shown.count)
                 .tag(SidebarItem.epubsTimeline)

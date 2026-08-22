@@ -166,7 +166,9 @@ enum TranscriptSummarizer {
             if case .guardrailViolation = error { return true }
             if case .refusal = error { return true }
         }
-        if let error = error as? LanguageModelError {
+        // The newer surface only exists from macOS 27; on 26 the
+        // GenerationError check above is the whole story.
+        if #available(macOS 27.0, *), let error = error as? LanguageModelError {
             if case .guardrailViolation = error { return true }
             if case .refusal = error { return true }
         }
@@ -178,7 +180,7 @@ enum TranscriptSummarizer {
     private static func isContextOverflow(_ error: Error) -> Bool {
         if let error = error as? LanguageModelSession.GenerationError,
            case .exceededContextWindowSize = error { return true }
-        if let error = error as? LanguageModelError,
+        if #available(macOS 27.0, *), let error = error as? LanguageModelError,
            case .contextSizeExceeded = error { return true }
         return false
     }

@@ -55,8 +55,10 @@ enum CitationLookup {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
+        // "2": matching grew a year check — the earlier file could hold
+        // same-titled OTHER works' abstracts, remembered forever.
         return base.appendingPathComponent("EPUBs", isDirectory: true)
-            .appendingPathComponent("CitationLookups.json")
+            .appendingPathComponent("CitationLookups2.json")
     }
 
     private static var cache: [String: Enrichment] = {
@@ -96,7 +98,16 @@ enum CitationLookup {
     /// What the cache already knows, hits and remembered misses alike.
     static func cached(for record: BibTeXRecord) -> Enrichment? {
         guard let key = cacheKey(for: record) else { return nil }
-        return cache[key]
+        return cache[key].map(tidied)
+    }
+
+    /// The enrichment with its prose repaired for display — entries
+    /// cached before the repair existed read clean too.
+    private static func tidied(_ enrichment: Enrichment) -> Enrichment {
+        var out = enrichment
+        out.abstract = out.abstract.map(tidiedAbstract)
+        out.tldr = out.tldr.map(tidiedAbstract)
+        return out
     }
 
     // MARK: The lookup
@@ -119,7 +130,7 @@ enum CitationLookup {
         // OpenAlex first when the reader holds a key — the best
         // abstract coverage of the three.
         if !openAlexKey.isEmpty {
-            enrichment = await openAlex(doi: doi, title: record.title)
+            enrichment = await openAlex(doi: doi, record: record)
         }
         if enrichment?.abstract == nil {
             if let better = await crossref(doi: doi, record: record) {
@@ -128,12 +139,13 @@ enum CitationLookup {
         }
         if enrichment?.abstract == nil {
             if let better = await semanticScholar(doi: doi ?? enrichment?.doi,
-                                                  title: record.title) {
+                                                  record: record) {
                 enrichment = merged(enrichment, better)
             }
         }
 
-        let result = enrichment ?? Enrichment(source: "", fetched: .now, found: false)
+        let result = enrichment.map(tidied)
+            ?? Enrichment(source: "", fetched: .now, found: false)
         var stored = result
         stored.fetched = .now
         cache[key] = stored
@@ -184,7 +196,11 @@ enum CitationLookup {
                let items = message["items"] as? [[String: Any]] {
                 work = items.first { item in
                     let titles = item["title"] as? [String] ?? []
-                    return titles.contains { titleMatches($0, record.title) }
+                    guard titles.contains(where: { titleMatches($0, record.title) })
+                    else { return false }
+                    let year = ((item["issued"] as? [String: Any])?["date-parts"]
+                        as? [[Int]])?.first?.first
+                    return yearAgrees(year, with: record)
                 }
             }
         }
@@ -203,7 +219,8 @@ enum CitationLookup {
     /// Semantic Scholar: keyless on the shared public pool — throttled,
     /// so one polite try and a graceful nil on refusal. Abstracts plus
     /// the AI TL;DR where the domain has one.
-    private static func semanticScholar(doi: String?, title: String) async -> Enrichment? {
+    private static func semanticScholar(doi: String?, record: BibTeXRecord) async -> Enrichment? {
+        let title = record.title
         let fields = "title,abstract,tldr,venue,year,externalIds,openAccessPdf"
         var paper: [String: Any]?
         if let doi,
@@ -222,7 +239,10 @@ enum CitationLookup {
             ]
             if let url = components?.url,
                let data = (await json(from: url))?["data"] as? [[String: Any]] {
-                paper = data.first { titleMatches(($0["title"] as? String) ?? "", title) }
+                paper = data.first {
+                    titleMatches(($0["title"] as? String) ?? "", title)
+                        && yearAgrees(($0["year"] as? NSNumber)?.intValue, with: record)
+                }
             }
         }
         guard let paper else { return nil }
@@ -244,7 +264,8 @@ enum CitationLookup {
     /// February 2026 — used only with the reader's own free key
     /// (Settings ▸ Reading). Abstracts arrive as an inverted index,
     /// rebuilt into words here.
-    private static func openAlex(doi: String?, title: String) async -> Enrichment? {
+    private static func openAlex(doi: String?, record: BibTeXRecord) async -> Enrichment? {
+        let title = record.title
         let key = openAlexKey
         guard !key.isEmpty else { return nil }
         var work: [String: Any]?
@@ -262,7 +283,11 @@ enum CitationLookup {
             ]
             if let url = components?.url,
                let results = (await json(from: url))?["results"] as? [[String: Any]] {
-                work = results.first { titleMatches(($0["title"] as? String) ?? "", title) }
+                work = results.first {
+                    titleMatches(($0["title"] as? String) ?? "", title)
+                        && yearAgrees(($0["publication_year"] as? NSNumber)?.intValue,
+                                      with: record)
+                }
             }
         }
         guard let work else { return nil }
@@ -301,6 +326,32 @@ enum CitationLookup {
         let b = OrigamiReading.normalize(wanted)
         guard !a.isEmpty, !b.isEmpty else { return false }
         return a == b || a.hasPrefix(b) || b.hasPrefix(a)
+    }
+
+    /// Whether a title-searched candidate's year agrees with the
+    /// record's (±1, for early-online editions). Same-titled works
+    /// abound — chapters, poems, reissues — and a year mismatch means
+    /// someone else's abstract lands on the card. When either side has
+    /// no year, the title match must carry it.
+    private static func yearAgrees(_ candidate: Int?, with record: BibTeXRecord) -> Bool {
+        guard let candidate,
+              let recorded = record.fields["year"]
+                  .map({ $0.trimmingCharacters(in: .whitespaces) })
+                  .flatMap({ Int($0.prefix(4)) })
+        else { return true }
+        return abs(candidate - recorded) <= 1
+    }
+
+    /// Publisher abstracts often arrive with the spaces eaten at the
+    /// original line breaks ("Ranch.Hal", "Warners,but"). Repairs the
+    /// recoverable cases — sentence punctuation running straight into a
+    /// capital, a comma straight into a letter — and leaves acronyms
+    /// ("U.S.") and numbers ("1,000", "10.1145") alone.
+    static func tidiedAbstract(_ text: String) -> String {
+        text.replacingOccurrences(of: #"([a-z0-9])([.!?])([A-Z])"#,
+                                  with: "$1$2 $3", options: .regularExpression)
+            .replacingOccurrences(of: #"([A-Za-z])([,;:])([A-Za-z])"#,
+                                  with: "$1$2 $3", options: .regularExpression)
     }
 
     /// Crossref's JATS markup down to the words: tags gone, entities

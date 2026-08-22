@@ -314,6 +314,8 @@ struct ContentView: View {
             EPUBLibraryListView(mode: .all)
         } else if model.sidebarSelection == .epubsInbox {
             EPUBLibraryListView(mode: .inbox)
+        } else if model.sidebarSelection == .epubsTopOfPile {
+            EPUBLibraryListView(mode: .topOfPile)
         } else if model.sidebarSelection == .epubsTimeline {
             EPUBLibraryListView(mode: .timeline)
         } else if model.sidebarSelection == .epubsAlphabetical {

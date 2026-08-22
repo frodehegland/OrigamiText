@@ -37,6 +37,7 @@ enum SidebarItem: Hashable {
     case epubsAlphabetical
     case epubJournals
     case epubPublication(String)
+    case epubsTopOfPile
     case epubsSetAside
     case epubFolder(String)
     // Views: ways into the opened EPUBs by who and what they hold.
@@ -701,6 +702,20 @@ final class AppModel {
         epubRecords.map { IndexEntry(doc: epubListingDoc($0)) }
     }
 
+    /// The record of the book open in the reader — what the book lists
+    /// highlight as their selection.
+    var openEPUBRecordID: String? {
+        guard let open = openEPUB else { return nil }
+        return epubRecords.first { $0.folder == open.id }?.id
+    }
+
+    /// Opens a listed book by its record id — the selection-driven twin
+    /// of `openStoredEPUB`, for the lists.
+    func openEPUBRecord(withID id: String) {
+        guard let record = epubRecords.first(where: { $0.id == id }) else { return }
+        openStoredEPUB(record)
+    }
+
     /// An opened EPUB is unread until it has been opened in the reader —
     /// the Files list shows unread records bold. The user's own authored
     /// EPUBs are never unread.
@@ -1327,16 +1342,90 @@ final class AppModel {
         }
     }
 
+    // MARK: Venue aliases — merged journal names
+
+    /// Venues the reader has declared the same: the written name → the
+    /// name it files under. Papers write the same venue slightly
+    /// differently (\acmConference here, a fuller \acmBooktitle there);
+    /// "Is the Same As" folds them without touching any document.
+    private(set) var venueAliases: [String: String] =
+        (UserDefaults.standard.dictionary(forKey: "venueAliases") as? [String: String]) ?? [:]
+
+    private func persistVenueAliases() {
+        UserDefaults.standard.set(venueAliases, forKey: "venueAliases")
+    }
+
+    /// The name a venue files under once aliases are applied. Venue
+    /// counts are small; the scan is nothing.
+    func canonicalVenue(_ name: String) -> String {
+        var current = name.trimmingCharacters(in: .whitespaces)
+        var hops = 0
+        while hops < 10,
+              let match = venueAliases.first(where: {
+                  $0.key.caseInsensitiveCompare(current) == .orderedSame }) {
+            current = match.value
+            hops += 1
+        }
+        return current
+    }
+
+    /// Declares one venue the same as another: its papers file under
+    /// the other's name from now on, and it leaves the Journals list.
+    /// Existing aliases are re-pointed so every one aims straight at
+    /// the surviving name.
+    func mergeVenue(_ alias: String, into target: String) {
+        let aliasName = alias.trimmingCharacters(in: .whitespaces)
+        let targetName = target.trimmingCharacters(in: .whitespaces)
+        guard !aliasName.isEmpty, !targetName.isEmpty,
+              aliasName.caseInsensitiveCompare(targetName) != .orderedSame else { return }
+        venueAliases[aliasName] = targetName
+        for (key, value) in venueAliases
+        where value.caseInsensitiveCompare(aliasName) == .orderedSame {
+            venueAliases[key] = targetName
+        }
+        persistVenueAliases()
+    }
+
+    /// Undoes a merge: the name stands on its own in Journals again.
+    func separateVenue(_ alias: String) {
+        let keys = venueAliases.keys.filter {
+            $0.caseInsensitiveCompare(alias) == .orderedSame
+        }
+        guard !keys.isEmpty else { return }
+        for key in keys { venueAliases.removeValue(forKey: key) }
+        persistVenueAliases()
+    }
+
+    /// The written names filed under this venue by "Is the Same As" —
+    /// what the Separate menu offers back.
+    func aliasesFiled(under venue: String) -> [String] {
+        venueAliases
+            .filter { $0.value.caseInsensitiveCompare(venue) == .orderedSame }
+            .map(\.key)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
     /// The distinct journals and proceedings the opened EPUBs declare
-    /// themselves part of, alphabetically — the Journals view.
+    /// themselves part of, aliases folded in, alphabetically — the
+    /// Journals view.
     var epubPublications: [String] {
-        let names = Set(shownEPUBRecords.compactMap(\.venue))
+        var names: [String] = []
+        for record in shownEPUBRecords {
+            guard let venue = record.venue.map(canonicalVenue) else { continue }
+            if !names.contains(where: { $0.caseInsensitiveCompare(venue) == .orderedSame }) {
+                names.append(venue)
+            }
+        }
         return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
-    /// The opened EPUBs that are part of a given journal or proceedings.
+    /// The opened EPUBs that are part of a given journal or proceedings,
+    /// under whichever of its names their pages carry.
     func epubRecords(inPublication name: String) -> [EPUBRecord] {
-        shownEPUBRecords.filter { $0.venue?.caseInsensitiveCompare(name) == .orderedSame }
+        let wanted = canonicalVenue(name)
+        return shownEPUBRecords.filter {
+            $0.venue.map(canonicalVenue)?.caseInsensitiveCompare(wanted) == .orderedSame
+        }
     }
 
     /// People the user is tracking across the library — added by hand the

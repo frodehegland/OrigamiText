@@ -283,14 +283,25 @@ final class PersonPortraitStore {
     private static func stylize(_ photo: CGImage, style: ImagePlaygroundStyle,
                                 concept: String) async throws -> CGImage {
         let creator = try await ImageCreator()
-        var options = ImagePlaygroundOptions()
-        options.creationStrategy = .editExisting
         let concepts: [ImagePlaygroundConcept] = [.image(photo), .text(concept)]
-        for try await created in creator.images(for: concepts,
-                                                style: style,
-                                                options: options,
-                                                limit: 1) {
-            return created.cgImage
+        // Edit-existing keeps the result closest to the person, but the
+        // option only exists from macOS 27; macOS 26 generates from the
+        // photo without it and simply strays a little further.
+        if #available(macOS 27.0, *) {
+            var options = ImagePlaygroundOptions()
+            options.creationStrategy = .editExisting
+            for try await created in creator.images(for: concepts,
+                                                    style: style,
+                                                    options: options,
+                                                    limit: 1) {
+                return created.cgImage
+            }
+        } else {
+            for try await created in creator.images(for: concepts,
+                                                    style: style,
+                                                    limit: 1) {
+                return created.cgImage
+            }
         }
         throw ImageCreator.Error.creationFailed
     }

@@ -28,12 +28,14 @@ struct DocumentListView: View {
     }
 }
 
-/// The ways through the Library shelf: everything, the unread, by date,
-/// by title, one folder's worth, or the books set aside.
+/// The ways through the Library shelf: everything, the unread, the
+/// pinned, by date, by title, one folder's worth, or the books set
+/// aside.
 enum LibraryListMode: Hashable {
     case all
     case folder(String)
     case inbox
+    case topOfPile
     case timeline
     case alphabetical
     case setAside
@@ -80,6 +82,8 @@ struct EPUBLibraryListView: View {
         case .inbox:
             return model.pinnedFirst(
                 model.epubRecords(inFolder: nil).filter { model.isUnread($0) })
+        case .topOfPile:
+            return model.epubRecords(inFolder: nil).filter { model.isTopOfPile($0) }
         case .timeline:
             return model.pinnedFirst(model.epubRecords(inFolder: nil)
                 .filter { !timelineUnreadOnly || model.isUnread($0) }
@@ -105,29 +109,26 @@ struct EPUBLibraryListView: View {
 
     var body: some View {
         let records = records
-        List {
+        // Selection IS the open book: the row highlights natively, and
+        // selecting a row opens it in the reader.
+        List(selection: epubListSelection(model)) {
             ForEach(records) { record in
-                Button {
-                    model.openStoredEPUB(record)
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(record.title)
-                            .fontWeight(model.isUnread(record) ? .bold : .regular)
-                            .lineLimit(2)
-                        HStack(spacing: 6) {
-                            Text(record.author)
-                            if let filed = model.epubFolder(for: record.id), !inFolder {
-                                Text("· \(filed)")
-                            }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(record.title)
+                        .fontWeight(model.isUnread(record) ? .bold : .regular)
+                        .lineLimit(2)
+                    HStack(spacing: 6) {
+                        Text(record.author)
+                        if let filed = model.epubFolder(for: record.id), !inFolder {
+                            Text("· \(filed)")
                         }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
-                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .tag(record.id)
                 .contextMenu {
                     Menu("File Under") {
                         ForEach(model.epubFolders, id: \.self) { name in
@@ -159,6 +160,7 @@ struct EPUBLibraryListView: View {
         switch mode {
         case .folder: "Empty Folder"
         case .inbox: "Nothing Unread"
+        case .topOfPile: "Nothing on Top"
         case .setAside: "Nothing Set Aside"
         default: "No EPUBs Yet"
         }
@@ -170,6 +172,8 @@ struct EPUBLibraryListView: View {
             "File EPUBs into “\(name)” from the All list's context menu."
         case .inbox:
             "Every opened EPUB has been read. New arrivals gather here until they are opened."
+        case .topOfPile:
+            "Right-click a book and choose Top of Pile — it gathers here and floats first in every list."
         case .setAside:
             "Right-click a book and choose Set Aside to tuck it out of the lists — it waits here until brought back."
         case .timeline where timelineUnreadOnly, .alphabetical where alphabeticalUnreadOnly:
@@ -180,8 +184,21 @@ struct EPUBLibraryListView: View {
     }
 }
 
-/// One opened-EPUB row: title (bold while unread), author, and filed
-/// folder. Reused by the Files shelf and the Views lists.
+/// The book lists' shared selection: the highlighted row is the book
+/// open in the reader, and selecting a row opens it.
+@MainActor
+func epubListSelection(_ model: AppModel) -> Binding<String?> {
+    Binding(
+        get: { model.openEPUBRecordID },
+        set: { id in
+            if let id { model.openEPUBRecord(withID: id) }
+        }
+    )
+}
+
+/// One opened-EPUB row: title (bold while unread) and author, tagged so
+/// its List selects — and thereby opens — it. Reused by the author and
+/// venue lists; their Lists take `epubListSelection`.
 struct EPUBRecordRow: View {
     @Environment(AppModel.self) private var model
     let record: EPUBRecord
@@ -190,24 +207,19 @@ struct EPUBRecordRow: View {
     var showsSubtitle: Bool = true
 
     var body: some View {
-        Button {
-            model.openStoredEPUB(record)
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(record.title)
-                    .fontWeight(model.isUnread(record) ? .bold : .regular)
-                    .lineLimit(2)
-                if showsSubtitle {
-                    Text(record.author)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+        VStack(alignment: .leading, spacing: 2) {
+            Text(record.title)
+                .fontWeight(model.isUnread(record) ? .bold : .regular)
+                .lineLimit(2)
+            if showsSubtitle {
+                Text(record.author)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .tag(record.id)
         .contextMenu {
             EPUBPileMenu(record: record)
         }
@@ -258,7 +270,7 @@ struct AuthorBooksListView: View {
     let name: String
 
     var body: some View {
-        List {
+        List(selection: epubListSelection(model)) {
             Section {
                 ForEach(model.epubRecords(byAuthor: name)) { record in
                     EPUBRecordRow(record: record, showsSubtitle: false)
@@ -310,6 +322,25 @@ struct JournalsListView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    // Papers write the same venue slightly differently;
+                    // declaring one the same as another folds them.
+                    Menu("Is the Same As") {
+                        ForEach(venues.filter {
+                            $0.caseInsensitiveCompare(venue) != .orderedSame
+                        }, id: \.self) { other in
+                            Button(other) { model.mergeVenue(venue, into: other) }
+                        }
+                    }
+                    let aliases = model.aliasesFiled(under: venue)
+                    if !aliases.isEmpty {
+                        Menu("Separate") {
+                            ForEach(aliases, id: \.self) { alias in
+                                Button(alias) { model.separateVenue(alias) }
+                            }
+                        }
+                    }
+                }
             }
         }
         .overlay {
@@ -331,7 +362,7 @@ struct JournalBooksListView: View {
     let name: String
 
     var body: some View {
-        List {
+        List(selection: epubListSelection(model)) {
             Section {
                 ForEach(model.epubRecords(inPublication: name)) { record in
                     EPUBRecordRow(record: record)
