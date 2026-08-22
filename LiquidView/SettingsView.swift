@@ -121,6 +121,15 @@ private struct ReadingSettingsView: View {
     private var bodyFont = ReaderStyle.defaultBodyFont
     @AppStorage(AppSettings.readerHeadingFontKey)
     private var headingFont = ReaderStyle.defaultHeadingFont
+    /// How citations read in a document — as written, numbered, or
+    /// superscript. Applies live to whatever is open; the citation's
+    /// click is the same in every style. (As in Knowledge Space.)
+    @AppStorage("origamiCitationStyle")
+    private var citationStyleRaw = OrigamiCitationStyle.authorDate.rawValue
+    /// Whether citation cards may ask the scholarly services for what
+    /// the package left out — see CitationLookup.swift.
+    @AppStorage(CitationLookup.enabledKey) private var lookupCitedWorks = true
+    @AppStorage(CitationLookup.openAlexKeyKey) private var openAlexKey = ""
 
     private let families = NSFontManager.shared.availableFontFamilies.sorted()
 
@@ -137,6 +146,32 @@ private struct ReadingSettingsView: View {
                 Text("Theme")
             } footer: {
                 Text("The page's background and text colours when reading an EPUB. Text colour applies to headings too; themes follow light and dark mode.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Picker("Citations", selection: $citationStyleRaw) {
+                    ForEach(OrigamiCitationStyle.allCases) { style in
+                        Text(style.displayName).tag(style.rawValue)
+                    }
+                }
+                .pickerStyle(.inline)
+            } header: {
+                Text("Citations")
+            } footer: {
+                Text("How citations read in the native reading styles: (Hegland 2025) as the author wrote them, [3] as the source's reference list numbers them, or the number raised. The click is the same in every style — the source's card. The Faithful view shows the page exactly as published.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Look up cited works online", isOn: $lookupCitedWorks)
+                TextField("OpenAlex API key (optional)", text: $openAlexKey)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!lookupCitedWorks)
+            } header: {
+                Text("Cited Works")
+            } footer: {
+                Text("When a citation's card lacks an abstract, the app asks Crossref and Semantic Scholar (both free, no account) and shows what they know — abstract, TL;DR, venue, DOI, an open-access link — naming the source. Answers are kept on this Mac, so a work is looked up once. OpenAlex has the widest abstract coverage but requires a free API key (openalex.org/settings/api); paste one to put it first in line.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -158,7 +193,7 @@ private struct ReadingSettingsView: View {
             } header: {
                 Text("Fonts")
             } footer: {
-                Text("Any font installed on this Mac. Defaults are Times for body and Georgia for headings.")
+                Text("Any font installed on this Mac, used everywhere words render — every reading style, the document views, the cards and columns. Defaults are Times for body and Georgia for headings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

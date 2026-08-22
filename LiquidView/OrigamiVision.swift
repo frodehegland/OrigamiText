@@ -220,7 +220,7 @@ struct VisionReaderView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(doc.title)
-                        .font(.system(size: 32, design: .serif))
+                        .font(AppFonts.heading(32))
                         .padding(.bottom, 4)
                     Text("\(doc.displayAuthor) · \(doc.listedDateText)")
                         .foregroundStyle(.secondary)
@@ -271,9 +271,8 @@ struct VisionReaderView: View {
         case 3: 19
         default: 17
         }
-        return .system(size: size,
-                       weight: paragraph.effectiveHeading == nil ? .regular : .bold,
-                       design: .serif)
+        return AppFonts.body(size,
+                             weight: paragraph.effectiveHeading == nil ? .regular : .bold)
     }
 }
 
@@ -370,7 +369,7 @@ struct VisionZZView: View {
         let isAccursed = placedCell.cellID == accursedID && !placedCell.isVirtualCopy
         return VStack(alignment: .leading, spacing: 2) {
             Text(label(for: placedCell.cellID))
-                .font(.system(size: 13, weight: isAccursed ? .semibold : .regular, design: .serif))
+                .font(AppFonts.body(13, weight: isAccursed ? .semibold : .regular))
                 .lineLimit(2)
             Text(placedCell.isVirtualCopy ? "wormhole" : kindName(of: placedCell.cellID))
                 .font(.system(size: 9))
@@ -559,7 +558,7 @@ struct AuthorsSpaceView: View {
         let isSelected = author.id == selectedAuthor
         return VStack(spacing: 5) {
             Text(author.id)
-                .font(.system(size: 15, weight: .semibold, design: .serif))
+                .font(AppFonts.body(15, weight: .semibold))
                 .lineLimit(2)
             Text(author.documentCount == 1 ? "1 document" : "\(author.documentCount) documents")
                 .font(.system(size: 12))
@@ -682,7 +681,7 @@ struct VisionWeaveView: View {
                 .fill(weaveColor(hue: knot.hue, opacity: 1))
                 .frame(width: knotSize(knot.weight), height: knotSize(knot.weight))
             Text(knot.title)
-                .font(.system(size: 12, design: .serif))
+                .font(AppFonts.body(12))
                 .lineLimit(1)
         }
         .padding(.horizontal, 10)
@@ -1074,7 +1073,7 @@ struct VisionBotsView: View {
         let stance = model.bots.stance(botID: bot.id, docID: doc.id)
         return VStack(spacing: 2) {
             Text(doc.title)
-                .font(.system(size: 12, design: .serif))
+                .font(AppFonts.body(12))
                 .lineLimit(2)
             Text(doc.displayAuthor)
                 .font(.system(size: 9))

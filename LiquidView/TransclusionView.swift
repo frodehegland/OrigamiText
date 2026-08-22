@@ -66,7 +66,7 @@ struct TransclusionQuoteView: View {
             } else {
                 ForEach(quoted) { paragraph in
                     Text(paragraph.renderedText)
-                        .font(.system(size: 15, design: .serif))
+                        .font(AppFonts.body(15))
                         .lineSpacing(4)
                         .textSelection(.enabled)
                 }

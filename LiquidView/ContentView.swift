@@ -113,14 +113,31 @@ struct ContentView: View {
         // it away with the menu bar, and mousing to the top edge brings
         // it back — carrying the right toolbar's commands.
         .toolbar(.automatic, for: .windowToolbar)
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in
-            model.enterFullScreenLayout()
+        // The layout swap happens BEFORE the transition on both doors
+        // (will-enter and will-exit), deferred one turn out of the
+        // notification: the split view and its scroll views must never
+        // participate in the animated resize — a scroll view changing
+        // geometry mid-transition re-enters window layout (AppKit's
+        // separator tracking registers right there) and AppKit
+        // escalates that to a crash.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in
+            Task { @MainActor in
+                model.enterFullScreenLayout()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
-            model.exitFullScreenLayout()
-            showsPeekSidebar = false
-            showsPeekList = false
+            Task { @MainActor in
+                model.exitFullScreenLayout()
+                showsPeekSidebar = false
+                showsPeekList = false
+            }
         }
+        // The titlebar separator's scroll tracking is the code that
+        // throws (NSWindowSectionController registering its adapter
+        // during layout, macOS 27). The toolbar here is bare and the
+        // hairline unwanted anyway: with the separator off, the
+        // registration never happens.
+        .background(TitlebarSeparatorDisabler())
         .environment(\.openURL, OpenURLAction { url in
             // origamitext:// links clicked inside documents navigate in-app,
             // through the same follow path as the links panel.
@@ -458,6 +475,24 @@ private struct HoverSensor: NSViewRepresentable {
 
         override func mouseEntered(with event: NSEvent) { onChange?(true) }
         override func mouseExited(with event: NSEvent) { onChange?(false) }
+    }
+}
+
+/// Turns the window's titlebar separator off. The separator's scroll
+/// tracking (NSWindowSectionController's adapter) registers itself from
+/// inside the window's layout pass when a scroll view's geometry moves —
+/// AppKit (macOS 27) escalates that to a crash during the full-screen
+/// transition. The toolbar here is bare and the hairline unwanted; with
+/// the style `.none`, the tracking never registers.
+private struct TitlebarSeparatorDisabler: NSViewRepresentable {
+    func makeNSView(context: Context) -> SeparatorView { SeparatorView() }
+    func updateNSView(_ view: SeparatorView, context: Context) {}
+
+    final class SeparatorView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.titlebarSeparatorStyle = .none
+        }
     }
 }
 

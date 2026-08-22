@@ -124,7 +124,7 @@ struct OpenQuestionsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(question.question)
-                    .font(.system(size: 16, weight: .bold, design: .serif))
+                    .font(AppFonts.body(16, weight: .bold))
                     .multilineTextAlignment(.leading)
                 Text("\(question.entries.count)")
                     .font(.caption.monospacedDigit())

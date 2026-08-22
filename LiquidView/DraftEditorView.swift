@@ -214,7 +214,7 @@ struct DraftEditorView: View {
             VStack(alignment: .leading, spacing: 8) {
                 if let overview = summary.overview {
                     Text(overview)
-                        .font(.system(size: 14, design: .serif))
+                        .font(AppFonts.body(14))
                         .textSelection(.enabled)
                 }
                 ForEach(summary.notes) { note in
@@ -223,7 +223,7 @@ struct DraftEditorView: View {
                             .foregroundStyle(.tertiary)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(note.text)
-                                .font(.system(size: 13, design: .serif))
+                                .font(AppFonts.body(13))
                                 .textSelection(.enabled)
                             WrappingHStack(horizontalSpacing: 5, verticalSpacing: 4) {
                                 ForEach(note.sources, id: \.self) { source in
@@ -485,7 +485,7 @@ struct DraftEditorView: View {
                 HStack(spacing: 10) {
                     TextField("Title", text: $editor.title, selection: $titleSelection)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 28, design: .serif))
+                        .font(AppFonts.heading(28))
                         .focused($titleFocused)
                         .onKeyPress(.tab) {
                             // Straight from the title into the words; the

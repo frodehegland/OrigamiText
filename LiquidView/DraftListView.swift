@@ -208,7 +208,7 @@ struct ArchivedDocumentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 Text(doc.title)
-                    .font(.system(size: 28, design: .serif))
+                    .font(AppFonts.heading(28))
                     .padding(.bottom, 4)
                 Text("\(doc.displayAuthor) · \(doc.listedDateText)")
                     .font(.callout)

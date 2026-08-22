@@ -795,7 +795,7 @@ struct DocumentDetailView: View {
             }
             if let overview = summary.overview {
                 Text(overview)
-                    .font(.system(size: 15, design: .serif))
+                    .font(AppFonts.body(15))
                     .textSelection(.enabled)
             }
             ForEach(summary.notes) { note in
@@ -804,7 +804,7 @@ struct DocumentDetailView: View {
                         .foregroundStyle(.tertiary)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(note.text)
-                            .font(.system(size: 14, design: .serif))
+                            .font(AppFonts.body(14))
                             .textSelection(.enabled)
                         WrappingHStack(horizontalSpacing: 5, verticalSpacing: 4) {
                             ForEach(note.sources, id: \.self) { source in
@@ -937,7 +937,7 @@ struct DocumentHeader: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(doc.title)
-                    .font(.system(size: compact ? 20 : 32, design: .serif))
+                    .font(AppFonts.heading(compact ? 20 : 32))
                     .textSelection(.enabled)
                 if doc.hasUnfamiliarFormatVersion {
                     Image(systemName: "exclamationmark.triangle")

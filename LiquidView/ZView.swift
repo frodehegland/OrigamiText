@@ -136,7 +136,7 @@ struct ZView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(doc.title)
-                    .font(.system(size: 21, weight: .semibold, design: .serif))
+                    .font(AppFonts.heading(21, weight: .semibold))
                 Spacer()
                 Text(doc.id)
                     .font(.system(size: 10, design: .monospaced))
@@ -150,7 +150,7 @@ struct ZView: View {
                 .filter { $0.effectiveHeading == nil && !$0.displayText.isEmpty }
                 .prefix(3)) { paragraph in
                 Text(paragraph.displayText)
-                    .font(.system(size: 13, design: .serif))
+                    .font(AppFonts.body(13))
                     .lineLimit(4)
             }
             Button("Read in full") { model.openInLibrary(doc) }
@@ -223,7 +223,7 @@ struct ZView: View {
         } label: {
             VStack(alignment: .leading, spacing: 3) {
                 Text(doc.title)
-                    .font(.system(size: 12, weight: .medium, design: .serif))
+                    .font(AppFonts.body(12, weight: .medium))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Text("\(doc.displayAuthor) · \(doc.date?.yearText ?? doc.created.formatted(.dateTime.year()))")

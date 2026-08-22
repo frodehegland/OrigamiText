@@ -772,6 +772,25 @@ final class AppModel {
     /// finishes loading — set when a cross-document link is followed.
     var pendingReaderFragment: String?
 
+    /// The Flow display: body text broken into reading lines at sentence
+    /// and clause marks. A view choice, never the document's — the View
+    /// menu (⌘⇧F) and the bare `f` key toggle the same switch, and it
+    /// rests off when the reading moves to another book.
+    var flowReading = false
+
+    /// Find in the open book: ⌘F asks for the bar, ⌘G and ⇧⌘G step the
+    /// matches. Counters, so repeated asks always land — the reader
+    /// screen watches them.
+    var readerFindShow = 0
+    var readerFindNext = 0
+    var readerFindPrevious = 0
+
+    /// How far the open book is folded (0 reads whole) — shared between
+    /// the foot bar's Outline group and the reading view, so the fold
+    /// can be asked for from either presentation. Rests when the
+    /// reading moves.
+    var readerFoldLevel = 0
+
     /// The opened EPUB whose address (its Origami id, or the identity of its
     /// unpacked folder) matches — how an `origamitext://open/<address>` link
     /// resolves to a book already in the library.
@@ -928,6 +947,8 @@ final class AppModel {
     /// Reopens a remembered EPUB from its unpacked folder in the container.
     func openStoredEPUB(_ record: EPUBRecord) {
         pendingReaderFragment = nil   // a plain open scrolls to the top
+        flowReading = false           // Flow rests when the reading moves
+        readerFoldLevel = 0           // and so does the fold
         let base = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
         let content = base.appendingPathComponent(record.contentSubpath)
         guard FileManager.default.fileExists(atPath: content.path) else {
@@ -1069,6 +1090,29 @@ final class AppModel {
         doc.tables = result.tables
         doc.assets = result.assets
         readingDocCache = (book.id, doc)
+        return doc
+    }
+
+    /// The document the citation card reads: the full structured import,
+    /// or — for a book whose content document will not parse (older
+    /// exports predating the well-formedness check) — the Visual-Meta
+    /// citation pool alone, abstracts folded in.
+    func citationCardDoc(forBook book: OpenEPUB) -> LiquidDoc? {
+        if let doc = readingDoc(forBook: book) { return doc }
+        let visualMetaData = (try? Data(contentsOf:
+                book.base.appendingPathComponent("visual-meta.json")))
+            ?? (try? String(contentsOf: book.content, encoding: .utf8))
+                .flatMap(OrigamiEPUBImporter.embeddedVisualMeta(in:))
+        guard let visualMetaData,
+              let object = (try? JSONSerialization.jsonObject(with: visualMetaData))
+                  as? [String: Any]
+        else { return nil }
+        let pool = OrigamiEPUBImporter.citationPool(fromVisualMeta: object)
+        guard !pool.references.isEmpty else { return nil }
+        var doc = LiquidDoc(format: LiquidDoc.knownFormat, id: book.id, title: book.title,
+                            author: "", created: .now, body: [], links: [], wraps: nil,
+                            fileURL: book.base)
+        doc.references = pool.references
         return doc
     }
 

@@ -100,7 +100,9 @@ nonisolated enum OrigamiEPUBExporter {
             let publication: String
             let doi: String
             let urls: [String]
-            let abstract = ""
+            /// The cited work's abstract, when the record carries one —
+            /// the citation card's summary.
+            let abstract: String
             let bibtex: String
             let csl: JSONValue
         }
@@ -240,6 +242,7 @@ nonisolated enum OrigamiEPUBExporter {
             return VisualMetaDocument.CitationNode(
                 id: nodeID, name: title, authors: authors, year: year,
                 publication: publication, doi: doi, urls: urls,
+                abstract: BibTeXParser.first(bibtexRecord)?.fields["abstract"] ?? "",
                 bibtex: bibtexRecord, csl: JSONValue.from(cslJSON))
         }
 

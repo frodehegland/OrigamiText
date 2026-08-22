@@ -145,6 +145,59 @@ enum ReaderStyle {
     }
 }
 
+/// The reader's chosen faces, wherever words render — Settings ▸
+/// Reading ▸ Fonts, one choice for every view: the reading styles, the
+/// document views, the cards and columns. A family the Mac does not
+/// know falls back to the system serif, never to sans.
+enum AppFonts {
+    static var bodyFamily: String {
+        UserDefaults.standard.string(forKey: AppSettings.readerBodyFontKey)
+            ?? ReaderStyle.defaultBodyFont
+    }
+
+    static var headingFamily: String {
+        UserDefaults.standard.string(forKey: AppSettings.readerHeadingFontKey)
+            ?? ReaderStyle.defaultHeadingFont
+    }
+
+    static func body(_ size: CGFloat, weight: Font.Weight? = nil) -> Font {
+        custom(bodyFamily, size, weight)
+    }
+
+    static func heading(_ size: CGFloat, weight: Font.Weight? = nil) -> Font {
+        custom(headingFamily, size, weight)
+    }
+
+    static func nsBody(_ size: CGFloat, bold: Bool = false, italic: Bool = false) -> NSFont {
+        var font = NSFont(name: bodyFamily, size: size)
+            ?? fallbackSerif(size, bold: bold)
+        var traits: NSFontDescriptor.SymbolicTraits = []
+        if bold { traits.insert(.bold) }
+        if italic { traits.insert(.italic) }
+        if !traits.isEmpty {
+            let descriptor = font.fontDescriptor.withSymbolicTraits(
+                font.fontDescriptor.symbolicTraits.union(traits))
+            font = NSFont(descriptor: descriptor, size: size) ?? font
+        }
+        return font
+    }
+
+    private static func custom(_ family: String, _ size: CGFloat,
+                               _ weight: Font.Weight?) -> Font {
+        let font = NSFont(name: family, size: size) != nil
+            ? Font.custom(family, size: size)
+            : Font.system(size: size, design: .serif)
+        return weight.map { font.weight($0) } ?? font
+    }
+
+    private static func fallbackSerif(_ size: CGFloat, bold: Bool) -> NSFont {
+        let base = NSFont.systemFont(ofSize: size, weight: bold ? .bold : .regular)
+        var descriptor = base.fontDescriptor
+        if let serif = descriptor.withDesign(.serif) { descriptor = serif }
+        return NSFont(descriptor: descriptor, size: size) ?? base
+    }
+}
+
 /// The rendered EPUB with its chrome: a thin bar naming the book and the
 /// way back. The Visual-Meta toggle lives inline in the page itself (a
 /// centered button where the appendix sits), not up here.
@@ -161,20 +214,37 @@ struct EPUBReaderScreen: View {
 
     private var theme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
 
-    private var readerMode: EPUBReaderMode {
-        EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
+    /// Whether this book explicitly is a transcript — only then does
+    /// the foot offer the Transcript mode. (The structured document is
+    /// cached per book, so the check costs one import at most.)
+    private var isTranscriptBook: Bool {
+        guard let doc = model.readingDoc(forBook: book) else { return false }
+        return doc.documentType == LiquidDoc.DocumentType.transcript.rawValue
+            || (doc.body ?? []).contains { $0.speaker != nil }
     }
 
-    /// Windowed reading is always High Contrast with the default fonts; the
-    /// chosen theme and fonts apply only in full screen — the focused
-    /// reading mode where personalization belongs.
-    private var readerCSS: String {
-        if model.isFullScreen {
-            return ReaderStyle.css(bodyFont: bodyFont, headingFont: headingFont, theme: theme)
+    private var availableModes: [EPUBReaderMode] {
+        // The Outline group beside Scroll folds the reading now; the
+        // old Outline mode word no longer rides at the end.
+        EPUBReaderMode.allCases.filter {
+            $0 != .outline && ($0 != .transcript || isTranscriptBook)
         }
-        return ReaderStyle.css(bodyFont: ReaderStyle.defaultBodyFont,
-                               headingFont: ReaderStyle.defaultHeadingFont,
-                               theme: .highContrast)
+    }
+
+    private var readerMode: EPUBReaderMode {
+        let mode = EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
+        // A transcript mode left over from a transcript book falls back
+        // to the book's own pages here.
+        if mode == .transcript, !isTranscriptBook { return .faithful }
+        return mode
+    }
+
+    /// The chosen fonts dress every reading, windowed and full screen
+    /// alike; the theme's colours stay a full-screen personalization —
+    /// the focused mode they belong to.
+    private var readerCSS: String {
+        ReaderStyle.css(bodyFont: bodyFont, headingFont: headingFont,
+                        theme: model.isFullScreen ? theme : .highContrast)
     }
 
     // MARK: Chapters (the whole spine, for plain chaptered books)
@@ -191,6 +261,77 @@ struct EPUBReaderScreen: View {
     @State private var tocEntries: [OrigamiEPUBImporter.TOCEntry] = []
     /// The selection a comment is being written for; non-nil shows the sheet.
     @State private var commentSelection: ReaderSelection?
+    /// The citation whose card is up — the same card the native styles
+    /// show, over the faithful page.
+    @State private var citationCard: FaithfulCitation?
+
+    private struct FaithfulCitation: Identifiable {
+        let key: String
+        var id: String { key }
+    }
+
+    // MARK: Find in the book (⌘F, ⌘G, ⇧⌘G)
+
+    @State private var showsFind = false
+    @State private var findText = ""
+    /// Bumped per step; the direction rides beside it. Whichever
+    /// presentation is up answers — the WebView's own find, or the
+    /// native styles' paragraph search.
+    @State private var findStamp = 0
+    @State private var findForward = true
+    @FocusState private var findFocused: Bool
+
+    private var findBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Find in book", text: $findText)
+                .textFieldStyle(.plain)
+                .focused($findFocused)
+                .onSubmit { stepFind(forward: true) }
+            Button {
+                stepFind(forward: false)
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.plain)
+            .disabled(findText.isEmpty)
+            .help("Previous match (⇧⌘G)")
+            Button {
+                stepFind(forward: true)
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.plain)
+            .disabled(findText.isEmpty)
+            .help("Next match (⌘G)")
+            Button {
+                closeFind()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .help("Done")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func stepFind(forward: Bool) {
+        guard !findText.isEmpty else { return }
+        findForward = forward
+        findStamp += 1
+    }
+
+    private func closeFind() {
+        showsFind = false
+        findText = ""
+        findStamp += 1   // an empty find clears the page's highlights
+    }
 
     private var chapters: [URL] {
         book.chapters.isEmpty ? [book.content] : book.chapters
@@ -268,13 +409,19 @@ struct EPUBReaderScreen: View {
                 .padding(.vertical, 8)
                 Divider()
             }
+            if showsFind {
+                findBar
+            }
             if readerMode == .faithful {
                 faithfulReader
             } else if let doc = model.readingDoc(forBook: book) {
                 // A native reading style over the book's structured
                 // body — the OrigamiReadingView carries the foot bar,
                 // the folding, and the Aa menu itself.
-                OrigamiReadingView(doc: doc)
+                OrigamiReadingView(doc: doc,
+                                   findText: showsFind ? findText : "",
+                                   findStamp: findStamp,
+                                   findForward: findForward)
                     .id(book.id)
             } else {
                 // The package would not read back as a structured
@@ -282,9 +429,32 @@ struct EPUBReaderScreen: View {
                 faithfulReader
             }
         }
+        // ⌘F, ⌘G, and ⇧⌘G land here from the View menu's counters.
+        .onChange(of: model.readerFindShow) {
+            showsFind = true
+            findFocused = true
+        }
+        .onChange(of: model.readerFindNext) {
+            if showsFind { stepFind(forward: true) } else { showsFind = true; findFocused = true }
+        }
+        .onChange(of: model.readerFindPrevious) {
+            if showsFind { stepFind(forward: false) } else { showsFind = true; findFocused = true }
+        }
         .sheet(item: $commentSelection) { selection in
             ReaderCommentSheet(selection: selection) { note in
                 model.addComment(note, on: selection)
+            }
+        }
+        .sheet(item: $citationCard) { citation in
+            // The same card the native styles show — the book's
+            // structured document supplies the reference pool, or the
+            // Visual-Meta pool alone when the body will not parse.
+            if let doc = model.citationCardDoc(forBook: book) {
+                CitationCardSheet(doc: doc, key: citation.key)
+            } else {
+                Text("The reference could not be read from this book.")
+                    .foregroundStyle(.secondary)
+                    .padding(30)
             }
         }
         .task(id: book.id) {
@@ -343,6 +513,29 @@ struct EPUBReaderScreen: View {
                 model.transcludedText(forAddress: address, fragment: fragment)
             },
             resolveEndnote: { id in model.endnoteText(inBook: book, id: id) },
+            onCitation: { key, ref in
+                // An internal citation carries its address (typed rel and
+                // #fragment included): when the cited book is here, follow
+                // it. Everything else answers with the card.
+                if !ref.isEmpty {
+                    var address = ref
+                    var fragment: String?
+                    if let hash = address.firstIndex(of: "#") {
+                        fragment = String(address[address.index(after: hash)...])
+                        address = String(address[..<hash])
+                    }
+                    if let colon = address.firstIndex(of: ":"),
+                       !address[..<colon].contains(".") {
+                        address = String(address[address.index(after: colon)...])
+                    }
+                    if model.epubRecord(forAddress: address) != nil {
+                        model.openEPUB(address: address, fragment: fragment)
+                        return
+                    }
+                }
+                let key = key.isEmpty ? ref : key
+                if !key.isEmpty { citationCard = FaithfulCitation(key: key) }
+            },
             initialFragment: model.pendingReaderFragment,
             requestedFragment: requestedFragment,
             fragmentStamp: fragmentStamp,
@@ -351,11 +544,15 @@ struct EPUBReaderScreen: View {
                 model.saveReadingPosition(forFolder: book.id,
                                           chapter: subpath(of: currentContent),
                                           fraction: fraction)
-            })
+            },
+            findText: showsFind ? findText : "",
+            findStamp: findStamp,
+            findForward: findForward)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            // The same foot the native styles carry, mode words only —
-            // clicking Scroll (or any other) leaves the faithful page.
-            ReadingFootBar()
+            // The same foot the native styles carry — clicking Scroll
+            // (or an Outline shape) leaves the faithful page.
+            ReadingFootBar(modes: availableModes,
+                           outlineAvailable: model.readingDoc(forBook: book) != nil)
         }
     }
 
@@ -484,6 +681,10 @@ struct EPUBReaderView: NSViewRepresentable {
     /// Resolves an endnote dagger's id to the note's words — Author's
     /// inline notes as stretchtext, unfolding in place.
     var resolveEndnote: (String) -> String? = { _ in nil }
+    /// A citation was clicked: its key (`data-citation-id`) and the
+    /// full-resolution reference (`data-origami-ref`, empty when the
+    /// citation is external). The screen answers with the citation card.
+    var onCitation: (_ key: String, _ ref: String) -> Void = { _, _ in }
     /// A paragraph to scroll to and flash once this book finishes loading —
     /// set when the reader was opened by following a quote link.
     var initialFragment: String? = nil
@@ -497,6 +698,12 @@ struct EPUBReaderView: NSViewRepresentable {
     /// The page's scroll position changed (throttled), as a 0–1 fraction —
     /// the reading-position memory's feed.
     var onProgress: (Double) -> Void = { _ in }
+    /// Find in the page: each stamp steps to the next (or previous)
+    /// match of the text, WebKit's own find doing the walking. An
+    /// empty text clears the search.
+    var findText: String = ""
+    var findStamp: Int = 0
+    var findForward: Bool = true
 
     /// The message channel name the injected bridge posts to.
     private static let bridgeName = "origami"
@@ -521,6 +728,11 @@ struct EPUBReaderView: NSViewRepresentable {
         controller.addUserScript(WKUserScript(source: endnoteScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: stretchtextScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        // Citations answer with their card, as in Knowledge Space — the
+        // listener registers before the bridge's, so a click never
+        // doubles as a Step 0 activation or a jump to the References.
+        controller.addUserScript(WKUserScript(source: citationScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         // The annotation script's click listener must register before the
         // bridge's, so a click on a highlight opens its popover instead of
@@ -582,6 +794,7 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onFollowLink = onFollowLink
         coordinator.resolveTransclusion = resolveTransclusion
         coordinator.resolveEndnote = resolveEndnote
+        coordinator.onCitation = onCitation
         coordinator.onHighlight = onHighlight
         coordinator.onAddComment = onAddComment
         coordinator.onRemoveAnnotation = onRemoveAnnotation
@@ -619,6 +832,17 @@ struct EPUBReaderView: NSViewRepresentable {
             coordinator.handledFragmentStamp = fragmentStamp
             if let fragment = requestedFragment, !fragment.isEmpty {
                 coordinator.scrollToFragment(fragment, in: webView)
+            }
+        }
+        // Find: each stamp is one step through the matches.
+        if findStamp != coordinator.handledFindStamp {
+            coordinator.handledFindStamp = findStamp
+            if !findText.isEmpty {
+                let configuration = WKFindConfiguration()
+                configuration.backwards = !findForward
+                configuration.caseSensitive = false
+                configuration.wraps = true
+                webView.find(findText, configuration: configuration) { _ in }
             }
         }
         // Annotations changed while the page is up: repaint, no reload.
@@ -664,6 +888,7 @@ struct EPUBReaderView: NSViewRepresentable {
         var onFollowLink: (_ address: String, _ fragment: String?) -> Void = { _, _ in }
         var resolveTransclusion: (_ address: String, _ fragment: String?) -> String? = { _, _ in nil }
         var resolveEndnote: (String) -> String? = { _ in nil }
+        var onCitation: (_ key: String, _ ref: String) -> Void = { _, _ in }
         var onHighlight: (ReaderSelection) -> Void = { _ in }
         var onAddComment: (ReaderSelection) -> Void = { _ in }
         var onRemoveAnnotation: (String) -> Void = { _ in }
@@ -682,6 +907,7 @@ struct EPUBReaderView: NSViewRepresentable {
         /// when a load starts.
         var finishedLoadID: String?
         var handledFragmentStamp = 0
+        var handledFindStamp = 0
         /// What the page paints, kept current so a fresh load repaints.
         var annotations: [PaintedAnnotation] = []
         var paintedStamp = 0
@@ -726,6 +952,9 @@ struct EPUBReaderView: NSViewRepresentable {
                 if let fraction = (body["fraction"] as? NSNumber)?.doubleValue {
                     onProgress(min(1, max(0, fraction)))
                 }
+            case "citation":
+                onCitation(body["key"] as? String ?? "",
+                           body["ref"] as? String ?? "")
             case "endnote":
                 // A dagger asked for its note's words: resolve the id
                 // its href carries and unfold them in place.
@@ -958,12 +1187,46 @@ struct EPUBReaderView: NSViewRepresentable {
     })();
     """
 
-    /// The endnote daggers, made stretchtext: a click on a noteref
-    /// anchor (`role="doc-noteref"`, `epub:type="noteref"`, or Author's
-    /// `a.ot-inline-note`) unfolds the note's words in place — [ the
-    /// words ] after the mark — instead of jumping to the appendix (or,
-    /// worse, navigating the reader off to the backmatter chapter).
-    /// A second click folds them back. The words come from Swift
+    /// A citation click answers with its card, as in Knowledge Space —
+    /// never a jump down to the References list. The key and the
+    /// full-resolution reference (internal citations) go to Swift; the
+    /// screen shows the card, or opens the cited book.
+    private static let citationScript = """
+    (function(){
+      var bridge = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.origami;
+      // Every citation shape a package may carry: this app's exports
+      // (class "citation", data-citation-id) and Author's biblioref
+      // anchors (data-citation-key, epub:type/role biblioref).
+      function isCitation(a){
+        if (!a) return false;
+        if (a.classList && a.classList.contains('citation')) return true;
+        if (a.getAttribute('data-citation-id')) return true;
+        if (a.getAttribute('data-citation-key')) return true;
+        if ((a.getAttribute('role') || '').indexOf('doc-biblioref') >= 0) return true;
+        if ((a.getAttribute('epub:type') || '').indexOf('biblioref') >= 0) return true;
+        return false;
+      }
+      document.addEventListener('click', function(e){
+        var a = e.target.closest ? e.target.closest('a') : null;
+        if (!isCitation(a)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!bridge) return;
+        bridge.postMessage({event:'citation',
+                            key: a.getAttribute('data-citation-id')
+                                 || a.getAttribute('data-citation-key') || '',
+                            ref: a.getAttribute('data-origami-ref') || ''});
+      }, true);
+    })();
+    """
+
+    /// The endnote daggers, made stretchtext: the export's ‡ (a plain
+    /// reader's mark) reads here as the format's fold — `[]` closed; a
+    /// click unfolds the note in place, `[` standing to the left of the
+    /// words and `]` after, every part a click to fold again. Never a
+    /// jump to the appendix (or, worse, a navigation off to the
+    /// backmatter chapter). The words come from Swift
     /// (`origamiInsertEndnote`), which finds the note by its id in any
     /// of the book's chapters.
     private static let endnoteScript = """
@@ -974,8 +1237,10 @@ struct EPUBReaderView: NSViewRepresentable {
       var style = document.getElementById('origami-endnote-style') || document.createElement('style');
       style.id = 'origami-endnote-style';
       style.textContent =
-        '.origami-note-inline{font-style:italic;opacity:0.85;}'
-        + '.origami-note-inline::before{content:" [";font-style:normal;}'
+        'a.origami-note-fold{text-decoration:none;cursor:pointer;opacity:0.7;font-style:normal;}'
+        + 'a.origami-note-fold:hover{opacity:1;}'
+        + 'a.origami-note-fold.open{opacity:1;}'
+        + '.origami-note-inline{font-style:italic;cursor:pointer;}'
         + '.origami-note-inline::after{content:"]";font-style:normal;}';
       (document.head || document.documentElement).appendChild(style);
 
@@ -987,16 +1252,42 @@ struct EPUBReaderView: NSViewRepresentable {
         return false;
       }
 
+      // The printed mark (‡, a number) gives way to the fold's []: the
+      // note is an offer to stretch the text, not a footnote to chase.
+      var daggers = document.querySelectorAll('a');
+      Array.prototype.forEach.call(daggers, function(a){
+        if (!isDagger(a)) return;
+        a.classList.add('origami-note-fold');
+        a.textContent = '[]';
+      });
+
+      function fold(a){
+        var open = a.nextElementSibling;
+        if (open && open.classList && open.classList.contains('origami-note-inline')) {
+          open.remove();
+        }
+        a.textContent = '[]';
+        a.classList.remove('open');
+      }
+
       var pending = {};
       var counter = 0;
       document.addEventListener('click', function(e){
+        // A click anywhere in the unfolded words folds them back.
+        var span = e.target.closest ? e.target.closest('.origami-note-inline') : null;
+        if (span) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          var anchor = span.previousElementSibling;
+          if (anchor && isDagger(anchor)) { fold(anchor); } else { span.remove(); }
+          return;
+        }
         var a = e.target.closest ? e.target.closest('a') : null;
         if (!isDagger(a)) return;
         e.preventDefault();
         e.stopImmediatePropagation();
-        var open = a.nextElementSibling;
-        if (open && open.classList && open.classList.contains('origami-note-inline')) {
-          open.remove();   // a second click folds the note back
+        if (a.classList.contains('open')) {
+          fold(a);   // a second click folds the note back
           return;
         }
         if (!bridge) return;
@@ -1010,6 +1301,10 @@ struct EPUBReaderView: NSViewRepresentable {
         var a = pending[reqId];
         delete pending[reqId];
         if (!a) return;
+        // Open: the anchor is the [ to the left of the stretched text;
+        // the words follow, ] closing them.
+        a.textContent = '[';
+        a.classList.add('open');
         var span = document.createElement('span');
         span.className = 'origami-note-inline';
         span.textContent = text;

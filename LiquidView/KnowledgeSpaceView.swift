@@ -363,7 +363,7 @@ struct KnowledgeSpaceView: View {
         let isSelected = doc.id == selectedDocID
         return VStack(spacing: 5) {
             Text(doc.title)
-                .font(.system(size: 15, weight: .semibold, design: .serif))
+                .font(AppFonts.body(15, weight: .semibold))
                 .lineLimit(maxTitleLines)
             Text(doc.displayAuthor)
                 .font(.system(size: 12))

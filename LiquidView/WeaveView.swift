@@ -162,14 +162,14 @@ struct WeaveCanvas: View {
             if let hovered, data.nodes.indices.contains(hovered) {
                 let node = data.nodes[hovered]
                 Text(node.title)
-                    .font(.system(size: 17, design: .serif))
+                    .font(AppFonts.body(17))
                     .foregroundStyle(.white)
                 Text(node.author)
                     .font(.caption)
                     .foregroundStyle(color(hue: node.hue, brightness: 0.95))
             } else if let probe {
                 Text("“\(String(probe.label.prefix(90)))”")
-                    .font(.system(size: 15, design: .serif))
+                    .font(AppFonts.body(15))
                     .italic()
                     .foregroundStyle(.white)
                 Text(probe.threads.isEmpty

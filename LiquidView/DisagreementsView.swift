@@ -136,7 +136,7 @@ struct DisagreementsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(disagreement.topic)
-                    .font(.system(size: 19, weight: .bold, design: .serif))
+                    .font(AppFonts.heading(19, weight: .bold))
                 Text("\(disagreement.first.entries.count) v \(disagreement.second.entries.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)

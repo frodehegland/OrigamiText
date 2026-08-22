@@ -233,7 +233,7 @@ struct GlossaryView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text(term.term)
-                    .font(.system(size: 24, weight: .bold, design: .serif))
+                    .font(AppFonts.heading(24, weight: .bold))
                 TextField("Your gloss — the meaning in your own words",
                           text: glossBinding(for: term.id), axis: .vertical)
                     .textFieldStyle(.plain)
@@ -247,7 +247,7 @@ struct GlossaryView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     Text("Where the community speaks it")
-                        .font(.system(size: 17, weight: .bold, design: .serif))
+                        .font(AppFonts.body(17, weight: .bold))
                     ForEach(found, id: \.entry.id) { occurrence in
                         occurrenceGroup(occurrence, term: term.term)
                     }

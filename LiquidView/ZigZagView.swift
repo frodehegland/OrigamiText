@@ -167,7 +167,7 @@ struct ZigZagView: View {
     private func focusedCell(_ doc: LiquidDoc) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(doc.title)
-                .font(.system(size: 14, weight: .semibold, design: .serif))
+                .font(AppFonts.body(14, weight: .semibold))
                 .foregroundStyle(.black)
                 .lineLimit(3)
             Text("\(doc.displayAuthor) · \(doc.listedDateText)")
@@ -195,7 +195,7 @@ struct ZigZagView: View {
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(doc.title)
-                    .font(.system(size: 11, design: .serif))
+                    .font(AppFonts.body(11))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Text("\(doc.author) · \(doc.date?.yearText ?? doc.created.formatted(.dateTime.year()))")

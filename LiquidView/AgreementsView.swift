@@ -126,7 +126,7 @@ struct AgreementsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(agreement.topic)
-                    .font(.system(size: 19, weight: .bold, design: .serif))
+                    .font(AppFonts.heading(19, weight: .bold))
                 Text("\(agreement.entries.count) documents")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)

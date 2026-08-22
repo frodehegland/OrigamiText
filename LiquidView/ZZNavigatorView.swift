@@ -139,8 +139,7 @@ struct ZZNavigatorView: View {
         let isAccursed = placedCell.cellID == accursedID && !placedCell.isVirtualCopy
         return VStack(alignment: .leading, spacing: 2) {
             Text(label(for: placedCell.cellID))
-                .font(.system(size: 11.5, weight: isAccursed ? .semibold : .regular,
-                              design: .serif))
+                .font(AppFonts.body(11.5, weight: isAccursed ? .semibold : .regular))
                 .foregroundStyle(isAccursed ? .black : .white)
                 .lineLimit(2)
             HStack(spacing: 5) {

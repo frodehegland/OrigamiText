@@ -115,7 +115,7 @@ struct AuthorPageView: View {
                         PersonAvatarView(name: summary?.name ?? authorName, size: 88)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(summary?.name ?? authorName)
-                                .font(.system(size: 32, weight: .bold, design: .serif))
+                                .font(AppFonts.heading(32, weight: .bold))
                             Text(subtitle(for: summary, spoken: spoken))
                                 .font(.callout)
                                 .foregroundStyle(.secondary)

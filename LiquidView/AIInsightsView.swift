@@ -198,7 +198,7 @@ struct AIInsightsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Text(heading.displayText)
-                            .font(.system(size: 19, weight: .bold, design: .serif))
+                            .font(AppFonts.heading(19, weight: .bold))
                     }
                     .contentShape(Rectangle())
                 }

@@ -28,7 +28,7 @@ enum EPUBReaderMode: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .faithful: "Faithful"
+        case .faithful: "Default"
         case .scroll: "Scroll"
         case .horizontal: "Horizontal"
         case .focus: "Focus"
@@ -73,11 +73,38 @@ extension FocusedValues {
 /// outline, ⌘+ opens the reading whole; ⇧⌘± sizes the type, ⌥⌘± sets
 /// the leading. Disabled while nothing readable is front.
 struct ReadingCommands: Commands {
+    let model: AppModel
+    @AppStorage("textColoringMode") private var coloringModeRaw = TextColoringMode.off.rawValue
     @FocusedValue(\.outlineFold) private var outlineFold
     @FocusedValue(\.readingTypography) private var typography
 
     var body: some Commands {
         CommandGroup(after: .toolbar) {
+            Divider()
+            // The ways of seeing the words, as in Knowledge Space: Flow
+            // breaks the body into reading lines at sentence and clause
+            // marks; the colour views paint by grammar (parts of speech)
+            // or meaning (the people, places, and organizations named).
+            Toggle("Flow", isOn: Binding(
+                get: { model.flowReading },
+                set: { model.flowReading = $0 }))
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+            Picker("Colour Words By", selection: $coloringModeRaw) {
+                ForEach(TextColoringMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode.rawValue)
+                }
+            }
+            Divider()
+            // Find in the open book — both presentations answer.
+            Button("Find in Book") { model.readerFindShow += 1 }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(model.openEPUB == nil)
+            Button("Find Next") { model.readerFindNext += 1 }
+                .keyboardShortcut("g", modifiers: .command)
+                .disabled(model.openEPUB == nil)
+            Button("Find Previous") { model.readerFindPrevious += 1 }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(model.openEPUB == nil)
             Divider()
             Button("Fold") { outlineFold?.fold() }
                 .keyboardShortcut("-", modifiers: .command)
@@ -108,13 +135,43 @@ struct OrigamiReadingView: View {
     @Environment(AppModel.self) private var model   // OT: was AppState
     let doc: LiquidDoc
 
+    /// Find in the book: the screen's ⌘F bar feeds these; each stamp
+    /// steps to the next (or previous) paragraph carrying the words,
+    /// every occurrence reading highlighted while the bar is up.
+    var findText: String = ""
+    var findStamp: Int = 0
+    var findForward: Bool = true
+    @State private var findCurrentID: String?
+
     /// Author's foot modes — Scroll is the article flow; Horizontal is
     /// pages side by side, two at least, a page more for every 460
     /// points the window offers.
     @AppStorage("readerMode") private var readerModeRaw = EPUBReaderMode.faithful.rawValue
 
+    /// Whether this book explicitly is a transcript — its paragraphs
+    /// carry speakers (or its metadata says so). Only then does the
+    /// foot offer the Transcript mode.
+    private var isTranscript: Bool {
+        doc.documentType == LiquidDoc.DocumentType.transcript.rawValue
+            || (doc.body ?? []).contains { $0.speaker != nil }
+    }
+
+    private var availableModes: [EPUBReaderMode] {
+        // The Outline group beside Scroll folds the reading now; the
+        // old Outline mode word no longer rides at the end.
+        EPUBReaderMode.allCases.filter {
+            $0 != .outline && ($0 != .transcript || isTranscript)
+        }
+    }
+
     private var readerMode: EPUBReaderMode {
-        EPUBReaderMode(rawValue: readerModeRaw) ?? .scroll
+        let mode = EPUBReaderMode(rawValue: readerModeRaw) ?? .scroll
+        // A transcript mode left over from a transcript book reads as
+        // the flow here; a persisted Outline mode reads as the flow
+        // too, folded or not by the Outline group.
+        if mode == .transcript, !isTranscript { return .scroll }
+        if mode == .outline { return .scroll }
+        return mode
     }
 
     @AppStorage("origamiCitationStyle") private var citationsRaw =
@@ -123,8 +180,12 @@ struct OrigamiReadingView: View {
         OrigamiContextAction.encodeList(OrigamiContextAction.defaultActions)
     @AppStorage("readingAIPrompts") private var aiPromptsRaw =
         AIPromptPreset.encodeList(AIPromptPreset.defaultPresets)
-    @AppStorage("readingBodyFont") private var bodyFontName = "New York"
-    @AppStorage("readingHeadingFont") private var headingFontName = "New York"
+    /// The reader's chosen faces — the same Settings ▸ Reading ▸ Fonts
+    /// choice the faithful view and every other view honours.
+    @AppStorage(AppSettings.readerBodyFontKey)
+    private var bodyFontName = ReaderStyle.defaultBodyFont
+    @AppStorage(AppSettings.readerHeadingFontKey)
+    private var headingFontName = ReaderStyle.defaultHeadingFont
     /// Points added to (or taken from) every reading size — ⌘⇧+ and
     /// ⌘⇧−. One value for all windows, kept until changed.
     @AppStorage("readingFontDelta") private var fontDelta = 3.0
@@ -201,8 +262,12 @@ struct OrigamiReadingView: View {
     @State private var openGlossary: Set<String> = []
     /// How far the document is folded (⌘− folds, ⌘+ unfolds): 0 reads
     /// whole; 1 is headings, first sentences, and Marked lines; deeper
-    /// levels are headings alone, then fewer ranks of them.
-    @State private var foldLevel = 0
+    /// levels are headings alone, then fewer ranks of them. Shared on
+    /// the model, so the foot bar's Outline group drives it too.
+    private var foldLevel: Int {
+        get { model.readerFoldLevel }
+        nonmutating set { model.readerFoldLevel = newValue }
+    }
     /// Sections clicked open while folded, by heading id.
     @State private var expandedFold: Set<String> = []
     /// What the fold shows under its headings — nothing (the headings
@@ -219,7 +284,7 @@ struct OrigamiReadingView: View {
     // (p), broken into flow lines (f), and each paragraph's key
     // sentence bolded (b).
     @State private var expandParagraphs = false
-    @State private var flowReading = false
+
     @State private var boldKeySentences = false
     /// The model's paragraph breaks, cached per paragraph id.
     @State private var paragraphSplits: [String: String] = [:]
@@ -249,16 +314,18 @@ struct OrigamiReadingView: View {
     @State private var progressSaveTask: Task<Void, Never>?
 
     enum FoldTarget: String, CaseIterable, Identifiable {
-        case headings, concepts, names
+        case headings, concepts, names, citations
         var id: String { rawValue }
         var displayName: String {
             switch self {
             case .headings: "Headings"
             case .concepts: "Concepts"
             case .names: "Names"
+            case .citations: "Citations"
             }
         }
     }
+
 
     private var foldTarget: FoldTarget {
         FoldTarget(rawValue: foldTargetRaw) ?? .headings
@@ -342,6 +409,11 @@ struct OrigamiReadingView: View {
                 guard let fragment = model.pendingReaderFragment else { return }
                 land(fragment, with: proxy)
             }
+            // The find bar's steps: each stamp walks to the next (or
+            // previous) paragraph carrying the words.
+            .onChange(of: findStamp) {
+                stepFind(with: proxy)
+            }
             .onAppear { landOnArrival(proxy) }
         }
         // Author's foot — the mode words at the bottom of the page,
@@ -350,12 +422,20 @@ struct OrigamiReadingView: View {
         // faithful WebView, so the words are always there to click.)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ReadingFootBar(
+                modes: availableModes,
                 foldLevelLabel: foldLevel > 0 ? "Folded — level \(foldLevel)" : nil,
                 contentsDisabled: sections.isEmpty,
                 showContents: $showContents,
                 contents: { AnyView(contentsList) },
-                foldMenu: { AnyView(foldMenu) },
                 typeMenu: { AnyView(typeMenu) })
+        }
+        // A fold asked for from the foot (or ⌘−/⌘+) resets the opened
+        // sections — the shape changed under them.
+        .onChange(of: model.readerFoldLevel) {
+            expandedFold = []
+        }
+        .onChange(of: foldTargetRaw) {
+            expandedFold = []
         }
         .background(Color(nsColor: .textBackgroundColor).ignoresSafeArea())
         // Where this window is: full screen or not, and on which kind
@@ -436,7 +516,7 @@ struct OrigamiReadingView: View {
                 } else if letter == "b" {
                     boldKeySentences.toggle()
                 } else {
-                    flowReading.toggle()
+                    model.flowReading.toggle()
                 }
                 return nil
             }
@@ -587,6 +667,50 @@ struct OrigamiReadingView: View {
         return true
     }
 
+    /// One find step: the next (or previous) body paragraph carrying
+    /// the words, wrapped at the ends, folded stretchtext unfolding
+    /// first — so no match hides.
+    private func stepFind(with proxy: ScrollViewProxy) {
+        let term = findText.trimmingCharacters(in: .whitespaces)
+        guard !term.isEmpty else {
+            findCurrentID = nil
+            return
+        }
+        let matches = (doc.body ?? []).filter {
+            $0.text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }.map(\.id)
+        guard !matches.isEmpty else { return }
+        let next: Int
+        if let current = findCurrentID.flatMap({ matches.firstIndex(of: $0) }) {
+            next = findForward ? (current + 1) % matches.count
+                               : (current - 1 + matches.count) % matches.count
+        } else {
+            next = findForward ? 0 : matches.count - 1
+        }
+        let target = matches[next]
+        findCurrentID = target
+        if let stretchID = (doc.body ?? []).first(where: { $0.id == target })?.stretchID {
+            openStretch.insert(stretchID)
+        }
+        // Horizontal and Focus turn to the match's page first.
+        if readerMode == .horizontal || readerMode == .focus {
+            if let page = horizontalPages.firstIndex(where: { page in
+                page.contains { section in
+                    section.heading?.id == target
+                        || section.paragraphs.contains { $0.id == target }
+                }
+            }) {
+                focusIndex = page
+            }
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(80))
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo(target, anchor: .center)
+            }
+        }
+    }
+
     private var progressKey: String { "readingProgress.\(doc.id)" }
 
     /// The scroll offset, saved a moment after each move.
@@ -626,19 +750,6 @@ struct OrigamiReadingView: View {
         .frame(width: 340, height: min(CGFloat(sections.count) * 30 + 40, 460))
     }
 
-    /// The fold menu: ⌘−/⌘+ steps and the alternate fold targets.
-    @ViewBuilder private var foldMenu: some View {
-        Button("Fold (⌘−)") { fold(by: 1) }
-            .disabled(foldLevel >= OrigamiReading.maxFoldLevel(of: doc))
-        Button("Unfold (⌘+)") { fold(by: -1) }
-            .disabled(foldLevel == 0)
-        Divider()
-        Picker("Fold to", selection: $foldTargetRaw) {
-            ForEach(FoldTarget.allCases) { target in
-                Text(target.displayName).tag(target.rawValue)
-            }
-        }
-    }
 
     /// The Aa menu — every way the type is set.
     @ViewBuilder private var typeMenu: some View {
@@ -657,6 +768,11 @@ struct OrigamiReadingView: View {
             } else {
                 Button("Wider") { windowedMeasure = min(windowedMeasure + 40, 1200) }
                 Button("Narrower") { windowedMeasure = max(windowedMeasure - 40, 380) }
+            }
+        }
+        Picker("Citations", selection: $citationsRaw) {
+            ForEach(OrigamiCitationStyle.allCases) { style in
+                Text(style.displayName).tag(style.rawValue)
             }
         }
         Picker("Marked Text", selection: $markedStyleRaw) {
@@ -713,6 +829,7 @@ struct OrigamiReadingView: View {
                 header
                 Divider()
                 flow(doc.body ?? [], annotations: annotations)
+                referencesSection
             }
             .padding(32)
             .frame(maxWidth: measure, alignment: .leading)
@@ -753,15 +870,24 @@ struct OrigamiReadingView: View {
                                   ? "Open all sections" : "Fold all sections")
                             .id(paragraph.id)
                         // The alternate fold targets — under each
-                        // heading, the section's Defined Concepts or
-                        // the people it names, each a click to its card.
-                        if foldTarget != .headings, expandedFold.isEmpty {
-                            termsLine(under: paragraph)
+                        // heading, the section's Defined Concepts, the
+                        // people it names, or the works it cites, each
+                        // a click to its card.
+                        if expandedFold.isEmpty {
+                            switch foldTarget {
+                            case .headings:
+                                EmptyView()
+                            case .citations:
+                                citationsLine(under: paragraph)
+                            case .concepts, .names:
+                                termsLine(under: paragraph)
+                            }
                         }
                     case .run(let run):
                         flow(run, annotations: annotations)
                     }
                 }
+                referencesSection
             }
             .padding(32)
             .frame(maxWidth: measure, alignment: .leading)
@@ -779,6 +905,66 @@ struct OrigamiReadingView: View {
                 .font(.callout)
                 .padding(.leading, 4)
         }
+    }
+
+    /// The works a section cites, under its folded heading — Author's
+    /// Citations outline: each cited work one line, title and author
+    /// and date, a click opening its card.
+    @ViewBuilder
+    private func citationsLine(under heading: LiquidDoc.Paragraph) -> some View {
+        if let lines = sectionCitationLines(under: heading) {
+            Text(lines)
+                .font(.callout)
+                .padding(.leading, 4)
+        }
+    }
+
+    private func sectionCitationLines(under heading: LiquidDoc.Paragraph) -> AttributedString? {
+        guard let section = sections.first(where: { $0.heading?.id == heading.id })
+        else { return nil }
+        var seen = Set<String>()
+        var out = AttributedString()
+        var empty = true
+        for paragraph in section.paragraphs {
+            for key in citationKeys(in: paragraph.text) where seen.insert(key).inserted {
+                guard let line = citationLine(forKey: key) else { continue }
+                if !empty { out += AttributedString("\n") }
+                out += line
+                empty = false
+            }
+        }
+        return empty ? nil : out
+    }
+
+    /// The `[cite:key]` tokens a paragraph carries, in order.
+    private func citationKeys(in text: String) -> [String] {
+        guard text.contains("[cite:"),
+              let regex = try? NSRegularExpression(pattern: #"\[cite:([^\]]+)\]"#)
+        else { return [] }
+        let ns = text as NSString
+        return regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            .map { ns.substring(with: $0.range(at: 1)) }
+    }
+
+    /// One cited work as a quiet clickable line: "Title — Author, Year",
+    /// linked to its citation card.
+    private func citationLine(forKey key: String) -> AttributedString? {
+        guard let reference = doc.references.first(where: { $0.id == key })
+        else { return nil }
+        let record = BibTeXRecord.records(in: reference.bibtex).first
+        var parts: [String] = []
+        if let title = record?.title, !title.isEmpty { parts.append(title) }
+        let credit = [record?.displayAuthors ?? "", record?.year ?? ""]
+            .filter { !$0.isEmpty }.joined(separator: ", ")
+        if !credit.isEmpty { parts.append(credit) }
+        if parts.isEmpty {
+            parts.append(reference.citedAs ?? key)
+        }
+        var line = AttributedString(parts.joined(separator: " \u{2014} "))
+        line.foregroundColor = themeDimmed
+        let escaped = key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? key
+        line.link = URL(string: OrigamiReading.citationScheme + ":" + escaped)
+        return line
     }
 
     private func sectionTerms(under heading: LiquidDoc.Paragraph) -> [LiquidDoc.Concept] {
@@ -987,6 +1173,7 @@ struct OrigamiReadingView: View {
                         flow(section.paragraphs, annotations: annotations)
                     }
                 }
+                referencesSection
             }
             .padding(32)
             .frame(maxWidth: measure, alignment: .leading)
@@ -1011,7 +1198,8 @@ struct OrigamiReadingView: View {
                         Group {
                             if index + offset < pages.count {
                                 focusColumn(pages[index + offset],
-                                            annotations: annotations)
+                                            annotations: annotations,
+                                            closesBook: index + offset == pages.count - 1)
                             } else {
                                 Color.clear.frame(maxWidth: .infinity)
                             }
@@ -1066,7 +1254,8 @@ struct OrigamiReadingView: View {
                 ContentUnavailableView("Nothing to Read", systemImage: "doc.text",
                                        description: Text("This document has no body."))
             } else {
-                focusColumn(pages[index], annotations: annotations)
+                focusColumn(pages[index], annotations: annotations,
+                            closesBook: index == pages.count - 1)
                 Divider()
                 HStack {
                     Button {
@@ -1164,7 +1353,8 @@ struct OrigamiReadingView: View {
     /// One Horizontal page: its section — with any bodyless headings
     /// that ride above it, stacked without a break.
     private func focusColumn(_ page: [OrigamiSection],
-                             annotations: [String: [ResolvedAnnotation]]) -> some View {
+                             annotations: [String: [ResolvedAnnotation]],
+                             closesBook: Bool = false) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 ForEach(page) { section in
@@ -1178,6 +1368,9 @@ struct OrigamiReadingView: View {
                             .id(heading.id)
                     }
                     flow(section.paragraphs, annotations: annotations)
+                }
+                if closesBook {
+                    referencesSection
                 }
             }
             .padding(40)
@@ -1211,6 +1404,7 @@ struct OrigamiReadingView: View {
                         }
                     }
                 }
+                referencesSection
             }
             .padding(32)
             .frame(maxWidth: measure, alignment: .leading)
@@ -1280,6 +1474,31 @@ struct OrigamiReadingView: View {
         }
         .greyedOut(selectionMode != nil) { selectionMode = nil }
         .dimmedForStretch(stretchFocus)
+    }
+
+    /// The reference list closing the reading, numbered as the body's
+    /// citations count them — the end-of-paper review the reader is
+    /// owed, in every style. (The Faithful view prints the page's own
+    /// References section.)
+    @ViewBuilder private var referencesSection: some View {
+        if !doc.references.isEmpty {
+            Divider()
+                .padding(.top, 12)
+            Text("References")
+                .font(headingFont(level: 1))
+                .foregroundStyle(themeHeading.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
+                .id("references")
+            let rowFont = Font.custom(
+                bodyFontName,
+                size: max(NSFont.preferredFont(forTextStyle: .body).pointSize + fontDelta - 2, 8))
+            ForEach(Array(OrigamiReading.readableReferences(of: doc).enumerated()),
+                    id: \.element.id) { index, reference in
+                Text("[\(index + 1)] \(reference.text)")
+                    .font(rowFont)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
     }
 
     /// The EPUB's cover, when the import carried one — an asset whose
@@ -1745,7 +1964,7 @@ struct OrigamiReadingView: View {
         if expandParagraphs, let split = paragraphSplits[paragraph.id] {
             text = split
         }
-        if flowReading {
+        if model.flowReading {
             text = text.components(separatedBy: "\n\n")
                 .map {
                     OrigamiReading.flowText($0, breakOnComma: flowBreakOnComma,
@@ -1850,7 +2069,7 @@ struct OrigamiReadingView: View {
         if boldKeySentences, paragraph.heading == nil,
            let sentence = keySentences[paragraph.id], !sentence.isEmpty {
             var needle = sentence
-            if flowReading {
+            if model.flowReading {
                 needle = OrigamiReading.flowText(needle,
                                                  breakOnComma: flowBreakOnComma,
                                                  doubleBreakOnPeriod: false)
@@ -1874,6 +2093,23 @@ struct OrigamiReadingView: View {
                                           options: [.caseInsensitive, .diacriticInsensitive]),
                   let attributedRange = Range(range, in: attributed) else { continue }
             attributed[attributedRange].backgroundColor = Color.yellow.opacity(0.35)
+        }
+        // The find bar's words read highlighted wherever they occur —
+        // stronger in the paragraph the walk stands on.
+        let findTerm = findText.trimmingCharacters(in: .whitespaces)
+        if !findTerm.isEmpty {
+            let plain = String(attributed.characters)
+            var search = plain.startIndex..<plain.endIndex
+            while let range = plain.range(of: findTerm,
+                                          options: [.caseInsensitive, .diacriticInsensitive],
+                                          range: search) {
+                if let attributedRange = Range(range, in: attributed) {
+                    attributed[attributedRange].backgroundColor =
+                        Color.orange.opacity(paragraph.id == findCurrentID ? 0.5 : 0.22)
+                }
+                guard range.upperBound < plain.endIndex else { break }
+                search = range.upperBound..<plain.endIndex
+            }
         }
         // The glossary on its terms — the Tab overview when it is up,
         // otherwise brackets or daggers per the Aa menu.
@@ -1952,16 +2188,25 @@ struct OrigamiReadingView: View {
 /// faithful WebView (without the reading-only controls), so the words
 /// are always there to click.
 struct ReadingFootBar: View {
+    @Environment(AppModel.self) private var model
     @AppStorage("readerMode") private var readerModeRaw = EPUBReaderMode.faithful.rawValue
+    @AppStorage("readingFoldTarget") private var foldTargetRaw =
+        OrigamiReadingView.FoldTarget.headings.rawValue
 
+    /// The modes the open book offers. Transcript joins only when the
+    /// book explicitly is one (its paragraphs carry speakers); Outline
+    /// never — the group beside Scroll folds the reading now.
+    var modes: [EPUBReaderMode] = EPUBReaderMode.allCases.filter {
+        $0 != .transcript && $0 != .outline
+    }
     /// "Folded — level 2" while the reading is folded; nil otherwise.
     var foldLevelLabel: String? = nil
+    /// Whether the book folds at all (its structured document reads).
+    var outlineAvailable = true
     var contentsDisabled = false
     var showContents: Binding<Bool>? = nil
     /// The contents popover's content; nil hides the contents button.
     var contents: (() -> AnyView)? = nil
-    /// The fold menu's items; nil hides the fold button.
-    var foldMenu: (() -> AnyView)? = nil
     /// The Aa menu's items; nil hides the Aa button.
     var typeMenu: (() -> AnyView)? = nil
 
@@ -1971,21 +2216,15 @@ struct ReadingFootBar: View {
 
     var body: some View {
         ZStack {
-            HStack(spacing: 14) {
-                ForEach(Array(EPUBReaderMode.allCases.enumerated()), id: \.element) { index, mode in
-                    if index > 0 {
-                        Rectangle()
-                            .fill(.quaternary)
-                            .frame(width: 1, height: 14)
-                    }
-                    modeWord(mode)
-                }
-            }
+            // The trailing edge lies beneath the mode words: nothing —
+            // the folded-state caption least of all — may shadow a tap
+            // on the words or the Outline group.
             HStack(spacing: 14) {
                 if let foldLevelLabel {
                     Text(foldLevelLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .allowsHitTesting(false)
                 }
                 Spacer()
                 if let contents, let showContents {
@@ -1999,18 +2238,6 @@ struct ReadingFootBar: View {
                     .disabled(contentsDisabled)
                     .help("Contents — every section, one click away")
                     .popover(isPresented: showContents) { contents() }
-                }
-                if let foldMenu {
-                    Menu {
-                        foldMenu()
-                    } label: {
-                        Image(systemName: "rectangle.compress.vertical")
-                            .foregroundStyle(.secondary)
-                    }
-                    .menuIndicator(.hidden)
-                    .buttonStyle(.plain)
-                    .fixedSize()
-                    .help("Fold the document to its structure — headings, concepts, or names")
                 }
                 if let typeMenu {
                     Menu {
@@ -2026,6 +2253,24 @@ struct ReadingFootBar: View {
                     .help("The reading's type: size, spacing, measure, marks, glossary, colour")
                 }
             }
+            // The mode words render last — topmost — so every tap on
+            // Default, Scroll, the Outline group's shapes, Horizontal,
+            // or Focus lands on its word, never on the layer beneath.
+            HStack(spacing: 14) {
+                ForEach(Array(modes.enumerated()), id: \.element) { index, mode in
+                    if index > 0 {
+                        separator
+                    }
+                    modeWord(mode)
+                    // The Outline group rides beside Scroll — the flow
+                    // it folds. Closed, one quiet word; open, its three
+                    // shapes bracketed in place, the active one bold.
+                    if mode == .scroll, outlineAvailable {
+                        separator
+                        outlineGroup
+                    }
+                }
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -2033,11 +2278,24 @@ struct ReadingFootBar: View {
         .overlay(alignment: .top) { Divider() }
     }
 
+    private var separator: some View {
+        Rectangle()
+            .fill(.quaternary)
+            .frame(width: 1, height: 14)
+    }
+
     /// One mode word at the foot, Author's way: the chosen one in the
     /// heading ink, the others resting quiet.
     private func modeWord(_ mode: EPUBReaderMode) -> some View {
         Button {
-            withAnimation(.snappy) { readerModeRaw = mode.rawValue }
+            withAnimation(.snappy) {
+                readerModeRaw = mode.rawValue
+                // A mode word always shows its own view: any standing
+                // fold (the Outline group's shapes) steps aside first —
+                // otherwise the folded view keeps the screen and the
+                // word appears to do nothing.
+                model.readerFoldLevel = 0
+            }
         } label: {
             Text(mode.displayName)
                 .font(.callout.weight(readerMode == mode ? .semibold : .regular))
@@ -2047,6 +2305,97 @@ struct ReadingFootBar: View {
         }
         .buttonStyle(.plain)
         .help(mode.help)
+    }
+
+    // MARK: The Outline group — Author's foot, unfolding in place
+
+    private enum OutlineShape {
+        case outline, overview, citations
+    }
+
+    /// Which shape the fold stands in, read from the shared fold level
+    /// and target — ⌘− folding by hand still reads as Outline.
+    private var outlineShape: OutlineShape? {
+        guard model.readerFoldLevel > 0 else { return nil }
+        switch OrigamiReadingView.FoldTarget(rawValue: foldTargetRaw) ?? .headings {
+        case .citations: return .citations
+        case .concepts, .names: return .overview
+        case .headings: return model.readerFoldLevel == 1 ? .overview : .outline
+        }
+    }
+
+    @ViewBuilder private var outlineGroup: some View {
+        if outlineShape == nil {
+            Button {
+                choose(.outline)
+            } label: {
+                Text("Outline")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Fold the document into its outline — headings alone; Overview and Citations unfold beside it")
+        } else {
+            HStack(spacing: 8) {
+                Text("[")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+                shapeWord("Outline", .outline,
+                          help: "Headings alone — the document's skeleton")
+                separator
+                shapeWord("Overview", .overview,
+                          help: "Headings with each section's first sentence, Marked lines, and concepts")
+                separator
+                shapeWord("Citations", .citations,
+                          help: "Headings with the works each section cites")
+                Text("]")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func shapeWord(_ title: String, _ shape: OutlineShape, help: String) -> some View {
+        Button {
+            choose(shape)
+        } label: {
+            Text(title)
+                .font(.callout.weight(outlineShape == shape ? .semibold : .regular))
+                .foregroundStyle(outlineShape == shape ? AnyShapeStyle(.primary)
+                                 : AnyShapeStyle(.secondary))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    /// One shape chosen: fold to it — or, chosen again while standing,
+    /// unfold (Author's toggles). The fold lives on the native flow, so
+    /// choosing from the book's own pages moves the reading to Scroll.
+    private func choose(_ shape: OutlineShape) {
+        withAnimation(.snappy) {
+            if outlineShape == shape {
+                model.readerFoldLevel = 0
+                return
+            }
+            // The fold lives on the native flow: whatever mode the
+            // reading stood in, folding moves it to Scroll.
+            if readerMode != .scroll {
+                readerModeRaw = EPUBReaderMode.scroll.rawValue
+            }
+            switch shape {
+            case .outline:
+                foldTargetRaw = OrigamiReadingView.FoldTarget.headings.rawValue
+                model.readerFoldLevel = 2
+            case .overview:
+                foldTargetRaw = OrigamiReadingView.FoldTarget.concepts.rawValue
+                model.readerFoldLevel = 1
+            case .citations:
+                foldTargetRaw = OrigamiReadingView.FoldTarget.citations.rawValue
+                model.readerFoldLevel = 2
+            }
+        }
     }
 }
 
@@ -2190,10 +2539,11 @@ private struct EndnoteSheet: View {
 }
 
 /// The card of a cited source, opened by tapping its citation in the
-/// body: the reference entry parsed into title, credit, venue, and DOI,
-/// the raw BibTeX one copy away — and, when the cited document is a
-/// book in this library, the way to open it at the very paragraph.
-private struct CitationCardSheet: View {
+/// body — in the native styles and the faithful WebView alike: the
+/// reference entry parsed into title, credit, venue, and DOI, the raw
+/// BibTeX one copy away — and, when the cited document is a book in
+/// this library, the way to open it at the very paragraph.
+struct CitationCardSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -2201,12 +2551,24 @@ private struct CitationCardSheet: View {
     let key: String
 
     private var reference: LiquidDoc.Reference? {
-        doc.references.first { $0.id == key }
+        if let direct = doc.references.first(where: { $0.id == key }) { return direct }
+        // An internal citation: the link to the cited document carries
+        // its own BibTeX — the card reads it the same way.
+        if let bibtex = doc.links.first(where: { $0.to == key })?.bibtex {
+            return LiquidDoc.Reference(id: key, bibtex: bibtex)
+        }
+        return nil
     }
 
     private var record: BibTeXRecord? {
         reference.flatMap { BibTeXRecord.records(in: $0.bibtex).first }
     }
+
+    /// What the lookup services gathered about the work — the abstract
+    /// the package did not carry, the TL;DR, an open-access way in.
+    /// See CitationLookup.swift.
+    @State private var enrichment: CitationLookup.Enrichment?
+    @State private var lookingUp = false
 
     /// The address a vm-id field carries: the cited document in the
     /// origami id space and, after the #, the very paragraph.
@@ -2216,6 +2578,14 @@ private struct CitationCardSheet: View {
         else { return nil }
         guard let hash = raw.firstIndex(of: "#") else { return (raw, nil) }
         return (String(raw[..<hash]), String(raw[raw.index(after: hash)...]))
+    }
+
+    /// The record's own abstract when it carries one; the services'
+    /// stands in otherwise.
+    private var recordAbstract: String? {
+        (record?.fields["abstract"])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
     }
 
     var body: some View {
@@ -2236,31 +2606,76 @@ private struct CitationCardSheet: View {
                         }
                     }
                 }
-                if let abstract = record.fields["abstract"]?
-                    .trimmingCharacters(in: .whitespacesAndNewlines), !abstract.isEmpty {
+                if let abstract = recordAbstract ?? enrichment?.abstract {
+                    // The abstract reads as the body does — the card is
+                    // a page to read, not a footnote.
+                    let readingFont = AppFonts.body(
+                        NSFont.preferredFont(forTextStyle: .body).pointSize + 2)
                     ScrollView {
-                        Text(abstract)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 8) {
+                            if let tldr = enrichment?.tldr {
+                                Text("TL;DR \u{2014} \(tldr)")
+                                    .font(readingFont)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            Text(abstract)
+                                .font(readingFont)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                     .frame(maxHeight: 300)
+                    if recordAbstract == nil, let source = enrichment?.source, !source.isEmpty {
+                        Text("Abstract via \(source)")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                } else if let tldr = enrichment?.tldr {
+                    // No abstract anywhere, but the AI summary answers.
+                    Text("TL;DR \u{2014} \(tldr)")
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Summary via \(enrichment?.source ?? "")")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                } else if lookingUp {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Looking up the work\u{2026}")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {
-                    if !record.year.isEmpty {
-                        LabeledContent("Year", value: record.year)
+                    // The record's own fields lead; the services fill
+                    // what it left blank.
+                    let year = record.year.isEmpty ? (enrichment?.year ?? "") : record.year
+                    if !year.isEmpty {
+                        LabeledContent("Year", value: year)
                             .font(.callout)
                     }
                     if let venue = [record.fields["journal"], record.fields["booktitle"],
-                                    record.fields["series"]]
+                                    record.fields["series"], enrichment?.venue]
                         .compactMap({ $0 }).first(where: { !$0.isEmpty }) {
                         LabeledContent("Published in", value: venue)
                             .font(.callout)
                     }
-                    if let doi = record.fields["doi"], !doi.isEmpty,
-                       let link = URL(string: "https://doi.org/\(doi)") {
+                    let doi = record.fields["doi"].flatMap { $0.isEmpty ? nil : $0 }
+                        ?? enrichment?.doi
+                    if let doi, let link = URL(string: "https://doi.org/\(doi)") {
                         LabeledContent("DOI") {
                             Link("doi.org/\(doi)", destination: link)
+                        }
+                        .font(.callout)
+                    }
+                    if let openAccess = enrichment?.openAccessURL,
+                       let link = URL(string: openAccess) {
+                        LabeledContent("Open access") {
+                            Link("Read the full text", destination: link)
                         }
                         .font(.callout)
                     }
@@ -2306,6 +2721,16 @@ private struct CitationCardSheet: View {
                     .keyboardShortcut(.defaultAction)
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.cancelAction)
+                } else if model.epubRecord(forAddress: key) != nil {
+                    // An internal citation: its key IS the cited
+                    // document's address, and the book is here.
+                    Button("Open Original") {
+                        dismiss()
+                        model.openEPUB(address: key, fragment: nil)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 } else if let url = record?.webURL {
                     Button("Open on the Web") {
                         openURL(url)
@@ -2320,6 +2745,21 @@ private struct CitationCardSheet: View {
         }
         .padding(20)
         .frame(minWidth: 480, maxWidth: 680)
+        // What the package left out, the services fill in: the cache
+        // answers free; the network is asked only when the record
+        // carries no abstract of its own (Settings ▸ Reading turns
+        // lookups off entirely).
+        .task(id: key) {
+            guard let record else { return }
+            if let cached = CitationLookup.cached(for: record) {
+                enrichment = cached
+                return
+            }
+            guard recordAbstract == nil, CitationLookup.isEnabled else { return }
+            lookingUp = true
+            enrichment = await CitationLookup.enrich(record)
+            lookingUp = false
+        }
     }
 }
 
@@ -2456,7 +2896,7 @@ private struct OrigamiTableView: View {
     }
 
     private func cellFont(row: Int) -> Font {
-        .system(size: 14, weight: row == 0 ? .semibold : .regular, design: .serif)
+        AppFonts.body(14, weight: row == 0 ? .semibold : .regular)
     }
 
     /// Typing over an input keeps the what-if beside the document's

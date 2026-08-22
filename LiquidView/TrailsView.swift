@@ -494,7 +494,7 @@ struct TrailsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Text(stop.title)
-                    .font(.system(size: 12, design: .serif))
+                    .font(AppFonts.body(12))
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
             }

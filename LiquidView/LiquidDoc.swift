@@ -223,8 +223,12 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// a lone image marker `![alt](asset:<id>)`. Returns the alt text too.
     static func imageReference(in text: String) -> (id: String, alt: String)? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The alt is greedy: a caption may itself carry brackets (a
+        // [cite:key] token from a figure credit) — the trailing
+        // `](asset:…)` anchor disambiguates.
         guard let regex = try? NSRegularExpression(
-            pattern: "^!\\[([^\\]]*)\\]\\(asset:([^)]+)\\)$"),
+            pattern: "^!\\[(.*)\\]\\(asset:([^)]+)\\)$",
+            options: [.dotMatchesLineSeparators]),
               let match = regex.firstMatch(
                 in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
               let altRange = Range(match.range(at: 1), in: trimmed),

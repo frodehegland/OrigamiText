@@ -128,7 +128,7 @@ struct ThemesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(theme.name)
-                    .font(.system(size: 19, weight: .bold, design: .serif))
+                    .font(AppFonts.heading(19, weight: .bold))
                 Text("\(theme.entries.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)

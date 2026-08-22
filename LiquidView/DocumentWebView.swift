@@ -185,7 +185,7 @@ struct DocumentWebView: View {
     private func card(for node: DocumentWeb.Node) -> some View {
         VStack(spacing: 2) {
             Text(node.entry.doc.title)
-                .font(.system(size: node.ring == 0 ? 14 : 12, design: .serif))
+                .font(AppFonts.body(node.ring == 0 ? 14 : 12))
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
             Text(node.entry.doc.displayAuthor)

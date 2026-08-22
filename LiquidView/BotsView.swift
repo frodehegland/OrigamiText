@@ -731,7 +731,7 @@ struct BotsView: View {
         let stance = model.bots.stance(botID: bot.id, docID: doc.id)
         return VStack(spacing: 2) {
             Text(doc.title)
-                .font(.system(size: 12, design: .serif))
+                .font(AppFonts.body(12))
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
             Text(doc.displayAuthor)

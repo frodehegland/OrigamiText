@@ -210,7 +210,7 @@ struct StrangerView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(finding.topic)
-                    .font(.system(size: 19, weight: .bold, design: .serif))
+                    .font(AppFonts.heading(19, weight: .bold))
                 Text("\(finding.entries.count) document\(finding.entries.count == 1 ? "" : "s")")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -256,7 +256,7 @@ struct StrangerView: View {
             Text(mode == .challenge
                  ? "The question the community writes around"
                  : "The question the community is close to answering")
-                .font(.system(size: 19, weight: .bold, design: .serif))
+                .font(AppFonts.heading(19, weight: .bold))
             Text(question)
                 .font(.callout)
                 .italic()

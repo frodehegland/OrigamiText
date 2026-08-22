@@ -107,7 +107,7 @@ struct GeometriesView: View {
                                      @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.system(size: 15, weight: .bold, design: .serif))
+                .font(AppFonts.body(15, weight: .bold))
             Text(caption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -125,7 +125,7 @@ struct GeometriesView: View {
     private var explainerPane: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Why five?")
-                .font(.system(size: 15, weight: .bold, design: .serif))
+                .font(AppFonts.body(15, weight: .bold))
             Text("A hierarchy can say “this belongs here” but not “these two touch”. A line can say “this came after” and nothing more. The graph knows relations but not nearness; the canvas knows nearness but commits to nothing. None of them is the library — each is one geometry of it, and whichever one a tool offers becomes the shape of its readers' thinking. A chat window, Millard warns, is the poorest geometry of all: a line that forgets.")
                 .font(.callout)
             Spacer(minLength: 0)

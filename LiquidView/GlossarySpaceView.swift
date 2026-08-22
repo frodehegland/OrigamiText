@@ -132,7 +132,7 @@ struct GlossarySpaceView: View {
         let fontSize = 12 + min(Double(node.count), 24) / 3
         return HStack(spacing: 5) {
             Text(node.term)
-                .font(.system(size: fontSize, weight: .medium, design: .serif))
+                .font(AppFonts.body(fontSize, weight: .medium))
             if node.count > 0 {
                 Text("\(node.count)")
                     .font(.caption2.monospacedDigit())

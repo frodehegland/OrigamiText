@@ -174,15 +174,10 @@ struct ReaderTextView: NSViewRepresentable {
         return result
     }
 
+    /// The reader's chosen body face (Settings ▸ Reading ▸ Fonts) —
+    /// the one choice every view honours.
     private static func serifFont(size: CGFloat, bold: Bool, italic: Bool) -> NSFont {
-        var traits: NSFontDescriptor.SymbolicTraits = []
-        if bold { traits.insert(.bold) }
-        if italic { traits.insert(.italic) }
-        let base = NSFont.systemFont(ofSize: size, weight: bold ? .bold : .regular)
-        var descriptor = base.fontDescriptor
-        if let serif = descriptor.withDesign(.serif) { descriptor = serif }
-        descriptor = descriptor.withSymbolicTraits(traits)
-        return NSFont(descriptor: descriptor, size: size) ?? base
+        AppFonts.nsBody(size, bold: bold, italic: italic)
     }
 
     // MARK: Interaction

@@ -133,21 +133,10 @@ nonisolated enum OrigamiEPUBImporter {
         // The citation pool, split back into its two homes: internal
         // citations (an origamitext:// URL names their address) become
         // links again; external records become references.
-        var addressByCitationID: [String: String] = [:]
-        var bibtexByAddress: [String: String] = [:]
-        var references: [LiquidDoc.Reference] = []
-        for citation in dictionaries(visualMeta?["citations"]) {
-            guard let citationID = citation["id"] as? String else { continue }
-            let urls = citation["urls"] as? [String] ?? []
-            let bibtex = (citation["bibtex"] as? String)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let address = urls.lazy.compactMap(originalAddress(fromOpenURL:)).first {
-                addressByCitationID[citationID] = address
-                if let bibtex, !bibtex.isEmpty { bibtexByAddress[address] = bibtex }
-            } else if let bibtex, !bibtex.isEmpty {
-                references.append(LiquidDoc.Reference(id: citationID, bibtex: bibtex))
-            }
-        }
+        let pool = citationPool(fromVisualMeta: visualMeta)
+        let addressByCitationID = pool.addressByCitationID
+        let bibtexByAddress = pool.bibtexByAddress
+        var references = pool.references
 
         let concepts: [LiquidDoc.Concept] = dictionaries(visualMeta?["concepts"]).compactMap { node in
             guard let conceptID = node["id"] as? String,
@@ -228,6 +217,7 @@ nonisolated enum OrigamiEPUBImporter {
         var body: [LiquidDoc.Paragraph]
         var bodyAssets: [LiquidDoc.Asset]
         var capturedFootnotes: [(id: String, text: String)] = []
+        let capture = CitationCapture()
         let spineHrefs = spineContentHrefs(in: opf)
         if visualMeta == nil, spineHrefs.count > 1 {
             body = []
@@ -251,7 +241,8 @@ nonisolated enum OrigamiEPUBImporter {
                     fromXHTML: String(decoding: data, as: UTF8.self),
                     addressByCitationID: [:],
                     resolveImage: resolve,
-                    idPrefix: "s\(index + 1)-") else { continue }
+                    idPrefix: "s\(index + 1)-",
+                    capture: capture) else { continue }
                 body += part
                 bodyAssets += partAssets
                 capturedFootnotes += partFootnotes
@@ -261,10 +252,51 @@ nonisolated enum OrigamiEPUBImporter {
             let (part, partAssets, partFootnotes) = try bodyParagraphs(
                 fromXHTML: html,
                 addressByCitationID: addressByCitationID,
-                resolveImage: resolveImage)
+                resolveImage: resolveImage,
+                capture: capture)
             body = part
             bodyAssets = partAssets
             capturedFootnotes = partFootnotes
+        }
+
+        // What the anchors carried joins the pool: the citation's display
+        // text as the author wrote it, and the number tying it to the
+        // source's References list.
+        references = references.map { reference in
+            var enriched = reference
+            if enriched.citedAs == nil, let raw = capture.citedAs[reference.id] {
+                let text = collapsedLineBreaks(raw)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { enriched.citedAs = text }
+            }
+            if enriched.number == nil {
+                enriched.number = capture.numbers[reference.id]
+            }
+            return enriched
+        }
+        // A package whose pool does not know a cited key — an export
+        // without its bibliography, say — still carried the author's own
+        // rendering in every anchor. Those become records here:
+        // "(Engelbart, Kay, Nelson 1995)" parses to author and year, a
+        // short text is the work's title, and a long one (a pasted
+        // passage) is kept as the record's note. Without this, such
+        // citations read as raw keys and no citation style has anything
+        // to say.
+        let pooledIDs = Set(references.map(\.id))
+        for (key, raw) in capture.citedAs where !pooledIDs.contains(key) {
+            let text = collapsedLineBreaks(raw)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            // An internal citation's key maps to its address: the pool
+            // record keeps the link's own BibTeX (vm-id and all), so
+            // the card can still open the original.
+            let bibtex = addressByCitationID[key].flatMap { bibtexByAddress[$0] }
+                ?? anchorBibTeX(from: text, key: key)
+            references.append(LiquidDoc.Reference(
+                id: key,
+                bibtex: bibtex,
+                citedAs: text.count <= 80 ? text : nil,
+                number: capture.numbers[key]))
         }
 
         // Endnotes travel in the metadata (the body only carries their
@@ -594,7 +626,8 @@ nonisolated enum OrigamiEPUBImporter {
     private static func bodyParagraphs(fromXHTML html: String,
                                        addressByCitationID: [String: String],
                                        resolveImage: (String) -> Data?,
-                                       idPrefix: String = "")
+                                       idPrefix: String = "",
+                                       capture: CitationCapture? = nil)
         throws -> (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset],
                    footnotes: [(id: String, text: String)]) {
         let root = try XMLTree.parse(Data(html.utf8))
@@ -698,13 +731,13 @@ nonisolated enum OrigamiEPUBImporter {
                     ?? element.attributes["id"]
                 paragraphs.append(paragraph)
             case "h1", "h2", "h3", "h4", "h5", "h6":
-                let text = inlineText(of: element, addressByCitationID: addressByCitationID)
+                let text = inlineText(of: element, addressByCitationID: addressByCitationID, capture: capture)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return }
                 paragraphs.append(LiquidDoc.Paragraph(
                     id: stableID(), heading: headingLevels[element.name], text: text))
             case "p", "blockquote":
-                let text = inlineText(of: element, addressByCitationID: addressByCitationID)
+                let text = inlineText(of: element, addressByCitationID: addressByCitationID, capture: capture)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return }
                 var paragraph = LiquidDoc.Paragraph(id: stableID(), heading: nil, text: text)
@@ -722,7 +755,7 @@ nonisolated enum OrigamiEPUBImporter {
             case "li":
                 // A plain book's list items read as bulleted paragraphs —
                 // never dropped with their container.
-                let text = inlineText(of: element, addressByCitationID: addressByCitationID)
+                let text = inlineText(of: element, addressByCitationID: addressByCitationID, capture: capture)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return }
                 var paragraph = LiquidDoc.Paragraph(id: stableID(), heading: nil,
@@ -746,20 +779,134 @@ nonisolated enum OrigamiEPUBImporter {
                                          options: .regularExpression)
     }
 
+    /// What the body's citation anchors carry besides their key: the
+    /// display text the author wrote (adjacent same-key fragments of
+    /// one citation accumulate into it; the first complete occurrence
+    /// is kept) and the `data-citation-number` tying the citation to
+    /// the source's References list. Gathered while the body parses,
+    /// then written onto the reference pool. (Ported from Knowledge
+    /// Space — keep synced.)
+    private nonisolated final class CitationCapture {
+        var citedAs: [String: String] = [:]
+        var numbers: [String: Int] = [:]
+        /// The key whose first occurrence is still accumulating
+        /// fragments — nil once anything else interrupts.
+        var openKey: String?
+    }
+
+    /// The Visual-Meta citation pool alone, split back into its two
+    /// homes: internal citations (an origamitext:// URL names their
+    /// address) map to addresses; external records become references,
+    /// each abstract folded into its BibTeX. Shared by the full import
+    /// and the citation card's fallback for books whose content
+    /// document will not parse.
+    static func citationPool(fromVisualMeta visualMeta: [String: Any]?)
+        -> (references: [LiquidDoc.Reference],
+            addressByCitationID: [String: String],
+            bibtexByAddress: [String: String]) {
+        var addressByCitationID: [String: String] = [:]
+        var bibtexByAddress: [String: String] = [:]
+        var references: [LiquidDoc.Reference] = []
+        for citation in dictionaries(visualMeta?["citations"]) {
+            guard let citationID = citation["id"] as? String else { continue }
+            let urls = citation["urls"] as? [String] ?? []
+            var bibtex = (citation["bibtex"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // Author carries the cited work's abstract beside the BibTeX,
+            // not inside it: fold it in, so the citation card (and any
+            // re-export) reads it from the one carrier every consumer
+            // shares.
+            if let record = bibtex, !record.isEmpty,
+               let abstract = (citation["abstract"] as? String)?
+                   .trimmingCharacters(in: .whitespacesAndNewlines),
+               !abstract.isEmpty,
+               BibTeXParser.first(record)?.fields["abstract"] == nil {
+                bibtex = withAbstractField(record, abstract)
+            }
+            if let address = urls.lazy.compactMap(originalAddress(fromOpenURL:)).first {
+                addressByCitationID[citationID] = address
+                if let bibtex, !bibtex.isEmpty { bibtexByAddress[address] = bibtex }
+            } else if let bibtex, !bibtex.isEmpty {
+                // Our own export writes citedAs and number onto the
+                // entries; the body's anchors fill them in otherwise.
+                references.append(LiquidDoc.Reference(
+                    id: citationID, bibtex: bibtex,
+                    citedAs: (citation["citedAs"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                    number: (citation["number"] as? NSNumber)?.intValue))
+            }
+        }
+        return (references, addressByCitationID, bibtexByAddress)
+    }
+
+    /// The abstract folded into a BibTeX record as its own field —
+    /// where the citation card (and any re-export) reads it.
+    static func withAbstractField(_ bibtex: String, _ abstract: String) -> String {
+        guard let closing = bibtex.lastIndex(of: "}") else { return bibtex }
+        let safe = abstract
+            .replacingOccurrences(of: "{", with: "(")
+            .replacingOccurrences(of: "}", with: ")")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        var head = String(bibtex[..<closing])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !head.hasSuffix(",") { head += "," }
+        return head + "\n  abstract = {\(safe)},\n}"
+    }
+
+    /// An anchor's display text as a BibTeX record, best effort:
+    /// "Names 1995" (parentheses shed) parses to author and year, a
+    /// short text is a title, a long one is kept whole as the note.
+    static func anchorBibTeX(from text: String, key: String) -> String {
+        func clean(_ value: String) -> String {
+            value.replacingOccurrences(of: "{", with: "(")
+                .replacingOccurrences(of: "}", with: ")")
+        }
+        var inner = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if inner.hasPrefix("("), inner.hasSuffix(")") {
+            inner = String(inner.dropFirst().dropLast())
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        var fields: [String] = []
+        let ns = inner as NSString
+        if inner.count <= 120,
+           let regex = try? NSRegularExpression(
+               pattern: #"^(.{2,100}?)[,;\s]+\(?((?:19|20)\d\d)\)?$"#),
+           let match = regex.firstMatch(
+               in: inner, range: NSRange(location: 0, length: ns.length)),
+           match.numberOfRanges >= 3 {
+            // Names then a year: the names, comma- or &-separated,
+            // become BibTeX authors.
+            let names = ns.substring(with: match.range(at: 1))
+                .replacingOccurrences(of: " & ", with: ", ")
+                .components(separatedBy: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if !names.isEmpty {
+                fields.append("  author = {\(clean(names.joined(separator: " and ")))}")
+            }
+            fields.append("  year = {\(ns.substring(with: match.range(at: 2)))}")
+        } else if inner.count <= 120 {
+            fields.append("  title = {\(clean(inner))}")
+        } else {
+            fields.append("  note = {\(clean(inner))}")
+        }
+        return "@misc{\(key),\n" + fields.joined(separator: ",\n") + ",\n}"
+    }
+
     /// One element's text with the inline conventions restored: strong
     /// back to `**`, em to `*`, code to backticks, plain hyperlinks to
     /// `[label](url)`, citation anchors back to their bracketed origami
     /// address (or their visible `[n]` when the citation is external),
     /// `<dfn>` wrappers unwrapped, the speaker's strong left plain.
     private static func inlineText(of element: XMLTree.Element,
-                                   addressByCitationID: [String: String]) -> String {
+                                   addressByCitationID: [String: String],
+                                   capture: CitationCapture? = nil) -> String {
         var out = ""
         for child in element.children {
             switch child {
             case .text(let text):
                 out += text
             case .element(let inner):
-                let content = inlineText(of: inner, addressByCitationID: addressByCitationID)
+                let content = inlineText(of: inner, addressByCitationID: addressByCitationID, capture: capture)
                 switch inner.name {
                 case "strong", "b":
                     out += inner.attributes["class"] == "speaker"
@@ -778,7 +925,39 @@ nonisolated enum OrigamiEPUBImporter {
                         // their own toggle from the aside's stretchID.
                         break
                     }
-                    if (inner.attributes["class"] ?? "").contains("ot-inline-note") {
+                    if let key = inner.attributes["data-citation-key"], !key.isEmpty {
+                        // Author's biblioref anchors. Older exports split
+                        // one citation across adjacent anchors (the
+                        // parenthesis, then the label), all carrying the
+                        // same key: one token, however many anchors. The
+                        // anchor's text — the author's own rendering —
+                        // and its number are kept on the reference
+                        // record, so the reader shows the citation as
+                        // written and numbers it as the source's
+                        // References list does.
+                        let token = "[cite:\(key)]"
+                        if let number = inner.attributes["data-citation-number"]
+                            .flatMap(Int.init) {
+                            capture?.numbers[key] = number
+                        }
+                        if out.hasSuffix(token) {
+                            // A continuation fragment of the citation
+                            // just opened joins its display text.
+                            if let capture, capture.openKey == key {
+                                capture.citedAs[key, default: ""] += content
+                            }
+                        } else {
+                            out += token
+                            if let capture {
+                                if capture.citedAs[key] == nil {
+                                    capture.citedAs[key] = content
+                                    capture.openKey = key
+                                } else {
+                                    capture.openKey = nil
+                                }
+                            }
+                        }
+                    } else if (inner.attributes["class"] ?? "").contains("ot-inline-note") {
                         // An inline note travelling as stretchtext
                         // (Author's Stretchtext export): the mark folds
                         // the note's words open in place — [] — while

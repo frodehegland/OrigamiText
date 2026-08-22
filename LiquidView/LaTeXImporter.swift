@@ -127,11 +127,14 @@ nonisolated enum LaTeXImporter {
         let stripped = strippingComments(from: source)
 
         // Metadata from the preamble (and Author's in-document topmatter).
-        let title = balancedArguments(of: "title", in: stripped).first
-            .map { inline(convert: $0).text }
+        // \title takes an optional short form in brackets first.
+        let title = firstBalancedArgument(of: "title", in: stripped,
+                                          skippingBracketOption: true)
+            .map { inline(convert: $0.value).text }
             .flatMap { $0.isEmpty ? nil : $0 }
             ?? fallbackTitle
-        let authors = balancedArguments(of: "author", in: stripped)
+        let authors = balancedArguments(of: "author", in: stripped,
+                                        skippingBracketOption: true)
             .map { inline(convert: $0).text }
             .filter { !$0.isEmpty }
         let author = authors.isEmpty ? nil : authors.joined(separator: ", ")
@@ -180,20 +183,42 @@ nonisolated enum LaTeXImporter {
                 }
                 return
             }
+            // The caption becomes the marker's alt text: cite tokens and
+            // brackets give way to plain words, so the `![alt](asset:id)`
+            // form stays parseable everywhere.
             let caption = balancedArguments(of: "caption", in: figureBody).first
-                .map { inline(convert: $0).text } ?? ""
-            let resolved = resources(path)
-                ?? ["jpg", "jpeg", "png", "pdf", "tiff"].lazy
-                    .compactMap { resources(path + "." + $0) }.first
+                .map { inline(convert: $0).text }
+                .map { text in
+                    text.replacingOccurrences(of: #"\[cite:[^\]]+\]"#, with: "",
+                                              options: .regularExpression)
+                        .replacingOccurrences(of: "[", with: "(")
+                        .replacingOccurrences(of: "]", with: ")")
+                        .replacingOccurrences(of: #"\s+"#, with: " ",
+                                              options: .regularExpression)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                } ?? ""
+            // An extensionless \includegraphics resolves by probing; the
+            // extension that answered names the asset, so bytes, file
+            // name, and media type always agree.
+            var resolved = resources(path)
+            var resolvedName = (path as NSString).lastPathComponent
+            if resolved == nil {
+                for probe in ["jpg", "jpeg", "png", "pdf", "tiff"] {
+                    if let data = resources(path + "." + probe) {
+                        resolved = data
+                        resolvedName += "." + probe
+                        break
+                    }
+                }
+            }
             let paragraphID = nextID()
             if let data = resolved, !data.isEmpty {
                 assetOrdinal += 1
                 let assetID = "img\(assetOrdinal)"
-                let name = (path as NSString).lastPathComponent
-                let ext = (name as NSString).pathExtension.lowercased()
+                let ext = (resolvedName as NSString).pathExtension.lowercased()
                 assets.append(LiquidDoc.Asset(
                     id: assetID,
-                    filename: name.contains(".") ? name : name + ".jpg",
+                    filename: resolvedName.contains(".") ? resolvedName : resolvedName + ".jpg",
                     mediaType: WordImporter.mediaType(forExtension: ext.isEmpty ? "jpg" : ext),
                     dataBase64: data.base64EncodedString(),
                     alt: caption.isEmpty ? nil : caption))
@@ -412,7 +437,10 @@ nonisolated enum LaTeXImporter {
                                 "acmDOI", "acmISBN", "copyrightyear", "setcopyright",
                                 "orcid", "affiliation", "email", "institution",
                                 "city", "country", "printbibliography", "pagebreak",
-                                "date", "thanks", "title", "author"] {
+                                "date", "thanks", "title", "author",
+                                "renewcommand", "newcommand", "providecommand",
+                                "authornote", "authornotemark", "graphicspath",
+                                "Description", "teaserfigure"] {
                     for form in ["\\\(command){", "\\\(command)[", "\\\(command)"] {
                         guard rest.hasPrefix(form) else { continue }
                         // The bare form must not eat a longer command's name.
@@ -508,10 +536,19 @@ nonisolated enum LaTeXImporter {
             ("\\ldots{}", "\u{2026}"), ("\\ldots", "\u{2026}"), ("\\dots", "\u{2026}"),
             ("\\LaTeX{}", "LaTeX"), ("\\LaTeX", "LaTeX"), ("\\TeX{}", "TeX"),
             ("\\ ", " "), ("\\,", " "), ("\\\\", "\n"),
+            ("\\-", ""),   // a discretionary hyphen marks nothing here
         ]
         for (from, to) in escapes {
             text = text.replacingOccurrences(of: from, with: to)
         }
+
+        // An environment opened mid-sentence (a CJK span, say): its
+        // markers and font arguments are chrome; the words between
+        // them stay in the flow.
+        text = text.replacingOccurrences(
+            of: #"\\begin\{[^}]*\}(\{[^}]*\})*"#, with: "", options: .regularExpression)
+        text = text.replacingOccurrences(
+            of: #"\\end\{[^}]*\}"#, with: "", options: .regularExpression)
 
         // Footnotes out first — their words go to the endnotes, a
         // dagger token stays.
@@ -565,15 +602,26 @@ nonisolated enum LaTeXImporter {
             }
         }
 
-        // Accents compose onto their letter: \'{e} and \'e alike.
-        let combining: [Character: String] = [
+        // Accents compose onto their letter: \'{e} and \'e alike for the
+        // symbol marks; the letter marks (\c, \v) only in their braced
+        // form — a bare \c would swallow \centering's opening letters.
+        let symbolMarks: [Character: String] = [
             "'": "\u{0301}", "`": "\u{0300}", "^": "\u{0302}",
-            "\"": "\u{0308}", "~": "\u{0303}", "c": "\u{0327}",
+            "\"": "\u{0308}", "~": "\u{0303}", "=": "\u{0304}", ".": "\u{0307}",
         ]
-        for (mark, accent) in combining {
+        for (mark, accent) in symbolMarks {
             let pattern = "\\\\\(NSRegularExpression.escapedPattern(for: String(mark)))\\{?([a-zA-Z])\\}?"
             while let range = text.range(of: pattern, options: .regularExpression) {
                 let letter = text[range].last.map(String.init) ?? ""
+                text.replaceSubrange(range,
+                                     with: (letter + accent).precomposedStringWithCanonicalMapping)
+            }
+        }
+        let letterMarks: [Character: String] = ["c": "\u{0327}", "v": "\u{030C}"]
+        for (mark, accent) in letterMarks {
+            let pattern = "\\\\\(mark)\\{([a-zA-Z])\\}"
+            while let range = text.range(of: pattern, options: .regularExpression) {
+                let letter = text[range].dropLast().last.map(String.init) ?? ""
                 text.replaceSubrange(range,
                                      with: (letter + accent).precomposedStringWithCanonicalMapping)
             }
