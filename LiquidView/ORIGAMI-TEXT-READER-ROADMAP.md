@@ -152,12 +152,12 @@ send a colleague — the path you took, not a reading list). *Lineage: Bush, 194
   UUIDs; "survive revision" means re‑anchoring by `data-id` across two EPUB versions.
   Precondition for the document as external cognition. *Lineage: Clark & Chalmers.*
 - **Reading as making — extraction into the spatial surround.** We have
-  `KnowledgeSpaceView`/`GlossarySpaceView` and `liftExtract`; the new piece is a live
+  `KnowledgeSpaceView` and `liftExtract`; the new piece is a live
   provenance link from a pulled‑out node back to its source element id. This is the
   Reader↔Author seam. *Lineage: Marshall & Shipman; Kirsh & Maglio.*
-- **Dimensional views (zzStructure).** `ZZStructure`/`ZigZagView`/`ZView` exist but are
-  library‑scoped; "only what I marked disagree" depends on annotations. *Lineage: Eric's
-  zzStructure.*
+- **Dimensional views (zzStructure).** `ZZStructure` remains (its first‑generation
+  views retired with the EPUB pivot) but is library‑scoped; "only what I marked
+  disagree" depends on annotations. *Lineage: Eric's zzStructure.*
 - **The AI operating the document's own controls.** The co‑agent furls/selects/expands/
   places through the same Command type, visibly and undoably, every claim anchored to an
   element id. Strictly downstream of 1–3. On‑device `FoundationModels` is already used

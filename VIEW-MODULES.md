@@ -1,18 +1,20 @@
 # Views are yours to make
 
-Origami Text ships with several ways of seeing a community's documents — Connections, Authors, Hot Paragraphs, Health. These are not features of the app. They are **view modules**: single Swift files, and the app treats your view exactly as it treats ours.
+Origami Text treats ways of seeing a library as **view modules**: single Swift files, and the app treats your view exactly as it treats ours.
 
-This follows Doug Engelbart's NLS, where a document could be seen through many *view specifications* without changing the document. The documents in your community folder are plain, self-describing text. The views multiply. When someone in your community thinks of a new way of looking — a reading-order timeline, a disagreement map, a view for teaching — they can build it and hand it to everyone else as one file.
+This follows Doug Engelbart's NLS, where a document could be seen through many *view specifications* without changing the document. The documents are plain, self-describing; the views multiply. When someone in your community thinks of a new way of looking — a reading-order timeline, a disagreement map, a view for teaching — they can build it and hand it to everyone else as one file.
+
+**Where this stands today:** Origami Text has just pivoted to EPUB + Visual-Meta as its document form, and the first generation of view modules (built against the earlier JSON documents) has been retired. The module mechanism itself — the registry, the sidebar routing, the exchange — remains and works; the registry is simply empty while views are rebuilt against the EPUB library. The built-in ways in (Chronological, Authors, Journals, People, Concepts) are currently wired directly. If you want to build a view now, the mechanism below is live and yours to use.
 
 ## Writing a view
 
 A view module is a SwiftUI view plus a short declaration. Three steps:
 
-1. **Write your view in one file.** The library comes to you through the environment: the document index, every link and backlink, and ready-made derivations (citation counts, author relationships, revision chains). Navigation is the same three calls every built-in view uses — open a document, open it at a paragraph, open two documents side by side with visible connections. Your view has no privileged access and needs none: whatever it can do, the built-in views do the same way.
+1. **Write your view in one file.** The library comes to you through the environment: the document index, every link and backlink, and ready-made derivations. Navigation is the same three calls every built-in view uses — open a document, open it at a paragraph, open two documents side by side with visible connections. Your view has no privileged access and needs none.
 
 2. **Declare the module at the bottom of the file** — an id, a sidebar name, an icon, and how to build its panes.
 
-3. **Register it — one line** in the registry. Sidebar entry, selection, and routing follow automatically.
+3. **Register it — one line** in `LibraryViewRegistry.modules` (LibraryViewModule.swift). Sidebar entry, selection, and routing follow automatically.
 
 ```swift
 import SwiftUI
