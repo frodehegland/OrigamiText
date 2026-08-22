@@ -78,6 +78,22 @@ enum SidebarCatalog {
     }
 }
 
+/// Sidebar labels with their icons in the lab's ember orange — a
+/// reddish orange that reads in light and dark mode alike. The text
+/// keeps whatever style its row gives it.
+struct EmberIconLabelStyle: LabelStyle {
+    static let ember = Color(red: 0.72, green: 0.42, blue: 0.06)
+
+    func makeBody(configuration: Configuration) -> some View {
+        Label {
+            configuration.title
+        } icon: {
+            configuration.icon
+                .foregroundStyle(Self.ember)
+        }
+    }
+}
+
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
@@ -143,6 +159,9 @@ struct SidebarView: View {
             viewsSection
         }
         .listStyle(.sidebar)
+        // Every place's icon in the lab's ember orange — one style,
+        // inherited by every Label in the list.
+        .labelStyle(EmberIconLabelStyle())
         // The app's name stands over the list, above Received — as
         // Knowledge Space's sidebar carries its own.
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -157,9 +176,9 @@ struct SidebarView: View {
                 .padding(.bottom, 18)
         }
         .navigationTitle("Origami Text")
-        // Starts equal to the document list — the reference proportions
-        // give each flanking column 195 of the 1120-point default window.
-        .navigationSplitViewColumnWidth(min: 180, ideal: 195)
+        // Wide enough for the longest place names ("Chronological",
+        // "Alphabetical", journal names) with their counts beside them.
+        .navigationSplitViewColumnWidth(min: 210, ideal: 240)
     }
 
     /// Ways into the opened EPUBs by who and what they hold: Authors (the
