@@ -26,6 +26,9 @@ struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let title: String
     let author: String
+    /// Every author of record, in order, when the book named more than
+    /// one. Optional so manifests written before it decode unchanged.
+    var authors: [String]? = nil
     /// ISO 8601, when the Visual-Meta carried a date.
     let dateISO: String?
     /// The unpack folder name under the EPUBs directory.
@@ -34,6 +37,20 @@ struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
     let contentSubpath: String
     /// When it was opened, for ordering the library newest-first.
     let openedAt: Date
+    /// The journal or proceedings the book is part of, when it declares
+    /// one. "" means the package was checked and names none; nil means
+    /// a record written before venues were kept (not yet checked).
+    var publication: String? = nil
+
+    /// The authors to list the book under: the full list when known,
+    /// else the single author of record.
+    var authorList: [String] { authors ?? [author] }
+
+    /// The declared venue, empty-checked: nil when the book names none.
+    var venue: String? {
+        let name = publication?.trimmingCharacters(in: .whitespaces) ?? ""
+        return name.isEmpty ? nil : name
+    }
 }
 
 /// A semantic element the reader's WebView reported — the Step 0 bridge.

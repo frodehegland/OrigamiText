@@ -54,7 +54,6 @@ protocol ContextActionProvider {
 enum ContextActionRegistry {
     static let providers: [any ContextActionProvider.Type] = [
         // Add custom menu modules here — one line per module.
-        MakeRedContextAction.self,
     ]
 }
 

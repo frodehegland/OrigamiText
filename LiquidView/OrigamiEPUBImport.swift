@@ -35,6 +35,14 @@ nonisolated enum OrigamiEPUBImporter {
     struct ImportResult: Sendable {
         let title: String
         let author: String?
+        /// Every author of record, in order: the Visual-Meta authors
+        /// array when present, else all the package's dc:creator
+        /// entries. Empty when the book names no one.
+        var authors: [String] = []
+        /// The journal or proceedings the book declares itself part of,
+        /// when it does — Visual-Meta first, then the package's own
+        /// collection declarations.
+        var publication: String? = nil
         /// YYYY-MM-DD from the package metadata.
         let date: String?
         /// The publication identifier (urn:uuid:…), for provenance.
@@ -111,7 +119,22 @@ nonisolated enum OrigamiEPUBImporter {
         let opfDirectory = (opfPath as NSString).deletingLastPathComponent
 
         let title = firstTagText(in: opf, tag: "dc:title")
-        let creator = firstTagText(in: opf, tag: "dc:creator")
+        // A book can name several creators; keep them all — the Authors
+        // view lists each, not just the first.
+        let creators = allTagTexts(in: opf, tag: "dc:creator")
+        let creator = creators.first
+        // The venue the package itself declares: the EPUB 3 collection,
+        // Dublin Core's isPartOf, or calibre's series — the Journals
+        // view groups books by it.
+        let opfVenue = [
+            firstCapture(in: opf, pattern: "<meta[^>]*property=\"belongs-to-collection\"[^>]*>([^<]*)</meta>"),
+            firstCapture(in: opf, pattern: "<meta[^>]*property=\"dcterms:isPartOf\"[^>]*>([^<]*)</meta>"),
+            firstCapture(in: opf, pattern: "<meta[^>]*name=\"calibre:series\"[^>]*content=\"([^\"]*)\"")
+        ]
+            .compactMap { $0 }
+            .map(xmlUnescaped)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
         let date = firstTagText(in: opf, tag: "dc:date")
         let identifier = firstTagText(in: opf, tag: "dc:identifier")
 
@@ -351,9 +374,18 @@ nonisolated enum OrigamiEPUBImporter {
         }
 
         let document = visualMeta?["document"] as? [String: Any]
+        let metaAuthors = (document?["authors"] as? [String])?
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty } ?? []
+        let metaVenue = ["journal", "proceedings", "publication", "booktitle"]
+            .compactMap { document?[$0] as? String }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty }
         return ImportResult(
             title: document?["title"] as? String ?? title ?? "Untitled",
-            author: (document?["authors"] as? [String])?.first ?? creator,
+            author: metaAuthors.first ?? creator,
+            authors: metaAuthors.isEmpty ? creators : metaAuthors,
+            publication: metaVenue ?? opfVenue,
             date: document?["date"] as? String ?? date,
             identifier: document?["identifier"] as? String ?? identifier,
             origamiID: document?["origami-id"] as? String,
@@ -606,6 +638,22 @@ nonisolated enum OrigamiEPUBImporter {
         firstCapture(in: xml, pattern: "<\(tag)[^>]*>([^<]*)</\(tag)>")
             .map(xmlUnescaped)
             .flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Every occurrence of the tag's text, in document order — how all
+    /// of a book's dc:creator entries are gathered.
+    private static func allTagTexts(in xml: String, tag: String) -> [String] {
+        guard let expression = try? NSRegularExpression(
+            pattern: "<\(tag)[^>]*>([^<]*)</\(tag)>", options: []) else { return [] }
+        let range = NSRange(xml.startIndex..., in: xml)
+        return expression.matches(in: xml, options: [], range: range)
+            .compactMap { match in
+                let index = match.numberOfRanges > 1 ? 1 : 0
+                return Range(match.range(at: index), in: xml).map { String(xml[$0]) }
+            }
+            .map(xmlUnescaped)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     private static func xmlUnescaped(_ text: String) -> String {

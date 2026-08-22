@@ -15,14 +15,7 @@ enum AppSettings {
     static let testAccountActiveKey = "testAccountActive"
     static let shareGeneralLocationKey = "shareGeneralLocation"
     static let testAccountNameKey = "testAccountName"
-    static let aiInsightsPromptKey = "aiInsightsPrompt"
-    static let aiThemesPromptKey = "aiThemesPrompt"
-    static let aiOpenQuestionsPromptKey = "aiOpenQuestionsPrompt"
-    static let aiDisagreementsPromptKey = "aiDisagreementsPrompt"
-    static let aiAgreementsPromptKey = "aiAgreementsPrompt"
     static let aiPersonProfilePromptKey = "aiPersonProfilePrompt"
-    static let aiStrangerChallengePromptKey = "aiStrangerChallengePrompt"
-    static let aiStrangerSupportPromptKey = "aiStrangerSupportPrompt"
     static let aiPersonProfilesEnabledKey = "aiPersonProfilesEnabled"
     static let portraitStyleKey = "portraitStyle"
     static let portraitPromptKey = "portraitPrompt"
@@ -32,6 +25,7 @@ enum AppSettings {
     static let readerBodyFontKey = "readerBodyFont"
     static let readerHeadingFontKey = "readerHeadingFont"
     static let readerLayoutStyleKey = "readerLayoutStyle"
+    static let venueLabelKey = "venueShelfLabel"
     static let readerHeaderColumnWidthKey = "readerHeaderColumnWidth"
     static let connectionPortraitsKey = "connectionPortraits"
 }
@@ -97,6 +91,8 @@ struct SettingsView: View {
 private struct LayoutSettingsView: View {
     @AppStorage(AppSettings.connectionPortraitsKey)
     private var connectionPortraits = true
+    @AppStorage(AppSettings.venueLabelKey)
+    private var venueLabel = "Journals"
 
     var body: some View {
         Form {
@@ -104,6 +100,19 @@ private struct LayoutSettingsView: View {
                 Toggle("Author portraits on connection cards", isOn: $connectionPortraits)
             } footer: {
                 Text("Shows each author's portrait on the cards in the reading margins — the letters this one links to and the letters that link back.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Picker("Call the venues shelf", selection: $venueLabel) {
+                    Text("Journals").tag("Journals")
+                    Text("Proceedings").tag("Proceedings")
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Library")
+            } footer: {
+                Text("The sidebar shelf that groups books by the journal or proceedings they are part of — call it whichever fits your library.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -324,90 +333,27 @@ private struct AuthorSettingsView: View {
     }
 }
 
-/// The prompts behind the AI views, fully user-owned. Every AI view runs
-/// on this Mac only — no text leaves it. One editor, a picker to choose
-/// which view's prompt it edits — the list grows as AI views do.
+/// The prompts behind the AI features, fully user-owned. Everything runs
+/// on this Mac only — no text leaves it. One prompt today (Person
+/// Profiles); the editor grows as AI features do.
 private struct AISettingsView: View {
-    @AppStorage(AppSettings.aiInsightsPromptKey) private var insightsPrompt = AIInsights.defaultPrompt
-    @AppStorage(AppSettings.aiThemesPromptKey) private var themesPrompt = Themes.defaultPrompt
-    @AppStorage(AppSettings.aiOpenQuestionsPromptKey) private var questionsPrompt = OpenQuestions.defaultPrompt
-    @AppStorage(AppSettings.aiDisagreementsPromptKey) private var disagreementsPrompt = Disagreements.defaultPrompt
-    @AppStorage(AppSettings.aiAgreementsPromptKey) private var agreementsPrompt = Agreements.defaultPrompt
     @AppStorage(AppSettings.aiPersonProfilePromptKey) private var personProfilePrompt = AuthorProfiles.defaultPrompt
-    @AppStorage(AppSettings.aiStrangerChallengePromptKey) private var strangerChallengePrompt = Stranger.defaultChallengePrompt
-    @AppStorage(AppSettings.aiStrangerSupportPromptKey) private var strangerSupportPrompt = Stranger.defaultSupportPrompt
     @AppStorage(AppSettings.aiPersonProfilesEnabledKey) private var personProfilesEnabled = true
-    @State private var selection = "AI Insights"
-
-    private var prompt: Binding<String> {
-        switch selection {
-        case "Themes": $themesPrompt
-        case "Open Questions": $questionsPrompt
-        case "Agreements": $agreementsPrompt
-        case "Disagreements": $disagreementsPrompt
-        case "Person Profiles": $personProfilePrompt
-        case "The Stranger — Challenge": $strangerChallengePrompt
-        case "The Stranger — Support": $strangerSupportPrompt
-        default: $insightsPrompt
-        }
-    }
-
-    private var defaultValue: String {
-        switch selection {
-        case "Themes": Themes.defaultPrompt
-        case "Open Questions": OpenQuestions.defaultPrompt
-        case "Agreements": Agreements.defaultPrompt
-        case "Disagreements": Disagreements.defaultPrompt
-        case "Person Profiles": AuthorProfiles.defaultPrompt
-        case "The Stranger — Challenge": Stranger.defaultChallengePrompt
-        case "The Stranger — Support": Stranger.defaultSupportPrompt
-        default: AIInsights.defaultPrompt
-        }
-    }
-
-    private var note: String {
-        switch selection {
-        case "Themes":
-            "Names the themes shown in the Themes view. The response is constrained to a list of themes, each grounded in document addresses — addresses that don't exist in the library are dropped."
-        case "Open Questions":
-            "Names what the community has not settled. The response is constrained to a list of questions, each grounded in real document addresses."
-        case "Agreements":
-            "Names where documents genuinely converge. An agreement survives only when at least two real documents hold the shared position — one document cannot agree with itself."
-        case "Disagreements":
-            "Names where documents genuinely pull apart. Each dispute keeps only sides grounded in real documents — both sides must survive or the dispute is dropped."
-        case "Person Profiles":
-            "Revises one person's profile from their new letters and statements — interests, concerns, temperament, way of writing. Runs continually as letters arrive, when enabled below."
-        case "The Stranger — Challenge":
-            "The Stranger in challenge mode: names what the community believes together but has never defended, with the strongest honest case against. Every finding is grounded in real document addresses or dropped."
-        case "The Stranger — Support":
-            "The Stranger in support mode: names what the community has right but undervalues. Every finding is grounded in real document addresses or dropped."
-        default:
-            "The AI Insights report. Citing documents by bracketed address makes the model's references live links."
-        }
-    }
 
     var body: some View {
         Form {
             Section {
-                Picker("Prompt", selection: $selection) {
-                    ForEach(["AI Insights", "Themes", "Open Questions", "Agreements",
-                             "Disagreements", "Person Profiles",
-                             "The Stranger — Challenge", "The Stranger — Support"], id: \.self) {
-                        Text($0)
-                    }
-                }
-                .pickerStyle(.menu)
-                TextEditor(text: prompt)
+                TextEditor(text: $personProfilePrompt)
                     .font(.system(size: 12, design: .monospaced))
                     .frame(minHeight: 260)
             } header: {
-                Text("AI View Prompts")
+                Text("Person Profiles Prompt")
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Runs on this Mac only — no text leaves it. The library's documents are appended after the prompt, newest first, with typed links passed as marked metadata and Visual-Meta appendices excluded as content. \(note)")
+                    Text("Runs on this Mac only — no text leaves it. Revises one person's profile from their new letters and statements — interests, concerns, temperament, way of writing. Runs continually as letters arrive, when enabled below.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Button("Reset to Default") { prompt.wrappedValue = defaultValue }
+                    Button("Reset to Default") { personProfilePrompt = AuthorProfiles.defaultPrompt }
                 }
             }
             Section {

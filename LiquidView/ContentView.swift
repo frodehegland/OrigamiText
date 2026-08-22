@@ -311,11 +311,25 @@ struct ContentView: View {
 
     @ViewBuilder private var listPane: some View {
         if model.sidebarSelection == .epubsAll {
-            EPUBLibraryListView(folder: nil)
+            EPUBLibraryListView(mode: .all)
+        } else if model.sidebarSelection == .epubsInbox {
+            EPUBLibraryListView(mode: .inbox)
+        } else if model.sidebarSelection == .epubsTimeline {
+            EPUBLibraryListView(mode: .timeline)
+        } else if model.sidebarSelection == .epubsAlphabetical {
+            EPUBLibraryListView(mode: .alphabetical)
+        } else if model.sidebarSelection == .epubJournals {
+            JournalsListView()
+        } else if case .epubPublication(let name)? = model.sidebarSelection {
+            JournalBooksListView(name: name)
+        } else if model.sidebarSelection == .epubsSetAside {
+            EPUBLibraryListView(mode: .setAside)
         } else if case .epubFolder(let folder)? = model.sidebarSelection {
-            EPUBLibraryListView(folder: folder)
+            EPUBLibraryListView(mode: .folder(folder))
         } else if model.sidebarSelection == .authors {
             AuthorsListView()
+        } else if case .epubAuthor(let name)? = model.sidebarSelection {
+            AuthorBooksListView(name: name)
         } else if case .person(let name)? = model.sidebarSelection {
             PersonListView(name: name)
         } else if model.sidebarSelection == .people {

@@ -55,13 +55,16 @@ nonisolated enum OrigamiEPUBExporter {
             enum CodingKeys: String, CodingKey {
                 case title, authors, date, identifier
                 case origamiID = "origami-id"
-                case abstract, keywords, isbn, doi
+                case abstract, keywords, isbn, doi, publication
             }
 
             let title: String
             let authors: [String]
             let date: String
             let identifier: String
+            /// The journal or proceedings the document is part of, when
+            /// it declares one — the reader's Journals view groups by it.
+            var publication: String? = nil
             /// The document's library address, carried openly so a
             /// receiving Origami Text can keep the book's identity —
             /// citations to it then resolve wherever it arrives.
@@ -375,6 +378,7 @@ nonisolated enum OrigamiEPUBExporter {
                 authors: [doc.displayAuthor],
                 date: documentDate(of: doc),
                 identifier: identifier(of: doc),
+                publication: doc.publication,
                 origamiID: doc.id),
             structure: VisualMetaDocument.Structure(headings: headings),
             concepts: doc.concepts.map { concept in

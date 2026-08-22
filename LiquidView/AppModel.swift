@@ -30,13 +30,20 @@ enum SidebarItem: Hashable {
     case bookDrafts
     case booksPublished
     case filedBooks
-    // Files: opened EPUBs, all or by folder
+    // Library: opened EPUBs — all, ways through them, or by folder
     case epubsAll
+    case epubsInbox
+    case epubsTimeline
+    case epubsAlphabetical
+    case epubJournals
+    case epubPublication(String)
+    case epubsSetAside
     case epubFolder(String)
     // Views: ways into the opened EPUBs by who and what they hold.
     // Authors is automatic (the authors of record); People and Concepts
     // are user-curated buckets, added the way folders are.
     case authors
+    case epubAuthor(String)
     case people
     case person(String)
     case concepts
@@ -76,7 +83,8 @@ final class AppModel {
         let token: UUID
     }
 
-    var sidebarSelection: SidebarItem? = .epubsAll {
+    // The app opens onto the Timeline — every book, newest first.
+    var sidebarSelection: SidebarItem? = .epubsTimeline {
         didSet {
             if oldValue != sidebarSelection { previousSidebarSelection = oldValue }
         }
@@ -635,6 +643,7 @@ final class AppModel {
                                 links: [], wraps: nil,
                                 fileURL: FileManager.default.temporaryDirectory)
             doc.documentType = LiquidDoc.DocumentType.book.rawValue
+            doc.publication = result.publication
             doc.references = result.references
             doc.tables = result.tables
             doc.assets = result.assets
@@ -733,7 +742,7 @@ final class AppModel {
         if let existing = epubRecords.first(where: { $0.folder == safe }),
            FileManager.default.fileExists(atPath:
                 directory.appendingPathComponent(existing.contentSubpath).path) {
-            return existing
+            return enrichRecordIfNeeded(existing, directory: directory)
         }
 
         do {
@@ -743,10 +752,17 @@ final class AppModel {
             let bookID = meta?.origamiID ?? identity
             let contentSubpath = unpacked.content.path
                 .replacingOccurrences(of: directory.path + "/", with: "")
+            // Rows display the authors joined; the Authors view lists
+            // the book under each of them.
+            let authors = meta?.authors ?? []
             let record = EPUBRecord(id: bookID, title: unpacked.title,
-                                    author: meta?.author ?? "Unknown",
+                                    author: authors.count > 1
+                                        ? authors.joined(separator: ", ")
+                                        : (authors.first ?? meta?.author ?? "Unknown"),
+                                    authors: authors.isEmpty ? nil : authors,
                                     dateISO: meta?.date, folder: safe,
-                                    contentSubpath: contentSubpath, openedAt: .now)
+                                    contentSubpath: contentSubpath, openedAt: .now,
+                                    publication: meta?.publication ?? "")
             epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
             epubRecords.insert(record, at: 0)
             persistEPUBRecords()
@@ -756,6 +772,53 @@ final class AppModel {
             showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    /// Records written before every author and the venue were kept carry
+    /// only the first author and no publication. One-time, from the
+    /// unpacked package on disk: read the full record, remember it, and
+    /// never parse again — a non-nil publication ("" when the book names
+    /// no venue) marks the record checked.
+    private func enrichRecordIfNeeded(_ record: EPUBRecord, directory: URL) -> EPUBRecord {
+        guard record.publication == nil,
+              let meta = try? OrigamiEPUBImporter.importDocument(inUnpackedFolder: directory)
+        else { return record }
+        let authors = record.authors ?? (meta.authors.isEmpty ? nil : meta.authors)
+        let names = authors ?? [record.author]
+        let refreshed = EPUBRecord(id: record.id, title: record.title,
+                                   author: names.count > 1
+                                       ? names.joined(separator: ", ")
+                                       : names[0],
+                                   authors: authors,
+                                   dateISO: record.dateISO, folder: record.folder,
+                                   contentSubpath: record.contentSubpath,
+                                   openedAt: record.openedAt,
+                                   publication: meta.publication ?? "")
+        if let index = epubRecords.firstIndex(where: { $0.id == record.id }) {
+            epubRecords[index] = refreshed
+            persistEPUBRecords()
+        }
+        return refreshed
+    }
+
+    /// Moves an opened EPUB to the Trash: its unpacked package leaves
+    /// the app container (recoverable from the Trash), the record leaves
+    /// the library, and its filing is forgotten. A book open in the
+    /// reader closes first.
+    func trashEPUB(_ record: EPUBRecord) {
+        if openEPUB?.id == record.folder { openEPUB = nil }
+        let directory = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+        try? FileManager.default.trashItem(at: directory, resultingItemURL: nil)
+        epubRecords.removeAll { $0.id == record.id }
+        unfileEPUB(record.id)
+        if epubTopOfPile.remove(record.id) != nil {
+            UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
+        }
+        if epubSetAsideIDs.remove(record.id) != nil {
+            UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
+        }
+        persistEPUBRecords()
+        showNote("Moved “\(record.title)” to the Trash")
     }
 
     /// Opens an EPUB in the faithful WebView reader: imports it (unpacking as
@@ -1189,27 +1252,91 @@ final class AppModel {
     /// The folder an opened EPUB is filed under, if any.
     func epubFolder(for id: String) -> String? { epubFiling[id] }
 
-    /// Opened EPUBs, all of them or just those filed under `folder`.
+    // MARK: - Top of Pile and Set Aside
+
+    /// Books pinned to the top of every Library list, by record id.
+    private(set) var epubTopOfPile: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "epubTopOfPile") ?? [])
+
+    /// Books set aside — out of every list and view until brought back,
+    /// by record id. They wait in the sidebar's Set Aside shelf.
+    private(set) var epubSetAsideIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "epubSetAside") ?? [])
+
+    func isTopOfPile(_ record: EPUBRecord) -> Bool { epubTopOfPile.contains(record.id) }
+    func isSetAside(_ record: EPUBRecord) -> Bool { epubSetAsideIDs.contains(record.id) }
+
+    func toggleTopOfPile(_ record: EPUBRecord) {
+        if !epubTopOfPile.insert(record.id).inserted { epubTopOfPile.remove(record.id) }
+        UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
+    }
+
+    func setAside(_ record: EPUBRecord) {
+        if openEPUB?.id == record.folder { openEPUB = nil }
+        epubSetAsideIDs.insert(record.id)
+        UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
+    }
+
+    func bringBack(_ record: EPUBRecord) {
+        epubSetAsideIDs.remove(record.id)
+        UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
+    }
+
+    /// The records the lists and views show — everything not set aside.
+    var shownEPUBRecords: [EPUBRecord] {
+        epubRecords.filter { !epubSetAsideIDs.contains($0.id) }
+    }
+
+    /// The Set Aside shelf's records, in library order.
+    var epubSetAsideRecords: [EPUBRecord] {
+        epubRecords.filter { epubSetAsideIDs.contains($0.id) }
+    }
+
+    /// Top of Pile first, otherwise keeping the given order.
+    func pinnedFirst(_ records: [EPUBRecord]) -> [EPUBRecord] {
+        records.filter { isTopOfPile($0) } + records.filter { !isTopOfPile($0) }
+    }
+
+    /// Opened EPUBs the lists show, all of them or just those filed
+    /// under `folder`. Set-aside books wait in their own shelf.
     func epubRecords(inFolder folder: String?) -> [EPUBRecord] {
-        guard let folder else { return epubRecords }
-        return epubRecords.filter { epubFiling[$0.id] == folder }
+        guard let folder else { return shownEPUBRecords }
+        return shownEPUBRecords.filter { epubFiling[$0.id] == folder }
     }
 
     // MARK: - Views (Authors, People, Concepts)
 
     /// The distinct authors of the opened EPUBs, alphabetically — the
-    /// "Authors" view. Built from the records' author of record; nothing
-    /// the user has to curate.
+    /// "Authors" view. Built from the records' authors of record, every
+    /// name a co-authored book carries; nothing the user has to curate.
     var epubAuthors: [String] {
-        let names = Set(epubRecords.map(\.author)
+        let names = Set(shownEPUBRecords.flatMap(\.authorList)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty })
         return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
-    /// The opened EPUBs by a given author of record.
+    /// The opened EPUBs carrying a given author of record — co-authored
+    /// books appear under each of their authors.
     func epubRecords(byAuthor author: String) -> [EPUBRecord] {
-        epubRecords.filter { $0.author.caseInsensitiveCompare(author) == .orderedSame }
+        shownEPUBRecords.filter { record in
+            record.authorList.contains {
+                $0.trimmingCharacters(in: .whitespaces)
+                    .caseInsensitiveCompare(author) == .orderedSame
+            }
+        }
+    }
+
+    /// The distinct journals and proceedings the opened EPUBs declare
+    /// themselves part of, alphabetically — the Journals view.
+    var epubPublications: [String] {
+        let names = Set(shownEPUBRecords.compactMap(\.venue))
+        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// The opened EPUBs that are part of a given journal or proceedings.
+    func epubRecords(inPublication name: String) -> [EPUBRecord] {
+        shownEPUBRecords.filter { $0.venue?.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     /// People the user is tracking across the library — added by hand the
@@ -1539,7 +1666,10 @@ final class AppModel {
         placeFinder.onPlace = { [weak self] place in
             self?.currentPlace = place
         }
-        refreshPlace()
+        // Launch never asks for location permission — the dialog waits
+        // for a deliberate act (publishing, turning sharing on). If
+        // permission was already given, the place refreshes quietly.
+        refreshPlace(promptIfNeeded: false)
     }
 
     /// The place this Mac last resolved — stamped onto a letter at
@@ -1554,10 +1684,11 @@ final class AppModel {
     }
 
     /// Asks for a fresh place, so the next publication carries it.
-    /// Never runs while sharing is off.
-    func refreshPlace() {
+    /// Never runs while sharing is off, and only shows the system's
+    /// permission dialog when the caller is a deliberate act.
+    func refreshPlace(promptIfNeeded: Bool = true) {
         guard sharesGeneralLocation else { return }
-        placeFinder.begin()
+        placeFinder.begin(promptIfNeeded: promptIfNeeded)
     }
     var draftEditor: DraftEditor?
     var selectedDraftID: String?

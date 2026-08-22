@@ -18,9 +18,9 @@ enum SidebarCatalog {
     /// Books, Transcripts, Notes, and the Views modules) — is obsolete and
     /// gone; new views will be built fresh against the EPUB + Visual-Meta.
     /// The full-screen peek still needs a way back to the library, so it
-    /// lists "All".
+    /// lists the Timeline — every book, newest first.
     static let received: [SidebarPlace] = [
-        SidebarPlace(name: "All", systemImage: "tray.full", item: .epubsAll),
+        SidebarPlace(name: "Timeline", systemImage: "clock", item: .epubsTimeline),
     ]
 
     /// The conversation itself: every letter to and from the user, the
@@ -85,24 +85,70 @@ struct SidebarView: View {
     /// launches, the way Finder remembers its sidebar.
     @State private var collapsed: Set<String> =
         Set(UserDefaults.standard.stringArray(forKey: "collapsedSidebarSections") ?? [])
+    /// What the venues shelf is called — Journals or Proceedings,
+    /// chosen in Settings ▸ Layout.
+    @AppStorage(AppSettings.venueLabelKey) private var venueLabel = "Journals"
+    /// The Unread narrowing for Timeline and Alphabetical, toggled from
+    /// their context menus; the lists read the same keys.
+    @AppStorage("libraryTimelineUnreadOnly") private var timelineUnreadOnly = false
+    @AppStorage("libraryAlphabeticalUnreadOnly") private var alphabeticalUnreadOnly = false
+
+    /// The sidebar's own selection: the model's, but only when it names
+    /// a row this list actually shows. The app has states with no
+    /// sidebar row — the drafts editor after an import, a single
+    /// author's list — and a macOS List whose selection names a missing
+    /// row stops answering clicks. Those states read as no selection
+    /// here; clicking any row still writes the model.
+    private var selection: Binding<SidebarItem?> {
+        Binding(
+            get: {
+                guard let item = model.sidebarSelection, hasRow(for: item) else { return nil }
+                return item
+            },
+            set: { newValue in
+                // The List clears its selection during row updates;
+                // only a real click on a row moves the app.
+                guard let newValue else { return }
+                // Choosing a place leaves the open book: the reader
+                // otherwise keeps the whole detail pane and the click
+                // would appear to do nothing.
+                model.openEPUB = nil
+                model.sidebarSelection = newValue
+            }
+        )
+    }
+
+    /// Whether the sidebar shows a row for this place.
+    private func hasRow(for item: SidebarItem) -> Bool {
+        switch item {
+        case .epubsInbox, .epubsTimeline, .epubsAlphabetical,
+             .epubJournals, .epubsSetAside, .authors, .people, .concepts:
+            true
+        case .epubFolder(let name):
+            model.epubFolders.contains(name)
+        case .person(let name):
+            model.viewPeople.contains(name)
+        case .concept(let name):
+            model.viewConcepts.contains(name)
+        default:
+            false
+        }
+    }
 
     var body: some View {
-        @Bindable var model = model
-        List(selection: $model.sidebarSelection) {
-            // The Files shelf of opened EPUBs ("All", the user's folders,
-            // and a "+"), then the authoring shelf. There is no Inbox:
-            // unread EPUBs simply show bold in the Files list.
-            filesSection
+        List(selection: selection) {
+            // The Library shelf of opened EPUBs ("All", the ways through
+            // them, the user's folders, and a "+"), then the Views.
+            librarySection
             viewsSection
-            authorSection
         }
         .listStyle(.sidebar)
         // The app's name stands over the list, above Received — as
         // Knowledge Space's sidebar carries its own.
         .safeAreaInset(edge: .top, spacing: 0) {
-            Text("Origami")
+            Text("Origami Text")
                 .font(.headline)
-                .fontWeight(.bold)
+                .fontWeight(.regular)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -110,38 +156,10 @@ struct SidebarView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 18)
         }
-        .navigationTitle("Origami")
+        .navigationTitle("Origami Text")
         // Starts equal to the document list — the reference proportions
         // give each flanking column 195 of the 1120-point default window.
         .navigationSplitViewColumnWidth(min: 180, ideal: 195)
-    }
-
-    /// The authoring shelf: drafts written or imported here, which export
-    /// as Origami Text EPUBs. Origami Text is a reader first, but until
-    /// there is other software that writes the format, it lets people
-    /// author too (import Word, edit, export EPUB).
-    @ViewBuilder
-    private var authorSection: some View {
-        Section {
-            Label("Drafts", systemImage: "square.and.pencil")
-                .tag(SidebarItem.drafts)
-            Button {
-                model.newDraft()
-            } label: {
-                Label("New", systemImage: "plus")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            Button {
-                model.importDocumentFile()
-            } label: {
-                Label("Import", systemImage: "square.and.arrow.down")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        } header: {
-            Text("Production")
-        }
     }
 
     /// Ways into the opened EPUBs by who and what they hold: Authors (the
@@ -152,10 +170,13 @@ struct SidebarView: View {
     @ViewBuilder
     private var viewsSection: some View {
         Section(isExpanded: isExpanded("Views")) {
+            // Badges inside the tags here too — see the Library shelf.
             Label("Authors", systemImage: "person.2")
+                .badge(model.epubAuthors.count)
                 .tag(SidebarItem.authors)
 
             Label("People", systemImage: "person.crop.circle")
+                .badge(model.viewPeople.count)
                 .tag(SidebarItem.people)
             ForEach(model.viewPeople, id: \.self) { name in
                 Label(name, systemImage: "person")
@@ -173,6 +194,7 @@ struct SidebarView: View {
             .buttonStyle(.plain)
 
             Label("Concepts", systemImage: "lightbulb")
+                .badge(model.viewConcepts.count)
                 .tag(SidebarItem.concepts)
             ForEach(model.viewConcepts, id: \.self) { name in
                 Label(name, systemImage: "tag")
@@ -193,17 +215,47 @@ struct SidebarView: View {
         }
     }
 
-    /// The Files shelf: "All" opened EPUBs, the user's folders, and a "+"
-    /// to add another folder.
+    /// The Library shelf: the ways through the opened EPUBs — Inbox
+    /// (unread), Timeline (every book, newest first — the home list),
+    /// Alphabetical, and the journals or proceedings they are part of —
+    /// then the user's folders, the books set aside, and a "+" to add
+    /// another folder. Every place carries its count on the right;
+    /// Timeline and Alphabetical can narrow to unread from their
+    /// context menus.
     @ViewBuilder
-    private var filesSection: some View {
-        Section(isExpanded: isExpanded("Files")) {
-            Label("All", systemImage: "tray.full")
-                .tag(SidebarItem.epubsAll)
+    private var librarySection: some View {
+        let shown = model.epubRecords(inFolder: nil)
+        Section(isExpanded: isExpanded("Library")) {
+            // The badge sits INSIDE the tag: a badge applied over the
+            // tag hides it from the List, and the row stops selecting.
+            Label("Inbox", systemImage: "tray")
+                .badge(shown.filter { model.isUnread($0) }.count)
+                .tag(SidebarItem.epubsInbox)
+            Label("Timeline", systemImage: "clock")
+                .badge(timelineUnreadOnly
+                       ? shown.filter { model.isUnread($0) }.count : shown.count)
+                .tag(SidebarItem.epubsTimeline)
+                .contextMenu {
+                    Toggle("Unread", isOn: $timelineUnreadOnly)
+                }
+            Label("Alphabetical", systemImage: "textformat.abc")
+                .badge(alphabeticalUnreadOnly
+                       ? shown.filter { model.isUnread($0) }.count : shown.count)
+                .tag(SidebarItem.epubsAlphabetical)
+                .contextMenu {
+                    Toggle("Unread", isOn: $alphabeticalUnreadOnly)
+                }
+            Label(venueLabel, systemImage: "newspaper")
+                .badge(model.epubPublications.count)
+                .tag(SidebarItem.epubJournals)
             ForEach(model.epubFolders, id: \.self) { folder in
                 Label(folder, systemImage: "folder")
+                    .badge(model.epubRecords(inFolder: folder).count)
                     .tag(SidebarItem.epubFolder(folder))
             }
+            Label("Set Aside", systemImage: "moon.zzz")
+                .badge(model.epubSetAsideRecords.count)
+                .tag(SidebarItem.epubsSetAside)
             Button {
                 model.promptNewEPUBFolder()
             } label: {
@@ -212,7 +264,7 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
         } header: {
-            Text("Files")
+            Text("Library")
         }
     }
 

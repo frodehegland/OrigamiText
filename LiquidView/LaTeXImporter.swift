@@ -26,6 +26,10 @@ nonisolated enum LaTeXImporter {
     struct Result: Sendable {
         var title: String
         var author: String?
+        /// The journal or proceedings the paper is part of, from the
+        /// preamble: \acmJournal, the conference name in \acmConference,
+        /// or \acmBooktitle's full proceedings title, in that order.
+        var publication: String?
         var body: [LiquidDoc.Paragraph]
         var references: [LiquidDoc.Reference] = []
         var tables: [LiquidDoc.Table] = []
@@ -138,6 +142,19 @@ nonisolated enum LaTeXImporter {
             .map { inline(convert: $0).text }
             .filter { !$0.isEmpty }
         let author = authors.isEmpty ? nil : authors.joined(separator: ", ")
+
+        // The venue: a journal's name, else the conference name from
+        // \acmConference[HT '26]{37th ACM Conference on Hypertext}{…}{…},
+        // else the full proceedings title. Comments are already
+        // stripped, so a commented-out template line cannot mislead.
+        let publication = ["acmJournal", "acmConference", "acmBooktitle"].lazy
+            .compactMap { command in
+                firstBalancedArgument(of: command, in: stripped,
+                                      skippingBracketOption: true)
+                    .map { inline(convert: $0.value).text }
+            }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty }
 
         // The words live between \begin{document} and \end{document};
         // a fragment with neither reads whole.
@@ -502,8 +519,8 @@ nonisolated enum LaTeXImporter {
             bibliography.trimmingCharacters(in: .whitespacesAndNewlines))
             .map { LiquidDoc.Reference(id: $0.key, bibtex: $0.raw) }
 
-        return Result(title: title, author: author, body: paragraphs,
-                      references: references,
+        return Result(title: title, author: author, publication: publication,
+                      body: paragraphs, references: references,
                       tables: namedTables, assets: assets)
     }
 

@@ -28,15 +28,83 @@ struct DocumentListView: View {
     }
 }
 
-/// The Files shelf: opened EPUBs, all of them or one folder's worth. Rows
-/// reopen the rendered page; a context menu files them into folders.
-struct EPUBLibraryListView: View {
+/// The ways through the Library shelf: everything, the unread, by date,
+/// by title, one folder's worth, or the books set aside.
+enum LibraryListMode: Hashable {
+    case all
+    case folder(String)
+    case inbox
+    case timeline
+    case alphabetical
+    case setAside
+}
+
+/// The pile actions every EPUB row's context menu offers: Top of Pile
+/// (pins it first in every list), Set Aside (out of the lists, into the
+/// sidebar's Set Aside shelf — or back), then Move to Trash.
+struct EPUBPileMenu: View {
     @Environment(AppModel.self) private var model
-    /// nil = All opened EPUBs; otherwise just this folder's.
-    var folder: String?
+    let record: EPUBRecord
 
     var body: some View {
-        let records = model.epubRecords(inFolder: folder)
+        Toggle("Top of Pile", isOn: Binding(
+            get: { model.isTopOfPile(record) },
+            set: { _ in model.toggleTopOfPile(record) }))
+        if model.isSetAside(record) {
+            Button("Bring Back") { model.bringBack(record) }
+        } else {
+            Button("Set Aside") { model.setAside(record) }
+        }
+        Divider()
+        Button("Move to Trash", role: .destructive) { model.trashEPUB(record) }
+    }
+}
+
+/// The Library shelf: opened EPUBs — all of them, the unread Inbox, the
+/// Timeline (newest publication first), Alphabetical, or one folder's
+/// worth. Rows reopen the rendered page; a context menu files them into
+/// folders. Timeline and Alphabetical can narrow to unread via their
+/// sidebar items' context menus.
+struct EPUBLibraryListView: View {
+    @Environment(AppModel.self) private var model
+    var mode: LibraryListMode = .all
+    @AppStorage("libraryTimelineUnreadOnly") private var timelineUnreadOnly = false
+    @AppStorage("libraryAlphabeticalUnreadOnly") private var alphabeticalUnreadOnly = false
+
+    private var records: [EPUBRecord] {
+        switch mode {
+        case .all:
+            return model.pinnedFirst(model.epubRecords(inFolder: nil))
+        case .folder(let name):
+            return model.pinnedFirst(model.epubRecords(inFolder: name))
+        case .inbox:
+            return model.pinnedFirst(
+                model.epubRecords(inFolder: nil).filter { model.isUnread($0) })
+        case .timeline:
+            return model.pinnedFirst(model.epubRecords(inFolder: nil)
+                .filter { !timelineUnreadOnly || model.isUnread($0) }
+                .sorted { publicationDate($0) > publicationDate($1) })
+        case .alphabetical:
+            return model.pinnedFirst(model.epubRecords(inFolder: nil)
+                .filter { !alphabeticalUnreadOnly || model.isUnread($0) }
+                .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending })
+        case .setAside:
+            return model.epubSetAsideRecords
+        }
+    }
+
+    /// The book's own date when it carries one, else when it arrived.
+    private func publicationDate(_ record: EPUBRecord) -> Date {
+        record.dateISO.flatMap(LiquidDoc.parseISO8601) ?? record.openedAt
+    }
+
+    private var inFolder: Bool {
+        if case .folder = mode { return true }
+        return false
+    }
+
+    var body: some View {
+        let records = records
         List {
             ForEach(records) { record in
                 Button {
@@ -48,7 +116,7 @@ struct EPUBLibraryListView: View {
                             .lineLimit(2)
                         HStack(spacing: 6) {
                             Text(record.author)
-                            if let filed = model.epubFolder(for: record.id), folder == nil {
+                            if let filed = model.epubFolder(for: record.id), !inFolder {
                                 Text("· \(filed)")
                             }
                         }
@@ -71,20 +139,43 @@ struct EPUBLibraryListView: View {
                     if model.epubFolder(for: record.id) != nil {
                         Button("Remove from Folder") { model.unfileEPUB(record.id) }
                     }
+                    Divider()
+                    EPUBPileMenu(record: record)
                 }
             }
         }
         .overlay {
             if records.isEmpty {
                 ContentUnavailableView {
-                    Label(folder == nil ? "No EPUBs Yet" : "Empty Folder",
-                          systemImage: "books.vertical")
+                    Label(emptyTitle, systemImage: "books.vertical")
                 } description: {
-                    Text(folder == nil
-                         ? "Open an EPUB (⌘O) or drag one in, and it appears here."
-                         : "File EPUBs into “\(folder ?? "")” from the All list's context menu.")
+                    Text(emptyDescription)
                 }
             }
+        }
+    }
+
+    private var emptyTitle: String {
+        switch mode {
+        case .folder: "Empty Folder"
+        case .inbox: "Nothing Unread"
+        case .setAside: "Nothing Set Aside"
+        default: "No EPUBs Yet"
+        }
+    }
+
+    private var emptyDescription: String {
+        switch mode {
+        case .folder(let name):
+            "File EPUBs into “\(name)” from the All list's context menu."
+        case .inbox:
+            "Every opened EPUB has been read. New arrivals gather here until they are opened."
+        case .setAside:
+            "Right-click a book and choose Set Aside to tuck it out of the lists — it waits here until brought back."
+        case .timeline where timelineUnreadOnly, .alphabetical where alphabeticalUnreadOnly:
+            "Nothing unread — this list is narrowed to unread (right-click its sidebar item to show everything)."
+        default:
+            "Open an EPUB (⌘O) or drag one in, and it appears here."
         }
     }
 }
@@ -117,11 +208,15 @@ struct EPUBRecordRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            EPUBPileMenu(record: record)
+        }
     }
 }
 
-/// Views ▸ Authors: the opened EPUBs grouped under their author of record,
-/// alphabetically. Automatic — nothing the user curates.
+/// Views ▸ Authors: the authors of record, names only, each with how
+/// many books they authored here. Click a name for their documents.
+/// Automatic — nothing the user curates.
 struct AuthorsListView: View {
     @Environment(AppModel.self) private var model
 
@@ -129,11 +224,19 @@ struct AuthorsListView: View {
         let authors = model.epubAuthors
         List {
             ForEach(authors, id: \.self) { author in
-                Section(author) {
-                    ForEach(model.epubRecords(byAuthor: author)) { record in
-                        EPUBRecordRow(record: record, showsSubtitle: false)
+                Button {
+                    model.sidebarSelection = .epubAuthor(author)
+                } label: {
+                    HStack {
+                        Label(author, systemImage: "person")
+                        Spacer()
+                        Text("\(model.epubRecords(byAuthor: author).count)")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
                     }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
         }
         .overlay {
@@ -142,6 +245,113 @@ struct AuthorsListView: View {
                     Label("No Authors Yet", systemImage: "person.2")
                 } description: {
                     Text("Open an EPUB and its author appears here.")
+                }
+            }
+        }
+    }
+}
+
+/// Views ▸ Authors ▸ one author: what they authored, newest first. The
+/// header row leads back to the author list.
+struct AuthorBooksListView: View {
+    @Environment(AppModel.self) private var model
+    let name: String
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(model.epubRecords(byAuthor: name)) { record in
+                    EPUBRecordRow(record: record, showsSubtitle: false)
+                }
+            } header: {
+                Button {
+                    model.sidebarSelection = .authors
+                } label: {
+                    Label(name, systemImage: "chevron.backward")
+                }
+                .buttonStyle(.plain)
+                .help("Back to Authors")
+            }
+        }
+        .overlay {
+            if model.epubRecords(byAuthor: name).isEmpty {
+                ContentUnavailableView {
+                    Label(name, systemImage: "person")
+                } description: {
+                    Text("Nothing by this author is in the library now.")
+                }
+            }
+        }
+    }
+}
+
+/// Library ▸ Journals (or Proceedings — Settings ▸ Layout chooses the
+/// word): the venues the opened EPUBs are part of, names only, each
+/// with how many books it holds here. Click a venue for its books.
+/// Automatic — read from each book's Visual-Meta or package metadata.
+struct JournalsListView: View {
+    @Environment(AppModel.self) private var model
+    @AppStorage(AppSettings.venueLabelKey) private var venueLabel = "Journals"
+
+    var body: some View {
+        let venues = model.epubPublications
+        List {
+            ForEach(venues, id: \.self) { venue in
+                Button {
+                    model.sidebarSelection = .epubPublication(venue)
+                } label: {
+                    HStack {
+                        Label(venue, systemImage: "newspaper")
+                        Spacer()
+                        Text("\(model.epubRecords(inPublication: venue).count)")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .overlay {
+            if venues.isEmpty {
+                ContentUnavailableView {
+                    Label("No \(venueLabel) Yet", systemImage: "newspaper")
+                } description: {
+                    Text("Books gather here when they declare the journal or proceedings they are part of — in their Visual-Meta or the EPUB's own metadata.")
+                }
+            }
+        }
+    }
+}
+
+/// Library ▸ Journals ▸ one venue: the books it holds here, newest
+/// first. The header row leads back to the venue list.
+struct JournalBooksListView: View {
+    @Environment(AppModel.self) private var model
+    let name: String
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(model.epubRecords(inPublication: name)) { record in
+                    EPUBRecordRow(record: record)
+                }
+            } header: {
+                Button {
+                    model.sidebarSelection = .epubJournals
+                } label: {
+                    Label(name, systemImage: "chevron.backward")
+                }
+                .buttonStyle(.plain)
+                .help("Back to the venues")
+            }
+        }
+        .overlay {
+            if model.epubRecords(inPublication: name).isEmpty {
+                ContentUnavailableView {
+                    Label(name, systemImage: "newspaper")
+                } description: {
+                    Text("Nothing from this venue is in the library now.")
                 }
             }
         }

@@ -143,7 +143,7 @@ struct LiquidViewApp: App {
         credits.append(NSAttributedString(string: "https://futuretextlab.info",
                                           attributes: linkAttributes))
         credits.append(NSAttributedString(
-            string: "\n\nThe Origami Text application and the document specifications are fully free and open source.",
+            string: "\n\nThe Origami Text application and the document specifications are fully free and open source, released under the MIT License.",
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
                 .foregroundColor: NSColor.labelColor,

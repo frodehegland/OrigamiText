@@ -11,11 +11,24 @@ nonisolated final class PlaceFinder: NSObject, CLLocationManagerDelegate {
     nonisolated(unsafe) var onPlace: (@MainActor (String) -> Void)?
     private let manager = CLLocationManager()
 
-    func begin() {
+    /// Asks for the current place. The system's location-permission
+    /// dialog only ever appears from a deliberate act (publishing,
+    /// turning sharing on) — never at launch, where a quiet refresh
+    /// (`promptIfNeeded: false`) uses permission already given or
+    /// does nothing.
+    func begin(promptIfNeeded: Bool = true) {
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.requestWhenInUseAuthorization()
-        manager.requestLocation()
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            guard promptIfNeeded else { return }
+            manager.requestWhenInUseAuthorization()
+            manager.requestLocation()
+        case .denied, .restricted:
+            return
+        default:
+            manager.requestLocation()
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {

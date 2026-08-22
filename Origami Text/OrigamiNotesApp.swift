@@ -105,12 +105,19 @@ final class LettersModel {
         locationFinder.onPlace = { [weak self] place in
             self?.currentPlace = place
         }
-        locationFinder.begin()
+        // Launch never asks for location permission — the dialog waits
+        // for a deliberate act (starting a letter). If permission was
+        // already given, the place refreshes quietly.
+        refreshPlace(promptIfNeeded: false)
     }
 
-    /// Called when a letter is about to be published, so the place is fresh.
-    func refreshPlace() {
-        locationFinder.begin()
+    /// Called when a letter is about to be written or published, so the
+    /// place is fresh. Never runs while sharing is off, and only shows
+    /// the system's permission dialog when the caller is a deliberate act.
+    func refreshPlace(promptIfNeeded: Bool = true) {
+        let shares = UserDefaults.standard.object(forKey: "shareGeneralLocation") as? Bool ?? true
+        guard shares else { return }
+        locationFinder.begin(promptIfNeeded: promptIfNeeded)
     }
 
     // MARK: The folder
@@ -352,11 +359,24 @@ private final class LocationFinder: NSObject, CLLocationManagerDelegate {
     var onPlace: (@MainActor (String) -> Void)?
     private let manager = CLLocationManager()
 
-    func begin() {
+    /// Asks for the current place. The system's location-permission
+    /// dialog only ever appears from a deliberate act (starting a
+    /// letter) — never at launch or foregrounding, where a quiet
+    /// refresh (`promptIfNeeded: false`) uses permission already
+    /// given or does nothing.
+    func begin(promptIfNeeded: Bool = true) {
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.requestWhenInUseAuthorization()
-        manager.requestLocation()
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            guard promptIfNeeded else { return }
+            manager.requestWhenInUseAuthorization()
+            manager.requestLocation()
+        case .denied, .restricted:
+            return
+        default:
+            manager.requestLocation()
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -499,7 +519,7 @@ struct LettersHomeView: View {
         .onChange(of: scenePhase) {
             if scenePhase == .active {
                 model.rescan()
-                model.refreshPlace()
+                model.refreshPlace(promptIfNeeded: false)
             }
         }
         // A tapped address link inside a letter asks for another letter.

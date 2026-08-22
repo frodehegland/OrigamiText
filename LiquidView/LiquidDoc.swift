@@ -42,6 +42,12 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// recorded it — a place name, free-form. Notes captured on the move
     /// (some by voice, outside Origami Text) carry one.
     var location: String? = nil
+    /// The journal or proceedings the document is part of, when it
+    /// declares one — "37th ACM Conference on Hypertext". Captured at
+    /// import (LaTeX's \acmJournal/\acmConference, an EPUB's own
+    /// metadata) and carried into the EPUB export's Visual-Meta, so
+    /// the Library's Journals view can group by it.
+    var publication: String? = nil
     /// Defined Concepts — the document's glossary: a shared pool of
     /// nodes (id, name, definition) that spatial layouts arrange and
     /// citations attach to. Books and papers carry them; the EPUB
@@ -433,6 +439,10 @@ extension LiquidDoc {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .flatMap { $0.isEmpty ? nil : $0 }
 
+        let publication = raw.publication
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+
         // Tolerant, like links: a concept or position missing its
         // essentials is skipped, never fatal.
         let concepts: [Concept] = (raw.concepts ?? []).compactMap { rawConcept in
@@ -495,6 +505,7 @@ extension LiquidDoc {
                          onBehalfOf: onBehalfOf,
                          documentType: documentType,
                          location: location,
+                         publication: publication,
                          concepts: concepts,
                          layouts: layouts,
                          mapConnections: mapConnections,
@@ -530,6 +541,7 @@ extension LiquidDoc {
         var onBehalfOf: String?
         var documentType: String?
         var location: String?
+        var publication: String?
         var concepts: [RawConcept]?
         var layouts: [RawLayout]?
         var connections: [RawConnection]?
