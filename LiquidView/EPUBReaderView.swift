@@ -84,8 +84,13 @@ struct PaintedAnnotation: Hashable, Sendable {
     let fragment: String?
     let exact: String
     let note: String?
-    /// "highlight" or "comment" — picks the highlight tint.
+    /// "highlight" or "comment" — the popover's wording.
     let kind: String
+    /// The kind's ink, "RRGGBB" — the annotated words take this colour
+    /// in the type itself (Settings ▸ Annotations).
+    let colorHex: String
+    /// Strikethrough draws its line instead of colouring.
+    let strike: Bool
 }
 
 /// A reading theme: the page's background and text colours, applied as CSS
@@ -372,66 +377,10 @@ struct EPUBReaderScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Full focus (full screen) is bare: just the page. The title
-            // bar, contents, chapter stepping, and Close return when the
-            // window is not full screen.
-            if !model.isFullScreen {
-                HStack(spacing: 10) {
-                    Text(book.title)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Spacer()
-                    // The contents and chapter stepping belong to the
-                    // faithful rendering; the native styles carry their
-                    // own contents in the foot bar.
-                    if readerMode == .faithful {
-                        Button {
-                            if tocEntries.isEmpty { loadContents() }
-                            showsContents = true
-                        } label: {
-                            Label("Contents", systemImage: "list.bullet")
-                        }
-                        .help("Table of contents")
-                        .popover(isPresented: $showsContents) {
-                            ReaderContentsList(entries: tocEntries,
-                                               currentSubpath: subpath(of: currentContent)) { entry in
-                                showsContents = false
-                                open(entry)
-                            }
-                        }
-                        if chapters.count > 1 {
-                            Button {
-                                step(by: -1)
-                            } label: {
-                                Label("Previous Chapter", systemImage: "chevron.left")
-                            }
-                            .disabled(chapterIndex == 0)
-                            .help("Previous chapter")
-                            Text("\(chapterIndex + 1) / \(chapters.count)")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                            Button {
-                                step(by: 1)
-                            } label: {
-                                Label("Next Chapter", systemImage: "chevron.right")
-                            }
-                            .disabled(chapterIndex >= chapters.count - 1)
-                            .help("Next chapter")
-                        }
-                    }
-                    Button {
-                        onClose()
-                    } label: {
-                        Label("Close", systemImage: "xmark")
-                    }
-                    .help("Close this EPUB")
-                }
-                .labelStyle(.iconOnly)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                Divider()
-            }
+            // No top strip: the article opens straight onto its own
+            // title. Contents and chapter stepping live in the foot
+            // bar's contents popover; the way back to the library is
+            // the sidebar (or ⌘L), never a close button.
             if showsFind {
                 findBar
             }
@@ -479,6 +428,15 @@ struct EPUBReaderScreen: View {
             showsFind = true
             findForward = true
             findStamp += 1
+        }
+        // A find-fold landing has shown its matches; the highlight
+        // fades and the find bar folds away.
+        .onChange(of: model.readerFindClear) {
+            withAnimation(.easeInOut(duration: 0.6)) {
+                showsFind = false
+                findText = ""
+                findStamp += 1
+            }
         }
         .sheet(item: $commentSelection) { selection in
             ReaderCommentSheet(selection: selection) { note in
@@ -533,6 +491,7 @@ struct EPUBReaderScreen: View {
             annotations: paintedAnnotations,
             annotationsStamp: model.annotationsStamp,
             onHighlight: { selection in model.addHighlight(on: selection) },
+            onAnnotate: { kind, selection in model.addTag(kind, on: selection) },
             onAddComment: { selection in commentSelection = selection },
             onRemoveAnnotation: { id in model.removeAnnotation(id: id) },
             // Step 0 substrate: for now, clicking a semantic element
@@ -590,9 +549,54 @@ struct EPUBReaderScreen: View {
             findForward: findForward)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // The same foot the native styles carry — clicking Scroll
-            // (or an Outline shape) leaves the faithful page.
+            // (or an Outline shape) leaves the faithful page. The
+            // contents button opens the book's own TOC, with the
+            // chapter stepper for plain chaptered books.
             ReadingFootBar(modes: availableModes,
-                           outlineAvailable: model.readingDoc(forBook: book) != nil)
+                           outlineAvailable: model.readingDoc(forBook: book) != nil,
+                           showContents: $showsContents,
+                           contents: { AnyView(faithfulContents) })
+        }
+    }
+
+    /// The faithful page's contents popover — the TOC, and for a plain
+    /// chaptered book the chapter stepper — living in the foot bar now
+    /// that the top strip is gone.
+    private var faithfulContents: some View {
+        VStack(spacing: 0) {
+            if chapters.count > 1 {
+                HStack(spacing: 10) {
+                    Button {
+                        step(by: -1)
+                    } label: {
+                        Label("Previous Chapter", systemImage: "chevron.left")
+                    }
+                    .disabled(chapterIndex == 0)
+                    .help("Previous chapter")
+                    Text("\(chapterIndex + 1) / \(chapters.count)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Button {
+                        step(by: 1)
+                    } label: {
+                        Label("Next Chapter", systemImage: "chevron.right")
+                    }
+                    .disabled(chapterIndex >= chapters.count - 1)
+                    .help("Next chapter")
+                }
+                .labelStyle(.iconOnly)
+                .padding(8)
+                Divider()
+            }
+            ReaderContentsList(entries: tocEntries,
+                               currentSubpath: subpath(of: currentContent)) { entry in
+                showsContents = false
+                open(entry)
+            }
+        }
+        .onAppear {
+            if tocEntries.isEmpty { loadContents() }
         }
     }
 
@@ -607,16 +611,19 @@ struct EPUBReaderScreen: View {
                 switch selector {
                 case .fragment(let value, _): fragment = fragment ?? value
                 case .quote(let words, _, _): if exact.isEmpty { exact = words }
-                case .position: break
+                case .position, .progression: break
                 }
             }
+            let kind = ReaderAnnotationKind.kind(of: annotation)
             return PaintedAnnotation(
                 id: annotation.id,
                 fragment: fragment,
                 exact: exact,
                 note: annotation.body?.value,
                 kind: annotation.motivation == WebAnnotation.Motivation.commenting
-                    ? "comment" : "highlight")
+                    ? "comment" : "highlight",
+                colorHex: AnnotationKindStyle.hex(of: kind ?? .highlight),
+                strike: kind == .strikethrough)
         }
     }
 
@@ -653,24 +660,32 @@ struct EPUBReaderScreen: View {
         }
     }
 
-    /// Builds a three-flavour citation from the selection and the open book's
-    /// stored metadata, then writes it to the clipboard — the same "Copy as
-    /// Quote" that the document reader offers, now reachable in the EPUB's own
-    /// context menu. The address is the book's Origami id; paragraph-scoped
-    /// fragments are a later step.
+    /// Builds the citation from the selection and the open book's stored
+    /// metadata, then writes it to the clipboard as pure BibTeX — the
+    /// same "Copy as Quote" that the document reader offers, reachable
+    /// in the EPUB's own context menu. The address is the book's Origami
+    /// id; paragraph-scoped fragments are a later step.
     private func copyAsQuote(_ text: String) {
         guard !text.isEmpty else { return }
         let record = model.epubRecords.first { $0.folder == book.id }
+        let address = record?.id ?? book.id
         let citation = OrigamiCitation(
-            to: record?.id ?? book.id,
+            to: address,
             fragment: nil,
             rel: "cites",
             quotedText: text,
             author: record?.author ?? "",
             year: record?.dateISO.map { String($0.prefix(4)) } ?? "",
-            bibtex: nil)
+            bibtex: OrigamiReading.bibTeXEntry(
+                title: record?.title ?? book.title,
+                author: record?.author ?? "",
+                year: record?.dateISO.map { String($0.prefix(4)) },
+                publication: record?.publication,
+                quote: text,
+                annotation: model.documentAnnotation(forAddress: address)?.body?.value,
+                address: address))
         CitationClipboard.write(citation)
-        model.showNote("Copied as quote")
+        model.showNote("Copied as a BibTeX quote")
     }
 }
 
@@ -699,6 +714,8 @@ struct EPUBReaderView: NSViewRepresentable {
     var annotationsStamp: Int = 0
     /// "Highlight" was chosen from the context menu, on this selection.
     var onHighlight: (ReaderSelection) -> Void = { _ in }
+    /// An Annotate kind was chosen from the context menu, on this selection.
+    var onAnnotate: (ReaderAnnotationKind, ReaderSelection) -> Void = { _, _ in }
     /// "Add Comment…" was chosen from the context menu, on this selection.
     var onAddComment: (ReaderSelection) -> Void = { _ in }
     /// The reader asked to remove an annotation (from its click-popover).
@@ -810,6 +827,9 @@ struct EPUBReaderView: NSViewRepresentable {
         webView.onHighlight = { [weak coordinator = context.coordinator] selection in
             coordinator?.onHighlight(selection)
         }
+        webView.onAnnotate = { [weak coordinator = context.coordinator] kind, selection in
+            coordinator?.onAnnotate(kind, selection)
+        }
         webView.onAddComment = { [weak coordinator = context.coordinator] selection in
             coordinator?.onAddComment(selection)
         }
@@ -836,6 +856,7 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.resolveEndnote = resolveEndnote
         coordinator.onCitation = onCitation
         coordinator.onHighlight = onHighlight
+        coordinator.onAnnotate = onAnnotate
         coordinator.onAddComment = onAddComment
         coordinator.onRemoveAnnotation = onRemoveAnnotation
         coordinator.onChapterStep = onChapterStep
@@ -930,6 +951,7 @@ struct EPUBReaderView: NSViewRepresentable {
         var resolveEndnote: (String) -> String? = { _ in nil }
         var onCitation: (_ key: String, _ ref: String) -> Void = { _, _ in }
         var onHighlight: (ReaderSelection) -> Void = { _ in }
+        var onAnnotate: (ReaderAnnotationKind, ReaderSelection) -> Void = { _, _ in }
         var onAddComment: (ReaderSelection) -> Void = { _ in }
         var onRemoveAnnotation: (String) -> Void = { _ in }
         var onChapterStep: (Int) -> Void = { _ in }
@@ -1087,7 +1109,9 @@ struct EPUBReaderView: NSViewRepresentable {
             let list = annotations.map { annotation -> [String: Any] in
                 var item: [String: Any] = ["id": annotation.id,
                                            "exact": annotation.exact,
-                                           "kind": annotation.kind]
+                                           "kind": annotation.kind,
+                                           "color": annotation.colorHex,
+                                           "strike": annotation.strike]
                 if let fragment = annotation.fragment { item["fragment"] = fragment }
                 if let note = annotation.note { item["note"] = note }
                 return item
@@ -1529,9 +1553,6 @@ struct EPUBReaderView: NSViewRepresentable {
     (function(){
       var style = document.getElementById('origami-annotation-style') || document.createElement('style');
       style.id = 'origami-annotation-style';
-      style.textContent =
-        '::highlight(origami-highlight){background-color:rgba(255,214,10,0.45);}'
-        + '::highlight(origami-comment){background-color:rgba(255,159,10,0.45);}';
       (document.head || document.documentElement).appendChild(style);
 
       var painted = [];
@@ -1568,7 +1589,10 @@ struct EPUBReaderView: NSViewRepresentable {
       window.origamiPaintAnnotations = function(list){
         if (typeof Highlight === 'undefined' || !CSS.highlights) return;
         painted = [];
-        var highlights = new Highlight(), comments = new Highlight();
+        // The annotated words take their kind's colour in the type
+        // itself — one highlight group per colour (and one more for
+        // strikethrough), styled as it arrives from Settings.
+        var groups = {}, rules = '';
         (list || []).forEach(function(a){
           var host = a.fragment
             ? (document.getElementById(a.fragment)
@@ -1583,11 +1607,24 @@ struct EPUBReaderView: NSViewRepresentable {
             range.selectNodeContents(host);
           }
           if (!range) return;
-          (a.kind === 'comment' ? comments : highlights).add(range);
+          var color = a.color || 'E8C51D';
+          var key = 'origami-k' + color + (a.strike ? '-s' : '');
+          if (!groups[key]) {
+            groups[key] = new Highlight();
+            rules += '::highlight(' + key + '){'
+              + (a.strike
+                 ? 'text-decoration:line-through;text-decoration-color:#' + color + ';'
+                 : 'color:#' + color + ';')
+              + '}';
+          }
+          groups[key].add(range);
           painted.push({id: a.id, kind: a.kind, note: a.note || '', range: range});
         });
-        CSS.highlights.set('origami-highlight', highlights);
-        CSS.highlights.set('origami-comment', comments);
+        CSS.highlights.clear();
+        Object.keys(groups).forEach(function(key){
+          CSS.highlights.set(key, groups[key]);
+        });
+        style.textContent = rules;
       };
 
       var bridge = window.webkit && window.webkit.messageHandlers
@@ -1719,6 +1756,8 @@ final class ReaderWebView: WKWebView {
     var onCopyQuote: (String) -> Void = { _ in }
     /// Invoked when "Highlight" is chosen on the current selection.
     var onHighlight: (ReaderSelection) -> Void = { _ in }
+    /// Invoked when an Annotate kind is chosen on the current selection.
+    var onAnnotate: (ReaderAnnotationKind, ReaderSelection) -> Void = { _, _ in }
     /// Invoked when "Add Comment…" is chosen on the current selection.
     var onAddComment: (ReaderSelection) -> Void = { _ in }
     /// Invoked when Remove is chosen in an annotation's popover.
@@ -1753,10 +1792,28 @@ final class ReaderWebView: WKWebView {
                 pendingDefinition = entry
                 addItem(to: menu, title: "Show Definition", action: #selector(showDefinition(_:)))
             }
-            // The reader's own marks: a highlight, or a comment anchored to
-            // the words — stored in the book's sidecar, never in the book.
+            // The reader's own marks: the Annotate vocabulary (after
+            // Reader's), or a comment anchored to the words — stored in
+            // the book's sidecar, never in the book.
             if currentSelection != nil {
-                addItem(to: menu, title: "Highlight", action: #selector(highlightSelection(_:)))
+                let annotate = NSMenuItem(title: "Highlight", action: nil, keyEquivalent: "")
+                let submenu = NSMenu(title: "Highlight")
+                for kind in ReaderAnnotationKind.allCases {
+                    // Reader's grouping: Important/Quotable, the
+                    // judgments, then Strikethrough on its own.
+                    if kind == .great || kind == .strikethrough {
+                        submenu.addItem(.separator())
+                    }
+                    let item = NSMenuItem(title: AnnotationKindStyle.displayName(of: kind),
+                                          action: #selector(annotateSelection(_:)),
+                                          keyEquivalent: kind.keyEquivalent)
+                    item.keyEquivalentModifierMask = []
+                    item.target = self
+                    item.representedObject = kind.rawValue
+                    submenu.addItem(item)
+                }
+                annotate.submenu = submenu
+                menu.addItem(annotate)
                 addItem(to: menu, title: "Add Comment…", action: #selector(commentOnSelection(_:)))
             }
             addItem(to: menu, title: "Copy as Quote", action: #selector(copyAsQuote(_:)))
@@ -1793,6 +1850,13 @@ final class ReaderWebView: WKWebView {
     @objc private func highlightSelection(_ sender: Any?) {
         guard let selection = currentSelection else { return }
         onHighlight(selection)
+    }
+
+    @objc private func annotateSelection(_ sender: NSMenuItem) {
+        guard let selection = currentSelection,
+              let raw = sender.representedObject as? String,
+              let kind = ReaderAnnotationKind(rawValue: raw) else { return }
+        onAnnotate(kind, selection)
     }
 
     @objc private func commentOnSelection(_ sender: Any?) {

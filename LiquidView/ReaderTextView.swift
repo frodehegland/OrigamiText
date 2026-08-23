@@ -55,6 +55,38 @@ struct ReaderTextView: NSViewRepresentable {
                 menu.removeItem(item)
             }
         }
+
+        /// Triple-click selects the sentence around the click — the
+        /// reading's natural unit — unless Settings ▸ Reading turns it
+        /// back to the paragraph, AppKit's own way. Double-click keeps
+        /// the word.
+        override func selectionRange(forProposedRange proposedCharRange: NSRange,
+                                     granularity: NSSelectionGranularity) -> NSRange {
+            let standard = super.selectionRange(forProposedRange: proposedCharRange,
+                                                granularity: granularity)
+            guard granularity == .selectByParagraph,
+                  UserDefaults.standard.object(
+                      forKey: AppSettings.tripleClickSelectsSentenceKey) as? Bool ?? true,
+                  let storage = textStorage
+            else { return standard }
+            let text = storage.string as NSString
+            var sentence = standard
+            text.enumerateSubstrings(in: NSRange(location: 0, length: text.length),
+                                     options: .bySentences) { _, range, _, stop in
+                if NSLocationInRange(proposedCharRange.location, range) {
+                    sentence = range
+                    stop.pointee = true
+                }
+            }
+            // The sentence without its trailing whitespace.
+            while sentence.length > 0 {
+                let last = text.character(at: sentence.location + sentence.length - 1)
+                guard let scalar = Unicode.Scalar(last),
+                      CharacterSet.whitespacesAndNewlines.contains(scalar) else { break }
+                sentence.length -= 1
+            }
+            return sentence.length > 0 ? sentence : standard
+        }
     }
 
     func makeNSView(context: Context) -> ReaderNSTextView {

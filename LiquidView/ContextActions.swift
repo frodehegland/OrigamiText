@@ -86,7 +86,8 @@ enum ContextActionBuilder {
                     let year = doc.date?.yearText ?? doc.created.formatted(.dateTime.year())
                     CitationClipboard.write(OrigamiCitation(
                         to: doc.id, fragment: nil, rel: "cites",
-                        quotedText: trimmed, author: doc.displayAuthor, year: year, bibtex: nil))
+                        quotedText: trimmed, author: doc.displayAuthor, year: year,
+                        bibtex: OrigamiReading.bibTeXEntry(for: doc, quote: trimmed)))
                 })
             }
             // The selected words as a person: offered when the library

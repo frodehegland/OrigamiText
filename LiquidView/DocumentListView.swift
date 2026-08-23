@@ -41,15 +41,15 @@ enum LibraryListMode: Hashable {
     case setAside
 }
 
-/// The pile actions every EPUB row's context menu offers: Top of Pile
-/// (pins it first in every list), Set Aside (out of the lists, into the
-/// sidebar's Set Aside shelf — or back), then Move to Trash.
+/// The pile actions every EPUB row's context menu offers: Pin (first
+/// in every list), Set Aside (out of the lists, into the sidebar's Set
+/// Aside shelf — or back), then Move to Trash.
 struct EPUBPileMenu: View {
     @Environment(AppModel.self) private var model
     let record: EPUBRecord
 
     var body: some View {
-        Toggle("Top of Pile", isOn: Binding(
+        Toggle("Pin", isOn: Binding(
             get: { model.isTopOfPile(record) },
             set: { _ in model.toggleTopOfPile(record) }))
         if model.isSetAside(record) {
@@ -114,9 +114,16 @@ struct EPUBLibraryListView: View {
         List(selection: epubListSelection(model)) {
             ForEach(records) { record in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(record.title)
-                        .fontWeight(model.isUnread(record) ? .bold : .regular)
-                        .lineLimit(2)
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        if model.isTopOfPile(record) {
+                            Image(systemName: "pin.fill")
+                                .font(.caption)
+                                .foregroundStyle(EmberIconLabelStyle.ember)
+                        }
+                        Text(record.title)
+                            .fontWeight(model.isUnread(record) ? .bold : .regular)
+                            .lineLimit(2)
+                    }
                     HStack(spacing: 6) {
                         Text(record.author)
                         if let filed = model.epubFolder(for: record.id), !inFolder {
@@ -126,6 +133,15 @@ struct EPUBLibraryListView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    // The reader's whole-document annotation, quiet
+                    // lines under the author.
+                    if let note = model.documentAnnotationNote(forRecordID: record.id) {
+                        Text(note)
+                            .font(.caption)
+                            .italic()
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .tag(record.id)
@@ -145,6 +161,8 @@ struct EPUBLibraryListView: View {
                 }
             }
         }
+        // The list starts right under the toolbar, no dead air.
+        .contentMargins(.top, 0, for: .scrollContent)
         .overlay {
             if records.isEmpty {
                 ContentUnavailableView {
@@ -160,7 +178,7 @@ struct EPUBLibraryListView: View {
         switch mode {
         case .folder: "Empty Folder"
         case .inbox: "Nothing Unread"
-        case .topOfPile: "Nothing on Top"
+        case .topOfPile: "Nothing Pinned"
         case .setAside: "Nothing Set Aside"
         default: "No EPUBs Yet"
         }
@@ -173,7 +191,7 @@ struct EPUBLibraryListView: View {
         case .inbox:
             "Every opened EPUB has been read. New arrivals gather here until they are opened."
         case .topOfPile:
-            "Right-click a book and choose Top of Pile — it gathers here and floats first in every list."
+            "Right-click a book and choose Pin — it gathers here and floats first in every list."
         case .setAside:
             "Right-click a book and choose Set Aside to tuck it out of the lists — it waits here until brought back."
         case .timeline where timelineUnreadOnly, .alphabetical where alphabeticalUnreadOnly:
@@ -208,14 +226,30 @@ struct EPUBRecordRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(record.title)
-                .fontWeight(model.isUnread(record) ? .bold : .regular)
-                .lineLimit(2)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                if model.isTopOfPile(record) {
+                    Image(systemName: "pin.fill")
+                        .font(.caption)
+                        .foregroundStyle(EmberIconLabelStyle.ember)
+                }
+                Text(record.title)
+                    .fontWeight(model.isUnread(record) ? .bold : .regular)
+                    .lineLimit(2)
+            }
             if showsSubtitle {
                 Text(record.author)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+            }
+            // The reader's whole-document annotation, quiet lines
+            // under the author.
+            if let note = model.documentAnnotationNote(forRecordID: record.id) {
+                Text(note)
+                    .font(.caption)
+                    .italic()
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -272,7 +306,8 @@ struct AuthorBooksListView: View {
     var body: some View {
         List(selection: epubListSelection(model)) {
             Section {
-                ForEach(model.epubRecords(byAuthor: name)) { record in
+                // The pinned books simply first, as in every list.
+                ForEach(model.pinnedFirst(model.epubRecords(byAuthor: name))) { record in
                     EPUBRecordRow(record: record, showsSubtitle: false)
                 }
             } header: {
@@ -285,6 +320,8 @@ struct AuthorBooksListView: View {
                 .help("Back to Authors")
             }
         }
+        // The list starts right under the toolbar, no dead air.
+        .contentMargins(.top, 0, for: .scrollContent)
         .overlay {
             if model.epubRecords(byAuthor: name).isEmpty {
                 ContentUnavailableView {
@@ -355,61 +392,46 @@ struct JournalsListView: View {
     }
 }
 
-/// Library ▸ Journals ▸ one venue: the books it holds here in three
-/// standings, each divided from the next by a rule — Top of Pile
-/// first (pinned, marked), then the rest, then the books Set Aside
-/// (dimmed, marked). The header row leads back to the venue list.
+/// Library ▸ Journals ▸ one venue: the books it holds here, the pinned
+/// ones simply first. The header is the venue's name; the sidebar is
+/// the way back. Books Set Aside stay hidden behind a pill at the foot
+/// of the list, and unfold below it when asked.
 struct JournalBooksListView: View {
     @Environment(AppModel.self) private var model
     let name: String
+    /// The Set Aside books stay tucked behind the foot pill until asked.
+    @State private var showsSetAside = false
 
     var body: some View {
-        let all = model.epubRecords(inPublication: name)
-        let pinned = all.filter { model.isTopOfPile($0) }
-        let regular = all.filter { !model.isTopOfPile($0) }
+        let shown = model.pinnedFirst(model.epubRecords(inPublication: name))
         let aside = model.epubSetAsideRecords(inPublication: name)
         List(selection: epubListSelection(model)) {
             Section {
-                ForEach(pinned) { record in
-                    EPUBRecordRow(record: record)
-                        .overlay(alignment: .topTrailing) {
-                            Image(systemName: "pin.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                }
-                if !pinned.isEmpty, !(regular.isEmpty && aside.isEmpty) {
-                    groupRule
-                }
-                ForEach(regular) { record in
+                ForEach(shown) { record in
                     EPUBRecordRow(record: record)
                 }
                 if !aside.isEmpty {
-                    if !(pinned.isEmpty && regular.isEmpty) {
-                        groupRule
-                    }
-                    ForEach(aside) { record in
-                        EPUBRecordRow(record: record)
-                            .opacity(0.55)
-                            .overlay(alignment: .topTrailing) {
-                                Image(systemName: "moon.zzz")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
+                    setAsidePill(count: aside.count)
+                    if showsSetAside {
+                        ForEach(aside) { record in
+                            EPUBRecordRow(record: record)
+                                .opacity(0.55)
+                                .overlay(alignment: .topTrailing) {
+                                    Image(systemName: "moon.zzz")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                        }
                     }
                 }
             } header: {
-                Button {
-                    model.sidebarSelection = .epubJournals
-                } label: {
-                    Label(name, systemImage: "chevron.backward")
-                }
-                .buttonStyle(.plain)
-                .help("Back to the venues")
+                Text(name)
             }
         }
+        // The list starts right under the toolbar, no dead air.
+        .contentMargins(.top, 0, for: .scrollContent)
         .overlay {
-            if pinned.isEmpty, regular.isEmpty, aside.isEmpty {
+            if shown.isEmpty, aside.isEmpty {
                 ContentUnavailableView {
                     Label(name, systemImage: "newspaper")
                 } description: {
@@ -419,16 +441,39 @@ struct JournalBooksListView: View {
         }
     }
 
-    /// The rule between standings: one line, a little stronger than
-    /// the row separators — its own row's separators hidden, so a
-    /// plain Divider's triple-line effect never appears.
-    private var groupRule: some View {
-        Rectangle()
-            .fill(.tertiary)
-            .frame(height: 1.5)
-            .listRowSeparator(.hidden)
-            .padding(.vertical, 2)
+    /// The pill at the foot of the articles: outlined while the Set
+    /// Aside books rest hidden, filled while they stand revealed below.
+    private func setAsidePill(count: Int) -> some View {
+        HStack {
+            Spacer()
+            Button {
+                withAnimation(.snappy) { showsSetAside.toggle() }
+            } label: {
+                Text("Set Aside")
+                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 3)
+                    .foregroundStyle(showsSetAside
+                                     ? AnyShapeStyle(Color.white)
+                                     : AnyShapeStyle(.secondary))
+                    .background(Capsule().fill(showsSetAside ? Color.accentColor : .clear))
+                    .overlay {
+                        if !showsSetAside {
+                            Capsule().strokeBorder(.secondary.opacity(0.6))
+                        }
+                    }
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help(showsSetAside
+                  ? "Tuck the Set Aside books away again"
+                  : "Reveal the \(count) Set Aside book\(count == 1 ? "" : "s") below")
+            Spacer()
+        }
+        .listRowSeparator(.hidden)
+        .padding(.vertical, 4)
     }
+
 }
 
 /// Views ▸ People: the people the user is tracking. Automatic extraction of

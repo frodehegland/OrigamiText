@@ -133,6 +133,8 @@ struct ReadingCommands: Commands {
 
 struct OrigamiReadingView: View {
     @Environment(AppModel.self) private var model   // OT: was AppState
+    /// Lift opens the document annotation in its own window.
+    @Environment(\.openWindow) private var openWindow
     let doc: LiquidDoc
 
     /// Find in the book: the screen's ⌘F bar feeds these; each stamp
@@ -248,11 +250,51 @@ struct OrigamiReadingView: View {
     /// Inline notes travelling as stretchtext: the ids whose [] is
     /// unfolded, the words bracketed in place.
     @State private var openInlineNotes: Set<String> = []
-    @State private var commentTarget: CommentTarget?
+    @State private var annotationEditor: AnnotationEditTarget?
+    @State private var marginNoteTarget: MarginNoteTarget?
+    /// The page surface, for turning a menu click's window point into
+    /// page coordinates — where a new Note stands.
+    @State private var surfaceBox = MarginNoteSurfaceBox()
+    /// Where each paragraph stands on the page — reported after layout,
+    /// so page notes can anchor their placement to the nearest one.
+    @State private var paragraphFrames: [String: CGRect] = [:]
+
+    /// A page point as a placement: anchored to the nearest paragraph
+    /// (by its top edge) with the offset from its top-left, so the note
+    /// re-places itself across resizes and Macs. With no paragraphs
+    /// laid out yet, the point stands absolute.
+    private func placement(for point: CGPoint) -> WebAnnotation.Placement {
+        let nearest = paragraphFrames.min {
+            abs($0.value.midY - point.y) < abs($1.value.midY - point.y)
+        }
+        guard let nearest else {
+            return WebAnnotation.Placement(near: nil, dx: point.x, dy: point.y)
+        }
+        return WebAnnotation.Placement(near: nearest.key,
+                                       dx: point.x - nearest.value.minX,
+                                       dy: point.y - nearest.value.minY)
+    }
+
+    /// Where a page note stands now: its placement resolved against the
+    /// current layout, the anchor paragraph's drift followed; absolute
+    /// when the anchor is gone; the pre-placement local position for
+    /// notes from before placements travelled.
+    private func slipPosition(for annotation: WebAnnotation) -> CGPoint? {
+        if let placement = annotation.placement {
+            if let near = placement.near, let frame = paragraphFrames[near] {
+                return CGPoint(x: frame.minX + placement.dx,
+                               y: frame.minY + placement.dy)
+            }
+            return CGPoint(x: placement.dx, y: placement.dy)
+        }
+        return model.marginNotePosition(forAnnotationID: annotation.id)
+    }
     @State private var conceptTarget: LiquidDoc.Concept?
     @State private var citationTarget: CitationTarget?
     @State private var noteTarget: NoteTarget?
     @State private var showReferences = false
+    /// The header pill's editor for the whole-document annotation.
+    @State private var showsDocumentAnnotation = false
     /// A selection being viewed differently — Flow lines or an AI
     /// rewrite. While set, everything unselected reads grey and any
     /// click on the grey returns to normal.
@@ -331,10 +373,73 @@ struct OrigamiReadingView: View {
         FoldTarget(rawValue: foldTargetRaw) ?? .headings
     }
 
-    private struct CommentTarget: Identifiable {
+    /// The paragraph's own sentence for a click with no selection: the
+    /// clicked sentence's position in the rendered words, carried to
+    /// the same position in the raw text (rendering resolves citations
+    /// and marks, so the words can differ). A heading is its own
+    /// sentence; an unplaceable click anchors to the first sentence —
+    /// never to the whole paragraph.
+    private func anchorSentence(for paragraph: LiquidDoc.Paragraph,
+                                rendered clicked: String?) -> String? {
+        let rawSentences = OrigamiReading.sentences(of: paragraph.text)
+        guard paragraph.heading == nil else { return paragraph.text }
+        guard let clicked else { return rawSentences.first }
+        let renderedText = String(rendered(readingText(for: paragraph)).characters)
+        let renderedSentences = OrigamiReading.sentences(of: renderedText)
+        let wanted = clicked.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let index = renderedSentences.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines) == wanted
+        }), rawSentences.indices.contains(index) {
+            return rawSentences[index]
+        }
+        // The click's words as they stand, when the raw text carries
+        // them verbatim; else the paragraph's opening sentence.
+        if paragraph.text.range(of: wanted,
+                                options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+            return wanted
+        }
+        return rawSentences.first
+    }
+
+    /// A written annotation opened from its words, for the editor sheet.
+    struct AnnotationEditTarget: Identifiable {
+        let annotation: WebAnnotation
         let paragraphID: String
-        let preview: String
-        var id: String { paragraphID }
+        var id: String { annotation.id }
+    }
+
+    /// A margin note being written: where the ctrl-click fell, in the
+    /// article's own coordinates.
+    private struct MarginNoteTarget: Identifiable {
+        let point: CGPoint
+        var id: String { "\(point.x)×\(point.y)" }
+    }
+
+    /// The notes standing on the page, each at the spot it was written —
+    /// free to sit anywhere, like little slips on the document. A click
+    /// opens the whole note with Delete, Copy, and Save; click-and-hold
+    /// drags one to a new spot, remembered on this Mac.
+    @ViewBuilder private var marginNotesLayer: some View {
+        let noteSize = max((NSFont.preferredFont(forTextStyle: .body).pointSize
+                            + CGFloat(fontDelta)) / 3, 8)
+        ForEach(model.marginNotes(for: doc), id: \.id) { annotation in
+            if let position = slipPosition(for: annotation) {
+                MarginNoteView(
+                    note: annotation,
+                    fontSize: noteSize,
+                    position: position,
+                    onMove: { moved in
+                        // The move travels in the sidecar, anchored to
+                        // the nearest paragraph at the new spot.
+                        model.setNotePlacement(placement(for: moved),
+                                               for: annotation, in: doc)
+                    },
+                    onOpen: {
+                        annotationEditor = AnnotationEditTarget(
+                            annotation: annotation, paragraphID: "")
+                    })
+            }
+        }
     }
 
     private struct CitationTarget: Identifiable {
@@ -383,8 +488,9 @@ struct OrigamiReadingView: View {
                 if let term = model.readerFindFoldTerm,
                    let found = OrigamiReading.folded(doc, matching: term) {
                     // The find-fold: headings and the full sentences
-                    // around every match, each highlighted by Find.
-                    foldedView(found, annotations: annotations)
+                    // around every match, each highlighted by Find and
+                    // each a click into the full reading at that place.
+                    findFoldView(found, annotations: annotations)
                 } else if foldLevel > 0,
                    let folded = OrigamiReading.folded(doc, level: foldLevel,
                                                       expanded: expandedFold) {
@@ -584,10 +690,30 @@ struct OrigamiReadingView: View {
             if let swipeMonitor { NSEvent.removeMonitor(swipeMonitor) }
             swipeMonitor = nil
         }
-        .sheet(item: $commentTarget) { target in
-            ReadingCommentComposer(preview: target.preview) { text in
-                model.addComment(text, to: doc, paragraphID: target.paragraphID)
+        // A note being written: Save stands its first sentence where
+        // the ctrl-click fell — a free slip on the page, touching no
+        // text, its place travelling in the sidecar; dismissing writes
+        // nothing.
+        .sheet(item: $marginNoteTarget) { target in
+            ReadingCommentComposer(preview: doc.title) { text in
+                model.addMarginNote(text, to: doc,
+                                    placement: placement(for: target.point))
             }
+        }
+        // An annotation chip opened: the whole note, with Delete, Copy
+        // (a citation to this document, the note in its Annotation
+        // field), and Save.
+        .sheet(item: $annotationEditor) { target in
+            AnnotationEditorSheet(
+                text: target.annotation.body?.value ?? "",
+                onDelete: { model.removeAnnotation(target.annotation, for: doc) },
+                onCopy: { text in
+                    copyAnnotationCitation(paragraphID: target.paragraphID,
+                                           annotation: text)
+                },
+                onSave: { text in
+                    model.updateAnnotation(target.annotation, note: text, for: doc)
+                })
         }
         .sheet(item: $conceptTarget) { concept in
             ConceptSheet(concept: concept)
@@ -831,15 +957,25 @@ struct OrigamiReadingView: View {
     /// scroll remembered per document.
     private func articleView(_ annotations: [String: [ResolvedAnnotation]]) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: flowSpacing) {
-                header
-                Divider()
-                flow(doc.body ?? [], annotations: annotations)
-                referencesSection
+            ZStack(alignment: .topLeading) {
+                // The page behind the paragraphs: a ctrl-click on no
+                // paragraph offers "Note…" — the note then stands where
+                // the click fell.
+                MarginNoteSurface(box: surfaceBox) { point in
+                    marginNoteTarget = MarginNoteTarget(point: point)
+                }
+                VStack(alignment: .leading, spacing: flowSpacing) {
+                    header
+                    Divider()
+                    flow(doc.body ?? [], annotations: annotations)
+                    referencesSection
+                }
+                .padding([.horizontal, .bottom], 32).padding(.top, 10)
+                .frame(maxWidth: measure, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                marginNotesLayer
             }
-            .padding(32)
-            .frame(maxWidth: measure, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .coordinateSpace(name: "origamiPage")
         }
         .scrollPosition($scrollPosition)
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -900,9 +1036,57 @@ struct OrigamiReadingView: View {
                 }
                 referencesSection
             }
-            .padding(32)
+            .padding([.horizontal, .bottom], 32).padding(.top, 10)
             .frame(maxWidth: measure, alignment: .leading)
             .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// The find-fold's page: every heading and the full sentences
+    /// carrying the found words, matches highlighted — and every line
+    /// a click, leaving the fold and landing the full reading on that
+    /// very place.
+    private func findFoldView(_ paragraphs: [LiquidDoc.Paragraph],
+                              annotations: [String: [ResolvedAnnotation]]) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: flowSpacing) {
+                header
+                Divider()
+                ForEach(paragraphs, id: \.id) { paragraph in
+                    Text(inlineText(paragraph,
+                                    highlights: annotations[paragraph.id] ?? []))
+                        .font(paragraphFont(paragraph))
+                        .foregroundStyle(paragraph.heading != nil
+                            ? (themeHeading.map(AnyShapeStyle.init)
+                               ?? AnyShapeStyle(.primary))
+                            : AnyShapeStyle(.primary))
+                        .contentShape(Rectangle())
+                        .onTapGesture { jumpFromFindFold(to: paragraph.id) }
+                        .help("Open the full reading at this place")
+                        .id(paragraph.id)
+                }
+            }
+            .padding([.horizontal, .bottom], 32).padding(.top, 10)
+            .frame(maxWidth: measure, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// A find-fold line clicked: the fold leaves, the full reading
+    /// stands, and the view lands on the clicked place — after the new
+    /// layout is in, the fold toggles' own measure.
+    private func jumpFromFindFold(to paragraphID: String) {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            model.readerFindFoldTerm = nil
+            model.readerFoldLevel = 0
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            pendingScrollID = paragraphID
+            // The landing shows its matches; two seconds later the
+            // orange fades and the reading stands at rest.
+            try? await Task.sleep(for: .seconds(2))
+            model.requestReaderFindClear()
         }
     }
 
@@ -922,9 +1106,10 @@ struct OrigamiReadingView: View {
                         pendingScrollID = entry.resolution.paragraphID
                     } label: {
                         HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: entry.annotation.motivation
-                                  == WebAnnotation.Motivation.commenting
-                                  ? "text.bubble" : "highlighter")
+                            Image(systemName: ReaderAnnotationKind.kind(of: entry.annotation)?.systemImage
+                                  ?? (entry.annotation.motivation
+                                      == WebAnnotation.Motivation.commenting
+                                      ? "text.bubble" : "highlighter"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.top, 3)
@@ -1252,7 +1437,7 @@ struct OrigamiReadingView: View {
                 }
                 referencesSection
             }
-            .padding(32)
+            .padding([.horizontal, .bottom], 32).padding(.top, 10)
             .frame(maxWidth: measure, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
@@ -1483,7 +1668,7 @@ struct OrigamiReadingView: View {
                 }
                 referencesSection
             }
-            .padding(32)
+            .padding([.horizontal, .bottom], 32).padding(.top, 10)
             .frame(maxWidth: measure, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
@@ -1535,6 +1720,7 @@ struct OrigamiReadingView: View {
                 .font(.headline)
                 .foregroundStyle(themeDimmed.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
             HStack(spacing: 12) {
+                documentAnnotationPill
                 if sections.count > 1 {
                     Label("\(sections.count) sections", systemImage: "list.bullet.indent")
                 }
@@ -1551,6 +1737,46 @@ struct OrigamiReadingView: View {
         }
         .greyedOut(selectionMode != nil) { selectionMode = nil }
         .dimmedForStretch(stretchFocus)
+    }
+
+    /// The pill opening the whole-document annotation: an outlined
+    /// "Annotate" while none is written, a filled "Annotation" once
+    /// one is — the line the book lists show under the author's name.
+    private var documentAnnotationPill: some View {
+        let written = model.documentAnnotation(forAddress: doc.id)?.body?.value ?? ""
+        return Button {
+            showsDocumentAnnotation = true
+        } label: {
+            Text(written.isEmpty ? "Annotate" : "Annotation")
+                .font(.caption)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 2)
+                .foregroundStyle(written.isEmpty
+                                 ? AnyShapeStyle(.secondary)
+                                 : AnyShapeStyle(Color.white))
+                .background(Capsule().fill(written.isEmpty ? Color.clear : Color.accentColor))
+                .overlay {
+                    if written.isEmpty {
+                        Capsule().strokeBorder(.secondary.opacity(0.6))
+                    }
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(written.isEmpty
+              ? "Annotate the document as a whole"
+              : "“\(written)” — click to edit")
+        .sheet(isPresented: $showsDocumentAnnotation) {
+            DocumentAnnotationComposer(title: doc.title, text: written) { text in
+                model.setDocumentAnnotation(text, forAddress: doc.id)
+            } onLift: { draft in
+                // The draft moves to a window of its own; the address
+                // pins it to this document wherever the reader goes.
+                openWindow(value: LiftedAnnotation(address: doc.id,
+                                                   title: doc.title,
+                                                   draft: draft))
+            }
+        }
     }
 
     /// The reference list closing the reading, numbered as the body's
@@ -1627,11 +1853,15 @@ struct OrigamiReadingView: View {
     /// Every annotation on the document, re-anchored through the selector
     /// ladder and grouped by the paragraph it lands on.
     private var resolvedByParagraph: [String: [ResolvedAnnotation]] {
+        // The model resolves (and caches) the whole sidecar — fuzzy
+        // re-anchoring included; orphans simply land nowhere here and
+        // wait, marked, in the Annotations shelf.
         var map: [String: [ResolvedAnnotation]] = [:]
-        for annotation in model.annotations(for: doc) {
-            guard let resolution = AnnotationAnchor.resolve(annotation, in: doc) else { continue }
+        for entry in model.resolvedAnnotations(for: doc) {
+            guard let resolution = entry.resolution else { continue }
             map[resolution.paragraphID, default: []]
-                .append(ResolvedAnnotation(annotation: annotation, resolution: resolution))
+                .append(ResolvedAnnotation(annotation: entry.annotation,
+                                           resolution: resolution))
         }
         return map
     }
@@ -1727,17 +1957,16 @@ struct OrigamiReadingView: View {
                                     closeStretch: (id: String, isLast: Bool)? = nil,
                                     dimmed: Bool = false)
         -> some View {
-        let highlights = annotations.filter {
-            $0.annotation.motivation == WebAnnotation.Motivation.highlighting
-        }
-        let comments = annotations.filter { $0.annotation.body != nil }
-        let wholeParagraph = highlights.contains { $0.resolution.exact == nil }
+        // Every annotation paints in the type itself — inlineText
+        // colours the words (or the whole paragraph) in the kind's ink.
+        // The paragraph reports where it stands on the page, so page
+        // notes can anchor their placement to their nearest paragraph.
         return VStack(alignment: .leading, spacing: 8) {
             // An NSTextView-backed paragraph: text selects normally, but
             // right-click shows exactly the reading menu — none of the
             // items macOS adds to selectable SwiftUI text.
             SelectableParagraph(
-                attributed: inlineText(paragraph, highlights: highlights,
+                attributed: inlineText(paragraph, highlights: annotations,
                                        trailingStretch: trailingStretch,
                                        closeStretch: closeStretch),
                 baseFont: nsFont(for: paragraph),
@@ -1745,18 +1974,19 @@ struct OrigamiReadingView: View {
                 inkColor: inkColor(for: paragraph),
                 dimmed: dimmed,
                 dimInk: themeDimmed.map(NSColor.init) ?? .secondaryLabelColor,
-                entries: menuEntries(for: paragraph, highlights: highlights),
+                entriesFor: { clicked, windowPoint in
+                    menuEntries(for: paragraph, highlights: annotations,
+                                clickedSentence: clicked,
+                                clickWindowPoint: windowPoint)
+                },
                 selectionEntries: selectionEntries(for: paragraph),
                 onLink: handleLink)
-                .padding(wholeParagraph ? 10 : 0)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(wholeParagraph ? Color.yellow.opacity(0.14) : .clear,
-                            in: RoundedRectangle(cornerRadius: 8))
-            ForEach(comments) { entry in
-                CommentBubble(entry: entry) {
-                    model.removeAnnotation(entry.annotation, for: doc)
-                }
-            }
+        }
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .named("origamiPage"))
+        } action: { frame in
+            paragraphFrames[paragraph.id] = frame
         }
     }
 
@@ -1764,8 +1994,14 @@ struct OrigamiReadingView: View {
     /// of the reader's chosen set, verbs with nothing to say here
     /// staying out.
     private func menuEntries(for paragraph: LiquidDoc.Paragraph,
-                             highlights: [ResolvedAnnotation]) -> [ParagraphMenuEntry] {
+                             highlights: [ResolvedAnnotation],
+                             clickedSentence: String? = nil,
+                             clickWindowPoint: NSPoint? = nil) -> [ParagraphMenuEntry] {
         var entries: [ParagraphMenuEntry] = []
+        // What a no-selection annotation anchors to: the sentence under
+        // the click, carried from the rendered words back to the
+        // paragraph's own — never the whole paragraph.
+        let anchor = anchorSentence(for: paragraph, rendered: clickedSentence)
         for action in enabledActions {
             switch action {
             case .copyText:
@@ -1784,27 +2020,51 @@ struct OrigamiReadingView: View {
                         generator: "Origami Text (macOS)").clipboardText())
                 })
             case .highlight:
-                entries.append(.action(title: "Highlight", symbol: "highlighter") {
-                    model.addHighlight(to: doc, paragraphID: paragraph.id)
-                })
+                // The Annotate vocabulary (after Reader's): judgments
+                // stamped on the paragraph, kept in the sidecar.
+                entries.append(.submenu(
+                    title: "Highlight", symbol: "highlighter",
+                    items: ReaderAnnotationKind.allCases.map { kind in
+                        (AnnotationKindStyle.displayName(of: kind), kind.keyEquivalent, {
+                            model.addTag(kind, to: doc, paragraphID: paragraph.id,
+                                         exact: anchor)
+                        })
+                    }))
                 if !highlights.isEmpty {
-                    entries.append(.action(title: "Remove Highlight", symbol: "eraser") {
+                    entries.append(.action(title: "Remove Annotations", symbol: "eraser") {
                         for entry in highlights {
                             model.removeAnnotation(entry.annotation, for: doc)
                         }
                     })
                 }
             case .comment:
-                entries.append(.action(title: "Comment…", symbol: "text.bubble") {
-                    commentTarget = CommentTarget(paragraphID: paragraph.id,
-                                                  preview: paragraph.text)
+                entries.append(.action(title: "Note…", symbol: "square.and.pencil") {
+                    // A Note is a free slip on the page — it touches no
+                    // text. It stands where the click fell (a quiet
+                    // corner when the spot cannot be told).
+                    let point = clickWindowPoint.flatMap { windowPoint in
+                        surfaceBox.surface.map { $0.convert(windowPoint, from: nil) }
+                    } ?? CGPoint(x: 120, y: 120)
+                    marginNoteTarget = MarginNoteTarget(point: point)
                 })
+                // A written note without its own words to click (it
+                // covers the whole paragraph) opens from the menu.
+                for entry in highlights
+                where entry.annotation.motivation == WebAnnotation.Motivation.commenting
+                    && entry.resolution.exact == nil {
+                    entries.append(.action(title: "Open Note…",
+                                           symbol: "text.bubble") {
+                        annotationEditor = AnnotationEditTarget(
+                            annotation: entry.annotation,
+                            paragraphID: paragraph.id)
+                    })
+                }
             case .concepts:
                 let matched = OrigamiReading.concepts(in: paragraph, of: doc)
                 if !matched.isEmpty {
                     entries.append(.submenu(title: "Concepts Here", symbol: "lightbulb",
                                             items: matched.map { concept in
-                                                (concept.name, { conceptTarget = concept })
+                                                (concept.name, "", { conceptTarget = concept })
                                             }))
                 }
             case .references:
@@ -1836,7 +2096,7 @@ struct OrigamiReadingView: View {
             case .submenu(let title, let symbol, let items):
                 Menu(title, systemImage: symbol) {
                     ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                        Button(item.0, action: item.1)
+                        Button(item.0, action: item.2)
                     }
                 }
             case .separator:
@@ -1863,9 +2123,14 @@ struct OrigamiReadingView: View {
             entries.append(.action(title: "Copy to Cite", symbol: "quote.opening") {
                 copyCitation(for: paragraph, quote: selected)
             })
-            entries.append(.action(title: "Highlight Selection", symbol: "highlighter") {
-                model.addHighlight(to: doc, paragraphID: paragraph.id, exact: selected)
-            })
+            entries.append(.submenu(
+                title: "Highlight", symbol: "highlighter",
+                items: ReaderAnnotationKind.allCases.map { kind in
+                    (AnnotationKindStyle.displayName(of: kind), kind.keyEquivalent, {
+                        model.addTag(kind, to: doc, paragraphID: paragraph.id,
+                                     exact: selected)
+                    })
+                }))
             entries.append(.action(title: "Flow", symbol: "text.line.first.and.arrowtriangle.forward") {
                 selectionMode = SelectionViewMode(
                     paragraphID: paragraph.id, prefix: prefix,
@@ -1876,7 +2141,7 @@ struct OrigamiReadingView: View {
                 entries.append(.submenu(
                     title: "AI", symbol: "sparkles",
                     items: presets.map { preset in
-                        (preset.name, {
+                        (preset.name, "", {
                             runAI(preset, paragraphID: paragraph.id,
                                   prefix: prefix, selected: selected, suffix: suffix)
                         })
@@ -1921,6 +2186,16 @@ struct OrigamiReadingView: View {
             let id = String(url.absoluteString.dropFirst("origami-conceptcard:".count))
             if let concept = doc.concepts.first(where: { $0.id == id }) {
                 conceptTarget = concept
+            }
+            return true
+        }
+        if url.scheme == "origami-annotation" {
+            let id = String(url.absoluteString.dropFirst("origami-annotation:".count))
+            if let annotation = model.annotations(for: doc).first(where: { $0.id == id }) {
+                let paragraphID = AnnotationAnchor.resolve(annotation, in: doc)?.paragraphID
+                annotationEditor = AnnotationEditTarget(
+                    annotation: annotation,
+                    paragraphID: paragraphID ?? "")
             }
             return true
         }
@@ -2010,19 +2285,18 @@ struct OrigamiReadingView: View {
         lineSpacing = min(max(lineSpacing + delta, 0), 24)
     }
 
-    /// The citation onto the clipboard in both dialects: the readable
-    /// block for anyone, and Author's citation payload — the quote and
-    /// a full BibTeX entry whose vm-id addresses the original document
-    /// and paragraph — so Author pastes it as a real citation.
+    /// The citation onto the clipboard in both dialects: pure BibTeX as
+    /// the text — usable in Author, reference managers, and anywhere
+    /// else — and Author's private payload beside it, so Author pastes
+    /// it as a real citation. The entry's vm-id addresses the original
+    /// document and paragraph.
     private func copyCitation(for paragraph: LiquidDoc.Paragraph,
                               quote: String? = nil) {
-        let text = OrigamiReading.citation(for: paragraph, in: doc,
-                                           view: viewState, quote: quote)
         let payload = OrigamiReading.authorCitationPayload(for: paragraph, in: doc,
                                                            quote: quote)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        pasteboard.setString(payload.bibtex, forType: .string)
         let dictionary: [String: Any] = ["Content": payload.content,
                                          "BibTeX": payload.bibtex]
         if let data = try? NSKeyedArchiver.archivedData(withRootObject: dictionary,
@@ -2030,6 +2304,33 @@ struct OrigamiReadingView: View {
             pasteboard.setData(data, forType:
                 NSPasteboard.PasteboardType("Liquid Author Citation pasteboard type"))
         }
+    }
+
+    /// A citation to this document with the reader's own note in its
+    /// Annotation field — Copy in an annotation's editor, ready to
+    /// paste into Author's citation dialog.
+    private func copyAnnotationCitation(paragraphID: String, annotation text: String) {
+        // A margin note has no paragraph of its own: the citation
+        // stands on the document's opening element instead.
+        guard let paragraph = (doc.body ?? []).first(where: { $0.id == paragraphID })
+            ?? doc.body?.first
+        else { return }
+        let payload = OrigamiReading.authorCitationPayload(for: paragraph, in: doc,
+                                                           annotation: text)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        // Pure BibTeX as the text — the annotation travels in its
+        // Annotation field, ready for Author's citation dialog.
+        pasteboard.setString(payload.bibtex, forType: .string)
+        let dictionary: [String: Any] = ["Content": payload.content,
+                                         "BibTeX": payload.bibtex,
+                                         "Annotation": text]
+        if let data = try? NSKeyedArchiver.archivedData(withRootObject: dictionary,
+                                                        requiringSecureCoding: false) {
+            pasteboard.setData(data, forType:
+                NSPasteboard.PasteboardType("Liquid Author Citation pasteboard type"))
+        }
+        model.showNote("Citation with your annotation copied — paste it in Author")
     }
 
     /// The paragraph's words as the view functions ask: expanded into
@@ -2164,12 +2465,31 @@ struct OrigamiReadingView: View {
             }
         }
         for entry in highlights {
-            guard let exact = entry.resolution.exact else { continue }
+            // The annotated words take their kind's colour in the type
+            // itself (Settings ▸ Annotation) — never a background frame.
+            // Strikethrough draws its line; a whole-paragraph annotation
+            // colours the whole paragraph; a written note is a click
+            // away on its words.
+            // Only the annotated words themselves colour — an anchor
+            // that degraded to paragraph scope paints nothing rather
+            // than claim the whole paragraph.
             let plain = String(attributed.characters)
-            guard let range = plain.range(of: exact,
+            guard let exact = entry.resolution.exact,
+                  let range = plain.range(of: exact,
                                           options: [.caseInsensitive, .diacriticInsensitive]),
                   let attributedRange = Range(range, in: attributed) else { continue }
-            attributed[attributedRange].backgroundColor = Color.yellow.opacity(0.35)
+            let kind = ReaderAnnotationKind.kind(of: entry.annotation)
+            let color = AnnotationKindStyle.color(of: kind ?? .highlight)
+            if kind == .strikethrough {
+                attributed[attributedRange].strikethroughStyle = .single
+                attributed[attributedRange].strikethroughColor = NSColor(color)
+            } else {
+                attributed[attributedRange].foregroundColor = color
+            }
+            if entry.annotation.motivation == WebAnnotation.Motivation.commenting,
+               let url = URL(string: "origami-annotation:" + entry.annotation.id) {
+                attributed[attributedRange].link = url
+            }
         }
         // The find bar's words read highlighted wherever they occur —
         // stronger in the paragraph the walk stands on.
@@ -2406,7 +2726,12 @@ struct ReadingFootBar: View {
     @ViewBuilder private var aiGroup: some View {
         if !aiShowsExpanded {
             Button {
-                withAnimation(.snappy) { aiExpanded = true }
+                withAnimation(.snappy) {
+                    aiExpanded = true
+                    // AI opens onto the Summary; the other readings
+                    // stand unfolded beside it.
+                    model.readingAnalysisKind = .summary
+                }
             } label: {
                 Text("AI")
                     .font(.callout)
@@ -2414,7 +2739,7 @@ struct ReadingFootBar: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Ask this Mac's model about the open book — Summary, Proposals, and Issues unfold beside it")
+            .help("This Mac's model reads the open book — the Summary opens, Proposals and Issues beside it")
         } else {
             HStack(spacing: 8) {
                 Button {
@@ -2531,8 +2856,11 @@ struct ReadingFootBar: View {
     /// choosing from the book's own pages moves the reading to Scroll.
     private func choose(_ shape: OutlineShape) {
         withAnimation(.snappy) {
-            // An Outline shape replaces any standing find-fold.
+            // An Outline shape replaces any standing find-fold — and a
+            // standing AI reading: the foot's words always answer with
+            // their own view.
             model.readerFindFoldTerm = nil
+            model.readingAnalysisKind = nil
             if outlineShape == shape {
                 model.readerFoldLevel = 0
                 return
@@ -2565,38 +2893,217 @@ private struct ResolvedAnnotation: Identifiable {
 }
 
 /// One comment shown beneath its paragraph, with who and when.
-private struct CommentBubble: View {
-    let entry: ResolvedAnnotation
-    let onRemove: () -> Void
+/// One note standing on the page where it was written: its first
+/// sentence at a third of the body size, on paper-white (light mode) or
+/// ink-black (dark). A click opens the whole note; click-and-hold drags
+/// it anywhere on the page, remembered on this Mac.
+private struct MarginNoteView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let note: WebAnnotation
+    let fontSize: CGFloat
+    let position: CGPoint
+    let onMove: (CGPoint) -> Void
+    let onOpen: () -> Void
+
+    @State private var drag: CGSize = .zero
+
+    @State private var hovering = false
+
+    /// The first sentence, "…" trailing when the note carries more.
+    private var slipText: String {
+        let whole = note.body?.value ?? ""
+        let sentences = OrigamiReading.sentences(of: whole)
+        guard let first = sentences.first?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !first.isEmpty
+        else { return whole }
+        return sentences.count > 1 ? first + " …" : first
+    }
+
+    private var paper: Color {
+        colorScheme == .dark ? Color(white: 0.13) : .white
+    }
+
+    /// The slip's own type, as AppKit measures and SwiftUI draws it.
+    private var slipFont: NSFont {
+        let size = max(fontSize, 10)
+        let descriptor = NSFont.systemFont(ofSize: size).fontDescriptor
+            .withDesign(.serif)?
+            .withSymbolicTraits(.italic)
+        return descriptor.flatMap { NSFont(descriptor: $0, size: size) }
+            ?? NSFont.systemFont(ofSize: size)
+    }
+
+    /// The text's own extent, wrapped at the slip's measure — the card
+    /// is never wider (or taller) than the words ask.
+    private var textSize: CGSize {
+        let bounds = (slipText as NSString).boundingRect(
+            with: NSSize(width: 170, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: slipFont])
+        return CGSize(width: ceil(bounds.width), height: ceil(bounds.height))
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(entry.annotation.body?.value ?? "")
-            Text(byline)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        Text(slipText)
+            .font(Font(slipFont as CTFont))
+            .foregroundStyle(colorScheme == .dark
+                             ? Color(white: 0.85) : Color(white: 0.25))
+            .multilineTextAlignment(.leading)
+            .frame(width: textSize.width, height: textSize.height,
+                   alignment: .topLeading)
+            .padding(.leading, 13)
+            .padding(.trailing, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(paper)
+                    .shadow(color: .black.opacity(colorScheme == .dark ? 0.55 : 0.16),
+                            radius: hovering ? 5 : 2.5, y: hovering ? 2.5 : 1.5))
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(Color.primary.opacity(0.08)))
+            // The slip's quiet spine — the lab's ember, a thread of
+            // identity without a post-it's shout. An overlay, so the
+            // card's height is the text's alone.
+            .overlay(alignment: .leading) {
+                UnevenRoundedRectangle(topLeadingRadius: 5, bottomLeadingRadius: 5)
+                    .fill(EmberIconLabelStyle.ember.opacity(0.85))
+                    .frame(width: 3)
+            }
+            .scaleEffect(hovering ? 1.02 : 1)
+            .animation(.easeOut(duration: 0.15), value: hovering)
+            .onHover { hovering = $0 }
+            .onTapGesture(perform: onOpen)
+            .gesture(
+                DragGesture(minimumDistance: 3)
+                    .onChanged { value in
+                        drag = value.translation
+                    }
+                    .onEnded { value in
+                        onMove(CGPoint(x: position.x + value.translation.width,
+                                       y: position.y + value.translation.height))
+                        drag = .zero
+                    })
+            .position(x: position.x + drag.width, y: position.y + drag.height)
+            .help("Click to open — drag to move")
+    }
+}
+
+#Preview("Margin note slips") {
+    ZStack(alignment: .topLeading) {
+        Color(nsColor: .textBackgroundColor)
+        MarginNoteView(
+            note: WebAnnotation(
+                motivation: WebAnnotation.Motivation.commenting,
+                body: WebAnnotation.TextualBody(
+                    value: "This argument echoes Engelbart's bootstrapping. Worth comparing with the 1962 framework paper in detail."),
+                target: WebAnnotation.Target(source: "origamitext://open/x", selectors: [])),
+            fontSize: 10.5,
+            position: CGPoint(x: 130, y: 60),
+            onMove: { _ in }, onOpen: {})
+        MarginNoteView(
+            note: WebAnnotation(
+                motivation: WebAnnotation.Motivation.commenting,
+                body: WebAnnotation.TextualBody(value: "Ask Mark about this."),
+                target: WebAnnotation.Target(source: "origamitext://open/x", selectors: [])),
+            fontSize: 10.5,
+            position: CGPoint(x: 150, y: 160),
+            onMove: { _ in }, onOpen: {})
+    }
+    .frame(width: 420, height: 240)
+}
+
+/// The page behind the paragraphs: a ctrl-click on no paragraph and no
+/// selection offers "Note…", reporting where the click fell (top-left
+/// origin, the article's coordinates) so the note can stand exactly
+/// there. Paragraphs above take their own clicks; only the empty page
+/// answers here.
+/// A weak hand on the page surface, so menu actions elsewhere in the
+/// view can convert a window point into the page's own coordinates.
+final class MarginNoteSurfaceBox {
+    weak var surface: MarginNoteSurface.Surface?
+}
+
+struct MarginNoteSurface: NSViewRepresentable {
+    let box: MarginNoteSurfaceBox
+    let onNote: (CGPoint) -> Void
+
+    final class Surface: NSView {
+        var onNote: ((CGPoint) -> Void)?
+        override var isFlipped: Bool { true }
+
+        override func menu(for event: NSEvent) -> NSMenu? {
+            let point = convert(event.locationInWindow, from: nil)
+            let menu = NSMenu()
+            menu.allowsContextMenuPlugIns = false
+            let item = NSMenuItem(title: "Note…", action: #selector(note(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = NSValue(point: point)
+            menu.addItem(item)
+            return menu
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(.yellow)
-                .frame(width: 3)
-                .padding(.vertical, 8)
-        }
-        .contextMenu {
-            Button("Remove Comment", systemImage: "trash", role: .destructive,
-                   action: onRemove)
+
+        @objc private func note(_ sender: NSMenuItem) {
+            guard let value = sender.representedObject as? NSValue else { return }
+            onNote?(value.pointValue)
         }
     }
 
-    private var byline: String {
-        let date = entry.annotation.created.formatted(date: .abbreviated, time: .shortened)
-        if let name = entry.annotation.creator?.name, !name.isEmpty {
-            return "\(name) \u{00B7} \(date)"
+    func makeNSView(context: Context) -> Surface {
+        let view = Surface()
+        view.onNote = onNote
+        box.surface = view
+        return view
+    }
+
+    func updateNSView(_ view: Surface, context: Context) {
+        view.onNote = onNote
+        box.surface = view
+    }
+}
+
+/// The opened annotation: the whole note, editable, with the reader's
+/// three verbs — Delete it, Copy it as a citation to this document
+/// (the note riding in the citation's Annotation field, for Author),
+/// or Save the rewrite.
+private struct AnnotationEditorSheet: View {
+    let text: String
+    let onDelete: () -> Void
+    let onCopy: (String) -> Void
+    let onSave: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Annotation").font(.headline)
+            TextEditor(text: $draft)
+                .font(.body)
+                .frame(minHeight: 140)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+            HStack {
+                Button("Delete", role: .destructive) {
+                    onDelete()
+                    dismiss()
+                }
+                Spacer()
+                Button("Copy") {
+                    onCopy(draft)
+                    dismiss()
+                }
+                .help("Copy as a citation to this document, your annotation in its Annotation field — paste into Author")
+                Button("Save") {
+                    onSave(draft)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
         }
-        return date
+        .padding(20)
+        .frame(width: 440)
+        .onAppear { draft = text }
     }
 }
 
@@ -2631,6 +3138,119 @@ private struct ReadingCommentComposer: View {
         }
         .padding(20)
         .frame(minWidth: 440)
+    }
+}
+
+/// The whole-document annotation sheet: one note describing the
+/// document itself, opened from the header pill. Saving empty text
+/// removes the annotation. Lift carries the draft into its own window
+/// (LiftedAnnotationWindow) — room to write, free to browse — still
+/// bound to this document.
+private struct DocumentAnnotationComposer: View {
+    let title: String
+    let text: String
+    let onSave: (String) -> Void
+    let onLift: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Annotate Document").font(.headline)
+            Text(title)
+                .lineLimit(2)
+                .foregroundStyle(.secondary)
+            TextField("Your annotation…", text: $draft, axis: .vertical)
+                .lineLimit(3...8)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Button("Lift") {
+                    dismiss()
+                    onLift(draft)
+                }
+                .help("Write in a window of its own — read anything meanwhile; the annotation stays this document's")
+                if !text.isEmpty {
+                    Button("Remove", role: .destructive) {
+                        onSave("")
+                        dismiss()
+                    }
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    onSave(draft)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(text.isEmpty
+                          && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 440)
+        .onAppear { draft = text }
+    }
+}
+
+/// A lifted document annotation: the address and title it belongs to,
+/// and the draft as it stood when lifted — the value a lifted window
+/// opens on.
+nonisolated struct LiftedAnnotation: Codable, Hashable {
+    var address: String
+    var title: String
+    var draft: String
+}
+
+/// The lifted annotation in its own window, titled with the article:
+/// a full text editor to think in, while the main window reads
+/// whatever it likes. Save writes the annotation to the original
+/// document; the association never moves.
+struct LiftedAnnotationWindow: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let target: LiftedAnnotation
+
+    @State private var draft = ""
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(target.title)
+                .font(.headline)
+                .lineLimit(2)
+                .foregroundStyle(.secondary)
+            TextEditor(text: $draft)
+                .font(.body)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack {
+                if model.documentAnnotation(forAddress: target.address) != nil {
+                    Button("Remove", role: .destructive) {
+                        model.setDocumentAnnotation("", forAddress: target.address)
+                        dismiss()
+                    }
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    model.setDocumentAnnotation(draft, forAddress: target.address)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          && model.documentAnnotation(forAddress: target.address) == nil)
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 480, minHeight: 360)
+        .navigationTitle(target.title)
+        .onAppear {
+            guard !loaded else { return }
+            draft = target.draft
+            loaded = true
+        }
     }
 }
 
@@ -3193,7 +3813,7 @@ extension View {
 /// table fallback.
 private enum ParagraphMenuEntry {
     case action(title: String, symbol: String, run: () -> Void)
-    case submenu(title: String, symbol: String, items: [(String, () -> Void)])
+    case submenu(title: String, symbol: String, items: [(String, String, () -> Void)])
     case separator
 }
 
@@ -3215,7 +3835,12 @@ private struct SelectableParagraph: NSViewRepresentable {
     /// AppKit view into a picture and swallow its clicks.
     let dimmed: Bool
     let dimInk: NSColor
-    let entries: [ParagraphMenuEntry]
+    /// The paragraph's verbs, built at right-click time with the
+    /// sentence under the click (nil when it cannot be told) and the
+    /// click's window point — so annotating without a selection takes
+    /// the sentence, never the whole paragraph, and a Note can stand
+    /// where the click fell.
+    let entriesFor: (String?, NSPoint?) -> [ParagraphMenuEntry]
     /// Extra verbs built at right-click time from the live selection —
     /// the view options over selected text (Flow, the AI submenu).
     let selectionEntries: (String, NSRange) -> [ParagraphMenuEntry]
@@ -3242,7 +3867,7 @@ private struct SelectableParagraph: NSViewRepresentable {
     }
 
     func updateNSView(_ view: MenuTextView, context: Context) {
-        context.coordinator.entries = entries
+        context.coordinator.entriesFor = entriesFor
         context.coordinator.selectionEntries = selectionEntries
         context.coordinator.onLink = onLink
         let converted = converted()
@@ -3322,7 +3947,7 @@ private struct SelectableParagraph: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
-        var entries: [ParagraphMenuEntry] = []
+        var entriesFor: (String?, NSPoint?) -> [ParagraphMenuEntry] = { _, _ in [] }
         var selectionEntries: (String, NSRange) -> [ParagraphMenuEntry] = { _, _ in [] }
         var onLink: (URL) -> Bool = { _ in false }
 
@@ -3332,12 +3957,31 @@ private struct SelectableParagraph: NSViewRepresentable {
             return onLink(url)
         }
 
+        /// The sentence under a character index in the view's text —
+        /// what a no-selection annotation anchors to.
+        private func sentence(in textView: NSTextView, at index: Int) -> String? {
+            let text = textView.string as NSString
+            guard index >= 0, index < text.length else { return nil }
+            var found: String?
+            text.enumerateSubstrings(in: NSRange(location: 0, length: text.length),
+                                     options: .bySentences) { sub, range, _, stop in
+                if NSLocationInRange(index, range) {
+                    found = sub
+                    stop.pointee = true
+                }
+            }
+            return found?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
         /// The context menu, built fresh on each right-click — the
-        /// paragraph's verbs, then the selection's view options when
-        /// words are selected. Nothing of the system's.
-        func makeMenu(for textView: NSTextView) -> NSMenu {
+        /// paragraph's verbs (knowing the clicked sentence), then the
+        /// selection's view options when words are selected. Nothing of
+        /// the system's.
+        func makeMenu(for textView: NSTextView, at clickIndex: Int?,
+                      windowPoint: NSPoint?) -> NSMenu {
             let menu = NSMenu()
-            var all = entries
+            let clicked = clickIndex.flatMap { sentence(in: textView, at: $0) }
+            var all = entriesFor(clicked, windowPoint)
             let range = textView.selectedRange()
             if range.length > 0 {
                 all += selectionEntries(textView.string, range)
@@ -3351,8 +3995,13 @@ private struct SelectableParagraph: NSViewRepresentable {
                     parent.image = NSImage(systemSymbolName: symbol,
                                            accessibilityDescription: nil)
                     let submenu = NSMenu()
-                    for (subtitle, run) in items {
-                        submenu.addItem(item(title: subtitle, symbol: nil, run: run))
+                    for (subtitle, key, run) in items {
+                        let child = item(title: subtitle, symbol: nil, run: run)
+                        // Bare keys, Reader's way: pressing the letter
+                        // fires the kind while the menu is open.
+                        child.keyEquivalent = key
+                        child.keyEquivalentModifierMask = []
+                        submenu.addItem(child)
                     }
                     parent.submenu = submenu
                     menu.addItem(parent)
@@ -3406,7 +4055,31 @@ private struct SelectableParagraph: NSViewRepresentable {
         }
 
         override func menu(for event: NSEvent) -> NSMenu? {
-            coordinator?.makeMenu(for: self)
+            // The clicked character, so a no-selection annotation can
+            // take the sentence under the cursor.
+            let point = convert(event.locationInWindow, from: nil)
+            var clickIndex: Int?
+            if let layoutManager, let textContainer, let storage = textStorage,
+               storage.length > 0 {
+                var fraction: CGFloat = 0
+                let index = layoutManager.characterIndex(
+                    for: point, in: textContainer, fractionOfDistanceBetweenInsertionPoints: &fraction)
+                if index < storage.length { clickIndex = index }
+            }
+            return coordinator?.makeMenu(for: self, at: clickIndex,
+                                         windowPoint: event.locationInWindow)
+        }
+
+        /// The empty page to the right of a short line belongs to the
+        /// page behind (the margin notes' surface), not to this
+        /// paragraph — a row spans the full column, but its words do not.
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            let local = convert(point, from: superview)
+            if let layoutManager, let textContainer {
+                let used = layoutManager.usedRect(for: textContainer)
+                if local.x > used.maxX + 12 { return nil }
+            }
+            return super.hitTest(point)
         }
 
         /// The document's own controls — the stretch toggles and

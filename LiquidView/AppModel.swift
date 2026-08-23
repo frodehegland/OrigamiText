@@ -68,6 +68,10 @@ enum ListSortOrder: String, CaseIterable, Identifiable {
 @MainActor @Observable
 final class AppModel {
     let index = LibraryIndex()
+    /// The library's gazetteer — the Places view's memory of every
+    /// distinct place a document has carried, geocoded by name once and
+    /// remembered. (Knowledge Space's; travels with the view modules.)
+    let places = PlaceDirectory()
 
     // MARK: - Navigation and history
 
@@ -103,6 +107,9 @@ final class AppModel {
     var current: Destination? {
         history.indices.contains(historyPosition) ? history[historyPosition] : nil
     }
+    /// The showing document's id — Knowledge Space's name for it, read
+    /// by the travelling view modules (the spherical weave's lit node).
+    var selectedDocID: String? { current?.doc.id }
     var canGoBack: Bool { historyPosition > 0 }
     var canGoForward: Bool { !history.isEmpty && historyPosition < history.count - 1 }
 
@@ -316,6 +323,46 @@ final class AppModel {
             if case .view(let id) = place.item { return !isViewHidden(id) }
             return true
         }
+    }
+
+    /// What "Show in <View>" handed over: the selected words for a
+    /// view about text snippets, or the document for a view about
+    /// documents as nodes. The named view takes it once and it is gone.
+    /// (Kept identical to Knowledge Space's, so view modules travel.)
+    struct ShowInPayload {
+        let viewID: String
+        let text: String?
+        let docID: String
+    }
+    private(set) var showInPayload: ShowInPayload?
+
+    /// Show in <view>: navigates there carrying the selection or the
+    /// document, per the view's declared appetite.
+    func showIn(viewID: String, selectedText: String?, docID: String) {
+        let module = LibraryViewRegistry.module(id: viewID)
+        let text = module?.showInAppetite == .text ? selectedText : nil
+        showInPayload = ShowInPayload(viewID: viewID, text: text, docID: docID)
+        sidebarSelection = .view(viewID)
+    }
+
+    /// A view's one-time pickup of what Show in brought it.
+    func takeShowInPayload(for viewID: String) -> ShowInPayload? {
+        guard let payload = showInPayload, payload.viewID == viewID else { return nil }
+        showInPayload = nil
+        return payload
+    }
+
+    /// The distinct names credited as authors in the library — the
+    /// spherical weave's rim, the person form's suggestions.
+    var libraryAuthorNames: [String] {
+        var seen = Set<String>()
+        var names: [String] = []
+        for entry in index.timeline {
+            let name = entry.doc.author.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { continue }
+            names.append(name)
+        }
+        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     /// One-time migration: the old archived id sets become filings
@@ -782,6 +829,7 @@ final class AppModel {
             epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
             epubRecords.insert(record, at: 0)
             persistEPUBRecords()
+            rebuildEPUBIndex()
             return record
         } catch {
             NSSound.beep()
@@ -836,6 +884,7 @@ final class AppModel {
             UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
         }
         persistEPUBRecords()
+        rebuildEPUBIndex()
         showNote("Moved “\(record.title)” to the Trash")
     }
 
@@ -845,6 +894,39 @@ final class AppModel {
         guard let record = importEPUB(at: url) else { return }
         openStoredEPUB(record)
         showNote("Opened “\(record.title)”")
+    }
+
+    /// The sidebar's Intro button: opens the built-in guide (IntroGuide.swift),
+    /// exporting it through the app's own EPUB writer on first use — and again
+    /// whenever `introGuideVersion` has moved, so a revised guide replaces the
+    /// stale unpack. The document id never changes, so annotations on the
+    /// guide survive editions.
+    func openIntroGuide() {
+        let versionKey = "introGuideVersion"
+        if UserDefaults.standard.integer(forKey: versionKey) != Self.introGuideVersion,
+           let stale = epubRecords.first(where: { $0.id == Self.introGuideID }) {
+            if openEPUB?.id == stale.folder { openEPUB = nil }
+            try? FileManager.default.removeItem(
+                at: Self.epubsRoot.appendingPathComponent(stale.folder, isDirectory: true))
+            epubRecords.removeAll { $0.id == stale.id }
+            persistEPUBRecords()
+        }
+        if let record = epubRecords.first(where: { $0.id == Self.introGuideID }) {
+            openStoredEPUB(record)
+            return
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Introducing Origami Text.epub")
+        do {
+            try OrigamiEPUBExporter.write(doc: Self.introGuideDoc(),
+                                          resolve: { _ in nil }, to: url)
+        } catch {
+            NSSound.beep()
+            showNote("Could not write the introduction: \(error.localizedDescription)")
+            return
+        }
+        openEPUBFile(at: url)
+        UserDefaults.standard.set(Self.introGuideVersion, forKey: versionKey)
     }
 
     // MARK: - Cross-document quote links (live + transclusion)
@@ -903,6 +985,18 @@ final class AppModel {
         ReadingAnalysisStore.save(all, for: address, in: Self.analysesRoot)
     }
 
+    /// Remembers which of an analysis's blocks the reader dismissed —
+    /// the Issues the reader judged not to be real issues.
+    func setAnalysisDismissed(_ dismissed: Set<Int>,
+                              kind: ReadingAnalysisKind, forBook book: OpenEPUB) {
+        let address = annotationAddress(forBook: book)
+        var all = ReadingAnalysisStore.load(for: address, in: Self.analysesRoot)
+        guard var entry = all[kind.rawValue] else { return }
+        entry.dismissed = dismissed.isEmpty ? nil : dismissed.sorted()
+        all[kind.rawValue] = entry
+        ReadingAnalysisStore.save(all, for: address, in: Self.analysesRoot)
+    }
+
     /// Deletes an analysis without regenerating it.
     func removeAnalysis(_ kind: ReadingAnalysisKind, forBook book: OpenEPUB) {
         let address = annotationAddress(forBook: book)
@@ -926,6 +1020,12 @@ final class AppModel {
         readerFindRequest = ReaderFindRequest(
             text: trimmed, stamp: (readerFindRequest?.stamp ?? 0) + 1)
     }
+
+    /// Asks the open reading to clear its find — after a find-fold
+    /// landing has shown its matches, the highlight fades and the
+    /// reading returns to rest. Stamped so repeated asks fire.
+    private(set) var readerFindClear = 0
+    func requestReaderFindClear() { readerFindClear += 1 }
 
     /// The Flow display: body text broken into reading lines at sentence
     /// and clause marks. A view choice, never the document's — the View
@@ -1177,7 +1277,19 @@ final class AppModel {
         addAnnotation(motivation: WebAnnotation.Motivation.commenting, note: trimmed, on: selection)
     }
 
-    private func addAnnotation(motivation: String, note: String?, on selection: ReaderSelection) {
+    /// Stamps one of the reader's judgments (Important, Disagree, …) on
+    /// the selection in the open book — a W3C tagging annotation.
+    func addTag(_ kind: ReaderAnnotationKind, on selection: ReaderSelection) {
+        if kind == .highlight {
+            addHighlight(on: selection)
+            return
+        }
+        addAnnotation(motivation: WebAnnotation.Motivation.tagging,
+                      note: kind.rawValue, purpose: "tagging", on: selection)
+    }
+
+    private func addAnnotation(motivation: String, note: String?,
+                               purpose: String? = nil, on selection: ReaderSelection) {
         guard let book = openEPUB, !selection.text.isEmpty else { return }
         // The anchoring ladder, most robust first: the enclosing element's
         // stable id, then the exact words with disambiguating context.
@@ -1193,7 +1305,7 @@ final class AppModel {
         let annotation = WebAnnotation(
             motivation: motivation,
             creator: WebAnnotation.Person(name: authorName),
-            body: note.map { WebAnnotation.TextualBody(value: $0) },
+            body: note.map { WebAnnotation.TextualBody(value: $0, purpose: purpose) },
             target: WebAnnotation.Target(source: "origamitext://open/" + address,
                                          selectors: selectors))
         var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
@@ -1241,6 +1353,15 @@ final class AppModel {
             }
             return nil
         }
+
+        /// The fraction through the document, when the annotation
+        /// carries a ProgressionSelector — the lists' reading order.
+        var progression: Double? {
+            for selector in annotation.target.selectors {
+                if case .progression(let value) = selector { return value }
+            }
+            return nil
+        }
     }
 
     /// Sidecar reads are cheap but not free; recomputed only when a
@@ -1282,7 +1403,20 @@ final class AppModel {
         guard let result = try? OrigamiEPUBImporter.importDocument(inUnpackedFolder: book.base)
         else { return nil }
         let record = epubRecords.first { $0.folder == book.id }
-        let address = record?.id ?? result.origamiID ?? book.id
+        let doc = Self.structuredDoc(from: result, record: record,
+                                     fallbackID: book.id, base: book.base)
+        readingDocCache = (book.id, doc)
+        return doc
+    }
+
+    /// The full structured document standing for an unpacked book — the
+    /// package's import result joined with the shelf record's metadata.
+    /// Shared by the reader (`readingDoc`) and by the view modules'
+    /// index (`rebuildEPUBIndex`).
+    nonisolated private static func structuredDoc(
+        from result: OrigamiEPUBImporter.ImportResult,
+        record: EPUBRecord?, fallbackID: String, base: URL) -> LiquidDoc {
+        let address = record?.id ?? result.origamiID ?? fallbackID
         let created = (record?.dateISO ?? result.date).flatMap(LiquidDoc.parseISO8601)
             ?? record?.openedAt ?? .now
         var doc = LiquidDoc(format: LiquidDoc.knownFormat,
@@ -1293,17 +1427,45 @@ final class AppModel {
                             body: result.body,
                             links: result.links,
                             wraps: nil,
-                            fileURL: book.base)
+                            fileURL: base)
         doc.date = (record?.dateISO ?? result.date).flatMap(LiquidDate.init(isoString:))
         doc.documentType = LiquidDoc.DocumentType.book.rawValue
+        doc.publication = result.publication ?? record?.publication
         doc.concepts = result.concepts
         doc.layouts = result.layouts
         doc.mapConnections = result.mapConnections
         doc.references = result.references
         doc.tables = result.tables
         doc.assets = result.assets
-        readingDocCache = (book.id, doc)
         return doc
+    }
+
+    /// Rebuilds the view modules' index from the EPUB shelf: every
+    /// opened book re-imported from its unpacked package as a structured
+    /// document — the Visual-Meta metadata, headings, concepts,
+    /// citations, references, and the typed links between books. Runs in
+    /// the background; a newer rebuild supersedes an older one mid-flight.
+    private var epubIndexGeneration = 0
+    func rebuildEPUBIndex() {
+        epubIndexGeneration += 1
+        let generation = epubIndexGeneration
+        let records = epubRecords
+        let root = Self.epubsRoot
+        Task.detached(priority: .utility) {
+            var docs: [LiquidDoc] = []
+            for record in records {
+                let base = root.appendingPathComponent(record.folder, isDirectory: true)
+                guard let result = try? OrigamiEPUBImporter.importDocument(
+                    inUnpackedFolder: base) else { continue }
+                docs.append(Self.structuredDoc(from: result, record: record,
+                                               fallbackID: record.folder, base: base))
+            }
+            let built = docs
+            await MainActor.run {
+                guard generation == self.epubIndexGeneration else { return }
+                self.index.setEPUBDocuments(built)
+            }
+        }
     }
 
     /// The document the citation card reads: the full structured import,
@@ -1345,14 +1507,174 @@ final class AppModel {
         appendAnnotation(annotation, for: doc)
     }
 
-    func addComment(_ text: String, to doc: LiquidDoc, paragraphID: String) {
+    /// Stamps one of the reader's judgments on a paragraph (or its
+    /// selected words) in a native reading — the tagging twin of
+    /// `addHighlight(to:paragraphID:exact:)`.
+    func addTag(_ kind: ReaderAnnotationKind, to doc: LiquidDoc,
+                paragraphID: String, exact: String? = nil) {
+        if kind == .highlight {
+            addHighlight(to: doc, paragraphID: paragraphID, exact: exact)
+            return
+        }
+        let annotation = WebAnnotation(
+            motivation: WebAnnotation.Motivation.tagging,
+            creator: WebAnnotation.Person(name: authorName),
+            body: WebAnnotation.TextualBody(value: kind.rawValue, purpose: "tagging"),
+            target: AnnotationAnchor.target(in: doc, paragraphID: paragraphID, exact: exact))
+        appendAnnotation(annotation, for: doc)
+    }
+
+    func addComment(_ text: String, to doc: LiquidDoc, paragraphID: String,
+                    exact: String? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let annotation = WebAnnotation(
             motivation: WebAnnotation.Motivation.commenting,
             body: WebAnnotation.TextualBody(value: trimmed),
-            target: AnnotationAnchor.target(in: doc, paragraphID: paragraphID))
+            target: AnnotationAnchor.target(in: doc, paragraphID: paragraphID,
+                                            exact: exact))
         appendAnnotation(annotation, for: doc)
+    }
+
+    /// A note written on the page itself — a ctrl-click where no
+    /// paragraph is. It targets the whole document (no selectors); its
+    /// standing place travels IN the annotation, as the sidecar's
+    /// origami:placement extension — anchored to the nearest stable
+    /// element, so it survives resizes and other Macs alike.
+    func addMarginNote(_ text: String, to doc: LiquidDoc,
+                       placement: WebAnnotation.Placement) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var annotation = WebAnnotation(
+            motivation: WebAnnotation.Motivation.commenting,
+            creator: WebAnnotation.Person(name: authorName),
+            body: WebAnnotation.TextualBody(value: trimmed),
+            target: WebAnnotation.Target(source: "origamitext://open/" + doc.id,
+                                         selectors: []))
+        annotation.placement = placement
+        appendAnnotation(annotation, for: doc)
+    }
+
+    /// Moves a page note's standing place — into the sidecar, where it
+    /// travels with the annotation.
+    func setNotePlacement(_ placement: WebAnnotation.Placement,
+                          for annotation: WebAnnotation, in doc: LiquidDoc) {
+        var all = AnnotationStore.load(for: doc.id, in: Self.annotationsRoot)
+        guard let index = all.firstIndex(where: { $0.id == annotation.id }) else { return }
+        all[index].placement = placement
+        all[index].modified = .now
+        AnnotationStore.save(all, for: doc.id, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
+    /// The notes standing on a document's page — written annotations
+    /// anchored to the document as a whole, not to any paragraph. (The
+    /// document annotation also targets the whole document, but is a
+    /// "describing" annotation, not a page note.)
+    func marginNotes(for doc: LiquidDoc) -> [WebAnnotation] {
+        annotations(for: doc).filter {
+            $0.target.selectors.isEmpty && $0.body?.value.isEmpty == false
+                && $0.motivation == WebAnnotation.Motivation.commenting
+        }
+    }
+
+    // MARK: The document annotation (one note on the whole document)
+
+    /// The reader's annotation on the document as a whole — a W3C
+    /// "describing" annotation with no selectors. One per book: the
+    /// reading header's pill fills when it exists, and the book lists
+    /// print it beneath the author's name.
+    func documentAnnotation(forAddress address: String) -> WebAnnotation? {
+        _ = annotationsStamp
+        return AnnotationStore.load(for: address, in: Self.annotationsRoot).first {
+            $0.motivation == WebAnnotation.Motivation.describing
+                && $0.target.selectors.isEmpty
+        }
+    }
+
+    /// Writes or rewrites the document annotation; empty text removes it.
+    func setDocumentAnnotation(_ text: String, forAddress address: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        if let index = all.firstIndex(where: {
+            $0.motivation == WebAnnotation.Motivation.describing
+                && $0.target.selectors.isEmpty
+        }) {
+            if trimmed.isEmpty {
+                all.remove(at: index)
+            } else {
+                all[index].body = WebAnnotation.TextualBody(value: trimmed,
+                                                            purpose: "describing")
+                all[index].modified = .now
+            }
+        } else {
+            guard !trimmed.isEmpty else { return }
+            all.append(WebAnnotation(
+                motivation: WebAnnotation.Motivation.describing,
+                creator: WebAnnotation.Person(name: authorName),
+                body: WebAnnotation.TextualBody(value: trimmed, purpose: "describing"),
+                target: WebAnnotation.Target(source: "origamitext://open/" + address,
+                                             selectors: [])))
+        }
+        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
+    // MARK: Resolution — where annotations land, and the orphans
+
+    /// One annotation resolved against its document: where it landed,
+    /// or nowhere — an orphan, kept and shown, never lost.
+    struct ResolvedDocAnnotation: Identifiable {
+        let annotation: WebAnnotation
+        let resolution: AnnotationAnchor.Resolution?
+        var id: String { annotation.id }
+    }
+
+    /// Fuzzy re-anchoring costs real work; the result holds until the
+    /// sidecar changes or another document asks.
+    @ObservationIgnored private var resolutionCache:
+        (docID: String, stamp: Int, resolved: [ResolvedDocAnnotation])?
+
+    /// Every annotation on the document with where it landed.
+    func resolvedAnnotations(for doc: LiquidDoc) -> [ResolvedDocAnnotation] {
+        if let cached = resolutionCache, cached.docID == doc.id,
+           cached.stamp == annotationsStamp {
+            return cached.resolved
+        }
+        let resolved = annotations(for: doc).map {
+            ResolvedDocAnnotation(annotation: $0,
+                                  resolution: AnnotationAnchor.resolve($0, in: doc))
+        }
+        resolutionCache = (doc.id, annotationsStamp, resolved)
+        return resolved
+    }
+
+    /// The annotations that no longer find their place in this
+    /// document — page notes (which have no selectors) are not orphans.
+    func orphanedAnnotationIDs(for doc: LiquidDoc) -> Set<String> {
+        Set(resolvedAnnotations(for: doc)
+            .filter { $0.resolution == nil && !$0.annotation.target.selectors.isEmpty }
+            .map(\.annotation.id))
+    }
+
+    /// Where each margin note stands, by annotation id — kept on this
+    /// Mac (the sidecar carries the note, not the layout).
+    private(set) var marginNotePositions: [String: CGPoint] = {
+        guard let stored = UserDefaults.standard.dictionary(forKey: "marginNotePositions")
+            as? [String: [Double]] else { return [:] }
+        return stored.compactMapValues { pair in
+            pair.count == 2 ? CGPoint(x: pair[0], y: pair[1]) : nil
+        }
+    }()
+
+    func marginNotePosition(forAnnotationID id: String) -> CGPoint? {
+        marginNotePositions[id]
+    }
+
+    func setMarginNotePosition(_ point: CGPoint, forAnnotationID id: String) {
+        marginNotePositions[id] = point
+        let stored = marginNotePositions.mapValues { [Double($0.x), Double($0.y)] }
+        UserDefaults.standard.set(stored, forKey: "marginNotePositions")
     }
 
     func removeAnnotation(_ annotation: WebAnnotation, for doc: LiquidDoc) {
@@ -1360,6 +1682,26 @@ final class AppModel {
         all.removeAll { $0.id == annotation.id }
         AnnotationStore.save(all, for: doc.id, in: Self.annotationsRoot)
         annotationsStamp += 1
+    }
+
+    /// Rewrites a written annotation's words, stamping when.
+    func updateAnnotation(_ annotation: WebAnnotation, note: String, for doc: LiquidDoc) {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var all = AnnotationStore.load(for: doc.id, in: Self.annotationsRoot)
+        guard let index = all.firstIndex(where: { $0.id == annotation.id }) else { return }
+        all[index].body = WebAnnotation.TextualBody(value: trimmed,
+                                                    purpose: annotation.body?.purpose)
+        all[index].modified = .now
+        AnnotationStore.save(all, for: doc.id, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
+    /// The reader's annotation on the document as a whole — the line
+    /// the book lists show beneath the author's name.
+    func documentAnnotationNote(forRecordID id: String) -> String? {
+        let text = documentAnnotation(forAddress: id)?.body?.value
+        return text?.isEmpty == false ? text : nil
     }
 
     private func appendAnnotation(_ annotation: WebAnnotation, for doc: LiquidDoc) {
@@ -1903,6 +2245,9 @@ final class AppModel {
         // for a deliberate act (publishing, turning sharing on). If
         // permission was already given, the place refreshes quietly.
         refreshPlace(promptIfNeeded: false)
+        // The views' index reads the EPUB shelf; build it for the books
+        // already on it.
+        rebuildEPUBIndex()
     }
 
     /// The place this Mac last resolved — stamped onto a letter at
@@ -3347,19 +3692,21 @@ final class AppModel {
 
     // MARK: - Misc
 
-    /// Puts a human-readable citation with the embedded document address on
-    /// the pasteboard. Pasted into a draft, the address becomes a structured
-    /// `cites` link when the draft is saved.
+    /// Puts a pure BibTeX citation for the document on the pasteboard —
+    /// with the reader's whole-document annotation as an extra field
+    /// when one is written. Pasted into a draft, the private flavour
+    /// still becomes a structured `cites` link on save.
     func copyCitation(doc: LiquidDoc, paragraphID: String? = nil) {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
-        // Three flavours: clean plain text and an HTML hyperlink for Word and
-        // elsewhere; a private JSON for full fidelity back in Origami/Author.
+        let annotation = documentAnnotation(forAddress: doc.id)?.body?.value
         CitationClipboard.write(OrigamiCitation(
             to: doc.id, fragment: paragraphID, rel: "cites",
-            quotedText: doc.title, author: doc.displayAuthor, year: year, bibtex: nil))
-        showNote("Citation copied — paste it into a draft to cite")
+            quotedText: doc.title, author: doc.displayAuthor, year: year,
+            bibtex: OrigamiReading.bibTeXEntry(for: doc, fragment: paragraphID,
+                                               annotation: annotation)))
+        showNote("Citation copied as BibTeX")
     }
 
     func copyParagraphLink(doc: LiquidDoc, paragraphID: String) {

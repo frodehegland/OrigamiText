@@ -21,6 +21,8 @@
 	<string>Ori-logo-2</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Frode Hegland and Future Text Lab contributors. Released under the MIT License.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>The Calendar view lists your events beside the library. Origami Text only reads them; nothing is written or shared.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

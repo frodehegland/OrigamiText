@@ -569,18 +569,32 @@ nonisolated enum OrigamiReading {
     /// original at the right place.
     static func authorCitationPayload(for paragraph: LiquidDoc.Paragraph,
                                       in doc: LiquidDoc,
-                                      quote quoted: String? = nil)
+                                      quote quoted: String? = nil,
+                                      annotation: String? = nil)
         -> (content: String, bibtex: String) {
-        let address = doc.id + "#" + paragraph.id
         let quote = plainQuote(quoted ?? paragraph.text, in: doc)
+        let bibtex = bibTeXEntry(for: doc, fragment: paragraph.id,
+                                 quote: quote.isEmpty ? nil : quote,
+                                 annotation: annotation)
+        return (content: quote, bibtex: bibtex)
+    }
 
+    /// One pure BibTeX entry — the form every Copy to Cite / Copy as
+    /// Quote variant puts on the clipboard, readable by Author,
+    /// reference managers, and anything else that speaks BibTeX.
+    /// Extra fields carry what the standard ones cannot: `quote` for
+    /// the cited words, `annotation` for the reader's own note, and
+    /// `vm-id` for the address that reopens the original at its place.
+    static func bibTeXEntry(title: String, author: String, year: String?,
+                            publication: String? = nil, quote: String? = nil,
+                            annotation: String? = nil, address: String) -> String {
         var fields: [(String, String)] = []
-        if !doc.author.isEmpty { fields.append(("author", doc.author)) }
-        fields.append(("title", doc.title))
-        if let year = doc.date?.isoString.prefix(4), year.count == 4 {
-            fields.append(("year", String(year)))
-        }
-        if !quote.isEmpty { fields.append(("quote", quote)) }
+        if !author.isEmpty { fields.append(("author", author)) }
+        fields.append(("title", title))
+        if let year, !year.isEmpty { fields.append(("year", year)) }
+        if let publication, !publication.isEmpty { fields.append(("journal", publication)) }
+        if let quote, !quote.isEmpty { fields.append(("quote", quote)) }
+        if let annotation, !annotation.isEmpty { fields.append(("annotation", annotation)) }
         fields.append(("vm-id", address))
 
         let key = "ot" + String(stableHash(of: address).prefix(10))
@@ -589,7 +603,21 @@ nonisolated enum OrigamiReading {
             bibtex += " \(name) = {\(bibValue(value))},\n"
         }
         bibtex += "}"
-        return (content: quote, bibtex: bibtex)
+        return bibtex
+    }
+
+    /// The document-level convenience: year from the document's own
+    /// date (or its creation), the venue as `journal`, the address with
+    /// an optional paragraph fragment.
+    static func bibTeXEntry(for doc: LiquidDoc, fragment: String? = nil,
+                            quote: String? = nil, annotation: String? = nil) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
+        return bibTeXEntry(title: doc.title, author: doc.displayAuthor, year: year,
+                           publication: doc.publication, quote: quote,
+                           annotation: annotation,
+                           address: doc.id + (fragment.map { "#\($0)" } ?? ""))
     }
 
     /// A paragraph's words with the reading conventions resolved away —

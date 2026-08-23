@@ -20,6 +20,15 @@ enum AppSettings {
     static let aiReadingProposalsPromptKey = "aiReadingProposalsPrompt"
     static let aiReadingIssuesPromptKey = "aiReadingIssuesPrompt"
     static let aiPersonProfilesEnabledKey = "aiPersonProfilesEnabled"
+    // The travelling view modules' tunable prompts (shared names with
+    // Knowledge Space, so the module files port unchanged).
+    static let aiInsightsPromptKey = "aiInsightsPrompt"
+    static let aiThemesPromptKey = "aiThemesPrompt"
+    static let aiOpenQuestionsPromptKey = "aiOpenQuestionsPrompt"
+    static let aiDisagreementsPromptKey = "aiDisagreementsPrompt"
+    static let aiAgreementsPromptKey = "aiAgreementsPrompt"
+    static let aiStrangerChallengePromptKey = "aiStrangerChallengePrompt"
+    static let aiStrangerSupportPromptKey = "aiStrangerSupportPrompt"
     static let portraitStyleKey = "portraitStyle"
     static let portraitPromptKey = "portraitPrompt"
     static let portraitInstantProcessingKey = "portraitInstantProcessing"
@@ -29,6 +38,7 @@ enum AppSettings {
     static let readerHeadingFontKey = "readerHeadingFont"
     static let readerLayoutStyleKey = "readerLayoutStyle"
     static let venueLabelKey = "venueShelfLabel"
+    static let tripleClickSelectsSentenceKey = "tripleClickSelectsSentence"
     static let readerHeaderColumnWidthKey = "readerHeaderColumnWidth"
     static let connectionPortraitsKey = "connectionPortraits"
 }
@@ -45,7 +55,7 @@ enum ReaderLayoutStyle: String, CaseIterable, Identifiable {
 /// The Settings window's tabs, addressable so other parts of the app can
 /// open Settings onto a particular one.
 enum SettingsTab: Hashable {
-    case author, editor, reading, layout, library, dialog, ai, modules, openSource
+    case author, editor, reading, annotation, layout, library, dialog, ai, modules, openSource
 }
 
 /// The app's Settings window (Origami Text → Settings…, ⌘,).
@@ -64,6 +74,9 @@ struct SettingsView: View {
             ReadingSettingsView()
                 .tabItem { Label("Reading", systemImage: "book") }
                 .tag(SettingsTab.reading)
+            AnnotationSettingsView()
+                .tabItem { Label("Annotations", systemImage: "highlighter") }
+                .tag(SettingsTab.annotation)
             LayoutSettingsView()
                 .tabItem { Label("Layout", systemImage: "sidebar.right") }
                 .tag(SettingsTab.layout)
@@ -83,7 +96,9 @@ struct SettingsView: View {
                 .tabItem { Label("Open Source", systemImage: "shippingbox") }
                 .tag(SettingsTab.openSource)
         }
-        .frame(width: 576)
+        // Wide enough for all ten tab buttons to stand in one row —
+        // narrower, the toolbar crops the trailing tabs.
+        .frame(width: 800)
         .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -124,6 +139,57 @@ private struct LayoutSettingsView: View {
     }
 }
 
+/// Annotation: the reader's vocabulary — each kind's name and the
+/// colour its annotated words take in the reading. The canonical kind
+/// stays in the stored annotation; these are this reader's words and
+/// inks for them.
+private struct AnnotationSettingsView: View {
+    /// Bumps to re-read the bindings after a Reset.
+    @State private var refresh = 0
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(ReaderAnnotationKind.allCases) { kind in
+                    HStack(spacing: 10) {
+                        ColorPicker("", selection: colorBinding(kind),
+                                    supportsOpacity: false)
+                            .labelsHidden()
+                        TextField(kind.rawValue, text: nameBinding(kind))
+                            .textFieldStyle(.roundedBorder)
+                        Button("Reset") {
+                            AnnotationKindStyle.reset(kind)
+                            refresh += 1
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                    }
+                }
+            } header: {
+                Text("Annotation Kinds")
+            } footer: {
+                Text("The Annotate menu's kinds: rename them to your own words, and choose the colour each paints on the annotated text. The stored annotations keep the canonical kind, so sidecars read the same everywhere.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .id(refresh)
+    }
+
+    private func nameBinding(_ kind: ReaderAnnotationKind) -> Binding<String> {
+        Binding(
+            get: { AnnotationKindStyle.displayName(of: kind) },
+            set: { AnnotationKindStyle.setDisplayName($0, for: kind) })
+    }
+
+    private func colorBinding(_ kind: ReaderAnnotationKind) -> Binding<Color> {
+        Binding(
+            get: { AnnotationKindStyle.color(of: kind) },
+            set: { AnnotationKindStyle.setHex($0.annotationHex, for: kind) })
+    }
+}
+
 /// Reading: how EPUBs are presented — the theme (background and text
 /// colours), which follows light and dark mode.
 private struct ReadingSettingsView: View {
@@ -141,6 +207,7 @@ private struct ReadingSettingsView: View {
     /// Whether citation cards may ask the scholarly services for what
     /// the package left out — see CitationLookup.swift.
     @AppStorage(CitationLookup.enabledKey) private var lookupCitedWorks = true
+    @AppStorage(AppSettings.tripleClickSelectsSentenceKey) private var tripleClickSelectsSentence = true
     @AppStorage(CitationLookup.openAlexKeyKey) private var openAlexKey = ""
 
     private let families = NSFontManager.shared.availableFontFamilies.sorted()
@@ -172,6 +239,13 @@ private struct ReadingSettingsView: View {
                 Text("Citations")
             } footer: {
                 Text("How citations read in the native reading styles: (Hegland 2025) as the author wrote them, [3] as the source's reference list numbers them, or the number raised. The click is the same in every style — the source's card. The Faithful view shows the page exactly as published.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Triple-click selects the sentence", isOn: $tripleClickSelectsSentence)
+            } footer: {
+                Text("In the native reading styles, a triple-click selects the whole sentence around the click — the reading's natural unit. Off, it selects the paragraph, the system's way. Double-click always selects the word.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -491,7 +565,7 @@ private struct ModulesSettingsView: View {
             Text("Create Your Own View")
                 .font(.headline)
             Text("""
-            1.  Write a SwiftUI view in one file. Read the library through the environment model — the document index, backlinks, and the ready-made derivations in LibraryInsights. Navigate with the same calls every view uses: openInLibrary, open(doc, fragment:), openTranspointing.
+            1.  Write a SwiftUI view in one file. Read the library through the environment model: every opened EPUB stands in the document index as a structured document — its Visual-Meta metadata (title, authors, date, venue), headings, concepts, citations and references, and the body paragraphs with their stable ids — with backlinks for the typed links between books and the ready-made derivations in LibraryInsights over the same shelf. Navigate with the same calls every view uses: openInLibrary, open(doc, fragment:), openTranspointing.
             2.  At the bottom of the file, declare a LibraryViewModule: an id, a sidebar name, an SF Symbol, and how to build its panes.
             3.  Add that module to LibraryViewRegistry.modules — one line. The sidebar entry, selection, and routing follow automatically.
 

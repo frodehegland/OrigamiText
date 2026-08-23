@@ -96,12 +96,15 @@ struct ReadingAnalysisResult: Sendable {
     var keywords: [String] = []
 }
 
-/// One kept analysis, as stored: the result and when it was made.
+/// One kept analysis, as stored: the result, when it was made, and —
+/// for Issues — which blocks the reader has dismissed as not real
+/// issues (by block index; regenerating clears them with the text).
 nonisolated struct StoredReadingAnalysis: Codable, Sendable {
     var text: String
     var names: [String] = []
     var keywords: [String] = []
     var created: Date
+    var dismissed: [Int]? = nil
 
     var result: ReadingAnalysisResult {
         ReadingAnalysisResult(text: text, names: names, keywords: keywords)
@@ -234,6 +237,11 @@ enum ReadingAnalyzer {
 /// back to plain paragraphs, so nothing is ever lost.
 struct MarkdownReplyText: View {
     let text: String
+    /// Dismissable blocks (the Issues reading): a click folds a block
+    /// to its leading bold words — unbolded, with an ellipsis — for
+    /// the reader to set aside an issue they judge not real; a click
+    /// on the folded line brings it back. Nil renders plainly.
+    var dismissed: Binding<Set<Int>>? = nil
 
     private enum Block: Identifiable {
         case heading(id: Int, level: Int, text: String)
@@ -253,29 +261,90 @@ struct MarkdownReplyText: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(blocks) { block in
-                switch block {
-                case .heading(_, let level, let text):
-                    inline(text)
-                        .font(level <= 2 ? .headline : .subheadline.weight(.semibold))
-                        .padding(.top, 4)
-                case .bullet(_, let text):
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("•")
-                        inline(text)
-                    }
-                    .padding(.leading, 8)
-                case .numbered(_, let number, let text):
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("\(number).")
-                            .monospacedDigit()
-                        inline(text)
-                    }
-                    .padding(.leading, 8)
-                case .paragraph(_, let text):
-                    inline(text)
+                if let dismissed {
+                    dismissable(block, dismissed: dismissed)
+                } else {
+                    blockView(block)
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: Block) -> some View {
+        switch block {
+        case .heading(_, let level, let text):
+            inline(text)
+                .font(level <= 2 ? .headline : .subheadline.weight(.semibold))
+                .padding(.top, 4)
+        case .bullet(_, let text):
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("•")
+                inline(text)
+            }
+            .padding(.leading, 8)
+        case .numbered(_, let number, let text):
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("\(number).")
+                    .monospacedDigit()
+                inline(text)
+            }
+            .padding(.leading, 8)
+        case .paragraph(_, let text):
+            inline(text)
+        }
+    }
+
+    /// One block the reader can set aside: whole, a click folds it to
+    /// its leading words with an ellipsis; folded, a click restores it.
+    @ViewBuilder
+    private func dismissable(_ block: Block, dismissed: Binding<Set<Int>>) -> some View {
+        let isDismissed = dismissed.wrappedValue.contains(block.id)
+        Group {
+            if isDismissed {
+                Text(collapsedLine(of: block))
+                    .foregroundStyle(.secondary)
+            } else {
+                blockView(block)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.snappy) {
+                if isDismissed {
+                    dismissed.wrappedValue.remove(block.id)
+                } else {
+                    dismissed.wrappedValue.insert(block.id)
+                }
+            }
+        }
+        .help(isDismissed ? "Restore this issue" : "Set this issue aside — you judge it not a real one")
+    }
+
+    /// The folded line: the block's leading bold words when it opens
+    /// with any (its own heading), else its first words — unbolded,
+    /// trailing an ellipsis, its list marker kept.
+    private func collapsedLine(of block: Block) -> String {
+        let raw: String
+        var marker = ""
+        switch block {
+        case .heading(_, _, let text): raw = text
+        case .bullet(_, let text): raw = text; marker = "• "
+        case .numbered(_, let number, let text): raw = text; marker = "\(number). "
+        case .paragraph(_, let text): raw = text
+        }
+        if let range = raw.range(of: #"^\*\*[^*]+\*\*"#, options: .regularExpression) {
+            let lead = String(raw[range])
+                .replacingOccurrences(of: "**", with: "")
+                .trimmingCharacters(in: CharacterSet(charactersIn: ": "))
+            return marker + lead + " …"
+        }
+        let words = raw
+            .replacingOccurrences(of: "**", with: "")
+            .split(separator: " ")
+            .prefix(6)
+            .joined(separator: " ")
+        return marker + words + " …"
     }
 
     /// The reply cut into blocks: headings, list items, and paragraphs
@@ -345,6 +414,22 @@ struct ReadingAnalysisScreen: View {
     @State private var created: Date?
     @State private var partial = ""
     @State private var failure: String?
+    /// Issues the reader has set aside, persisted with the analysis.
+    @State private var dismissedBlocks: Set<Int> = []
+
+    /// The dismissal binding, Issues only — a change lands straight in
+    /// the stored analysis. Text selection yields to the click there.
+    private var dismissedBinding: Binding<Set<Int>>? {
+        guard kind == .issues else { return nil }
+        return Binding(
+            get: { dismissedBlocks },
+            set: { value in
+                dismissedBlocks = value
+                if let book = model.openEPUB {
+                    model.setAnalysisDismissed(value, kind: kind, forBook: book)
+                }
+            })
+    }
 
     var body: some View {
         ScrollView {
@@ -369,8 +454,15 @@ struct ReadingAnalysisScreen: View {
                     Text(failure)
                         .foregroundStyle(.secondary)
                 } else if let result {
-                    MarkdownReplyText(text: result.text)
-                        .textSelection(.enabled)
+                    if let dismissedBinding {
+                        // Issues: each block a click to set aside or
+                        // restore — selection yields to the judgment.
+                        MarkdownReplyText(text: result.text,
+                                          dismissed: dismissedBinding)
+                    } else {
+                        MarkdownReplyText(text: result.text)
+                            .textSelection(.enabled)
+                    }
                     if !result.names.isEmpty {
                         termsSection("Names", terms: result.names)
                     }
@@ -466,6 +558,7 @@ struct ReadingAnalysisScreen: View {
         created = nil
         partial = ""
         failure = nil
+        dismissedBlocks = []
         guard let book = model.openEPUB,
               let doc = model.readingDoc(forBook: book) else {
             failure = "Open a book first — the analysis reads the open document."
@@ -475,6 +568,7 @@ struct ReadingAnalysisScreen: View {
         if !regenerate, let stored = model.storedAnalysis(kind, forBook: book) {
             result = stored.result
             created = stored.created
+            dismissedBlocks = Set(stored.dismissed ?? [])
             return
         }
         do {

@@ -48,6 +48,12 @@ public nonisolated enum AnnotationStore {
         return all
     }
 
+    /// The sidecar's bytes as they stand — a W3C AnnotationCollection,
+    /// the heart of a Readium annotation set — for Export Annotations….
+    public static func exportData(for address: String, in folder: URL) -> Data? {
+        try? Data(contentsOf: fileURL(for: address, in: folder))
+    }
+
     /// Writes the sidecar, or removes it when the last annotation is gone.
     public static func save(_ annotations: [WebAnnotation], for address: String, in folder: URL) {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -128,25 +134,39 @@ public nonisolated enum AnnotationAnchor {
     }
 
     /// Where an annotation lands in this document, or nil when nothing in
-    /// it still matches (the document changed beyond re-anchoring).
+    /// it still matches (an orphan — kept and shown, never lost). The
+    /// cascade, Hypothesis's way: the stable id and exact words; the
+    /// words fuzzily inside their paragraph; the exact words anywhere
+    /// (context-scored); the words fuzzily anywhere, searched outward
+    /// from where the position and progression hints expect them.
     static func resolve(_ annotation: WebAnnotation, in doc: LiquidDoc) -> Resolution? {
         var fragmentID: String?
         var quote: (exact: String, prefix: String?, suffix: String?)?
+        var positionHint: Int?
+        var progressionHint: Double?
         for selector in annotation.target.selectors {
             switch selector {
             case .fragment(let value, _): fragmentID = fragmentID ?? value
             case .quote(let exact, let prefix, let suffix):
                 if quote == nil, !exact.isEmpty { quote = (exact, prefix, suffix) }
-            case .position: break   // a hint only; positions shift too easily
+            case .position(let start, _): positionHint = positionHint ?? start
+            case .progression(let value): progressionHint = progressionHint ?? value
             }
         }
         let paragraphs = doc.body ?? []
+        let anchored = fragmentID.flatMap { id in paragraphs.first { $0.id == id } }
 
-        if let fragmentID,
-           let paragraph = paragraphs.first(where: { $0.id == fragmentID }) {
+        if let paragraph = anchored {
             if let quote {
                 if paragraph.text.range(of: quote.exact, options: matching) != nil {
                     return Resolution(paragraphID: paragraph.id, exact: quote.exact,
+                                      method: .quoteInParagraph)
+                }
+                // The words drifted (an edit, a re-export): find their
+                // nearest reading inside the paragraph, and highlight
+                // the document's own words there.
+                if let fuzzy = fuzzyMatch(quote.exact, in: paragraph.text) {
+                    return Resolution(paragraphID: paragraph.id, exact: fuzzy,
                                       method: .quoteInParagraph)
                 }
                 // The span is gone from its paragraph: paragraph scope
@@ -156,35 +176,124 @@ public nonisolated enum AnnotationAnchor {
             return Resolution(paragraphID: paragraph.id, exact: nil, method: .fragment)
         }
 
-        if let quote {
-            var best: (id: String, score: Int)?
-            for paragraph in paragraphs {
-                let text = paragraph.text
-                var search = text.startIndex..<text.endIndex
-                while let found = text.range(of: quote.exact, options: matching, range: search) {
-                    var score = 0
-                    if let prefix = quote.prefix, !prefix.isEmpty {
-                        let preceding = String(text[..<found.lowerBound].suffix(prefix.count + 8))
-                        if folded(preceding).hasSuffix(folded(prefix)) { score += 1 }
-                    }
-                    if let suffix = quote.suffix, !suffix.isEmpty {
-                        let following = String(text[found.upperBound...].prefix(suffix.count + 8))
-                        if folded(following).hasPrefix(folded(suffix)) { score += 1 }
-                    }
-                    if best == nil || score > best!.score {
-                        best = (paragraph.id, score)
-                    }
-                    guard found.upperBound < text.endIndex else { break }
-                    search = found.upperBound..<text.endIndex
+        guard let quote else { return nil }
+
+        // Exact words anywhere, the prefix/suffix breaking ties.
+        var best: (id: String, score: Int)?
+        for paragraph in paragraphs {
+            let text = paragraph.text
+            var search = text.startIndex..<text.endIndex
+            while let found = text.range(of: quote.exact, options: matching, range: search) {
+                var score = 0
+                if let prefix = quote.prefix, !prefix.isEmpty {
+                    let preceding = String(text[..<found.lowerBound].suffix(prefix.count + 8))
+                    if folded(preceding).hasSuffix(folded(prefix)) { score += 1 }
                 }
+                if let suffix = quote.suffix, !suffix.isEmpty {
+                    let following = String(text[found.upperBound...].prefix(suffix.count + 8))
+                    if folded(following).hasPrefix(folded(suffix)) { score += 1 }
+                }
+                if best == nil || score > best!.score {
+                    best = (paragraph.id, score)
+                }
+                guard found.upperBound < text.endIndex else { break }
+                search = found.upperBound..<text.endIndex
             }
-            if let best {
-                return Resolution(paragraphID: best.id, exact: quote.exact,
+        }
+        if let best {
+            return Resolution(paragraphID: best.id, exact: quote.exact,
+                              method: .quoteInDocument)
+        }
+
+        // Fuzzy anywhere — but hinted: paragraphs are tried outward
+        // from where the position (or progression) says the words
+        // were, so the search usually ends where it starts.
+        let ordered = hintOrdered(paragraphs, positionHint: positionHint,
+                                  progressionHint: progressionHint)
+        for paragraph in ordered {
+            if let fuzzy = fuzzyMatch(quote.exact, in: paragraph.text) {
+                return Resolution(paragraphID: paragraph.id, exact: fuzzy,
                                   method: .quoteInDocument)
             }
         }
 
         return nil
+    }
+
+    /// The paragraphs ordered outward from the hinted place: the
+    /// position selector's global offset when there is one, else the
+    /// progression fraction, else document order.
+    private static func hintOrdered(_ paragraphs: [LiquidDoc.Paragraph],
+                                    positionHint: Int?,
+                                    progressionHint: Double?) -> [LiquidDoc.Paragraph] {
+        guard positionHint != nil || progressionHint != nil else { return paragraphs }
+        var offsets: [Int] = []
+        var running = 0
+        for paragraph in paragraphs {
+            offsets.append(running)
+            running += paragraph.text.count + 2
+        }
+        let target: Int
+        if let positionHint {
+            target = positionHint
+        } else {
+            target = Int(Double(running) * min(max(progressionHint ?? 0, 0), 1))
+        }
+        return zip(paragraphs, offsets)
+            .sorted { abs($0.1 - target) < abs($1.1 - target) }
+            .map(\.0)
+    }
+
+    /// The document's own words nearest the quote, within an edit
+    /// budget of a fifth of the quote (at least 2, at most 24 edits) —
+    /// Sellers's approximate substring search. Returns the matched
+    /// words as the document writes them, so the highlight paints what
+    /// the page actually says. Short quotes stay exact-only: fuzziness
+    /// on a few characters matches noise.
+    static func fuzzyMatch(_ quote: String, in text: String) -> String? {
+        let needle = Array(quote.lowercased())
+        let haystack = Array(text.lowercased())
+        guard needle.count >= 8, !haystack.isEmpty else { return nil }
+        let budget = max(2, min(needle.count / 5, 24))
+
+        // D[i] = fewest edits matching needle[0..<i] ending at the
+        // current haystack position; start[i] = where that match began.
+        var previousDistance = Array(0...needle.count)
+        var previousStart = Array(repeating: 0, count: needle.count + 1)
+        var best: (start: Int, end: Int, distance: Int)?
+
+        for j in 1...haystack.count {
+            var currentDistance = [0] + Array(repeating: 0, count: needle.count)
+            var currentStart = Array(repeating: j, count: needle.count + 1)
+            for i in 1...needle.count {
+                let substitution = previousDistance[i - 1]
+                    + (needle[i - 1] == haystack[j - 1] ? 0 : 1)
+                let deletion = previousDistance[i] + 1
+                let insertion = currentDistance[i - 1] + 1
+                let smallest = min(substitution, min(deletion, insertion))
+                currentDistance[i] = smallest
+                if smallest == substitution {
+                    currentStart[i] = previousStart[i - 1]
+                } else if smallest == deletion {
+                    currentStart[i] = previousStart[i]
+                } else {
+                    currentStart[i] = currentStart[i - 1]
+                }
+            }
+            let distance = currentDistance[needle.count]
+            if distance <= budget, best == nil || distance < best!.distance {
+                best = (currentStart[needle.count], j, distance)
+            }
+            previousDistance = currentDistance
+            previousStart = currentStart
+        }
+
+        guard let best else { return nil }
+        let characters = Array(text)
+        guard best.start < best.end, best.end <= characters.count else { return nil }
+        let matched = String(characters[best.start..<best.end])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return matched.isEmpty ? nil : matched
     }
 
     /// The target for a new annotation on `paragraphID`, carrying the whole
@@ -211,6 +320,12 @@ public nonisolated enum AnnotationAnchor {
             } else {
                 selectors.append(.quote(exact: exact, prefix: nil, suffix: nil))
             }
+        }
+        // The coarse fraction through the document — Readium's
+        // ProgressionSelector: ordering, hinting, and last resort.
+        if let body = doc.body, !body.isEmpty,
+           let index = body.firstIndex(where: { $0.id == paragraphID }) {
+            selectors.append(.progression(Double(index) / Double(body.count)))
         }
         return WebAnnotation.Target(source: "origamitext://open/" + doc.id,
                                     selectors: selectors)

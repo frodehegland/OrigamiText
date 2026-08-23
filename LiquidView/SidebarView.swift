@@ -20,7 +20,7 @@ enum SidebarCatalog {
     /// The full-screen peek still needs a way back to the library, so it
     /// lists Chronological — every book, newest first.
     static let received: [SidebarPlace] = [
-        SidebarPlace(name: "Chronological", systemImage: "clock", item: .epubsTimeline),
+        SidebarPlace(name: "Time", systemImage: "clock", item: .epubsTimeline),
     ]
 
     /// The conversation itself: every letter to and from the user, the
@@ -138,7 +138,7 @@ struct SidebarView: View {
     private func hasRow(for item: SidebarItem) -> Bool {
         switch item {
         case .epubsTopOfPile, .epubsTimeline, .epubsAlphabetical,
-             .epubJournals, .epubsSetAside, .authors, .annotations,
+             .epubJournals, .authors, .annotations,
              .people, .concepts:
             true
         case .epubFolder(let name):
@@ -147,39 +147,81 @@ struct SidebarView: View {
             model.viewPeople.contains(name)
         case .concept(let name):
             model.viewConcepts.contains(name)
+        case .view(let id):
+            LibraryViewRegistry.module(id: id) != nil && !model.isViewHidden(id)
         default:
             false
         }
     }
 
     var body: some View {
-        List(selection: selection) {
-            // The Library shelf of opened EPUBs ("All", the ways through
-            // them, the user's folders, and a "+"), then the Views.
-            librarySection
-            viewsSection
-        }
-        .listStyle(.sidebar)
-        // Every place's icon in the lab's ember orange — one style,
-        // inherited by every Label in the list.
-        .labelStyle(EmberIconLabelStyle())
-        // The app's name stands over the list, above Received — as
-        // Knowledge Space's sidebar carries its own.
-        .safeAreaInset(edge: .top, spacing: 0) {
+        // The title and the foot stand OUTSIDE the list, so all three
+        // share the column's one material — no backing views (a second
+        // material over the first reads lighter, like a highlight) and
+        // nothing ever scrolls beneath them.
+        VStack(spacing: 0) {
+            // The app's name stands over the list — as Knowledge
+            // Space's sidebar carries its own.
             Text("Origami Text")
                 .font(.headline)
                 .fontWeight(.regular)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
                 .padding(.bottom, 18)
+            List(selection: selection) {
+                // The Library shelf of opened EPUBs (the ways through
+                // them, the user's folders, and a "+"), then the Views.
+                librarySection
+                viewsSection
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            // Every place's icon in the lab's ember orange — one style,
+            // inherited by every Label in the list.
+            .labelStyle(EmberIconLabelStyle())
+            // The column's foot, under a rule: the built-in guide (the
+            // user guide as an Origami EPUB, opened like any other
+            // book), Settings, and Contact — always at hand.
+            VStack(alignment: .leading, spacing: 10) {
+                Divider()
+                Button {
+                    model.openIntroGuide()
+                } label: {
+                    Label("Intro", systemImage: "book")
+                }
+                .buttonStyle(.plain)
+                Button {
+                    openSettings()
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .buttonStyle(.plain)
+                Button {
+                    let subject = "Origami Text Feedback"
+                        .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+                        ?? "Origami%20Text%20Feedback"
+                    if let url = URL(string: "mailto:frode@hegland.com?subject=\(subject)") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Label("Contact", systemImage: "envelope")
+                }
+                .buttonStyle(.plain)
+                .help("Email your feedback to frode@hegland.com")
+            }
+            .labelStyle(EmberIconLabelStyle())
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .navigationTitle("Origami Text")
-        // Wide enough for the longest place names ("Chronological",
-        // "Alphabetical", journal names) with their counts beside them.
-        .navigationSplitViewColumnWidth(min: 210, ideal: 240)
+        // Wide enough for the longest place names ("Alphabetical",
+        // journal names) with their counts beside them, at the large
+        // sidebar text size too.
+        .navigationSplitViewColumnWidth(min: 300, ideal: 330)
     }
 
     /// Ways into the opened EPUBs by who and what they hold: Authors (the
@@ -234,6 +276,22 @@ struct SidebarView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+
+            // The experimental views shared with Knowledge Space, each a
+            // module in LibraryViewRegistry; curated with checkboxes in
+            // Settings ▸ View Modules.
+            ForEach(model.shownPlaces(of: SidebarCatalog.views)) { place in
+                Label(place.name, systemImage: place.systemImage)
+                    .tag(place.item)
+            }
+            Button {
+                model.settingsTab = .modules
+                openSettings()
+            } label: {
+                Label("Edit Views", systemImage: "slider.horizontal.3")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
         } header: {
             Text("Views")
         }
@@ -252,17 +310,17 @@ struct SidebarView: View {
         Section(isExpanded: isExpanded("Library")) {
             // The badge sits INSIDE the tag: a badge applied over the
             // tag hides it from the List, and the row stops selecting.
-            Label("Top of Pile", systemImage: "pin")
+            Label("Pinned", systemImage: "pin")
                 .badge(shown.filter { model.isTopOfPile($0) }.count)
                 .tag(SidebarItem.epubsTopOfPile)
-            Label("Chronological", systemImage: "clock")
+            Label("Time", systemImage: "clock")
                 .badge(timelineUnreadOnly
                        ? shown.filter { model.isUnread($0) }.count : shown.count)
                 .tag(SidebarItem.epubsTimeline)
                 .contextMenu {
                     Toggle("Unread", isOn: $timelineUnreadOnly)
                 }
-            Label("Alphabetical", systemImage: "textformat.abc")
+            Label("Alpha", systemImage: "textformat.abc")
                 .badge(alphabeticalUnreadOnly
                        ? shown.filter { model.isUnread($0) }.count : shown.count)
                 .tag(SidebarItem.epubsAlphabetical)
@@ -277,9 +335,6 @@ struct SidebarView: View {
                     .badge(model.epubRecords(inFolder: folder).count)
                     .tag(SidebarItem.epubFolder(folder))
             }
-            Label("Set Aside", systemImage: "moon.zzz")
-                .badge(model.epubSetAsideRecords.count)
-                .tag(SidebarItem.epubsSetAside)
             Button {
                 model.promptNewEPUBFolder()
             } label: {

@@ -18,7 +18,7 @@ struct LiquidViewApp: App {
                 }
                 .background(TabBarRemover())
         }
-        .defaultSize(width: 1120, height: 640)
+        .defaultSize(width: 1240, height: 864)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Origami Text") { showAboutPanel() }
@@ -113,6 +113,17 @@ struct LiquidViewApp: App {
                           || (model.parallelCandidates.isEmpty && model.parallelDoc == nil))
             }
         }
+
+        // A lifted document annotation: its own window, titled with the
+        // article, room to write while the main window reads anything —
+        // Save still lands on the original document.
+        WindowGroup("Annotation", for: LiftedAnnotation.self) { $target in
+            if let target {
+                LiftedAnnotationWindow(target: target)
+                    .environment(model)
+            }
+        }
+        .defaultSize(width: 560, height: 440)
 
         Settings {
             SettingsView()

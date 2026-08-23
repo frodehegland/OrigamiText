@@ -25,6 +25,10 @@ nonisolated struct UnreadableFile: Identifiable, Hashable, Sendable {
 final class LibraryIndex {
     private(set) var folderURL: URL?
     private(set) var byID: [String: IndexEntry] = [:]
+    /// Everything scanned — in Origami Text nothing is filtered from the
+    /// index, so this is `byID` itself; kept under Knowledge Space's name
+    /// so the travelling view modules compile unchanged.
+    var allByID: [String: IndexEntry] { byID }
     private(set) var backlinks: [String: [BacklinkRef]] = [:]
     /// Keyed by the superseded (older) document; the value is the newer
     /// document whose `revises` link points at it.
@@ -42,6 +46,35 @@ final class LibraryIndex {
     private var watcher: FolderWatcher?
     #endif
     private var scanGeneration = 0
+
+    /// The two feeds the index merges: the community folder's JSON
+    /// documents (when one is chosen) and the EPUB shelf — every opened
+    /// book as a structured document, re-imported from its unpacked
+    /// package. The views and modules read the merged result.
+    private var scannedDocs: [LiquidDoc] = []
+    private var scannedDuplicates: Set<String> = []
+    private var epubDocs: [LiquidDoc] = []
+
+    /// Installs the EPUB shelf's documents (see
+    /// `AppModel.rebuildEPUBIndex`) and re-derives the merged index.
+    func setEPUBDocuments(_ docs: [LiquidDoc]) {
+        epubDocs = docs
+        rebuild()
+    }
+
+    /// Re-derives byID, backlinks, revisions, and the timeline over both
+    /// feeds. The EPUB shelf comes last: on an id both feeds claim, the
+    /// book wins.
+    private func rebuild() {
+        let result = LibraryScanner.derive(docs: scannedDocs + epubDocs,
+                                           duplicateIDs: scannedDuplicates)
+        byID = result.byID
+        backlinks = result.backlinks
+        revisionOf = result.revisionOf
+        timeline = result.timeline
+        supersededIDs = Set(result.revisionOf.keys)
+        retractedIDs = result.retractedIDs
+    }
 
     func setFolder(_ url: URL) {
         folderURL = url
@@ -64,16 +97,25 @@ final class LibraryIndex {
             let result = LibraryScanner.scan(folder: folderURL)
             await MainActor.run {
                 guard generation == self.scanGeneration else { return }
-                self.byID = result.byID
-                self.backlinks = result.backlinks
-                self.revisionOf = result.revisionOf
-                self.timeline = result.timeline
+                self.scannedDocs = result.docs
+                self.scannedDuplicates = result.duplicateIDs
                 self.unreadableFiles = result.unreadable
-                self.supersededIDs = Set(result.revisionOf.keys)
-                self.retractedIDs = result.retractedIDs
+                self.rebuild()
                 self.isScanning = false
             }
         }
+    }
+
+    /// Whether a candidate document id is already spoken for — by any
+    /// indexed document or by an id-named file the scanner has not read
+    /// yet. The writer's side of collision honesty. (Knowledge Space's
+    /// definition, kept so the travelling view modules compile.)
+    func isIDTaken(_ candidate: String) -> Bool {
+        if allByID[candidate] != nil { return true }
+        guard let folderURL else { return false }
+        return FileManager.default.fileExists(
+            atPath: folderURL.appendingPathComponent(candidate)
+                .appendingPathExtension(LiquidDoc.fileExtension).path)
     }
 
     /// Follows `revises` chains forward to the newest revision.
@@ -92,12 +134,38 @@ final class LibraryIndex {
 
 nonisolated enum LibraryScanner {
     struct Result: Sendable {
+        var docs: [LiquidDoc] = []
+        var duplicateIDs: Set<String> = []
         var byID: [String: IndexEntry] = [:]
         var backlinks: [String: [BacklinkRef]] = [:]
         var revisionOf: [String: String] = [:]
         var retractedIDs: Set<String> = []
         var timeline: [IndexEntry] = []
         var unreadable: [UnreadableFile] = []
+    }
+
+    /// The index derivations over a set of documents, whatever fed them:
+    /// id lookup, backlinks, revision chains, retractions, and the
+    /// listed-date timeline.
+    static func derive(docs: [LiquidDoc], duplicateIDs: Set<String> = []) -> Result {
+        var result = Result()
+        result.docs = docs
+        result.duplicateIDs = duplicateIDs
+        for doc in docs {
+            result.byID[doc.id] = IndexEntry(doc: doc, hasDuplicate: duplicateIDs.contains(doc.id))
+            for link in doc.links {
+                result.backlinks[link.to, default: []]
+                    .append(BacklinkRef(fromID: doc.id, rel: link.rel, fragment: link.fragment))
+                if link.rel == "revises" {
+                    result.revisionOf[link.to] = doc.id
+                }
+                if link.rel == "retracts" {
+                    result.retractedIDs.insert(link.to)
+                }
+            }
+        }
+        result.timeline = result.byID.values.sorted { $0.doc.listedDate < $1.doc.listedDate }
+        return result
     }
 
     /// The folder often lives in iCloud Drive: a file another device
@@ -125,17 +193,17 @@ nonisolated enum LibraryScanner {
     }
 
     static func scan(folder: URL) -> Result {
-        var result = Result()
         requestICloudDownloads(in: folder)
         guard let enumerator = FileManager.default.enumerator(
             at: folder,
             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return result }
+        ) else { return Result() }
 
         var docs: [LiquidDoc] = []
         var modificationDates: [String: Date] = [:]
         var duplicateIDs: Set<String> = []
+        var unreadable: [UnreadableFile] = []
 
         for case let url as URL in enumerator {
             guard url.pathExtension.lowercased() == LiquidDoc.fileExtension else { continue }
@@ -157,25 +225,12 @@ nonisolated enum LibraryScanner {
                     docs.append(doc)
                 }
             } catch {
-                result.unreadable.append(UnreadableFile(fileURL: url, reason: error.localizedDescription))
+                unreadable.append(UnreadableFile(fileURL: url, reason: error.localizedDescription))
             }
         }
 
-        for doc in docs {
-            result.byID[doc.id] = IndexEntry(doc: doc, hasDuplicate: duplicateIDs.contains(doc.id))
-            for link in doc.links {
-                result.backlinks[link.to, default: []]
-                    .append(BacklinkRef(fromID: doc.id, rel: link.rel, fragment: link.fragment))
-                if link.rel == "revises" {
-                    result.revisionOf[link.to] = doc.id
-                }
-                if link.rel == "retracts" {
-                    result.retractedIDs.insert(link.to)
-                }
-            }
-        }
-
-        result.timeline = result.byID.values.sorted { $0.doc.listedDate < $1.doc.listedDate }
+        var result = derive(docs: docs, duplicateIDs: duplicateIDs)
+        result.unreadable = unreadable
         return result
     }
 }
