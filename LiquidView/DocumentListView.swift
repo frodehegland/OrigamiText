@@ -355,17 +355,48 @@ struct JournalsListView: View {
     }
 }
 
-/// Library ▸ Journals ▸ one venue: the books it holds here, newest
-/// first. The header row leads back to the venue list.
+/// Library ▸ Journals ▸ one venue: the books it holds here in three
+/// standings, each divided from the next by a rule — Top of Pile
+/// first (pinned, marked), then the rest, then the books Set Aside
+/// (dimmed, marked). The header row leads back to the venue list.
 struct JournalBooksListView: View {
     @Environment(AppModel.self) private var model
     let name: String
 
     var body: some View {
+        let all = model.epubRecords(inPublication: name)
+        let pinned = all.filter { model.isTopOfPile($0) }
+        let regular = all.filter { !model.isTopOfPile($0) }
+        let aside = model.epubSetAsideRecords(inPublication: name)
         List(selection: epubListSelection(model)) {
             Section {
-                ForEach(model.epubRecords(inPublication: name)) { record in
+                ForEach(pinned) { record in
                     EPUBRecordRow(record: record)
+                        .overlay(alignment: .topTrailing) {
+                            Image(systemName: "pin.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                }
+                if !pinned.isEmpty, !(regular.isEmpty && aside.isEmpty) {
+                    groupRule
+                }
+                ForEach(regular) { record in
+                    EPUBRecordRow(record: record)
+                }
+                if !aside.isEmpty {
+                    if !(pinned.isEmpty && regular.isEmpty) {
+                        groupRule
+                    }
+                    ForEach(aside) { record in
+                        EPUBRecordRow(record: record)
+                            .opacity(0.55)
+                            .overlay(alignment: .topTrailing) {
+                                Image(systemName: "moon.zzz")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                    }
                 }
             } header: {
                 Button {
@@ -378,7 +409,7 @@ struct JournalBooksListView: View {
             }
         }
         .overlay {
-            if model.epubRecords(inPublication: name).isEmpty {
+            if pinned.isEmpty, regular.isEmpty, aside.isEmpty {
                 ContentUnavailableView {
                     Label(name, systemImage: "newspaper")
                 } description: {
@@ -386,6 +417,17 @@ struct JournalBooksListView: View {
                 }
             }
         }
+    }
+
+    /// The rule between standings: one line, a little stronger than
+    /// the row separators — its own row's separators hidden, so a
+    /// plain Divider's triple-line effect never appears.
+    private var groupRule: some View {
+        Rectangle()
+            .fill(.tertiary)
+            .frame(height: 1.5)
+            .listRowSeparator(.hidden)
+            .padding(.vertical, 2)
     }
 }
 

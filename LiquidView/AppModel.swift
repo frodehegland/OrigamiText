@@ -45,6 +45,7 @@ enum SidebarItem: Hashable {
     // are user-curated buckets, added the way folders are.
     case authors
     case epubAuthor(String)
+    case annotations
     case people
     case person(String)
     case concepts
@@ -824,6 +825,8 @@ final class AppModel {
         if openEPUB?.id == record.folder { openEPUB = nil }
         let directory = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
         try? FileManager.default.trashItem(at: directory, resultingItemURL: nil)
+        try? FileManager.default.removeItem(
+            at: ReadingAnalysisStore.fileURL(for: record.id, in: Self.analysesRoot))
         epubRecords.removeAll { $0.id == record.id }
         unfileEPUB(record.id)
         if epubTopOfPile.remove(record.id) != nil {
@@ -849,6 +852,80 @@ final class AppModel {
     /// A paragraph the reader should scroll to and flash after the next EPUB
     /// finishes loading — set when a cross-document link is followed.
     var pendingReaderFragment: String?
+
+    /// The AI reading standing over the page, if any — Summary,
+    /// Proposals, or Issues takes the whole reading area until closed.
+    /// Set by the foot bar's AI group; cleared by Close, a mode word,
+    /// or opening another book.
+    var readingAnalysisKind: ReadingAnalysisKind?
+
+    /// The find-fold: a term clicked in an AI analysis folds the
+    /// reading to headings plus the full sentences carrying the words.
+    /// Cleared by any mode word, an Outline shape, or closing Find.
+    var readerFindFoldTerm: String?
+
+    /// A keyword clicked in an AI analysis: the analysis closes and the
+    /// reading returns folded to the find — the document's headings
+    /// with the full sentences around every match, each highlighted,
+    /// ⌘G stepping through them.
+    func showFindFold(term: String) {
+        readingAnalysisKind = nil
+        // The fold lives on the native flow, as the Outline group's.
+        UserDefaults.standard.set(EPUBReaderMode.scroll.rawValue, forKey: "readerMode")
+        readerFindFoldTerm = term
+        readerFoldLevel = 1
+        requestReaderFind(term)
+    }
+
+    // MARK: Stored AI analyses (Regenerate / Remove)
+
+    /// Analyses live beside the unpacked books like annotations do —
+    /// one JSON per analyzed book, keyed by the book's address.
+    static var analysesRoot: URL {
+        epubsRoot.appendingPathComponent("Analyses", isDirectory: true)
+    }
+
+    /// The stored analysis of this kind for the book, if one is kept.
+    func storedAnalysis(_ kind: ReadingAnalysisKind,
+                        forBook book: OpenEPUB) -> StoredReadingAnalysis? {
+        ReadingAnalysisStore.load(for: annotationAddress(forBook: book),
+                                  in: Self.analysesRoot)[kind.rawValue]
+    }
+
+    /// Keeps an analysis, replacing any earlier one of its kind.
+    func saveAnalysis(_ kind: ReadingAnalysisKind,
+                      result: ReadingAnalysisResult, forBook book: OpenEPUB) {
+        let address = annotationAddress(forBook: book)
+        var all = ReadingAnalysisStore.load(for: address, in: Self.analysesRoot)
+        all[kind.rawValue] = StoredReadingAnalysis(
+            text: result.text, names: result.names,
+            keywords: result.keywords, created: .now)
+        ReadingAnalysisStore.save(all, for: address, in: Self.analysesRoot)
+    }
+
+    /// Deletes an analysis without regenerating it.
+    func removeAnalysis(_ kind: ReadingAnalysisKind, forBook book: OpenEPUB) {
+        let address = annotationAddress(forBook: book)
+        var all = ReadingAnalysisStore.load(for: address, in: Self.analysesRoot)
+        all.removeValue(forKey: kind.rawValue)
+        ReadingAnalysisStore.save(all, for: address, in: Self.analysesRoot)
+    }
+
+    /// A find the AI panel (or any tool) asks the open reading to run.
+    /// The reader screen watches the stamp and feeds its own find bar,
+    /// so the same term can be asked again.
+    struct ReaderFindRequest: Equatable {
+        let text: String
+        let stamp: Int
+    }
+    private(set) var readerFindRequest: ReaderFindRequest?
+
+    func requestReaderFind(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        readerFindRequest = ReaderFindRequest(
+            text: trimmed, stamp: (readerFindRequest?.stamp ?? 0) + 1)
+    }
 
     /// The Flow display: body text broken into reading lines at sentence
     /// and clause marks. A view choice, never the document's — the View
@@ -1027,6 +1104,8 @@ final class AppModel {
         pendingReaderFragment = nil   // a plain open scrolls to the top
         flowReading = false           // Flow rests when the reading moves
         readerFoldLevel = 0           // and so does the fold
+        readingAnalysisKind = nil     // a new book begins on its page
+        readerFindFoldTerm = nil      // and without a standing find-fold
         let base = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
         let content = base.appendingPathComponent(record.contentSubpath)
         guard FileManager.default.fileExists(atPath: content.path) else {
@@ -1113,6 +1192,7 @@ final class AppModel {
         let address = annotationAddress(forBook: book)
         let annotation = WebAnnotation(
             motivation: motivation,
+            creator: WebAnnotation.Person(name: authorName),
             body: note.map { WebAnnotation.TextualBody(value: $0) },
             target: WebAnnotation.Target(source: "origamitext://open/" + address,
                                          selectors: selectors))
@@ -1125,11 +1205,66 @@ final class AppModel {
     /// Removes one annotation from the open book's sidecar.
     func removeAnnotation(id: String) {
         guard let book = openEPUB else { return }
-        let address = annotationAddress(forBook: book)
+        removeAnnotation(id: id, address: annotationAddress(forBook: book))
+    }
+
+    /// Removes one annotation from any book's sidecar — how the
+    /// cross-document Annotations view deletes.
+    func removeAnnotation(id: String, address: String) {
         var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
         all.removeAll { $0.id == id }
         AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
         annotationsStamp += 1
+    }
+
+    // MARK: Annotations across the library
+
+    /// One annotation with the address of the book it targets — the
+    /// unit the cross-document Annotations view lists and searches.
+    struct LibraryAnnotation: Identifiable, Hashable {
+        let annotation: WebAnnotation
+        let address: String
+        var id: String { annotation.id }
+
+        /// The annotated words, when the annotation quotes any.
+        var exact: String? {
+            for selector in annotation.target.selectors {
+                if case .quote(let exact, _, _) = selector, !exact.isEmpty { return exact }
+            }
+            return nil
+        }
+
+        /// The stable element id the annotation anchors to, when known.
+        var fragment: String? {
+            for selector in annotation.target.selectors {
+                if case .fragment(let value, _) = selector, !value.isEmpty { return value }
+            }
+            return nil
+        }
+    }
+
+    /// Sidecar reads are cheap but not free; recomputed only when a
+    /// sidecar changes (`annotationsStamp`).
+    @ObservationIgnored private var annotationsCache: (stamp: Int, items: [LibraryAnnotation])?
+
+    /// Every annotation across every book, newest first — read from the
+    /// JSON-LD sidecars beside the unpacked books.
+    var allAnnotations: [LibraryAnnotation] {
+        if let cached = annotationsCache, cached.stamp == annotationsStamp {
+            return cached.items
+        }
+        let items = AnnotationStore.loadAll(in: Self.annotationsRoot)
+            .flatMap { address, list in
+                list.map { LibraryAnnotation(annotation: $0, address: address) }
+            }
+            .sorted { $0.annotation.created > $1.annotation.created }
+        annotationsCache = (annotationsStamp, items)
+        return items
+    }
+
+    /// Opens the annotated book at the annotation's own paragraph.
+    func openAnnotation(_ item: LibraryAnnotation) {
+        openEPUB(address: item.address, fragment: item.fragment)
     }
 
     // MARK: - The native reading styles' document
@@ -1424,6 +1559,15 @@ final class AppModel {
     func epubRecords(inPublication name: String) -> [EPUBRecord] {
         let wanted = canonicalVenue(name)
         return shownEPUBRecords.filter {
+            $0.venue.map(canonicalVenue)?.caseInsensitiveCompare(wanted) == .orderedSame
+        }
+    }
+
+    /// The set-aside books that are part of a given journal or
+    /// proceedings — the venue drill-in shows them apart, below a rule.
+    func epubSetAsideRecords(inPublication name: String) -> [EPUBRecord] {
+        let wanted = canonicalVenue(name)
+        return epubSetAsideRecords.filter {
             $0.venue.map(canonicalVenue)?.caseInsensitiveCompare(wanted) == .orderedSame
         }
     }

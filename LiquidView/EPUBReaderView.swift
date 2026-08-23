@@ -348,6 +348,12 @@ struct EPUBReaderScreen: View {
         showsFind = false
         findText = ""
         findStamp += 1   // an empty find clears the page's highlights
+        // Closing Find also closes a standing find-fold: the reading
+        // unfolds to where it stood.
+        if model.readerFindFoldTerm != nil {
+            model.readerFindFoldTerm = nil
+            model.readerFoldLevel = 0
+        }
     }
 
     private var chapters: [URL] {
@@ -429,7 +435,15 @@ struct EPUBReaderScreen: View {
             if showsFind {
                 findBar
             }
-            if readerMode == .faithful {
+            if let kind = model.readingAnalysisKind {
+                // An AI reading takes the whole page; the foot stays,
+                // so the way back is one click on any word.
+                ReadingAnalysisScreen(kind: kind)
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        ReadingFootBar(modes: availableModes,
+                                       outlineAvailable: model.readingDoc(forBook: book) != nil)
+                    }
+            } else if readerMode == .faithful {
                 faithfulReader
             } else if let doc = model.readingDoc(forBook: book) {
                 // A native reading style over the book's structured
@@ -456,6 +470,15 @@ struct EPUBReaderScreen: View {
         }
         .onChange(of: model.readerFindPrevious) {
             if showsFind { stepFind(forward: false) } else { showsFind = true; findFocused = true }
+        }
+        // The AI panel's names and keywords land here: each click asks
+        // Find to run on those very words.
+        .onChange(of: model.readerFindRequest) {
+            guard let request = model.readerFindRequest else { return }
+            findText = request.text
+            showsFind = true
+            findForward = true
+            findStamp += 1
         }
         .sheet(item: $commentSelection) { selection in
             ReaderCommentSheet(selection: selection) { note in

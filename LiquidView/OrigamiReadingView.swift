@@ -380,7 +380,12 @@ struct OrigamiReadingView: View {
         let annotations = resolvedByParagraph
         ScrollViewReader { proxy in
             Group {
-                if foldLevel > 0,
+                if let term = model.readerFindFoldTerm,
+                   let found = OrigamiReading.folded(doc, matching: term) {
+                    // The find-fold: headings and the full sentences
+                    // around every match, each highlighted by Find.
+                    foldedView(found, annotations: annotations)
+                } else if foldLevel > 0,
                    let folded = OrigamiReading.folded(doc, level: foldLevel,
                                                       expanded: expandedFold) {
                     foldedView(folded, annotations: annotations)
@@ -423,7 +428,8 @@ struct OrigamiReadingView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ReadingFootBar(
                 modes: availableModes,
-                foldLevelLabel: foldLevel > 0 ? "Folded — level \(foldLevel)" : nil,
+                foldLevelLabel: model.readerFindFoldTerm.map { "Finding “\($0)”" }
+                    ?? (foldLevel > 0 ? "Folded — level \(foldLevel)" : nil),
                 contentsDisabled: sections.isEmpty,
                 showContents: $showContents,
                 contents: { AnyView(contentsList) },
@@ -882,6 +888,11 @@ struct OrigamiReadingView: View {
                             case .concepts, .names:
                                 termsLine(under: paragraph)
                             }
+                            // The reader's own layer stays visible in
+                            // the overview: the section's highlights
+                            // and comments, whatever the fold target.
+                            annotationsLine(under: paragraph,
+                                            annotations: annotations)
                         }
                     case .run(let run):
                         flow(run, annotations: annotations)
@@ -893,6 +904,72 @@ struct OrigamiReadingView: View {
             .frame(maxWidth: measure, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
+    }
+
+    /// The section's annotations under its folded heading: each
+    /// highlight's quoted words and each comment, a click opening the
+    /// section on the very paragraph. The overview keeps the reader's
+    /// layer in sight even while the body text is furled.
+    @ViewBuilder
+    private func annotationsLine(under heading: LiquidDoc.Paragraph,
+                                 annotations: [String: [ResolvedAnnotation]]) -> some View {
+        let entries = sectionAnnotations(under: heading, annotations: annotations)
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(entries) { entry in
+                    Button {
+                        expandedFold.insert(heading.id)
+                        pendingScrollID = entry.resolution.paragraphID
+                    } label: {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: entry.annotation.motivation
+                                  == WebAnnotation.Motivation.commenting
+                                  ? "text.bubble" : "highlighter")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 3)
+                            VStack(alignment: .leading, spacing: 1) {
+                                if let quote = quotedWords(of: entry) {
+                                    Text("“\(quote)”")
+                                        .italic()
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                                if let note = entry.annotation.body?.value,
+                                   !note.isEmpty {
+                                    Text(note)
+                                        .lineLimit(2)
+                                }
+                            }
+                        }
+                        .font(.callout)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open the section on this annotation")
+                }
+            }
+            .padding(.leading, 4)
+        }
+    }
+
+    /// The annotations landing anywhere in the section under a heading.
+    private func sectionAnnotations(under heading: LiquidDoc.Paragraph,
+                                    annotations: [String: [ResolvedAnnotation]])
+        -> [ResolvedAnnotation] {
+        guard let section = sections.first(where: { $0.heading?.id == heading.id })
+        else { return [] }
+        return ([heading] + section.paragraphs).flatMap { annotations[$0.id] ?? [] }
+    }
+
+    /// The annotated words: what the anchor resolved, else what the
+    /// annotation's own quote selector carries.
+    private func quotedWords(of entry: ResolvedAnnotation) -> String? {
+        if let exact = entry.resolution.exact { return exact }
+        for selector in entry.annotation.target.selectors {
+            if case .quote(let exact, _, _) = selector, !exact.isEmpty { return exact }
+        }
+        return nil
     }
 
     /// The terms a section mentions, as quiet clickable words under
@@ -2257,6 +2334,13 @@ struct ReadingFootBar: View {
             // Default, Scroll, the Outline group's shapes, Horizontal,
             // or Focus lands on its word, never on the layer beneath.
             HStack(spacing: 14) {
+                // The AI group stands left of Default: the on-device
+                // model's readings of the open book, unfolding in place
+                // like the Outline group.
+                if model.openEPUB != nil {
+                    aiGroup
+                    separator
+                }
                 ForEach(Array(modes.enumerated()), id: \.element) { index, mode in
                     if index > 0 {
                         separator
@@ -2291,10 +2375,12 @@ struct ReadingFootBar: View {
             withAnimation(.snappy) {
                 readerModeRaw = mode.rawValue
                 // A mode word always shows its own view: any standing
-                // fold (the Outline group's shapes) steps aside first —
-                // otherwise the folded view keeps the screen and the
-                // word appears to do nothing.
+                // fold (the Outline group's shapes), find-fold, or AI
+                // reading steps aside first, otherwise it keeps the
+                // screen and the word appears to do nothing.
                 model.readerFoldLevel = 0
+                model.readingAnalysisKind = nil
+                model.readerFindFoldTerm = nil
             }
         } label: {
             Text(mode.displayName)
@@ -2305,6 +2391,76 @@ struct ReadingFootBar: View {
         }
         .buttonStyle(.plain)
         .help(mode.help)
+    }
+
+    // MARK: The AI group — the model's readings, unfolding in place
+
+    @State private var aiExpanded = false
+
+    /// A standing analysis keeps the group unfolded, whatever the
+    /// local expansion state says.
+    private var aiShowsExpanded: Bool {
+        aiExpanded || model.readingAnalysisKind != nil
+    }
+
+    @ViewBuilder private var aiGroup: some View {
+        if !aiShowsExpanded {
+            Button {
+                withAnimation(.snappy) { aiExpanded = true }
+            } label: {
+                Text("AI")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Ask this Mac's model about the open book — Summary, Proposals, and Issues unfold beside it")
+        } else {
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.snappy) {
+                        aiExpanded = false
+                        model.readingAnalysisKind = nil
+                    }
+                } label: {
+                    Text("[")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Fold the AI group away — back to the reading")
+                aiWord(.summary)
+                separator
+                aiWord(.proposals)
+                separator
+                aiWord(.issues)
+                Text("]")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    /// One reading chosen: it takes the whole page — or, chosen again
+    /// while standing, the page returns (the Outline group's toggles).
+    private func aiWord(_ kind: ReadingAnalysisKind) -> some View {
+        Button {
+            withAnimation(.snappy) {
+                model.readingAnalysisKind =
+                    model.readingAnalysisKind == kind ? nil : kind
+            }
+        } label: {
+            Text(kind.displayName)
+                .font(.callout.weight(model.readingAnalysisKind == kind
+                                      ? .semibold : .regular))
+                .foregroundStyle(model.readingAnalysisKind == kind
+                                 ? AnyShapeStyle(.primary)
+                                 : AnyShapeStyle(.secondary))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(kind.help)
     }
 
     // MARK: The Outline group — Author's foot, unfolding in place
@@ -2375,6 +2531,8 @@ struct ReadingFootBar: View {
     /// choosing from the book's own pages moves the reading to Scroll.
     private func choose(_ shape: OutlineShape) {
         withAnimation(.snappy) {
+            // An Outline shape replaces any standing find-fold.
+            model.readerFindFoldTerm = nil
             if outlineShape == shape {
                 model.readerFoldLevel = 0
                 return

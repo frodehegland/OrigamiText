@@ -32,6 +32,22 @@ public nonisolated enum AnnotationStore {
         return collection.items.sorted { $0.created < $1.created }
     }
 
+    /// Every sidecar in the folder, keyed by the annotated book's
+    /// address — the cross-document view of a reader's annotations.
+    /// One folder scan; unreadable sidecars simply contribute nothing.
+    public static func loadAll(in folder: URL) -> [String: [WebAnnotation]] {
+        let suffix = ".annotations.jsonld"
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path)
+        else { return [:] }
+        var all: [String: [WebAnnotation]] = [:]
+        for name in names where name.hasSuffix(suffix) {
+            let address = String(name.dropLast(suffix.count))
+            let annotations = load(for: address, in: folder)
+            if !annotations.isEmpty { all[address] = annotations }
+        }
+        return all
+    }
+
     /// Writes the sidecar, or removes it when the last annotation is gone.
     public static func save(_ annotations: [WebAnnotation], for address: String, in folder: URL) {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

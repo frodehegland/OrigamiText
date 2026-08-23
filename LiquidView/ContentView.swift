@@ -332,6 +332,8 @@ struct ContentView: View {
             AuthorsListView()
         } else if case .epubAuthor(let name)? = model.sidebarSelection {
             AuthorBooksListView(name: name)
+        } else if model.sidebarSelection == .annotations {
+            AnnotationsListView()
         } else if case .person(let name)? = model.sidebarSelection {
             PersonListView(name: name)
         } else if model.sidebarSelection == .people {

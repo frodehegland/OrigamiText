@@ -16,6 +16,9 @@ enum AppSettings {
     static let shareGeneralLocationKey = "shareGeneralLocation"
     static let testAccountNameKey = "testAccountName"
     static let aiPersonProfilePromptKey = "aiPersonProfilePrompt"
+    static let aiReadingSummaryPromptKey = "aiReadingSummaryPrompt"
+    static let aiReadingProposalsPromptKey = "aiReadingProposalsPrompt"
+    static let aiReadingIssuesPromptKey = "aiReadingIssuesPrompt"
     static let aiPersonProfilesEnabledKey = "aiPersonProfilesEnabled"
     static let portraitStyleKey = "portraitStyle"
     static let portraitPromptKey = "portraitPrompt"
@@ -334,26 +337,72 @@ private struct AuthorSettingsView: View {
 }
 
 /// The prompts behind the AI features, fully user-owned. Everything runs
-/// on this Mac only — no text leaves it. One prompt today (Person
-/// Profiles); the editor grows as AI features do.
+/// on this Mac only — no text leaves it. One editor, a picker to choose
+/// which prompt it edits: the reading foot's AI group (Summary,
+/// Proposals, Issues) and the continual Person Profiles.
 private struct AISettingsView: View {
+    @AppStorage(AppSettings.aiReadingSummaryPromptKey) private var summaryPrompt =
+        ReadingAnalysisKind.summary.defaultPrompt
+    @AppStorage(AppSettings.aiReadingProposalsPromptKey) private var proposalsPrompt =
+        ReadingAnalysisKind.proposals.defaultPrompt
+    @AppStorage(AppSettings.aiReadingIssuesPromptKey) private var issuesPrompt =
+        ReadingAnalysisKind.issues.defaultPrompt
     @AppStorage(AppSettings.aiPersonProfilePromptKey) private var personProfilePrompt = AuthorProfiles.defaultPrompt
     @AppStorage(AppSettings.aiPersonProfilesEnabledKey) private var personProfilesEnabled = true
+    @State private var selection = "Summary"
+
+    private var prompt: Binding<String> {
+        switch selection {
+        case "Proposals": $proposalsPrompt
+        case "Issues": $issuesPrompt
+        case "Person Profiles": $personProfilePrompt
+        default: $summaryPrompt
+        }
+    }
+
+    private var defaultValue: String {
+        switch selection {
+        case "Proposals": ReadingAnalysisKind.proposals.defaultPrompt
+        case "Issues": ReadingAnalysisKind.issues.defaultPrompt
+        case "Person Profiles": AuthorProfiles.defaultPrompt
+        default: ReadingAnalysisKind.summary.defaultPrompt
+        }
+    }
+
+    private var note: String {
+        switch selection {
+        case "Proposals":
+            "The reading foot's AI ▸ Proposals: what the open document asks the reader to accept, plainly stated."
+        case "Issues":
+            "The reading foot's AI ▸ Issues: an honest reviewer's pass — the logic first, then factual correctness, then the structure and what is missing."
+        case "Person Profiles":
+            "Revises one person's profile from their new letters and statements — interests, concerns, temperament, way of writing. Runs continually as letters arrive, when enabled below."
+        default:
+            "The reading foot's AI ▸ Summary: the open document in the plainest language, with its names and keywords — each a click to find them in the text."
+        }
+    }
 
     var body: some View {
         Form {
             Section {
-                TextEditor(text: $personProfilePrompt)
+                Picker("Prompt", selection: $selection) {
+                    ForEach(["Summary", "Proposals", "Issues", "Person Profiles"],
+                            id: \.self) {
+                        Text($0)
+                    }
+                }
+                .pickerStyle(.menu)
+                TextEditor(text: prompt)
                     .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 260)
+                    .frame(minHeight: 240)
             } header: {
-                Text("Person Profiles Prompt")
+                Text("AI Prompts")
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Runs on this Mac only — no text leaves it. Revises one person's profile from their new letters and statements — interests, concerns, temperament, way of writing. Runs continually as letters arrive, when enabled below.")
+                    Text("Runs on this Mac only — no text leaves it. \(note)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Button("Reset to Default") { personProfilePrompt = AuthorProfiles.defaultPrompt }
+                    Button("Reset to Default") { prompt.wrappedValue = defaultValue }
                 }
             }
             Section {

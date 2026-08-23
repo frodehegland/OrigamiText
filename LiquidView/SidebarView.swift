@@ -138,7 +138,8 @@ struct SidebarView: View {
     private func hasRow(for item: SidebarItem) -> Bool {
         switch item {
         case .epubsTopOfPile, .epubsTimeline, .epubsAlphabetical,
-             .epubJournals, .epubsSetAside, .authors, .people, .concepts:
+             .epubJournals, .epubsSetAside, .authors, .annotations,
+             .people, .concepts:
             true
         case .epubFolder(let name):
             model.epubFolders.contains(name)
@@ -193,6 +194,10 @@ struct SidebarView: View {
             Label("Authors", systemImage: "person.2")
                 .badge(model.epubAuthors.count)
                 .tag(SidebarItem.authors)
+
+            Label("Annotations", systemImage: "highlighter")
+                .badge(model.allAnnotations.count)
+                .tag(SidebarItem.annotations)
 
             Label("People", systemImage: "person.crop.circle")
                 .badge(model.viewPeople.count)

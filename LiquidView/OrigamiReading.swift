@@ -1203,6 +1203,31 @@ nonisolated enum OrigamiReading {
         return out
     }
 
+    /// The body folded to a find: every heading — the document's
+    /// skeleton — and, in place, the full sentences carrying the term,
+    /// so every match reads in its own context. Case- and diacritic-
+    /// insensitive, the format's matching. Nil when the term is blank
+    /// or nothing matches at all.
+    static func folded(_ doc: LiquidDoc, matching term: String) -> [LiquidDoc.Paragraph]? {
+        let wanted = term.trimmingCharacters(in: .whitespaces)
+        guard !wanted.isEmpty, let body = doc.body, !body.isEmpty else { return nil }
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        var out: [LiquidDoc.Paragraph] = []
+        for paragraph in body {
+            if paragraph.heading != nil {
+                out.append(paragraph)
+                continue
+            }
+            guard paragraph.text.range(of: wanted, options: options) != nil else { continue }
+            let hits = sentences(of: paragraph.text)
+                .filter { $0.range(of: wanted, options: options) != nil }
+            guard !hits.isEmpty else { continue }
+            out.append(LiquidDoc.Paragraph(id: paragraph.id, heading: nil,
+                                           text: hits.joined(separator: " ")))
+        }
+        return out.contains(where: { $0.heading == nil }) ? out : nil
+    }
+
     /// The reference list as readable sentences: each BibTeX entry
     /// parsed into "“Title” (Authors, Year)", the raw entry standing in
     /// when parsing fails. Pairs with the entry id for anchoring.
