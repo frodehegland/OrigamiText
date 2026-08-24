@@ -225,6 +225,22 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         var data: Data? { Data(base64Encoded: dataBase64) }
     }
 
+    /// The image media type an asset's file extension names — the
+    /// importers' shared table (moved here from WordImporter so the
+    /// visionOS target's EPUB import compiles).
+    static func mediaType(forExtension ext: String) -> String {
+        switch ext.lowercased() {
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "gif": return "image/gif"
+        case "svg": return "image/svg+xml"
+        case "webp": return "image/webp"
+        case "tif", "tiff": return "image/tiff"
+        case "bmp": return "image/bmp"
+        default: return "application/octet-stream"
+        }
+    }
+
     /// The asset id a body paragraph's text points at, when the paragraph is
     /// a lone image marker `![alt](asset:<id>)`. Returns the alt text too.
     static func imageReference(in text: String) -> (id: String, alt: String)? {

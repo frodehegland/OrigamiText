@@ -1,7 +1,9 @@
 #if os(visionOS)
 import SwiftUI
+import RealityKit
 import UniformTypeIdentifiers
 import FoundationModels
+import os
 
 /// Origami Text for visionOS — the same app (one bundle id, one App Store
 /// listing), the same library. The session is not a document but the
@@ -11,12 +13,42 @@ import FoundationModels
 struct OrigamiVisionApp: App {
     @State private var model = VisionModel()
 
-    var body: some Scene {
+    // SwiftUI.Scene spelled out: RealityKit (the arm menus) brings its
+    // own Scene type into the file.
+    var body: some SwiftUI.Scene {
+        // The opening panel: Articles and Journals, nothing else — tap a
+        // journal and its articles fill the space. The original documents
+        // panel and Settings ride the arm menus.
         WindowGroup(id: "library") {
+            VisionOpeningView()
+                .environment(model)
+        }
+        .defaultSize(width: 560, height: 720)
+
+        // The original documents panel — the letters timeline with the
+        // volumes toolbar — opened from the right arm's Documents chip.
+        WindowGroup(id: "documents") {
             VisionLibraryView()
                 .environment(model)
         }
         .defaultSize(width: 560, height: 720)
+
+        // Settings, opened from the right arm's Settings chip.
+        WindowGroup(id: "settings") {
+            VisionSettingsView()
+                .environment(model)
+        }
+        .defaultSize(width: 460, height: 520)
+
+        // The one immersive space (mixed, so windows and volumes share
+        // the room), ONE RealityView: the arm menus on the right wrist
+        // and the open journal's articles as cards filling the room —
+        // one scene, no ambiguity about what renders where.
+        ImmersiveSpace(id: "arms") {
+            OrigamiSpaceView()
+                .environment(model)
+        }
+        .immersionStyle(selection: .constant(.mixed), in: .mixed)
 
         // The Knowledge Space: a volume, Author-Map logic — an essentially
         // 2D arrangement whose cards the hand can pull and push in Z.
@@ -60,6 +92,9 @@ struct OrigamiVisionApp: App {
         }
         .defaultSize(width: 660, height: 840)
 
+        // The journal's articles live in the immersive space itself (see
+        // JournalFieldSpace below) — the full room, not a volume.
+
         // zzStructure navigation in a volume: the bound Z dimension is
         // literal depth — posward recedes, negward approaches.
         WindowGroup(id: "zz") {
@@ -73,14 +108,21 @@ struct OrigamiVisionApp: App {
 
 /// visionOS session state: the same LibraryIndex the Mac uses, plus a
 /// folder bookmark that survives relaunch. Rescans happen on demand and
-/// when a scene returns to the foreground (no FSEvents here).
+/// when a scene returns to the foreground (no FSEvents here). The EPUB
+/// shelf mirrors the Mac's: books found in the community folder are
+/// unpacked once under Application Support/EPUBs, remembered as
+/// EPUBRecords, and re-imported as structured documents into the index —
+/// so the reader, the volumes, and the journals all see them.
 @MainActor @Observable
 final class VisionModel {
     let index = LibraryIndex()
     let bots = VisionBotStore()
     private static let bookmarkKey = "communityFolderBookmark"
 
-    init() { restoreFolder() }
+    init() {
+        restoreFolder()
+        rebuildEPUBIndex()
+    }
 
     func openFolder(_ url: URL) {
         guard url.startAccessingSecurityScopedResource() else { return }
@@ -88,6 +130,7 @@ final class VisionModel {
             UserDefaults.standard.set(bookmark, forKey: Self.bookmarkKey)
         }
         index.setFolder(url)
+        scanFolderForEPUBs()
     }
 
     private func restoreFolder() {
@@ -96,6 +139,197 @@ final class VisionModel {
         guard let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &stale),
               url.startAccessingSecurityScopedResource() else { return }
         index.setFolder(url)
+        scanFolderForEPUBs()
+    }
+
+    // MARK: - The EPUB shelf
+
+    /// The remembered books, newest first — the Mac's manifest, kept here
+    /// in this device's own defaults.
+    private(set) var epubRecords: [EPUBRecord] = VisionModel.loadEPUBRecords()
+
+
+    /// Where books unpack: one folder per identity, reused forever.
+    static var epubsRoot: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let root = base.appendingPathComponent("EPUBs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private static let epubRecordsKey = "epubRecords"
+
+    private static func loadEPUBRecords() -> [EPUBRecord] {
+        guard let data = UserDefaults.standard.data(forKey: epubRecordsKey),
+              let records = try? JSONDecoder().decode([EPUBRecord].self, from: data)
+        else { return [] }
+        return records
+    }
+
+    private func persistEPUBRecords() {
+        guard let data = try? JSONEncoder().encode(epubRecords) else { return }
+        UserDefaults.standard.set(data, forKey: Self.epubRecordsKey)
+    }
+
+    /// The venues the shelf's books declare, most-stocked first — the
+    /// opening window's journals.
+    var venues: [String] {
+        var counts: [String: Int] = [:]
+        var order: [String] = []
+        for record in epubRecords {
+            guard let venue = record.venue else { continue }
+            if counts[venue] == nil { order.append(venue) }
+            counts[venue, default: 0] += 1
+        }
+        return order.sorted {
+            let a = counts[$0] ?? 0
+            let b = counts[$1] ?? 0
+            if a != b { return a > b }
+            return $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    func records(inVenue venue: String) -> [EPUBRecord] {
+        epubRecords.filter {
+            $0.venue?.caseInsensitiveCompare(venue) == .orderedSame
+        }
+    }
+
+    /// Imports every EPUB in the community folder — new arrivals unpack
+    /// and join the shelf; books already unpacked are left as they
+    /// stand. The folder usually lives in iCloud, so files another
+    /// device published may exist here only as placeholders: those are
+    /// nudged to download first, and while any remain, the scan tries
+    /// again shortly — there is no folder watcher on this platform.
+    func scanFolderForEPUBs() {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        LibraryScanner.requestICloudDownloads(in: folder)
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsPackageDescendants]) else { return }
+        var changed = false
+        var placeholdersRemain = false
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            if name.hasSuffix(".icloud"), name.contains(".epub") {
+                placeholdersRemain = true
+                continue
+            }
+            guard url.pathExtension.lowercased() == "epub" else { continue }
+            if importEPUB(at: url) { changed = true }
+        }
+        if changed { rebuildEPUBIndex() }
+        if placeholdersRemain, scanRetries < 5 {
+            scanRetries += 1
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(6))
+                self.scanFolderForEPUBs()
+            }
+        } else if !placeholdersRemain {
+            scanRetries = 0
+        }
+    }
+
+    /// Downloads in flight are retried a few times, never forever.
+    @ObservationIgnored private var scanRetries = 0
+
+    /// Unpacks one EPUB into the shelf (once per identity) and remembers
+    /// it. Returns whether the shelf changed. The Mac's importEPUB,
+    /// without the reader-side niceties.
+    @discardableResult
+    func importEPUB(at url: URL) -> Bool {
+        let name = url.deletingPathExtension().lastPathComponent
+        let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
+        let safe = identity.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        let directory = Self.epubsRoot.appendingPathComponent(safe, isDirectory: true)
+
+        if let existing = epubRecords.first(where: { $0.folder == safe }),
+           FileManager.default.fileExists(atPath:
+                directory.appendingPathComponent(existing.contentSubpath).path) {
+            return false
+        }
+
+        do {
+            let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: directory)
+            let meta = try? OrigamiEPUBImporter.importDocument(at: url)
+            let bookID = meta?.origamiID ?? identity
+            let contentSubpath = unpacked.content.path
+                .replacingOccurrences(of: directory.path + "/", with: "")
+            let authors = meta?.authors ?? []
+            let record = EPUBRecord(id: bookID, title: unpacked.title,
+                                    author: authors.count > 1
+                                        ? authors.joined(separator: ", ")
+                                        : (authors.first ?? meta?.author ?? "Unknown"),
+                                    authors: authors.isEmpty ? nil : authors,
+                                    dateISO: meta?.date, folder: safe,
+                                    contentSubpath: contentSubpath, openedAt: .now,
+                                    publication: meta?.publication ?? "")
+            epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
+            epubRecords.insert(record, at: 0)
+            persistEPUBRecords()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Every shelf book re-imported as a structured document and merged
+    /// into the index — the reader, the spaces, and the threads all read
+    /// from there. A newer rebuild supersedes an older one mid-flight.
+    private var epubIndexGeneration = 0
+    func rebuildEPUBIndex() {
+        epubIndexGeneration += 1
+        let generation = epubIndexGeneration
+        let records = epubRecords
+        let root = Self.epubsRoot
+        Task.detached(priority: .utility) {
+            var docs: [LiquidDoc] = []
+            for record in records {
+                let base = root.appendingPathComponent(record.folder, isDirectory: true)
+                guard let result = try? OrigamiEPUBImporter.importDocument(
+                    inUnpackedFolder: base) else { continue }
+                docs.append(Self.structuredDoc(from: result, record: record, base: base))
+            }
+            let built = docs
+            await MainActor.run {
+                guard generation == self.epubIndexGeneration else { return }
+                self.index.setEPUBDocuments(built)
+            }
+        }
+    }
+
+    /// The import result joined with the record's metadata — kept in
+    /// step with AppModel.structuredDoc on the Mac.
+    nonisolated private static func structuredDoc(
+        from result: OrigamiEPUBImporter.ImportResult,
+        record: EPUBRecord, base: URL) -> LiquidDoc {
+        let address = record.id
+        let created = (record.dateISO ?? result.date).flatMap(LiquidDoc.parseISO8601)
+            ?? record.openedAt
+        var doc = LiquidDoc(format: LiquidDoc.knownFormat,
+                            id: address,
+                            title: result.title,
+                            author: result.author ?? record.author,
+                            created: created,
+                            body: result.body,
+                            links: result.links,
+                            wraps: nil,
+                            fileURL: base)
+        doc.date = (record.dateISO ?? result.date).flatMap(LiquidDate.init(isoString:))
+        doc.documentType = LiquidDoc.DocumentType.book.rawValue
+        doc.publication = result.publication ?? record.publication
+        doc.concepts = result.concepts
+        doc.layouts = result.layouts
+        doc.mapConnections = result.mapConnections
+        doc.references = result.references
+        doc.tables = result.tables
+        doc.assets = result.assets
+        return doc
     }
 }
 
@@ -127,31 +361,17 @@ struct VisionLibraryView: View {
                         Button("Choose Folder…") { choosingFolder = true }
                     }
                 } else {
-                    let entries = model.index.timeline.reversed()
-                        .filter { !showingTranscriptsOnly || isTranscript($0.doc) }
-                    List(entries) { entry in
-                        Button {
-                            openWindow(id: "reader", value: entry.doc.id)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.doc.title)
-                                    .lineLimit(1)
-                                Text("\(entry.doc.displayAuthor) · \(entry.doc.listedDateText)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                    documentList(transcriptsOnly: showingTranscriptsOnly)
+                        .safeAreaInset(edge: .top) {
+                            Picker("Showing", selection: $showingTranscriptsOnly) {
+                                Text("Library").tag(false)
+                                Text("Transcripts").tag(true)
                             }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .padding(.horizontal)
+                            .padding(.vertical, 6)
                         }
-                    }
-                    .safeAreaInset(edge: .top) {
-                        Picker("Showing", selection: $showingTranscriptsOnly) {
-                            Text("Library").tag(false)
-                            Text("Transcripts").tag(true)
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .padding(.horizontal)
-                        .padding(.vertical, 6)
-                    }
                 }
             }
             .toolbar {
@@ -197,10 +417,338 @@ struct VisionLibraryView: View {
             if case .success(let url) = result { model.openFolder(url) }
         }
         .onChange(of: scenePhase) {
-            if scenePhase == .active { model.index.rescan() }
+            if scenePhase == .active {
+                model.index.rescan()
+                model.scanFolderForEPUBs()
+            }
+        }
+    }
+
+    /// The Library and Transcripts tabs: the timeline, newest first.
+    private func documentList(transcriptsOnly: Bool) -> some View {
+        let entries = model.index.timeline.reversed()
+            .filter { !transcriptsOnly || isTranscript($0.doc) }
+        return List(entries) { entry in
+            Button {
+                openWindow(id: "reader", value: entry.doc.id)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.doc.title)
+                        .lineLimit(1)
+                    Text("\(entry.doc.displayAuthor) · \(entry.doc.listedDateText)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }
+
+/// The opening panel: two tabs and nothing else. Journals lists every
+/// venue on the shelf — tap one and its articles fill the space.
+/// Articles is every article, alphabetically. The original documents
+/// panel and Settings ride the right arm's chips (ArmMenuSpace).
+struct VisionOpeningView: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var choosingFolder = false
+    @State private var shelf: Shelf = .journals
+
+    private enum Shelf: Hashable { case articles, journals }
+
+    var body: some View {
+        Group {
+            // Books already on the shelf show even before a community
+            // folder is chosen — the folder feeds the shelf, it does not
+            // gate it.
+            if model.index.folderURL == nil, model.epubRecords.isEmpty {
+                ContentUnavailableView {
+                    Label("No Community Folder", systemImage: "folder")
+                } description: {
+                    Text("Choose the iCloud folder your community shares. Everything published from your Mac appears here instantly.")
+                } actions: {
+                    Button("Choose Folder…") { choosingFolder = true }
+                }
+            } else {
+                Group {
+                    switch shelf {
+                    case .articles: articlesList
+                    case .journals: journalsList
+                    }
+                }
+                .safeAreaInset(edge: .top) {
+                    Picker("Showing", selection: $shelf) {
+                        Text("Articles").tag(Shelf.articles)
+                        Text("Journals").tag(Shelf.journals)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .padding(.horizontal)
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+            if case .success(let url) = result { model.openFolder(url) }
+        }
+        .onChange(of: scenePhase) {
+            if scenePhase == .active {
+                model.index.rescan()
+                model.scanFolderForEPUBs()
+            }
+        }
+        // The arm menus stand from the start — a mixed space, so the
+        // windows and volumes share the room with the chips.
+        .task {
+            await openImmersiveSpace(id: "arms")
+        }
+    }
+
+    /// Journals: every venue on the shelf. Tap one for its articles —
+    /// in the panel for now; the spatial Map view is being rebuilt on
+    /// Author's basis.
+    @ViewBuilder private var journalsList: some View {
+        let venues = model.venues
+        if venues.isEmpty {
+            ContentUnavailableView {
+                Label("No Journals Yet", systemImage: "newspaper")
+            } description: {
+                // Which half of the pipeline is empty: no books at all
+                // (still importing, or none in the folder), or books
+                // that name no venue.
+                if model.epubRecords.isEmpty {
+                    Text("EPUBs in the community folder join the shelf on their own — iCloud may still be downloading them. Settings (on your right arm) shows the shelf and can rescan.")
+                } else {
+                    Text("\(model.epubRecords.count) article\(model.epubRecords.count == 1 ? " is" : "s are") on the shelf, but none declares the journal or proceedings it is part of.")
+                }
+            }
+        } else {
+            NavigationStack {
+                List(venues, id: \.self) { venue in
+                    NavigationLink(value: venue) {
+                        HStack {
+                            Label(venue, systemImage: "newspaper")
+                                .lineLimit(2)
+                            Spacer()
+                            Text("\(model.records(inVenue: venue).count)")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                }
+                .navigationDestination(for: String.self) { venue in
+                    List(model.records(inVenue: venue)) { record in
+                        Button {
+                            openWindow(id: "reader", value: record.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(record.title)
+                                    .lineLimit(2)
+                                Text(record.author)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    .navigationTitle(venue)
+                }
+            }
+        }
+    }
+
+    /// Articles: every article on the shelf, alphabetically by title.
+    @ViewBuilder private var articlesList: some View {
+        let records = model.epubRecords.sorted {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+        if records.isEmpty {
+            ContentUnavailableView {
+                Label("No Articles Yet", systemImage: "doc.text")
+            } description: {
+                Text("EPUBs in the community folder join the shelf on their own.")
+            }
+        } else {
+            List(records) { record in
+                Button {
+                    openWindow(id: "reader", value: record.id)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(record.title)
+                            .lineLimit(2)
+                        Text(record.author)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - The arm menus
+
+/// A forearm command rendered as in Interatlas and Author: a word on a
+/// semi-transparent glass panel with a thin frame. Non-interactive
+/// itself; the tap is handled by the collision on the entity it rides.
+struct ArmChip: View {
+    let text: String
+    var active: Bool = false
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 22, weight: .semibold))
+            .foregroundStyle(.white)
+            .fixedSize()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 16).fill(.regularMaterial))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .strokeBorder(.white.opacity(active ? 0.9 : 0.35),
+                                  lineWidth: active ? 2 : 1)
+            )
+            .allowsHitTesting(false)
+    }
+}
+
+/// The arm menus, Interatlas and Author's pattern: hand tracking seats
+/// chips on the right wrist — Settings, and Documents (the original
+/// documents panel, back again) — tucked just under the forearm, a
+/// little up from the wrist, exactly where Interatlas rides its
+/// Settings and Scale. A mixed immersive space, so the chips share the
+/// room with every window and volume.
+/// The one immersive scene: the arm menus riding the right wrist —
+/// Settings and Documents as pinchable chips, Interatlas's layout. The
+/// journal-in-space experiment is out; the spatial Map view starts
+/// fresh on Author's basis.
+struct OrigamiSpaceView: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    @State private var tracking: SpatialTrackingSession?
+    @State private var layoutTick: EventSubscription?
+
+    var body: some View {
+        RealityView { content, attachments in
+            let session = SpatialTrackingSession()
+            _ = await session.run(SpatialTrackingSession.Configuration(tracking: [.hand]))
+            tracking = session
+
+            // The wrist carries the chips; the knuckle gives the arm's
+            // direction, so the chips lie along the forearm however the
+            // arm turns — Interatlas's layout, measurements and all.
+            let wrist = AnchorEntity(.hand(.right, location: .joint(for: .wrist)))
+            let knuckle = AnchorEntity(.hand(.right, location: .joint(for: .middleFingerKnuckle)))
+            content.add(wrist)
+            content.add(knuckle)
+
+            func chip(_ name: String) -> Entity {
+                let item = Entity()
+                item.name = name
+                item.components.set(CollisionComponent(
+                    shapes: [.generateBox(size: SIMD3<Float>(0.10, 0.04, 0.04))]))
+                item.components.set(InputTargetComponent())
+                item.components.set(HoverEffectComponent())
+                wrist.addChild(item)
+                if let face = attachments.entity(for: name) {
+                    // Attachments render life-size; shrink to forearm
+                    // scale and keep the words facing the reader.
+                    face.components.set(BillboardComponent())
+                    face.scale = SIMD3<Float>(repeating: 0.32)
+                    face.setParent(item)
+                    face.position = .zero
+                }
+                return item
+            }
+            let settings = chip("arm.settings")
+            let documents = chip("arm.documents")
+
+            // Interatlas's wrist-band math, each frame: alongArm points
+            // toward the elbow, lift is world-up made perpendicular to
+            // the arm.
+            layoutTick = content.subscribe(to: SceneEvents.Update.self) { _ in
+                guard wrist.isAnchored, knuckle.isAnchored else { return }
+                let fingerWorld = knuckle.position(relativeTo: nil) - wrist.position(relativeTo: nil)
+                let fingerLocal = wrist.convert(direction: fingerWorld, from: nil)
+                let alongArm: SIMD3<Float> = fingerLocal.x >= 0 ? SIMD3(-1, 0, 0) : SIMD3(1, 0, 0)
+                var lift = wrist.convert(direction: SIMD3<Float>(0, 1, 0), from: nil)
+                lift -= alongArm * simd_dot(lift, alongArm)
+                let len = simd_length(lift)
+                guard len > 1e-5 else { return }
+                lift /= len
+                settings.position = alongArm * 0.05 - lift * 0.11
+                documents.position = alongArm * 0.14 - lift * 0.11
+            }
+        } attachments: {
+            Attachment(id: "arm.settings") { ArmChip(text: "Settings") }
+            Attachment(id: "arm.documents") { ArmChip(text: "Documents") }
+        }
+        .gesture(SpatialTapGesture().targetedToAnyEntity().onEnded { value in
+            switch value.entity.name {
+            case "arm.settings": openWindow(id: "settings")
+            // The way back: the opening panel (Journals and Articles).
+            // The letters-era panel lives on in Settings.
+            case "arm.documents": openWindow(id: "library")
+            default: break
+            }
+        })
+    }
+}
+
+/// Settings, from the right arm's chip: the community folder and the
+/// space's card lines.
+struct VisionSettingsView: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    @AppStorage("xrMaxTitleLines") private var maxTitleLines = 2
+    @AppStorage("xrMaxAuthorLines") private var maxAuthorLines = 1
+    @State private var choosingFolder = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Community Folder") {
+                    LabeledContent("Folder",
+                                   value: model.index.folderURL?.lastPathComponent ?? "Not set")
+                    LabeledContent("Books on the shelf",
+                                   value: "\(model.epubRecords.count)")
+                    Button("Scan for New Books") {
+                        model.index.rescan()
+                        model.scanFolderForEPUBs()
+                    }
+                    .disabled(model.index.folderURL == nil)
+                    Button("Choose Folder…") { choosingFolder = true }
+                }
+                Section("Panels") {
+                    // The letters-era panel: the timeline with the
+                    // volumes toolbar (Documents space, Authors, Weave,
+                    // Bots, zzStructure).
+                    Button("Letters & Volumes") { openWindow(id: "documents") }
+                }
+                Section {
+                    Stepper("Title: up to \(maxTitleLines) \(maxTitleLines == 1 ? "line" : "lines")",
+                            value: $maxTitleLines, in: 1...6)
+                    Stepper("Author: up to \(maxAuthorLines) \(maxAuthorLines == 1 ? "line" : "lines")",
+                            value: $maxAuthorLines, in: 1...4)
+                } header: {
+                    Text("Cards")
+                } footer: {
+                    Text("The spaces' cards show each document's title, then its author. Double-tap any card to open the full article.")
+                }
+            }
+            .navigationTitle("Settings")
+        }
+        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+            if case .success(let url) = result { model.openFolder(url) }
+        }
+    }
+}
+
+
 
 /// The full article, opened by double-tapping a card in the Knowledge
 /// Space (or a row in the library).

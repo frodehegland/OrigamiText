@@ -319,12 +319,14 @@ nonisolated struct CrossrefVerifier: ReferenceVerifier {
     }
 }
 
-/// The verifiers the user has enabled in Settings.
+/// The verifiers the user has enabled in Settings. (The key is
+/// AppSettings.verifyCrossrefKey's, spelled out so this file compiles
+/// on targets without SettingsView.)
 @MainActor
 enum ReferenceVerification {
     static var enabledVerifiers: [any ReferenceVerifier] {
         var verifiers: [any ReferenceVerifier] = []
-        if UserDefaults.standard.object(forKey: AppSettings.verifyCrossrefKey) as? Bool ?? true {
+        if UserDefaults.standard.object(forKey: "verifyReferencesCrossref") as? Bool ?? true {
             verifiers.append(CrossrefVerifier())
         }
         return verifiers

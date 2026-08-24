@@ -288,13 +288,10 @@ final class PersonPortraitStore {
         // option only exists from macOS 27; macOS 26 generates from the
         // photo without it and simply strays a little further.
         if #available(macOS 27.0, *) {
-            var options = ImagePlaygroundOptions()
-            options.creationStrategy = .editExisting
-            for try await created in creator.images(for: concepts,
-                                                    style: style,
-                                                    options: options,
-                                                    limit: 1) {
-                return created.cgImage
+            if let result = try await stylizeEditExisting(creator: creator,
+                                                          concepts: concepts,
+                                                          style: style) {
+                return result
             }
         } else {
             for try await created in creator.images(for: concepts,
@@ -304,6 +301,21 @@ final class PersonPortraitStore {
             }
         }
         throw ImageCreator.Error.creationFailed
+    }
+
+    @available(macOS 27.0, *)
+    private static func stylizeEditExisting(creator: ImageCreator,
+                                            concepts: [ImagePlaygroundConcept],
+                                            style: ImagePlaygroundStyle) async throws -> CGImage? {
+        var options = ImagePlaygroundOptions()
+        options.creationStrategy = .editExisting
+        for try await created in creator.images(for: concepts,
+                                                style: style,
+                                                options: options,
+                                                limit: 1) {
+            return created.cgImage
+        }
+        return nil
     }
 
     // MARK: - Bot portraits

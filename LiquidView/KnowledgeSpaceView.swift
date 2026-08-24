@@ -3,10 +3,38 @@ import SwiftUI
 
 // MARK: - Spatial card plane
 
-/// Persists a spatial arrangement — every card's x, y, and z — keyed by
-/// item id, one file per named layout, so each space is where you left
-/// it, across sessions.
+/// Persists a spatial arrangement — every card's x, y, and z — one file
+/// per named layout, so each space is where you left it, across sessions.
+///
+/// The file IS a Visual-Meta map: one named View over node refs with
+/// x/y/z positions, byte-compatible with the `map.views` section the
+/// EPUB exporter writes and Author reads. An arrangement made here is
+/// Author's-Map data from the moment it is saved — exportable, openable
+/// in Author, and one day carried inside documents. Files written by the
+/// earlier private format (a bare id → position dictionary) still load.
 nonisolated enum SpatialLayoutStore {
+
+    /// The Visual-Meta `map` shape, as the exporter writes it.
+    private struct MapFile: Codable {
+        struct Map: Codable {
+            var views: [View]
+        }
+        struct View: Codable {
+            struct Space: Codable { var units: String }
+            struct Node: Codable {
+                var ref: String
+                var x: Double
+                var y: Double
+                var z: Double
+            }
+            var id: String
+            var name: String
+            var space: Space
+            var nodes: [Node]
+        }
+        var map: Map
+    }
+
     private static func fileURL(for name: String) -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask).first
@@ -16,14 +44,31 @@ nonisolated enum SpatialLayoutStore {
     }
 
     static func load(_ name: String) -> [String: SIMD3<Double>] {
-        guard let data = try? Data(contentsOf: fileURL(for: name)),
-              let positions = try? JSONDecoder().decode([String: SIMD3<Double>].self, from: data)
-        else { return [:] }
-        return positions
+        guard let data = try? Data(contentsOf: fileURL(for: name)) else { return [:] }
+        if let file = try? JSONDecoder().decode(MapFile.self, from: data) {
+            let view = file.map.views.first { $0.name == name } ?? file.map.views.first
+            var positions: [String: SIMD3<Double>] = [:]
+            for node in view?.nodes ?? [] {
+                positions[node.ref] = SIMD3(node.x, node.y, node.z)
+            }
+            return positions
+        }
+        // A file from before the Visual-Meta shape: the bare dictionary.
+        return (try? JSONDecoder().decode([String: SIMD3<Double>].self, from: data)) ?? [:]
     }
 
     static func save(_ name: String, _ positions: [String: SIMD3<Double>]) {
-        guard let data = try? JSONEncoder().encode(positions) else { return }
+        let nodes = positions
+            .sorted { $0.key < $1.key }
+            .map { MapFile.View.Node(ref: $0.key, x: $0.value.x, y: $0.value.y, z: $0.value.z) }
+        let file = MapFile(map: MapFile.Map(views: [
+            MapFile.View(id: "view-" + name, name: name,
+                         space: MapFile.View.Space(units: "points"),
+                         nodes: nodes),
+        ]))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(file) else { return }
         try? data.write(to: fileURL(for: name), options: .atomic)
     }
 }

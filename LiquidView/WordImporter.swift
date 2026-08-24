@@ -266,17 +266,11 @@ nonisolated enum WordImporter {
         return "png"
     }
 
+    /// The image media type by extension — now LiquidDoc's
+    /// (LiquidDoc.swift, shared with the visionOS target); kept here as
+    /// a passthrough for the importers that call through WordImporter.
     static func mediaType(forExtension ext: String) -> String {
-        switch ext.lowercased() {
-        case "jpg", "jpeg": return "image/jpeg"
-        case "png": return "image/png"
-        case "gif": return "image/gif"
-        case "svg": return "image/svg+xml"
-        case "webp": return "image/webp"
-        case "tif", "tiff": return "image/tiff"
-        case "bmp": return "image/bmp"
-        default: return "application/octet-stream"
-        }
+        LiquidDoc.mediaType(forExtension: ext)
     }
 }
 

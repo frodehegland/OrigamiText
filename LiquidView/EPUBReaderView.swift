@@ -17,41 +17,8 @@ struct OpenEPUB: Identifiable, Hashable, Sendable {
     var nav: URL? = nil
 }
 
-/// A remembered EPUB in the reader's library: enough to list it (title,
-/// author, date) and to reopen its rendered page (the unpacked `folder`
-/// under the app container's EPUBs directory, and the content document's
-/// path within it). Persisted to an internal manifest — no JSON document
-/// is written, per the EPUB-only direction.
-struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
-    let id: String
-    let title: String
-    let author: String
-    /// Every author of record, in order, when the book named more than
-    /// one. Optional so manifests written before it decode unchanged.
-    var authors: [String]? = nil
-    /// ISO 8601, when the Visual-Meta carried a date.
-    let dateISO: String?
-    /// The unpack folder name under the EPUBs directory.
-    let folder: String
-    /// The content document's path within `folder`, e.g. "content/paper.html".
-    let contentSubpath: String
-    /// When it was opened, for ordering the library newest-first.
-    let openedAt: Date
-    /// The journal or proceedings the book is part of, when it declares
-    /// one. "" means the package was checked and names none; nil means
-    /// a record written before venues were kept (not yet checked).
-    var publication: String? = nil
-
-    /// The authors to list the book under: the full list when known,
-    /// else the single author of record.
-    var authorList: [String] { authors ?? [author] }
-
-    /// The declared venue, empty-checked: nil when the book names none.
-    var venue: String? {
-        let name = publication?.trimmingCharacters(in: .whitespaces) ?? ""
-        return name.isEmpty ? nil : name
-    }
-}
+// EPUBRecord — the shelf's remembered book — lives in EPUBShelf.swift,
+// shared with the visionOS target.
 
 /// A semantic element the reader's WebView reported — the Step 0 bridge.
 /// `kind` is the format's own type (equation, citation, concept, heading,
@@ -145,8 +112,10 @@ enum ReaderTheme: String, CaseIterable, Identifiable, Sendable {
 /// glaringly in full screen), then the theme's colours. One string so theme
 /// and fonts switch together, live.
 enum ReaderStyle {
-    static let defaultBodyFont = "Times New Roman"
-    static let defaultHeadingFont = "Georgia"
+    // One source of truth for the default faces: AppFonts (shared with
+    // the visionOS target).
+    static let defaultBodyFont = AppFonts.defaultBodyFamily
+    static let defaultHeadingFont = AppFonts.defaultHeadingFamily
 
     static func css(bodyFont: String, headingFont: String, theme: ReaderTheme) -> String {
         """
@@ -167,58 +136,8 @@ enum ReaderStyle {
     }
 }
 
-/// The reader's chosen faces, wherever words render — Settings ▸
-/// Reading ▸ Fonts, one choice for every view: the reading styles, the
-/// document views, the cards and columns. A family the Mac does not
-/// know falls back to the system serif, never to sans.
-enum AppFonts {
-    static var bodyFamily: String {
-        UserDefaults.standard.string(forKey: AppSettings.readerBodyFontKey)
-            ?? ReaderStyle.defaultBodyFont
-    }
-
-    static var headingFamily: String {
-        UserDefaults.standard.string(forKey: AppSettings.readerHeadingFontKey)
-            ?? ReaderStyle.defaultHeadingFont
-    }
-
-    static func body(_ size: CGFloat, weight: Font.Weight? = nil) -> Font {
-        custom(bodyFamily, size, weight)
-    }
-
-    static func heading(_ size: CGFloat, weight: Font.Weight? = nil) -> Font {
-        custom(headingFamily, size, weight)
-    }
-
-    static func nsBody(_ size: CGFloat, bold: Bool = false, italic: Bool = false) -> NSFont {
-        var font = NSFont(name: bodyFamily, size: size)
-            ?? fallbackSerif(size, bold: bold)
-        var traits: NSFontDescriptor.SymbolicTraits = []
-        if bold { traits.insert(.bold) }
-        if italic { traits.insert(.italic) }
-        if !traits.isEmpty {
-            let descriptor = font.fontDescriptor.withSymbolicTraits(
-                font.fontDescriptor.symbolicTraits.union(traits))
-            font = NSFont(descriptor: descriptor, size: size) ?? font
-        }
-        return font
-    }
-
-    private static func custom(_ family: String, _ size: CGFloat,
-                               _ weight: Font.Weight?) -> Font {
-        let font = NSFont(name: family, size: size) != nil
-            ? Font.custom(family, size: size)
-            : Font.system(size: size, design: .serif)
-        return weight.map { font.weight($0) } ?? font
-    }
-
-    private static func fallbackSerif(_ size: CGFloat, bold: Bool) -> NSFont {
-        let base = NSFont.systemFont(ofSize: size, weight: bold ? .bold : .regular)
-        var descriptor = base.fontDescriptor
-        if let serif = descriptor.withDesign(.serif) { descriptor = serif }
-        return NSFont(descriptor: descriptor, size: size) ?? base
-    }
-}
+// AppFonts — the reader's chosen faces — lives in AppFonts.swift,
+// shared with the visionOS target.
 
 /// The rendered EPUB with its chrome: a thin bar naming the book and the
 /// way back. The Visual-Meta toggle lives inline in the page itself (a

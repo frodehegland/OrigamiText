@@ -755,7 +755,7 @@ nonisolated enum OrigamiEPUBImporter {
                     assets.append(LiquidDoc.Asset(
                         id: assetID,
                         filename: name.isEmpty ? "\(assetID).png" : name,
-                        mediaType: WordImporter.mediaType(forExtension: ext),
+                        mediaType: LiquidDoc.mediaType(forExtension: ext),
                         dataBase64: data.base64EncodedString(),
                         alt: alt.isEmpty ? nil : alt))
                     paragraphs.append(LiquidDoc.Paragraph(

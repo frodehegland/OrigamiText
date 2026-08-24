@@ -947,6 +947,37 @@ nonisolated enum OrigamiEPUBExporter {
     """
 }
 
+// MARK: - Repacking an unpacked book
+
+extension OrigamiEPUBExporter {
+    /// Packs an unpacked EPUB folder back into one `.epub`: the mimetype
+    /// first (stored, per the spec), then every file under the folder at
+    /// its relative path. The inverse of the importer's unpack — how the
+    /// Mac publishes its shelf into the community folder, so every
+    /// device reading that folder shows the same books.
+    static func pack(unpackedFolder folder: URL) throws -> Data {
+        var zip = ZipWriter()
+        zip.add("mimetype", Data("application/epub+zip".utf8))
+        var files: [(relative: String, url: URL)] = []
+        if let enumerator = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]) {
+            for case let url as URL in enumerator {
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?
+                    .isRegularFile == true else { continue }
+                let relative = url.path.replacingOccurrences(of: folder.path + "/", with: "")
+                guard relative != "mimetype" else { continue }
+                files.append((relative, url))
+            }
+        }
+        for file in files.sorted(by: { $0.relative < $1.relative }) {
+            guard let data = try? Data(contentsOf: file.url) else { continue }
+            zip.add(file.relative, data)
+        }
+        return zip.finished()
+    }
+}
+
 // MARK: - The container
 
 /// A minimal store-only ZIP writer — everything EPUB needs and nothing

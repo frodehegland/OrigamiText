@@ -214,7 +214,7 @@ struct WeaveCanvas: View {
     }
 
     private func nearestNode(to point: CGPoint, in size: CGSize, at date: Date) -> Int? {
-        var best: (index: Int, distance: Double)?
+        var best: (index: Int, distance: CGFloat)?
         for index in data.nodes.indices {
             let p = position(of: index, in: size, at: date)
             let d = hypot(p.x - point.x, p.y - point.y)

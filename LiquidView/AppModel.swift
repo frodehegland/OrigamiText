@@ -894,6 +894,9 @@ final class AppModel {
         guard let record = importEPUB(at: url) else { return }
         openStoredEPUB(record)
         showNote("Opened “\(record.title)”")
+        // The new arrival joins the community folder too, so every
+        // device reading it shows the same shelf.
+        mirrorShelfToCommunityFolder()
     }
 
     /// The sidebar's Intro button: opens the built-in guide (IntroGuide.swift),
@@ -2071,7 +2074,8 @@ final class AppModel {
     /// Imports every EPUB found in the community folder into the Files list.
     /// New books arrive unread (bold) until opened; ones already imported are
     /// left untouched. iCloud placeholders are nudged to download, and the
-    /// folder watch rescans once they land.
+    /// folder watch rescans once they land. Afterwards the mirror runs the
+    /// other way: shelf books the folder lacks are published into it.
     func scanCommunityFolderForEPUBs() {
         guard let folder = index.folderURL else { return }
         LibraryScanner.requestICloudDownloads(in: folder)
@@ -2083,6 +2087,49 @@ final class AppModel {
         for case let url as URL in enumerator
         where url.pathExtension.lowercased() == "epub" {
             importEPUB(at: url)
+        }
+        mirrorShelfToCommunityFolder()
+    }
+
+    /// Publishes every shelf book the community folder lacks into it, as
+    /// a packed EPUB — the folder is the library's shared truth, so
+    /// visionOS (and any other Mac) reading the same iCloud folder shows
+    /// the same journals and the same articles. Files are named by the
+    /// book's unpack identity ("<folder>.epub"), the same identity every
+    /// import derives, so no device ever re-imports its own copy.
+    func mirrorShelfToCommunityFolder() {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        // The identities already present, however their files are named
+        // — including still-undownloaded iCloud placeholders, so a book
+        // another device published is never doubled.
+        var present: Set<String> = []
+        if let enumerator = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsPackageDescendants]) {
+            for case let url as URL in enumerator {
+                var name = url.lastPathComponent
+                if name.hasSuffix(".icloud") {
+                    if name.hasPrefix(".") { name.removeFirst() }
+                    name = String(name.dropLast(".icloud".count))
+                }
+                guard name.lowercased().hasSuffix(".epub") else { continue }
+                name = String(name.dropLast(".epub".count))
+                let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
+                present.insert(identity.replacingOccurrences(of: "/", with: "_")
+                    .replacingOccurrences(of: ":", with: "_"))
+            }
+        }
+        for record in epubRecords where !present.contains(record.folder) {
+            let unpacked = Self.epubsRoot.appendingPathComponent(record.folder,
+                                                                 isDirectory: true)
+            guard FileManager.default.fileExists(atPath:
+                    unpacked.appendingPathComponent(record.contentSubpath).path),
+                  let data = try? OrigamiEPUBExporter.pack(unpackedFolder: unpacked)
+            else { continue }
+            try? data.write(to: folder.appendingPathComponent(record.folder + ".epub"),
+                            options: .atomic)
         }
     }
 
