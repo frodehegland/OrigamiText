@@ -9,12 +9,12 @@ import SwiftUI
 import RealityKit
 
 /// One node on the Map: a journal's article, a work it cites (standing
-/// a level behind), or the probe card. Position mutates as the engine
+/// a level behind). Position mutates as the engine
 /// moves the node, and selection gates the citation lines; visual
 /// equality ignores both, so neither a drag nor a selection triggers
 /// the rasterize-and-rebuild path.
 struct EPUBMapItem: ItemProtocol {
-    enum Kind { case article, cited, probe }
+    enum Kind { case article, cited }
 
     let id: String
     var title: String
@@ -40,17 +40,10 @@ struct EPUBMapView: View {
     @Environment(VisionModel.self) private var model
     @Environment(\.openWindow) private var openWindow
 
-    /// The Map's nodes: the open journal's records, seeded on a grid —
-    /// or, while no journal is open, the probe card (proof of life,
-    /// phase 2's gate).
-    @State private var items: [EPUBMapItem] = EPUBMapView.probeItems
-
-    private static let probeItems = [
-        EPUBMapItem(id: "probe",
-                    title: "Author's Map engine, in Origami Text",
-                    author: "Open a journal from the panel — its articles land here",
-                    position: SIMD3<Float>(0.0, 1.4, -1.2)),
-    ]
+    /// The Map's nodes: the open journal's records, seeded on a grid,
+    /// with the works they cite a level behind. Empty until a journal
+    /// is opened from the panel.
+    @State private var items: [EPUBMapItem] = []
 
     /// Where the reader has placed each card — kept across reloads, so
     /// a card returning from its reader window (or a returning journal)
@@ -161,7 +154,7 @@ struct EPUBMapView: View {
             }
             items = built
         } else {
-            items = Self.probeItems
+            items = []
         }
     }
 
