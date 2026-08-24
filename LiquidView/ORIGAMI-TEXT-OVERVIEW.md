@@ -57,6 +57,41 @@
 - **The prompts are yours**: every AI view's prompt is editable in Settings.
 - **Bots stand in for known thinkers**: created from a name, identified by the on-device model, each bot judges the library's documents as its person might — agree, disagree, neutral, with the reason in their voice. A bot is itself a document (`documentType: bot`) in the shared folder, its judgements on the record like everything else, and never mistakable for the person: the name always says "bot".
 
+## The Hallway View — reading a journal in space (visionOS)
+
+Named 2026-08-25, this is the Vision Pro's answer to a journal: a
+walkable corridor whose depth IS time.
+
+- **The room is quiet by default**: a journal's articles stand as small
+  cards, pinned first, the set-aside in a faded row. Selection is
+  additive and sticky; a selected card wears an ember border.
+- **Citations live on the timeline**: select an article and its cited
+  works rise on a dated wall — every citation at its publication year's
+  exact depth, and held there: a drag slides it in X and Y only, mid-
+  gesture included. Select a citation and what IT cites rises behind
+  it (from the citation graph the Mac researched), each at its own
+  year. Whisper-faint ember lines carry the weave; double-tapping a
+  citation opens its record — title, authors, year, abstract, DOI —
+  with **Acquire** listing it in the Mac's Time view (ember dot,
+  download link) as a book to obtain.
+- **Timeflows flank the corridor**: data diagrams on the very same
+  year-to-depth axis — Sankey widths or cylinder graphs standing as
+  real tubes in the room, lanes or overlaid, their key outside the
+  plot, coloured with Paul Tol's muted colour-blind-safe scheme. Eight
+  verified sample series from the last 150 years are one tap away, the
+  Ask-for-Data dialog fetches more, and the Mac's Time Flows sidebar
+  curates the same shelf.
+- **History underfoot**: the physical floor carries a chosen history —
+  world, hypertext, hypertext people, environmental, space, computing,
+  or discoveries — each event lying at its year's depth.
+- **The body is the interface**: arm chips command it all, a fist
+  carries the whole space, a two-hand pinch stretches the corridor's
+  depth (the rows gathering toward walking height), and readings open
+  in-situ on glass panels dragged anywhere by their handles.
+
+Everything travels through the community folder, so the Mac curates
+and the headset shows.
+
 ## Built to be extended by the community
 
 - **Library views are exchangeable modules**: a new way of seeing the library is one Swift file — write a SwiftUI view, describe it in a `LibraryViewModule`, add one registry line, and it appears in the sidebar. Share the file and others can install it.

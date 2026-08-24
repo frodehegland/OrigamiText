@@ -1,9 +1,10 @@
-// The Map view: Author's NodeImmersiveView engine with EPUBs as the
-// nodes. Phase 2 of the port: ONE hard-coded card, rendered through
-// Author's exact pipeline (SwiftUI face → rasterized textured plane →
-// ModelEntity.box), with Author's ArmMenu carrying Settings and
-// Documents. Nothing advances past this file's card until it has stood
-// in the room on the device.
+// THE HALLWAY VIEW — the visionOS timeline corridor, named 2026-08-25.
+// Author's NodeImmersiveView engine with EPUBs as the nodes: articles
+// front and centre, citations welded to their publication years' Z on
+// a walkable time axis, Timeflow data diagrams flanking the corridor
+// on the same axis, themed history written on the physical floor,
+// readings and citation records opening in-situ, and the arms carrying
+// the commands. (See ORIGAMI-TEXT-OVERVIEW.md ▸ The Hallway View.)
 #if os(visionOS)
 import SwiftUI
 import RealityKit
@@ -1882,23 +1883,24 @@ enum TimeSpreadLayout: String, CaseIterable, Identifiable {
 /// the value normalization — one truth for the flat ribbons and the
 /// graph's cylinders alike.
 enum TimeSpreadInk {
-    /// max reads warm, min cool; further pairs step around the wheel —
-    /// wide enough that a shelf of samples stays tellable apart.
+    /// Paul Tol's MUTED qualitative scheme (SRON technical note
+    /// SRON/EPS/TN/09-002): designed muted, colour-blind safe, and
+    /// meant to be used as given — the reference palette for exactly
+    /// this need. Split along the corridor's convention: max reads
+    /// from the warm half (rose, sand, wine, purple, olive), min from
+    /// the cool (indigo, cyan, teal, green).
     static let maxColors: [Color] = [
-        Color(red: 0.85, green: 0.45, blue: 0.10),
-        Color(red: 0.80, green: 0.25, blue: 0.25),
-        Color(red: 0.75, green: 0.55, blue: 0.10),
-        Color(red: 0.60, green: 0.70, blue: 0.20),
-        Color(red: 0.80, green: 0.35, blue: 0.55),
-        Color(red: 0.55, green: 0.40, blue: 0.20),
+        Color(red: 0.80, green: 0.40, blue: 0.47),   // rose   #CC6677
+        Color(red: 0.87, green: 0.80, blue: 0.47),   // sand   #DDCC77
+        Color(red: 0.53, green: 0.13, blue: 0.33),   // wine   #882255
+        Color(red: 0.67, green: 0.27, blue: 0.60),   // purple #AA4499
+        Color(red: 0.60, green: 0.60, blue: 0.20),   // olive  #999933
     ]
     static let minColors: [Color] = [
-        Color(red: 0.25, green: 0.45, blue: 0.75),
-        Color(red: 0.20, green: 0.60, blue: 0.60),
-        Color(red: 0.45, green: 0.35, blue: 0.75),
-        Color(red: 0.20, green: 0.55, blue: 0.35),
-        Color(red: 0.50, green: 0.55, blue: 0.80),
-        Color(red: 0.30, green: 0.40, blue: 0.50),
+        Color(red: 0.20, green: 0.13, blue: 0.53),   // indigo #332288
+        Color(red: 0.53, green: 0.80, blue: 0.93),   // cyan   #88CCEE
+        Color(red: 0.27, green: 0.67, blue: 0.60),   // teal   #44AA99
+        Color(red: 0.07, green: 0.47, blue: 0.20),   // green  #117733
     ]
 
     static func pairIndices(of dataset: SankeySpace.Dataset) -> [String: Int] {
