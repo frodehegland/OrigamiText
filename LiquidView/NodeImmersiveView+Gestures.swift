@@ -103,10 +103,18 @@ extension NodeImmersiveView {
                 }
                 
                 var movingItems = [Items.Element]()
-                
+
                 if shouldMoveNodeBlock?(movingItem) ?? true {
-                    value.entity.position = movingEntityStartPosition + getDelta()
-                    
+                    // Origami addition (carry back to Author): a caller
+                    // may constrain where the drag can take a node —
+                    // e.g. holding a timeline axis — given the item,
+                    // the proposed position, and where the drag began.
+                    var position = movingEntityStartPosition + getDelta()
+                    if let constrain = constrainMovedNodeBlock {
+                        position = constrain(movingItem, position, movingEntityStartPosition)
+                    }
+                    value.entity.position = position
+
                     movingItems.append(movingItem)
                 }
                 

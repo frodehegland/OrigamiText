@@ -264,6 +264,7 @@ nonisolated enum OrigamiEPUBImporter {
                     fromXHTML: String(decoding: data, as: UTF8.self),
                     addressByCitationID: [:],
                     resolveImage: resolve,
+                    contentDir: chapterDir,
                     idPrefix: "s\(index + 1)-",
                     capture: capture) else { continue }
                 body += part
@@ -276,6 +277,7 @@ nonisolated enum OrigamiEPUBImporter {
                 fromXHTML: html,
                 addressByCitationID: addressByCitationID,
                 resolveImage: resolveImage,
+                contentDir: contentDir,
                 capture: capture)
             body = part
             bodyAssets = partAssets
@@ -674,6 +676,7 @@ nonisolated enum OrigamiEPUBImporter {
     private static func bodyParagraphs(fromXHTML html: String,
                                        addressByCitationID: [String: String],
                                        resolveImage: (String) -> Data?,
+                                       contentDir: String = "",
                                        idPrefix: String = "",
                                        capture: CitationCapture? = nil)
         throws -> (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset],
@@ -736,6 +739,37 @@ nonisolated enum OrigamiEPUBImporter {
                 }
             case "hr":
                 paragraphs.append(LiquidDoc.Paragraph(id: stableID(), heading: nil, text: "---"))
+            case "model":
+                // An EPUB's embedded 3D model (the <model> element): the
+                // marker carries the model file's package-relative path —
+                // the 3D bytes stay on disk, never base64 in the document
+                // — and the poster image inside becomes an asset the
+                // marker names, the fallback where no 3D can show.
+                guard let src = element.attributes["src"], !src.isEmpty else {
+                    for child in element.elements { visit(child, stretchID: stretchID) }
+                    return
+                }
+                let modelAlt = element.firstDescendant(named: "img")?.attributes["alt"]
+                    ?? element.attributes["alt"] ?? ""
+                var marker = "![\(modelAlt)](model:\(joinedPath(contentDir, src))"
+                if let poster = element.firstDescendant(named: "img"),
+                   let posterSrc = poster.attributes["src"], !posterSrc.isEmpty,
+                   let data = resolveImage(posterSrc), !data.isEmpty {
+                    assetOrdinal += 1
+                    let assetID = "\(idPrefix)img\(assetOrdinal)"
+                    let name = (posterSrc as NSString).lastPathComponent
+                    let ext = (name as NSString).pathExtension.lowercased()
+                    assets.append(LiquidDoc.Asset(
+                        id: assetID,
+                        filename: name.isEmpty ? "\(assetID).png" : name,
+                        mediaType: LiquidDoc.mediaType(forExtension: ext),
+                        dataBase64: data.base64EncodedString(),
+                        alt: modelAlt.isEmpty ? nil : modelAlt))
+                    marker += "?poster=\(assetID)"
+                }
+                marker += ")"
+                paragraphs.append(LiquidDoc.Paragraph(
+                    id: stableID(), heading: nil, text: marker))
             case "figure", "img":
                 // A figure/image comes back as an asset plus an
                 // `![alt](asset:id)` marker paragraph — the same form the

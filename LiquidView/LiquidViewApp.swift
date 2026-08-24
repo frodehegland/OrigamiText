@@ -44,6 +44,10 @@ struct LiquidViewApp: App {
                 Button("Choose Community Folder…") { model.chooseFolder() }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
             }
+            // Where paper meets the app, as in Knowledge Space: the
+            // camera reads a printed page and opens its document at
+            // that place.
+            PageCaptureCommands()
             CommandGroup(replacing: .saveItem) {
                 // Replacing .saveItem also removes the system Close item,
                 // so it is restored here — Settings and every other window
@@ -125,6 +129,13 @@ struct LiquidViewApp: App {
         }
         .defaultSize(width: 560, height: 440)
 
+        // File ▸ Hold Up a Page… — the camera reads a printed page and
+        // opens its document in the main window at the page's place.
+        Window("Hold Up a Page", id: "pageCamera") {
+            PageCaptureView()
+                .environment(model)
+        }
+
         Settings {
             SettingsView()
                 .environment(model)
@@ -162,6 +173,21 @@ struct LiquidViewApp: App {
             ]))
         NSApp.activate()
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+    }
+}
+
+/// The File menu's paper door: Hold Up a Page… opens the camera window
+/// that reads a printed page back to its library document. Its own
+/// Commands struct so it can reach openWindow.
+private struct PageCaptureCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(after: .importExport) {
+            Button("Hold Up a Page\u{2026}") {
+                openWindow(id: "pageCamera")
+            }
+        }
     }
 }
 

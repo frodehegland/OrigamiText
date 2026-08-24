@@ -793,6 +793,34 @@ private struct LibrarySettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section {
+                LabeledContent("Interatlas Links") {
+                    Text(model.interatlasAppPath.map {
+                        ($0 as NSString).lastPathComponent
+                    } ?? "Not set — links open in the browser")
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("Choose App…") { chooseInteratlasApp() }
+                    Button("Use Browser") { model.interatlasAppPath = nil }
+                        .disabled(model.interatlasAppPath == nil)
+                }
+                LabeledContent("Liquid View Links") {
+                    Text(model.liquidAppPath.map {
+                        ($0 as NSString).lastPathComponent
+                    } ?? "Not set — links open in the browser")
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("Choose App…") { chooseLiquidApp() }
+                    Button("Use Browser") { model.liquidAppPath = nil }
+                        .disabled(model.liquidAppPath == nil)
+                }
+            } footer: {
+                Text("Which apps receive scene links — Open Source on a citable figure hands over the URL that recreates the very scene (layers, camera, zoom, all of it). Until Interatlas and Liquid register their link domains, choosing the app here routes around the browser.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 HStack {
                     Button("Create Sample Community") { model.createSampleCommunity() }
                         .disabled(model.index.folderURL == nil)
@@ -808,6 +836,29 @@ private struct LibrarySettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func chooseInteratlasApp() {
+        if let path = chooseLinkApp(message: "Choose the app that opens Interatlas links.") {
+            model.interatlasAppPath = path
+        }
+    }
+
+    private func chooseLiquidApp() {
+        if let path = chooseLinkApp(message: "Choose the app that opens Liquid view links (Author, or Liquid).") {
+            model.liquidAppPath = path
+        }
+    }
+
+    /// One app-picker for every link kind; only the words differ.
+    private func chooseLinkApp(message: String) -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.message = message
+        return panel.runModal() == .OK ? panel.url?.path : nil
     }
 }
 

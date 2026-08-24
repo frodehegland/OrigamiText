@@ -223,6 +223,13 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         var alt: String?
 
         var data: Data? { Data(base64Encoded: dataBase64) }
+
+        /// True for a figure's packaged scene dataset —
+        /// `data/<scene-id>.liquidinfo.json` (spec §2.4) — rather than
+        /// an image the body shows.
+        var isLiquidSceneResource: Bool {
+            filename.lowercased().hasSuffix(".liquidinfo.json")
+        }
     }
 
     /// The image media type an asset's file extension names — the
@@ -239,6 +246,25 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         case "bmp": return "image/bmp"
         default: return "application/octet-stream"
         }
+    }
+
+    /// The 3D model a body paragraph points at, when the paragraph is a
+    /// lone `![alt](model:<path>?poster=<assetID>)` marker — an EPUB's
+    /// embedded model, its path relative to the unpacked package (the
+    /// bytes stay on disk), the optional poster naming the asset that
+    /// stands in where no 3D can show.
+    static func modelReference(in text: String)
+        -> (path: String, alt: String, posterID: String?)? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let regex = try? NSRegularExpression(
+            pattern: "^!\\[(.*)\\]\\(model:([^)?]+)(?:\\?poster=([^)]+))?\\)$",
+            options: [.dotMatchesLineSeparators]),
+              let match = regex.firstMatch(
+                in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+              let altRange = Range(match.range(at: 1), in: trimmed),
+              let pathRange = Range(match.range(at: 2), in: trimmed) else { return nil }
+        let poster = Range(match.range(at: 3), in: trimmed).map { String(trimmed[$0]) }
+        return (String(trimmed[pathRange]), String(trimmed[altRange]), poster)
     }
 
     /// The asset id a body paragraph's text points at, when the paragraph is

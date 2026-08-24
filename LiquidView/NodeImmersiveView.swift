@@ -122,8 +122,12 @@ public struct NodeImmersiveView<
     var onPinchInBlock: OnPinchInBlock?
     
     var onPinchOutBlock: OnPinchOutBlock?
-    
+
     var onUpdateNodeSizesBlock: OnUpdateNodeSizesBlock?
+
+    // Origami addition (carry back to Author): constrains a dragged
+    // node's position — (item, proposed, dragStart) → allowed.
+    var constrainMovedNodeBlock: ConstrainMovedNodeBlock?
 
     /// Handed the RealityView content once, in the make closure, so a caller
     /// can add its own entities (e.g. the forearm arm menu).

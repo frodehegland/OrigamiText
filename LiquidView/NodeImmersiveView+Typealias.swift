@@ -74,5 +74,13 @@ public extension NodeImmersiveView {
     typealias OnPinchOutBlock = () -> Void
     
     typealias OnUpdateNodeSizesBlock = (_ sizes: [AnyHashable: SIMD3<Float>]) -> Void
+
+    // Origami addition (carry back to Author): constrains a dragged
+    // node — (item, proposed position, drag start) → allowed position.
+    typealias ConstrainMovedNodeBlock = (
+        _ item: Items.Element,
+        _ proposed: SIMD3<Float>,
+        _ start: SIMD3<Float>
+    ) -> SIMD3<Float>
 }
 #endif

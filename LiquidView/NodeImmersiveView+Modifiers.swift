@@ -152,9 +152,19 @@ public extension NodeImmersiveView {
     
     func onUpdateNodeSizes(_ block: @escaping OnUpdateNodeSizesBlock) -> Self {
         var copy = self
-        
+
         copy.onUpdateNodeSizesBlock = block
-        
+
+        return copy
+    }
+
+    // Origami addition (carry back to Author): constrain where a drag
+    // can take a node — e.g. holding a timeline axis.
+    func constrainMovedNode(_ block: @escaping ConstrainMovedNodeBlock) -> Self {
+        var copy = self
+
+        copy.constrainMovedNodeBlock = block
+
         return copy
     }
     

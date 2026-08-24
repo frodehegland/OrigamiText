@@ -49,6 +49,11 @@ nonisolated enum EPUBStanding {
     struct State: Codable {
         var pinned: [String]
         var setAside: [String]
+        /// The reader's tracked concepts (the macOS Concepts view),
+        /// riding along so the Vision Pro's arm can offer them.
+        /// Optional: files written before concepts travelled decode
+        /// without them.
+        var concepts: [String]?
         var modified: Date
     }
 
@@ -61,8 +66,10 @@ nonisolated enum EPUBStanding {
     }
 
     @discardableResult
-    static func write(pinned: Set<String>, setAside: Set<String>, to folder: URL) -> Date {
+    static func write(pinned: Set<String>, setAside: Set<String>,
+                      concepts: [String], to folder: URL) -> Date {
         let state = State(pinned: pinned.sorted(), setAside: setAside.sorted(),
+                          concepts: concepts,
                           modified: .now)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

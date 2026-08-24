@@ -40,6 +40,16 @@ struct OrigamiVisionApp: App {
         }
         .defaultSize(width: 460, height: 520)
 
+        // The Sankey's data, opened from the left arm's Data chip:
+        // the series standing on the corridor's Z axis, and the
+        // Ask-for-Data field that brings in more — Liquid
+        // Information's + dialog, here.
+        WindowGroup(id: "data") {
+            VisionDataView()
+                .environment(model)
+        }
+        .defaultSize(width: 480, height: 460)
+
         // The one immersive space (mixed, so windows and volumes share
         // the room): the Map — Author's engine with EPUBs as nodes —
         // which hosts the arm menus itself, Author's way. (The arm-only
@@ -184,14 +194,21 @@ final class VisionModel {
     /// file read back never clobbers a newer local change.
     @ObservationIgnored private var standingWrittenAt: Date = .distantPast
 
+    /// The reader's tracked concepts, adopted from the Mac through the
+    /// standing file — the Map's left arm offers them.
+    private(set) var concepts: [String] =
+        UserDefaults.standard.stringArray(forKey: "viewConcepts") ?? []
+
     /// Pin and Set Aside travel through the community folder, so the
-    /// Mac and this device agree on the pile.
+    /// Mac and this device agree on the pile. The adopted concepts
+    /// ride along so this device's writes never strip them.
     private func publishStanding() {
         guard let folder = index.folderURL else { return }
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
         standingWrittenAt = EPUBStanding.write(pinned: pinnedIDs,
                                                setAside: setAsideIDs,
+                                               concepts: concepts,
                                                to: folder)
     }
 
@@ -208,6 +225,31 @@ final class VisionModel {
         setAsideIDs = Set(state.setAside)
         UserDefaults.standard.set(pinnedIDs.sorted(), forKey: "epubTopOfPile")
         UserDefaults.standard.set(setAsideIDs.sorted(), forKey: "epubSetAside")
+        if let shared = state.concepts {
+            concepts = shared
+            UserDefaults.standard.set(concepts, forKey: "viewConcepts")
+        }
+    }
+
+    /// The articles whose text carries a concept — the Map's concept
+    /// pick highlights them.
+    func articleIDs(mentioning concept: String) -> Set<String> {
+        let needle = concept.lowercased()
+        guard !needle.isEmpty else { return [] }
+        var matches: Set<String> = []
+        for record in epubRecords {
+            if record.title.lowercased().contains(needle) {
+                matches.insert(record.id)
+                continue
+            }
+            guard let doc = index.byID[record.id]?.doc else { continue }
+            if (doc.body ?? []).contains(where: {
+                $0.text.lowercased().contains(needle)
+            }) {
+                matches.insert(record.id)
+            }
+        }
+        return matches
     }
 
     /// The pinned books simply first, order otherwise kept — the Mac's
@@ -297,6 +339,8 @@ final class VisionModel {
         // themselves cite — reads in from the same folder; this device
         // never crawls.
         CitationGraph.adoptMirror(from: folder)
+        adoptSankeyData(from: folder)
+        adoptFloorHistory(from: folder)
         if placeholdersRemain, scanRetries < 5 {
             scanRetries += 1
             Task { @MainActor in
@@ -311,6 +355,104 @@ final class VisionModel {
     /// Downloads in flight are retried a few times, never forever.
     @ObservationIgnored private var scanRetries = 0
 
+    // MARK: - The time-spread's data lines
+
+    /// The Sankey's series — yearly values standing on the corridor's
+    /// own Z axis. Adopted from the community folder (the Mac fetches
+    /// New York's first pair); this device fetches only what the user
+    /// asks for here, and never re-fetches what the mirror holds.
+    private(set) var sankey: SankeySpace.Dataset?
+
+    private func adoptSankeyData(from folder: URL) {
+        if let dataset = SankeySpace.read(from: folder), !dataset.series.isEmpty {
+            sankey = dataset
+        } else if sankey == nil, !isFetchingSankey {
+            // No Mac has filled the mirror yet — this device can.
+            isFetchingSankey = true
+            Task { @MainActor in
+                defer { isFetchingSankey = false }
+                guard let series = try? await SankeySpace.temperatureSeries(city: "New York")
+                else { return }
+                let dataset = SankeySpace.Dataset(series: series, modified: .now)
+                sankey = dataset
+                writeSankeyMirror(dataset)
+            }
+        }
+    }
+
+    @ObservationIgnored private var isFetchingSankey = false
+
+    /// The floor's themed histories, adopted from the mirror — a theme
+    /// no Mac has filled yet is fetched here when the reader picks it.
+    /// The revision ticks whenever any theme lands, so the floor
+    /// redraws.
+    private(set) var floorHistories: [SankeySpace.FloorTheme: SankeySpace.FloorHistory] = [:]
+    private(set) var floorRevision = 0
+
+    @ObservationIgnored private var fetchingFloorThemes: Set<SankeySpace.FloorTheme> = []
+
+    func floorHistory(for theme: SankeySpace.FloorTheme) -> SankeySpace.FloorHistory? {
+        floorHistories[theme]
+    }
+
+    private func adoptFloorHistory(from folder: URL) {
+        for theme in SankeySpace.FloorTheme.allCases {
+            if let history = SankeySpace.readFloorHistory(theme: theme, from: folder),
+               !history.events.isEmpty {
+                floorHistories[theme] = history
+            }
+        }
+        floorRevision += 1
+    }
+
+    /// The picked theme must answer: absent from the mirror, it is
+    /// fetched here and mirrored back.
+    func ensureFloorTheme(_ theme: SankeySpace.FloorTheme) {
+        guard floorHistories[theme] == nil,
+              !fetchingFloorThemes.contains(theme) else { return }
+        fetchingFloorThemes.insert(theme)
+        Task { @MainActor in
+            defer { fetchingFloorThemes.remove(theme) }
+            guard let events = try? await SankeySpace.fetchFloorHistory(theme: theme),
+                  !events.isEmpty else { return }
+            let history = SankeySpace.FloorHistory(events: events, modified: .now)
+            floorHistories[theme] = history
+            floorRevision += 1
+            guard let folder = index.folderURL else { return }
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            SankeySpace.writeFloorHistory(history, theme: theme, to: folder)
+        }
+    }
+
+    /// The user's Ask-for-Data: a city's yearly min/max temperatures
+    /// join the diagram and the mirror. Throws the fetch's own words.
+    func addSankeyCity(_ city: String) async throws {
+        let series = try await SankeySpace.temperatureSeries(city: city)
+        var dataset = sankey ?? SankeySpace.Dataset(series: [], modified: .now)
+        let pair = series.first?.pair
+        dataset.series.removeAll { $0.pair == pair }
+        dataset.series.append(contentsOf: series)
+        dataset.modified = .now
+        sankey = dataset
+        writeSankeyMirror(dataset)
+    }
+
+    func removeSankeyPair(_ pair: String) {
+        guard var dataset = sankey else { return }
+        dataset.series.removeAll { $0.pair == pair }
+        dataset.modified = .now
+        sankey = dataset
+        writeSankeyMirror(dataset)
+    }
+
+    private func writeSankeyMirror(_ dataset: SankeySpace.Dataset) {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        SankeySpace.write(dataset, to: folder)
+    }
+
     /// Unpacks one EPUB into the shelf (once per identity) and remembers
     /// it. Returns whether the shelf changed. The Mac's importEPUB,
     /// without the reader-side niceties.
@@ -322,10 +464,18 @@ final class VisionModel {
             .replacingOccurrences(of: ":", with: "_")
         let directory = Self.epubsRoot.appendingPathComponent(safe, isDirectory: true)
 
-        if let existing = epubRecords.first(where: { $0.folder == safe }),
-           FileManager.default.fileExists(atPath:
-                directory.appendingPathComponent(existing.contentSubpath).path) {
-            return false
+        // Keep the existing unpack — unless the source file is newer:
+        // a re-export of the same document (an added figure) must show.
+        if let existing = epubRecords.first(where: { $0.folder == safe }) {
+            let content = directory.appendingPathComponent(existing.contentSubpath)
+            let sourceStamp = (try? url.resourceValues(
+                forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            let unpackedStamp = (try? content.resourceValues(
+                forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if FileManager.default.fileExists(atPath: content.path),
+               let sourceStamp, let unpackedStamp, sourceStamp <= unpackedStamp {
+                return false
+            }
         }
 
         do {
@@ -764,6 +914,117 @@ struct OrigamiSpaceView: View {
 
 /// Settings, from the right arm's chip: the community folder and the
 /// space's card lines.
+/// The Sankey's data dialog — Liquid Information's Ask-for-Data, here:
+/// the series pairs standing on the corridor, each removable, and a
+/// field that fetches a new city's yearly min/max temperatures from
+/// Open-Meteo. One pair to begin with; the diagram takes as many as
+/// the reader asks for.
+struct VisionDataView: View {
+    @Environment(VisionModel.self) private var model
+
+    @State private var city = ""
+    @State private var isFetching = false
+    @State private var status: String?
+    /// Sankey widths or a traditional line graph — read by the Map's
+    /// diagram, redrawn the moment it changes.
+    @AppStorage("timeSpreadStyle") private var timeSpreadStyleRaw =
+        TimeSpreadStyle.sankey.rawValue
+    /// What lies written on the physical floor beneath the corridor.
+    @AppStorage("floorShow") private var floorShowRaw = FloorShow.world.rawValue
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Presentation") {
+                    Picker("Style", selection: $timeSpreadStyleRaw) {
+                        ForEach(TimeSpreadStyle.allCases) { style in
+                            Text(style.displayName).tag(style.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Picker("Floor", selection: $floorShowRaw) {
+                        ForEach(FloorShow.allCases) { show in
+                            Text(show.displayName).tag(show.rawValue)
+                        }
+                    }
+                }
+                Section("Data lines — each year a point on the corridor") {
+                    if let dataset = model.sankey, !dataset.series.isEmpty {
+                        ForEach(dataset.pairs, id: \.pair) { entry in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.name)
+                                    Text(span(of: entry.series))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button(role: .destructive) {
+                                    model.removeSankeyPair(entry.pair)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    } else {
+                        Text("No data lines yet — the first pair arrives with the community folder scan, or ask below.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section("Ask for data") {
+                    HStack {
+                        TextField("A city — yearly min/max temperatures", text: $city)
+                            .onSubmit { ask() }
+                        Button("Add") { ask() }
+                            .disabled(city.trimmingCharacters(in: .whitespaces).isEmpty
+                                      || isFetching)
+                    }
+                    if isFetching {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Fetching the archive\u{2026}")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if let status {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Weather data by Open-Meteo.com")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .navigationTitle("Time Data")
+        }
+    }
+
+    private func span(of series: [SankeySpace.Series]) -> String {
+        let years = series.flatMap { $0.values.map(\.year) }
+        guard let first = years.min(), let last = years.max() else { return "" }
+        let unit = series.first?.unit ?? ""
+        return "min and max \(unit), \(first)\u{2013}\(last)"
+    }
+
+    private func ask() {
+        let name = city.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !isFetching else { return }
+        isFetching = true
+        status = nil
+        Task { @MainActor in
+            defer { isFetching = false }
+            do {
+                try await model.addSankeyCity(name)
+                status = "Added \(name)."
+                city = ""
+            } catch {
+                status = error.localizedDescription
+            }
+        }
+    }
+}
+
 struct VisionSettingsView: View {
     @Environment(VisionModel.self) private var model
     @Environment(\.openWindow) private var openWindow

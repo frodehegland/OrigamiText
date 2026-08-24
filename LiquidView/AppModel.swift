@@ -50,6 +50,9 @@ enum SidebarItem: Hashable {
     case person(String)
     case concepts
     case concept(String)
+    /// The Time Flows: the data lines standing along the headset's
+    /// corridor, curated here for easy access there.
+    case timeFlows
     // Reachable by code, not from the sidebar: Everything as a reading
     // context, and the drafts shelf.
     case allDocuments
@@ -801,11 +804,19 @@ final class AppModel {
         let directory = Self.epubsRoot.appendingPathComponent(safe, isDirectory: true)
 
         // Already known and still on disk? Keep the existing record — no
-        // re-unpack, and its read/unread state is preserved.
-        if let existing = epubRecords.first(where: { $0.folder == safe }),
-           FileManager.default.fileExists(atPath:
-                directory.appendingPathComponent(existing.contentSubpath).path) {
-            return enrichRecordIfNeeded(existing, directory: directory)
+        // re-unpack — unless the source file is newer than the unpacked
+        // copy: a re-export of the same document (an added figure, a
+        // corrected paragraph) must show, so a newer file refreshes.
+        if let existing = epubRecords.first(where: { $0.folder == safe }) {
+            let content = directory.appendingPathComponent(existing.contentSubpath)
+            let sourceStamp = (try? url.resourceValues(
+                forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            let unpackedStamp = (try? content.resourceValues(
+                forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if FileManager.default.fileExists(atPath: content.path),
+               let sourceStamp, let unpackedStamp, sourceStamp <= unpackedStamp {
+                return enrichRecordIfNeeded(existing, directory: directory)
+            }
         }
 
         do {
@@ -818,16 +829,21 @@ final class AppModel {
             // Rows display the authors joined; the Authors view lists
             // the book under each of them.
             let authors = meta?.authors ?? []
+            // A refreshed book keeps its place in time; only a truly
+            // new one arrives at the top as just-opened.
+            let openedAt = epubRecords.first(where: { $0.folder == safe })?.openedAt ?? .now
             let record = EPUBRecord(id: bookID, title: unpacked.title,
                                     author: authors.count > 1
                                         ? authors.joined(separator: ", ")
                                         : (authors.first ?? meta?.author ?? "Unknown"),
                                     authors: authors.isEmpty ? nil : authors,
                                     dateISO: meta?.date, folder: safe,
-                                    contentSubpath: contentSubpath, openedAt: .now,
+                                    contentSubpath: contentSubpath, openedAt: openedAt,
                                     publication: meta?.publication ?? "")
             epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
             epubRecords.insert(record, at: 0)
+            // The reading cache may hold the pre-refresh text.
+            readingDocCache = nil
             persistEPUBRecords()
             rebuildEPUBIndex()
             return record
@@ -836,6 +852,153 @@ final class AppModel {
             showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    // MARK: - Scene links (Interatlas and Liquid)
+
+    /// The app that opens Interatlas links: Open Source on an image's
+    /// citation recreates the scene there rather than in the browser.
+    /// Nil falls back to the system default until Interatlas registers
+    /// its universal link domain.
+    var interatlasAppPath: String? =
+        UserDefaults.standard.string(forKey: "interatlasAppPath") {
+        didSet { UserDefaults.standard.set(interatlasAppPath, forKey: "interatlasAppPath") }
+    }
+
+    /// The app that opens Liquid view links (Author, or Liquid).
+    var liquidAppPath: String? =
+        UserDefaults.standard.string(forKey: "liquidAppPath") {
+        didSet { UserDefaults.standard.set(liquidAppPath, forKey: "liquidAppPath") }
+    }
+
+    /// Opens an Interatlas link where the reader said to. The URL
+    /// carries the whole scene; the question is only which door the
+    /// app offers. In order: the `interatlas://` scheme once Interatlas
+    /// declares one; the chosen app handed the https link; and when the
+    /// app declares no way to receive a URL at all — today's Interatlas
+    /// — the link goes to the clipboard and the app comes forward,
+    /// rather than a dead system alert.
+    func openInteratlasLink(_ url: URL) {
+        openSceneLink(url, schemedForms: [InteratlasLink.schemed(url)].compactMap { $0 },
+                      appPath: interatlasAppPath,
+                      cantReceiveNote: "Interatlas can\u{2019}t receive links yet — the scene link is on the clipboard, ready to paste there.")
+    }
+
+    /// Opens a Liquid view link — Author's 3D view citation on the
+    /// same link domain, path /liquid/ — by the same ladder, through
+    /// Liquid's own doors (`liquidinfo://`, the old `liquid://`, or
+    /// the chosen app).
+    func openLiquidViewLink(_ url: URL) {
+        openSceneLink(url, schemedForms: LiquidViewLink.schemedForms(url),
+                      appPath: liquidAppPath,
+                      cantReceiveNote: "That app can\u{2019}t receive links yet — the view link is on the clipboard, ready to paste there.")
+    }
+
+    /// Hands a complete scene to Liquid Information as a `.liquidinfo`
+    /// file — the road for scenes too large to ride in any URL. The
+    /// doors, in order: the chosen app, whatever app is registered for
+    /// the file type, and failing both, the file revealed in the
+    /// Finder with the truth on the status line — never a click that
+    /// does nothing.
+    func openLiquidScene(json: String, link: URL) {
+        let name = link.pathComponents.last.flatMap { $0.isEmpty ? nil : $0 } ?? "scene"
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(name)
+            .appendingPathExtension("liquidinfo")
+        do {
+            try Data(json.utf8).write(to: fileURL, options: .atomic)
+        } catch {
+            showNote("Couldn\u{2019}t write the scene file: \(error.localizedDescription)")
+            return
+        }
+        func reveal() {
+            NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+            showNote("The scene is too large for a link — it is written as \(fileURL.lastPathComponent) and revealed in the Finder, ready to open in Liquid Information.")
+        }
+        if let liquidAppPath, FileManager.default.fileExists(atPath: liquidAppPath) {
+            NSWorkspace.shared.open([fileURL],
+                                    withApplicationAt: URL(fileURLWithPath: liquidAppPath),
+                                    configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                guard error != nil else { return }
+                Task { @MainActor in reveal() }
+            }
+            return
+        }
+        if NSWorkspace.shared.urlForApplication(toOpen: fileURL) != nil,
+           NSWorkspace.shared.open(fileURL) {
+            return
+        }
+        reveal()
+    }
+
+    /// The one ladder every scene-link kind climbs. The chosen app
+    /// always wins: an explicit choice outranks whatever app happens
+    /// to have claimed a scheme — stale archive builds do, and Launch
+    /// Services remembers them. Only without a choice do the schemes'
+    /// registered handlers get the link, newest scheme first, and
+    /// failing those the browser.
+    private func openSceneLink(_ url: URL, schemedForms: [URL], appPath: String?,
+                               cantReceiveNote: String) {
+        if let appPath, FileManager.default.fileExists(atPath: appPath) {
+            openSceneLink(url, schemedForms: schemedForms,
+                          withApplicationAt: URL(fileURLWithPath: appPath),
+                          cantReceiveNote: cantReceiveNote)
+            return
+        }
+        // Every rung answers or the ladder climbs on: a scheme whose
+        // registered app has moved or been deleted (a stale Launch
+        // Services memory) fails in silence unless the result is
+        // checked.
+        for schemed in schemedForms
+        where NSWorkspace.shared.urlForApplication(toOpen: schemed) != nil {
+            if NSWorkspace.shared.open(schemed) { return }
+        }
+        if NSWorkspace.shared.open(url) { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        showNote("The link couldn\u{2019}t be opened here — it is on the clipboard, ready to paste.")
+    }
+
+    /// The chosen app's own doors, in order: whichever scheme form the
+    /// app claims; the https link when Launch Services agrees the app
+    /// can take it; and failing both, the link to the clipboard and
+    /// the app to the front, with the truth on the status line.
+    private func openSceneLink(_ url: URL, schemedForms: [URL],
+                               withApplicationAt appURL: URL,
+                               cantReceiveNote: String) {
+        let appPath = appURL.standardizedFileURL.path
+        func claims(_ candidate: URL) -> Bool {
+            NSWorkspace.shared.urlsForApplications(toOpen: candidate)
+                .contains { $0.standardizedFileURL.path == appPath }
+        }
+        // The last resort, shared by every failed hand-off: the link
+        // onto the clipboard, the app to the front, and the truth on
+        // the status line — never a click that does nothing.
+        func fallBack() {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(url.absoluteString, forType: .string)
+            NSWorkspace.shared.openApplication(at: appURL,
+                                               configuration: NSWorkspace.OpenConfiguration())
+            showNote(cantReceiveNote)
+        }
+        // A hand-off's failure arrives in its completion, off the main
+        // thread and easy to lose — heard here, it falls back visibly.
+        func hand(_ links: [URL]) {
+            NSWorkspace.shared.open(links, withApplicationAt: appURL,
+                                    configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                guard error != nil else { return }
+                Task { @MainActor in fallBack() }
+            }
+        }
+        for schemed in schemedForms where claims(schemed) {
+            hand([schemed])
+            return
+        }
+        if claims(url) {
+            hand([url])
+            return
+        }
+        fallBack()
     }
 
     /// Records written before every author and the venue were kept carry
@@ -1792,6 +1955,7 @@ final class AppModel {
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
         standingWrittenAt = EPUBStanding.write(pinned: epubTopOfPile,
                                                setAside: epubSetAsideIDs,
+                                               concepts: viewConcepts,
                                                to: folder)
     }
 
@@ -1808,6 +1972,12 @@ final class AppModel {
         epubSetAsideIDs = Set(state.setAside)
         UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
         UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
+        // Concepts ride the same file; a file from before they
+        // travelled leaves this device's list alone.
+        if let concepts = state.concepts {
+            viewConcepts = concepts
+            UserDefaults.standard.set(viewConcepts, forKey: "viewConcepts")
+        }
     }
 
     /// The records the lists and views show — everything not set aside.
@@ -1987,6 +2157,9 @@ final class AppModel {
         viewConcepts.append(trimmed)
         viewConcepts.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         UserDefaults.standard.set(viewConcepts, forKey: "viewConcepts")
+        // Concepts travel in the standing file, so the Vision Pro's
+        // arm offers the new one without waiting for a pin to change.
+        publishStanding()
     }
 
     func removeConcept(_ name: String) {
@@ -1994,6 +2167,7 @@ final class AppModel {
         else { return }
         viewConcepts.remove(at: index)
         UserDefaults.standard.set(viewConcepts, forKey: "viewConcepts")
+        publishStanding()
     }
 
     /// Asks for a person's name and adds them to the People view.
@@ -2128,6 +2302,58 @@ final class AppModel {
         CitationGraph.mirrorFolder = folder
         CitationGraph.adoptMirror(from: folder)
         prefetchCitationGraph()
+        ensureSankeyData(in: folder)
+        ensureFloorHistory(in: folder)
+    }
+
+    /// The floor's histories — every theme's Wikidata sweep, fetched
+    /// once each and mirrored for the Vision Pro's floor. Themes the
+    /// mirror already holds are left in peace.
+    @ObservationIgnored private var isFetchingFloorHistory = false
+
+    private func ensureFloorHistory(in folder: URL) {
+        let missing = SankeySpace.FloorTheme.allCases.filter {
+            SankeySpace.readFloorHistory(theme: $0, from: folder)?.events.isEmpty ?? true
+        }
+        guard !isFetchingFloorHistory, !missing.isEmpty else { return }
+        isFetchingFloorHistory = true
+        Task { @MainActor in
+            defer { isFetchingFloorHistory = false }
+            for theme in missing {
+                guard let events = try? await SankeySpace.fetchFloorHistory(theme: theme),
+                      !events.isEmpty else { continue }
+                let scoped = folder.startAccessingSecurityScopedResource()
+                defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+                SankeySpace.writeFloorHistory(
+                    SankeySpace.FloorHistory(events: events, modified: .now),
+                    theme: theme, to: folder)
+            }
+        }
+    }
+
+    /// Ticks when the Time Flows mirror changes, so the sidebar list
+    /// rereads it.
+    var timeFlowsRevision = 0
+
+    /// The time-spread's first data lines: New York's yearly min/max
+    /// temperatures, fetched once from Open-Meteo and mirrored through
+    /// the community folder for the Vision Pro's Sankey. Quiet when the
+    /// mirror already holds data.
+    @ObservationIgnored private var isFetchingSankey = false
+
+    private func ensureSankeyData(in folder: URL) {
+        guard !isFetchingSankey,
+              SankeySpace.read(from: folder)?.series.isEmpty ?? true else { return }
+        isFetchingSankey = true
+        Task { @MainActor in
+            defer { isFetchingSankey = false }
+            guard let series = try? await SankeySpace.temperatureSeries(city: "New York")
+            else { return }
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            SankeySpace.write(SankeySpace.Dataset(series: series, modified: .now),
+                              to: folder)
+        }
     }
 
     /// Quietly gathers what the shelf's cited works themselves cite —

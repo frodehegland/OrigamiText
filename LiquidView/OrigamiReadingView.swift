@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import WebKit
 
 // Ported from Knowledge Space's OrigamiReadingView.swift (itself from
 // Augmented Library) — the book reader: an Origami document read
@@ -1900,24 +1901,23 @@ struct OrigamiReadingView: View {
             openStretch.contains($0.id) && stretchDisplay == .inline
         } ?? false
         let dim = stretchFocus && closeStretch == nil && !inlineOpenHost
-        if let image = LiquidDoc.imageReference(in: paragraph.text),
+        if let modelRef = LiquidDoc.modelReference(in: paragraph.text) {
+            // An embedded 3D model (the EPUB <model> element): an
+            // interactive orbit stage, the poster standing in when
+            // the model cannot show.
+            OrigamiModelView(path: modelRef.path, alt: modelRef.alt,
+                             posterID: modelRef.posterID, doc: doc)
+                .dimmedForStretch(dim)
+        } else if let image = LiquidDoc.imageReference(in: paragraph.text),
            let asset = doc.assets.first(where: { $0.id == image.id }) {
-            VStack(alignment: .leading, spacing: 6) {
-                if let nsImage = asset.data.flatMap(NSImage.init(data:)) {
-                    Image(nsImage: nsImage)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxHeight: 560)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                } else {
-                    Label(asset.filename, systemImage: "photo")
-                        .foregroundStyle(.secondary)
-                }
-                if !image.alt.isEmpty {
-                    Text(image.alt).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .dimmedForStretch(dim)
+            // A citable figure (an Interatlas screenshot carrying its
+            // View Citation in the PNG itself) answers a click with
+            // the record and Open Source; a plain image just stands.
+            OrigamiAssetView(
+                asset: asset,
+                fallback: OrigamiAssetView.imageCitation(after: paragraph, in: doc),
+                doc: doc)
+                .dimmedForStretch(dim)
         } else if let tableID = paragraph.tableID,
                   let table = doc.tables.first(where: { $0.identifier == tableID }) {
             // A live table from the document's pool — a clean grid,
@@ -4256,4 +4256,342 @@ private struct ReaderWindowWatcher: NSViewRepresentable {
             observers.forEach(NotificationCenter.default.removeObserver)
         }
     }
+}
+
+// MARK: - Citable figures
+
+/// An image a document carries aboard (an imported EPUB's figure), its
+/// alt text as a quiet caption. An Interatlas screenshot carries its
+/// View Citation inside the PNG itself; such an image answers a click
+/// with the citation and Open Source — the link that recreates the
+/// very scene. Brought across from Knowledge Space; keep in step.
+struct OrigamiAssetView: View {
+    @Environment(AppModel.self) private var model
+    let asset: LiquidDoc.Asset
+    /// The citation standing beside the image in the document, for a
+    /// PNG whose own embedded copy did not survive its export.
+    var fallback: BibTeXRecord? = nil
+    /// The document the figure stands in, for the package's own scene
+    /// datasets (data/<scene-id>.liquidinfo.json, spec §2.4).
+    var doc: LiquidDoc? = nil
+
+    /// The citation read out of the PNG, once, on appearance.
+    @State private var record: BibTeXRecord?
+    /// The complete `.liquidinfo` scene a Liquid PNG carries in its
+    /// `liquid-scene` chunk — the image as its own source of truth.
+    @State private var scene: String?
+    @State private var showsCitation = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if record != nil {
+                Button {
+                    showsCitation = true
+                } label: {
+                    imageContent
+                }
+                .buttonStyle(.plain)
+                .help("This image carries its citation — click for the record and Open Source")
+                .popover(isPresented: $showsCitation) { citationPopover }
+            } else {
+                imageContent
+            }
+            if let alt = asset.alt, !alt.isEmpty {
+                Text(alt)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .task {
+            // The PNG's own embedded citation first; the one standing
+            // beside the image in the document otherwise. The scene
+            // rides along for Open Source, by the format's ladder:
+            // the package's data/ file is the full truth — the chunk
+            // may be the trimmed form when the data is large — and
+            // the chunk stands in otherwise.
+            if asset.mediaType == "image/png", let data = asset.data {
+                scene = PNGCitation.sceneText(inPNGData: data)
+                if let text = PNGCitation.citationText(inPNGData: data),
+                   let found = BibTeXRecord.records(in: text).first {
+                    record = found
+                }
+            }
+            if record == nil { record = fallback }
+            if let packaged = packagedScene() { scene = packaged }
+        }
+    }
+
+    /// The record an image cites when its citation stands beside it:
+    /// Author's export wraps a figure in a citation anchor and repeats
+    /// the key in the caption paragraph, so the nearest `[cite:]`
+    /// within the two paragraphs after the image is the image's own.
+    /// Failing that, a document with exactly one Interatlas-linked
+    /// reference gives its images that one — never a guess between
+    /// several.
+    static func imageCitation(after paragraph: LiquidDoc.Paragraph,
+                              in doc: LiquidDoc) -> BibTeXRecord? {
+        func record(forKey key: String) -> BibTeXRecord? {
+            doc.references.first { $0.id == key }
+                .flatMap { BibTeXRecord.records(in: $0.bibtex).first }
+        }
+        if let body = doc.body,
+           let index = body.firstIndex(where: { $0.id == paragraph.id }) {
+            for next in body[(index + 1)...].prefix(2) {
+                guard let match = next.text.range(of: #"\[cite:([^\]]+)\]"#,
+                                                  options: .regularExpression) else { continue }
+                let token = String(next.text[match])
+                let key = String(token.dropFirst("[cite:".count).dropLast())
+                if let found = record(forKey: key) { return found }
+            }
+        }
+        let interatlas = doc.references.compactMap { reference -> BibTeXRecord? in
+            guard let parsed = BibTeXRecord.records(in: reference.bibtex).first,
+                  let url = parsed.fields["url"],
+                  InteratlasLink.isInteratlasLink(url) else { return nil }
+            return parsed
+        }
+        return interatlas.count == 1 ? interatlas.first : nil
+    }
+
+    /// The scene dataset the document's package carries for this
+    /// figure (spec §2.4) — named by the citation's `scene-resource`
+    /// field (the pool's copy carries it; the PNG's embedded record
+    /// cannot know package paths), or matched to the link's scene id
+    /// when the field is absent.
+    private func packagedScene() -> String? {
+        guard let doc else { return nil }
+        var names: [String] = []
+        if let resource = record?.fields["scene-resource"]
+            ?? fallback?.fields["scene-resource"] {
+            let trimmed = resource.trimmingCharacters(in: .whitespaces)
+            names.append((trimmed as NSString).lastPathComponent.lowercased())
+        }
+        if let urlText = record?.fields["url"] ?? fallback?.fields["url"],
+           let url = URL(string: urlText.trimmingCharacters(in: .whitespaces)),
+           LiquidViewLink.isLiquidViewLink(url),
+           let sceneID = url.pathComponents.last, !sceneID.isEmpty {
+            names.append("\(sceneID.lowercased()).liquidinfo.json")
+        }
+        guard !names.isEmpty else { return nil }
+        for candidate in doc.assets
+        where candidate.isLiquidSceneResource
+            && names.contains(candidate.filename.lowercased()) {
+            if let data = candidate.data {
+                return String(data: data, encoding: .utf8)
+            }
+        }
+        return nil
+    }
+
+    /// Open Source: a Liquid view link that does not itself carry the
+    /// scene is handed over with the scene the document holds — the
+    /// package's data/ file or the PNG's own `liquid-scene` chunk — so
+    /// what is sent is always enough to re-create the very view. A
+    /// scene over the link ceiling travels as a `.liquidinfo` file.
+    private func openSource(_ url: URL) {
+        var url = url
+        var sceneAsFile: String?
+        if LiquidViewLink.isLiquidViewLink(url), let scene {
+            if LiquidViewLink.sceneTravelsInLink(scene) {
+                url = LiquidViewLink.carryingScene(url, sceneJSON: scene)
+            } else if !LiquidViewLink.carriesScene(url) {
+                sceneAsFile = scene
+            }
+        }
+        if let sceneAsFile {
+            model.openLiquidScene(json: sceneAsFile, link: url)
+            return
+        }
+        // The Liquid check first: a Liquid view link lives on the same
+        // link domain as Interatlas, told apart by its /liquid/ path.
+        if LiquidViewLink.isLiquidViewLink(url) {
+            model.openLiquidViewLink(url)
+        } else if InteratlasLink.isInteratlasLink(url) {
+            model.openInteratlasLink(url)
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @ViewBuilder private var imageContent: some View {
+        if let data = asset.data, let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxHeight: 560)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        } else {
+            Label(asset.filename, systemImage: "photo")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The citation as the source speaks it, with its doors.
+    @ViewBuilder private var citationPopover: some View {
+        if let record {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(record.citationSentence)
+                    .font(.system(size: 14, design: .serif))
+                    .textSelection(.enabled)
+                if let abstract = record.fields["abstract"], !abstract.isEmpty {
+                    Text(abstract)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                HStack(spacing: 8) {
+                    if let urlText = record.fields["url"],
+                       let url = URL(string: urlText.trimmingCharacters(in: .whitespaces)) {
+                        Button("Open Source") { openSource(url) }
+                            .help(LiquidViewLink.isLiquidViewLink(url)
+                                  ? "Opens this very view in Liquid — the link carries the whole view state"
+                                  : InteratlasLink.isInteratlasLink(url)
+                                  ? "Opens this very scene in Interatlas — the link carries the whole view state"
+                                  : "Opens the cited source")
+                    }
+                    Button("Copy Citation") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(record.raw, forType: .string)
+                    }
+                    .help("The full BibTeX record, onto the clipboard")
+                }
+            }
+            .padding(14)
+            .frame(minWidth: 260, maxWidth: 420, alignment: .leading)
+        }
+    }
+}
+
+// MARK: - Embedded 3D models
+
+/// An EPUB's embedded 3D model (the `<model>` element), shown on an
+/// interactive orbit stage. Apple's frameworks read USD, not glTF, so
+/// the stage is the vendored model-viewer (BSD-3-Clause, WebGL) in a
+/// web view — everything local: the viewer page and script are laid
+/// down beside the model inside the book's own unpacked folder. Where
+/// the stage cannot be built, the poster stands in, plainly saying why.
+struct OrigamiModelView: View {
+    /// The model file's path, relative to the unpacked package.
+    let path: String
+    let alt: String
+    /// The poster image's asset id, when the marker carries one.
+    let posterID: String?
+    let doc: LiquidDoc
+
+    /// The viewer page written beside the model, or the reason not.
+    @State private var stage: Result<URL, StageFailure>?
+
+    enum StageFailure: Error {
+        case modelMissing
+        case viewerMissing
+        case couldNotWrite(String)
+
+        var explanation: String {
+            switch self {
+            case .modelMissing: "The model file is not in the unpacked book."
+            case .viewerMissing: "The 3D viewer script is missing from the app."
+            case .couldNotWrite(let why): "The stage could not be written: \(why)"
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch stage {
+            case .success(let page):
+                ModelStageWebView(page: page,
+                                  base: page.deletingLastPathComponent())
+                    .frame(height: 460)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                Text("3D — drag to orbit, scroll to zoom")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            case .failure(let failure):
+                posterView
+                Label(failure.explanation, systemImage: "cube.transparent")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case nil:
+                posterView
+            }
+            if !alt.isEmpty {
+                Text(alt).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .task(id: path) { stage = buildStage() }
+    }
+
+    /// The poster asset, while the stage builds or where it cannot.
+    @ViewBuilder private var posterView: some View {
+        if let posterID,
+           let asset = doc.assets.first(where: { $0.id == posterID }),
+           let nsImage = asset.data.flatMap(NSImage.init(data:)) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .scaledToFit()
+                .frame(maxHeight: 460)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        } else {
+            Label((path as NSString).lastPathComponent, systemImage: "cube.transparent")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Lays the stage down inside the book's folder — the page, the
+    /// viewer script beside it — so one file-access grant covers the
+    /// page, the script, and the model. Cheap to repeat; a re-unpack
+    /// sweeps the folder and the next look rebuilds it.
+    private func buildStage() -> Result<URL, StageFailure> {
+        let base = doc.fileURL
+        let model = base.appendingPathComponent(path)
+        guard FileManager.default.fileExists(atPath: model.path) else {
+            return .failure(.modelMissing)
+        }
+        guard let script = Bundle.main.url(forResource: "model-viewer.min",
+                                           withExtension: "js") else {
+            return .failure(.viewerMissing)
+        }
+        let stagedScript = base.appendingPathComponent("origami-model-viewer.js")
+        let page = base.appendingPathComponent(
+            "origami-model-stage-\((path as NSString).lastPathComponent).html")
+        do {
+            if !FileManager.default.fileExists(atPath: stagedScript.path) {
+                try FileManager.default.copyItem(at: script, to: stagedScript)
+            }
+            // The model's path relative to the page — both live in base.
+            let html = """
+            <!doctype html><html><head><meta charset="utf-8">
+            <script type="module" src="origami-model-viewer.js"></script>
+            <style>
+            html, body { margin: 0; height: 100%; background: transparent; }
+            model-viewer { width: 100%; height: 100%; --poster-color: transparent; }
+            </style></head><body>
+            <model-viewer src="\(path)" camera-controls interaction-prompt="none"></model-viewer>
+            </body></html>
+            """
+            try Data(html.utf8).write(to: page, options: .atomic)
+        } catch {
+            return .failure(.couldNotWrite(error.localizedDescription))
+        }
+        return .success(page)
+    }
+}
+
+/// The stage's web view: local files only, no navigation away.
+private struct ModelStageWebView: NSViewRepresentable {
+    let page: URL
+    let base: URL
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.setValue(false, forKey: "drawsBackground")
+        view.loadFileURL(page, allowingReadAccessTo: base)
+        return view
+    }
+
+    func updateNSView(_ view: WKWebView, context: Context) {}
 }
