@@ -159,6 +159,32 @@ final class VisionModel {
     /// reader closes — the book is in the hand, not on the table.
     var openDocIDs: Set<String> = []
 
+    /// Pinned books stand first on the Map — the Mac's Pin, here. Kept
+    /// in this device's own defaults, under the Mac's key names.
+    private(set) var pinnedIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "epubTopOfPile") ?? [])
+
+    /// Set Aside books collapse to a quiet title-row beneath the others.
+    private(set) var setAsideIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "epubSetAside") ?? [])
+
+    func togglePinned(_ id: String) {
+        if pinnedIDs.remove(id) == nil { pinnedIDs.insert(id) }
+        UserDefaults.standard.set(pinnedIDs.sorted(), forKey: "epubTopOfPile")
+    }
+
+    func toggleSetAside(_ id: String) {
+        if setAsideIDs.remove(id) == nil { setAsideIDs.insert(id) }
+        UserDefaults.standard.set(setAsideIDs.sorted(), forKey: "epubSetAside")
+    }
+
+    /// The pinned books simply first, order otherwise kept — the Mac's
+    /// pinnedFirst.
+    func pinnedFirstRecords(_ records: [EPUBRecord]) -> [EPUBRecord] {
+        records.filter { pinnedIDs.contains($0.id) }
+            + records.filter { !pinnedIDs.contains($0.id) }
+    }
+
 
     /// Where books unpack: one folder per identity, reused forever.
     static var epubsRoot: URL {

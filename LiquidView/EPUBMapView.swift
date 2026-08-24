@@ -26,12 +26,18 @@ struct EPUBMapItem: ItemProtocol {
     var citedIDs: [String] = []
     /// Selected articles draw their citation lines.
     var isSelected = false
+    /// Pinned articles stand first and wear the pin on their face.
+    var isPinned = false
+    /// Set Aside articles collapse to a half-faded title in the quiet
+    /// row beneath the others.
+    var isAside = false
 
     var isAttachmentsEnabled: Bool { false }
 
     func isVisuallyEqual(to other: EPUBMapItem) -> Bool {
         id == other.id && title == other.title && author == other.author
-            && kind == other.kind
+            && kind == other.kind && isPinned == other.isPinned
+            && isAside == other.isAside
     }
 }
 
@@ -101,10 +107,14 @@ struct EPUBMapView: View {
             citedIDsByArticle[record.id] = cited
         }
 
-        // The journal's articles, front and centre.
-        let columns = max(1, Int(Double(records.count * 7).squareRoot() / 2))
-        var result: [EPUBMapItem] = records.enumerated().compactMap { index, record in
-            guard !model.openDocIDs.contains(record.id) else { return nil }
+        // The journal's articles, front and centre: pinned first, then
+        // the rest; the Set Aside collapse into a quiet row beneath.
+        let shown = records.filter { !model.openDocIDs.contains($0.id) }
+        let standing = model.pinnedFirstRecords(shown.filter { !model.setAsideIDs.contains($0.id) })
+        let asides = shown.filter { model.setAsideIDs.contains($0.id) }
+
+        let columns = max(1, Int(Double(standing.count * 7).squareRoot() / 2))
+        var result: [EPUBMapItem] = standing.enumerated().map { index, record in
             let column = index % columns
             let row = index / columns
             let seed = SIMD3<Float>(
@@ -117,8 +127,32 @@ struct EPUBMapView: View {
                 author: record.author,
                 kind: .article,
                 position: placed[record.id] ?? seed,
-                citedIDs: citedIDsByArticle[record.id] ?? [])
+                citedIDs: citedIDsByArticle[record.id] ?? [],
+                isPinned: model.pinnedIDs.contains(record.id))
         }
+
+        // The Set Aside row: title-only slips, half faded, in their own
+        // row under the grid — the Mac's journal list, spatialized. A
+        // set-aside card always sits in the row (its wandering position
+        // is kept for its return).
+        let gridRows = standing.isEmpty ? 0 : (standing.count - 1) / columns + 1
+        let asideTop = 1.55 - Float(gridRows) * 0.18 - 0.10
+        let asideColumns = max(1, min(asides.count, 5))
+        result.append(contentsOf: asides.enumerated().map { index, record in
+            let column = index % asideColumns
+            let row = index / asideColumns
+            return EPUBMapItem(
+                id: record.id,
+                title: record.title,
+                author: record.author,
+                kind: .article,
+                position: SIMD3<Float>(
+                    (Float(column) - Float(asideColumns - 1) / 2) * 0.24,
+                    asideTop - Float(row) * 0.08,
+                    -1.2),
+                citedIDs: citedIDsByArticle[record.id] ?? [],
+                isAside: true)
+        })
 
         // The cited works, a level behind — deeper into the room, a
         // wider and taller wall for the bigger population.
@@ -159,14 +193,19 @@ struct EPUBMapView: View {
     }
 
     /// The arm menu, Author's component: Settings and Documents ride
-    /// the right forearm, exactly as in Author's Map.
+    /// the right forearm, exactly as in Author's Map; Pin and Set Aside
+    /// ride the left, acting on the selected card.
     @State private var armMenu = ArmMenu(chips: [
         ArmMenu.Chip(id: EPUBMapView.settingsChipID, title: "Settings", side: .right),
         ArmMenu.Chip(id: EPUBMapView.documentsChipID, title: "Documents", side: .right),
+        ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.asideChipID, title: "Set Aside", side: .left),
     ])
 
     private static let settingsChipID = "map.arm.settings"
     private static let documentsChipID = "map.arm.documents"
+    private static let pinChipID = "map.arm.pin"
+    private static let asideChipID = "map.arm.aside"
 
     var body: some View {
         engine
@@ -203,7 +242,8 @@ struct EPUBMapView: View {
             }
         )
         view = view.nodeMaxWidth { item in
-            item.kind == .cited ? 150.0 : 200.0
+            if item.isAside { return 170.0 }
+            return item.kind == .cited ? 150.0 : 200.0
         }
         view = view.onEndMoveNode { _, _, newItems in
             keepPlacements(of: Array(newItems))
@@ -239,30 +279,49 @@ struct EPUBMapView: View {
 
     /// The card's face — rasterized by the engine onto the node plane;
     /// the box beneath provides the paper. Cited works read a step
-    /// quieter than the journal's own.
-    private func cardFace(for item: EPUBMapItem) -> some View {
-        VStack(spacing: 5) {
+    /// quieter than the journal's own; a Set Aside card collapses to
+    /// its title alone; a pinned card wears the pin.
+    @ViewBuilder private func cardFace(for item: EPUBMapItem) -> some View {
+        if item.isAside {
             Text(item.title)
-                .font(AppFonts.body(item.kind == .cited ? 12 : 15, weight: .semibold))
-                .lineLimit(3)
-            Text(item.author)
-                .font(.system(size: item.kind == .cited ? 9 : 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .font(AppFonts.body(11, weight: .semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+        } else {
+            VStack(spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    if item.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color(red: 0.72, green: 0.42, blue: 0.06))
+                    }
+                    Text(item.title)
+                        .font(AppFonts.body(item.kind == .cited ? 12 : 15, weight: .semibold))
+                        .lineLimit(3)
+                }
+                Text(item.author)
+                    .font(.system(size: item.kind == .cited ? 9 : 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .multilineTextAlignment(.center)
+            .padding(item.kind == .cited ? 8 : 10)
         }
-        .multilineTextAlignment(.center)
-        .padding(item.kind == .cited ? 8 : 10)
     }
 
     private func cardEntity(for item: EPUBMapItem, texturedPlane: ModelEntity)
         -> (modelEntity: ModelEntity?, collisionShape: ShapeResource) {
-        ModelEntity.box(
+        // Set Aside slips stand at half presence.
+        let opacity: Float = item.isAside ? 0.5
+            : (item.kind == .cited ? 0.92 : 1.0)
+        return ModelEntity.box(
             with: texturedPlane,
             backPlane: nil,
             color: item.kind == .cited ? UIColor(white: 0.82, alpha: 1) : .white,
             depth: 0.01,
-            margins: 0.006,
-            opacity: item.kind == .cited ? 0.92 : 1.0,
+            margins: item.isAside ? 0.004 : 0.006,
+            opacity: opacity,
             cornerRadius: 0.01,
             useBorder: false,
             borderColor: .clear,
@@ -312,6 +371,24 @@ struct EPUBMapView: View {
             return true
         case Self.documentsChipID:
             openWindow(id: "library")
+            return true
+        case Self.pinChipID:
+            // Pin the selected card first in the grid (or unpin it).
+            // Its wandering position clears so the new order shows.
+            if let selected = items.first(where: { $0.isSelected && $0.kind == .article }) {
+                model.togglePinned(selected.id)
+                placed[selected.id] = nil
+                reload()
+            }
+            return true
+        case Self.asideChipID:
+            // Collapse the selected card into the Set Aside row — or
+            // bring it back to the grid.
+            if let selected = items.first(where: { $0.isSelected && $0.kind == .article }) {
+                model.toggleSetAside(selected.id)
+                placed[selected.id] = nil
+                reload()
+            }
             return true
         default:
             return false
