@@ -41,11 +41,12 @@ struct OrigamiVisionApp: App {
         .defaultSize(width: 460, height: 520)
 
         // The one immersive space (mixed, so windows and volumes share
-        // the room), ONE RealityView: the arm menus on the right wrist
-        // and the open journal's articles as cards filling the room —
-        // one scene, no ambiguity about what renders where.
+        // the room): the Map — Author's engine with EPUBs as nodes —
+        // which hosts the arm menus itself, Author's way. (The arm-only
+        // OrigamiSpaceView remains below, one line to swap back if the
+        // Map misbehaves on device.)
         ImmersiveSpace(id: "arms") {
-            OrigamiSpaceView()
+            EPUBMapView()
                 .environment(model)
         }
         .immersionStyle(selection: .constant(.mixed), in: .mixed)
@@ -147,6 +148,16 @@ final class VisionModel {
     /// The remembered books, newest first — the Mac's manifest, kept here
     /// in this device's own defaults.
     private(set) var epubRecords: [EPUBRecord] = VisionModel.loadEPUBRecords()
+
+    /// The journal whose articles stand on the Map right now — set by
+    /// the opening panel, nil puts the Map back to rest. One journal at
+    /// a time; opening another replaces the nodes.
+    var openJournalVenue: String?
+
+    /// The documents open in reader windows right now. A card leaves
+    /// the Map while its article is being read, and returns when the
+    /// reader closes — the book is in the hand, not on the table.
+    var openDocIDs: Set<String> = []
 
 
     /// Where books unpack: one folder per identity, reused forever.
@@ -473,13 +484,10 @@ struct VisionOpeningView: View {
                     Button("Choose Folder…") { choosingFolder = true }
                 }
             } else {
-                Group {
-                    switch shelf {
-                    case .articles: articlesList
-                    case .journals: journalsList
-                    }
-                }
-                .safeAreaInset(edge: .top) {
+                // The tabs stand as a plain header ABOVE the content —
+                // a safe-area inset here slid under the Journals tab's
+                // own NavigationStack, the list overlapping the tabs.
+                VStack(spacing: 0) {
                     Picker("Showing", selection: $shelf) {
                         Text("Articles").tag(Shelf.articles)
                         Text("Journals").tag(Shelf.journals)
@@ -488,6 +496,10 @@ struct VisionOpeningView: View {
                     .labelsHidden()
                     .padding(.horizontal)
                     .padding(.vertical, 6)
+                    switch shelf {
+                    case .articles: articlesList
+                    case .journals: journalsList
+                    }
                 }
             }
         }
@@ -526,36 +538,24 @@ struct VisionOpeningView: View {
                 }
             }
         } else {
-            NavigationStack {
-                List(venues, id: \.self) { venue in
-                    NavigationLink(value: venue) {
-                        HStack {
-                            Label(venue, systemImage: "newspaper")
-                                .lineLimit(2)
-                            Spacer()
-                            Text("\(model.records(inVenue: venue).count)")
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
+            List(venues, id: \.self) { venue in
+                Button {
+                    // The journal's articles take the Map; the panel
+                    // steps aside — the right arm's Documents chip
+                    // brings it back.
+                    model.openJournalVenue = venue
+                    dismissWindow(id: "library")
+                } label: {
+                    HStack {
+                        Label(venue, systemImage: "newspaper")
+                            .lineLimit(2)
+                        Spacer()
+                        Text("\(model.records(inVenue: venue).count)")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
                     }
                 }
-                .navigationDestination(for: String.self) { venue in
-                    List(model.records(inVenue: venue)) { record in
-                        Button {
-                            openWindow(id: "reader", value: record.id)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(record.title)
-                                    .lineLimit(2)
-                                Text(record.author)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                    .navigationTitle(venue)
-                }
+                .help("Open this journal's articles on the Map")
             }
         }
     }
@@ -757,6 +757,16 @@ struct VisionReaderView: View {
     let docID: String
     /// The speaker whose statements are being browsed, sheet-presented.
     @State private var browsingSpeaker: SpeakerSelection?
+    /// The reading controls, the Mac's foot bar brought over: the mode
+    /// words (Scroll, Outline), the contents, and the type size.
+    @State private var mode: Mode = .scroll
+    /// Outline: the sections clicked open, by heading id.
+    @State private var expanded: Set<String> = []
+    @State private var showsContents = false
+    /// One point either way for every reading, remembered — the Aa menu.
+    @AppStorage("visionReaderFontDelta") private var fontDelta = 0.0
+
+    private enum Mode { case scroll, outline }
 
     private struct SpeakerSelection: Identifiable {
         let name: String
@@ -765,61 +775,216 @@ struct VisionReaderView: View {
 
     var body: some View {
         if let doc = model.index.byID[docID]?.doc {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(doc.title)
-                        .font(AppFonts.heading(32))
-                        .padding(.bottom, 4)
-                    Text("\(doc.displayAuthor) · \(doc.listedDateText)")
-                        .foregroundStyle(.secondary)
-                        .padding(.bottom, 20)
-                    let appendixIDs = doc.visualMetaParagraphIDs
-                    ForEach((doc.body ?? []).filter { !appendixIDs.contains($0.id) }) { paragraph in
-                        VStack(alignment: .leading, spacing: 2) {
-                            // The attribution is an affordance here as on
-                            // the Mac: the name opens everything this
-                            // person has said across the library.
-                            if let speaker = paragraph.speaker {
-                                Button {
-                                    browsingSpeaker = SpeakerSelection(name: speaker)
-                                } label: {
-                                    Text(speaker)
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .kerning(0.8)
-                                        .textCase(.uppercase)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .buttonStyle(.plain)
-                                .help("Everything \(speaker) has said in this library")
-                            }
-                            Text(paragraph.renderedText)
-                                .font(font(for: paragraph))
-                                .textSelection(.enabled)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(doc.title)
+                            .font(AppFonts.heading(32 + fontDelta))
+                            .padding(.bottom, 4)
+                        Text("\(doc.displayAuthor) · \(doc.listedDateText)")
+                            .foregroundStyle(.secondary)
+                            .padding(.bottom, 20)
+                        ForEach(shownParagraphs(of: doc)) { paragraph in
+                            paragraphView(paragraph)
                         }
-                        .padding(.bottom, 12)
+                        referencesSection(doc)
                     }
+                    .frame(maxWidth: 640, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                    .padding(28)
                 }
-                .frame(maxWidth: 640, alignment: .leading)
-                .frame(maxWidth: .infinity)
-                .padding(28)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    footBar(doc, proxy: proxy)
+                }
             }
             .sheet(item: $browsingSpeaker) { selection in
                 VisionSpeakerStatementsView(name: selection.name)
             }
+            // While this article is open, its card leaves the Map; the
+            // card returns the moment the window closes.
+            .onAppear { model.openDocIDs.insert(docID) }
+            .onDisappear { model.openDocIDs.remove(docID) }
         } else {
             ContentUnavailableView("Document Not Available", systemImage: "doc",
                                    description: Text("This document is not in the library folder."))
         }
     }
 
+    // MARK: The flow
+
+    /// The readable body: everything in Scroll; in Outline, the headings
+    /// with only the opened sections' paragraphs beneath them.
+    private func shownParagraphs(of doc: LiquidDoc) -> [LiquidDoc.Paragraph] {
+        let appendixIDs = doc.visualMetaParagraphIDs
+        let readable = (doc.body ?? []).filter { !appendixIDs.contains($0.id) }
+        guard mode == .outline else { return readable }
+        var shown: [LiquidDoc.Paragraph] = []
+        var currentSection: String?
+        for paragraph in readable {
+            if paragraph.effectiveHeading != nil {
+                currentSection = paragraph.id
+                shown.append(paragraph)
+            } else if let section = currentSection, expanded.contains(section) {
+                shown.append(paragraph)
+            } else if currentSection == nil {
+                // The preamble, before any heading, always reads.
+                shown.append(paragraph)
+            }
+        }
+        return shown
+    }
+
+    @ViewBuilder private func paragraphView(_ paragraph: LiquidDoc.Paragraph) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            // The attribution is an affordance here as on the Mac: the
+            // name opens everything this person has said.
+            if let speaker = paragraph.speaker {
+                Button {
+                    browsingSpeaker = SpeakerSelection(name: speaker)
+                } label: {
+                    Text(speaker)
+                        .font(.system(size: 12, weight: .semibold))
+                        .kerning(0.8)
+                        .textCase(.uppercase)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Everything \(speaker) has said in this library")
+            }
+            if mode == .outline, paragraph.effectiveHeading != nil {
+                // A heading in the outline folds and unfolds its section.
+                Button {
+                    if expanded.contains(paragraph.id) {
+                        expanded.remove(paragraph.id)
+                    } else {
+                        expanded.insert(paragraph.id)
+                    }
+                } label: {
+                    Text(paragraph.renderedText)
+                        .font(font(for: paragraph))
+                        .multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.plain)
+                .help(expanded.contains(paragraph.id)
+                      ? "Fold this section" : "Open this section")
+            } else {
+                Text(paragraph.renderedText)
+                    .font(font(for: paragraph))
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.bottom, 12)
+        .id(paragraph.id)   // the contents land here
+    }
+
+    /// The reference list closing the reading, as on the Mac.
+    @ViewBuilder private func referencesSection(_ doc: LiquidDoc) -> some View {
+        if !doc.references.isEmpty, mode == .scroll {
+            Divider()
+                .padding(.vertical, 12)
+            Text("References")
+                .font(AppFonts.heading(23 + fontDelta))
+                .padding(.bottom, 8)
+            ForEach(Array(doc.references.enumerated()), id: \.element.id) { index, reference in
+                Text(referenceLine(reference, number: index + 1))
+                    .font(AppFonts.body(max(14 + fontDelta, 8)))
+                    .textSelection(.enabled)
+                    .padding(.bottom, 6)
+            }
+        }
+    }
+
+    private func referenceLine(_ reference: LiquidDoc.Reference, number: Int) -> String {
+        let fields = BibTeXParser.first(reference.bibtex)?.fields ?? [:]
+        var parts: [String] = []
+        if let author = fields["author"], !author.isEmpty { parts.append(author) }
+        if let year = fields["year"], !year.isEmpty { parts.append("(\(year))") }
+        if let title = fields["title"], !title.isEmpty { parts.append(title) }
+        if parts.isEmpty { parts.append(reference.citedAs ?? reference.bibtex) }
+        return "[\(reference.number ?? number)] " + parts.joined(separator: ". ")
+    }
+
+    // MARK: The foot bar — the Mac's reading controls
+
+    private func footBar(_ doc: LiquidDoc, proxy: ScrollViewProxy) -> some View {
+        let headings = (doc.body ?? []).filter { $0.effectiveHeading != nil }
+        return HStack(spacing: 14) {
+            Spacer()
+            modeWord("Scroll", chosen: mode == .scroll) { mode = .scroll }
+            separator
+            modeWord("Outline", chosen: mode == .outline) {
+                mode = .outline
+                expanded = []
+            }
+            separator
+            Button {
+                showsContents = true
+            } label: {
+                Image(systemName: "list.bullet")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(headings.isEmpty)
+            .help("Contents — every section, one click away")
+            .popover(isPresented: $showsContents) {
+                List(headings) { heading in
+                    Button {
+                        showsContents = false
+                        withAnimation { proxy.scrollTo(heading.id, anchor: .top) }
+                    } label: {
+                        Text(heading.text)
+                            .padding(.leading, CGFloat(max((heading.effectiveHeading ?? 1) - 1, 0)) * 14)
+                    }
+                }
+                .frame(minWidth: 320, minHeight: 240)
+            }
+            Menu {
+                Button("Bigger") { fontDelta = min(fontDelta + 1, 12) }
+                Button("Smaller") { fontDelta = max(fontDelta - 1, -4) }
+                Divider()
+                Button("Reset Size") { fontDelta = 0 }
+            } label: {
+                Text("Aa")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .menuIndicator(.hidden)
+            .buttonStyle(.plain)
+            .fixedSize()
+            .help("The reading's type size")
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .glassBackgroundEffect()
+        .padding(.horizontal, 24)
+        .padding(.bottom, 8)
+    }
+
+    private var separator: some View {
+        Rectangle()
+            .fill(.quaternary)
+            .frame(width: 1, height: 14)
+    }
+
+    private func modeWord(_ word: String, chosen: Bool, act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            Text(word)
+                .font(.callout.weight(chosen ? .semibold : .regular))
+                .foregroundStyle(chosen ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func font(for paragraph: LiquidDoc.Paragraph) -> Font {
-        let size: CGFloat = switch paragraph.effectiveHeading {
+        let base: CGFloat = switch paragraph.effectiveHeading {
         case 1: 28
         case 2: 23
         case 3: 19
         default: 17
         }
-        return AppFonts.body(size,
+        return AppFonts.body(max(base + fontDelta, 8),
                              weight: paragraph.effectiveHeading == nil ? .regular : .bold)
     }
 }
