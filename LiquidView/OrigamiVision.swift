@@ -171,10 +171,42 @@ final class VisionModel {
     func togglePinned(_ id: String) {
         if pinnedIDs.remove(id) == nil { pinnedIDs.insert(id) }
         UserDefaults.standard.set(pinnedIDs.sorted(), forKey: "epubTopOfPile")
+        publishStanding()
     }
 
     func toggleSetAside(_ id: String) {
         if setAsideIDs.remove(id) == nil { setAsideIDs.insert(id) }
+        UserDefaults.standard.set(setAsideIDs.sorted(), forKey: "epubSetAside")
+        publishStanding()
+    }
+
+    /// When this device last wrote the shared standing file — an older
+    /// file read back never clobbers a newer local change.
+    @ObservationIgnored private var standingWrittenAt: Date = .distantPast
+
+    /// Pin and Set Aside travel through the community folder, so the
+    /// Mac and this device agree on the pile.
+    private func publishStanding() {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        standingWrittenAt = EPUBStanding.write(pinned: pinnedIDs,
+                                               setAside: setAsideIDs,
+                                               to: folder)
+    }
+
+    /// Adopts the shared standing when another device wrote it more
+    /// recently than this one did.
+    func adoptStanding() {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        guard let state = EPUBStanding.read(from: folder),
+              state.modified > standingWrittenAt else { return }
+        standingWrittenAt = state.modified
+        pinnedIDs = Set(state.pinned)
+        setAsideIDs = Set(state.setAside)
+        UserDefaults.standard.set(pinnedIDs.sorted(), forKey: "epubTopOfPile")
         UserDefaults.standard.set(setAsideIDs.sorted(), forKey: "epubSetAside")
     }
 
@@ -260,6 +292,7 @@ final class VisionModel {
             if importEPUB(at: url) { changed = true }
         }
         if changed { rebuildEPUBIndex() }
+        adoptStanding()
         if placeholdersRemain, scanRetries < 5 {
             scanRetries += 1
             Task { @MainActor in

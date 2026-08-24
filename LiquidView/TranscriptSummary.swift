@@ -166,18 +166,7 @@ enum TranscriptSummarizer {
             if case .guardrailViolation = error { return true }
             if case .refusal = error { return true }
         }
-        // The newer surface only exists from macOS 27; on 26 the
-        // GenerationError check above is the whole story.
-        if #available(macOS 27.0, *), languageModelErrorIsRefusal(error) { return true }
-        return false
-    }
-
-    @available(macOS 27.0, *)
-    private static func languageModelErrorIsRefusal(_ error: Error) -> Bool {
-        guard let error = error as? LanguageModelError else { return false }
-        if case .guardrailViolation = error { return true }
-        if case .refusal = error { return true }
-        return false
+        return isNewerSurface(error, oneOf: ["guardrailViolation", "refusal"])
     }
 
     /// Whether the failure was the context window overflowing —
@@ -185,15 +174,20 @@ enum TranscriptSummarizer {
     private static func isContextOverflow(_ error: Error) -> Bool {
         if let error = error as? LanguageModelSession.GenerationError,
            case .exceededContextWindowSize = error { return true }
-        if #available(macOS 27.0, *), languageModelErrorIsContextOverflow(error) { return true }
-        return false
+        return isNewerSurface(error, oneOf: ["contextSizeExceeded"])
     }
 
-    @available(macOS 27.0, *)
-    private static func languageModelErrorIsContextOverflow(_ error: Error) -> Bool {
-        guard let error = error as? LanguageModelError,
-              case .contextSizeExceeded = error else { return false }
-        return true
+    /// The newer error surface (`LanguageModelError`, macOS 27) matched
+    /// by NAME, never by type: the type is absent from the macOS 26
+    /// SDK, so naming it — even behind `@available`, which gates
+    /// runtime, not compilation — breaks the build for anyone on the
+    /// older SDK. Reflection reads the case out of whatever the newer
+    /// runtime threw; on macOS 26 nothing matches and the
+    /// GenerationError checks above are the whole story.
+    private static func isNewerSurface(_ error: Error, oneOf cases: [String]) -> Bool {
+        let described = String(reflecting: error)
+        guard described.contains("LanguageModelError") else { return false }
+        return cases.contains { described.contains($0) }
     }
 
     /// One statement as the model sees it: its paragraph id in square

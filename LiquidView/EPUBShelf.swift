@@ -38,3 +38,37 @@ struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
         return name.isEmpty ? nil : name
     }
 }
+
+/// The reader's standing over the shelf — which books are pinned and
+/// which set aside — as one small file in the community folder, so the
+/// Mac and the Vision Pro agree. Whole-file, last-writer-wins: each
+/// device writes on every change and adopts on every scan, skipping
+/// files older than its own last write.
+nonisolated enum EPUBStanding {
+
+    struct State: Codable {
+        var pinned: [String]
+        var setAside: [String]
+        var modified: Date
+    }
+
+    private static let fileName = "origami-standing.json"
+
+    static func read(from folder: URL) -> State? {
+        let url = folder.appendingPathComponent(fileName)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(State.self, from: data)
+    }
+
+    @discardableResult
+    static func write(pinned: Set<String>, setAside: Set<String>, to folder: URL) -> Date {
+        let state = State(pinned: pinned.sorted(), setAside: setAside.sorted(),
+                          modified: .now)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(state) {
+            try? data.write(to: folder.appendingPathComponent(fileName), options: .atomic)
+        }
+        return state.modified
+    }
+}

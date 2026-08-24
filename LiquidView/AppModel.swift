@@ -1764,16 +1764,49 @@ final class AppModel {
     func toggleTopOfPile(_ record: EPUBRecord) {
         if !epubTopOfPile.insert(record.id).inserted { epubTopOfPile.remove(record.id) }
         UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
+        publishStanding()
     }
 
     func setAside(_ record: EPUBRecord) {
         if openEPUB?.id == record.folder { openEPUB = nil }
         epubSetAsideIDs.insert(record.id)
         UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
+        publishStanding()
     }
 
     func bringBack(_ record: EPUBRecord) {
         epubSetAsideIDs.remove(record.id)
+        UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
+        publishStanding()
+    }
+
+    /// When this device last wrote the shared standing file — an older
+    /// file read back never clobbers a newer local change.
+    @ObservationIgnored private var standingWrittenAt: Date = .distantPast
+
+    /// Writes the pinned/set-aside standing into the community folder,
+    /// so the Vision Pro (and any other Mac) adopts it.
+    private func publishStanding() {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        standingWrittenAt = EPUBStanding.write(pinned: epubTopOfPile,
+                                               setAside: epubSetAsideIDs,
+                                               to: folder)
+    }
+
+    /// Adopts the shared standing when another device wrote it more
+    /// recently than this one did.
+    func adoptStanding() {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        guard let state = EPUBStanding.read(from: folder),
+              state.modified > standingWrittenAt else { return }
+        standingWrittenAt = state.modified
+        epubTopOfPile = Set(state.pinned)
+        epubSetAsideIDs = Set(state.setAside)
+        UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
         UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
     }
 
@@ -2089,6 +2122,7 @@ final class AppModel {
             importEPUB(at: url)
         }
         mirrorShelfToCommunityFolder()
+        adoptStanding()
     }
 
     /// Publishes every shelf book the community folder lacks into it, as
