@@ -14,6 +14,15 @@ The two documents that define the project live in `LiquidView/`:
 
 Read those first; this file covers the things that trip people up.
 
+## Toolchain
+
+Build with **Xcode 26.5 or newer** (the version the project is verified
+against). The deployment target is macOS 26.0 — the app runs there,
+with availability gates providing fallbacks — but the source names APIs
+newer than the earliest 26.x SDKs (Image Playground's
+`ImagePlaygroundOptions` and its `creationStrategy`), so older Xcodes
+fail to compile with "cannot find in scope" errors.
+
 ## Targets and schemes (the first confusion)
 
 One Xcode project, three app targets, all sharing the `LiquidView`

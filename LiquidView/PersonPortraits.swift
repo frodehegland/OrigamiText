@@ -285,8 +285,9 @@ final class PersonPortraitStore {
         let creator = try await ImageCreator()
         let concepts: [ImagePlaygroundConcept] = [.image(photo), .text(concept)]
         // Edit-existing keeps the result closest to the person, but the
-        // option only exists from macOS 27; macOS 26 generates from the
-        // photo without it and simply strays a little further.
+        // strategy option only exists from macOS 27 (the options type
+        // itself arrived at 26.4); macOS 26 generates from the photo
+        // without it and simply strays a little further.
         if #available(macOS 27.0, *) {
             if let result = try await stylizeEditExisting(creator: creator,
                                                           concepts: concepts,
