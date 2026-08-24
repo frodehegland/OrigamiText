@@ -16,12 +16,15 @@ Read those first; this file covers the things that trip people up.
 
 ## Toolchain
 
-Build with **Xcode 26.5 or newer** (the version the project is verified
-against). The deployment target is macOS 26.0 — the app runs there,
-with availability gates providing fallbacks — but the source names APIs
-newer than the earliest 26.x SDKs (Image Playground's
-`ImagePlaygroundOptions` and its `creationStrategy`), so older Xcodes
-fail to compile with "cannot find in scope" errors.
+Any **Xcode 26** should build the project; 26.5 is the version it is
+verified against (if an older Xcode fails, report it — that is a bug
+here, not on your machine). The deployment target is macOS 26.0 and the
+app runs there. House rule that keeps this true: never *name* an API
+newer than the macOS 26.0 SDK — `@available` only gates running code,
+not compiling it, so a newer symbol still breaks older SDKs at compile
+time. Match newer types by reflection instead (see
+`TranscriptSummary.swift`) or skip the newer path (see the note in
+`PersonPortraits.swift`).
 
 ## Targets and schemes (the first confusion)
 

@@ -284,39 +284,17 @@ final class PersonPortraitStore {
                                 concept: String) async throws -> CGImage {
         let creator = try await ImageCreator()
         let concepts: [ImagePlaygroundConcept] = [.image(photo), .text(concept)]
-        // Edit-existing keeps the result closest to the person, but the
-        // strategy option only exists from macOS 27 (the options type
-        // itself arrived at 26.4); macOS 26 generates from the photo
-        // without it and simply strays a little further.
-        if #available(macOS 27.0, *) {
-            if let result = try await stylizeEditExisting(creator: creator,
-                                                          concepts: concepts,
-                                                          style: style) {
-                return result
-            }
-        } else {
-            for try await created in creator.images(for: concepts,
-                                                    style: style,
-                                                    limit: 1) {
-                return created.cgImage
-            }
-        }
-        throw ImageCreator.Error.creationFailed
-    }
-
-    @available(macOS 27.0, *)
-    private static func stylizeEditExisting(creator: ImageCreator,
-                                            concepts: [ImagePlaygroundConcept],
-                                            style: ImagePlaygroundStyle) async throws -> CGImage? {
-        var options = ImagePlaygroundOptions()
-        options.creationStrategy = .editExisting
+        // The macOS 27 edit-existing strategy (which keeps the result
+        // closest to the person) is deliberately not used: naming
+        // ImagePlaygroundOptions breaks the compile for contributors on
+        // early macOS 26 SDKs. Reinstate it when the team's Xcode floor
+        // rises past 26.4.
         for try await created in creator.images(for: concepts,
                                                 style: style,
-                                                options: options,
                                                 limit: 1) {
             return created.cgImage
         }
-        return nil
+        throw ImageCreator.Error.creationFailed
     }
 
     // MARK: - Bot portraits
