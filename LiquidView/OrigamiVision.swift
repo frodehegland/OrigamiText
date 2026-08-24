@@ -293,6 +293,10 @@ final class VisionModel {
         }
         if changed { rebuildEPUBIndex() }
         adoptStanding()
+        // The citation graph the Mac researched — what the cited works
+        // themselves cite — reads in from the same folder; this device
+        // never crawls.
+        CitationGraph.adoptMirror(from: folder)
         if placeholdersRemain, scanRetries < 5 {
             scanRetries += 1
             Task { @MainActor in

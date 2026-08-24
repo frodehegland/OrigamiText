@@ -67,9 +67,39 @@ struct EPUBMapView: View {
         var origin = SIMD3<Float>(0.0, 1.95, -1.6)
         var columnSpacing: Float = 0.24
         var rowSpacing: Float = 0.14
-        /// How far behind the newest the oldest citation stands.
+        /// How far behind the newest the oldest citation stands. Pinch
+        /// out on the Map to stretch it, pinch in to gather it back.
         var depth: Float = 1.0
         var zMapping: ZMapping = .date
+
+        /// What the pinch steps through: one pinch, one step of the
+        /// factor, held inside walking range.
+        static let depthRange: ClosedRange<Float> = 0.4...6.0
+        static let depthStep: Float = 1.4
+        /// At this depth (the default) the wall stands at full height;
+        /// past it the rows squeeze toward walking height.
+        static let referenceDepth: Float = 1.0
+        /// Where the squeezed rows gather — the band the reader walks
+        /// through when the spread becomes a corridor.
+        static let walkHeight: Float = 1.5
+
+        /// How much of the wall's height survives at this depth: all
+        /// of it while the wall is near, squeezing as the spread
+        /// stretches — the bottom rows lift, the top rows lower, and Z
+        /// keeps them apart where Y no longer does.
+        var heightSqueeze: Float {
+            max(0.22, min(1.0, Self.referenceDepth / depth))
+        }
+
+        /// The y for a row: the full wall when near, gathered toward
+        /// walking height as the spread deepens into the room.
+        func y(row: Int, rowCount: Int) -> Float {
+            let mid = Float(max(rowCount, 1) - 1) / 2
+            let fullCenter = origin.y - mid * rowSpacing
+            let squeeze = heightSqueeze
+            let center = fullCenter + (Self.walkHeight - fullCenter) * (1 - squeeze)
+            return center + (mid - Float(row)) * rowSpacing * squeeze
+        }
 
         /// The z for a work, given where its date falls in the span —
         /// 0 is the newest (nearest), 1 the oldest (deepest). Works
@@ -84,9 +114,13 @@ struct EPUBMapView: View {
         }
     }
 
-    /// The cited wall's configuration — a constant until the XY and Z
-    /// controls arrive.
+    /// The cited wall's configuration. The Z distance is the reader's:
+    /// pinch out on the Map to stretch the time-spread deeper into the
+    /// room, pinch in to gather it back to a wall.
     @State private var citedSpace = CitedSpace()
+
+    /// The chosen depth, kept across sessions.
+    @AppStorage("citedSpaceDepth") private var citedDepthSetting = 1.0
 
     /// The open journal's records as nodes — arranged positions where
     /// the reader has made them, the grid for the rest — and, a level
@@ -205,6 +239,7 @@ struct EPUBMapView: View {
         let oldest = years.min()
         let span = Float(max((newest ?? 0) - (oldest ?? 0), 1))
         let citedColumns = max(1, Int(Double(citedWorks.count * 7).squareRoot() / 2))
+        let citedRows = citedWorks.isEmpty ? 0 : (citedWorks.count - 1) / citedColumns + 1
         result.append(contentsOf: citedWorks.enumerated().map { index, work in
             let column = index % citedColumns
             let row = index / citedColumns
@@ -215,7 +250,7 @@ struct EPUBMapView: View {
             let seed = SIMD3<Float>(
                 citedSpace.origin.x
                     + (Float(column) - Float(citedColumns - 1) / 2) * citedSpace.columnSpacing,
-                citedSpace.origin.y - Float(row) * citedSpace.rowSpacing,
+                citedSpace.y(row: row, rowCount: citedRows),
                 citedSpace.z(agePlace: agePlace))
             return EPUBMapItem(
                 id: work.id,
@@ -281,8 +316,27 @@ struct EPUBMapView: View {
                 reload()
             }
             .onAppear {
+                citedSpace.depth = min(
+                    max(Float(citedDepthSetting), CitedSpace.depthRange.lowerBound),
+                    CitedSpace.depthRange.upperBound)
                 reload()
             }
+    }
+
+    /// One pinch, one step: deeper stretches the spread into the room
+    /// (the rows squeezing toward walking height so the reader can walk
+    /// the timeline); shallower gathers it back toward the wall.
+    private func stepCitedDepth(deeper: Bool) {
+        let next = citedSpace.depth
+            * (deeper ? CitedSpace.depthStep : 1 / CitedSpace.depthStep)
+        citedSpace.depth = min(
+            max(next, CitedSpace.depthRange.lowerBound),
+            CitedSpace.depthRange.upperBound)
+        citedDepthSetting = Double(citedSpace.depth)
+        // The pinch re-lays the whole spread — wandering cited cards
+        // rejoin the mapping. The reader's article placements hold.
+        placed = placed.filter { !$0.key.hasPrefix("cited:") }
+        reload()
     }
 
     private typealias Engine = NodeImmersiveView<[EPUBMapItem], AnyView, AnyView>
@@ -332,6 +386,15 @@ struct EPUBMapView: View {
         }
         view = view.onTapNode { tapCount, item in
             handleTap(count: tapCount, on: item)
+        }
+        // The Z control: a two-hand pinch anywhere on the Map. Out
+        // stretches the time-spread deeper into the room; in gathers
+        // it back. One pinch, one step.
+        view = view.onPinchOut {
+            stepCitedDepth(deeper: true)
+        }
+        view = view.onPinchIn {
+            stepCitedDepth(deeper: false)
         }
         view = view.defaultMaxWidth(200.0)
         view = view.defaultNodePosition([0.0, 1.4, -1.2])

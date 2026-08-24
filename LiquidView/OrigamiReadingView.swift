@@ -3348,6 +3348,11 @@ struct CitationCardSheet: View {
     @State private var enrichment: CitationLookup.Enrichment?
     @State private var lookingUp = false
 
+    /// What this cited work itself cites — the second-order references
+    /// the longer Maps draw. See CitationGraph.swift.
+    @State private var graph: CitationGraph.Entry?
+    @State private var fetchingGraph = false
+
     /// The address a vm-id field carries: the cited document in the
     /// origami id space and, after the #, the very paragraph.
     private var citedAddress: (docID: String, paragraphID: String?)? {
@@ -3458,6 +3463,7 @@ struct CitationCardSheet: View {
                         .font(.callout)
                     }
                 }
+                citesSection(record)
             } else if let reference {
                 // No parseable BibTeX to render a card from — the raw
                 // entry is all there is to show.
@@ -3529,6 +3535,10 @@ struct CitationCardSheet: View {
         // lookups off entirely).
         .task(id: key) {
             guard let record else { return }
+            // The citation graph's answer, when the quiet prefetch (or
+            // an earlier ask) already holds it.
+            graph = CitationGraph.cached(forKey: CitationGraph.key(
+                title: record.title, author: record.fields["author"] ?? ""))
             if let cached = CitationLookup.cached(for: record) {
                 enrichment = cached
                 return
@@ -3537,6 +3547,68 @@ struct CitationCardSheet: View {
             lookingUp = true
             enrichment = await CitationLookup.enrich(record)
             lookingUp = false
+        }
+    }
+
+    /// What this work itself cites — the second-order references the
+    /// longer Maps draw, fetched once and cached (CitationGraph).
+    @ViewBuilder private func citesSection(_ record: BibTeXRecord) -> some View {
+        Divider()
+        if let graph, graph.found {
+            DisclosureGroup {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(graph.references.enumerated()), id: \.offset) { _, cited in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(cited.title)
+                                    .font(.callout)
+                                    .textSelection(.enabled)
+                                let line = [cited.authors,
+                                            cited.year.map(String.init) ?? ""]
+                                    .filter { !$0.isEmpty }.joined(separator: " · ")
+                                if !line.isEmpty {
+                                    Text(line)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 220)
+            } label: {
+                Text("Cites \(graph.references.count) works")
+                    .font(.callout)
+            }
+            Text("References via \(graph.source)")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        } else if fetchingGraph {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Asking what this work cites\u{2026}")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        } else if graph != nil {
+            Text("The services do not list this work's references.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        } else if CitationGraph.isEnabled {
+            Button("What does this work cite?") {
+                fetchingGraph = true
+                Task { @MainActor in
+                    graph = await CitationGraph.references(
+                        title: record.title,
+                        author: record.fields["author"] ?? "",
+                        year: Int(record.year.prefix(4)),
+                        doi: record.fields["doi"]?.lowercased())
+                    fetchingGraph = false
+                }
+            }
+            .font(.callout)
+            .help("The work's own reference list, from the scholarly services — how the Maps grow longer chains")
         }
     }
 }

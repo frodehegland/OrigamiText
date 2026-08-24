@@ -2123,6 +2123,48 @@ final class AppModel {
         }
         mirrorShelfToCommunityFolder()
         adoptStanding()
+        // The citation graph shares the folder: adopt what other
+        // devices fetched, then quietly research a few more works.
+        CitationGraph.mirrorFolder = folder
+        CitationGraph.adoptMirror(from: folder)
+        prefetchCitationGraph()
+    }
+
+    /// Quietly gathers what the shelf's cited works themselves cite —
+    /// the second-order references the longer Maps draw — a budgeted
+    /// handful per scan, one polite request a second, everything
+    /// cached and mirrored for the Vision Pro. The full journal fills
+    /// in over a few sessions rather than hammering the services once.
+    @ObservationIgnored private var isPrefetchingGraph = false
+
+    private func prefetchCitationGraph(budget: Int = 50) {
+        guard CitationGraph.isEnabled, !isPrefetchingGraph else { return }
+        isPrefetchingGraph = true
+        Task { @MainActor in
+            defer { isPrefetchingGraph = false }
+            var remaining = budget
+            var seen = Set<String>()
+            for record in epubRecords {
+                guard remaining > 0 else { break }
+                guard let doc = index.byID[record.id]?.doc else { continue }
+                for reference in doc.references {
+                    guard remaining > 0 else { break }
+                    let fields = BibTeXParser.first(reference.bibtex)?.fields ?? [:]
+                    guard let title = fields["title"] ?? reference.citedAs,
+                          !title.isEmpty else { continue }
+                    let author = fields["author"] ?? ""
+                    let key = CitationGraph.key(title: title, author: author)
+                    guard seen.insert(key).inserted,
+                          CitationGraph.cached(forKey: key) == nil else { continue }
+                    await CitationGraph.references(
+                        title: title,
+                        author: author,
+                        year: fields["year"].flatMap { Int($0.filter(\.isNumber).prefix(4)) },
+                        doi: fields["doi"]?.lowercased())
+                    remaining -= 1
+                }
+            }
+        }
     }
 
     /// Publishes every shelf book the community folder lacks into it, as

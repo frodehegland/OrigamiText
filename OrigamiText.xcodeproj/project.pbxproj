@@ -78,6 +78,7 @@
 				AppFonts.swift,
 				ArmMenu.swift,
 				BibTeX.swift,
+				CitationGraph.swift,
 				DocumentRelation.swift,
 				EPUBMapView.swift,
 				EPUBShelf.swift,
