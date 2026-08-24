@@ -44,6 +44,59 @@ struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
 /// Mac and the Vision Pro agree. Whole-file, last-writer-wins: each
 /// device writes on every change and adopts on every scan, skipping
 /// files older than its own last write.
+/// Books the reader asked for from the headset: cited works not yet in
+/// the library, listed for the Mac to acquire — one small file in the
+/// community folder, merged by key so a wish is never doubled.
+nonisolated enum EPUBAcquisitions {
+
+    struct Wanted: Codable, Sendable, Identifiable {
+        /// The citation key — title|author, lowercased, spaceless.
+        var id: String
+        var title: String
+        var author: String
+        var year: Int?
+        var doi: String?
+        var added: Date
+    }
+
+    private struct State: Codable {
+        var wanted: [Wanted]
+        var modified: Date
+    }
+
+    private static let fileName = "origami-acquisitions.json"
+
+    static func read(from folder: URL) -> [Wanted] {
+        let url = folder.appendingPathComponent(fileName)
+        guard let data = try? Data(contentsOf: url),
+              let state = try? JSONDecoder().decode(State.self, from: data)
+        else { return [] }
+        return state.wanted
+    }
+
+    static func add(_ item: Wanted, in folder: URL) {
+        var wanted = read(from: folder)
+        guard !wanted.contains(where: { $0.id == item.id }) else { return }
+        wanted.append(item)
+        write(wanted, to: folder)
+    }
+
+    static func remove(id: String, in folder: URL) {
+        var wanted = read(from: folder)
+        wanted.removeAll { $0.id == id }
+        write(wanted, to: folder)
+    }
+
+    private static func write(_ wanted: [Wanted], to folder: URL) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(State(wanted: wanted, modified: .now)) {
+            try? data.write(to: folder.appendingPathComponent(fileName),
+                            options: .atomic)
+        }
+    }
+}
+
 nonisolated enum EPUBStanding {
 
     struct State: Codable {

@@ -199,6 +199,24 @@ final class VisionModel {
     private(set) var concepts: [String] =
         UserDefaults.standard.stringArray(forKey: "viewConcepts") ?? []
 
+    /// The books already asked for — the citation card's Acquire
+    /// button rests once its wish is listed.
+    private(set) var acquisitionIDs: Set<String> = []
+
+    /// A cited work the reader wants as a book: listed in the shared
+    /// acquisitions file for the Mac's library to show and download.
+    func requestAcquisition(key: String, title: String, author: String,
+                            year: Int?, doi: String?) {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        EPUBAcquisitions.add(
+            EPUBAcquisitions.Wanted(id: key, title: title, author: author,
+                                    year: year, doi: doi, added: .now),
+            in: folder)
+        acquisitionIDs.insert(key)
+    }
+
     /// Pin and Set Aside travel through the community folder, so the
     /// Mac and this device agree on the pile. The adopted concepts
     /// ride along so this device's writes never strip them.
@@ -341,6 +359,7 @@ final class VisionModel {
         CitationGraph.adoptMirror(from: folder)
         adoptSankeyData(from: folder)
         adoptFloorHistory(from: folder)
+        acquisitionIDs = Set(EPUBAcquisitions.read(from: folder).map(\.id))
         if placeholdersRemain, scanRetries < 5 {
             scanRetries += 1
             Task { @MainActor in
@@ -428,10 +447,22 @@ final class VisionModel {
     /// The user's Ask-for-Data: a city's yearly min/max temperatures
     /// join the diagram and the mirror. Throws the fetch's own words.
     func addSankeyCity(_ city: String) async throws {
-        let series = try await SankeySpace.temperatureSeries(city: city)
+        adoptSankeySeries(try await SankeySpace.temperatureSeries(city: city))
+    }
+
+    /// One of the sample shelf's long-run series joins the corridor.
+    func addSampleFlow(_ sample: SankeySpace.SampleFlow) async throws {
+        adoptSankeySeries([try await SankeySpace.fetchSample(sample)])
+    }
+
+    /// New series replace their pair, land in the dataset, and travel
+    /// through the mirror.
+    private func adoptSankeySeries(_ series: [SankeySpace.Series]) {
+        guard !series.isEmpty else { return }
         var dataset = sankey ?? SankeySpace.Dataset(series: [], modified: .now)
-        let pair = series.first?.pair
-        dataset.series.removeAll { $0.pair == pair }
+        for pair in Set(series.map(\.pair)) {
+            dataset.series.removeAll { $0.pair == pair }
+        }
         dataset.series.append(contentsOf: series)
         dataset.modified = .now
         sankey = dataset
@@ -925,10 +956,15 @@ struct VisionDataView: View {
     @State private var city = ""
     @State private var isFetching = false
     @State private var status: String?
+    /// The sample being fetched right now, by id — one at a time.
+    @State private var fetchingSample: String?
     /// Sankey widths or a traditional line graph — read by the Map's
     /// diagram, redrawn the moment it changes.
     @AppStorage("timeSpreadStyle") private var timeSpreadStyleRaw =
         TimeSpreadStyle.sankey.rawValue
+    /// Lanes apart, or every data set overlaid in one field.
+    @AppStorage("timeSpreadLayout") private var timeSpreadLayoutRaw =
+        TimeSpreadLayout.lanes.rawValue
     /// What lies written on the physical floor beneath the corridor.
     @AppStorage("floorShow") private var floorShowRaw = FloorShow.world.rawValue
 
@@ -939,6 +975,12 @@ struct VisionDataView: View {
                     Picker("Style", selection: $timeSpreadStyleRaw) {
                         ForEach(TimeSpreadStyle.allCases) { style in
                             Text(style.displayName).tag(style.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Picker("Layout", selection: $timeSpreadLayoutRaw) {
+                        ForEach(TimeSpreadLayout.allCases) { layout in
+                            Text(layout.displayName).tag(layout.rawValue)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -970,6 +1012,29 @@ struct VisionDataView: View {
                     } else {
                         Text("No data lines yet — the first pair arrives with the community folder scan, or ask below.")
                             .foregroundStyle(.secondary)
+                    }
+                }
+                Section("Samples — the last 150 years") {
+                    ForEach(SankeySpace.sampleFlows) { sample in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(sample.name)
+                                Text(sample.note)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if model.sankey?.series.contains(where: { $0.pair == sample.id }) == true {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.secondary)
+                            } else if fetchingSample == sample.id {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button("Add") { addSample(sample) }
+                                    .buttonStyle(.borderless)
+                                    .disabled(fetchingSample != nil)
+                            }
+                        }
                     }
                 }
                 Section("Ask for data") {
@@ -1018,6 +1083,21 @@ struct VisionDataView: View {
                 try await model.addSankeyCity(name)
                 status = "Added \(name)."
                 city = ""
+            } catch {
+                status = error.localizedDescription
+            }
+        }
+    }
+
+    private func addSample(_ sample: SankeySpace.SampleFlow) {
+        guard fetchingSample == nil else { return }
+        fetchingSample = sample.id
+        status = nil
+        Task { @MainActor in
+            defer { fetchingSample = nil }
+            do {
+                try await model.addSampleFlow(sample)
+                status = "Added \(sample.name)."
             } catch {
                 status = error.localizedDescription
             }

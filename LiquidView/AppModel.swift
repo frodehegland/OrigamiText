@@ -2297,6 +2297,9 @@ final class AppModel {
         }
         mirrorShelfToCommunityFolder()
         adoptStanding()
+        // The headset's wishes: cited works asked for as books, shown
+        // in the Time view until acquired or dismissed.
+        acquisitions = EPUBAcquisitions.read(from: folder)
         // The citation graph shares the folder: adopt what other
         // devices fetched, then quietly research a few more works.
         CitationGraph.mirrorFolder = folder
@@ -2334,6 +2337,18 @@ final class AppModel {
     /// Ticks when the Time Flows mirror changes, so the sidebar list
     /// rereads it.
     var timeFlowsRevision = 0
+
+    /// Books the headset asked to acquire — the Time view lists them
+    /// with an ember dot and their download link.
+    private(set) var acquisitions: [EPUBAcquisitions.Wanted] = []
+
+    func removeAcquisition(_ id: String) {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        EPUBAcquisitions.remove(id: id, in: folder)
+        acquisitions.removeAll { $0.id == id }
+    }
 
     /// The time-spread's first data lines: New York's yearly min/max
     /// temperatures, fetched once from Open-Meteo and mirrored through

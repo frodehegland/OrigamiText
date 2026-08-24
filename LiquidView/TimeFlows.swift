@@ -82,6 +82,21 @@ extension AppModel {
         SankeySpace.write(dataset, to: folder)
         timeFlowsRevision += 1
     }
+
+    /// One of the sample shelf's long-run series, fetched and mirrored.
+    func addSampleFlow(_ sample: SankeySpace.SampleFlow) async throws {
+        let series = try await SankeySpace.fetchSample(sample)
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        var dataset = SankeySpace.read(from: folder)
+            ?? SankeySpace.Dataset(series: [], modified: .now)
+        dataset.series.removeAll { $0.pair == series.pair }
+        dataset.series.append(series)
+        dataset.modified = .now
+        SankeySpace.write(dataset, to: folder)
+        timeFlowsRevision += 1
+    }
 }
 
 // MARK: - The list
@@ -91,6 +106,9 @@ extension AppModel {
 struct TimeFlowsListView: View {
     @Environment(AppModel.self) private var model
     @State private var showsRequest = false
+    /// The sample being fetched right now, by id — one at a time.
+    @State private var fetchingSample: String?
+    @State private var sampleError: String?
 
     var body: some View {
         // The revision read makes this view live to mirror changes.
@@ -101,7 +119,7 @@ struct TimeFlowsListView: View {
                 ContentUnavailableView {
                     Label("No Time Flows yet", systemImage: "chart.line.uptrend.xyaxis")
                 } description: {
-                    Text("A Time Flow is a data line standing along the headset's timeline — each year one point. Ask for one with +.")
+                    Text("A Time Flow is a data line standing along the headset's timeline — each year one point. Take one from the samples below, or ask for anything with +.")
                 }
             }
             ForEach(pairs, id: \.pair) { entry in
@@ -123,6 +141,34 @@ struct TimeFlowsListView: View {
                 }
                 .padding(.vertical, 3)
             }
+            Section("Samples — the last 150 years") {
+                ForEach(SankeySpace.sampleFlows) { sample in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(sample.name)
+                            Text(sample.note)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if pairs.contains(where: { $0.pair == sample.id }) {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.secondary)
+                        } else if fetchingSample == sample.id {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Add") { addSample(sample) }
+                                .buttonStyle(.borderless)
+                                .disabled(fetchingSample != nil)
+                        }
+                    }
+                }
+                if let sampleError {
+                    Label(sampleError, systemImage: "xmark.octagon")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
         }
         .navigationTitle("Time Flows")
         .toolbar {
@@ -137,6 +183,20 @@ struct TimeFlowsListView: View {
                 model.addTimeFlows(fetched)
             }
             .environment(model)
+        }
+    }
+
+    private func addSample(_ sample: SankeySpace.SampleFlow) {
+        guard fetchingSample == nil else { return }
+        fetchingSample = sample.id
+        sampleError = nil
+        Task { @MainActor in
+            defer { fetchingSample = nil }
+            do {
+                try await model.addSampleFlow(sample)
+            } catch {
+                sampleError = error.localizedDescription
+            }
         }
     }
 

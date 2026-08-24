@@ -117,6 +117,10 @@ struct EPUBMapView: View {
     @AppStorage("timeSpreadStyle") private var timeSpreadStyleRaw =
         TimeSpreadStyle.sankey.rawValue
 
+    /// Lanes apart, or every data set overlaid in one field.
+    @AppStorage("timeSpreadLayout") private var timeSpreadLayoutRaw =
+        TimeSpreadLayout.lanes.rawValue
+
     /// The raised wall's year span, kept when the wall builds — the
     /// Sankey shares it, so the diagram and the citations agree on
     /// where every year stands.
@@ -126,6 +130,15 @@ struct EPUBMapView: View {
     /// slides a citation in X and Y, but its Z settles back here, so
     /// the corridor stays a truthful timeline.
     @State private var citedTimelineZ: [String: Float] = [:]
+
+    /// What the references told us about each citation beyond its face
+    /// — the abstract and the DOI, for the double-tap card and its
+    /// Acquire button.
+    struct CitedFacts {
+        var abstract: String?
+        var doi: String?
+    }
+    @State private var citedFacts: [String: CitedFacts] = [:]
 
     /// Where the reader has placed each card — kept across reloads, so
     /// a card returning from its reader window (or a returning journal)
@@ -221,6 +234,7 @@ struct EPUBMapView: View {
         var citedWorks: [CitedWork] = []
         var citedIDByKey: [String: String] = [:]
         var citedIDsByArticle: [String: [String]] = [:]
+        var facts: [String: CitedFacts] = [:]
         for record in records {
             guard let doc = model.index.byID[record.id]?.doc else { continue }
             var cited: [String] = []
@@ -251,6 +265,10 @@ struct EPUBMapView: View {
                     citedIDByKey[key] = citedID
                     citedWorks.append(CitedWork(id: citedID, title: title,
                                                 author: author, year: year))
+                    // What the double-tap card shows beyond the face.
+                    facts[citedID] = CitedFacts(
+                        abstract: fields["abstract"],
+                        doi: fields["doi"]?.lowercased())
                 }
                 cited.append(citedID)
             }
@@ -347,6 +365,7 @@ struct EPUBMapView: View {
                 position: placed[work.id] ?? seed)
         })
         citedTimelineZ = timelineZ
+        citedFacts = facts
         return result
     }
 
@@ -386,17 +405,20 @@ struct EPUBMapView: View {
     /// their chips put them away.
     private func updateSankey() {
         let style = TimeSpreadStyle(rawValue: timeSpreadStyleRaw) ?? .sankey
+        let layout = TimeSpreadLayout(rawValue: timeSpreadLayoutRaw) ?? .lanes
         let span = citedYearRange ?? dataYearSpan()
         sankeyWallLeft.update(dataset: timeflowLeftShown ? model.sankey : nil,
                               years: span,
                               citedSpace: citedSpace,
                               shift: spaceShift,
-                              style: style)
+                              style: style,
+                              layout: layout)
         sankeyWallRight.update(dataset: timeflowRightShown ? model.sankey : nil,
                                years: span,
                                citedSpace: citedSpace,
                                shift: spaceShift,
-                               style: style)
+                               style: style,
+                               layout: layout)
         let floorShow = FloorShow(rawValue: floorShowRaw) ?? .world
         let floorHistory = floorShow.theme.flatMap { model.floorHistory(for: $0) }
         floorBand.update(history: floorHistory,
@@ -482,6 +504,8 @@ struct EPUBMapView: View {
                 // one card, lines from both parents.
                 guard !raisedAll.contains(where: { $0.id == deepID }) else { continue }
                 if let year = reference.year { raisedYear[deepID] = year }
+                citedFacts[deepID] = CitedFacts(abstract: nil,
+                                                doi: reference.doi?.lowercased())
                 raised.append(EPUBMapItem(
                     id: deepID,
                     title: reference.title,
@@ -583,6 +607,7 @@ struct EPUBMapView: View {
         ArmMenu.Chip(id: EPUBMapView.settingsChipID, title: "Settings", side: .right),
         ArmMenu.Chip(id: EPUBMapView.documentsChipID, title: "Documents", side: .right),
         ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Timeflow", side: .right),
+        ArmMenu.Chip(id: EPUBMapView.dataRightChipID, title: "Time Data", side: .right),
         ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .left),
         ArmMenu.Chip(id: EPUBMapView.asideChipID, title: "Set Aside", side: .left),
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
@@ -597,6 +622,7 @@ struct EPUBMapView: View {
     private static let asideChipID = "map.arm.aside"
     private static let conceptsChipID = "map.arm.concepts"
     private static let dataChipID = "map.arm.data"
+    private static let dataRightChipID = "map.arm.data.right"
     private static let timeflowLeftChipID = "map.arm.timeflow.left"
     private static let timeflowRightChipID = "map.arm.timeflow.right"
 
@@ -623,6 +649,9 @@ struct EPUBMapView: View {
                 updateSankey()
             }
             .onChange(of: timeSpreadStyleRaw) {
+                updateSankey()
+            }
+            .onChange(of: timeSpreadLayoutRaw) {
                 updateSankey()
             }
             .onChange(of: floorShowRaw) {
@@ -719,9 +748,9 @@ struct EPUBMapView: View {
             // entity.
             ModelEntity.connection(
                 size: 0.0022,
-                // A breath of ember: present when looked for, never a
-                // curtain.
-                color: Color(red: 0.72, green: 0.42, blue: 0.06).opacity(0.1),
+                // The faintest breath of ember: found when looked for,
+                // never in the way.
+                color: Color(red: 0.72, green: 0.42, blue: 0.06).opacity(0.05),
                 connectionOptions: .none,
                 materialMode: .none)
         }
@@ -974,8 +1003,12 @@ struct EPUBMapView: View {
             // The card steps off the Map and its reading opens in-situ
             // — the full reader standing where the card stood, movable
             // anywhere by its handle, free of the timeline. Closing
-            // brings the card back. Cited works have no local book.
-            guard item.kind == .article else { return }
+            // brings the card back. A citation opens its record card
+            // instead: everything we hold on it, and Acquire.
+            guard item.kind == .article else {
+                openCitationCard(for: item)
+                return
+            }
             let docID = item.id
             let position = (item.position ?? SIMD3<Float>(0, 1.4, -1.0))
                 + SIMD3<Float>(0, 0, 0.06)
@@ -994,6 +1027,37 @@ struct EPUBMapView: View {
         }
     }
 
+    /// A citation's record, opened in-situ where the card stands: the
+    /// title, the authors and year, the abstract when the reference
+    /// carried one — and Acquire, bottom centre, listing the work in
+    /// the Mac's library as a book to download.
+    private func openCitationCard(for item: EPUBMapItem) {
+        let cardID = "cite-card:" + item.id
+        let key = item.id.hasPrefix("cited:")
+            ? String(item.id.dropFirst("cited:".count))
+            : String(item.id.dropFirst("deep:".count))
+        // The face's byline is "authors · year"; split them back.
+        let parts = item.author.components(separatedBy: " \u{00B7} ")
+        let author = parts.first ?? item.author
+        let year = parts.count > 1 ? Int(parts.last ?? "") : nil
+        let facts = citedFacts[item.id]
+        let position = (item.position ?? SIMD3<Float>(0, 1.4, -1.0))
+            + SIMD3<Float>(0, 0, 0.06)
+        readerPanels.open(
+            docID: cardID,
+            at: position,
+            view: AnyView(
+                CitationCardPanel(citationKey: key,
+                                  title: item.title,
+                                  author: author,
+                                  year: year,
+                                  abstract: facts?.abstract,
+                                  doi: facts?.doi) {
+                    readerPanels.close(docID: cardID)
+                }
+                .environment(model)))
+    }
+
     private func handleArmTap(on entity: Entity) -> Bool {
         // A rung of the open Concepts ladder: picking one folds the
         // ladder and highlights every article carrying the concept.
@@ -1008,7 +1072,7 @@ struct EPUBMapView: View {
             // concepts unfold up the forearm; tap again to fold.
             conceptLadder.toggle(concepts: model.concepts)
             return true
-        case Self.dataChipID:
+        case Self.dataChipID, Self.dataRightChipID:
             openWindow(id: "data")
             return true
         case Self.timeflowLeftChipID:
@@ -1294,7 +1358,8 @@ final class SankeyWall {
 
     /// The face's logical size: 1400pt maps to 1.4m at the engine's
     /// ratio, then the length is scaled to the corridor's exact depth.
-    private static let faceSize = CGSize(width: 1400, height: 520)
+    /// Tall enough that the key band leaves the plot its room.
+    private static let faceSize = CGSize(width: 1400, height: 560)
     /// How far from the wall's centre it stands — negative to the
     /// walker's left, positive to the right of the nodes.
     private let sideOffset: Float
@@ -1310,15 +1375,25 @@ final class SankeyWall {
         self.content = content
     }
 
+    /// The graph style's series, standing as real tubes in the room.
+    private var cylinders: Entity?
+
     func update(dataset: SankeySpace.Dataset?,
                 years: (newest: Int, oldest: Int)?,
                 citedSpace: EPUBMapView.CitedSpace,
                 shift: SIMD3<Float>,
-                style: TimeSpreadStyle) {
+                style: TimeSpreadStyle,
+                layout: TimeSpreadLayout) {
         entity?.removeFromParent()
         entity = nil
+        cylinders?.removeFromParent()
+        cylinders = nil
         guard let content, let dataset, !dataset.series.isEmpty,
               let years, years.newest > years.oldest else { return }
+        if style == .graph {
+            addCylinders(dataset: dataset, years: years,
+                         citedSpace: citedSpace, shift: shift, layout: layout)
+        }
 
         // Two faces, each drawn for its own side — the mirrored one
         // keeps every year at the same Z with its words still reading
@@ -1328,7 +1403,8 @@ final class SankeyWall {
             let face = SankeyRibbonView(dataset: dataset,
                                         newest: years.newest, oldest: years.oldest,
                                         mirrored: mirrored,
-                                        style: style)
+                                        style: style,
+                                        layout: layout)
                 .frame(width: Self.faceSize.width, height: Self.faceSize.height)
             let renderer = ImageRenderer(content: face)
             renderer.scale = 2
@@ -1360,6 +1436,70 @@ final class SankeyWall {
             citedSpace.origin.z - citedSpace.depth / 2) + shift
         content.add(holder)
         entity = holder
+    }
+
+    /// The value band the tubes stand in — chest to eye, matching the
+    /// face's plot area near enough that the ticks frame them.
+    private static let tubeBottom: Float = 1.02
+    private static let tubeTop: Float = 1.68
+    /// One tube segment per year-step, thinned when a long span would
+    /// crowd the room with geometry.
+    private static let segmentTarget = 120
+
+    /// The graph as the room's own geometry: every series a run of
+    /// cylinders through the years, at exactly the citations' depths —
+    /// unit cylinders scaled and turned between the points, one mesh
+    /// and one material per series.
+    private func addCylinders(dataset: SankeySpace.Dataset,
+                              years: (newest: Int, oldest: Int),
+                              citedSpace: EPUBMapView.CitedSpace,
+                              shift: SIMD3<Float>,
+                              layout: TimeSpreadLayout) {
+        guard let content,
+              let norm = TimeSpreadInk.normalizer(for: dataset, layout: layout)
+        else { return }
+        let pairIndices = TimeSpreadInk.pairIndices(of: dataset)
+        let span = Float(years.newest - years.oldest)
+        let x = citedSpace.origin.x + sideOffset + shift.x
+        func z(_ year: Int) -> Float {
+            citedSpace.z(agePlace: Float(years.newest - year) / span) + shift.z
+        }
+        func y(_ value: Double, in series: SankeySpace.Series) -> Float {
+            Self.tubeBottom + Float(norm(value, series)) * (Self.tubeTop - Self.tubeBottom)
+        }
+
+        let holder = Entity()
+        holder.components.set(MapSpaceNodeComponent())
+        let unit = MeshResource.generateCylinder(height: 1, radius: 0.007)
+
+        for series in dataset.series {
+            let points = series.values
+                .filter { $0.year >= years.oldest && $0.year <= years.newest }
+                .sorted { $0.year < $1.year }
+            guard points.count >= 2 else { continue }
+            let stride = max(1, points.count / Self.segmentTarget)
+            let kept = points.enumerated().compactMap { index, point in
+                index % stride == 0 || index == points.count - 1 ? point : nil
+            }
+            var material = UnlitMaterial()
+            material.color = .init(tint: UIColor(
+                TimeSpreadInk.color(of: series, pairIndices: pairIndices)))
+            for (from, to) in zip(kept, kept.dropFirst()) {
+                let start = SIMD3<Float>(x, y(from.value, in: series), z(from.year))
+                let end = SIMD3<Float>(x, y(to.value, in: series), z(to.year))
+                let run = end - start
+                let length = simd_length(run)
+                guard length > 0.0005 else { continue }
+                let segment = ModelEntity(mesh: unit, materials: [material])
+                segment.scale = SIMD3<Float>(1, length, 1)
+                segment.orientation = simd_quatf(
+                    from: SIMD3<Float>(0, 1, 0), to: run / length)
+                segment.position = (start + end) / 2
+                holder.addChild(segment)
+            }
+        }
+        content.add(holder)
+        cylinders = holder
     }
 }
 
@@ -1474,6 +1614,82 @@ struct MapReaderPanel: View {
     }
 }
 
+/// A citation's record card, opened in-situ by a double-tap: all the
+/// data we hold — title, author, year, abstract — with Acquire at the
+/// bottom centre for a work the library does not yet have. Acquiring
+/// lists it in the Mac's Time view with an ember dot and its DOI.
+struct CitationCardPanel: View {
+    @Environment(VisionModel.self) private var model
+    let citationKey: String
+    let title: String
+    let author: String
+    let year: Int?
+    let abstract: String?
+    let doi: String?
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(2)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                }
+                .buttonBorderShape(.circle)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text([author, year.map(String.init)]
+                        .compactMap { $0 }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: ", "))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    if let abstract, !abstract.isEmpty {
+                        Text(abstract)
+                            .font(.callout)
+                    } else {
+                        Text("No abstract on record.")
+                            .font(.callout)
+                            .italic()
+                            .foregroundStyle(.secondary)
+                    }
+                    if let doi, !doi.isEmpty {
+                        Text("doi: \(doi)")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            Group {
+                if model.acquisitionIDs.contains(citationKey) {
+                    Label("Listed to acquire", systemImage: "checkmark")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("Acquire") {
+                        model.requestAcquisition(key: citationKey, title: title,
+                                                 author: author, year: year, doi: doi)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(.vertical, 12)
+        }
+        .frame(width: 460, height: 400)
+        .glassBackgroundEffect()
+    }
+}
+
 /// What lies written on the physical floor — a themed history, or
 /// nothing. Chosen in Time Data. The world theme keeps the raw value
 /// "history", so the setting from before themes still reads.
@@ -1484,6 +1700,7 @@ enum FloorShow: String, CaseIterable, Identifiable {
     case environmental
     case space
     case computing
+    case discoveries
     case nothing
 
     var id: String { rawValue }
@@ -1496,6 +1713,7 @@ enum FloorShow: String, CaseIterable, Identifiable {
         case .environmental: .environmental
         case .space: .space
         case .computing: .computing
+        case .discoveries: .discoveries
         case .nothing: nil
         }
     }
@@ -1647,6 +1865,79 @@ enum TimeSpreadStyle: String, CaseIterable, Identifiable {
     var displayName: String { self == .sankey ? "Sankey" : "Graph" }
 }
 
+/// Whether the data lines stand apart or on top of one another —
+/// "timeSpreadLayout", offered in Time Data. Overlaid draws every
+/// series in one shared field: same-unit series share their true
+/// scale; mixed units each fill their own range, so the shapes
+/// compare and the labels carry the numbers.
+enum TimeSpreadLayout: String, CaseIterable, Identifiable {
+    case lanes
+    case overlaid
+
+    var id: String { rawValue }
+    var displayName: String { self == .lanes ? "Lanes" : "Overlaid" }
+}
+
+/// The Timeflows' shared ink: the palettes, each series' colour, and
+/// the value normalization — one truth for the flat ribbons and the
+/// graph's cylinders alike.
+enum TimeSpreadInk {
+    /// max reads warm, min cool; further pairs step around the wheel —
+    /// wide enough that a shelf of samples stays tellable apart.
+    static let maxColors: [Color] = [
+        Color(red: 0.85, green: 0.45, blue: 0.10),
+        Color(red: 0.80, green: 0.25, blue: 0.25),
+        Color(red: 0.75, green: 0.55, blue: 0.10),
+        Color(red: 0.60, green: 0.70, blue: 0.20),
+        Color(red: 0.80, green: 0.35, blue: 0.55),
+        Color(red: 0.55, green: 0.40, blue: 0.20),
+    ]
+    static let minColors: [Color] = [
+        Color(red: 0.25, green: 0.45, blue: 0.75),
+        Color(red: 0.20, green: 0.60, blue: 0.60),
+        Color(red: 0.45, green: 0.35, blue: 0.75),
+        Color(red: 0.20, green: 0.55, blue: 0.35),
+        Color(red: 0.50, green: 0.55, blue: 0.80),
+        Color(red: 0.30, green: 0.40, blue: 0.50),
+    ]
+
+    static func pairIndices(of dataset: SankeySpace.Dataset) -> [String: Int] {
+        var indices: [String: Int] = [:]
+        for series in dataset.series where indices[series.pair] == nil {
+            indices[series.pair] = indices.count
+        }
+        return indices
+    }
+
+    static func color(of series: SankeySpace.Series,
+                      pairIndices: [String: Int]) -> Color {
+        let palette = series.role == .max ? maxColors : minColors
+        return palette[(pairIndices[series.pair] ?? 0) % palette.count]
+    }
+
+    /// The value scale. Lanes share one absolute scale, so magnitudes
+    /// compare across series. Overlaid same-unit series keep that
+    /// shared truth; overlaid mixed units each fill their own range —
+    /// the shapes compare, the key carries the numbers. Nil when the
+    /// data is flat.
+    static func normalizer(for dataset: SankeySpace.Dataset,
+                           layout: TimeSpreadLayout)
+        -> ((Double, SankeySpace.Series) -> CGFloat)? {
+        let all = dataset.series.flatMap { $0.values.map(\.value) }
+        guard let low = all.min(), let high = all.max(), high > low else { return nil }
+        let mixedUnits = Set(dataset.series.map(\.unit)).count > 1
+        return { value, series in
+            if layout == .overlaid && mixedUnits {
+                let own = series.values.map(\.value)
+                guard let ownLow = own.min(), let ownHigh = own.max(),
+                      ownHigh > ownLow else { return 0.5 }
+                return CGFloat((value - ownLow) / (ownHigh - ownLow))
+            }
+            return CGFloat((value - low) / (high - low))
+        }
+    }
+}
+
 struct SankeyRibbonView: View {
     let dataset: SankeySpace.Dataset
     let newest: Int
@@ -1656,18 +1947,7 @@ struct SankeyRibbonView: View {
     /// left to right.
     var mirrored = false
     var style: TimeSpreadStyle = .sankey
-
-    /// max reads warm, min cool; further pairs step around the wheel.
-    private static let maxColors: [Color] = [
-        Color(red: 0.85, green: 0.45, blue: 0.10),
-        Color(red: 0.80, green: 0.25, blue: 0.25),
-        Color(red: 0.75, green: 0.55, blue: 0.10),
-    ]
-    private static let minColors: [Color] = [
-        Color(red: 0.25, green: 0.45, blue: 0.75),
-        Color(red: 0.20, green: 0.60, blue: 0.60),
-        Color(red: 0.45, green: 0.35, blue: 0.75),
-    ]
+    var layout: TimeSpreadLayout = .lanes
 
     var body: some View {
         Canvas { context, size in
@@ -1678,19 +1958,59 @@ struct SankeyRibbonView: View {
                 return mirrored ? size.width - toward : toward
             }
 
-            // One value scale across every series, so widths compare.
-            let all = dataset.series.flatMap { $0.values.map(\.value) }
-            guard let low = all.min(), let high = all.max(), high > low else { return }
-            func halfWidth(_ value: Double) -> CGFloat {
-                3 + 30 * CGFloat((value - low) / (high - low))
+            // The value scale and the colours — the shared ink, so the
+            // cylinders and these ribbons can never disagree.
+            guard let norm = TimeSpreadInk.normalizer(for: dataset, layout: layout)
+            else { return }
+            func halfWidth(_ value: Double, in series: SankeySpace.Series) -> CGFloat {
+                3 + (layout == .overlaid ? 44 : 30) * norm(value, series)
             }
+            let pairIndex = TimeSpreadInk.pairIndices(of: dataset)
+            func seriesColor(_ series: SankeySpace.Series) -> Color {
+                TimeSpreadInk.color(of: series, pairIndices: pairIndex)
+            }
+
+            // The key, OUTSIDE the plot: a band across the top naming
+            // every series with its swatch and latest value, flowing
+            // into further rows as the shelf grows — so the plot below
+            // carries only the data, nothing overlaying it.
+            let keyRowHeight: CGFloat = 38
+            var keyX: CGFloat = 16
+            var keyRow = 0
+            for series in dataset.series {
+                guard let latest = series.values.max(by: { $0.year < $1.year })
+                else { continue }
+                let words = series.role == .min || dataset.series.contains(where: {
+                    $0.pair == series.pair && $0.id != series.id
+                })
+                    ? "\(series.name) \(series.role.rawValue) "
+                    : "\(series.name) "
+                let label = context.resolve(
+                    Text(words + String(format: "%.1f", latest.value) + " " + series.unit)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.88)))
+                let measured = label.measure(in: CGSize(width: size.width, height: keyRowHeight))
+                let entryWidth = 24 + 8 + measured.width + 26
+                if keyX + entryWidth > size.width - 16 {
+                    keyRow += 1
+                    keyX = 16
+                }
+                let middle = 12 + keyRowHeight * CGFloat(keyRow) + keyRowHeight / 2
+                context.fill(
+                    Path(roundedRect: CGRect(x: keyX, y: middle - 9, width: 24, height: 18),
+                         cornerRadius: 5),
+                    with: .color(seriesColor(series)))
+                context.draw(label, at: CGPoint(x: keyX + 32, y: middle), anchor: .leading)
+                keyX += entryWidth
+            }
+            let contentTop = 12 + keyRowHeight * CGFloat(keyRow + 1) + 8
 
             // Decade ticks, on the corridor's very Zs.
             let firstDecade = (oldest / 10 + 1) * 10
             for year in stride(from: firstDecade, through: newest, by: 10) {
                 let tick = x(year)
                 var line = Path()
-                line.move(to: CGPoint(x: tick, y: 18))
+                line.move(to: CGPoint(x: tick, y: contentTop))
                 line.addLine(to: CGPoint(x: tick, y: size.height - 26))
                 context.stroke(line, with: .color(.white.opacity(0.25)), lineWidth: 1)
                 context.draw(
@@ -1698,74 +2018,55 @@ struct SankeyRibbonView: View {
                     at: CGPoint(x: tick, y: size.height - 12))
             }
 
-            // The value axis for the traditional graph: one shared
-            // plot, position carrying the value.
-            let plotTop: CGFloat = 30
-            let plotBottom = size.height - 40
-            func plotY(_ value: Double) -> CGFloat {
-                plotBottom - CGFloat((value - low) / (high - low)) * (plotBottom - plotTop)
-            }
+            // The graph style's series are CYLINDERS in the room, not
+            // ink on this plane — the face then carries only the key
+            // and the ticks.
+            guard style == .sankey else { return }
 
+            let plotBottom = size.height - 40
             let lanes = dataset.series.count
-            let laneHeight = (size.height - 60) / CGFloat(max(lanes, 1))
-            var pairIndex: [String: Int] = [:]
-            for (index, series) in dataset.series.enumerated() {
-                if pairIndex[series.pair] == nil {
-                    pairIndex[series.pair] = pairIndex.count
-                }
-                let palette = series.role == .max ? Self.maxColors : Self.minColors
-                let color = palette[(pairIndex[series.pair] ?? 0) % palette.count]
+            let laneHeight = (size.height - contentTop - 36) / CGFloat(max(lanes, 1))
+            // Overlaid ribbons draw the widest first, so smaller ones
+            // stay visible on top of them.
+            let drawOrder: [(Int, SankeySpace.Series)]
+            if layout == .overlaid {
+                drawOrder = dataset.series.enumerated().sorted { left, right in
+                    let mean = { (entry: SankeySpace.Series) -> CGFloat in
+                        let widths = entry.values.map { norm($0.value, entry) }
+                        return widths.reduce(0, +) / CGFloat(max(widths.count, 1))
+                    }
+                    return mean(left.element) > mean(right.element)
+                }.map { ($0.offset, $0.element) }
+            } else {
+                drawOrder = Array(dataset.series.enumerated()).map { ($0.offset, $0.element) }
+            }
+            for (index, series) in drawOrder {
+                let color = seriesColor(series)
 
                 let points = series.values
                     .filter { $0.year >= oldest && $0.year <= newest }
                     .sorted { $0.year > $1.year }   // newest (left) first
                 guard points.count >= 2 else { continue }
 
-                let labelY: CGFloat
-                switch style {
-                case .sankey:
-                    // The ribbon, one lane per series, width the value.
-                    let center = 24 + laneHeight * (CGFloat(index) + 0.5)
-                    var ribbon = Path()
-                    ribbon.move(to: CGPoint(x: x(points[0].year),
-                                            y: center - halfWidth(points[0].value)))
-                    for point in points.dropFirst() {
-                        ribbon.addLine(to: CGPoint(x: x(point.year),
-                                                   y: center - halfWidth(point.value)))
-                    }
-                    for point in points.reversed() {
-                        ribbon.addLine(to: CGPoint(x: x(point.year),
-                                                   y: center + halfWidth(point.value)))
-                    }
-                    ribbon.closeSubpath()
-                    context.fill(ribbon, with: .color(color.opacity(0.82)))
-                    labelY = center - halfWidth(points[0].value) - 14
-                case .graph:
-                    // The line, all series on one shared value scale.
-                    var line = Path()
-                    line.move(to: CGPoint(x: x(points[0].year),
-                                          y: plotY(points[0].value)))
-                    for point in points.dropFirst() {
-                        line.addLine(to: CGPoint(x: x(point.year),
-                                                 y: plotY(point.value)))
-                    }
-                    context.stroke(line, with: .color(color.opacity(0.9)),
-                                   style: StrokeStyle(lineWidth: 4,
-                                                      lineCap: .round,
-                                                      lineJoin: .round))
-                    labelY = plotY(points[0].value) - 16
+                // The ribbon: its own lane, or the shared middle when
+                // overlaid.
+                let center = layout == .overlaid
+                    ? contentTop + (plotBottom - contentTop) / 2
+                    : contentTop + laneHeight * (CGFloat(index) + 0.5)
+                var ribbon = Path()
+                ribbon.move(to: CGPoint(x: x(points[0].year),
+                                        y: center - halfWidth(points[0].value, in: series)))
+                for point in points.dropFirst() {
+                    ribbon.addLine(to: CGPoint(x: x(point.year),
+                                               y: center - halfWidth(point.value, in: series)))
                 }
-
-                // The name and the newest value, at the near end.
-                let label = "\(series.name) \(series.role == .max ? "max" : "min") "
-                    + String(format: "%.1f", points[0].value) + series.unit
-                let nearX = x(points[0].year)
-                context.draw(
-                    Text(label).font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(color),
-                    at: CGPoint(x: mirrored ? nearX - 14 : nearX + 14,
-                                y: labelY),
-                    anchor: mirrored ? .trailing : .leading)
+                for point in points.reversed() {
+                    ribbon.addLine(to: CGPoint(x: x(point.year),
+                                               y: center + halfWidth(point.value, in: series)))
+                }
+                ribbon.closeSubpath()
+                context.fill(ribbon, with: .color(
+                    color.opacity(layout == .overlaid ? 0.5 : 0.82)))
             }
         }
     }

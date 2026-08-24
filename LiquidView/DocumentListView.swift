@@ -160,6 +160,48 @@ struct EPUBLibraryListView: View {
                     EPUBPileMenu(record: record)
                 }
             }
+            // The headset's wishes: cited works asked for as books from
+            // the Map's citation cards — an ember dot each, the
+            // download link where the citation carried one, until
+            // acquired or dismissed.
+            if case .timeline = mode, !model.acquisitions.isEmpty {
+                Section("To acquire") {
+                    ForEach(model.acquisitions) { wanted in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Circle()
+                                .fill(EmberIconLabelStyle.ember)
+                                .frame(width: 8, height: 8)
+                                .padding(.top, 4)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(wanted.title)
+                                    .lineLimit(2)
+                                HStack(spacing: 6) {
+                                    Text([wanted.author,
+                                          wanted.year.map(String.init) ?? ""]
+                                        .filter { !$0.isEmpty }
+                                        .joined(separator: " · "))
+                                    if let doi = wanted.doi, !doi.isEmpty,
+                                       let url = URL(string: doi.hasPrefix("http")
+                                            ? doi : "https://doi.org/\(doi)") {
+                                        Link("doi", destination: url)
+                                    }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            }
+                            Spacer()
+                            Button(role: .destructive) {
+                                model.removeAcquisition(wanted.id)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Dismiss this wish")
+                        }
+                    }
+                }
+            }
         }
         // The list starts right under the toolbar, no dead air.
         .contentMargins(.top, 0, for: .scrollContent)

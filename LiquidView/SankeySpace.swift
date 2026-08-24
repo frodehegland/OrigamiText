@@ -149,6 +149,134 @@ nonisolated enum SankeySpace {
         var daily: Daily
     }
 
+    // MARK: - The sample shelf
+
+    /// Curated long-run series — the last 150 years, ready to stand on
+    /// the corridor with one tap. Every endpoint verified live before
+    /// it was written here.
+    struct SampleFlow: Identifiable, Sendable {
+        enum Source: Sendable {
+            /// Our World in Data's grapher CSV: the slug, the value
+            /// column's header name, and how to scale the raw value.
+            case owid(slug: String, column: String, scale: Double)
+            /// SILSO's yearly sunspot record, 1700 onward.
+            case silso
+        }
+        let id: String
+        let name: String
+        let unit: String
+        let note: String
+        let source: Source
+    }
+
+    static let sampleFlows: [SampleFlow] = [
+        SampleFlow(id: "sample-temperature",
+                   name: "Global temperature anomaly", unit: "\u{00B0}C",
+                   note: "vs 1961\u{2013}90, HadCRUT via Our World in Data",
+                   source: .owid(slug: "temperature-anomaly", column: "Average", scale: 1)),
+        SampleFlow(id: "sample-co2",
+                   name: "CO\u{2082} concentration", unit: "ppm",
+                   note: "atmospheric, via Our World in Data",
+                   source: .owid(slug: "co2-long-term-concentration",
+                                 column: "Annual average", scale: 1)),
+        SampleFlow(id: "sample-emissions",
+                   name: "Global CO\u{2082} emissions", unit: "Gt",
+                   note: "fossil and industry, via Our World in Data",
+                   source: .owid(slug: "annual-co2-emissions-per-country",
+                                 column: "Annual CO\u{2082} emissions", scale: 1e-9)),
+        SampleFlow(id: "sample-life",
+                   name: "World life expectancy", unit: "years",
+                   note: "at birth, via Our World in Data",
+                   source: .owid(slug: "life-expectancy",
+                                 column: "Life expectancy", scale: 1)),
+        SampleFlow(id: "sample-mortality",
+                   name: "World child mortality", unit: "%",
+                   note: "share dying before five, via Our World in Data",
+                   source: .owid(slug: "child-mortality",
+                                 column: "Under-five mortality rate (selected)", scale: 1)),
+        SampleFlow(id: "sample-population",
+                   name: "World population", unit: "bn",
+                   note: "via Our World in Data",
+                   source: .owid(slug: "population", column: "Population", scale: 1e-9)),
+        SampleFlow(id: "sample-gdp",
+                   name: "World GDP", unit: "tn $",
+                   note: "constant international-$, via Our World in Data",
+                   source: .owid(slug: "gdp-world-regions-stacked-area",
+                                 column: "GDP", scale: 1e-12)),
+        SampleFlow(id: "sample-sunspots",
+                   name: "Sunspots", unit: "count",
+                   note: "yearly mean, SILSO (Royal Observatory of Belgium)",
+                   source: .silso),
+    ]
+
+    /// The earliest year a sample carries — the catalogue's promise is
+    /// the last 150 years.
+    private static var sampleFloorYear: Int {
+        Calendar(identifier: .gregorian).component(.year, from: .now) - 150
+    }
+
+    static func fetchSample(_ sample: SampleFlow) async throws -> Series {
+        let values: [Series.YearValue]
+        switch sample.source {
+        case .owid(let slug, let column, let scale):
+            values = try await owidYearly(slug: slug, column: column, scale: scale)
+        case .silso:
+            values = try await silsoYearly()
+        }
+        let floor = sampleFloorYear
+        let kept = values.filter { $0.year >= floor }
+        guard kept.count >= 2 else { throw FetchError.noData(sample.name) }
+        return Series(id: sample.id, pair: sample.id, name: sample.name,
+                      role: .max, unit: sample.unit, values: kept)
+    }
+
+    /// One OWID grapher CSV, reduced to the World rows' yearly values.
+    /// (The CSV lists every entity; the URL's country filter is not
+    /// honoured, so the World is picked out here by its code.)
+    private static func owidYearly(slug: String, column: String,
+                                   scale: Double) async throws -> [Series.YearValue] {
+        let url = URL(string: "https://ourworldindata.org/grapher/\(slug).csv")!
+        var request = URLRequest(url: url, timeoutInterval: 60)
+        request.setValue("OrigamiText/1.0 (mailto:frode@hegland.com)",
+                         forHTTPHeaderField: "User-Agent")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let text = String(decoding: data, as: UTF8.self)
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        guard !lines.isEmpty else { return [] }
+        let header = lines.removeFirst().split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let codeIndex = header.firstIndex(of: "Code"),
+              let yearIndex = header.firstIndex(of: "Year"),
+              let valueIndex = header.firstIndex(of: column) else { return [] }
+        var values: [Series.YearValue] = []
+        for line in lines {
+            let cells = line.split(separator: ",", omittingEmptySubsequences: false)
+            guard cells.count > max(codeIndex, yearIndex, valueIndex),
+                  cells[codeIndex] == "OWID_WRL",
+                  let year = Int(cells[yearIndex]),
+                  let value = Double(cells[valueIndex]) else { continue }
+            values.append(Series.YearValue(year: year, value: value * scale))
+        }
+        return values.sorted { $0.year < $1.year }
+    }
+
+    /// SILSO's yearly means: "1700.5   8.3 ..." — the year, then the
+    /// smoothed count.
+    private static func silsoYearly() async throws -> [Series.YearValue] {
+        let url = URL(string: "https://www.sidc.be/SILSO/DATA/SN_y_tot_V2.0.txt")!
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let text = String(decoding: data, as: UTF8.self)
+        var values: [Series.YearValue] = []
+        for line in text.split(separator: "\n") {
+            let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard fields.count >= 2,
+                  let yearPoint = Double(fields[0]),
+                  let value = Double(fields[1]), value >= 0 else { continue }
+            values.append(Series.YearValue(year: Int(yearPoint), value: value))
+        }
+        return values
+    }
+
     // MARK: - The floor's world history
 
     /// One event on the floor: its year, its words, and how widely the
@@ -175,6 +303,7 @@ nonisolated enum SankeySpace {
         case environmental
         case space
         case computing
+        case discoveries
 
         var id: String { rawValue }
 
@@ -186,6 +315,7 @@ nonisolated enum SankeySpace {
             case .environmental: "Environmental History"
             case .space: "Space History"
             case .computing: "Computing History"
+            case .discoveries: "Discoveries & Inventions"
             }
         }
 
@@ -252,6 +382,14 @@ nonisolated enum SankeySpace {
                   FILTER(?links > 25)
                   SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
                 } ORDER BY DESC(?links) LIMIT 250
+                """
+            case .discoveries: return """
+                SELECT ?itemLabel (YEAR(?date) AS ?year) ?links WHERE {
+                  ?item wdt:P575 ?date; wikibase:sitelinks ?links.
+                  FILTER(YEAR(?date) >= 1850 && YEAR(?date) <= 2026)
+                  FILTER(?links > 30)
+                  SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+                } ORDER BY DESC(?links) LIMIT 300
                 """
             }
         }
