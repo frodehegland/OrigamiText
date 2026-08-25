@@ -83,6 +83,37 @@ extension AppModel {
         timeFlowsRevision += 1
     }
 
+    /// The graph's shown name — every series of the pair takes it.
+    func renameTimeFlowPair(_ pair: String, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        guard var dataset = SankeySpace.read(from: folder) else { return }
+        for index in dataset.series.indices where dataset.series[index].pair == pair {
+            dataset.series[index].name = trimmed
+        }
+        dataset.modified = .now
+        SankeySpace.write(dataset, to: folder)
+        timeFlowsRevision += 1
+    }
+
+    /// The graph's chosen ink — every series of the pair wears it; nil
+    /// returns the pair to the palette. Carried by the mirror, so the
+    /// headset wears it too.
+    func setTimeFlowColor(pair: String, hex: String?) {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        guard var dataset = SankeySpace.read(from: folder) else { return }
+        for index in dataset.series.indices where dataset.series[index].pair == pair {
+            dataset.series[index].colorHex = hex
+        }
+        dataset.modified = .now
+        SankeySpace.write(dataset, to: folder)
+        timeFlowsRevision += 1
+    }
+
     /// One of the sample shelf's long-run series, fetched and mirrored.
     func addSampleFlow(_ sample: SankeySpace.SampleFlow) async throws {
         let series = try await SankeySpace.fetchSample(sample)
@@ -101,11 +132,21 @@ extension AppModel {
 
 // MARK: - The list
 
-/// Views ▸ Time Flows: every data line standing along the headset's
-/// corridor, and the + that asks for more.
+/// Views ▸ Graphs: every graph standing along the headset's corridor,
+/// its colour the reader's to choose, and the + that asks for more.
+/// A graph under edit: what the dialog opens on.
+struct EditingGraph: Identifiable {
+    let pair: String
+    let name: String
+    let colorHex: String?
+    var id: String { pair }
+}
+
 struct TimeFlowsListView: View {
     @Environment(AppModel.self) private var model
     @State private var showsRequest = false
+    /// The graph whose edit dialog stands open.
+    @State private var editingGraph: EditingGraph?
     /// The sample being fetched right now, by id — one at a time.
     @State private var fetchingSample: String?
     @State private var sampleError: String?
@@ -117,30 +158,49 @@ struct TimeFlowsListView: View {
         List {
             if pairs.isEmpty {
                 ContentUnavailableView {
-                    Label("No Time Flows yet", systemImage: "chart.line.uptrend.xyaxis")
+                    Label("No graphs yet", systemImage: "chart.line.uptrend.xyaxis")
                 } description: {
-                    Text("A Time Flow is a data line standing along the headset's timeline — each year one point. Take one from the samples below, or ask for anything with +.")
+                    Text("A graph is a data line standing along the headset's timeline — each year one point. Take one from the samples below, or ask for anything with +.")
                 }
             }
             ForEach(pairs, id: \.pair) { entry in
                 HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(entry.name)
-                        Text(rowDetail(of: entry.series))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    // The graph's row opens its edit dialog — the same
+                    // dialog that creates one.
+                    Button {
+                        editingGraph = EditingGraph(
+                            pair: entry.pair, name: entry.name,
+                            colorHex: entry.series.compactMap(\.colorHex).first)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(entry.name)
+                            Text(rowDetail(of: entry.series))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     Spacer()
+                    inkMenu(for: entry)
                     Button(role: .destructive) {
                         model.removeTimeFlowPair(entry.pair)
                     } label: {
                         Image(systemName: "minus.circle")
                     }
                     .buttonStyle(.borderless)
-                    .help("Remove this flow from the corridor")
+                    .help("Remove this graph from the corridor")
                 }
                 .padding(.vertical, 3)
             }
+            // The + at the list's foot, beside the toolbar's.
+            Button {
+                showsRequest = true
+            } label: {
+                Label("Add Graph", systemImage: "plus")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
             Section("Samples — the last 150 years") {
                 ForEach(SankeySpace.sampleFlows) { sample in
                     HStack {
@@ -170,12 +230,12 @@ struct TimeFlowsListView: View {
                 }
             }
         }
-        .navigationTitle("Time Flows")
+        .navigationTitle("Graphs")
         .toolbar {
             Button {
                 showsRequest = true
             } label: {
-                Label("Add Time Flow", systemImage: "plus")
+                Label("Add Graph", systemImage: "plus")
             }
         }
         .sheet(isPresented: $showsRequest) {
@@ -184,6 +244,53 @@ struct TimeFlowsListView: View {
             }
             .environment(model)
         }
+        .sheet(item: $editingGraph) { graph in
+            TimeFlowRequestView(editing: graph) { fetched in
+                // A refetch replaces the graph's data.
+                model.removeTimeFlowPair(graph.pair)
+                model.addTimeFlows(fetched)
+            } onEdit: { name, hex in
+                model.renameTimeFlowPair(graph.pair, to: name)
+                model.setTimeFlowColor(pair: graph.pair, hex: hex)
+            }
+            .environment(model)
+        }
+    }
+
+    /// The graph's ink, chosen by pop-up: the corridor palette's named
+    /// hues, or Automatic to paint from the palette by pair. The
+    /// choice travels through the mirror, so the headset wears it too.
+    private func inkMenu(for entry: (pair: String, name: String,
+                                     series: [SankeySpace.Series])) -> some View {
+        let chosen = entry.series.compactMap(\.colorHex).first
+        return Menu {
+            Button("Automatic") {
+                model.setTimeFlowColor(pair: entry.pair, hex: nil)
+            }
+            Divider()
+            ForEach(SankeySpace.inkChoices, id: \.hex) { choice in
+                Button {
+                    model.setTimeFlowColor(pair: entry.pair, hex: choice.hex)
+                } label: {
+                    Label {
+                        Text(choice.name)
+                    } icon: {
+                        Image(systemName: chosen == choice.hex
+                            ? "checkmark.circle.fill" : "circle.fill")
+                            .foregroundStyle(Color(hexCode: choice.hex) ?? .secondary)
+                    }
+                }
+            }
+        } label: {
+            Circle()
+                .fill(chosen.flatMap { Color(hexCode: $0) } ?? Color.secondary.opacity(0.4))
+                .frame(width: 14, height: 14)
+                .overlay(Circle().strokeBorder(.quaternary))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("The graph's colour — Automatic paints from the palette")
     }
 
     private func addSample(_ sample: SankeySpace.SampleFlow) {
@@ -217,9 +324,18 @@ struct TimeFlowsListView: View {
 /// user's own file parsed the deterministic way. What lands here are
 /// fetched series; the caller folds them into the corridor.
 struct TimeFlowRequestView: View {
+    /// Editing an existing graph: its identity opens the same dialog
+    /// with name and colour on top, and Fetch replacing its data.
+    /// Nil creates.
+    var editing: EditingGraph? = nil
     let onAdd: ([FetchedSeries]) -> Void
+    /// Called by Save when editing: the (possibly changed) name and
+    /// colour.
+    var onEdit: ((String, String?) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
+    @State private var editedName = ""
+    @State private var editedHex: String?
     @State private var prompt = ""
     @State private var category: DataCategory = .any
     @State private var isWorking = false
@@ -253,7 +369,24 @@ struct TimeFlowRequestView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Request") {
+                if editing != nil {
+                    Section("Graph") {
+                        TextField("Name", text: $editedName)
+                        Picker("Colour", selection: $editedHex) {
+                            Text("Automatic").tag(String?.none)
+                            ForEach(SankeySpace.inkChoices, id: \.hex) { choice in
+                                Label {
+                                    Text(choice.name)
+                                } icon: {
+                                    Image(systemName: "circle.fill")
+                                        .foregroundStyle(Color(hexCode: choice.hex) ?? .secondary)
+                                }
+                                .tag(String?.some(choice.hex))
+                            }
+                        }
+                    }
+                }
+                Section(editing == nil ? "Request" : "Refetch the data") {
                     TextField("", text: $prompt, axis: .vertical)
                         .lineLimit(3...6)
                         .labelsHidden()
@@ -313,7 +446,14 @@ struct TimeFlowRequestView: View {
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle("Add Time Flow")
+            .navigationTitle(editing == nil ? "Add Graph" : "Edit Graph")
+            .onAppear {
+                if let editing {
+                    editedName = editing.name
+                    editedHex = editing.colorHex
+                    if prompt.isEmpty { prompt = editing.name }
+                }
+            }
             .safeAreaInset(edge: .bottom) {
                 HStack {
                     Button("Open Data") {
@@ -322,10 +462,23 @@ struct TimeFlowRequestView: View {
                     .help("Open your own data file — CSV and similar tables")
                     .disabled(isWorking)
                     Spacer()
-                    Button("Fetch") { run() }
+                    if editing != nil {
+                        Button("Save") {
+                            onEdit?(editedName, editedHex)
+                            dismiss()
+                        }
                         .buttonStyle(.borderedProminent)
-                        .disabled(isWorking || trimmedPrompt.isEmpty
-                                  || SeriesPlanner.unavailabilityReason != nil)
+                        .disabled(isWorking
+                                  || editedName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        Button("Fetch") { run() }
+                            .disabled(isWorking || trimmedPrompt.isEmpty
+                                      || SeriesPlanner.unavailabilityReason != nil)
+                    } else {
+                        Button("Fetch") { run() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isWorking || trimmedPrompt.isEmpty
+                                      || SeriesPlanner.unavailabilityReason != nil)
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 12)

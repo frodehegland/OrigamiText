@@ -31,6 +31,9 @@ struct EPUBMapItem: ItemProtocol {
     var citedIDs: [String] = []
     /// Selected articles draw their citation lines.
     var isSelected = false
+    /// A cited work every raised article cites (two or more raised):
+    /// the common ground, and it reads green.
+    var isShared = false
     /// Pinned articles stand first and wear the pin on their face.
     var isPinned = false
     /// Set Aside articles collapse to a half-faded title in the quiet
@@ -46,6 +49,7 @@ struct EPUBMapItem: ItemProtocol {
         id == other.id && title == other.title && author == other.author
             && kind == other.kind && isPinned == other.isPinned
             && isAside == other.isAside && isSelected == other.isSelected
+            && isShared == other.isShared
     }
 }
 
@@ -99,6 +103,10 @@ struct EPUBMapView: View {
     /// Which Timeflows stand — toggled by the arm chips, remembered.
     @AppStorage("timeflowLeftShown") private var timeflowLeftShown = true
     @AppStorage("timeflowRightShown") private var timeflowRightShown = false
+    /// The snap-to-wall option, per graph — set in each side's Time
+    /// Data dialog.
+    @AppStorage("graphSnapWallLeft") private var graphSnapWallLeft = false
+    @AppStorage("graphSnapWallRight") private var graphSnapWallRight = false
 
     /// The physical floor put to work: what lies written along it —
     /// world history by default, or nothing. Chosen in Time Data.
@@ -338,6 +346,12 @@ struct EPUBMapView: View {
         // and Z carries the date: newest nearest, the oldest deepest
         // into the room, dateless works at the far plane.
         let raisedIDs = Set(raisedArticleIDs.flatMap { citedIDsByArticle[$0] ?? [] })
+        // The common ground: with two or more articles raised, the
+        // works EVERY one of them cites read green on the wall.
+        let raisedSets = raisedArticleIDs.map { Set(citedIDsByArticle[$0] ?? []) }
+        let sharedIDs: Set<String> = raisedSets.count >= 2
+            ? raisedSets.dropFirst().reduce(raisedSets[0]) { $0.intersection($1) }
+            : []
         let shownCited = citedWorks.filter { raisedIDs.contains($0.id) }
         let years = shownCited.compactMap(\.year)
         let newest = years.max()
@@ -368,7 +382,8 @@ struct EPUBMapView: View {
                 // The year on the face, so the depth reads at a glance.
                 author: work.year.map { "\(work.author) · \($0)" } ?? work.author,
                 kind: .cited,
-                position: placed[work.id] ?? seed)
+                position: placed[work.id] ?? seed,
+                isShared: sharedIDs.contains(work.id))
         })
         citedTimelineZ = timelineZ
         citedFacts = facts
@@ -420,13 +435,15 @@ struct EPUBMapView: View {
                               citedSpace: citedSpace,
                               shift: spaceShift,
                               style: style,
-                              layout: layout)
+                              layout: layout,
+                              snapToWall: graphSnapWallLeft)
         sankeyWallRight.update(dataset: (timeflowRightShown && !desk) ? model.sankey : nil,
                                years: span,
                                citedSpace: citedSpace,
                                shift: spaceShift,
                                style: style,
-                               layout: layout)
+                               layout: layout,
+                               snapToWall: graphSnapWallRight)
         let floorShow = FloorShow(rawValue: floorShowRaw) ?? .world
         let floorHistory = floorShow.theme.flatMap { model.floorHistory(for: $0) }
         floorBand.update(history: desk ? nil : floorHistory,
@@ -614,14 +631,14 @@ struct EPUBMapView: View {
     @State private var armMenu = ArmMenu(chips: [
         ArmMenu.Chip(id: EPUBMapView.settingsChipID, title: "Settings", side: .right),
         ArmMenu.Chip(id: EPUBMapView.documentsChipID, title: "Documents", side: .right),
-        ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Timeflow", side: .right),
+        ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Graph", side: .right),
         ArmMenu.Chip(id: EPUBMapView.dataRightChipID, title: "Time Data", side: .right),
         ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Floor Timeline", side: .right),
         ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .left),
         ArmMenu.Chip(id: EPUBMapView.asideChipID, title: "Set Aside", side: .left),
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
-        // Timeflow stands above Time Data on the arm.
-        ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Timeflow", side: .left),
+        // Graph stands above Time Data on the arm.
+        ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Graph", side: .left),
         ArmMenu.Chip(id: EPUBMapView.dataChipID, title: "Time Data", side: .left),
     ], tracksPlanes: true)   // the flat pose finds the actual desk
 
@@ -655,16 +672,9 @@ struct EPUBMapView: View {
             .onChange(of: model.setAsideIDs) {
                 reload()
             }
-            .onChange(of: model.sankey?.modified) {
-                updateSankey()
-            }
-            .onChange(of: timeSpreadStyleRaw) {
-                updateSankey()
-            }
-            .onChange(of: timeSpreadLayoutRaw) {
-                updateSankey()
-            }
-            .onChange(of: floorShowRaw) {
+            // One tick for every setting the diagrams read — a single
+            // observed value keeps the modifier chain type-checkable.
+            .onChange(of: sankeySettingsTick) {
                 updateSankey()
             }
             .onChange(of: model.floorRevision) {
@@ -706,6 +716,15 @@ struct EPUBMapView: View {
                     .onEnded { _ in
                         readerPanels.dragStart = [:]
                     })
+    }
+
+    /// Everything the diagrams read, folded to one comparable value —
+    /// any of it changing re-lays the Timeflows and the floor.
+    private var sankeySettingsTick: String {
+        [model.sankey?.modified.description ?? "",
+         timeSpreadStyleRaw, timeSpreadLayoutRaw, floorShowRaw,
+         graphSnapWallLeft.description, graphSnapWallRight.description]
+            .joined(separator: "|")
     }
 
     /// One pinch, one step: deeper stretches the spread into the room
@@ -767,13 +786,13 @@ struct EPUBMapView: View {
             return held
         }
         view = view.constructorConnectionModelEntity {
-            // The citation lines — the lab's ember, Author's connection
-            // entity.
+            // The citation lines — Author's connection entity.
             ModelEntity.connection(
                 size: 0.0022,
-                // The faintest breath of ember: found when looked for,
-                // never in the way.
-                color: Color(red: 0.72, green: 0.42, blue: 0.06).opacity(0.02),
+                // A whisper of light grey: found when looked for,
+                // never in the way. (Grey carries less pop than the
+                // old ember, so it stands a step less transparent.)
+                color: Color(white: 0.85).opacity(0.06),
                 connectionOptions: .none,
                 materialMode: .none)
         }
@@ -902,7 +921,11 @@ struct EPUBMapView: View {
             : (item.kind == .article ? 1.0 : (item.kind == .cited ? 0.92 : 0.85))
         let paper: UIColor = switch item.kind {
         case .article: .white
-        case .cited: UIColor(white: 0.82, alpha: 1)
+        // The common ground reads green: a work every raised article
+        // cites, when two or more stand raised together.
+        case .cited: item.isShared
+            ? UIColor(red: 0.63, green: 0.84, blue: 0.63, alpha: 1)
+            : UIColor(white: 0.82, alpha: 1)
         case .citedDeep: UIColor(white: 0.72, alpha: 1)
         }
         let box = ModelEntity.box(
@@ -1112,8 +1135,12 @@ struct EPUBMapView: View {
             // concepts unfold up the forearm; tap again to fold.
             conceptLadder.toggle(concepts: model.concepts)
             return true
-        case Self.dataChipID, Self.dataRightChipID:
-            openWindow(id: "data")
+        // Each arm's Time Data curates its own side's graph.
+        case Self.dataChipID:
+            openWindow(id: "data", value: "left")
+            return true
+        case Self.dataRightChipID:
+            openWindow(id: "data", value: "right")
             return true
         case Self.timeflowLeftChipID:
             timeflowLeftShown.toggle()
@@ -1423,25 +1450,75 @@ final class SankeyWall {
 
     func install(in content: RealityViewContent) {
         self.content = content
+        // The room's own wall, for the snap option: a wall-classified
+        // vertical plane on the arm menu's one tracking session —
+        // never a second session.
+        let wall = AnchorEntity(.plane(.vertical, classification: .wall,
+                                       minimumBounds: SIMD2<Float>(1, 1)))
+        content.add(wall)
+        wallAnchor = wall
+        snapTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
+            MainActor.assumeIsolated { self?.settleToWall() }
+        }
     }
 
     /// The graph style's series, standing as real tubes in the room.
     private var cylinders: Entity?
+    /// The key's card, standing in front of the plot.
+    private var keyEntity: Entity?
+    /// The snap-to-wall option's anchor and settle.
+    private var wallAnchor: AnchorEntity?
+    private var snapTick: EventSubscription?
+    private var snapsToWall = false
+    /// The corridor-given x the graph stands at when no wall claims it.
+    private var baseX: Float = 0
 
     /// Which side's series this wall carries — an untagged series
     /// stands on both.
     private var side: String { sideOffset < 0 ? "left" : "right" }
+
+    /// The room wall's x, when one has anchored on this graph's own
+    /// side within a room's reach — pulled a hand's breadth off the
+    /// plaster.
+    private func wallX() -> Float? {
+        guard let wallAnchor, wallAnchor.isAnchored else { return nil }
+        let x = wallAnchor.position(relativeTo: nil).x
+        if sideOffset < 0 {
+            guard x < baseX, x > baseX - 6 else { return nil }
+            return x + 0.05
+        } else {
+            guard x > baseX, x < baseX + 6 else { return nil }
+            return x - 0.05
+        }
+    }
+
+    /// The graph keeps to the room's wall while the option is on, and
+    /// to its corridor place otherwise — the key and the cylinders
+    /// stepping with it.
+    private func settleToWall() {
+        guard let entity else { return }
+        let targetX = snapsToWall ? (wallX() ?? baseX) : baseX
+        guard abs(entity.position.x - targetX) > 0.005 else { return }
+        entity.position.x = targetX
+        keyEntity?.position.x = targetX
+        cylinders?.position.x = targetX - baseX
+    }
 
     func update(dataset: SankeySpace.Dataset?,
                 years: (newest: Int, oldest: Int)?,
                 citedSpace: EPUBMapView.CitedSpace,
                 shift: SIMD3<Float>,
                 style: TimeSpreadStyle,
-                layout: TimeSpreadLayout) {
+                layout: TimeSpreadLayout,
+                snapToWall: Bool = false) {
         entity?.removeFromParent()
         entity = nil
         cylinders?.removeFromParent()
         cylinders = nil
+        keyEntity?.removeFromParent()
+        keyEntity = nil
+        snapsToWall = snapToWall
+        baseX = citedSpace.origin.x + sideOffset + shift.x
         let dataset = dataset.map { whole in
             var mine = whole
             mine.series = whole.series.filter { $0.wall == nil || $0.wall == side }
@@ -1495,6 +1572,26 @@ final class SankeyWall {
             citedSpace.origin.z - citedSpace.depth / 2) + shift
         content.add(holder)
         entity = holder
+
+        // The key: a plate at the graph's near (newest) end, standing
+        // across the X axis and facing the walker — where the graph
+        // starts, closest to the reader. Unscaled, so the words keep
+        // their size however the corridor stretches.
+        let keyRenderer = ImageRenderer(content: GraphKeyView(dataset: dataset))
+        keyRenderer.scale = 2
+        keyRenderer.isOpaque = false
+        if let keyImage = keyRenderer.uiImage,
+           let face = ModelEntity.texturedPlane(with: keyImage, ratio: 0.001) {
+            let keyHolder = ModelEntity()
+            keyHolder.components.set(MapSpaceNodeComponent())
+            keyHolder.addChild(face)   // unrotated: its face reads down +Z, at the walker
+            keyHolder.position = SIMD3<Float>(
+                citedSpace.origin.x + sideOffset,
+                Self.height,
+                citedSpace.origin.z + 0.06) + shift
+            content.add(keyHolder)
+            keyEntity = keyHolder
+        }
     }
 
     /// The value band the tubes stand in — chest to eye, matching the
@@ -2043,9 +2140,38 @@ final class FloorBand {
     /// A whisper above the real floor, so the letters never z-fight
     /// the carpet.
     private static let height: Float = 0.01
+    /// The room's actual floor: a floor-classified plane on the arm
+    /// menu's own tracking session — never a second session.
+    private var floorAnchor: AnchorEntity?
+    private var snapTick: EventSubscription?
 
     func install(in content: RealityViewContent) {
         self.content = content
+        let floor = AnchorEntity(.plane(.horizontal, classification: .floor,
+                                        minimumBounds: SIMD2<Float>(1, 1)))
+        content.add(floor)
+        floorAnchor = floor
+        // The snap: the band keeps to the real floor as the anchor
+        // resolves or refines; until then the world origin stands in.
+        snapTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
+            MainActor.assumeIsolated { self?.snapToFloor() }
+        }
+    }
+
+    /// The real floor's world height, when the room has offered one —
+    /// trusted only near the world origin's own level.
+    private func floorY() -> Float? {
+        guard let floorAnchor, floorAnchor.isAnchored else { return nil }
+        let y = floorAnchor.position(relativeTo: nil).y
+        return (-0.6...0.6).contains(y) ? y : nil
+    }
+
+    private func snapToFloor() {
+        guard let entity, let y = floorY() else { return }
+        let target = y + Self.height
+        if abs(entity.position.y - target) > 0.005 {
+            entity.position.y = target
+        }
     }
 
     func update(history: SankeySpace.FloorHistory?,
@@ -2082,10 +2208,12 @@ final class FloorBand {
         holder.components.set(MapSpaceNodeComponent())
         holder.addChild(plane)
         holder.scale = SIMD3<Float>(1, 1, citedSpace.depth / baseLength)
+        // The fist carries the band sideways and along the corridor
+        // only — its height is the floor's, never the carry's.
         holder.position = SIMD3<Float>(
-            citedSpace.origin.x,
-            Self.height,
-            citedSpace.origin.z - citedSpace.depth / 2) + shift
+            citedSpace.origin.x + shift.x,
+            floorY().map { $0 + Self.height } ?? Self.height,
+            citedSpace.origin.z - citedSpace.depth / 2 + shift.z)
         content.add(holder)
         entity = holder
     }
@@ -2188,16 +2316,23 @@ enum TimeSpreadLayout: String, CaseIterable, Identifiable {
 /// the value normalization — one truth for the flat ribbons and the
 /// graph's cylinders alike.
 enum TimeSpreadInk {
-    /// Frode's chosen graph colours (2026-08-25), darkened a step:
-    /// slate, olive, sienna, ochre — the warm pair reads max, the
-    /// cool pair min.
+    /// Frode's chosen graph colours (2026-08-25), darkened a step —
+    /// slate, olive, sienna, ochre — extended (2026-08-25) with more
+    /// of Tol's muted scheme, darkened the same step: the warm run
+    /// reads max, the cool run min.
     static let maxColors: [Color] = [
         Color(red: 0.59, green: 0.46, blue: 0.22),   // ochre, darkened
         Color(red: 0.42, green: 0.27, blue: 0.20),   // sienna, darkened
+        Color(red: 0.43, green: 0.10, blue: 0.27),   // wine, darkened
+        Color(red: 0.64, green: 0.32, blue: 0.37),   // rose, darkened
+        Color(red: 0.69, green: 0.64, blue: 0.37),   // sand, darkened
     ]
     static let minColors: [Color] = [
         Color(red: 0.29, green: 0.37, blue: 0.42),   // slate, darkened
         Color(red: 0.30, green: 0.34, blue: 0.21),   // olive, darkened
+        Color(red: 0.21, green: 0.53, blue: 0.48),   // teal, darkened
+        Color(red: 0.05, green: 0.37, blue: 0.16),   // green, darkened
+        Color(red: 0.16, green: 0.11, blue: 0.43),   // indigo, darkened
     ]
 
     static func pairIndices(of dataset: SankeySpace.Dataset) -> [String: Int] {
@@ -2210,8 +2345,23 @@ enum TimeSpreadInk {
 
     static func color(of series: SankeySpace.Series,
                       pairIndices: [String: Int]) -> Color {
+        // The reader's chosen ink first — picked on the Mac, carried
+        // by the mirror — the palette by pair otherwise.
+        if let hex = series.colorHex, let chosen = color(fromHex: hex) {
+            return chosen
+        }
         let palette = series.role == .max ? maxColors : minColors
         return palette[(pairIndices[series.pair] ?? 0) % palette.count]
+    }
+
+    /// "#RRGGBB" in, a colour out — nil for anything else.
+    static func color(fromHex hex: String) -> Color? {
+        let cleaned = hex.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "#", with: "")
+        guard cleaned.count == 6, let value = UInt32(cleaned, radix: 16) else { return nil }
+        return Color(red: Double((value >> 16) & 0xFF) / 255,
+                     green: Double((value >> 8) & 0xFF) / 255,
+                     blue: Double(value & 0xFF) / 255)
     }
 
     /// The value scale. Lanes share one absolute scale, so magnitudes
@@ -2234,6 +2384,44 @@ enum TimeSpreadInk {
             }
             return CGFloat((value - low) / (high - low))
         }
+    }
+}
+
+/// The graph's key, a card of its own standing in front of the plot:
+/// every series' swatch, name, and latest value — one row each.
+struct GraphKeyView: View {
+    let dataset: SankeySpace.Dataset
+
+    var body: some View {
+        let pairIndex = TimeSpreadInk.pairIndices(of: dataset)
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(dataset.series) { series in
+                HStack(spacing: 9) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(TimeSpreadInk.color(of: series, pairIndices: pairIndex))
+                        .frame(width: 16, height: 10)
+                    Text(label(for: series))
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.black.opacity(0.55)))
+    }
+
+    private func label(for series: SankeySpace.Series) -> String {
+        guard let latest = series.values.max(by: { $0.year < $1.year }) else {
+            return series.name
+        }
+        let words = series.role == .min || dataset.series.contains(where: {
+            $0.pair == series.pair && $0.id != series.id
+        })
+            ? "\(series.name) \(series.role.rawValue) "
+            : "\(series.name) "
+        return words + String(format: "%.1f", latest.value) + " " + series.unit
     }
 }
 
@@ -2269,40 +2457,9 @@ struct SankeyRibbonView: View {
                 TimeSpreadInk.color(of: series, pairIndices: pairIndex)
             }
 
-            // The key, OUTSIDE the plot: a band across the top naming
-            // every series with its swatch and latest value, flowing
-            // into further rows as the shelf grows — so the plot below
-            // carries only the data, nothing overlaying it.
-            let keyRowHeight: CGFloat = 22
-            var keyX: CGFloat = 16
-            var keyRow = 0
-            for series in dataset.series {
-                guard let latest = series.values.max(by: { $0.year < $1.year })
-                else { continue }
-                let words = series.role == .min || dataset.series.contains(where: {
-                    $0.pair == series.pair && $0.id != series.id
-                })
-                    ? "\(series.name) \(series.role.rawValue) "
-                    : "\(series.name) "
-                let label = context.resolve(
-                    Text(words + String(format: "%.1f", latest.value) + " " + series.unit)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.88)))
-                let measured = label.measure(in: CGSize(width: size.width, height: keyRowHeight))
-                let entryWidth = 12 + 5 + measured.width + 16
-                if keyX + entryWidth > size.width - 16 {
-                    keyRow += 1
-                    keyX = 16
-                }
-                let middle = 10 + keyRowHeight * CGFloat(keyRow) + keyRowHeight / 2
-                context.fill(
-                    Path(roundedRect: CGRect(x: keyX, y: middle - 4.5, width: 12, height: 9),
-                         cornerRadius: 3),
-                    with: .color(seriesColor(series)))
-                context.draw(label, at: CGPoint(x: keyX + 17, y: middle), anchor: .leading)
-                keyX += entryWidth
-            }
-            let contentTop = 10 + keyRowHeight * CGFloat(keyRow + 1) + 6
+            // The key lives on its own card IN FRONT of the graph
+            // (GraphKeyView) — the plot here carries only the data.
+            let contentTop: CGFloat = 16
 
             // Decade ticks, on the corridor's very Zs.
             let firstDecade = (oldest / 10 + 1) * 10

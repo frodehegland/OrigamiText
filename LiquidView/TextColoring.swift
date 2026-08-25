@@ -23,6 +23,10 @@ public nonisolated enum TextColoringMode: String, CaseIterable, Identifiable, Se
     case off
     case grammar
     case meaning
+    // Origami addition (carry back to Knowledge Space): the argument
+    // mode — the moves of academic argument painted by their cue
+    // phrases.
+    case argument
 
     public var id: String { rawValue }
 
@@ -31,6 +35,7 @@ public nonisolated enum TextColoringMode: String, CaseIterable, Identifiable, Se
         case .off: "Off"
         case .grammar: "Grammar"
         case .meaning: "Meaning"
+        case .argument: "Argument"
         }
     }
 }
@@ -42,6 +47,14 @@ public nonisolated enum TextColorCategory: String, CaseIterable, Codable, Sendab
     case determiner, preposition, conjunction, number, interjection
     // Meaning — the named entities, and what the text measures.
     case person, place, organization, time, quantity
+    // Argument — the moves of academic writing, drawn from the
+    // argumentation literature: Toulmin's model (claim, grounds,
+    // qualifier, rebuttal), Teufel & Moens' Argumentative Zoning of
+    // scientific papers (background, own/aim, contrast, basis), the
+    // Citation Typing Ontology's relations (supports, disputes,
+    // extends, usesMethodIn, compares), and Hyland's hedges.
+    case context, claim, evidence, method, comparison
+    case concession, refutation, originality
 
     public var displayName: String {
         switch self {
@@ -60,6 +73,14 @@ public nonisolated enum TextColorCategory: String, CaseIterable, Codable, Sendab
         case .organization: "Organizations"
         case .time: "Time"
         case .quantity: "Quantities"
+        case .context: "Context"
+        case .claim: "Claims"
+        case .evidence: "Evidence"
+        case .method: "Method"
+        case .comparison: "Comparison"
+        case .concession: "Concession"
+        case .refutation: "Refutation"
+        case .originality: "Originality"
         }
     }
 
@@ -81,6 +102,14 @@ public nonisolated enum TextColorCategory: String, CaseIterable, Codable, Sendab
         case .organization: "SRI"
         case .time: "decade"
         case .quantity: "several"
+        case .context: "previously"
+        case .claim: "we argue"
+        case .evidence: "shows that"
+        case .method: "we adopt"
+        case .comparison: "similar to"
+        case .concession: "admittedly"
+        case .refutation: "however"
+        case .originality: "for the first time"
         }
     }
 
@@ -88,6 +117,8 @@ public nonisolated enum TextColorCategory: String, CaseIterable, Codable, Sendab
     public var mode: TextColoringMode {
         switch self {
         case .person, .place, .organization, .time, .quantity: .meaning
+        case .context, .claim, .evidence, .method, .comparison,
+             .concession, .refutation, .originality: .argument
         default: .grammar
         }
     }
@@ -162,6 +193,22 @@ public nonisolated struct TextColorRule: Codable, Identifiable, Hashable, Sendab
         TextColorRule(category: .organization, enabled: true, hex: "#4A5AB8"),
         TextColorRule(category: .time, enabled: true, hex: "#A98600"),
         TextColorRule(category: .quantity, enabled: true, hex: "#E08A3C"),
+        // Argument: colour conventions the literature and common sense
+        // agree on — red for opposition (refutation), green for
+        // confirmation (evidence), blue for assertion (claims, the
+        // substance), violet for the new (originality), amber for
+        // weighing (comparison), teal for the workshop (method), a
+        // quiet lavender for hedged ground (concession), and a slate
+        // that recedes for background (context) — the eight kept
+        // within the six-to-eight hues the eye holds apart.
+        TextColorRule(category: .context, enabled: true, hex: "#7A8CA3"),
+        TextColorRule(category: .claim, enabled: true, hex: "#1F5FA8"),
+        TextColorRule(category: .evidence, enabled: true, hex: "#2E7D5B"),
+        TextColorRule(category: .method, enabled: true, hex: "#2A8A8A"),
+        TextColorRule(category: .comparison, enabled: true, hex: "#C99A2E"),
+        TextColorRule(category: .concession, enabled: true, hex: "#8A7AAF"),
+        TextColorRule(category: .refutation, enabled: true, hex: "#C4342B"),
+        TextColorRule(category: .originality, enabled: true, hex: "#7B3FA6"),
     ]
 
     /// The persisted form.
@@ -220,13 +267,93 @@ extension OrigamiReading {
         "amount", "amounts", "count", "total", "totals", "sum", "sums",
     ]
 
+    /// The cue phrases of academic argument, by category — drawn from
+    /// Toulmin's model, Teufel & Moens' Argumentative Zoning cue
+    /// lists, CiTO's citation relations, and Hyland's hedge and
+    /// booster lexicons. Ordered by precedence: an "although" is a
+    /// concession before its clause reads as anything else, a
+    /// "however" a refutation before "while" reads as comparison.
+    private static let argumentCues: [(TextColorCategory, [String])] = [
+        (.refutation, [
+            "however", "but", "yet", "nevertheless", "nonetheless",
+            "in contrast", "on the contrary", "contrary to", "counter to",
+            "refutes", "refute", "disputes", "dispute", "challenges",
+            "challenge", "rejects", "reject", "fails to", "overlooks",
+            "overlook", "we disagree", "disagrees with", "unlike",
+            "misses", "neglects", "does not hold", "falls short",
+        ]),
+        (.concession, [
+            "although", "though", "admittedly", "granted", "perhaps",
+            "possibly", "arguably", "may", "might", "could be",
+            "to some extent", "somewhat", "partially", "not necessarily",
+            "it seems", "appears to", "tends to", "suggests itself",
+            "with caution", "tentatively",
+        ]),
+        (.originality, [
+            "novel", "for the first time", "we introduce", "we propose",
+            "we present a new", "new approach", "goes beyond",
+            "unlike previous", "we extend", "extends", "original",
+            "unprecedented", "the first to", "our contribution",
+            "we are the first",
+        ]),
+        (.claim, [
+            "we argue", "we claim", "we suggest", "we contend",
+            "we believe", "we maintain", "this paper argues",
+            "it follows that", "therefore", "thus", "hence",
+            "consequently", "we conclude", "in conclusion",
+            "must", "clearly", "certainly", "indeed",
+        ]),
+        (.evidence, [
+            "shows that", "shows", "demonstrates", "demonstrate",
+            "confirms", "confirm", "supports", "support",
+            "consistent with", "corroborates", "evidence", "as shown",
+            "found that", "reveals", "reveal", "indicates", "indicate",
+            "according to", "observed", "results show",
+        ]),
+        (.method, [
+            "using", "we use", "we adopt", "we employ", "applying",
+            "we applied", "we implemented", "we measured", "we conducted",
+            "procedure", "based on the method", "following the approach",
+            "adapted from", "our analysis", "we analysed", "we analyzed",
+        ]),
+        (.comparison, [
+            "compared with", "compared to", "in comparison", "similar to",
+            "similarly", "likewise", "akin to", "parallels", "resembles",
+            "analogous", "whereas", "while", "as in", "echoes",
+            "by analogy", "on the other hand",
+        ]),
+        (.context, [
+            "previous work", "previously", "prior work", "traditionally",
+            "historically", "in recent years", "the literature",
+            "has been shown", "it is known", "well established",
+            "as noted", "originally", "background", "long been",
+            "classic", "canonical", "early work",
+        ]),
+    ]
+
+    /// One compiled matcher per category, longest cue first so
+    /// "in contrast" wins over any shorter overlap. Built once.
+    private static let argumentMatchers: [(TextColorCategory, NSRegularExpression)] =
+        argumentCues.compactMap { category, cues in
+            let alternation = cues
+                .sorted { $0.count > $1.count }
+                .map { NSRegularExpression.escapedPattern(for: $0) }
+                .joined(separator: "|")
+            guard let regex = try? NSRegularExpression(
+                pattern: #"\b(?:"# + alternation + #")\b"#,
+                options: [.caseInsensitive]) else { return nil }
+            return (category, regex)
+        }
+
     /// The paragraph coloured by its words: each tagged on-device and
     /// painted with its category's colour. Grammar paints by part of
     /// speech; Meaning paints named entities, then spans of time (the
     /// date detector plus the period lexicon), then quantities (number
-    /// words and amount words). Words that already carry a colour or a
-    /// link (marks, glossary, citations, the stretch controls) keep
-    /// their own — and earlier passes win over later ones.
+    /// words and amount words); Argument paints the cue phrases of the
+    /// argument's moves, so a skim reads the skeleton of the case
+    /// being made. Words that already carry a colour or a link (marks,
+    /// glossary, citations, the stretch controls) keep their own — and
+    /// earlier passes win over later ones.
     public static func colorCoded(_ attributed: AttributedString,
                                   mode: TextColoringMode,
                                   rules: [TextColorRule]) -> AttributedString {
@@ -306,6 +433,19 @@ extension OrigamiReading {
                     paint(range, quantityColor)
                 }
                 return true
+            }
+        case .argument:
+            // The cue phrases, in precedence order — paint() leaves
+            // already-painted words alone, so the first category to
+            // claim a phrase keeps it.
+            let whole = NSRange(plain.startIndex..<plain.endIndex, in: plain)
+            for (category, regex) in argumentMatchers {
+                guard let color = colors[category] else { continue }
+                for match in regex.matches(in: plain, range: whole) {
+                    if let range = Range(match.range, in: plain) {
+                        paint(range, color)
+                    }
+                }
             }
         }
         return out

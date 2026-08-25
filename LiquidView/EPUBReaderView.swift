@@ -268,6 +268,22 @@ struct EPUBReaderScreen: View {
         findStamp += 1
     }
 
+    /// The words selected in the reading right now — the paragraphs
+    /// are AppKit text views, so the key window's first responder
+    /// carries the selection. Nil when nothing is selected.
+    private func selectedReadingText() -> String? {
+        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else {
+            return nil
+        }
+        let range = textView.selectedRange()
+        guard range.length > 0, range.location != NSNotFound,
+              range.location + range.length <= (textView.string as NSString).length
+        else { return nil }
+        let selected = (textView.string as NSString).substring(with: range)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return selected.isEmpty ? nil : selected
+    }
+
     private func closeFind() {
         showsFind = false
         findText = ""
@@ -330,8 +346,15 @@ struct EPUBReaderScreen: View {
         }
         // ⌘F, ⌘G, and ⇧⌘G land here from the View menu's counters.
         .onChange(of: model.readerFindShow) {
-            showsFind = true
-            findFocused = true
+            // ⌘F over a live selection IS the search: no typing — the
+            // reading folds at once to its headings with the full
+            // sentences carrying the selected words, each highlighted.
+            if let selected = selectedReadingText() {
+                model.showFindFold(term: selected)
+            } else {
+                showsFind = true
+                findFocused = true
+            }
         }
         .onChange(of: model.readerFindNext) {
             if showsFind { stepFind(forward: true) } else { showsFind = true; findFocused = true }

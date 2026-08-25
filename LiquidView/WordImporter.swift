@@ -16,6 +16,12 @@ nonisolated enum WordImporter {
         let author: String?
         let body: [LiquidDoc.Paragraph]
         var assets: [LiquidDoc.Asset] = []
+        /// The works cited through a reference manager (Zotero,
+        /// Mendeley), as cite-keyed BibTeX — the body carries matching
+        /// `[cite:key]` tokens.
+        var references: [LiquidDoc.Reference] = []
+        /// Import diagnostics worth telling the user, warnings first.
+        var notices: [String] = []
     }
 
     static func importFile(at url: URL) throws -> ImportResult {
@@ -100,6 +106,35 @@ nonisolated enum WordImporter {
             if !citations.isEmpty { blocks = injectingAddresses(citations, into: blocks) }
         }
 
+        // Reference-manager citations: the CSL metadata harvested from
+        // the field instructions becomes the references, the visible
+        // "(Author, Year)" texts become [cite:key] tokens, and the
+        // flattened bibliography (regenerated from the map) is dropped.
+        var references: [LiquidDoc.Reference] = []
+        var notices: [String] = []
+        if let docxData {
+            let harvest = WordCitationFields.harvest(fromDocx: docxData)
+            references = harvest.references
+            notices = harvest.notices
+            if harvest.foundCitationFields {
+                let applied = applyingCitations(harvest, to: blocks)
+                blocks = applied.blocks
+                if applied.unmatched > 0 {
+                    notices.append("""
+                        \(applied.unmatched) citation\(applied.unmatched == 1 ? "" : "s") \
+                        could not be located in the text; the references were still imported.
+                        """)
+                }
+            } else if WordCitationFields.looksFlattened(
+                blocks.map(\.text).joined(separator: "\n")) {
+                notices.insert("""
+                    This document appears to contain citations, but the \
+                    reference-manager data has been removed (unlinked). \
+                    Citations import as plain text.
+                    """, at: 0)
+            }
+        }
+
         // Word's Title property, else a leading level-1 heading, else the
         // filename — same order of preference as the Markdown importer.
         let metaTitle = (documentAttributes?[NSAttributedString.DocumentAttributeKey.title] as? String)?
@@ -124,7 +159,64 @@ nonisolated enum WordImporter {
         return ImportResult(title: title,
                             author: author?.isEmpty == false ? author : nil,
                             body: paragraphs,
-                            assets: assets)
+                            assets: assets,
+                            references: references,
+                            notices: notices)
+    }
+
+    /// Applies the harvest to the body: the flattened bibliography's
+    /// lines drop, and each citation's visible text — consumed in
+    /// document order, so repeats resolve one by one — becomes its
+    /// `[cite:key]` tokens.
+    private static func applyingCitations(_ harvest: WordCitationFields.Harvest,
+                                          to blocks: [(heading: Int?, text: String)])
+        -> (blocks: [(heading: Int?, text: String)], unmatched: Int) {
+        var blocks = blocks
+        if !harvest.bibliographyLines.isEmpty {
+            func normalized(_ text: String) -> String {
+                text.replacingOccurrences(of: "\u{00A0}", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let dropped = Set(harvest.bibliographyLines.map(normalized))
+            blocks.removeAll { !dropped.isEmpty && dropped.contains(normalized($0.text)) }
+        }
+        var cursorBlock = 0
+        var cursorLocation = 0
+        var unmatched = 0
+        for (display, replacement) in harvest.replacements {
+            let target = sanitize(display).trimmingCharacters(in: .whitespaces)
+            guard !target.isEmpty else { continue }
+            var found = false
+            var index = cursorBlock
+            while index < blocks.count {
+                let text = blocks[index].text
+                let from = index == cursorBlock
+                    ? text.index(text.startIndex,
+                                 offsetBy: min(cursorLocation, text.count))
+                    : text.startIndex
+                if let range = text.range(of: target, range: from..<text.endIndex) {
+                    let location = text.distance(from: text.startIndex, to: range.lowerBound)
+                    blocks[index].text.replaceSubrange(range, with: replacement)
+                    cursorBlock = index
+                    cursorLocation = location + replacement.count
+                    found = true
+                    break
+                }
+                index += 1
+            }
+            if !found {
+                // Out-of-order fallback (a footnote's citation, an
+                // unexpected walk): search the whole body once, without
+                // moving the cursor.
+                if let hit = blocks.indices.first(where: { blocks[$0].text.contains(target) }),
+                   let range = blocks[hit].text.range(of: target) {
+                    blocks[hit].text.replaceSubrange(range, with: replacement)
+                } else {
+                    unmatched += 1
+                }
+            }
+        }
+        return (blocks, unmatched)
     }
 
     /// Word heading styles usually arrive as an outline level; when they
@@ -441,6 +533,449 @@ nonisolated enum WordFieldLinks {
             .replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&#39;", with: "'")
             .replacingOccurrences(of: "&apos;", with: "'")
+    }
+}
+
+/// Reference-manager citations from a `.docx` — Zotero and Mendeley
+/// store each citation as a Word field whose instruction carries the
+/// full CSL-JSON metadata, so the user's library is never needed. The
+/// harvest walks document.xml, footnotes.xml, and endnotes.xml with a
+/// real field state machine (instructions split across runs, nested
+/// fields, `fldSimple`), builds a works map with stable cite keys, and
+/// hands back BibTeX references plus the in-body replacements that
+/// turn each visible citation into `[cite:key]` tokens.
+nonisolated enum WordCitationFields {
+
+    /// One completed field: its instruction and its visible result,
+    /// paragraph breaks in the result kept as newlines.
+    struct FieldCluster {
+        var instruction = ""
+        var result = ""
+    }
+
+    struct Harvest {
+        /// The works map, in first-appearance order: cite key + BibTeX.
+        var references: [LiquidDoc.Reference] = []
+        /// Each citation cluster in document order: the visible text
+        /// AppKit put in the body, and the token text replacing it.
+        var replacements: [(display: String, replacement: String)] = []
+        /// The flattened bibliography's lines, to drop from the body —
+        /// the references section is regenerated from the works map.
+        var bibliographyLines: [String] = []
+        /// Import diagnostics, WARNINGs first.
+        var notices: [String] = []
+        /// Whether any reference-manager field was seen at all.
+        var foundCitationFields = false
+    }
+
+    // MARK: The harvest
+
+    static func harvest(fromDocx data: Data) -> Harvest {
+        guard let zip = DocxZip(data: data) else { return Harvest() }
+        var harvest = Harvest()
+        var works = WorksMap()
+        // All three parts carry fields; notes' citations still yield
+        // their metadata even where the note text itself is dropped.
+        for part in ["word/document.xml", "word/footnotes.xml", "word/endnotes.xml"] {
+            guard let xml = zip.read(part) else { continue }
+            for cluster in FieldScanner.fields(in: xml) {
+                classify(cluster, into: &harvest, works: &works)
+            }
+        }
+        harvest.references = works.orderedReferences()
+        if let uncited = works.uncitedCount, uncited > 0 {
+            harvest.notices.insert("""
+                \(uncited) uncited bibliography \(uncited == 1 ? "entry" : "entries") \
+                could not be imported (the metadata lives only in the reference \
+                manager's library) — re-cite them or add them manually.
+                """, at: 0)
+        }
+        return harvest
+    }
+
+    /// §8: with no recognised fields, a document full of author-year
+    /// parentheses was probably flattened (Unlink Citations).
+    static func looksFlattened(_ text: String) -> Bool {
+        let pattern = #"\(\p{Lu}[\p{L}'-]+( et al\.)?,? (17|18|19|20)\d\d[a-z]?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        let hits = regex.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text))
+        if hits >= 3 { return true }
+        return text.range(of: #"^(References|Bibliography|Works Cited)$"#,
+                          options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    // MARK: Classification (§2)
+
+    private static func classify(_ cluster: FieldCluster, into harvest: inout Harvest,
+                                 works: inout WorksMap) {
+        let instruction = cluster.instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard instruction.hasPrefix("ADDIN") else { return }
+        if instruction.contains("CSL_CITATION") && !instruction.contains("CSL_BIBLIOGRAPHY") {
+            // Zotero (ADDIN ZOTERO_ITEM CSL_CITATION) and Mendeley
+            // Desktop (ADDIN CSL_CITATION) share the schema.
+            harvest.foundCitationFields = true
+            citation(instruction: instruction, result: cluster.result,
+                     into: &harvest, works: &works)
+        } else if instruction.contains("ZOTERO_BIBL")
+                    || instruction.contains("CSL_BIBLIOGRAPHY") {
+            harvest.foundCitationFields = true
+            bibliography(instruction: instruction, result: cluster.result,
+                         into: &harvest, works: &works)
+        } else if instruction.contains("EN.CITE") {
+            harvest.notices.append("""
+                EndNote citations detected — metadata import for EndNote is not \
+                yet supported; the citations are preserved as text.
+                """)
+        } else if instruction.contains("EN.REFLIST") {
+            // The EndNote bibliography: its text stands as it is.
+        } else if instruction.contains("CitaviPlaceholder") {
+            harvest.notices.append(
+                "Citavi citations detected — preserved as text (not yet supported).")
+        }
+        // Any other ADDIN (or plain Word field): its result already
+        // stands in the body as text — current behaviour.
+    }
+
+    /// One citation cluster (§3, §6.1): every cited work joins the map,
+    /// and the visible text is replaced by `[cite:key]` tokens with the
+    /// author's prefix and locator kept as plain words around them.
+    private static func citation(instruction: String, result: String,
+                                 into harvest: inout Harvest, works: inout WorksMap) {
+        guard let json = firstJSONObject(in: instruction) else {
+            harvest.notices.append(
+                "One citation field's data could not be read — it was imported as plain text.")
+            return
+        }
+        let items = (json["citationItems"] as? [[String: Any]]) ?? []
+        guard !items.isEmpty else { return }
+        var pieces: [String] = []
+        for item in items {
+            guard let itemData = item["itemData"] as? [String: Any] else { continue }
+            let uris = (item["uris"] as? [String]) ?? []
+            let key = works.key(for: itemData, uris: uris)
+            var piece = ""
+            if let prefix = item["prefix"] as? String,
+               !prefix.trimmingCharacters(in: .whitespaces).isEmpty {
+                piece += prefix.trimmingCharacters(in: .whitespaces) + " "
+            }
+            piece += "[cite:\(key)]"
+            if let locator = item["locator"] as? String, !locator.isEmpty {
+                piece += " (\(locatorLabel(item["label"] as? String)) \(locator))"
+            }
+            if let suffix = item["suffix"] as? String,
+               !suffix.trimmingCharacters(in: .whitespaces).isEmpty {
+                piece += " " + suffix.trimmingCharacters(in: .whitespaces)
+            }
+            pieces.append(piece)
+        }
+        guard !pieces.isEmpty else { return }
+        let display = result
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // A field with no visible result has nothing to replace; the
+        // references still land.
+        if !display.isEmpty {
+            harvest.replacements.append((display, pieces.joined(separator: " ")))
+        }
+    }
+
+    private static func locatorLabel(_ label: String?) -> String {
+        switch label {
+        case nil, "page": "p."
+        case "chapter": "ch."
+        case "section": "§"
+        case let other?: other
+        }
+    }
+
+    /// The bibliography control field (§5): its formatted list is
+    /// dropped (the references regenerate from the works map), and its
+    /// `uncited` URIs become a warning — their metadata is not in the
+    /// document.
+    private static func bibliography(instruction: String, result: String,
+                                     into harvest: inout Harvest, works: inout WorksMap) {
+        harvest.bibliographyLines.append(contentsOf: result
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty })
+        if let json = firstJSONObject(in: instruction) {
+            let uncited = (json["uncited"] as? [[String]])?.count
+                ?? (json["uncited"] as? [Any])?.count ?? 0
+            works.uncitedCount = uncited
+        }
+    }
+
+    /// The first balanced JSON object after the field keyword — never
+    /// regexed; the payload is full of nested braces (§2).
+    private static func firstJSONObject(in instruction: String) -> [String: Any]? {
+        guard let start = instruction.firstIndex(of: "{") else { return nil }
+        let tail = String(instruction[start...])
+        // The instruction may trail the JSON (ZOTERO_BIBL ends with
+        // "CSL_BIBLIOGRAPHY"): JSONSerialization wants the object
+        // alone, so scan to its balanced end first.
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var end: String.Index?
+        for index in tail.indices {
+            let character = tail[index]
+            if escaped { escaped = false; continue }
+            switch character {
+            case "\\" where inString: escaped = true
+            case "\"": inString.toggle()
+            case "{" where !inString: depth += 1
+            case "}" where !inString:
+                depth -= 1
+                if depth == 0 { end = index }
+            default: break
+            }
+            if end != nil { break }
+        }
+        guard let end,
+              let objectData = String(tail[...end]).data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: objectData)) as? [String: Any]
+    }
+
+    // MARK: The works map (§4)
+
+    struct WorksMap {
+        private var keysByIdentity: [String: String] = [:]
+        private var referencesByKey: [String: LiquidDoc.Reference] = [:]
+        private var order: [String] = []
+        var uncitedCount: Int?
+
+        /// The work's cite key, minted on first sight: FamilyYYYYFirstword,
+        /// ASCII-folded, collisions suffixed a, b, c…
+        mutating func key(for itemData: [String: Any], uris: [String]) -> String {
+            let identity = uris.isEmpty
+                ? [CSLItem.firstFamily(of: itemData) ?? "",
+                   CSLItem.year(of: itemData) ?? "",
+                   (itemData["title"] as? String ?? "").lowercased()]
+                    .joined(separator: "|")
+                : uris.sorted().joined(separator: "|")
+            if let existing = keysByIdentity[identity] { return existing }
+            var base = (CSLItem.firstFamily(of: itemData) ?? "Anon")
+                + (CSLItem.year(of: itemData) ?? "")
+                + CSLItem.firstTitleWord(of: itemData)
+            base = base.folding(options: .diacriticInsensitive, locale: nil)
+                .components(separatedBy: CharacterSet.alphanumerics.inverted).joined()
+            if base.isEmpty { base = "Work" }
+            var key = base
+            var suffix = ""
+            while referencesByKey[key] != nil {
+                suffix = suffix.isEmpty ? "a" : String(UnicodeScalar(
+                    suffix.unicodeScalars.first!.value + 1)!)
+                key = base + suffix
+            }
+            keysByIdentity[identity] = key
+            referencesByKey[key] = LiquidDoc.Reference(
+                id: key,
+                bibtex: CSLItem.bibtex(of: itemData, key: key),
+                citedAs: CSLItem.citedAs(of: itemData))
+            order.append(key)
+            return key
+        }
+
+        func orderedReferences() -> [LiquidDoc.Reference] {
+            order.compactMap { referencesByKey[$0] }
+        }
+    }
+
+    // MARK: CSL-JSON accessors and the BibTeX mapping (§4.1)
+
+    /// Lenient readers over the raw CSL-JSON dictionary — CSL in the
+    /// wild carries string-or-number ids and parts, so nothing here
+    /// assumes a rigid shape; a malformed item degrades, never aborts.
+    enum CSLItem {
+
+        static func firstFamily(of item: [String: Any]) -> String? {
+            guard let authors = item["author"] as? [[String: Any]],
+                  let first = authors.first else { return nil }
+            return (first["family"] as? String)
+                ?? (first["literal"] as? String)?
+                    .components(separatedBy: " ").last
+        }
+
+        static func year(of item: [String: Any]) -> String? {
+            guard let issued = item["issued"] as? [String: Any],
+                  let parts = issued["date-parts"] as? [[Any]],
+                  let year = parts.first?.first else { return nil }
+            return "\(year)".components(separatedBy: ".").first
+        }
+
+        static func firstTitleWord(of item: [String: Any]) -> String {
+            let skip: Set<String> = ["a", "an", "the", "on", "of", "in", "and",
+                                     "for", "to", "at", "from", "with"]
+            let words = (item["title"] as? String ?? "")
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            let word = words.first { $0.count > 1 && !skip.contains($0.lowercased()) }
+            return (word ?? "").capitalized
+        }
+
+        static func citedAs(of item: [String: Any]) -> String? {
+            guard let family = firstFamily(of: item) else { return nil }
+            let year = year(of: item)
+            return "(\(family)\(year.map { ", \($0)" } ?? ""))"
+        }
+
+        /// CSL `type` → BibTeX entry type.
+        private static func entryType(_ type: String?) -> String {
+            switch type {
+            case "article-journal", "article-magazine", "article-newspaper": "article"
+            case "paper-conference": "inproceedings"
+            case "chapter": "incollection"
+            case "book": "book"
+            case "thesis": "thesis"
+            case "report": "report"
+            case "webpage", "post", "post-weblog": "online"
+            case "manuscript": "unpublished"
+            case "dataset": "dataset"
+            default: "misc"
+            }
+        }
+
+        /// The derived BibTeX entry — raw UTF-8, the app's own `.bib`
+        /// convention (this codebase parses its references with
+        /// BibTeXParser; the export layers escape at their own edge).
+        static func bibtex(of item: [String: Any], key: String) -> String {
+            let type = entryType(item["type"] as? String)
+            var fields: [(String, String)] = []
+            func add(_ name: String, _ value: String?) {
+                if let value, !value.isEmpty {
+                    fields.append((name, value.replacingOccurrences(of: "\n", with: " ")))
+                }
+            }
+            func names(_ csl: String) -> String? {
+                guard let people = item[csl] as? [[String: Any]], !people.isEmpty
+                else { return nil }
+                return people.compactMap { person -> String? in
+                    if let literal = person["literal"] as? String { return "{\(literal)}" }
+                    guard let family = person["family"] as? String else { return nil }
+                    let given = person["given"] as? String
+                    return given.map { "\(family), \($0)" } ?? family
+                }.joined(separator: " and ")
+            }
+            add("title", item["title"] as? String)
+            add("author", names("author"))
+            add("editor", names("editor"))
+            add("year", year(of: item))
+            let container = item["container-title"] as? String
+            switch type {
+            case "article": add("journaltitle", container)
+            case "inproceedings", "incollection": add("booktitle", container)
+            default: add("howpublished", container)
+            }
+            add("series", item["collection-title"] as? String)
+            add("volume", (item["volume"] as? String) ?? (item["volume"] as? NSNumber)?.stringValue)
+            add("number", (item["issue"] as? String) ?? (item["issue"] as? NSNumber)?.stringValue)
+            add("pages", (item["page"] as? String)?
+                .replacingOccurrences(of: "-", with: "--")
+                .replacingOccurrences(of: "----", with: "--")
+                .replacingOccurrences(of: "\u{2013}", with: "--"))
+            add("publisher", item["publisher"] as? String)
+            add("address", item["publisher-place"] as? String)
+            add("doi", item["DOI"] as? String)
+            add("url", item["URL"] as? String)
+            add("isbn", item["ISBN"] as? String)
+            add("issn", item["ISSN"] as? String)
+            add("eventtitle", item["event-title"] as? String)
+            if type == "thesis" { add("type", item["genre"] as? String) }
+            if let accessed = item["accessed"] as? [String: Any],
+               let parts = (accessed["date-parts"] as? [[Any]])?.first {
+                let stamped = parts.prefix(3).map {
+                    String(format: "%02d", Int("\($0)".components(separatedBy: ".").first ?? "") ?? 0)
+                }.joined(separator: "-")
+                if !stamped.isEmpty { add("urldate", stamped) }
+            }
+            let body = fields.map { "  \($0.0) = {\($0.1)}" }.joined(separator: ",\n")
+            return "@\(type){\(key),\n\(body)\n}"
+        }
+    }
+
+    // MARK: The field scanner (§1)
+
+    /// Walks one OOXML part and returns every completed field, in
+    /// document order: instructions concatenated across split
+    /// `instrText` runs, a depth stack so nested fields never
+    /// desynchronise, `fldSimple` handled alongside, and paragraph
+    /// ends inside a field's result kept as newlines.
+    private final class FieldScanner: NSObject, XMLParserDelegate {
+
+        static func fields(in xmlData: Data) -> [FieldCluster] {
+            let scanner = FieldScanner()
+            let parser = XMLParser(data: xmlData)
+            parser.delegate = scanner
+            parser.parse()
+            return scanner.completed
+        }
+
+        private var completed: [FieldCluster] = []
+        /// The open complex fields, innermost last; `pastSeparate`
+        /// rides along per level.
+        private var stack: [(field: FieldCluster, pastSeparate: Bool)] = []
+        private var collectingInstruction = false
+        private var collectingText = false
+
+        func parser(_ parser: XMLParser, didStartElement elementName: String,
+                    namespaceURI: String?, qualifiedName: String?,
+                    attributes: [String: String]) {
+            switch elementName {
+            case "w:fldChar":
+                switch attributes["w:fldCharType"] {
+                case "begin":
+                    stack.append((FieldCluster(), false))
+                case "separate":
+                    if !stack.isEmpty { stack[stack.count - 1].pastSeparate = true }
+                case "end":
+                    guard let done = stack.popLast() else { break }
+                    completed.append(done.field)
+                    // A nested field's visible words are part of its
+                    // parent's result.
+                    if !stack.isEmpty { stack[stack.count - 1].field.result += done.field.result }
+                default: break
+                }
+            case "w:instrText":
+                collectingInstruction = true
+            case "w:t":
+                collectingText = true
+            case "w:fldSimple":
+                // The instruction lives in the attribute (already
+                // entity-decoded by the parser); children are result.
+                var simple = FieldCluster()
+                simple.instruction = attributes["w:instr"] ?? ""
+                stack.append((simple, true))
+            default: break
+            }
+        }
+
+        func parser(_ parser: XMLParser, didEndElement elementName: String,
+                    namespaceURI: String?, qualifiedName: String?) {
+            switch elementName {
+            case "w:instrText": collectingInstruction = false
+            case "w:t": collectingText = false
+            case "w:fldSimple":
+                guard let done = stack.popLast() else { break }
+                completed.append(done.field)
+                if !stack.isEmpty { stack[stack.count - 1].field.result += done.field.result }
+            case "w:p":
+                // A paragraph break inside a field's result — the
+                // flattened bibliography's line ends.
+                if !stack.isEmpty, stack[stack.count - 1].pastSeparate {
+                    stack[stack.count - 1].field.result += "\n"
+                }
+            default: break
+            }
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            guard !stack.isEmpty else { return }
+            let last = stack.count - 1
+            if collectingInstruction, !stack[last].pastSeparate {
+                stack[last].field.instruction += string
+            } else if collectingText, stack[last].pastSeparate {
+                stack[last].field.result += string
+            }
+        }
     }
 }
 

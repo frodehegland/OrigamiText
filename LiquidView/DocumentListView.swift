@@ -638,12 +638,14 @@ struct InboxListView: View {
                 }
             }
         }
-        // Drop an EPUB (or other importable file) onto the inbox to import
-        // it into a new draft.
+        // Drop an EPUB — or a LaTeX project (an Overleaf/Author zip,
+        // or a bare .tex) — onto the inbox to bring it in.
         .dropDestination(for: URL.self) { urls, _ in
-            let epubs = urls.filter { $0.pathExtension.lowercased() == "epub" }
-            guard !epubs.isEmpty else { return false }
-            for url in epubs { model.openFile(at: url) }
+            let importable = urls.filter {
+                ["epub", "zip", "tex"].contains($0.pathExtension.lowercased())
+            }
+            guard !importable.isEmpty else { return false }
+            for url in importable { model.openFile(at: url) }
             return true
         } isTargeted: { isDropTargeted = $0 }
         .overlay {

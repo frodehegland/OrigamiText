@@ -24,6 +24,9 @@ nonisolated enum SankeySpace {
         /// Which Timeflow carries it — "left", "right", or nil for
         /// both. Absent from older mirrors, which read as nil.
         var wall: String? = nil
+        /// The reader's chosen ink, "#RRGGBB" — nil paints from the
+        /// palette by pair. Chosen on the Mac, worn everywhere.
+        var colorHex: String? = nil
 
         enum Role: String, Codable, Sendable { case max, min }
 
@@ -230,16 +233,30 @@ nonisolated enum SankeySpace {
                                  scale: 1e-9)),
     ]
 
-    /// The corridor's own defaults, fetched when no Mac has filled the
-    /// mirror: computing stands on the left wall, the world on the
-    /// right. ("Computing power per dollar" and "computers in the
-    /// world" publish no live series at Our World in Data — Moore's
-    /// law and the TOP500 leader stand in, both verified.)
+    /// The graphs' named inks — the corridor palette's own hues (Tol's
+    /// muted scheme, darkened), offered by name wherever a graph's
+    /// colour is chosen. Hex here, Color at the edges, so this file
+    /// stays Foundation-clean.
+    static let inkChoices: [(name: String, hex: String)] = [
+        ("Ochre", "#967538"),
+        ("Sienna", "#6B4533"),
+        ("Wine", "#6E1A45"),
+        ("Rose", "#A3525E"),
+        ("Sand", "#B0A35E"),
+        ("Slate", "#4A5E6B"),
+        ("Olive", "#4C5736"),
+        ("Teal", "#36877A"),
+        ("Green", "#0D5E29"),
+        ("Indigo", "#291C6E"),
+    ]
+
+    /// The corridor's own defaults (chosen 2026-08-25): Moore's law
+    /// and the TOP500 leader on the left wall, internet users on the
+    /// right.
     static func defaultWallSeries() async -> [Series] {
         let plan: [(sampleID: String, wall: String)] = [
             ("sample-transistors", "left"),
             ("sample-supercomputer", "left"),
-            ("sample-population", "right"),
             ("sample-internet", "right"),
         ]
         var out: [Series] = []

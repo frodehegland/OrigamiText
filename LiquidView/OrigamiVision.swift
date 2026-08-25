@@ -41,12 +41,12 @@ struct OrigamiVisionApp: App {
         }
         .defaultSize(width: 460, height: 520)
 
-        // The Sankey's data, opened from the left arm's Data chip:
-        // the series standing on the corridor's Z axis, and the
-        // Ask-for-Data field that brings in more — Liquid
-        // Information's + dialog, here.
-        WindowGroup(id: "data") {
-            VisionDataView()
+        // The graphs' data, opened from either arm's Time Data chip —
+        // each arm curates its own side's graph: the series standing
+        // on the corridor's Z axis, and the Ask-for-Data field that
+        // brings in more — Liquid Information's + dialog, here.
+        WindowGroup(id: "data", for: String.self) { $wall in
+            VisionDataView(wall: wall ?? "left")
                 .environment(model)
         }
         .defaultSize(width: 480, height: 460)
@@ -466,14 +466,21 @@ final class VisionModel {
     }
 
     /// The user's Ask-for-Data: a city's yearly min/max temperatures
-    /// join the diagram and the mirror. Throws the fetch's own words.
-    func addSankeyCity(_ city: String) async throws {
-        adoptSankeySeries(try await SankeySpace.temperatureSeries(city: city))
+    /// join the diagram and the mirror — on the asking arm's graph.
+    /// Throws the fetch's own words.
+    func addSankeyCity(_ city: String, wall: String? = nil) async throws {
+        var series = try await SankeySpace.temperatureSeries(city: city)
+        for index in series.indices { series[index].wall = wall }
+        adoptSankeySeries(series)
     }
 
-    /// One of the sample shelf's long-run series joins the corridor.
-    func addSampleFlow(_ sample: SankeySpace.SampleFlow) async throws {
-        adoptSankeySeries([try await SankeySpace.fetchSample(sample)])
+    /// One of the sample shelf's long-run series joins the corridor —
+    /// on the asking arm's graph.
+    func addSampleFlow(_ sample: SankeySpace.SampleFlow,
+                       wall: String? = nil) async throws {
+        var series = try await SankeySpace.fetchSample(sample)
+        series.wall = wall
+        adoptSankeySeries([series])
     }
 
     /// New series replace their pair, land in the dataset, and travel
@@ -973,6 +980,10 @@ struct OrigamiSpaceView: View {
 /// the reader asks for.
 struct VisionDataView: View {
     @Environment(VisionModel.self) private var model
+    /// Which graph this dialog curates — "left" or "right"; the arm
+    /// that opened it decides. Untagged series stand on both graphs
+    /// and so appear in both dialogs.
+    let wall: String
 
     @State private var city = ""
     @State private var isFetching = false
@@ -988,6 +999,10 @@ struct VisionDataView: View {
         TimeSpreadLayout.lanes.rawValue
     /// What lies written on the physical floor beneath the corridor.
     @AppStorage("floorShow") private var floorShowRaw = FloorShow.world.rawValue
+    /// The snap-to-wall option, one per graph — this dialog offers its
+    /// own side's.
+    @AppStorage("graphSnapWallLeft") private var snapWallLeft = false
+    @AppStorage("graphSnapWallRight") private var snapWallRight = false
 
     var body: some View {
         NavigationStack {
@@ -1010,10 +1025,15 @@ struct VisionDataView: View {
                             Text(show.displayName).tag(show.rawValue)
                         }
                     }
+                    Toggle("Snap to wall",
+                           isOn: wall == "left" ? $snapWallLeft : $snapWallRight)
                 }
                 Section("Data lines — each year a point on the corridor") {
-                    if let dataset = model.sankey, !dataset.series.isEmpty {
-                        ForEach(dataset.pairs, id: \.pair) { entry in
+                    let mine = (model.sankey?.pairs ?? []).filter { entry in
+                        entry.series.contains { $0.wall == nil || $0.wall == wall }
+                    }
+                    if !mine.isEmpty {
+                        ForEach(mine, id: \.pair) { entry in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(entry.name)
@@ -1031,7 +1051,7 @@ struct VisionDataView: View {
                             }
                         }
                     } else {
-                        Text("No data lines yet — the first pair arrives with the community folder scan, or ask below.")
+                        Text("No data lines on this graph yet — add a sample below, or ask for a city's temperatures.")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -1045,7 +1065,9 @@ struct VisionDataView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if model.sankey?.series.contains(where: { $0.pair == sample.id }) == true {
+                            if model.sankey?.series.contains(where: {
+                                $0.pair == sample.id && ($0.wall == nil || $0.wall == wall)
+                            }) == true {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(.secondary)
                             } else if fetchingSample == sample.id {
@@ -1082,7 +1104,7 @@ struct VisionDataView: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .navigationTitle("Time Data")
+            .navigationTitle(wall == "left" ? "Left Graph" : "Right Graph")
         }
     }
 
@@ -1101,7 +1123,7 @@ struct VisionDataView: View {
         Task { @MainActor in
             defer { isFetching = false }
             do {
-                try await model.addSankeyCity(name)
+                try await model.addSankeyCity(name, wall: wall)
                 status = "Added \(name)."
                 city = ""
             } catch {
@@ -1117,7 +1139,7 @@ struct VisionDataView: View {
         Task { @MainActor in
             defer { fetchingSample = nil }
             do {
-                try await model.addSampleFlow(sample)
+                try await model.addSampleFlow(sample, wall: wall)
                 status = "Added \(sample.name)."
             } catch {
                 status = error.localizedDescription

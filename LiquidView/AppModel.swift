@@ -3204,8 +3204,11 @@ final class AppModel {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         panel.treatsFilePackagesAsDirectories = false
-        panel.allowedContentTypes = [.epub]
-        panel.message = "Open an EPUB to read it."
+        // EPUBs open; a LaTeX project (an Overleaf/Author zip, or a
+        // bare .tex) imports — becoming an EPUB on the way in.
+        panel.allowedContentTypes = [.epub, .zip]
+            + (UTType(filenameExtension: "tex").map { [$0] } ?? [])
+        panel.message = "Open an EPUB to read it, or a LaTeX project (.zip or .tex) to import."
         panel.prompt = "Open"
         panel.setContentSize(NSSize(width: 450, height: 600))
         NSApp.activate()
@@ -3320,6 +3323,11 @@ final class AppModel {
                 author = result.author ?? authorName
                 body = result.body
                 assets = result.assets
+                references = result.references
+                if let first = result.notices.first {
+                    let more = result.notices.count - 1
+                    showNote(more > 0 ? "\(first) (+\(more) more)" : first)
+                }
             case "epub":
                 // An Origami Text EPUB comes back whole: the body with
                 // its stable paragraph ids, and the Visual-Meta layer —

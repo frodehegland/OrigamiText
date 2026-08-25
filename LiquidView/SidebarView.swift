@@ -277,11 +277,6 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
 
-            // The data lines standing along the headset's corridor —
-            // curated here, carried by the community folder.
-            Label("Time Flows", systemImage: "chart.line.uptrend.xyaxis")
-                .tag(SidebarItem.timeFlows)
-
             // The experimental views shared with Knowledge Space, each a
             // module in LibraryViewRegistry; curated with checkboxes in
             // Settings ▸ View Modules.
@@ -335,6 +330,10 @@ struct SidebarView: View {
             Label(venueLabel, systemImage: "newspaper")
                 .badge(model.epubPublications.count)
                 .tag(SidebarItem.epubJournals)
+            // The graphs standing along the headset's corridor —
+            // curated here, carried by the community folder.
+            Label("Graphs", systemImage: "chart.line.uptrend.xyaxis")
+                .tag(SidebarItem.timeFlows)
             ForEach(model.epubFolders, id: \.self) { folder in
                 Label(folder, systemImage: "folder")
                     .badge(model.epubRecords(inFolder: folder).count)
