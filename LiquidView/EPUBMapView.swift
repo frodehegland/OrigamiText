@@ -124,6 +124,8 @@ struct EPUBMapView: View {
     /// corridor's centre, each arm's Time Data choosing its own.
     @State private var floorBandLeft = FloorBand(sideOffset: -0.75)
     @State private var floorBandRight = FloorBand(sideOffset: 0.75)
+    /// Decade rules across the floor, graph to graph.
+    @State private var floorDecadeLines = FloorDecadeLines()
 
     /// Readers opened in-situ: the full reading standing where its
     /// card stood, dragged anywhere by its handle bar — free of the
@@ -472,6 +474,12 @@ struct EPUBMapView: View {
                               years: span ?? historyYearSpan(of: rightHistory),
                               citedSpace: citedSpace,
                               shift: spaceShift)
+        // The decade rules tie graphs and floor lanes to one calendar.
+        floorDecadeLines.update(
+            years: desk ? nil : (span ?? historyYearSpan(of: leftHistory)
+                                 ?? historyYearSpan(of: rightHistory)),
+            citedSpace: citedSpace,
+            shift: spaceShift)
     }
 
     /// One lane's choice resolved to its events — asking the model to
@@ -907,6 +915,7 @@ struct EPUBMapView: View {
             sankeyWallRight.install(in: content)
             floorBandLeft.install(in: content)
             floorBandRight.install(in: content)
+            floorDecadeLines.install(in: content)
             readerPanels.install(in: content)
             fistGrab.install(
                 in: content,
@@ -1148,8 +1157,11 @@ struct EPUBMapView: View {
         if model.readingDeskDocID == docID {
             model.readingDeskDocID = nil
         }
-        readerPanels.close(docID: docID)
-        model.openDocIDs.remove(docID)
+        // The panel flies home first; the card returns as it lands,
+        // and catches it with a wobble.
+        readerPanels.closeAnimated(docID: docID) {
+            model.openDocIDs.remove(docID)
+        }
     }
 
     /// A citation's record, opened in-situ where the card stands: the
@@ -1828,6 +1840,8 @@ final class ReaderPanels {
             standing.position = position
             return
         }
+        // Where the card stood — the close flies the reading home.
+        origins[docID] = position
         let root = Entity()
         root.position = position
 
@@ -1869,6 +1883,73 @@ final class ReaderPanels {
         roots[docID]?.removeFromParent()
         roots[docID] = nil
         dragStart[docID] = nil
+        origins[docID] = nil
+        closing.remove(docID)
+    }
+
+    /// Where each reading opened — the card's place, and the close's
+    /// destination.
+    private var origins: [String: SIMD3<Float>] = [:]
+    /// Panels mid-flight home, so a second ✕ doesn't double the close.
+    private var closing: Set<String> = []
+
+    /// The close with its story told: the panel shrinks and flies back
+    /// to where its card stood, and the card catches it with a wobble
+    /// — something thrown back into it.
+    func closeAnimated(docID: String, onClosed: @escaping @MainActor () -> Void) {
+        guard let root = roots[docID], !closing.contains(docID) else { return }
+        closing.insert(docID)
+        var transform = root.transform
+        transform.translation = origins[docID] ?? root.position
+        transform.scale = SIMD3<Float>(repeating: 0.03)
+        root.move(to: transform, relativeTo: nil,
+                  duration: 0.32, timingFunction: .easeIn)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(340))
+            guard let self else { return }
+            self.close(docID: docID)
+            onClosed()   // the card returns with the reload
+            // A beat for the card to stand again, then the catch.
+            try? await Task.sleep(for: .milliseconds(80))
+            self.wobble(self.cardEntity(for: docID))
+        }
+    }
+
+    private typealias MapItemComponent =
+        NodeImmersiveView<[EPUBMapItem], AnyView, AnyView>.ItemComponent<EPUBMapItem>
+
+    /// The engine-owned card for a document, found by its item.
+    private func cardEntity(for docID: String) -> Entity? {
+        guard let content else { return nil }
+        return content.entities.first {
+            $0.components[MapItemComponent.self]?.item.id == docID
+        }
+    }
+
+    /// The catch: a quick tilt, a counter-tilt, and a settle.
+    private func wobble(_ entity: Entity?) {
+        guard let entity else { return }
+        let rest = entity.transform
+        func tilted(_ degrees: Float, grown: Float = 1) -> Transform {
+            var pose = rest
+            pose.rotation = rest.rotation * simd_quatf(
+                angle: degrees * .pi / 180, axis: SIMD3<Float>(0, 0, 1))
+            pose.scale = rest.scale * grown
+            return pose
+        }
+        entity.move(to: tilted(7, grown: 1.06), relativeTo: entity.parent,
+                    duration: 0.09, timingFunction: .easeOut)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(95))
+            entity.move(to: tilted(-5), relativeTo: entity.parent,
+                        duration: 0.1, timingFunction: .easeInOut)
+            try? await Task.sleep(for: .milliseconds(105))
+            entity.move(to: tilted(2.5), relativeTo: entity.parent,
+                        duration: 0.09, timingFunction: .easeInOut)
+            try? await Task.sleep(for: .milliseconds(95))
+            entity.move(to: rest, relativeTo: entity.parent,
+                        duration: 0.12, timingFunction: .easeOut)
+        }
     }
 
     /// The Reading Desk's sweep: every panel steps away except the one
@@ -2293,6 +2374,78 @@ final class FloorBand {
     }
 }
 
+/// Decade rules spanning the floor from graph to graph: one line
+/// across the corridor at every tenth year's depth, tying the two
+/// Timeflows and the floor timelines to one calendar. Floor-pinned
+/// like the bands — the fist slides them, never lifts them.
+@MainActor
+final class FloorDecadeLines {
+    private var content: RealityViewContent?
+    private var holder: Entity?
+    private var floorAnchor: AnchorEntity?
+    private var snapTick: EventSubscription?
+    /// Graph to graph: the Timeflows stand at ±1.15 from the centre.
+    private static let halfSpan: Float = 1.15
+    /// A whisper above the carpet — beneath the bands and their
+    /// words, which lie at 0.01.
+    private static let height: Float = 0.003
+
+    func install(in content: RealityViewContent) {
+        self.content = content
+        let floor = AnchorEntity(.plane(.horizontal, classification: .floor,
+                                        minimumBounds: SIMD2<Float>(1, 1)))
+        content.add(floor)
+        floorAnchor = floor
+        snapTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
+            MainActor.assumeIsolated { self?.snapToFloor() }
+        }
+    }
+
+    private func floorY() -> Float? {
+        guard let floorAnchor, floorAnchor.isAnchored else { return nil }
+        let y = floorAnchor.position(relativeTo: nil).y
+        return (-0.6...0.6).contains(y) ? y : nil
+    }
+
+    private func snapToFloor() {
+        guard let holder else { return }
+        let target = (floorY() ?? 0) + Self.height
+        if abs(holder.position.y - target) > 0.005 {
+            holder.position.y = target
+        }
+    }
+
+    func update(years: (newest: Int, oldest: Int)?,
+                citedSpace: EPUBMapView.CitedSpace,
+                shift: SIMD3<Float>) {
+        holder?.removeFromParent()
+        holder = nil
+        guard let content, let years, years.newest > years.oldest else { return }
+        let span = Float(years.newest - years.oldest)
+        // Every decade — thinned to whole tens when a long span would
+        // rule the floor into a grate.
+        let step = max(10, Int((Double(span) / 400).rounded(.up)) * 10)
+        let root = Entity()
+        root.components.set(MapSpaceNodeComponent())
+        var material = UnlitMaterial()
+        material.color = .init(tint: UIColor(white: 1, alpha: 0.07))
+        let mesh = MeshResource.generateBox(
+            size: SIMD3<Float>(Self.halfSpan * 2, 0.001, 0.004))
+        let firstDecade = (years.oldest / 10 + 1) * 10
+        for year in stride(from: firstDecade, through: years.newest, by: step) {
+            let line = ModelEntity(mesh: mesh, materials: [material])
+            let agePlace = Float(years.newest - year) / span
+            line.position = SIMD3<Float>(
+                0, 0, citedSpace.z(agePlace: agePlace) + shift.z)
+            root.addChild(line)
+        }
+        root.position = SIMD3<Float>(
+            citedSpace.origin.x + shift.x, Self.height, 0)
+        content.add(root)
+        holder = root
+    }
+}
+
 /// The floor's face: decade rules across the band, and one event line
 /// per free year-slot — the widest-carried first, each at its year's
 /// exact place on the timeline (the image's vertical axis), its words
@@ -2340,7 +2493,7 @@ struct FloorHistoryView: View {
                 guard row > 20, row < size.height - 20,
                       !taken.contains(where: { abs($0 - row) < lineHeight }) else { continue }
                 taken.append(row)
-                let words = "\(event.year)  \(event.title)"
+                let words = event.title
                 // A quiet dark bed under the words, so they read on any
                 // carpet.
                 let text = Text(words)
