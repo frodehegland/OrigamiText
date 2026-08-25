@@ -191,6 +191,12 @@ enum ReadingAnalyzer {
     static func run(_ kind: ReadingAnalysisKind, on doc: LiquidDoc,
                     onPartial: @escaping @MainActor (String) -> Void)
         async throws -> ReadingAnalysisResult {
+        // A selected server model (Settings ▸ AI) reads the document
+        // instead — with Apple's model as the automatic fallback
+        // inside respond(). Servers usually carry far larger windows.
+        if OrigamiLLM.shared.selectedEndpointModel() != nil {
+            return try await runOnSelectedModel(kind, on: doc, onPartial: onPartial)
+        }
         #if canImport(FoundationModels)
         guard ReadingAI.isAvailable else { throw ReadingAI.Unavailable() }
         // ~9000 characters keeps well inside the on-device window with
@@ -228,6 +234,56 @@ enum ReadingAnalyzer {
         #else
         throw ReadingAI.Unavailable()
         #endif
+    }
+
+    /// The analysis on the chosen server model. The Summary's
+    /// structure (names, keywords) comes by JSON prompting with one
+    /// retry — guided generation is Apple's alone — degrading to plain
+    /// prose rather than failing; Proposals and Issues stream.
+    private static func runOnSelectedModel(
+        _ kind: ReadingAnalysisKind, on doc: LiquidDoc,
+        onPartial: @escaping @MainActor (String) -> Void)
+        async throws -> ReadingAnalysisResult {
+        let material = corpus(of: doc, cap: 24_000)
+        if kind == .summary {
+            let ask = material + """
+
+
+                Answer ONLY with one JSON object, no other words: \
+                {"summary": "the summary", "names": ["..."], "keywords": ["..."]}
+                """
+            var (text, _) = try await OrigamiLLM.shared.respond(
+                instructions: kind.prompt, to: ask)
+            for attempt in 0..<2 {
+                if let parsed = summaryJSON(text) { return parsed }
+                guard attempt == 0 else { break }
+                (text, _) = try await OrigamiLLM.shared.respond(
+                    instructions: kind.prompt,
+                    to: ask + "\n\nYour previous answer was not valid JSON. Answer only the JSON object.")
+            }
+            // The words still count when the shape didn't come.
+            return ReadingAnalysisResult(
+                text: text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        let (text, _) = try await OrigamiLLM.shared.respond(
+            instructions: kind.prompt, to: material, onPartial: onPartial)
+        return ReadingAnalysisResult(
+            text: text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// A lenient read of the summary JSON — fenced or bare, extra keys
+    /// ignored. Nil when no object parses.
+    private static func summaryJSON(_ text: String) -> ReadingAnalysisResult? {
+        guard let start = text.firstIndex(of: "{"),
+              let end = text.lastIndex(of: "}"), start < end,
+              let data = String(text[start...end]).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let summary = object["summary"] as? String, !summary.isEmpty
+        else { return nil }
+        return ReadingAnalysisResult(
+            text: summary.trimmingCharacters(in: .whitespacesAndNewlines),
+            names: (object["names"] as? [String] ?? []).filter { !$0.isEmpty },
+            keywords: (object["keywords"] as? [String] ?? []).filter { !$0.isEmpty })
     }
 }
 
@@ -578,6 +634,12 @@ struct ReadingAnalysisScreen: View {
             result = fresh
             created = .now
             model.saveAnalysis(kind, result: fresh, forBook: book)
+            // The chosen model wasn't reachable and Apple's answered
+            // instead — said plainly, never silently (Settings ▸ AI).
+            if let notice = OrigamiLLM.shared.fallbackNotice {
+                OrigamiLLM.shared.fallbackNotice = nil
+                model.showNote(notice)
+            }
         } catch is CancellationError {
             // The reader moved on; nothing to say.
         } catch {

@@ -53,6 +53,9 @@ enum SidebarItem: Hashable {
     /// The Time Flows: the data lines standing along the headset's
     /// corridor, curated here for easy access there.
     case timeFlows
+    /// The floor timelines: the histories lying under the corridor —
+    /// the built-in Wikidata themes and the user's own.
+    case timelines
     // Reachable by code, not from the sidebar: Everything as a reading
     // context, and the drafts shelf.
     case allDocuments

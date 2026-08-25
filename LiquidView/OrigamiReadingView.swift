@@ -396,7 +396,7 @@ struct OrigamiReadingView: View {
         // The click's words as they stand, when the raw text carries
         // them verbatim; else the paragraph's opening sentence.
         if paragraph.text.range(of: wanted,
-                                options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) != nil {
             return wanted
         }
         return rawSentences.first
@@ -810,7 +810,7 @@ struct OrigamiReadingView: View {
             return
         }
         let matches = (doc.body ?? []).filter {
-            $0.text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            $0.text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) != nil
         }.map(\.id)
         guard !matches.isEmpty else { return }
         let next: Int
@@ -2476,7 +2476,7 @@ struct OrigamiReadingView: View {
             let plain = String(attributed.characters)
             guard let exact = entry.resolution.exact,
                   let range = plain.range(of: exact,
-                                          options: [.caseInsensitive, .diacriticInsensitive]),
+                                          options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]),
                   let attributedRange = Range(range, in: attributed) else { continue }
             let kind = ReaderAnnotationKind.kind(of: entry.annotation)
             let color = AnnotationKindStyle.color(of: kind ?? .highlight)
@@ -2498,7 +2498,7 @@ struct OrigamiReadingView: View {
             let plain = String(attributed.characters)
             var search = plain.startIndex..<plain.endIndex
             while let range = plain.range(of: findTerm,
-                                          options: [.caseInsensitive, .diacriticInsensitive],
+                                          options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
                                           range: search) {
                 if let attributedRange = Range(range, in: attributed) {
                     attributed[attributedRange].backgroundColor =

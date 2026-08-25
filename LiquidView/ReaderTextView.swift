@@ -196,7 +196,7 @@ struct ReaderTextView: NSViewRepresentable {
         // where they don't, the paragraph flash alone stands.
         if let highlightedSpan {
             let range = (plain as NSString).range(of: highlightedSpan,
-                                                  options: [.caseInsensitive, .diacriticInsensitive])
+                                                  options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive])
             if range.location != NSNotFound {
                 result.addAttribute(.backgroundColor,
                                     value: NSColor.systemYellow.withAlphaComponent(0.85),

@@ -331,10 +331,10 @@ public nonisolated enum AnnotationAnchor {
                                     selectors: selectors)
     }
 
-    private static let matching: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+    private static let matching: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
 
     private static func folded(_ text: String) -> String {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive],
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
                      locale: Locale(identifier: "en_US_POSIX"))
     }
 }

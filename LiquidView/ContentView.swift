@@ -344,6 +344,8 @@ struct ContentView: View {
             ConceptsListView()
         } else if model.sidebarSelection == .timeFlows {
             TimeFlowsListView()
+        } else if model.sidebarSelection == .timelines {
+            TimelinesListView()
         } else if model.sidebarSelection == .notes {
             NotesListView()
         } else if model.sidebarSelection == .noteLocations {

@@ -382,7 +382,7 @@ enum CitationGraph {
     /// Same folding as OrigamiReading.normalize, inlined so the vision
     /// target needs only this file.
     private static func normalize(_ text: String) -> String {
-        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive],
+        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
                                   locale: Locale(identifier: "en_US_POSIX"))
         let kept = folded.map { $0.isLetter || $0.isNumber ? $0 : " " }
         return String(kept).split(separator: " ").joined(separator: " ")

@@ -442,7 +442,38 @@ final class VisionModel {
                 floorHistories[theme] = history
             }
         }
+        // The user's own timelines — curated on the Mac (a Wikidata
+        // query or an imported file), read whole from the mirror; a
+        // removed one leaves the floor here too.
+        var adopted: [String: SankeySpace.FloorHistory] = [:]
+        for entry in SankeySpace.listUserFloorTimelines(in: folder) {
+            if let history = SankeySpace.readUserFloorHistory(slug: entry.slug,
+                                                              from: folder),
+               !history.events.isEmpty {
+                adopted[entry.slug] = history
+            }
+        }
+        userFloorHistories = adopted
         floorRevision += 1
+    }
+
+    /// The user timelines by slug, and the floor picker's entries.
+    private(set) var userFloorHistories: [String: SankeySpace.FloorHistory] = [:]
+
+    struct UserFloorEntry: Identifiable {
+        let slug: String
+        let name: String
+        var id: String { slug }
+    }
+
+    var userFloorEntries: [UserFloorEntry] {
+        userFloorHistories
+            .map { UserFloorEntry(slug: $0.key, name: $0.value.name ?? $0.key) }
+            .sorted { $0.name < $1.name }
+    }
+
+    func userFloorHistory(slug: String) -> SankeySpace.FloorHistory? {
+        userFloorHistories[slug]
     }
 
     /// The picked theme must answer: absent from the mirror, it is
@@ -997,8 +1028,10 @@ struct VisionDataView: View {
     /// Lanes apart, or every data set overlaid in one field.
     @AppStorage("timeSpreadLayout") private var timeSpreadLayoutRaw =
         TimeSpreadLayout.lanes.rawValue
-    /// What lies written on the physical floor beneath the corridor.
+    /// What lies written on the physical floor beneath the corridor —
+    /// two lanes, one per arm: this dialog sets its own side's.
     @AppStorage("floorShow") private var floorShowRaw = FloorShow.world.rawValue
+    @AppStorage("floorShowRight") private var floorShowRightRaw = FloorShow.nothing.rawValue
     /// The snap-to-wall option, one per graph — this dialog offers its
     /// own side's.
     @AppStorage("graphSnapWallLeft") private var snapWallLeft = false
@@ -1020,9 +1053,14 @@ struct VisionDataView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    Picker("Floor", selection: $floorShowRaw) {
+                    Picker("Floor", selection: wall == "left"
+                        ? $floorShowRaw : $floorShowRightRaw) {
                         ForEach(FloorShow.allCases) { show in
                             Text(show.displayName).tag(show.rawValue)
+                        }
+                        // The user's own timelines, curated on the Mac.
+                        ForEach(model.userFloorEntries) { entry in
+                            Text(entry.name).tag("user:" + entry.slug)
                         }
                     }
                     Toggle("Snap to wall",
@@ -1437,14 +1475,16 @@ struct VisionReaderView: View {
         let pages = horizontalPages(of: doc)
         let pose = model.pose(of: docID)
         let columnWidth: CGFloat = pose == .flat ? 280 : 560
-        let fullWidth = CGFloat(pages.count) * (columnWidth + 12)
-        // Standing, the band curves gently around the reader: each
-        // column yaws toward the centre and steps closer at the edges
-        // — a faceted arc, still one live panel. Tilted or flat it
-        // lies true.
+        // The curve — each column yawing toward the centre, wearing
+        // its own glass — belongs to the ROOM. On the Reading Desk the
+        // document is one continuous sheet: no gaps, no yaw, the
+        // panel's own paper behind everything.
+        let curved = pose == .upright && !isDesk
+        let gap: CGFloat = isDesk ? 0 : 12
+        let fullWidth = CGFloat(pages.count) * (columnWidth + gap)
         let centre = Double(pages.count - 1) / 2
         return ScrollView(.horizontal) {
-            LazyHStack(alignment: .top, spacing: 12) {
+            LazyHStack(alignment: .top, spacing: gap) {
                 ForEach(Array(pages.enumerated()), id: \.offset) { index, page in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
@@ -1468,22 +1508,16 @@ struct VisionReaderView: View {
                     // Flat on the table, the columns halve with the type.
                     .frame(width: columnWidth)
                     .containerRelativeFrame(.vertical)
-                    // Each column wears its own page — the theme's
-                    // paper on the desk, the room's glass otherwise —
+                    // In the room each column wears its own glass —
                     // BEFORE the yaw, so the background curves with
-                    // the column and no flat slab pokes through the arc.
-                    .background {
-                        if isDesk {
-                            RoundedRectangle(cornerRadius: 18)
-                                .fill(deskTheme.page)
-                        }
-                    }
+                    // the column and no flat slab pokes through the
+                    // arc. On the desk the panel's paper carries all.
                     .glassBackgroundEffect(in: .rect(cornerRadius: 18),
                                            displayMode: isDesk ? .never : .always)
                     .rotation3DEffect(
-                        .degrees(pose == .upright ? (Double(index) - centre) * -5 : 0),
+                        .degrees(curved ? (Double(index) - centre) * -5 : 0),
                         axis: (x: 0, y: 1, z: 0))
-                    .offset(z: pose == .upright
+                    .offset(z: curved
                         ? CGFloat(pow(Double(index) - centre, 2)) * 14 : 0)
                 }
             }
@@ -1491,8 +1525,11 @@ struct VisionReaderView: View {
         }
         .scrollTargetBehavior(.viewAligned)
         // The reader takes the columns' whole width, so the hosting
-        // panel grows to show every one of them.
-        .frame(width: min(fullWidth, 4200))
+        // panel grows to show every one of them — capped under the
+        // GPU's texture ceiling: attachments render at 2x, and a
+        // texture past 8192px simply fails to draw (the body goes
+        // missing). 3900pt keeps a margin; the rest walks by swipe.
+        .frame(width: min(fullWidth, 3900))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             footBar(doc, proxy: nil)
         }

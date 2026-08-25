@@ -49,12 +49,20 @@ public nonisolated struct AIPromptPreset: Codable, Identifiable, Hashable, Senda
 /// words, on this device's model only — nothing leaves the machine.
 public nonisolated enum ReadingAI {
 
-    /// Whether the on-device model can run here.
+    /// Whether a model can answer here — Apple's on-device model, or
+    /// (on the Mac) a selected server model, which needs no Apple
+    /// Intelligence at all.
     public static var isAvailable: Bool {
+        #if os(macOS)
+        if let id = UserDefaults.standard.string(forKey: "selectedModelID"),
+           id.hasPrefix("endpoint|") {
+            return true
+        }
+        #endif
         #if canImport(FoundationModels)
-        SystemLanguageModel.default.availability == .available
+        return SystemLanguageModel.default.availability == .available
         #else
-        false
+        return false
         #endif
     }
 
@@ -67,11 +75,18 @@ public nonisolated enum ReadingAI {
         public var errorDescription: String? { ReadingAI.unavailableReason }
     }
 
-    /// The preset's prompt over the text, answered by the on-device
-    /// model. Throws `Unavailable` where the model cannot run.
+    /// The preset's prompt over the text, answered by the reader's
+    /// chosen model (Settings ▸ AI) — Apple's on-device model by
+    /// default, an endpoint model when one is selected, Apple's again
+    /// as the automatic fallback.
+    @MainActor
     public static func rewrite(_ text: String,
                                with preset: AIPromptPreset) async throws -> String {
-        #if canImport(FoundationModels)
+        #if os(macOS)
+        let (answer, _) = try await OrigamiLLM.shared.respond(
+            instructions: nil, to: preset.prompt + "\n\n" + text)
+        return answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        #elseif canImport(FoundationModels)
         guard isAvailable else { throw Unavailable() }
         let session = LanguageModelSession()
         let response = try await session.respond(to: preset.prompt + "\n\n" + text)
@@ -204,23 +219,41 @@ extension OrigamiReading {
         var current = ""
         var iterator = text.makeIterator()
         var pending = iterator.next()
+        // A fullwidth mark's break, held one character while a closing
+        // quote or bracket joins its line.
+        var closeAfterCloser: Character?
+        func close(after mark: Character, next: Character?) {
+            let line = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !line.isEmpty {
+                lines.append(line)
+                if mark != ",", mark != "\u{3001}", doubleBreakOnPeriod, next != nil {
+                    lines.append("")
+                }
+            }
+            current = ""
+        }
         while let character = pending {
             let next = iterator.next()
             current.append(character)
             // A line ends only where the mark does: before a space or
             // the end, not mid-number or mid-word — and a sentence's
-            // period, never an abbreviation's.
-            if character == "." || (character == "," && breakOnComma) {
+            // period, never an abbreviation's. The fullwidth marks
+            // (。！？, and the clause's 、) end their line on their
+            // own; CJK text puts no space after them.
+            if let mark = closeAfterCloser {
+                closeAfterCloser = nil
+                close(after: mark, next: next)
+            } else if character == "." || (character == "," && breakOnComma) {
                 if next == nil || next?.isWhitespace == true,
                    character == "," || !endsInAbbreviation(current) {
-                    let line = current.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !line.isEmpty {
-                        lines.append(line)
-                        if character == ".", doubleBreakOnPeriod, next != nil {
-                            lines.append("")
-                        }
-                    }
-                    current = ""
+                    close(after: character, next: next)
+                }
+            } else if OrigamiReading.fullwidthSentenceMarks.contains(character)
+                        || (character == "\u{3001}" && breakOnComma) {
+                if let next, OrigamiReading.trailingClosers.contains(next) {
+                    closeAfterCloser = character
+                } else {
+                    close(after: character, next: next)
                 }
             }
             pending = next

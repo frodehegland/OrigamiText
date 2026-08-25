@@ -1000,6 +1000,10 @@ nonisolated enum OrigamiEPUBImporter {
                     out += "`\(content)`"
                 case "dfn":
                     out += content
+                case "rt", "rp":
+                    // Ruby readings (furigana): annotation on the base
+                    // text, never the words themselves.
+                    break
                 case "a":
                     if (inner.attributes["class"] ?? "").contains("ot-stretchtext") {
                         // The stretchtext marker (»/‹‹) is the export's
@@ -1142,7 +1146,12 @@ private final class XMLTree: NSObject, XMLParserDelegate {
             children.map {
                 switch $0 {
                 case .text(let text): text
-                case .element(let element): element.plainText
+                case .element(let element):
+                    // Ruby readings (furigana) annotate the base text;
+                    // joined inline they would double it — 東京 must
+                    // never import as 東京とうきょう.
+                    element.name == "rt" || element.name == "rp"
+                        ? "" : element.plainText
                 }
             }.joined()
         }

@@ -458,6 +458,10 @@ private struct AISettingsView: View {
 
     var body: some View {
         Form {
+            // The language model itself: Apple's built-in, or any
+            // OpenAI-compatible server (Ollama, LM Studio) — chosen
+            // once, used by the reading's AI.
+            LLMModelSettingsSections()
             Section {
                 Picker("Prompt", selection: $selection) {
                     ForEach(["Summary", "Proposals", "Issues", "Person Profiles"],

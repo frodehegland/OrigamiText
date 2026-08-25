@@ -166,7 +166,7 @@ extension AppModel {
             for paragraph in doc.body ?? [] {
                 if let range = paragraph.text.range(
                     of: phrase,
-                    options: [.caseInsensitive, .diacriticInsensitive]) {
+                    options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) {
                     anchored = (paragraph.id, String(paragraph.text[range]))
                     break
                 }
@@ -177,7 +177,7 @@ extension AppModel {
                     if case .quote(let exact, _, _) = selector {
                         return exact.compare(
                             anchored.exact,
-                            options: [.caseInsensitive, .diacriticInsensitive])
+                            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive])
                             == .orderedSame
                     }
                     return false

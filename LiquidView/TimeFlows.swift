@@ -83,6 +83,129 @@ extension AppModel {
         timeFlowsRevision += 1
     }
 
+    /// One floor timeline's standing in the mirror — how many events,
+    /// and when it was fetched. Nil where the theme was never fetched.
+    func floorTimelineState(_ theme: SankeySpace.FloorTheme)
+        -> (events: Int, modified: Date)? {
+        guard let folder = index.folderURL else { return nil }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        guard let history = SankeySpace.readFloorHistory(theme: theme, from: folder),
+              !history.events.isEmpty else { return nil }
+        return (history.events.count, history.modified)
+    }
+
+    /// Fetches one floor timeline from Wikidata and mirrors it — the
+    /// headset reads it on its next scan instead of fetching itself.
+    func addFloorTimeline(_ theme: SankeySpace.FloorTheme) async throws {
+        let events = try await SankeySpace.fetchFloorHistory(theme: theme)
+        guard !events.isEmpty else {
+            throw NSError(domain: "OrigamiText", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Wikidata returned no events for \(theme.displayName)."])
+        }
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        SankeySpace.writeFloorHistory(
+            SankeySpace.FloorHistory(events: events, modified: .now),
+            theme: theme, to: folder)
+        timeFlowsRevision += 1
+    }
+
+    /// Removes one floor timeline's mirror file.
+    func removeFloorTimeline(_ theme: SankeySpace.FloorTheme) {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        try? FileManager.default.removeItem(
+            at: folder.appendingPathComponent(theme.fileName))
+        timeFlowsRevision += 1
+    }
+
+    /// The user's own floor timelines in the mirror, with their standing.
+    func userFloorTimelines()
+        -> [(slug: String, name: String, events: Int, modified: Date, hasQuery: Bool)] {
+        guard let folder = index.folderURL else { return [] }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        return SankeySpace.listUserFloorTimelines(in: folder).compactMap { entry in
+            guard let history = SankeySpace.readUserFloorHistory(slug: entry.slug,
+                                                                 from: folder)
+            else { return nil }
+            return (entry.slug, entry.name, history.events.count,
+                    history.modified, history.query != nil)
+        }
+    }
+
+    /// A user timeline from the user's own SPARQL — it must bind
+    /// ?itemLabel, ?year, and ?links. The query travels in the file,
+    /// so Refresh can run it again.
+    func addUserFloorTimeline(name: String, query: String) async throws {
+        let events = try await SankeySpace.fetchFloorEvents(query: query)
+        guard !events.isEmpty else {
+            throw NSError(domain: "OrigamiText", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: """
+                    Wikidata returned no events. The query must SELECT \
+                    ?itemLabel, ?year, and ?links.
+                    """])
+        }
+        try writeUserFloorTimeline(name: name, events: events, query: query)
+    }
+
+    /// A user timeline from a file: year and title per line (comma or
+    /// tab), an optional third column weighting the event.
+    func importUserFloorTimeline(name: String, fileURL: URL) throws {
+        let secured = fileURL.startAccessingSecurityScopedResource()
+        defer { if secured { fileURL.stopAccessingSecurityScopedResource() } }
+        let data = try Data(contentsOf: fileURL)
+        guard let text = String(data: data, encoding: .utf8)
+                ?? String(data: data, encoding: .isoLatin1) else {
+            throw NSError(domain: "OrigamiText", code: 2, userInfo: [
+                NSLocalizedDescriptionKey:
+                    "\u{201C}\(fileURL.lastPathComponent)\u{201D} could not be read as text."])
+        }
+        let events = SankeySpace.parseFloorEvents(text: text)
+        guard !events.isEmpty else {
+            throw NSError(domain: "OrigamiText", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: """
+                    No events found. Each line needs a year, then the \
+                    event's words \u{2014} comma or tab separated.
+                    """])
+        }
+        try writeUserFloorTimeline(name: name, events: events, query: nil)
+    }
+
+    private func writeUserFloorTimeline(name: String, events: [SankeySpace.FloorEvent],
+                                        query: String?) throws {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        SankeySpace.writeUserFloorHistory(
+            SankeySpace.FloorHistory(events: events, modified: .now,
+                                     name: name, query: query),
+            slug: SankeySpace.userFloorSlug(name: name), to: folder)
+        timeFlowsRevision += 1
+    }
+
+    /// Re-runs a user timeline's stored query.
+    func refreshUserFloorTimeline(slug: String) async throws {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        let stored = SankeySpace.readUserFloorHistory(slug: slug, from: folder)
+        if scoped { folder.stopAccessingSecurityScopedResource() }
+        guard let stored, let query = stored.query else { return }
+        try await addUserFloorTimeline(name: stored.name ?? slug, query: query)
+    }
+
+    func removeUserFloorTimeline(slug: String) {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent(
+            SankeySpace.userFloorFileName(slug: slug)))
+        timeFlowsRevision += 1
+    }
+
     /// The graph's shown name — every series of the pair takes it.
     func renameTimeFlowPair(_ pair: String, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
@@ -641,6 +764,352 @@ struct TimeFlowRequestView: View {
             fileChoices.valueColumns = lowered.contains("all")
                 ? ["*"]
                 : answer.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+    }
+}
+
+// MARK: - Timelines
+
+/// Views ▸ Timelines: the histories lying under the headset's corridor
+/// — the built-in Wikidata themes and the user's own, with the + that
+/// makes one from a query or a file.
+struct TimelinesListView: View {
+    @Environment(AppModel.self) private var model
+    /// The timeline being fetched right now — one at a time.
+    @State private var fetchingFloor: SankeySpace.FloorTheme?
+    @State private var floorError: String?
+    @State private var showsAdd = false
+
+    var body: some View {
+        // The revision read makes this view live to mirror changes.
+        let _ = model.timeFlowsRevision
+        List {
+            Section("Wikidata themes") {
+                ForEach(SankeySpace.FloorTheme.allCases) { theme in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(theme.displayName)
+                            Text(floorDetail(of: theme))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if fetchingFloor == theme {
+                            ProgressView().controlSize(.small)
+                        } else if model.floorTimelineState(theme) != nil {
+                            Button("Refresh") { addFloor(theme) }
+                                .buttonStyle(.borderless)
+                                .disabled(fetchingFloor != nil)
+                            Button(role: .destructive) {
+                                model.removeFloorTimeline(theme)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Remove this timeline from the mirror")
+                        } else {
+                            Button("Add") { addFloor(theme) }
+                                .buttonStyle(.borderless)
+                                .disabled(fetchingFloor != nil)
+                        }
+                    }
+                }
+            }
+            Section("Your own") {
+                let mine = model.userFloorTimelines()
+                if mine.isEmpty {
+                    Text("A timeline of your own comes from a Wikidata query, or from a file of years and events — add one with +.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(mine, id: \.slug) { entry in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.name)
+                            Text("\(entry.events) events, fetched \(entry.modified.formatted(date: .abbreviated, time: .omitted))\(entry.hasQuery ? "" : " \u{00B7} imported file")")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if entry.hasQuery {
+                            Button("Refresh") { refreshUserFloor(entry.slug) }
+                                .buttonStyle(.borderless)
+                                .disabled(fetchingFloor != nil)
+                        }
+                        Button(role: .destructive) {
+                            model.removeUserFloorTimeline(slug: entry.slug)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Remove this timeline from the mirror")
+                    }
+                }
+                if let floorError {
+                    Label(floorError, systemImage: "xmark.octagon")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                // The + at the list's foot, beside the toolbar's.
+                Button {
+                    showsAdd = true
+                } label: {
+                    Label("Add Timeline", systemImage: "plus")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            Section {
+                Text("Each timeline lies on the floor under the headset's corridor, every event at its year's depth — chosen there with the Floor Timeline chip or the Time Data dialog. The Wikidata themes rank events by how many Wikipedias carry them; fetched here, they are ready before the headset asks.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .navigationTitle("Timelines")
+        .toolbar {
+            Button {
+                showsAdd = true
+            } label: {
+                Label("Add Timeline", systemImage: "plus")
+            }
+        }
+        .sheet(isPresented: $showsAdd) {
+            FloorTimelineAddView()
+                .environment(model)
+        }
+    }
+
+    private func addFloor(_ theme: SankeySpace.FloorTheme) {
+        guard fetchingFloor == nil else { return }
+        fetchingFloor = theme
+        floorError = nil
+        Task { @MainActor in
+            defer { fetchingFloor = nil }
+            do {
+                try await model.addFloorTimeline(theme)
+            } catch {
+                floorError = error.localizedDescription
+            }
+        }
+    }
+
+    private func refreshUserFloor(_ slug: String) {
+        floorError = nil
+        Task { @MainActor in
+            do {
+                try await model.refreshUserFloorTimeline(slug: slug)
+            } catch {
+                floorError = error.localizedDescription
+            }
+        }
+    }
+
+    private func floorDetail(of theme: SankeySpace.FloorTheme) -> String {
+        guard let state = model.floorTimelineState(theme) else { return "Not fetched" }
+        let day = state.modified.formatted(date: .abbreviated, time: .omitted)
+        return "\(state.events) events, fetched \(day)"
+    }
+}
+
+// MARK: - Add Floor Timeline
+
+/// A user's own floor timeline: named, then either a Wikidata SPARQL
+/// query (which must bind ?itemLabel, ?year, and ?links — the built-in
+/// themes' shape) or the user's own file of years and events.
+struct FloorTimelineAddView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name = ""
+    @State private var query = ""
+    /// The plain-words ask, drafted into SPARQL on request.
+    @State private var plainWords = ""
+    @State private var draftNote: String?
+    @State private var isWorking = false
+    @State private var errorMessage: String?
+    @State private var showsFileImporter = false
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespaces)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Name") {
+                    // Bare and left-aligned: a grouped form pushes a
+                    // field's text to the trailing edge otherwise.
+                    TextField("", text: $name)
+                        .labelsHidden()
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Section {
+                    HStack {
+                        TextField("", text: $plainWords, prompt:
+                            Text("iphone \u{00B7} telescopes \u{00B7} volcanic eruptions"))
+                            .labelsHidden()
+                            .multilineTextAlignment(.leading)
+                            .onSubmit { draft() }
+                        Button("Draft Query") { draft() }
+                            .disabled(isWorking
+                                      || plainWords.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                } header: {
+                    Text("Ask in plain words")
+                } footer: {
+                    Text("The words are looked up on Wikidata and a query drafted around what they name — it lands below for you to run and adapt.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Section {
+                    TextEditor(text: $query)
+                        .font(.system(size: 12, design: .monospaced))
+                        .multilineTextAlignment(.leading)
+                        .frame(minHeight: 140)
+                } header: {
+                    Text("Wikidata query")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("""
+                            SPARQL against query.wikidata.org, binding ?itemLabel, \
+                            ?year, and ?links — the shape the built-in themes use. \
+                            Or skip the query and import your own file below: one \
+                            event per line, the year then the words, comma or tab \
+                            separated, an optional third column weighting it.
+                            """)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Insert a working example (video games)") {
+                            if trimmedName.isEmpty { name = "Video Game History" }
+                            query = Self.exampleQuery
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                    }
+                }
+                if isWorking {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("Asking Wikidata\u{2026}")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if let draftNote {
+                    Section {
+                        Label(draftNote, systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let errorMessage {
+                    Section {
+                        Label(errorMessage, systemImage: "xmark.octagon")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Add Floor Timeline")
+            .safeAreaInset(edge: .bottom) {
+                // Live as soon as there is something to act on — a
+                // missing name is said in words, never a dead button.
+                HStack {
+                    Button("Import File\u{2026}") {
+                        guard named() else { return }
+                        showsFileImporter = true
+                    }
+                    .disabled(isWorking)
+                    .help("Your own timeline: a year and an event per line")
+                    Spacer()
+                    Button("Fetch") { fetch() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isWorking
+                                  || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
+            }
+            .fileImporter(isPresented: $showsFileImporter,
+                          allowedContentTypes: [.commaSeparatedText, .tabSeparatedText,
+                                                .delimitedText, .plainText, .text]) { result in
+                if case .success(let url) = result { importFile(url) }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(isWorking)
+                }
+            }
+        }
+        .frame(minWidth: 460, minHeight: 380)
+    }
+
+    /// A known-good query to start from — verified live (2026-08-25):
+    /// notable video games at their release years.
+    private static let exampleQuery = """
+        SELECT ?itemLabel (YEAR(?date) AS ?year) ?links WHERE {
+          ?item wdt:P31 wd:Q7889; wdt:P577 ?date; wikibase:sitelinks ?links.
+          FILTER(?links > 60)
+          SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+        } ORDER BY DESC(?links) LIMIT 100
+        """
+
+    /// True with a name in place; otherwise says what is missing.
+    private func named() -> Bool {
+        if trimmedName.isEmpty {
+            errorMessage = "Give the timeline a name first."
+            return false
+        }
+        return true
+    }
+
+    /// Plain words to a drafted query: Wikidata resolves the entity,
+    /// the gathering relations are tried in turn, and the winning
+    /// SPARQL lands in the editor — visible, runnable, adaptable.
+    private func draft() {
+        let words = plainWords.trimmingCharacters(in: .whitespaces)
+        guard !words.isEmpty, !isWorking else { return }
+        isWorking = true
+        errorMessage = nil
+        draftNote = nil
+        Task { @MainActor in
+            defer { isWorking = false }
+            do {
+                let drafted = try await SankeySpace.draftFloorQuery(about: words)
+                query = drafted.query
+                if trimmedName.isEmpty { name = drafted.name }
+                draftNote = "Drafted \u{201C}\(drafted.name)\u{201D} — \(drafted.events) events found. Press Fetch to add it."
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func fetch() {
+        guard named() else { return }
+        isWorking = true
+        errorMessage = nil
+        draftNote = nil
+        Task { @MainActor in
+            defer { isWorking = false }
+            do {
+                try await model.addUserFloorTimeline(name: trimmedName, query: query)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func importFile(_ url: URL) {
+        guard named() else { return }
+        errorMessage = nil
+        do {
+            try model.importUserFloorTimeline(name: trimmedName, fileURL: url)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

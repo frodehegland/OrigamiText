@@ -334,6 +334,10 @@ struct SidebarView: View {
             // curated here, carried by the community folder.
             Label("Graphs", systemImage: "chart.line.uptrend.xyaxis")
                 .tag(SidebarItem.timeFlows)
+            // The histories lying under the corridor — the Wikidata
+            // themes and the user's own timelines.
+            Label("Timelines", systemImage: "calendar.day.timeline.left")
+                .tag(SidebarItem.timelines)
             ForEach(model.epubFolders, id: \.self) { folder in
                 Label(folder, systemImage: "folder")
                     .badge(model.epubRecords(inFolder: folder).count)

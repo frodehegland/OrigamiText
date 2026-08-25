@@ -111,6 +111,8 @@ struct EPUBMapView: View {
     /// The physical floor put to work: what lies written along it —
     /// world history by default, or nothing. Chosen in Time Data.
     @AppStorage("floorShow") private var floorShowRaw = FloorShow.world.rawValue
+    /// The right lane's timeline — the right arm's Time Data sets it.
+    @AppStorage("floorShowRight") private var floorShowRightRaw = FloorShow.nothing.rawValue
 
     /// The theme the floor returns to when its arm chip toggles it
     /// back on.
@@ -118,7 +120,10 @@ struct EPUBMapView: View {
 
     /// The floor's writing, laid flat on the real ground under the
     /// corridor, each event at its year's exact depth.
-    @State private var floorBand = FloorBand()
+    /// Two timelines share the floor: one lane each side of the
+    /// corridor's centre, each arm's Time Data choosing its own.
+    @State private var floorBandLeft = FloorBand(sideOffset: -0.75)
+    @State private var floorBandRight = FloorBand(sideOffset: 0.75)
 
     /// Readers opened in-situ: the full reading standing where its
     /// card stood, dragged anywhere by its handle bar — free of the
@@ -352,7 +357,15 @@ struct EPUBMapView: View {
         let sharedIDs: Set<String> = raisedSets.count >= 2
             ? raisedSets.dropFirst().reduce(raisedSets[0]) { $0.intersection($1) }
             : []
-        let shownCited = citedWorks.filter { raisedIDs.contains($0.id) }
+        // The Only Overlap chip stands while common ground does; when
+        // it is on, the wall narrows to the shared citations alone —
+        // the green cards and their green lines, nothing else.
+        sharedCitedStanding = !sharedIDs.isEmpty
+        armMenu.setChipVisible(Self.onlyOverlapChipID, !sharedIDs.isEmpty || onlyOverlap)
+        let shownCited = citedWorks.filter {
+            raisedIDs.contains($0.id)
+                && (!onlyOverlap || sharedIDs.isEmpty || sharedIDs.contains($0.id))
+        }
         let years = shownCited.compactMap(\.year)
         let newest = years.max()
         let oldest = years.min()
@@ -444,15 +457,36 @@ struct EPUBMapView: View {
                                style: style,
                                layout: layout,
                                snapToWall: graphSnapWallRight)
-        let floorShow = FloorShow(rawValue: floorShowRaw) ?? .world
-        let floorHistory = floorShow.theme.flatMap { model.floorHistory(for: $0) }
-        floorBand.update(history: desk ? nil : floorHistory,
-                         years: span ?? historyYearSpan(of: floorHistory),
-                         citedSpace: citedSpace,
-                         shift: spaceShift)
-        if let theme = floorShow.theme, !desk {
+        // The floor's two lanes: each arm's Time Data chooses its own
+        // timeline — a built-in theme, or one of the user's (raw
+        // "user:<slug>", curated on the Mac).
+        let leftHistory = resolvedFloorHistory(floorShowRaw, desk: desk,
+                                               fallback: .world)
+        let rightHistory = resolvedFloorHistory(floorShowRightRaw, desk: desk,
+                                                fallback: .nothing)
+        floorBandLeft.update(history: desk ? nil : leftHistory,
+                             years: span ?? historyYearSpan(of: leftHistory),
+                             citedSpace: citedSpace,
+                             shift: spaceShift)
+        floorBandRight.update(history: desk ? nil : rightHistory,
+                              years: span ?? historyYearSpan(of: rightHistory),
+                              citedSpace: citedSpace,
+                              shift: spaceShift)
+    }
+
+    /// One lane's choice resolved to its events — asking the model to
+    /// fetch a missing built-in theme along the way.
+    private func resolvedFloorHistory(_ raw: String, desk: Bool,
+                                      fallback: FloorShow)
+        -> SankeySpace.FloorHistory? {
+        if raw.hasPrefix("user:") {
+            return model.userFloorHistory(slug: String(raw.dropFirst("user:".count)))
+        }
+        let show = FloorShow(rawValue: raw) ?? fallback
+        if let theme = show.theme, !desk {
             model.ensureFloorTheme(theme)
         }
+        return show.theme.flatMap { model.floorHistory(for: $0) }
     }
 
     /// The data's own year span — the Timeflow's frame while no
@@ -629,11 +663,17 @@ struct EPUBMapView: View {
     /// the right forearm, exactly as in Author's Map; Pin and Set Aside
     /// ride the left, acting on the selected card.
     @State private var armMenu = ArmMenu(chips: [
-        ArmMenu.Chip(id: EPUBMapView.settingsChipID, title: "Settings", side: .right),
+        // Settings hangs beneath the forearm — touched rarely, out of
+        // the working row.
+        ArmMenu.Chip(id: EPUBMapView.settingsChipID, title: "Settings", side: .right,
+                     underside: true),
         ArmMenu.Chip(id: EPUBMapView.documentsChipID, title: "Documents", side: .right),
         ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Graph", side: .right),
         ArmMenu.Chip(id: EPUBMapView.dataRightChipID, title: "Time Data", side: .right),
         ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Floor Timeline", side: .right),
+        // Standing only while common ground does: the wall reduced to
+        // the works every raised article cites — the green alone.
+        ArmMenu.Chip(id: EPUBMapView.onlyOverlapChipID, title: "Only Overlap", side: .right),
         ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .left),
         ArmMenu.Chip(id: EPUBMapView.asideChipID, title: "Set Aside", side: .left),
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
@@ -641,6 +681,11 @@ struct EPUBMapView: View {
         ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Graph", side: .left),
         ArmMenu.Chip(id: EPUBMapView.dataChipID, title: "Time Data", side: .left),
     ], tracksPlanes: true)   // the flat pose finds the actual desk
+
+    /// Only Overlap: the cited wall narrowed to the shared citations.
+    @State private var onlyOverlap = false
+    /// Whether any shared citation stands — the chip's reason to show.
+    @State private var sharedCitedStanding = false
 
     private static let settingsChipID = "map.arm.settings"
     private static let documentsChipID = "map.arm.documents"
@@ -652,6 +697,7 @@ struct EPUBMapView: View {
     private static let timeflowLeftChipID = "map.arm.timeflow.left"
     private static let timeflowRightChipID = "map.arm.timeflow.right"
     private static let floorChipID = "map.arm.floor"
+    private static let onlyOverlapChipID = "map.arm.onlyoverlap"
 
     var body: some View {
         engine
@@ -722,7 +768,7 @@ struct EPUBMapView: View {
     /// any of it changing re-lays the Timeflows and the floor.
     private var sankeySettingsTick: String {
         [model.sankey?.modified.description ?? "",
-         timeSpreadStyleRaw, timeSpreadLayoutRaw, floorShowRaw,
+         timeSpreadStyleRaw, timeSpreadLayoutRaw, floorShowRaw, floorShowRightRaw,
          graphSnapWallLeft.description, graphSnapWallRight.description]
             .joined(separator: "|")
     }
@@ -789,10 +835,11 @@ struct EPUBMapView: View {
             // The citation lines — Author's connection entity.
             ModelEntity.connection(
                 size: 0.0022,
-                // A whisper of light grey: found when looked for,
-                // never in the way. (Grey carries less pop than the
-                // old ember, so it stands a step less transparent.)
-                color: Color(white: 0.85).opacity(0.06),
+                // The faintest breath of light grey: found when looked
+                // for, never in the way. Lines to a shared citation
+                // wear green instead (the tint the shared card asks
+                // for, a shade stronger so the green reads).
+                color: Color(white: 0.85).opacity(0.02),
                 connectionOptions: .none,
                 materialMode: .none)
         }
@@ -805,30 +852,36 @@ struct EPUBMapView: View {
             model.readingDeskDocID == nil && item.isSelected
         }
         view = view.connectedNodesToNode { item in
+            // The line rule: documents draw no lines to their
+            // citations — except the common ground, when two or more
+            // stand selected, and those lines read green. A selected
+            // citation draws forward, into the citations it has
+            // itself; never back to the documents.
             switch item.kind {
             case .cited:
-                // A selected citation shows both directions: back to
-                // every article naming it, and forward into the raised
-                // rank of what it cites itself.
-                return items.filter {
-                    $0.citedIDs.contains(item.id) || item.citedIDs.contains($0.id)
-                }
+                // Forward only: the raised rank of what it cites.
+                return items.filter { item.citedIDs.contains($0.id) }
             case .citedDeep:
-                // A selected raised card shows everything leading to
-                // it and from it: the citations that raised it, any
-                // article citing the same work directly, the works
-                // whose references name it, and the visible cards its
-                // own references name.
+                // A selected raised card weaves among citations alone:
+                // the citations that raised it, the works whose
+                // references name it, and the visible cards its own
+                // references name — the documents stay out of it.
                 let wallID = "cited:" + item.id.dropFirst("deep:".count)
                 let links = deepLinks[item.id]
                 return items.filter {
-                    $0.citedIDs.contains(item.id)
-                        || $0.citedIDs.contains(wallID)
-                        || links?.inbound.contains($0.id) == true
-                        || links?.outbound.contains($0.id) == true
+                    $0.kind != .article
+                        && ($0.citedIDs.contains(item.id)
+                            || $0.citedIDs.contains(wallID)
+                            || links?.inbound.contains($0.id) == true
+                            || links?.outbound.contains($0.id) == true)
                 }
             case .article:
-                return items.filter { item.citedIDs.contains($0.id) }
+                // Only the common ground, only in company: with two or
+                // more documents selected, the lines run to the shared
+                // citations — green, as the cards are.
+                let company = items.count(where: { $0.kind == .article && $0.isSelected })
+                guard company >= 2 else { return [] }
+                return items.filter { $0.isShared && item.citedIDs.contains($0.id) }
             }
         }
         view = view.onTapNode { tapCount, item in
@@ -847,10 +900,13 @@ struct EPUBMapView: View {
         view = view.defaultNodePosition([0.0, 1.4, -1.2])
         view = view.onSetupContent { content in
             armMenu.install(in: content)
+            // Only Overlap steps in only when common ground stands.
+            armMenu.setChipVisible(Self.onlyOverlapChipID, false)
             conceptLadder.install(in: content)
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
-            floorBand.install(in: content)
+            floorBandLeft.install(in: content)
+            floorBandRight.install(in: content)
             readerPanels.install(in: content)
             fistGrab.install(
                 in: content,
@@ -948,6 +1004,13 @@ struct EPUBMapView: View {
         // The fist carries every card; the connection lines re-lay
         // themselves from the cards each frame.
         box.modelEntity.components.set(MapSpaceNodeComponent())
+        // The common ground's lines go green with its card: every line
+        // drawn to a shared citation wears the tint — a shade stronger
+        // than the grey whisper, so the green reads as green.
+        if item.isShared {
+            box.modelEntity.components.set(NodeConnectionTintComponent(
+                tint: UIColor(red: 0.45, green: 0.75, blue: 0.45, alpha: 0.08)))
+        }
         return box
     }
 
@@ -1149,6 +1212,11 @@ struct EPUBMapView: View {
         case Self.timeflowRightChipID:
             timeflowRightShown.toggle()
             updateSankey()
+            return true
+        case Self.onlyOverlapChipID:
+            // The wall narrowed to the common ground, and back.
+            onlyOverlap.toggle()
+            reload()
             return true
         case Self.floorChipID:
             // The floor timeline, on and off: off remembers the theme,
@@ -1930,33 +1998,33 @@ struct MapReaderPanel: View {
     private var isHorizontal: Bool { readerModeRaw == "horizontal" }
 
     var body: some View {
-        if isHorizontal {
-            // Horizontal curves its columns, and each wears its own
-            // background inside the reader — the panel adds no flat
-            // slab for the text to stick out of. The desk theme still
-            // sets the words' light or dark.
-            if isDesk {
-                panel.environment(\.colorScheme, theme.scheme)
-            } else {
-                panel
-            }
-        } else if isDesk {
-            // On the desk the panel wears the chosen theme: the
-            // theme's page instead of the room's glass, its light or
-            // dark throughout the words.
+        if isDesk {
+            // On the desk the panel wears the chosen theme, whole —
+            // one continuous sheet of the theme's page, its light or
+            // dark throughout the words. (The Horizontal curve, with
+            // its per-column glass, belongs to the room.)
             panel
                 .background(RoundedRectangle(cornerRadius: 24).fill(theme.page))
                 .environment(\.colorScheme, theme.scheme)
+        } else if isHorizontal {
+            // Horizontal in the room curves its columns, each wearing
+            // its own glass inside the reader — the panel adds no flat
+            // slab for the text to stick out of.
+            panel
         } else {
             panel
                 .glassBackgroundEffect()
         }
     }
 
+    /// Whether the panel stands as separate floating pieces (the
+    /// room's curved Horizontal) rather than one dressed sheet.
+    private var isLoose: Bool { isHorizontal && !isDesk }
+
     private var panel: some View {
-        VStack(spacing: isHorizontal ? 12 : 0) {
+        VStack(spacing: isLoose ? 12 : 0) {
             headerBar
-            if !isHorizontal {
+            if !isLoose {
                 Divider()
             }
             VisionReaderView(docID: docID)
@@ -2003,16 +2071,12 @@ struct MapReaderPanel: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-        if !isHorizontal {
-            bar
-        } else if isDesk {
-            bar
-                .frame(maxWidth: 900)
-                .background(RoundedRectangle(cornerRadius: 18).fill(theme.page))
-        } else {
+        if isLoose {
             bar
                 .frame(maxWidth: 900)
                 .glassBackgroundEffect(in: .rect(cornerRadius: 18))
+        } else {
+            bar
         }
     }
 }
@@ -2140,10 +2204,17 @@ final class FloorBand {
     /// A whisper above the real floor, so the letters never z-fight
     /// the carpet.
     private static let height: Float = 0.01
+    /// Which side of the corridor the band lies on — two timelines
+    /// can share the floor, one per arm.
+    private let sideOffset: Float
     /// The room's actual floor: a floor-classified plane on the arm
     /// menu's own tracking session — never a second session.
     private var floorAnchor: AnchorEntity?
     private var snapTick: EventSubscription?
+
+    init(sideOffset: Float = 0) {
+        self.sideOffset = sideOffset
+    }
 
     func install(in content: RealityViewContent) {
         self.content = content
@@ -2167,8 +2238,11 @@ final class FloorBand {
     }
 
     private func snapToFloor() {
-        guard let entity, let y = floorY() else { return }
-        let target = y + Self.height
+        guard let entity else { return }
+        // Pinned every frame: the fist may carry the space, but the
+        // band never leaves the floor — the world origin's level
+        // standing in until the real floor resolves.
+        let target = (floorY() ?? 0) + Self.height
         if abs(entity.position.y - target) > 0.005 {
             entity.position.y = target
         }
@@ -2211,7 +2285,7 @@ final class FloorBand {
         // The fist carries the band sideways and along the corridor
         // only — its height is the floor's, never the carry's.
         holder.position = SIMD3<Float>(
-            citedSpace.origin.x + shift.x,
+            citedSpace.origin.x + sideOffset + shift.x,
             floorY().map { $0 + Self.height } ?? Self.height,
             citedSpace.origin.z - citedSpace.depth / 2 + shift.z)
         content.add(holder)
@@ -2248,7 +2322,7 @@ struct FloorHistoryView: View {
                 line.addLine(to: CGPoint(x: size.width, y: rule))
                 context.stroke(line, with: .color(.white.opacity(0.18)), lineWidth: 1)
                 context.draw(
-                    Text(String(year)).font(.system(size: 20, weight: .medium))
+                    Text(String(year)).font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.white.opacity(0.55)),
                     at: CGPoint(x: size.width - 12, y: rule - 14),
                     anchor: .trailing)
@@ -2256,7 +2330,7 @@ struct FloorHistoryView: View {
 
             // The events: most widely carried first; a year-row only
             // holds one line, and crowded years yield to bigger events.
-            let lineHeight: CGFloat = 44
+            let lineHeight: CGFloat = 30
             var taken: [CGFloat] = []
             let ordered = history.events
                 .filter { $0.year >= oldest && $0.year <= newest }
@@ -2270,7 +2344,7 @@ struct FloorHistoryView: View {
                 // A quiet dark bed under the words, so they read on any
                 // carpet.
                 let text = Text(words)
-                    .font(.system(size: 26, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.92))
                 let resolved = context.resolve(text)
                 let measured = resolved.measure(in: CGSize(width: size.width - 80,

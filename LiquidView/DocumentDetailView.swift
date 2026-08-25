@@ -1398,7 +1398,7 @@ struct ParagraphView: View {
         // where they don't (a title-quote, or drifted text), the
         // paragraph flash alone stands — scope degrades, never breaks.
         if isHighlighted, let highlightedSpan,
-           let range = attributed.range(of: highlightedSpan, options: [.caseInsensitive, .diacriticInsensitive]) {
+           let range = attributed.range(of: highlightedSpan, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) {
             attributed[range].backgroundColor = Color.yellow.opacity(0.85)
         }
         if flowed, paragraph.effectiveHeading == nil {

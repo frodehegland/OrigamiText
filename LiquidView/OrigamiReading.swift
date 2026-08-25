@@ -663,7 +663,7 @@ nonisolated enum OrigamiReading {
     /// Case- and diacritic-folded words, punctuation dropped — the
     /// concept matcher's common ground.
     static func normalize(_ text: String) -> String {
-        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive],
+        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
                                   locale: Locale(identifier: "en_US_POSIX"))
         let kept = folded.map { $0.isLetter || $0.isNumber ? $0 : " " }
         return String(kept).split(separator: " ").joined(separator: " ")
@@ -1011,7 +1011,7 @@ nonisolated enum OrigamiReading {
             var searchStart = plain.startIndex
             var found: Range<String.Index>?
             while let range = plain.range(of: concept.name,
-                                          options: [.caseInsensitive, .diacriticInsensitive],
+                                          options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
                                           range: searchStart..<plain.endIndex) {
                 let openOK = range.lowerBound == plain.startIndex
                     || !isWordCharacter(plain[plain.index(before: range.lowerBound)])
@@ -1095,7 +1095,7 @@ nonisolated enum OrigamiReading {
             var searchStart = plain.startIndex
             var isFirst = true
             while let range = plain.range(of: concept.name,
-                                          options: [.caseInsensitive, .diacriticInsensitive],
+                                          options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
                                           range: searchStart..<plain.endIndex) {
                 searchStart = range.upperBound
                 let openOK = range.lowerBound == plain.startIndex
@@ -1133,22 +1133,45 @@ nonisolated enum OrigamiReading {
 
     // MARK: - Folding
 
-    /// The text split into sentences, each closing at a `.`, `!`, or
-    /// `?` that stands at a word's end — decimals and abbreviations
-    /// mid-word do not break.
+    /// The fullwidth sentence enders — 。！？ end their sentence on
+    /// their own; CJK text puts no space after them.
+    static let fullwidthSentenceMarks: Set<Character> = ["\u{3002}", "\u{FF01}", "\u{FF1F}"]
+    /// Closers that ride with the mark before them: a quote's or
+    /// bracket's close belongs to the sentence it ends.
+    static let trailingClosers: Set<Character> =
+        ["\u{300D}", "\u{300F}", "\u{FF09}", "\u{3009}", "\u{300B}",
+         "\u{3011}", "\u{3015}", "\u{FF5D}", ")", "\u{201D}", "\u{2019}"]
+
+    /// The text split into sentences: a `.`, `!`, or `?` at a word's
+    /// end (decimals and abbreviations mid-word do not break), or a
+    /// fullwidth 。！？ anywhere — no following space required, a
+    /// closing quote or bracket joining the sentence it ends.
     static func sentences(of text: String) -> [String] {
         var sentences: [String] = []
         var current = ""
         var iterator = text.makeIterator()
         var pending = iterator.next()
+        var closeAfterCloser = false
+        func close() {
+            let sentence = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !sentence.isEmpty { sentences.append(sentence) }
+            current = ""
+        }
         while let character = pending {
             let next = iterator.next()
             current.append(character)
-            if character == "." || character == "!" || character == "?" {
+            if closeAfterCloser {
+                closeAfterCloser = false
+                close()
+            } else if character == "." || character == "!" || character == "?" {
                 if next == nil || next?.isWhitespace == true {
-                    let sentence = current.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !sentence.isEmpty { sentences.append(sentence) }
-                    current = ""
+                    close()
+                }
+            } else if fullwidthSentenceMarks.contains(character) {
+                if let next, trailingClosers.contains(next) {
+                    closeAfterCloser = true
+                } else {
+                    close()
                 }
             }
             pending = next
@@ -1239,7 +1262,7 @@ nonisolated enum OrigamiReading {
     static func folded(_ doc: LiquidDoc, matching term: String) -> [LiquidDoc.Paragraph]? {
         let wanted = term.trimmingCharacters(in: .whitespaces)
         guard !wanted.isEmpty, let body = doc.body, !body.isEmpty else { return nil }
-        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
         var out: [LiquidDoc.Paragraph] = []
         for paragraph in body {
             if paragraph.heading != nil {

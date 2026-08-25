@@ -40,11 +40,15 @@ final class ArmMenu {
         let id: String
         let title: String
         let side: Side
+        /// An underside chip hangs beneath the forearm — the rarely
+        /// touched commands (Settings) out of the working row.
+        let underside: Bool
 
-        init(id: String, title: String, side: Side) {
+        init(id: String, title: String, side: Side, underside: Bool = false) {
             self.id = id
             self.title = title
             self.side = side
+            self.underside = underside
         }
     }
 
@@ -181,12 +185,29 @@ final class ArmMenu {
         guard liftLength > 1e-5 else { return }
         lift /= liftLength
 
-        // ~9 cm of air between skin and text.
+        // ~9 cm of air between skin and text — the underside chips
+        // hang the same distance beneath, in their own row.
         let sideChips = chips.filter { $0.side == side }
-        for (index, chip) in sideChips.enumerated() {
+        var topIndex = 0
+        var underIndex = 0
+        for chip in sideChips {
             guard let item = items[chip.id] else { continue }
-            item.position = alongArm * (0.04 + 0.05 * Float(index)) + lift * 0.09
+            if chip.underside {
+                item.position = alongArm * (0.04 + 0.05 * Float(underIndex)) - lift * 0.09
+                underIndex += 1
+            } else {
+                item.position = alongArm * (0.04 + 0.05 * Float(topIndex)) + lift * 0.09
+                topIndex += 1
+            }
         }
+    }
+
+    // MARK: - Visibility
+
+    /// Shows or hides one chip — a command that only means something
+    /// sometimes steps away otherwise.
+    func setChipVisible(_ id: String, _ visible: Bool) {
+        items[id]?.isEnabled = visible
     }
 }
 

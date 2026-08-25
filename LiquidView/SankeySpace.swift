@@ -80,6 +80,7 @@ nonisolated enum SankeySpace {
     enum FetchError: LocalizedError {
         case cityNotFound(String)
         case noData(String)
+        case queryRejected(String)
 
         var errorDescription: String? {
             switch self {
@@ -87,6 +88,8 @@ nonisolated enum SankeySpace {
                 "No place called \u{201C}\(name)\u{201D} was found."
             case .noData(let name):
                 "Open-Meteo has no temperature archive for \(name)."
+            case .queryRejected(let why):
+                "Wikidata rejected the query: \(why)"
             }
         }
     }
@@ -351,6 +354,12 @@ nonisolated enum SankeySpace {
     struct FloorHistory: Codable, Sendable {
         var events: [FloorEvent]
         var modified: Date
+        /// A user timeline's shown name — the built-in themes name
+        /// themselves. Absent from older mirrors.
+        var name: String? = nil
+        /// The user timeline's own SPARQL, kept so it can refresh; nil
+        /// for imported files and the built-in themes.
+        var query: String? = nil
     }
 
     /// The floor's histories — each a themed Wikidata sweep, verified
@@ -471,22 +480,223 @@ nonisolated enum SankeySpace {
         }
     }
 
+    // MARK: - Drafting a floor query from plain words
+
+    /// A timeline query drafted from plain words ("iphone",
+    /// "telescopes"): the words resolve to Wikidata entities through
+    /// the entity-search API, then the relations that gather a
+    /// subject's members are tried in turn — instances (and their
+    /// subclasses), series and parts, facets — and the first query
+    /// that yields enough dated events wins. The drafted SPARQL is
+    /// returned for the user to see, run, and adapt — never hidden.
+    static func draftFloorQuery(about term: String) async throws
+        -> (name: String, query: String, events: Int) {
+        // The ask's framing words carry no entity — "history of the
+        // iphone" must search as "iphone". The full phrase is tried
+        // first (it may name an entity exactly), the stripped subject
+        // after.
+        let framing: Set<String> = ["history", "timeline", "evolution", "story",
+                                    "of", "the", "a", "an", "about"]
+        let stripped = term.split(separator: " ")
+            .filter { !framing.contains($0.lowercased()) }
+            .joined(separator: " ")
+        var terms = [term]
+        if !stripped.isEmpty, stripped.lowercased() != term.lowercased() {
+            terms.append(stripped)
+        }
+        let patterns = [
+            "?item wdt:P31/wdt:P279* wd:%@.",       // instances, subclasses deep
+            "?item (wdt:P179|wdt:P361) wd:%@.",     // series members, parts
+            "?item (wdt:P1269|wdt:P921) wd:%@.",    // facets, main subjects
+        ]
+        var best: (name: String, query: String, events: Int)?
+        var foundAnyEntity = false
+        for variant in terms {
+            let candidates = (try? await searchEntities(variant)) ?? []
+            foundAnyEntity = foundAnyEntity || !candidates.isEmpty
+            for candidate in candidates.prefix(3) {
+                for pattern in patterns {
+                    let query = floorQueryTemplate(
+                        pattern: String(format: pattern, candidate.id))
+                    guard let events = try? await fetchFloorEvents(query: query),
+                          !events.isEmpty else { continue }
+                    let drafted = ("\(candidate.label) History", query, events.count)
+                    if events.count >= 8 { return drafted }
+                    if events.count > (best?.events ?? 0) { best = drafted }
+                }
+            }
+        }
+        if let best { return best }
+        guard foundAnyEntity else {
+            throw FetchError.queryRejected(
+                "Wikidata knows no entity called \u{201C}\(term)\u{201D}.")
+        }
+        throw FetchError.queryRejected("""
+            Wikidata holds too few dated items about \
+            \u{201C}\(term)\u{201D} \u{2014} try a more concrete subject \
+            (\u{201C}telescopes\u{201D} works where \u{201C}astronomy\u{201D} \
+            would not).
+            """)
+    }
+
+    /// The entity-search API: the words to their best-known entities.
+    private static func searchEntities(_ term: String) async throws
+        -> [(id: String, label: String)] {
+        var components = URLComponents(string: "https://www.wikidata.org/w/api.php")!
+        components.queryItems = [
+            URLQueryItem(name: "action", value: "wbsearchentities"),
+            URLQueryItem(name: "search", value: term),
+            URLQueryItem(name: "language", value: "en"),
+            URLQueryItem(name: "type", value: "item"),
+            URLQueryItem(name: "limit", value: "5"),
+            URLQueryItem(name: "format", value: "json"),
+        ]
+        var request = URLRequest(url: components.url!, timeoutInterval: 30)
+        request.setValue("OrigamiText/1.0 (mailto:frode@hegland.com)",
+                         forHTTPHeaderField: "User-Agent")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let found = object["search"] as? [[String: Any]] else { return [] }
+        return found.compactMap { entry in
+            guard let id = entry["id"] as? String else { return nil }
+            return (id, entry["label"] as? String ?? id)
+        }
+    }
+
+    /// The drafted queries' shared shape: the subject pattern, then
+    /// whichever date the item carries (publication, inception,
+    /// discovery, the moment itself, launch, birth), ranked by
+    /// Wikipedia carriage.
+    private static func floorQueryTemplate(pattern: String) -> String {
+        """
+        SELECT ?itemLabel (YEAR(?date) AS ?year) ?links WHERE {
+          \(pattern)
+          ?item wikibase:sitelinks ?links.
+          FILTER(?links > 10)
+          OPTIONAL { ?item wdt:P577 ?d1 } OPTIONAL { ?item wdt:P571 ?d2 }
+          OPTIONAL { ?item wdt:P575 ?d3 } OPTIONAL { ?item wdt:P585 ?d4 }
+          OPTIONAL { ?item wdt:P619 ?d5 } OPTIONAL { ?item wdt:P569 ?d6 }
+          BIND(COALESCE(?d1, ?d2, ?d3, ?d4, ?d5, ?d6) AS ?date)
+          FILTER(BOUND(?date))
+          SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+        } ORDER BY DESC(?links) LIMIT 200
+        """
+    }
+
+    // MARK: - The user's own floor timelines
+
+    /// A user timeline mirrors like a theme — one JSON per timeline,
+    /// named by its slug — and carries its own name (and its query,
+    /// when it came from one) inside the file.
+    private static let userFloorPrefix = "origami-floor-user-"
+
+    static func userFloorFileName(slug: String) -> String {
+        userFloorPrefix + slug + ".json"
+    }
+
+    /// A shown name reduced to a file-safe slug.
+    static func userFloorSlug(name: String) -> String {
+        let slug = name.lowercased()
+            .folding(options: .diacriticInsensitive, locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        return slug.isEmpty ? "timeline" : slug
+    }
+
+    /// Every user timeline the folder carries, by slug and shown name.
+    static func listUserFloorTimelines(in folder: URL) -> [(slug: String, name: String)] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        return names.compactMap { file in
+            guard file.hasPrefix(userFloorPrefix), file.hasSuffix(".json") else { return nil }
+            let slug = String(file.dropFirst(userFloorPrefix.count).dropLast(".json".count))
+            guard !slug.isEmpty else { return nil }
+            let history = readUserFloorHistory(slug: slug, from: folder)
+            return (slug, history?.name ?? slug)
+        }.sorted { $0.name < $1.name }
+    }
+
+    static func readUserFloorHistory(slug: String, from folder: URL) -> FloorHistory? {
+        let url = folder.appendingPathComponent(userFloorFileName(slug: slug))
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(FloorHistory.self, from: data)
+    }
+
+    static func writeUserFloorHistory(_ history: FloorHistory, slug: String,
+                                      to folder: URL) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        if let data = try? encoder.encode(history) {
+            try? data.write(to: folder.appendingPathComponent(userFloorFileName(slug: slug)),
+                            options: .atomic)
+        }
+    }
+
+    /// A timeline from the user's own file: one event per line, the
+    /// year then the words — comma or tab separated, an optional third
+    /// column carrying the weight (the Wikipedia-carriage stand-in
+    /// that decides floor space in tight years; 10 when absent).
+    /// Header lines and anything without a leading year are skipped;
+    /// negative years read as BCE.
+    static func parseFloorEvents(text: String) -> [FloorEvent] {
+        var events: [FloorEvent] = []
+        for line in text.split(whereSeparator: \.isNewline) {
+            let separator: Character = line.contains("\t") ? "\t" : ","
+            let cells = line.split(separator: separator, omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(
+                    in: CharacterSet(charactersIn: "\"")) }
+            guard cells.count >= 2, let year = Int(cells[0]), !cells[1].isEmpty
+            else { continue }
+            let links = cells.count >= 3 ? Int(cells[2]) ?? 10 : 10
+            events.append(FloorEvent(year: year, title: cells[1], links: links))
+        }
+        return events
+    }
+
     /// One theme's events from Wikidata, ranked by how many Wikipedias
     /// carry each — fetched once and mirrored, like the temperature
     /// lines. Unlabelled items (a bare Q-number) are left out.
     static func fetchFloorHistory(theme: FloorTheme) async throws -> [FloorEvent] {
+        try await fetchFloorEvents(query: theme.query)
+    }
+
+    /// Any SPARQL against Wikidata that binds ?itemLabel, ?year, and
+    /// ?links — the built-in themes and the user's own queries share
+    /// this one wire.
+    static func fetchFloorEvents(query: String) async throws -> [FloorEvent] {
         var components = URLComponents(string: "https://query.wikidata.org/sparql")!
         components.queryItems = [
-            URLQueryItem(name: "query", value: theme.query),
+            URLQueryItem(name: "query", value: query),
             URLQueryItem(name: "format", value: "json"),
         ]
         var request = URLRequest(url: components.url!, timeoutInterval: 60)
         request.setValue("OrigamiText/1.0 (mailto:frode@hegland.com)",
                          forHTTPHeaderField: "User-Agent")
-        let (data, _) = try await URLSession.shared.data(for: request)
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let (data, response) = try await URLSession.shared.data(for: request)
+        // A bad query comes back as a Java exception in plain text —
+        // fish Wikidata's own words out rather than failing to parse
+        // it as JSON.
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else {
+            let body = String(decoding: data, as: UTF8.self)
+            let reason = body.split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .first {
+                    $0.localizedCaseInsensitiveContains("exception")
+                        || $0.localizedCaseInsensitiveContains("error")
+                }?
+                .prefix(200)
+            throw FetchError.queryRejected(
+                reason.map(String.init) ?? "the server answered with status \(status).")
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let results = object["results"] as? [String: Any],
-              let bindings = results["bindings"] as? [[String: Any]] else { return [] }
+              let bindings = results["bindings"] as? [[String: Any]] else {
+            throw FetchError.queryRejected("""
+                the answer was not JSON. The query must SELECT ?itemLabel, \
+                (YEAR(?date) AS ?year), and ?links.
+                """)
+        }
         var seen = Set<String>()
         var events: [FloorEvent] = []
         for row in bindings {
