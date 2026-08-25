@@ -49,9 +49,14 @@ final class ArmMenu {
     }
 
     private let chips: [Chip]
+    /// Whether the session also tracks planes — the Hallway asks for
+    /// this so a reading laid flat can find the actual desk. One
+    /// session carries both; a second session breaks the device.
+    private let tracksPlanes: Bool
 
-    init(chips: [Chip]) {
+    init(chips: [Chip], tracksPlanes: Bool = false) {
         self.chips = chips
+        self.tracksPlanes = tracksPlanes
     }
 
     // MARK: -
@@ -121,7 +126,8 @@ final class ArmMenu {
 
     private func startTracking() async {
         let session = SpatialTrackingSession()
-        let unavailable = await session.run(SpatialTrackingSession.Configuration(tracking: [.hand]))
+        let unavailable = await session.run(SpatialTrackingSession.Configuration(
+            tracking: tracksPlanes ? [.hand, .plane] : [.hand]))
         self.session = session
 
         if let unavailable, !unavailable.anchor.isEmpty {

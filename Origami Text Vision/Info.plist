@@ -4,6 +4,8 @@
 <dict>
 	<key>NSHandsTrackingUsageDescription</key>
 	<string>Origami Text tracks your hands to place the arm menus — Settings and Documents ride above your right hand.</string>
+	<key>NSWorldSensingUsageDescription</key>
+	<string>Origami Text senses the surfaces around you so a reading laid flat can rest on your actual desk.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>

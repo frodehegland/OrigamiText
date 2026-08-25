@@ -102,6 +102,7 @@
 				"NodeImmersiveView+Typealias.swift",
 				OrigamiEPUBImport.swift,
 				OrigamiMath.swift,
+				OrigamiReading.swift,
 				OrigamiVision.swift,
 				SankeySpace.swift,
 				VisualMeta.swift,

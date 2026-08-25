@@ -3,6 +3,7 @@ import SwiftUI
 import RealityKit
 import UniformTypeIdentifiers
 import FoundationModels
+import WebKit
 import os
 
 /// Origami Text for visionOS — the same app (one bundle id, one App Store
@@ -203,6 +204,19 @@ final class VisionModel {
     /// button rests once its wish is listed.
     private(set) var acquisitionIDs: Set<String> = []
 
+    /// The Reading Desk: the one document whose panel stands alone —
+    /// everything else in the Hallway steps away while this is set.
+    /// Toggled from the reader panel's own toolbar.
+    var readingDeskDocID: String?
+
+    /// Each panel's pose: standing, tilted like a drafting board, or
+    /// flat on the reading surface — cycled from the panel's toolbar.
+    var panelPoses: [String: PanelPose] = [:]
+
+    func pose(of docID: String) -> PanelPose {
+        panelPoses[docID] ?? .upright
+    }
+
     /// A cited work the reader wants as a book: listed in the shared
     /// acquisitions file for the Mac's library to show and download.
     func requestAcquisition(key: String, title: String, author: String,
@@ -385,17 +399,24 @@ final class VisionModel {
     private func adoptSankeyData(from folder: URL) {
         if let dataset = SankeySpace.read(from: folder), !dataset.series.isEmpty {
             sankey = dataset
-        } else if sankey == nil, !isFetchingSankey {
-            // No Mac has filled the mirror yet — this device can.
-            isFetchingSankey = true
-            Task { @MainActor in
-                defer { isFetchingSankey = false }
-                guard let series = try? await SankeySpace.temperatureSeries(city: "New York")
-                else { return }
-                let dataset = SankeySpace.Dataset(series: series, modified: .now)
-                sankey = dataset
-                writeSankeyMirror(dataset)
-            }
+        }
+        seedDefaultTimeflows()
+    }
+
+    /// The corridor's default Timeflows, seeded once per device:
+    /// computing on the left wall, the world on the right. They join
+    /// whatever the mirror already carries, and a removal afterwards
+    /// is respected — the seed never returns on its own.
+    private func seedDefaultTimeflows() {
+        let key = "seededDefaultTimeflows"
+        guard !UserDefaults.standard.bool(forKey: key), !isFetchingSankey else { return }
+        isFetchingSankey = true
+        Task { @MainActor in
+            defer { isFetchingSankey = false }
+            let series = await SankeySpace.defaultWallSeries()
+            guard !series.isEmpty else { return }
+            UserDefaults.standard.set(true, forKey: key)
+            adoptSankeySeries(series)
         }
     }
 
@@ -1110,11 +1131,25 @@ struct VisionSettingsView: View {
     @Environment(\.openWindow) private var openWindow
     @AppStorage("xrMaxTitleLines") private var maxTitleLines = 2
     @AppStorage("xrMaxAuthorLines") private var maxAuthorLines = 1
+    /// The Reading Desk's dress — worn while a document is read alone.
+    @AppStorage("readingDeskTheme") private var deskThemeRaw =
+        ReadingDeskTheme.light.rawValue
     @State private var choosingFolder = false
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Reading Desk") {
+                    Picker("Theme", selection: $deskThemeRaw) {
+                        ForEach(ReadingDeskTheme.allCases) { theme in
+                            Text(theme.displayName).tag(theme.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Worn by the document while it is read alone on the Reading Desk — the Hallway's panels keep their glass.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Section("Community Folder") {
                     LabeledContent("Folder",
                                    value: model.index.folderURL?.lastPathComponent ?? "Not set")
@@ -1154,6 +1189,32 @@ struct VisionSettingsView: View {
 
 
 
+/// A reader panel's pose in the room: standing, the drafting-board
+/// tilt, or flat on the table.
+enum PanelPose: String {
+    case upright
+    case tilted
+    case flat
+}
+
+/// The EPUB's own pages for the Default reading: local files only, no
+/// navigation away.
+private struct FaithfulWebView: UIViewRepresentable {
+    let page: URL
+    let base: URL
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.isOpaque = false
+        view.loadFileURL(page, allowingReadAccessTo: base)
+        return view
+    }
+
+    func updateUIView(_ view: WKWebView, context: Context) {}
+}
+
 /// The full article, opened by double-tapping a card in the Knowledge
 /// Space (or a row in the library).
 struct VisionReaderView: View {
@@ -1161,49 +1222,127 @@ struct VisionReaderView: View {
     let docID: String
     /// The speaker whose statements are being browsed, sheet-presented.
     @State private var browsingSpeaker: SpeakerSelection?
-    /// The reading controls, the Mac's foot bar brought over: the mode
-    /// words (Scroll, Outline), the contents, and the type size.
-    @State private var mode: Mode = .scroll
+    /// The reading controls, the Mac's foot bar brought over whole:
+    /// every reading view macOS has, plus the on-device AI reading.
+    /// Persisted, and read by the hosting panel so Horizontal earns
+    /// its width.
+    @AppStorage("visionReaderMode") private var modeRaw = Mode.scroll.rawValue
     /// Outline: the sections clicked open, by heading id.
     @State private var expanded: Set<String> = []
     @State private var showsContents = false
+    /// Focus: the one paragraph being read.
+    @State private var focusIndex = 0
+    /// The AI reading: the summary once made, and its making.
+    @State private var aiSummary: String?
+    @State private var aiWorking = false
+    @State private var aiError: String?
     /// One point either way for every reading, remembered — the Aa menu.
     @AppStorage("visionReaderFontDelta") private var fontDelta = 0.0
+    /// The desk theme — when this reading IS the desk, the Horizontal
+    /// columns wear its paper instead of the room's glass.
+    @AppStorage("readingDeskTheme") private var deskThemeRaw =
+        ReadingDeskTheme.light.rawValue
+    /// The document's own interactions, the Mac's brought over whole:
+    /// the stretchtext blocks clicked open, the tapped citation's card,
+    /// the dagger's endnote.
+    @State private var openStretch: Set<String> = []
+    @State private var citationTarget: CitationTarget?
+    @State private var noteTarget: NoteTarget?
+    @Environment(\.colorScheme) private var colorScheme
 
-    private enum Mode { case scroll, outline }
+    private var mode: Mode { Mode(rawValue: modeRaw) ?? .scroll }
+
+    private var isDesk: Bool { model.readingDeskDocID == docID }
+    private var deskTheme: ReadingDeskTheme {
+        ReadingDeskTheme(rawValue: deskThemeRaw) ?? .light
+    }
+
+    /// A page lying flat on the table is read from above at arm's
+    /// length — its type steps down to suit; the drafting tilt takes
+    /// the middle way.
+    private var typeScale: CGFloat {
+        switch model.pose(of: docID) {
+        case .upright: 1.0
+        case .tilted: 0.75
+        case .flat: 0.55
+        }
+    }
+
+    /// The Mac's reading views, here: Default (the EPUB's own pages),
+    /// Scroll, Horizontal, Focus, Outline, and AI.
+    private enum Mode: String, CaseIterable {
+        case faithful, scroll, horizontal, focus, outline, ai
+
+        var word: String {
+            switch self {
+            case .faithful: "Default"
+            case .scroll: "Scroll"
+            case .horizontal: "Horizontal"
+            case .focus: "Focus"
+            case .outline: "Outline"
+            case .ai: "AI"
+            }
+        }
+    }
 
     private struct SpeakerSelection: Identifiable {
         let name: String
         var id: String { name }
     }
 
+    private struct CitationTarget: Identifiable {
+        let key: String
+        var id: String { key }
+    }
+
+    private struct NoteTarget: Identifiable {
+        let noteID: String
+        var id: String { noteID }
+    }
+
     var body: some View {
         if let doc = model.index.byID[docID]?.doc {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(doc.title)
-                            .font(AppFonts.heading(32 + fontDelta))
-                            .padding(.bottom, 4)
-                        Text("\(doc.displayAuthor) · \(doc.listedDateText)")
-                            .foregroundStyle(.secondary)
-                            .padding(.bottom, 20)
-                        ForEach(shownParagraphs(of: doc)) { paragraph in
-                            paragraphView(paragraph)
-                        }
-                        referencesSection(doc)
-                    }
-                    .frame(maxWidth: 640, alignment: .leading)
-                    .frame(maxWidth: .infinity)
-                    .padding(28)
-                }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    footBar(doc, proxy: proxy)
+            Group {
+                switch mode {
+                case .faithful:
+                    faithfulView(doc)
+                case .horizontal:
+                    horizontalView(doc)
+                case .focus:
+                    focusView(doc)
+                case .ai:
+                    aiView(doc)
+                case .scroll, .outline:
+                    scrollBody(doc)
                 }
             }
             .sheet(item: $browsingSpeaker) { selection in
                 VisionSpeakerStatementsView(name: selection.name)
             }
+            // A tapped citation opens the source's card; a dagger its
+            // endnote — as on the Mac. Overlaid, not sheeted: this
+            // view lives on a RealityKit attachment, where a sheet has
+            // no window to present in.
+            .overlay {
+                if let target = citationTarget {
+                    VisionCitationSheet(doc: doc, key: target.key) {
+                        citationTarget = nil
+                    }
+                } else if let target = noteTarget {
+                    VisionEndnoteSheet(
+                        text: OrigamiReading.endnote(withID: target.noteID, in: doc)
+                            .map { inline($0, doc: doc) }
+                            ?? AttributedString("The document carries no note \(target.noteID).")) {
+                        noteTarget = nil
+                    }
+                }
+            }
+            // The reading's own links: origami-cite to the card,
+            // origami-note to the endnote, origami-stretch folds and
+            // unfolds; everything else opens as links do.
+            .environment(\.openURL, OpenURLAction { url in
+                handle(url, doc: doc) ? .handled : .systemAction
+            })
             // While this article is open, its card leaves the Map; the
             // card returns the moment the window closes.
             .onAppear { model.openDocIDs.insert(docID) }
@@ -1214,13 +1353,309 @@ struct VisionReaderView: View {
         }
     }
 
+    /// Scroll, Outline and Transcript share the flowing page.
+    private func scrollBody(_ doc: LiquidDoc) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(doc.title)
+                        .font(AppFonts.heading((32 + fontDelta) * typeScale))
+                        .padding(.bottom, 4)
+                    Text("\(doc.displayAuthor) · \(doc.listedDateText)")
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 20)
+                    if mode == .scroll {
+                        // Scroll reads the whole flow, stretch folds
+                        // and all.
+                        flowView(readable(of: doc), doc: doc)
+                    } else {
+                        ForEach(shownParagraphs(of: doc)) { paragraph in
+                            paragraphView(paragraph, doc: doc)
+                        }
+                    }
+                    referencesSection(doc)
+                }
+                .frame(maxWidth: 640, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                .padding(28)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                footBar(doc, proxy: proxy)
+            }
+        }
+    }
+
+    // MARK: Default — the EPUB's own pages
+
+    /// The book as its publisher shaped it: the unpacked package's own
+    /// XHTML in a web view, styles and all.
+    @ViewBuilder private func faithfulView(_ doc: LiquidDoc) -> some View {
+        if let record = model.epubRecords.first(where: { $0.id == docID }) {
+            let folder = VisionModel.epubsRoot
+                .appendingPathComponent(record.folder, isDirectory: true)
+            FaithfulWebView(
+                page: folder.appendingPathComponent(record.contentSubpath),
+                base: folder)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    footBar(doc, proxy: nil)
+                }
+        } else {
+            // Not a shelf book (a letter, a note): the flow stands in.
+            scrollBody(doc)
+        }
+    }
+
+    // MARK: Horizontal — pages side by side
+
+    /// The reading cut into columns, ALL of them standing side by side
+    /// — the document's whole breadth at once. (A very long reading is
+    /// capped at a room-sized width and walks the rest by swipe; the
+    /// attachment's render texture cannot be endless.)
+    private func horizontalView(_ doc: LiquidDoc) -> some View {
+        let pages = horizontalPages(of: doc)
+        let pose = model.pose(of: docID)
+        let columnWidth: CGFloat = pose == .flat ? 280 : 560
+        let fullWidth = CGFloat(pages.count) * (columnWidth + 12)
+        // Standing, the band curves gently around the reader: each
+        // column yaws toward the centre and steps closer at the edges
+        // — a faceted arc, still one live panel. Tilted or flat it
+        // lies true.
+        let centre = Double(pages.count - 1) / 2
+        return ScrollView(.horizontal) {
+            LazyHStack(alignment: .top, spacing: 12) {
+                ForEach(Array(pages.enumerated()), id: \.offset) { index, page in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            if index == 0 {
+                                Text(doc.title)
+                                    .font(AppFonts.heading((28 + fontDelta) * typeScale))
+                                    .padding(.bottom, 4)
+                                Text("\(doc.displayAuthor) · \(doc.listedDateText)")
+                                    .foregroundStyle(.secondary)
+                                    .padding(.bottom, 16)
+                            }
+                            flowView(page, doc: doc)
+                            // The references close the last column, as
+                            // on the Mac.
+                            if index == pages.count - 1 {
+                                referencesSection(doc)
+                            }
+                        }
+                        .padding(24)
+                    }
+                    // Flat on the table, the columns halve with the type.
+                    .frame(width: columnWidth)
+                    .containerRelativeFrame(.vertical)
+                    // Each column wears its own page — the theme's
+                    // paper on the desk, the room's glass otherwise —
+                    // BEFORE the yaw, so the background curves with
+                    // the column and no flat slab pokes through the arc.
+                    .background {
+                        if isDesk {
+                            RoundedRectangle(cornerRadius: 18)
+                                .fill(deskTheme.page)
+                        }
+                    }
+                    .glassBackgroundEffect(in: .rect(cornerRadius: 18),
+                                           displayMode: isDesk ? .never : .always)
+                    .rotation3DEffect(
+                        .degrees(pose == .upright ? (Double(index) - centre) * -5 : 0),
+                        axis: (x: 0, y: 1, z: 0))
+                    .offset(z: pose == .upright
+                        ? CGFloat(pow(Double(index) - centre, 2)) * 14 : 0)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.viewAligned)
+        // The reader takes the columns' whole width, so the hosting
+        // panel grows to show every one of them.
+        .frame(width: min(fullWidth, 4200))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            footBar(doc, proxy: nil)
+        }
+    }
+
+    /// The Mac's Horizontal rule: one SECTION per column — a heading
+    /// with no body of its own never breaks to a column alone; it
+    /// rides atop the section that follows. A long section scrolls
+    /// within its column.
+    private func horizontalPages(of doc: LiquidDoc) -> [[LiquidDoc.Paragraph]] {
+        var pages: [[LiquidDoc.Paragraph]] = []
+        var current: [LiquidDoc.Paragraph] = []
+        var currentHasBody = false
+        for paragraph in readable(of: doc) {
+            if paragraph.effectiveHeading != nil {
+                if currentHasBody {
+                    pages.append(current)
+                    current = []
+                    currentHasBody = false
+                }
+                current.append(paragraph)
+            } else {
+                current.append(paragraph)
+                currentHasBody = true
+            }
+        }
+        if !current.isEmpty {
+            // Bare headings at the very end stay with the last column.
+            if currentHasBody || pages.isEmpty {
+                pages.append(current)
+            } else {
+                pages[pages.count - 1] += current
+            }
+        }
+        return pages
+    }
+
+    // MARK: Focus — one paragraph at a time
+
+    /// The Mac's Focus: one paragraph large and alone, the rest of the
+    /// world quiet; arrows or a tap walk the reading.
+    private func focusView(_ doc: LiquidDoc) -> some View {
+        let readable = readable(of: doc)
+        let index = min(focusIndex, max(readable.count - 1, 0))
+        return VStack(spacing: 0) {
+            Spacer()
+            if readable.indices.contains(index) {
+                let paragraph = readable[index]
+                VStack(alignment: .leading, spacing: 10) {
+                    if let speaker = paragraph.speaker {
+                        Text(speaker)
+                            .font(.system(size: 13, weight: .semibold))
+                            .kerning(0.8)
+                            .textCase(.uppercase)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(inline(paragraph, doc: doc))
+                        .font(paragraph.effectiveHeading != nil
+                            ? AppFonts.heading((30 + fontDelta) * typeScale)
+                            : AppFonts.body((22 + fontDelta) * typeScale))
+                        .tint(.primary)
+                }
+                .frame(maxWidth: 560, alignment: .leading)
+                .padding(28)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if index < readable.count - 1 { focusIndex = index + 1 }
+                }
+            }
+            Spacer()
+            HStack(spacing: 18) {
+                Button {
+                    focusIndex = max(index - 1, 0)
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .disabled(index == 0)
+                Text("\(index + 1) of \(readable.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Button {
+                    focusIndex = min(index + 1, readable.count - 1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .disabled(index >= readable.count - 1)
+            }
+            .padding(.bottom, 8)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            footBar(doc, proxy: nil)
+        }
+    }
+
+    // MARK: AI — the on-device reading
+
+    /// The reading read for you, on this device: Apple Intelligence
+    /// summarizes the document; nothing leaves the headset.
+    private func aiView(_ doc: LiquidDoc) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(doc.title)
+                    .font(AppFonts.heading((26 + fontDelta) * typeScale))
+                Text("\(doc.displayAuthor) · \(doc.listedDateText)")
+                    .foregroundStyle(.secondary)
+                Divider()
+                if case .available = SystemLanguageModel.default.availability {
+                    if let aiSummary {
+                        Text("Summary")
+                            .font(.headline)
+                        Text(aiSummary)
+                            .font(AppFonts.body((16 + fontDelta) * typeScale))
+                            .textSelection(.enabled)
+                        Button("Summarize Again") { summarize(doc) }
+                            .disabled(aiWorking)
+                    } else if aiWorking {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Reading on this device\u{2026}")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Button("Summarize This Reading") { summarize(doc) }
+                            .buttonStyle(.borderedProminent)
+                        Text("The summary is made on this device by Apple Intelligence — the document never leaves the headset.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let aiError {
+                        Label(aiError, systemImage: "xmark.octagon")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                } else {
+                    Label("Apple Intelligence is not available on this device.",
+                          systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .frame(maxWidth: 640, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .padding(28)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            footBar(doc, proxy: nil)
+        }
+    }
+
+    private func summarize(_ doc: LiquidDoc) {
+        guard !aiWorking else { return }
+        aiWorking = true
+        aiError = nil
+        let text = readable(of: doc).map(\.text).joined(separator: "\n")
+        let title = doc.title
+        Task { @MainActor in
+            defer { aiWorking = false }
+            do {
+                let session = LanguageModelSession(instructions: """
+                    You summarize academic and literary documents faithfully \
+                    and plainly, in a few short paragraphs, never inventing \
+                    what the text does not say.
+                    """)
+                let response = try await session.respond(
+                    to: "Summarize \u{201C}\(title)\u{201D}:\n\n"
+                        + String(text.prefix(12_000)))
+                aiSummary = response.content
+            } catch {
+                aiError = error.localizedDescription
+            }
+        }
+    }
+
     // MARK: The flow
 
     /// The readable body: everything in Scroll; in Outline, the headings
     /// with only the opened sections' paragraphs beneath them.
-    private func shownParagraphs(of doc: LiquidDoc) -> [LiquidDoc.Paragraph] {
+    /// The readable body, the appendix machinery left out.
+    private func readable(of doc: LiquidDoc) -> [LiquidDoc.Paragraph] {
         let appendixIDs = doc.visualMetaParagraphIDs
-        let readable = (doc.body ?? []).filter { !appendixIDs.contains($0.id) }
+        return (doc.body ?? []).filter { !appendixIDs.contains($0.id) }
+    }
+
+    private func shownParagraphs(of doc: LiquidDoc) -> [LiquidDoc.Paragraph] {
+        let readable = readable(of: doc)
         guard mode == .outline else { return readable }
         var shown: [LiquidDoc.Paragraph] = []
         var currentSection: String?
@@ -1238,7 +1673,131 @@ struct VisionReaderView: View {
         return shown
     }
 
-    @ViewBuilder private func paragraphView(_ paragraph: LiquidDoc.Paragraph) -> some View {
+    /// The flow as the Mac reads it: plain paragraphs interleaved with
+    /// stretch blocks — the `»` toggle riding inline at the end of the
+    /// paragraph the stretch follows, the opened detail a callout.
+    @ViewBuilder private func flowView(_ paragraphs: [LiquidDoc.Paragraph],
+                                       doc: LiquidDoc) -> some View {
+        let items = OrigamiFlowItem.build(paragraphs)
+        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            switch item {
+            case .paragraph(let paragraph):
+                let trailing: (id: String, run: [LiquidDoc.Paragraph])? = {
+                    guard isPlainText(paragraph), index + 1 < items.count,
+                          case .stretch(let id, let run) = items[index + 1]
+                    else { return nil }
+                    return (id, run)
+                }()
+                paragraphView(paragraph, doc: doc, trailingStretch: trailing)
+            case .stretch(let id, let run):
+                let hosted: Bool = {
+                    guard index > 0, case .paragraph(let host) = items[index - 1]
+                    else { return false }
+                    return isPlainText(host)
+                }()
+                stretchBlock(id: id, run: run, doc: doc, hosted: hosted)
+            }
+        }
+    }
+
+    /// Whether a paragraph is running text — something an inline
+    /// stretch toggle can end. Images, tables, and rules are not.
+    private func isPlainText(_ paragraph: LiquidDoc.Paragraph) -> Bool {
+        paragraph.tableID == nil && paragraph.text != "---"
+            && LiquidDoc.imageReference(in: paragraph.text) == nil
+    }
+
+    /// One stretchtext block's detail, a callout under its host; the
+    /// revealed words themselves fold it back.
+    @ViewBuilder private func stretchBlock(id: String, run: [LiquidDoc.Paragraph],
+                                           doc: LiquidDoc, hosted: Bool) -> some View {
+        let isOpen = openStretch.contains(id)
+        if !hosted {
+            // A stretch with no text before it (rare) gets a toggle of
+            // its own; a hosted one lives at its host's line end.
+            Button {
+                toggleStretch(id)
+            } label: {
+                Text(isOpen ? "\u{2039}" : "\u{00BB}")
+                    .font(.callout.bold())
+            }
+            .buttonStyle(.plain)
+            .help(isOpen ? "Close the stretchtext" : "Open the stretchtext")
+            .padding(.bottom, 12)
+        }
+        if isOpen {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(run) { paragraph in
+                    Text(OrigamiReading.stretchRevealed(
+                            inline(paragraph, doc: doc),
+                            id: id, closing: paragraph.id == run.last?.id))
+                        .font(font(for: paragraph))
+                        .tint(.primary)
+                }
+            }
+            .padding(.leading, 14)
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(.tertiary)
+                    .frame(width: 3)
+            }
+            .padding(.bottom, 12)
+        }
+    }
+
+    private func toggleStretch(_ id: String) {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            if openStretch.contains(id) {
+                openStretch.remove(id)
+            } else {
+                openStretch.insert(id)
+            }
+        }
+    }
+
+    /// A paragraph's words with their conventions live: citations as
+    /// links on the origami-cite scheme, endnote daggers on
+    /// origami-note, and — when a stretch follows — its `»`/`‹` toggle
+    /// at the line's end.
+    private func inline(_ paragraph: LiquidDoc.Paragraph, doc: LiquidDoc,
+                        trailingStretch: (id: String, run: [LiquidDoc.Paragraph])? = nil)
+        -> AttributedString {
+        var out = OrigamiReading.inlineAttributed(paragraph.text, in: doc,
+                                                  citations: .authorDate,
+                                                  appearance: colorScheme)
+        if let trailing = trailingStretch,
+           let url = URL(string: OrigamiReading.stretchScheme + ":" + trailing.id) {
+            var mark = AttributedString(
+                openStretch.contains(trailing.id) ? " \u{2039}" : " \u{00BB}")
+            mark.link = url
+            out += mark
+        }
+        return out
+    }
+
+    /// The reading's own schemes, caught; true consumes the tap.
+    private func handle(_ url: URL, doc: LiquidDoc) -> Bool {
+        if let key = OrigamiReading.citationKey(from: url) {
+            citationTarget = CitationTarget(key: key)
+            return true
+        }
+        if let noteID = OrigamiReading.noteID(from: url) {
+            noteTarget = NoteTarget(noteID: noteID)
+            return true
+        }
+        if url.scheme == OrigamiReading.stretchScheme {
+            let raw = String(url.absoluteString
+                .dropFirst(OrigamiReading.stretchScheme.count + 1))
+            toggleStretch(raw.removingPercentEncoding ?? raw)
+            return true
+        }
+        return false
+    }
+
+    @ViewBuilder private func paragraphView(_ paragraph: LiquidDoc.Paragraph,
+                                            doc: LiquidDoc,
+                                            trailingStretch: (id: String, run: [LiquidDoc.Paragraph])? = nil)
+        -> some View {
         VStack(alignment: .leading, spacing: 2) {
             // The attribution is an affordance here as on the Mac: the
             // name opens everything this person has said.
@@ -1272,9 +1831,12 @@ struct VisionReaderView: View {
                 .help(expanded.contains(paragraph.id)
                       ? "Fold this section" : "Open this section")
             } else {
-                Text(paragraph.renderedText)
+                // Links wear the body's own ink (tint), and selection
+                // stays off the flowing text so a pinch always lands
+                // on the link, not a selection gesture.
+                Text(inline(paragraph, doc: doc, trailingStretch: trailingStretch))
                     .font(font(for: paragraph))
-                    .textSelection(.enabled)
+                    .tint(.primary)
             }
         }
         .padding(.bottom, 12)
@@ -1283,15 +1845,15 @@ struct VisionReaderView: View {
 
     /// The reference list closing the reading, as on the Mac.
     @ViewBuilder private func referencesSection(_ doc: LiquidDoc) -> some View {
-        if !doc.references.isEmpty, mode == .scroll {
+        if !doc.references.isEmpty, mode == .scroll || mode == .horizontal {
             Divider()
                 .padding(.vertical, 12)
             Text("References")
-                .font(AppFonts.heading(23 + fontDelta))
+                .font(AppFonts.heading((23 + fontDelta) * typeScale))
                 .padding(.bottom, 8)
             ForEach(Array(doc.references.enumerated()), id: \.element.id) { index, reference in
                 Text(referenceLine(reference, number: index + 1))
-                    .font(AppFonts.body(max(14 + fontDelta, 8)))
+                    .font(AppFonts.body(max((14 + fontDelta) * typeScale, 6)))
                     .textSelection(.enabled)
                     .padding(.bottom, 6)
             }
@@ -1310,15 +1872,18 @@ struct VisionReaderView: View {
 
     // MARK: The foot bar — the Mac's reading controls
 
-    private func footBar(_ doc: LiquidDoc, proxy: ScrollViewProxy) -> some View {
+    private func footBar(_ doc: LiquidDoc, proxy: ScrollViewProxy?) -> some View {
         let headings = (doc.body ?? []).filter { $0.effectiveHeading != nil }
-        return HStack(spacing: 14) {
+        let modes: [Mode] = [.faithful, .scroll, .horizontal, .focus, .outline, .ai]
+        return HStack(spacing: 12) {
             Spacer()
-            modeWord("Scroll", chosen: mode == .scroll) { mode = .scroll }
-            separator
-            modeWord("Outline", chosen: mode == .outline) {
-                mode = .outline
-                expanded = []
+            ForEach(Array(modes.enumerated()), id: \.offset) { index, word in
+                if index > 0 { separator }
+                modeWord(word.word, chosen: mode == word) {
+                    modeRaw = word.rawValue
+                    if word == .outline { expanded = [] }
+                    if word == .focus { focusIndex = 0 }
+                }
             }
             separator
             Button {
@@ -1328,13 +1893,13 @@ struct VisionReaderView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .disabled(headings.isEmpty)
+            .disabled(headings.isEmpty || proxy == nil)
             .help("Contents — every section, one click away")
             .popover(isPresented: $showsContents) {
                 List(headings) { heading in
                     Button {
                         showsContents = false
-                        withAnimation { proxy.scrollTo(heading.id, anchor: .top) }
+                        withAnimation { proxy?.scrollTo(heading.id, anchor: .top) }
                     } label: {
                         Text(heading.text)
                             .padding(.leading, CGFloat(max((heading.effectiveHeading ?? 1) - 1, 0)) * 14)
@@ -1388,8 +1953,119 @@ struct VisionReaderView: View {
         case 3: 19
         default: 17
         }
-        return AppFonts.body(max(base + fontDelta, 8),
+        return AppFonts.body(max((base + fontDelta) * typeScale, 6),
                              weight: paragraph.effectiveHeading == nil ? .regular : .bold)
+    }
+}
+
+/// A tapped citation's card, overlaid on the reading: all the record
+/// the document carries — with Acquire at the bottom centre when the
+/// library lacks the work, listing it in the Mac's Time view.
+private struct VisionCitationSheet: View {
+    @Environment(VisionModel.self) private var model
+    let doc: LiquidDoc
+    let key: String
+    let onClose: () -> Void
+
+    var body: some View {
+        let reference = doc.references.first { $0.id == key }
+        let fields = reference.flatMap { BibTeXParser.first($0.bibtex)?.fields } ?? [:]
+        let title = fields["title"] ?? reference?.citedAs ?? key
+        let author = fields["author"] ?? ""
+        let year = fields["year"].flatMap { Int($0.prefix(4)) }
+        let doi = fields["doi"] ?? fields["url"]
+        VStack(spacing: 0) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(3)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                }
+                .buttonBorderShape(.circle)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text([author, year.map(String.init), fields["journal"]]
+                        .compactMap { $0 }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: ", "))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    if let abstract = fields["abstract"], !abstract.isEmpty {
+                        Text(abstract)
+                            .font(.callout)
+                    } else {
+                        Text("No abstract on record.")
+                            .font(.callout)
+                            .italic()
+                            .foregroundStyle(.secondary)
+                    }
+                    if let doi, !doi.isEmpty {
+                        Text("doi: \(doi)")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            Group {
+                if model.acquisitionIDs.contains(key) {
+                    Label("Listed to acquire", systemImage: "checkmark")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("Acquire") {
+                        model.requestAcquisition(key: key, title: title,
+                                                 author: author, year: year, doi: doi)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(.vertical, 12)
+        }
+        .frame(width: 460, height: 400)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .shadow(radius: 12)
+    }
+}
+
+/// An endnote, opened from its dagger — the note's own links live.
+private struct VisionEndnoteSheet: View {
+    let text: AttributedString
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Note")
+                    .font(.headline)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                }
+                .buttonBorderShape(.circle)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            Divider()
+            ScrollView {
+                Text(text)
+                    .font(AppFonts.body(17))
+                    .tint(.primary)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: 420, height: 280)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .shadow(radius: 12)
     }
 }
 

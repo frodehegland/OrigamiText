@@ -104,6 +104,10 @@ struct EPUBMapView: View {
     /// world history by default, or nothing. Chosen in Time Data.
     @AppStorage("floorShow") private var floorShowRaw = FloorShow.world.rawValue
 
+    /// The theme the floor returns to when its arm chip toggles it
+    /// back on.
+    @AppStorage("floorShowLast") private var floorShowLastRaw = FloorShow.world.rawValue
+
     /// The floor's writing, laid flat on the real ground under the
     /// corridor, each event at its year's exact depth.
     @State private var floorBand = FloorBand()
@@ -112,6 +116,7 @@ struct EPUBMapView: View {
     /// card stood, dragged anywhere by its handle bar — free of the
     /// timeline; an open book is in the hand, not on the shelf.
     @State private var readerPanels = ReaderPanels()
+
 
     /// Sankey widths or a traditional line graph — the reader's
     /// choice, offered in the Time Data window.
@@ -405,16 +410,18 @@ struct EPUBMapView: View {
     /// data's own year span — never hidden by a mere deselection; only
     /// their chips put them away.
     private func updateSankey() {
+        // The Reading Desk empties the room: no Timeflows, no floor.
+        let desk = model.readingDeskDocID != nil
         let style = TimeSpreadStyle(rawValue: timeSpreadStyleRaw) ?? .sankey
         let layout = TimeSpreadLayout(rawValue: timeSpreadLayoutRaw) ?? .lanes
         let span = citedYearRange ?? dataYearSpan()
-        sankeyWallLeft.update(dataset: timeflowLeftShown ? model.sankey : nil,
+        sankeyWallLeft.update(dataset: (timeflowLeftShown && !desk) ? model.sankey : nil,
                               years: span,
                               citedSpace: citedSpace,
                               shift: spaceShift,
                               style: style,
                               layout: layout)
-        sankeyWallRight.update(dataset: timeflowRightShown ? model.sankey : nil,
+        sankeyWallRight.update(dataset: (timeflowRightShown && !desk) ? model.sankey : nil,
                                years: span,
                                citedSpace: citedSpace,
                                shift: spaceShift,
@@ -422,11 +429,11 @@ struct EPUBMapView: View {
                                layout: layout)
         let floorShow = FloorShow(rawValue: floorShowRaw) ?? .world
         let floorHistory = floorShow.theme.flatMap { model.floorHistory(for: $0) }
-        floorBand.update(history: floorHistory,
+        floorBand.update(history: desk ? nil : floorHistory,
                          years: span ?? historyYearSpan(of: floorHistory),
                          citedSpace: citedSpace,
                          shift: spaceShift)
-        if let theme = floorShow.theme {
+        if let theme = floorShow.theme, !desk {
             model.ensureFloorTheme(theme)
         }
     }
@@ -609,13 +616,14 @@ struct EPUBMapView: View {
         ArmMenu.Chip(id: EPUBMapView.documentsChipID, title: "Documents", side: .right),
         ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Timeflow", side: .right),
         ArmMenu.Chip(id: EPUBMapView.dataRightChipID, title: "Time Data", side: .right),
+        ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Floor Timeline", side: .right),
         ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .left),
         ArmMenu.Chip(id: EPUBMapView.asideChipID, title: "Set Aside", side: .left),
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
         // Timeflow stands above Time Data on the arm.
         ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Timeflow", side: .left),
         ArmMenu.Chip(id: EPUBMapView.dataChipID, title: "Time Data", side: .left),
-    ])
+    ], tracksPlanes: true)   // the flat pose finds the actual desk
 
     private static let settingsChipID = "map.arm.settings"
     private static let documentsChipID = "map.arm.documents"
@@ -626,6 +634,7 @@ struct EPUBMapView: View {
     private static let dataRightChipID = "map.arm.data.right"
     private static let timeflowLeftChipID = "map.arm.timeflow.left"
     private static let timeflowRightChipID = "map.arm.timeflow.right"
+    private static let floorChipID = "map.arm.floor"
 
     var body: some View {
         engine
@@ -660,6 +669,19 @@ struct EPUBMapView: View {
             }
             .onChange(of: model.floorRevision) {
                 updateSankey()
+            }
+            .onChange(of: model.panelPoses) {
+                readerPanels.applyPoses(model.panelPoses)
+            }
+            .onChange(of: model.readingDeskDocID) {
+                // In or out of the Reading Desk: the panels sweep, the
+                // ladder folds, and the reload re-evaluates every
+                // card's standing through the engine's enable hook.
+                readerPanels.hideAll(except: model.readingDeskDocID)
+                if model.readingDeskDocID != nil {
+                    conceptLadder.close()
+                }
+                reload()
             }
             .onAppear {
                 citedSpace.depth = min(
@@ -751,12 +773,17 @@ struct EPUBMapView: View {
                 size: 0.0022,
                 // The faintest breath of ember: found when looked for,
                 // never in the way.
-                color: Color(red: 0.72, green: 0.42, blue: 0.06).opacity(0.05),
+                color: Color(red: 0.72, green: 0.42, blue: 0.06).opacity(0.02),
                 connectionOptions: .none,
                 materialMode: .none)
         }
+        view = view.shouldEnableNode { _ in
+            // The Reading Desk: while one document is being read
+            // alone, every card steps away.
+            model.readingDeskDocID == nil
+        }
         view = view.shouldDrawConnectionForNode { item in
-            item.isSelected
+            model.readingDeskDocID == nil && item.isSelected
         }
         view = view.connectedNodesToNode { item in
             switch item.kind {
@@ -1018,14 +1045,25 @@ struct EPUBMapView: View {
                 at: position,
                 view: AnyView(
                     MapReaderPanel(docID: docID, title: item.title) {
-                        readerPanels.close(docID: docID)
-                        model.openDocIDs.remove(docID)
+                        closeReader(docID)
                     }
-                    .environment(model)))
+                    .environment(model)),
+                onClose: { closeReader(docID) })
             model.openDocIDs.insert(docID)
         default:
             break
         }
+    }
+
+    /// One close for every door a panel offers — the title bar's ✕ and
+    /// the spatial ✕ beside the pill: the desk ends if it was this
+    /// document's, the panel goes, the card returns.
+    private func closeReader(_ docID: String) {
+        if model.readingDeskDocID == docID {
+            model.readingDeskDocID = nil
+        }
+        readerPanels.close(docID: docID)
+        model.openDocIDs.remove(docID)
     }
 
     /// A citation's record, opened in-situ where the card stands: the
@@ -1056,7 +1094,8 @@ struct EPUBMapView: View {
                                   doi: facts?.doi) {
                     readerPanels.close(docID: cardID)
                 }
-                .environment(model)))
+                .environment(model)),
+            onClose: { readerPanels.close(docID: cardID) })
     }
 
     private func handleArmTap(on entity: Entity) -> Bool {
@@ -1083,6 +1122,16 @@ struct EPUBMapView: View {
         case Self.timeflowRightChipID:
             timeflowRightShown.toggle()
             updateSankey()
+            return true
+        case Self.floorChipID:
+            // The floor timeline, on and off: off remembers the theme,
+            // on brings it back.
+            if floorShowRaw == FloorShow.nothing.rawValue {
+                floorShowRaw = floorShowLastRaw
+            } else {
+                floorShowLastRaw = floorShowRaw
+                floorShowRaw = FloorShow.nothing.rawValue
+            }
             return true
         case Self.settingsChipID:
             openWindow(id: "settings")
@@ -1379,6 +1428,10 @@ final class SankeyWall {
     /// The graph style's series, standing as real tubes in the room.
     private var cylinders: Entity?
 
+    /// Which side's series this wall carries — an untagged series
+    /// stands on both.
+    private var side: String { sideOffset < 0 ? "left" : "right" }
+
     func update(dataset: SankeySpace.Dataset?,
                 years: (newest: Int, oldest: Int)?,
                 citedSpace: EPUBMapView.CitedSpace,
@@ -1389,6 +1442,11 @@ final class SankeyWall {
         entity = nil
         cylinders?.removeFromParent()
         cylinders = nil
+        let dataset = dataset.map { whole in
+            var mine = whole
+            mine.series = whole.series.filter { $0.wall == nil || $0.wall == side }
+            return mine
+        }
         guard let content, let dataset, !dataset.series.isEmpty,
               let years, years.newest > years.oldest else { return }
         if style == .graph {
@@ -1514,6 +1572,32 @@ struct ReaderHandleComponent: Component {
     var docID: String
 }
 
+/// The ✕ in its circle: always there but very faded, brightening to
+/// full under the gaze — the fade rides a custom hover effect,
+/// composited by the system, so the app never learns the gaze.
+private struct ReaderCloseGlyph: View {
+    let onClose: () -> Void
+
+    var body: some View {
+        Button(action: onClose) {
+            ZStack {
+                Circle()
+                    .fill(.white.opacity(0.22))
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+            .frame(width: 30, height: 30)
+            .padding(10)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .hoverEffect { effect, isActive, _ in
+            effect.opacity(isActive ? 1 : 0.22)
+        }
+    }
+}
+
 /// The in-situ readers: each a full reading standing in the room where
 /// its card stood — hosted the arm-chip way, a live SwiftUI view on an
 /// entity — with a slim handle bar above the page for dragging it
@@ -1524,13 +1608,55 @@ final class ReaderPanels {
     private var roots: [String: Entity] = [:]
     /// Where each drag began, by document — cleared when it ends.
     var dragStart: [String: SIMD3<Float>] = [:]
+    /// The desk found in the room: a table-classified horizontal
+    /// plane, anchored by RealityKit on the arm menu's own tracking
+    /// session — never a second session (the Hallway's hard lesson).
+    private var deskAnchor: AnchorEntity?
+    private var snapTick: EventSubscription?
 
     func install(in content: RealityViewContent) {
         ReaderHandleComponent.registerComponent()
         self.content = content
+        let desk = AnchorEntity(.plane(.horizontal, classification: .table,
+                                       minimumBounds: SIMD2<Float>(0.4, 0.4)))
+        content.add(desk)
+        deskAnchor = desk
+        // The snap: a flat panel keeps to the desk's surface as the
+        // anchor resolves or refines — X and Z stay the reader's, so a
+        // drag slides the page across the desk, never off it.
+        snapTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
+            MainActor.assumeIsolated { self?.snapFlatPanels() }
+        }
     }
 
-    func open(docID: String, at position: SIMD3<Float>, view: AnyView) {
+    /// The desk surface's world height, when the room has offered one.
+    private func deskSurfaceY() -> Float? {
+        guard let deskAnchor, deskAnchor.isAnchored else { return nil }
+        let y = deskAnchor.position(relativeTo: nil).y
+        // A believable desk: knee to chest height.
+        return (0.3...1.2).contains(y) ? y : nil
+    }
+
+    /// The world height a flat page lies at: the desk itself when the
+    /// room has shown one, a table's usual height until then.
+    private var flatY: Float {
+        (deskSurfaceY() ?? Self.tableHeight) + Self.flatClearance
+    }
+    // A whisper above the wood — enough to never z-fight the
+    // passthrough surface, never a visible hover.
+    private static let flatClearance: Float = 0.002
+
+    private func snapFlatPanels() {
+        let target = flatY
+        for (id, root) in roots where appliedPoses[id] == .flat {
+            if abs(root.position.y - target) > 0.005 {
+                root.position.y = target
+            }
+        }
+    }
+
+    func open(docID: String, at position: SIMD3<Float>, view: AnyView,
+              onClose: @escaping () -> Void) {
         guard let content else { return }
         // Already open: bring it to the asked place instead.
         if let standing = roots[docID] {
@@ -1544,21 +1670,31 @@ final class ReaderPanels {
         page.components.set(ViewAttachmentComponent(rootView: view))
         root.addChild(page)
 
-        // The handle: a slim glass bar above the page — the one part
-        // that drags, so the page itself keeps every touch for reading.
+        // The handle: the system's own kind of grab bar — a small
+        // white pill just under the page. Only it drags, so the page
+        // keeps every touch for reading. (Attachments render at
+        // ~1360pt/m; an 800pt page is ~0.59m tall.)
         var material = UnlitMaterial()
-        material.color = .init(tint: UIColor(white: 1, alpha: 0.35))
+        material.color = .init(tint: UIColor(white: 1, alpha: 0.5))
         let bar = ModelEntity(
-            mesh: .generateBox(size: SIMD3<Float>(0.22, 0.016, 0.012),
-                               cornerRadius: 0.006),
+            mesh: .generateBox(size: SIMD3<Float>(0.10, 0.006, 0.006),
+                               cornerRadius: 0.003),
             materials: [material])
-        bar.position = SIMD3<Float>(0, 0.44, 0)
+        bar.position = SIMD3<Float>(0, -0.32, 0)
         bar.components.set(CollisionComponent(
-            shapes: [.generateBox(size: SIMD3<Float>(0.28, 0.05, 0.04))]))
+            shapes: [.generateBox(size: SIMD3<Float>(0.14, 0.035, 0.03))]))
         bar.components.set(InputTargetComponent())
         bar.components.set(HoverEffectComponent())
         bar.components.set(ReaderHandleComponent(docID: docID))
         root.addChild(bar)
+
+        // The ✕ in its circle, left of the pill — the system window
+        // bar's grammar: there when looked at, gone when not.
+        let close = Entity()
+        close.components.set(ViewAttachmentComponent(
+            rootView: ReaderCloseGlyph(onClose: onClose)))
+        close.position = SIMD3<Float>(-0.095, -0.32, 0)
+        root.addChild(close)
 
         content.add(root)
         roots[docID] = root
@@ -1568,6 +1704,52 @@ final class ReaderPanels {
         roots[docID]?.removeFromParent()
         roots[docID] = nil
         dragStart[docID] = nil
+    }
+
+    /// The Reading Desk's sweep: every panel steps away except the one
+    /// being read; nil brings them all back.
+    func hideAll(except docID: String?) {
+        for (id, root) in roots {
+            root.isEnabled = docID == nil || id == docID
+        }
+    }
+
+    /// The standing height a posed panel returns to, by document.
+    private var uprightY: [String: Float] = [:]
+    /// Each panel's applied pose, so a repeat apply is a no-op.
+    private var appliedPoses: [String: PanelPose] = [:]
+    /// The reading surface — a table's height.
+    private static let tableHeight: Float = 0.75
+    /// The drafting board's height and lean.
+    private static let tiltedHeight: Float = 0.95
+    private static let tiltedAngle: Float = -.pi / 4
+
+    /// Poses the panels: standing where they were, tilted like a
+    /// drafting board at 45°, or flat on the table — the page's top
+    /// away from the reader either way.
+    func applyPoses(_ poses: [String: PanelPose]) {
+        for (id, root) in roots {
+            let pose = poses[id] ?? .upright
+            guard pose != (appliedPoses[id] ?? .upright) else { continue }
+            // Leaving upright remembers the standing height once.
+            if appliedPoses[id] ?? .upright == .upright {
+                uprightY[id] = root.position.y
+            }
+            switch pose {
+            case .upright:
+                root.orientation = simd_quatf()
+                root.position.y = uprightY.removeValue(forKey: id) ?? 1.35
+            case .tilted:
+                root.orientation = simd_quatf(angle: Self.tiltedAngle,
+                                              axis: SIMD3<Float>(1, 0, 0))
+                root.position.y = Self.tiltedHeight
+            case .flat:
+                root.orientation = simd_quatf(angle: -.pi / 2,
+                                              axis: SIMD3<Float>(1, 0, 0))
+                root.position.y = flatY
+            }
+            appliedPoses[id] = pose
+        }
     }
 
     /// The panel a touched entity belongs to — the handle bar answers,
@@ -1585,17 +1767,134 @@ final class ReaderPanels {
     }
 }
 
-/// The in-situ reader's dress: a title bar with its close, the full
-/// reading beneath — the reader itself manages the card's leave and
-/// return through its own appear and disappear.
+/// The Reading Desk's dress — chosen in Settings, worn by the panel
+/// only while the desk stands. Light and dark to begin with.
+enum ReadingDeskTheme: String, CaseIterable, Identifiable {
+    case light
+    case dark
+
+    var id: String { rawValue }
+    var displayName: String { self == .light ? "Light" : "Dark" }
+
+    var scheme: ColorScheme { self == .light ? .light : .dark }
+
+    /// The page behind the words — warm paper, or a quiet near-black.
+    var page: Color {
+        self == .light
+            ? Color(red: 0.98, green: 0.97, blue: 0.94)
+            : Color(red: 0.11, green: 0.11, blue: 0.12)
+    }
+}
+
+/// The in-situ reader's dress: a title bar with the Reading Desk
+/// toggle on its left and close on its right, the full reading
+/// beneath — the reader itself manages the card's leave and return
+/// through its own appear and disappear. On the desk, the panel wears
+/// the chosen theme's page instead of glass.
 struct MapReaderPanel: View {
+    @Environment(VisionModel.self) private var model
     let docID: String
     let title: String
     let onClose: () -> Void
 
+    /// The desk's theme — Settings ▸ Reading Desk.
+    @AppStorage("readingDeskTheme") private var deskThemeRaw =
+        ReadingDeskTheme.light.rawValue
+    /// The reading view inside, shared with VisionReaderView — the
+    /// Horizontal view earns a panel wide enough for whole pages.
+    @AppStorage("visionReaderMode") private var readerModeRaw = "scroll"
+
+    private var isDesk: Bool { model.readingDeskDocID == docID }
+    private var theme: ReadingDeskTheme {
+        ReadingDeskTheme(rawValue: deskThemeRaw) ?? .light
+    }
+
+    private var poseIcon: String {
+        switch model.pose(of: docID) {
+        case .upright: "arrow.down.to.line.compact"
+        case .tilted: "arrow.down.to.line"
+        case .flat: "arrow.up.to.line.compact"
+        }
+    }
+
+    private var poseHelp: String {
+        switch model.pose(of: docID) {
+        case .upright: "Tilt the page like a drafting board"
+        case .tilted: "Lay the page flat on the table"
+        case .flat: "Stand the page back up"
+        }
+    }
+    /// Horizontal hugs its columns' full breadth (the reader sizes
+    /// itself); every other view keeps the page width.
+    private var panelWidth: CGFloat? {
+        isHorizontal ? nil : 640
+    }
+
+    private var isHorizontal: Bool { readerModeRaw == "horizontal" }
+
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
+        if isHorizontal {
+            // Horizontal curves its columns, and each wears its own
+            // background inside the reader — the panel adds no flat
+            // slab for the text to stick out of. The desk theme still
+            // sets the words' light or dark.
+            if isDesk {
+                panel.environment(\.colorScheme, theme.scheme)
+            } else {
+                panel
+            }
+        } else if isDesk {
+            // On the desk the panel wears the chosen theme: the
+            // theme's page instead of the room's glass, its light or
+            // dark throughout the words.
+            panel
+                .background(RoundedRectangle(cornerRadius: 24).fill(theme.page))
+                .environment(\.colorScheme, theme.scheme)
+        } else {
+            panel
+                .glassBackgroundEffect()
+        }
+    }
+
+    private var panel: some View {
+        VStack(spacing: isHorizontal ? 12 : 0) {
+            headerBar
+            if !isHorizontal {
+                Divider()
+            }
+            VisionReaderView(docID: docID)
+        }
+        .frame(width: panelWidth, height: 800)
+    }
+
+    /// The title bar. In Horizontal it floats on a glass (or themed
+    /// paper) strip of its own above the curved columns; elsewhere it
+    /// sits in the panel's chrome.
+    @ViewBuilder private var headerBar: some View {
+        let bar = HStack {
+                // The Reading Desk toggle: one document (this alone in
+                // the room), or many (the Hallway back around it). The
+                // panel never moves — everything else steps away.
+                Button {
+                    model.readingDeskDocID = isDesk ? nil : docID
+                } label: {
+                    Image(systemName: isDesk ? "doc.on.doc" : "doc")
+                }
+                .buttonBorderShape(.circle)
+                .help(isDesk ? "Back to the Hallway" : "Reading Desk — just this document")
+                // The pose cycle: standing → the 45° drafting board →
+                // flat on the table → standing again.
+                Button {
+                    switch model.pose(of: docID) {
+                    case .upright: model.panelPoses[docID] = .tilted
+                    case .tilted: model.panelPoses[docID] = .flat
+                    case .flat: model.panelPoses[docID] = nil
+                    }
+                } label: {
+                    Image(systemName: poseIcon)
+                }
+                .buttonBorderShape(.circle)
+                .help(poseHelp)
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
@@ -1607,11 +1906,17 @@ struct MapReaderPanel: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            Divider()
-            VisionReaderView(docID: docID)
+        if !isHorizontal {
+            bar
+        } else if isDesk {
+            bar
+                .frame(maxWidth: 900)
+                .background(RoundedRectangle(cornerRadius: 18).fill(theme.page))
+        } else {
+            bar
+                .frame(maxWidth: 900)
+                .glassBackgroundEffect(in: .rect(cornerRadius: 18))
         }
-        .frame(width: 640, height: 800)
-        .glassBackgroundEffect()
     }
 }
 
@@ -1883,24 +2188,16 @@ enum TimeSpreadLayout: String, CaseIterable, Identifiable {
 /// the value normalization — one truth for the flat ribbons and the
 /// graph's cylinders alike.
 enum TimeSpreadInk {
-    /// Paul Tol's MUTED qualitative scheme (SRON technical note
-    /// SRON/EPS/TN/09-002): designed muted, colour-blind safe, and
-    /// meant to be used as given — the reference palette for exactly
-    /// this need. Split along the corridor's convention: max reads
-    /// from the warm half (rose, sand, wine, purple, olive), min from
-    /// the cool (indigo, cyan, teal, green).
+    /// Frode's chosen graph colours (2026-08-25), darkened a step:
+    /// slate, olive, sienna, ochre — the warm pair reads max, the
+    /// cool pair min.
     static let maxColors: [Color] = [
-        Color(red: 0.80, green: 0.40, blue: 0.47),   // rose   #CC6677
-        Color(red: 0.87, green: 0.80, blue: 0.47),   // sand   #DDCC77
-        Color(red: 0.53, green: 0.13, blue: 0.33),   // wine   #882255
-        Color(red: 0.67, green: 0.27, blue: 0.60),   // purple #AA4499
-        Color(red: 0.60, green: 0.60, blue: 0.20),   // olive  #999933
+        Color(red: 0.59, green: 0.46, blue: 0.22),   // ochre, darkened
+        Color(red: 0.42, green: 0.27, blue: 0.20),   // sienna, darkened
     ]
     static let minColors: [Color] = [
-        Color(red: 0.20, green: 0.13, blue: 0.53),   // indigo #332288
-        Color(red: 0.53, green: 0.80, blue: 0.93),   // cyan   #88CCEE
-        Color(red: 0.27, green: 0.67, blue: 0.60),   // teal   #44AA99
-        Color(red: 0.07, green: 0.47, blue: 0.20),   // green  #117733
+        Color(red: 0.29, green: 0.37, blue: 0.42),   // slate, darkened
+        Color(red: 0.30, green: 0.34, blue: 0.21),   // olive, darkened
     ]
 
     static func pairIndices(of dataset: SankeySpace.Dataset) -> [String: Int] {
@@ -1976,7 +2273,7 @@ struct SankeyRibbonView: View {
             // every series with its swatch and latest value, flowing
             // into further rows as the shelf grows — so the plot below
             // carries only the data, nothing overlaying it.
-            let keyRowHeight: CGFloat = 38
+            let keyRowHeight: CGFloat = 22
             var keyX: CGFloat = 16
             var keyRow = 0
             for series in dataset.series {
@@ -1989,23 +2286,23 @@ struct SankeyRibbonView: View {
                     : "\(series.name) "
                 let label = context.resolve(
                     Text(words + String(format: "%.1f", latest.value) + " " + series.unit)
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.88)))
                 let measured = label.measure(in: CGSize(width: size.width, height: keyRowHeight))
-                let entryWidth = 24 + 8 + measured.width + 26
+                let entryWidth = 12 + 5 + measured.width + 16
                 if keyX + entryWidth > size.width - 16 {
                     keyRow += 1
                     keyX = 16
                 }
-                let middle = 12 + keyRowHeight * CGFloat(keyRow) + keyRowHeight / 2
+                let middle = 10 + keyRowHeight * CGFloat(keyRow) + keyRowHeight / 2
                 context.fill(
-                    Path(roundedRect: CGRect(x: keyX, y: middle - 9, width: 24, height: 18),
-                         cornerRadius: 5),
+                    Path(roundedRect: CGRect(x: keyX, y: middle - 4.5, width: 12, height: 9),
+                         cornerRadius: 3),
                     with: .color(seriesColor(series)))
-                context.draw(label, at: CGPoint(x: keyX + 32, y: middle), anchor: .leading)
+                context.draw(label, at: CGPoint(x: keyX + 17, y: middle), anchor: .leading)
                 keyX += entryWidth
             }
-            let contentTop = 12 + keyRowHeight * CGFloat(keyRow + 1) + 8
+            let contentTop = 10 + keyRowHeight * CGFloat(keyRow + 1) + 6
 
             // Decade ticks, on the corridor's very Zs.
             let firstDecade = (oldest / 10 + 1) * 10
@@ -2013,11 +2310,11 @@ struct SankeyRibbonView: View {
                 let tick = x(year)
                 var line = Path()
                 line.move(to: CGPoint(x: tick, y: contentTop))
-                line.addLine(to: CGPoint(x: tick, y: size.height - 26))
+                line.addLine(to: CGPoint(x: tick, y: size.height - 16))
                 context.stroke(line, with: .color(.white.opacity(0.25)), lineWidth: 1)
                 context.draw(
-                    Text(String(year)).font(.system(size: 17)).foregroundStyle(.white.opacity(0.7)),
-                    at: CGPoint(x: tick, y: size.height - 12))
+                    Text(String(year)).font(.system(size: 9)).foregroundStyle(.white.opacity(0.7)),
+                    at: CGPoint(x: tick, y: size.height - 8))
             }
 
             // The graph style's series are CYLINDERS in the room, not

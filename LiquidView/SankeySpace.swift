@@ -21,6 +21,9 @@ nonisolated enum SankeySpace {
         var role: Role
         var unit: String
         var values: [YearValue]
+        /// Which Timeflow carries it — "left", "right", or nil for
+        /// both. Absent from older mirrors, which read as nil.
+        var wall: String? = nil
 
         enum Role: String, Codable, Sendable { case max, min }
 
@@ -207,7 +210,47 @@ nonisolated enum SankeySpace {
                    name: "Sunspots", unit: "count",
                    note: "yearly mean, SILSO (Royal Observatory of Belgium)",
                    source: .silso),
+        SampleFlow(id: "sample-transistors",
+                   name: "Transistors per microprocessor", unit: "bn",
+                   note: "Moore's law, via Our World in Data",
+                   source: .owid(slug: "transistors-per-microprocessor",
+                                 column: "Transistors per microprocessor",
+                                 scale: 1e-9)),
+        SampleFlow(id: "sample-supercomputer",
+                   name: "Fastest supercomputer", unit: "PFLOPS",
+                   note: "the TOP500 leader's capacity, via Our World in Data",
+                   source: .owid(slug: "supercomputer-power-flops",
+                                 column: "Computational capacity of the fastest supercomputer",
+                                 scale: 1e-6)),
+        SampleFlow(id: "sample-internet",
+                   name: "Internet users", unit: "bn",
+                   note: "people online, via Our World in Data",
+                   source: .owid(slug: "number-of-internet-users",
+                                 column: "Number of people using the Internet",
+                                 scale: 1e-9)),
     ]
+
+    /// The corridor's own defaults, fetched when no Mac has filled the
+    /// mirror: computing stands on the left wall, the world on the
+    /// right. ("Computing power per dollar" and "computers in the
+    /// world" publish no live series at Our World in Data — Moore's
+    /// law and the TOP500 leader stand in, both verified.)
+    static func defaultWallSeries() async -> [Series] {
+        let plan: [(sampleID: String, wall: String)] = [
+            ("sample-transistors", "left"),
+            ("sample-supercomputer", "left"),
+            ("sample-population", "right"),
+            ("sample-internet", "right"),
+        ]
+        var out: [Series] = []
+        for (id, wall) in plan {
+            guard let sample = sampleFlows.first(where: { $0.id == id }),
+                  var series = try? await fetchSample(sample) else { continue }
+            series.wall = wall
+            out.append(series)
+        }
+        return out
+    }
 
     /// The earliest year a sample carries — the catalogue's promise is
     /// the last 150 years.
