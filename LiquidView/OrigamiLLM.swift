@@ -44,6 +44,9 @@ nonisolated struct OrigamiEndpoint: Codable, Identifiable, Hashable {
     /// Normalised: scheme://host[:port], no trailing slash, no /v1.
     var base: String
     var models: [String] = []
+    /// Byte size keyed by model id — populated from Ollama's /api/tags;
+    /// empty for servers that don't expose it (LM Studio, hosted APIs).
+    var modelSizes: [String: Int64] = [:]
     var hasKey = false
 
     var id: String { base }
@@ -103,11 +106,13 @@ final class OrigamiLLM {
 
     // MARK: Endpoints
 
-    func addOrUpdateEndpoint(base: String, models: [String], key: String?) {
+    func addOrUpdateEndpoint(base: String, models: [String],
+                              sizes: [String: Int64] = [:], key: String?) {
         let base = ChatCompletionsClient.normalizedBase(base)
         var entry = endpoints.first { $0.base == base }
             ?? OrigamiEndpoint(base: base)
         entry.models = models
+        if !sizes.isEmpty { entry.modelSizes = sizes }
         if let key {
             LLMKeychain.write(key.isEmpty ? nil : key, account: base)
             entry.hasKey = !key.isEmpty
@@ -136,7 +141,8 @@ final class OrigamiLLM {
     func refreshModels(for base: String) async {
         guard let models = try? await ChatCompletionsClient.models(
             base: base, key: apiKey(for: base)) else { return }
-        addOrUpdateEndpoint(base: base, models: models, key: nil)
+        let sizes = await ChatCompletionsClient.modelSizes(base: base, key: apiKey(for: base))
+        addOrUpdateEndpoint(base: base, models: models, sizes: sizes, key: nil)
     }
 
     // MARK: Generation, with the fallback (spec §2)
@@ -313,6 +319,27 @@ nonisolated enum ChatCompletionsClient {
         }
     }
 
+    /// Tries Ollama's /api/tags to get byte sizes for each model.
+    /// Returns an empty dict silently for servers that don't support it.
+    static func modelSizes(base: String, key: String?,
+                           timeout: TimeInterval = 2) async -> [String: Int64] {
+        guard let url = URL(string: base + "/api/tags") else { return [:] }
+        var request = URLRequest(url: url, timeoutInterval: timeout)
+        if let key { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = object["models"] as? [[String: Any]] else { return [:] }
+        var sizes: [String: Int64] = [:]
+        for entry in list {
+            if let name = entry["name"] as? String,
+               let size = entry["size"] as? Int64 {
+                sizes[name] = size
+            }
+        }
+        return sizes
+    }
+
     /// One generation, streamed (SSE) and gathered; `onPartial` sees
     /// the text grow. Cancellation cancels the transport.
     static func respond(base: String, model: String, key: String?,
@@ -422,10 +449,11 @@ struct LLMModelSettingsSections: View {
     @State private var pendingRemote: (base: String, models: [String])?
     /// The one-tap banner for a detected local server (§6.1).
     @State private var detected: (base: String, models: [String])?
+    @State private var showingRecommendations = false
 
     var body: some View {
         Section {
-            Picker("Model", selection: Binding(
+            Picker("Choose Model", selection: Binding(
                 get: { llm.selectedID },
                 set: { llm.selectedID = $0 })) {
                 Text("Apple\u{2019}s built-in \u{2014} on this Mac").tag("apple")
@@ -500,6 +528,12 @@ struct LLMModelSettingsSections: View {
             } else if let status {
                 Text(status).font(.caption).foregroundStyle(.secondary)
             }
+            Button("Find a model for this Mac\u{2026}") {
+                showingRecommendations = true
+            }
+            .popover(isPresented: $showingRecommendations, arrowEdge: .trailing) {
+                ModelRecommendationsView(specs: .current)
+            }
         } header: {
             Text("Add a Model or Server")
         } footer: {
@@ -549,6 +583,7 @@ struct LLMModelSettingsSections: View {
             }
             detected = await llm.detectLocalServers().first
         }
+
     }
 
     private func classifyPasted() {
@@ -606,6 +641,249 @@ struct LLMModelSettingsSections: View {
                 status = error.localizedDescription
             }
         }
+    }
+}
+
+// MARK: - Mac hardware snapshot
+
+fileprivate struct MacSpecs {
+    let ramGB: Int
+    let isAppleSilicon: Bool
+
+    static var current: MacSpecs {
+        let ram = Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824)
+        var flag: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        sysctlbyname("hw.optional.arm64", &flag, &size, nil, 0)
+        return MacSpecs(ramGB: ram, isAppleSilicon: flag == 1)
+    }
+}
+
+// MARK: - Curated model catalogue (researched August 2026)
+
+fileprivate struct OllamaRecommendation: Identifiable {
+    let id: String          // Ollama pull ID, e.g. "qwen3:14b"
+    let displayName: String
+    let summary: String
+    let diskGB: Double
+    let minRAMGB: Int
+}
+
+fileprivate enum OllamaModelCatalog {
+    static let all: [OllamaRecommendation] = [
+        // ── 8 GB ─────────────────────────────────────────────────────────
+        OllamaRecommendation(
+            id: "phi4-mini", displayName: "Phi-4-mini 3.8B",
+            summary: "Remarkable 128K context for a 3.8B model; fast on any Mac; best choice for long EPUB passages on 8 GB",
+            diskGB: 2.5, minRAMGB: 8),
+        OllamaRecommendation(
+            id: "llama3.2:3b", displayName: "Llama 3.2 3B",
+            summary: "Lightweight and quick; good for short summaries when speed matters most",
+            diskGB: 2.0, minRAMGB: 8),
+        OllamaRecommendation(
+            id: "qwen3:4b", displayName: "Qwen 3 4B",
+            summary: "Outperforms older 7B models; thinking mode for step-by-step reasoning; fits any Mac",
+            diskGB: 2.7, minRAMGB: 8),
+        OllamaRecommendation(
+            id: "qwen3:8b", displayName: "Qwen 3 8B",
+            summary: "Best accuracy on 8 GB Macs; stronger reasoning than Llama 3.1 8B; built-in thinking mode",
+            diskGB: 5.2, minRAMGB: 8),
+        // ── 16 GB ────────────────────────────────────────────────────────
+        OllamaRecommendation(
+            id: "qwen3:14b", displayName: "Qwen 3 14B",
+            summary: "128K\u{2013}1M context; strongest multilingual; standout accuracy for 16 GB Macs",
+            diskGB: 9.0, minRAMGB: 16),
+        // ── 24 GB ────────────────────────────────────────────────────────
+        OllamaRecommendation(
+            id: "mistral-small:22b", displayName: "Mistral Small 22B",
+            summary: "High summarisation accuracy in benchmarks; fast inference; good all-rounder for 24 GB",
+            diskGB: 14.0, minRAMGB: 24),
+        // ── 32 GB ────────────────────────────────────────────────────────
+        OllamaRecommendation(
+            id: "qwen3:27b", displayName: "Qwen 3 27B",
+            summary: "Near-frontier quality; best dense model for 32 GB Macs",
+            diskGB: 17.0, minRAMGB: 32),
+        OllamaRecommendation(
+            id: "qwen3:30b-a3b", displayName: "Qwen 3 30B-A3B (MoE)",
+            summary: "MoE: 3B active params, 30B total \u{2014} faster than the dense 27B and often smarter; the best value at 32 GB",
+            diskGB: 19.0, minRAMGB: 32),
+        // ── 64 GB ────────────────────────────────────────────────────────
+        OllamaRecommendation(
+            id: "llama3.3:70b", displayName: "Llama 3.3 70B",
+            summary: "Deep document analysis and RAG; one of the strongest dense 70B models available",
+            diskGB: 43.0, minRAMGB: 64),
+        OllamaRecommendation(
+            id: "qwen3:70b", displayName: "Qwen 3 70B",
+            summary: "Frontier-class reasoning and multilingual; trades blows with hosted models on most benchmarks",
+            diskGB: 47.0, minRAMGB: 64),
+        // ── 80 GB ────────────────────────────────────────────────────────
+        OllamaRecommendation(
+            id: "llama4:scout", displayName: "Llama 4 Scout (MoE)",
+            summary: "10M-token context \u{2014} an entire EPUB library in one pass; MoE (17B active of 109B total); needs \u{2265}80 GB RAM",
+            diskGB: 69.0, minRAMGB: 80),
+    ]
+
+    static func recommendations(for specs: MacSpecs) -> [OllamaRecommendation] {
+        all.filter { $0.minRAMGB <= specs.ramGB }
+    }
+}
+
+// MARK: - Recommendations sheet
+
+fileprivate struct ModelRecommendationsView: View {
+    let specs: MacSpecs
+    @Environment(\.dismiss) private var dismiss
+    @State private var copiedID: String?
+    @State private var llm = OrigamiLLM.shared
+
+    private var installedModelIDs: Set<String> {
+        Set(llm.endpoints.flatMap { $0.models })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+
+            // Title row
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Models for your Mac")
+                        .font(.headline)
+                    HStack(spacing: 10) {
+                        Label("\(specs.ramGB)\u{00A0}GB memory", systemImage: "memorychip")
+                        if specs.isAppleSilicon {
+                            Label("Apple Silicon", systemImage: "cpu")
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding()
+
+            Text("All models run on Ollama. Click \u{201C}Copy command\u{201D} on any row, then paste it in Terminal after installing Ollama.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal)
+                .padding(.bottom, 10)
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(OllamaModelCatalog.all) { model in
+                        RecommendationRow(
+                            model: model,
+                            isCompatible: model.minRAMGB <= specs.ramGB,
+                            isInstalled: installedModelIDs.contains(model.id),
+                            copiedID: $copiedID)
+                        Divider().padding(.leading)
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack {
+                Text("Researched August 2026.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Link("Browse all at ollama.com", destination: URL(string: "https://ollama.com/library")!)
+                    .font(.caption)
+            }
+            .padding()
+        }
+        .frame(width: 520, height: 480)
+    }
+}
+
+private struct RecommendationRow: View {
+    let model: OllamaRecommendation
+    let isCompatible: Bool
+    let isInstalled: Bool
+    @Binding var copiedID: String?
+
+    private var pullCommand: String { "ollama pull \(model.id)" }
+    private var isCopied: Bool { copiedID == model.id }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+
+            // Name + size badges
+            HStack(spacing: 6) {
+                Text(model.displayName)
+                    .fontWeight(.semibold)
+                Spacer()
+                Label(String(format: "%.0f\u{00A0}GB RAM", Double(model.minRAMGB)),
+                      systemImage: "memorychip")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(String(format: "%.0f\u{00A0}GB download", model.diskGB))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(.secondary.opacity(0.12), in: Capsule())
+            }
+
+            // Description
+            Text(model.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Status pills
+            if isCompatible || isInstalled {
+                HStack(spacing: 6) {
+                    if isCompatible {
+                        Text("Compatible with this Mac")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(.green.opacity(0.12), in: Capsule())
+                    }
+                    if isInstalled {
+                        Text("Installed")
+                            .font(.caption2)
+                            .foregroundStyle(.blue)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(.blue.opacity(0.12), in: Capsule())
+                    }
+                }
+            }
+
+            // Pull command + copy button
+            HStack(spacing: 8) {
+                Text(pullCommand)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(pullCommand, forType: .string)
+                    copiedID = model.id
+                    Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        if copiedID == model.id { copiedID = nil }
+                    }
+                } label: {
+                    Label(isCopied ? "Copied" : "Copy command",
+                          systemImage: isCopied ? "checkmark" : "doc.on.doc")
+                        .animation(.default, value: isCopied)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(isCopied ? .green : nil)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
     }
 }
 #endif

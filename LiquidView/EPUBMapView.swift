@@ -843,11 +843,10 @@ struct EPUBMapView: View {
             // The citation lines — Author's connection entity.
             ModelEntity.connection(
                 size: 0.0022,
-                // The faintest breath of light grey: found when looked
-                // for, never in the way. Lines to a shared citation
-                // wear green instead (the tint the shared card asks
-                // for, a shade stronger so the green reads).
-                color: Color(white: 0.85).opacity(0.02),
+                // Mid-grey, barely there: visible only when two or more
+                // papers stand selected. Lines to a shared citation wear
+                // green instead (the tint the shared card asks for).
+                color: Color(white: 0.5).opacity(0.05),
                 connectionOptions: .none,
                 materialMode: .none)
         }
@@ -860,11 +859,11 @@ struct EPUBMapView: View {
             model.readingDeskDocID == nil && item.isSelected
         }
         view = view.connectedNodesToNode { item in
-            // The line rule: documents draw no lines to their
-            // citations — except the common ground, when two or more
-            // stand selected, and those lines read green. A selected
-            // citation draws forward, into the citations it has
-            // itself; never back to the documents.
+            // Lines appear only when two or more articles are selected —
+            // a single selection raises citations silently, no weave.
+            let selectedArticleCount = items.count(where: { $0.kind == .article && $0.isSelected })
+            guard selectedArticleCount >= 2 else { return [] }
+
             switch item.kind {
             case .cited:
                 // Forward only: the raised rank of what it cites.
@@ -884,11 +883,8 @@ struct EPUBMapView: View {
                             || links?.outbound.contains($0.id) == true)
                 }
             case .article:
-                // Only the common ground, only in company: with two or
-                // more documents selected, the lines run to the shared
+                // Two or more selected: lines run to the shared
                 // citations — green, as the cards are.
-                let company = items.count(where: { $0.kind == .article && $0.isSelected })
-                guard company >= 2 else { return [] }
                 return items.filter { $0.isShared && item.citedIDs.contains($0.id) }
             }
         }

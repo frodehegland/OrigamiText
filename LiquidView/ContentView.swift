@@ -16,6 +16,15 @@ struct ContentView: View {
     /// view's own narrow-window behavior) would have no way back. Any
     /// change away from all columns is snapped straight back.
     @State private var columnVisibility = NavigationSplitViewVisibility.all
+    /// When true the detail pane is hidden so the list column can expand freely.
+    @State private var wideListMode = false
+
+    private var venueIsSelected: Bool {
+        switch model.sidebarSelection {
+        case .epubPublication, .epubPublicationAuthor, .epubPublicationTopic: return true
+        default: return false
+        }
+    }
 
     var body: some View {
         @Bindable var model = model
@@ -38,18 +47,42 @@ struct ContentView: View {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .toolbar(removing: .sidebarToggle)
+                        .navigationSplitViewColumnWidth(
+                            min: venueIsSelected ? 360 : 200,
+                            ideal: venueIsSelected ? 440 : 220,
+                            max: venueIsSelected ? 540 : 300)
                 } detail: {
                     detailPane
+                }
+            } else if wideListMode {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
+                    SidebarView()
+                        .toolbar(removing: .sidebarToggle)
+                        .navigationSplitViewColumnWidth(
+                            min: venueIsSelected ? 360 : 200,
+                            ideal: venueIsSelected ? 440 : 220,
+                            max: venueIsSelected ? 540 : 300)
+                } detail: {
+                    listPane
+                        .safeAreaInset(edge: .bottom, spacing: 0) { findBar }
+                }
+                .onChange(of: model.current) { _, new in
+                    if new != nil { wideListMode = false }
+                }
+                .onChange(of: model.draftEditor?.docID) { _, new in
+                    if new != nil { wideListMode = false }
                 }
             } else {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .toolbar(removing: .sidebarToggle)
+                        .navigationSplitViewColumnWidth(
+                            min: venueIsSelected ? 360 : 200,
+                            ideal: venueIsSelected ? 440 : 220,
+                            max: venueIsSelected ? 540 : 300)
                 } content: {
                     listPane
-                        .navigationSplitViewColumnWidth(min: 120, ideal: 195, max: 600)
-                        // Find sits framed at the foot of the letters
-                        // list, as in Knowledge Space; the top stays bare.
+                        .navigationSplitViewColumnWidth(min: 120, ideal: 380, max: 900)
                         .safeAreaInset(edge: .bottom, spacing: 0) { findBar }
                 } detail: {
                     detailPane
@@ -296,6 +329,16 @@ struct ContentView: View {
             .background(RoundedRectangle(cornerRadius: 7).fill(.background))
             .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(.quaternary))
             Button {
+                wideListMode.toggle()
+            } label: {
+                Image(systemName: wideListMode
+                      ? "rectangle.compress.horizontal"
+                      : "rectangle.expand.horizontal")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(wideListMode ? "Show document alongside list" : "Wide list — hide document pane")
+            Button {
                 model.newDraft()
             } label: {
                 Image(systemName: "square.and.pencil")
@@ -314,6 +357,8 @@ struct ContentView: View {
             EPUBLibraryListView(mode: .all)
         } else if model.sidebarSelection == .epubsInbox {
             EPUBLibraryListView(mode: .inbox)
+        } else if model.sidebarSelection == .myEPUBs {
+            EPUBLibraryListView(mode: .myEPUBs)
         } else if model.sidebarSelection == .epubsTopOfPile {
             EPUBLibraryListView(mode: .topOfPile)
         } else if model.sidebarSelection == .epubsTimeline {
@@ -324,6 +369,12 @@ struct ContentView: View {
             JournalsListView()
         } else if case .epubPublication(let name)? = model.sidebarSelection {
             JournalBooksListView(name: name)
+        } else if case .epubPublicationAuthor(let venue, let author)? = model.sidebarSelection {
+            PublicationFilteredListView(venue: venue, filter: .author(author))
+        } else if case .epubPublicationTopic(let venue, let topic)? = model.sidebarSelection {
+            PublicationFilteredListView(venue: venue, filter: .topic(topic))
+        } else if model.sidebarSelection == .acquisitions {
+            AcquisitionsListView()
         } else if model.sidebarSelection == .epubsSetAside {
             EPUBLibraryListView(mode: .setAside)
         } else if case .epubFolder(let folder)? = model.sidebarSelection {

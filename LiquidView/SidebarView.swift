@@ -138,8 +138,12 @@ struct SidebarView: View {
     private func hasRow(for item: SidebarItem) -> Bool {
         switch item {
         case .epubsTopOfPile, .epubsTimeline, .epubsAlphabetical,
-             .epubJournals, .authors, .annotations,
+             .epubJournals, .myEPUBs, .authors, .annotations,
              .people, .concepts:
+            true
+        case .acquisitions:
+            !model.acquisitions.isEmpty
+        case .epubPublicationAuthor, .epubPublicationTopic:
             true
         case .epubFolder(let name):
             model.epubFolders.contains(name)
@@ -175,6 +179,7 @@ struct SidebarView: View {
                 // The Library shelf of opened EPUBs (the ways through
                 // them, the user's folders, and a "+"), then the Views.
                 librarySection
+                acquisitionsSection
                 viewsSection
             }
             .listStyle(.sidebar)
@@ -217,6 +222,7 @@ struct SidebarView: View {
             .padding(.bottom, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(Color(nsColor: .controlBackgroundColor))
         .navigationTitle("Origami Text")
         // Wide enough for the longest place names ("Alphabetical",
         // journal names) with their counts beside them, at the large
@@ -307,6 +313,8 @@ struct SidebarView: View {
     @ViewBuilder
     private var librarySection: some View {
         let shown = model.epubRecords(inFolder: nil)
+        let myLastName = model.authorName.components(separatedBy: " ").last ?? model.authorName
+        let myCount = model.epubRecords(byAuthor: model.authorName).count
         Section(isExpanded: isExpanded("Library")) {
             // The badge sits INSIDE the tag: a badge applied over the
             // tag hides it from the List, and the row stops selecting.
@@ -330,6 +338,7 @@ struct SidebarView: View {
             Label(venueLabel, systemImage: "newspaper")
                 .badge(model.epubPublications.count)
                 .tag(SidebarItem.epubJournals)
+            publicationSubmenus
             // The graphs standing along the headset's corridor —
             // curated here, carried by the community folder.
             Label("Graphs", systemImage: "chart.line.uptrend.xyaxis")
@@ -338,6 +347,9 @@ struct SidebarView: View {
             // themes and the user's own timelines.
             Label("Timelines", systemImage: "calendar.day.timeline.left")
                 .tag(SidebarItem.timelines)
+            Label(myLastName, systemImage: "person.fill")
+                .badge(myCount > 0 ? myCount : 0)
+                .tag(SidebarItem.myEPUBs)
             ForEach(model.epubFolders, id: \.self) { folder in
                 Label(folder, systemImage: "folder")
                     .badge(model.epubRecords(inFolder: folder).count)
@@ -352,6 +364,154 @@ struct SidebarView: View {
             .buttonStyle(.plain)
         } header: {
             Text("Library")
+        }
+    }
+
+    /// Which venue is currently in focus — either selected directly or via
+    /// a topic/author filter within it. Drives `publicationSubmenus`.
+    private var currentVenueName: String? {
+        switch model.sidebarSelection {
+        case .epubPublication(let name): return name
+        case .epubPublicationAuthor(let venue, _): return venue
+        case .epubPublicationTopic(let venue, _): return venue
+        default: return nil
+        }
+    }
+
+    /// Inline submenus that appear inside the Library section when the user
+    /// has drilled into a specific journal or proceedings. Stays visible when
+    /// an author or topic filter row is selected. Every author and topic row
+    /// carries a tag so clicking it filters the middle column.
+    @ViewBuilder
+    private var publicationSubmenus: some View {
+        if let name = currentVenueName {
+            let pubRecords = model.epubRecords(inPublication: name)
+            let analysis = model.publicationAnalyses[name]
+            let isAnalysing = model.analysisInProgress.contains(name)
+            let hasAnalysis = analysis != nil
+
+            // Authors: filter set-aside, sort pinned-first then alphabetical
+            let pinnedAuthorSet = Set(model.globalPinnedAuthors)
+            let setAsideAuthors = analysis?.setAsideAuthors ?? []
+            let rawAuthors = Array(Set(
+                pubRecords.flatMap(\.authorList)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            )).filter { !setAsideAuthors.contains($0) }
+            let pubAuthors = rawAuthors.sorted { a, b in
+                let ap = pinnedAuthorSet.contains(a), bp = pinnedAuthorSet.contains(b)
+                return ap != bp ? ap : a < b
+            }
+
+            // Topics: allTopics already filters set-aside; sort pinned-first
+            let pinnedTopicSet = Set(model.globalPinnedTopics)
+            let sortedTopics = (analysis?.allTopics ?? []).sorted { a, b in
+                let ap = pinnedTopicSet.contains(a), bp = pinnedTopicSet.contains(b)
+                return ap != bp ? ap : a < b
+            }
+
+            // Conference name — non-selectable, truncated; no icon
+            Text(name)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            // Authors — clickable; control-click to pin or set aside
+            DisclosureGroup(isExpanded: isExpanded("PubAuthors")) {
+                ForEach(pubAuthors, id: \.self) { author in
+                    Text(author)
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .tag(SidebarItem.epubPublicationAuthor(name, author))
+                        .contextMenu {
+                            if pinnedAuthorSet.contains(author) {
+                                Button("Unpin") { model.unpinGlobalAuthor(author) }
+                            } else {
+                                Button("Pin") { model.pinGlobalAuthor(author) }
+                            }
+                            Button("Set Aside") { model.setAsideAuthor(author, inPublication: name) }
+                        }
+                }
+            } label: {
+                Label("Authors (\(pubAuthors.count))", systemImage: "person.2")
+                    .font(.caption)
+            }
+
+            // Topics — clickable after AI analysis; control-click to pin or set aside
+            DisclosureGroup(isExpanded: isExpanded("PubTopics")) {
+                if !sortedTopics.isEmpty {
+                    ForEach(sortedTopics, id: \.self) { topic in
+                        Text(topic)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .tag(SidebarItem.epubPublicationTopic(name, topic))
+                            .contextMenu {
+                                if pinnedTopicSet.contains(topic) {
+                                    Button("Unpin") { model.unpinGlobalTopic(topic) }
+                                } else {
+                                    Button("Pin") { model.pinGlobalTopic(topic) }
+                                }
+                                Button("Set Aside") { model.setAsideTopic(topic, inPublication: name) }
+                            }
+                    }
+                } else {
+                    Text(isAnalysing
+                         ? "Analysing\u{2026}"
+                         : "Tap \u{201C}AI Analyse\u{201D} to extract topics")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .italic()
+                }
+            } label: {
+                Label("Topics", systemImage: "tag")
+                    .font(.caption)
+            }
+
+            // Analyse pill — turns grey "Re-Analyse" once results exist
+            HStack {
+                Spacer()
+                Button {
+                    Task { await model.analysePublication(name) }
+                } label: {
+                    HStack(spacing: 5) {
+                        if isAnalysing { ProgressView().controlSize(.mini) }
+                        Text(isAnalysing ? "Analysing\u{2026}" : hasAnalysis ? "Re-Analyse" : "AI Analyse")
+                            .font(.caption)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 3)
+                    .foregroundStyle(isAnalysing || hasAnalysis
+                                     ? AnyShapeStyle(.secondary)
+                                     : AnyShapeStyle(Color.accentColor))
+                    .background(Capsule().fill(isAnalysing || hasAnalysis
+                                               ? Color.secondary.opacity(0.1)
+                                               : Color.accentColor.opacity(0.1)))
+                    .overlay {
+                        if !isAnalysing && !hasAnalysis {
+                            Capsule().strokeBorder(Color.accentColor.opacity(0.6))
+                        }
+                    }
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(isAnalysing)
+                Spacer()
+            }
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    /// "To Acquire" — a single selectable sidebar row between Library and
+    /// Views; clicking it shows the full acquisition list in the middle column.
+    @ViewBuilder
+    private var acquisitionsSection: some View {
+        if !model.acquisitions.isEmpty {
+            Section {
+                Label("To Acquire", systemImage: "arrow.down.circle")
+                    .badge(model.acquisitions.count)
+                    .tag(SidebarItem.acquisitions)
+            }
         }
     }
 

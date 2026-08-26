@@ -33,13 +33,17 @@ enum SidebarItem: Hashable {
     // Library: opened EPUBs — all, ways through them, or by folder
     case epubsAll
     case epubsInbox
+    case myEPUBs
     case epubsTimeline
     case epubsAlphabetical
     case epubJournals
     case epubPublication(String)
+    case epubPublicationAuthor(String, String)   // venue, author
+    case epubPublicationTopic(String, String)    // venue, topic
     case epubsTopOfPile
     case epubsSetAside
     case epubFolder(String)
+    case acquisitions
     // Views: ways into the opened EPUBs by who and what they hold.
     // Authors is automatic (the authors of record); People and Concepts
     // are user-curated buckets, added the way folders are.
@@ -130,6 +134,9 @@ final class AppModel {
     /// The EPUB currently open in the faithful WebView reader, if any. When
     /// set, the detail pane renders it; navigating anywhere else clears it.
     var openEPUB: OpenEPUB?
+    /// Spine results keyed by folder name — reading container.xml + OPF on
+    /// every tap is the main source of selection lag, so we cache on first open.
+    private var spineCache: [String: OrigamiEPUBImporter.BookSpine] = [:]
     /// The reader's most recent text selection, reported by the Step 0
     /// bridge. The seam for select-and-act and reading-as-making.
     var lastEPUBSelection: String?
@@ -356,6 +363,28 @@ final class AppModel {
         guard let payload = showInPayload, payload.viewID == viewID else { return nil }
         showInPayload = nil
         return payload
+    }
+
+    /// The citation a "View as Tree" request is about. Consumed by the
+    /// Citation Tree view; persists across sheet dismissal so the tree
+    /// renders once the sheet is gone.
+    struct CitationTreeTarget {
+        var title: String
+        var author: String
+        var year: Int?
+        var doi: String?
+        var graphKey: String
+    }
+    private(set) var citationTreeTarget: CitationTreeTarget?
+
+    func showCitationTree(title: String, author: String, year: Int?, doi: String?) {
+        citationTreeTarget = CitationTreeTarget(
+            title: title,
+            author: author,
+            year: year,
+            doi: doi,
+            graphKey: CitationGraph.key(title: title, author: author))
+        sidebarSelection = .view("citation-tree")
     }
 
     /// The distinct names credited as authors in the library — the
@@ -845,6 +874,8 @@ final class AppModel {
                                     publication: meta?.publication ?? "")
             epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
             epubRecords.insert(record, at: 0)
+            // A fresh unpack means a new spine — drop the cached one.
+            spineCache.removeValue(forKey: safe)
             // The reading cache may hold the pre-refresh text.
             readingDocCache = nil
             persistEPUBRecords()
@@ -1382,11 +1413,12 @@ final class AppModel {
             showNote("“\(record.title)” is no longer unpacked — open the EPUB file again.")
             return
         }
-        // The whole spine, re-derived from the unpacked package so books
-        // remembered before chapters existed gain them without a manifest
-        // migration. A plain chaptered book reads whole; an Origami-profile
-        // book has a single spine document, as before.
-        let spine = OrigamiEPUBImporter.spine(inUnpackedFolder: base)
+        // The whole spine, derived once from the unpacked package and then
+        // cached — re-reading container.xml + OPF on every selection tap
+        // was the main source of list-selection lag.
+        let spine = spineCache[record.folder]
+            ?? OrigamiEPUBImporter.spine(inUnpackedFolder: base)
+        if let spine { spineCache[record.folder] = spine }
         let chapters = (spine?.chapters ?? []).map { base.appendingPathComponent($0) }
         openEPUB = OpenEPUB(id: record.folder, title: record.title, content: content, base: base,
                             chapters: chapters.isEmpty ? [content] : chapters,
@@ -2303,6 +2335,19 @@ final class AppModel {
         // The headset's wishes: cited works asked for as books, shown
         // in the Time view until acquired or dismissed.
         acquisitions = EPUBAcquisitions.read(from: folder)
+        // Publication analyses live in the shared folder so visionOS reads the same data.
+        // Migrate from UserDefaults once if the file doesn't exist yet.
+        var analysesFile = AnalysesFile.read(from: folder)
+        if analysesFile.analyses.isEmpty,
+           let data = UserDefaults.standard.data(forKey: "publicationAnalyses"),
+           let legacy = try? JSONDecoder().decode([String: PublicationAnalysis].self, from: data) {
+            analysesFile.analyses = legacy
+            analysesFile.write(to: folder)
+            UserDefaults.standard.removeObject(forKey: "publicationAnalyses")
+        }
+        publicationAnalyses = analysesFile.analyses
+        globalPinnedAuthors = analysesFile.pinnedAuthors
+        globalPinnedTopics = analysesFile.pinnedTopics
         // The citation graph shares the folder: adopt what other
         // devices fetched, then quietly research a few more works.
         CitationGraph.mirrorFolder = folder
@@ -2341,9 +2386,149 @@ final class AppModel {
     /// rereads it.
     var timeFlowsRevision = 0
 
-    /// Books the headset asked to acquire — the Time view lists them
-    /// with an ember dot and their download link.
+    /// Books the headset asked to acquire — the sidebar lists them with
+    /// an ember dot and their download link.
     private(set) var acquisitions: [EPUBAcquisitions.Wanted] = []
+
+    // MARK: Publication AI analysis
+
+    /// Per-venue analysis results: topic keywords per paper, plus per-venue set-aside lists.
+    struct PublicationAnalysis: Codable {
+        var paperTopics: [String: [String]] = [:]   // record.id → [topic]
+        var setAsideAuthors: Set<String> = []
+        var setAsideTopics: Set<String> = []
+
+        /// Visible topics after filtering set-aside items, sorted.
+        var allTopics: [String] {
+            Array(Set(paperTopics.values.flatMap { $0 }))
+                .filter { !setAsideTopics.contains($0) }
+                .sorted()
+        }
+    }
+
+    /// On-disk container stored in the shared library folder so visionOS reads the same data.
+    private struct AnalysesFile: Codable {
+        var analyses: [String: PublicationAnalysis] = [:]
+        var pinnedAuthors: [String] = []    // global — floats to top in every venue
+        var pinnedTopics: [String] = []     // global — floats to top in every venue
+        static let filename = "_publication-analyses.json"
+
+        static func read(from folder: URL) -> AnalysesFile {
+            let url = folder.appendingPathComponent(filename)
+            guard let data = try? Data(contentsOf: url),
+                  let file = try? JSONDecoder().decode(AnalysesFile.self, from: data)
+            else { return AnalysesFile() }
+            return file
+        }
+
+        func write(to folder: URL) {
+            let url = folder.appendingPathComponent(Self.filename)
+            if let data = try? JSONEncoder().encode(self) {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
+
+    private(set) var publicationAnalyses: [String: PublicationAnalysis] = [:]
+    private(set) var globalPinnedAuthors: [String] = []
+    private(set) var globalPinnedTopics: [String] = []
+
+    /// Publications currently being analysed — drives the spinner in the sidebar.
+    private(set) var analysisInProgress: Set<String> = []
+
+    private func saveAnalysesFile() {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        var file = AnalysesFile()
+        file.analyses = publicationAnalyses
+        file.pinnedAuthors = globalPinnedAuthors
+        file.pinnedTopics = globalPinnedTopics
+        file.write(to: folder)
+    }
+
+    /// Analyses each paper in the venue with one LLM call each, storing per-paper topic lists.
+    /// Re-analysis preserves existing set-aside author/topic lists.
+    func analysePublication(_ name: String) async {
+        guard !analysisInProgress.contains(name) else { return }
+        analysisInProgress.insert(name)
+        defer { analysisInProgress.remove(name) }
+
+        let records = epubRecords(inPublication: name)
+        guard !records.isEmpty else { return }
+
+        var paperTopics: [String: [String]] = [:]
+        for record in records {
+            let prompt = """
+                Title: \(record.title)
+                Author: \(record.author)
+
+                List 3 to 5 short topic keywords or phrases for this paper. \
+                Reply with only a comma-separated list, nothing else.
+                """
+            guard let (text, _) = try? await OrigamiLLM.shared.respond(
+                instructions: "Extract topic keywords from academic paper titles. Be concise and specific.",
+                to: prompt)
+            else { continue }
+
+            let topics = text
+                .components(separatedBy: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && $0.count < 60 }
+            paperTopics[record.id] = topics
+        }
+
+        var updated = publicationAnalyses[name] ?? PublicationAnalysis()
+        updated.paperTopics = paperTopics
+        publicationAnalyses[name] = updated
+        saveAnalysesFile()
+    }
+
+    func pinGlobalAuthor(_ name: String) {
+        guard !globalPinnedAuthors.contains(name) else { return }
+        globalPinnedAuthors.append(name)
+        saveAnalysesFile()
+    }
+
+    func unpinGlobalAuthor(_ name: String) {
+        globalPinnedAuthors.removeAll { $0 == name }
+        saveAnalysesFile()
+    }
+
+    func pinGlobalTopic(_ name: String) {
+        guard !globalPinnedTopics.contains(name) else { return }
+        globalPinnedTopics.append(name)
+        saveAnalysesFile()
+    }
+
+    func unpinGlobalTopic(_ name: String) {
+        globalPinnedTopics.removeAll { $0 == name }
+        saveAnalysesFile()
+    }
+
+    func setAsideAuthor(_ author: String, inPublication pub: String) {
+        var entry = publicationAnalyses[pub] ?? PublicationAnalysis()
+        entry.setAsideAuthors.insert(author)
+        publicationAnalyses[pub] = entry
+        saveAnalysesFile()
+    }
+
+    func setAsideTopic(_ topic: String, inPublication pub: String) {
+        var entry = publicationAnalyses[pub] ?? PublicationAnalysis()
+        entry.setAsideTopics.insert(topic)
+        publicationAnalyses[pub] = entry
+        saveAnalysesFile()
+    }
+
+    /// Papers in a venue whose per-paper topic list contains the given topic.
+    func epubRecords(inPublication venue: String, matchingTopic topic: String) -> [EPUBRecord] {
+        let analysis = publicationAnalyses[venue]
+        return epubRecords(inPublication: venue).filter { record in
+            analysis?.paperTopics[record.id]?.contains {
+                $0.localizedCaseInsensitiveCompare(topic) == .orderedSame
+            } ?? false
+        }
+    }
 
     func removeAcquisition(_ id: String) {
         guard let folder = index.folderURL else { return }
@@ -2351,6 +2536,17 @@ final class AppModel {
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
         EPUBAcquisitions.remove(id: id, in: folder)
         acquisitions.removeAll { $0.id == id }
+    }
+
+    func addAcquisition(key: String, title: String, author: String, year: Int?, doi: String?) {
+        guard !acquisitions.contains(where: { $0.id == key }),
+              let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        let item = EPUBAcquisitions.Wanted(id: key, title: title, author: author,
+                                           year: year, doi: doi, added: .now)
+        EPUBAcquisitions.add(item, in: folder)
+        acquisitions.append(item)
     }
 
     /// The time-spread's first data lines: New York's yearly min/max

@@ -39,6 +39,7 @@ enum LibraryListMode: Hashable {
     case timeline
     case alphabetical
     case setAside
+    case myEPUBs
 }
 
 /// The pile actions every EPUB row's context menu offers: Pin (first
@@ -72,6 +73,7 @@ struct EPUBLibraryListView: View {
     var mode: LibraryListMode = .all
     @AppStorage("libraryTimelineUnreadOnly") private var timelineUnreadOnly = false
     @AppStorage("libraryAlphabeticalUnreadOnly") private var alphabeticalUnreadOnly = false
+    @AppStorage(AppSettings.listTitleFontKey) private var listTitleFamily = ""
 
     private var records: [EPUBRecord] {
         switch mode {
@@ -94,6 +96,8 @@ struct EPUBLibraryListView: View {
                 .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending })
         case .setAside:
             return model.epubSetAsideRecords
+        case .myEPUBs:
+            return model.pinnedFirst(model.epubRecords(byAuthor: model.authorName))
         }
     }
 
@@ -121,6 +125,7 @@ struct EPUBLibraryListView: View {
                                 .foregroundStyle(EmberIconLabelStyle.ember)
                         }
                         Text(record.title)
+                            .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
                             .fontWeight(model.isUnread(record) ? .bold : .regular)
                             .lineLimit(2)
                     }
@@ -159,49 +164,10 @@ struct EPUBLibraryListView: View {
                     Divider()
                     EPUBPileMenu(record: record)
                 }
+                .listRowSeparator(.hidden)
+                .padding(.vertical, 3)
             }
-            // The headset's wishes: cited works asked for as books from
-            // the Map's citation cards — an ember dot each, the
-            // download link where the citation carried one, until
-            // acquired or dismissed.
-            if case .timeline = mode, !model.acquisitions.isEmpty {
-                Section("To acquire") {
-                    ForEach(model.acquisitions) { wanted in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Circle()
-                                .fill(EmberIconLabelStyle.ember)
-                                .frame(width: 8, height: 8)
-                                .padding(.top, 4)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(wanted.title)
-                                    .lineLimit(2)
-                                HStack(spacing: 6) {
-                                    Text([wanted.author,
-                                          wanted.year.map(String.init) ?? ""]
-                                        .filter { !$0.isEmpty }
-                                        .joined(separator: " · "))
-                                    if let doi = wanted.doi, !doi.isEmpty,
-                                       let url = URL(string: doi.hasPrefix("http")
-                                            ? doi : "https://doi.org/\(doi)") {
-                                        Link("doi", destination: url)
-                                    }
-                                }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            }
-                            Spacer()
-                            Button(role: .destructive) {
-                                model.removeAcquisition(wanted.id)
-                            } label: {
-                                Image(systemName: "minus.circle")
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Dismiss this wish")
-                        }
-                    }
-                }
-            }
+
         }
         // The list starts right under the toolbar, no dead air.
         .contentMargins(.top, 0, for: .scrollContent)
@@ -222,6 +188,7 @@ struct EPUBLibraryListView: View {
         case .inbox: "Nothing Unread"
         case .topOfPile: "Nothing Pinned"
         case .setAside: "Nothing Set Aside"
+        case .myEPUBs: "No EPUBs by You"
         default: "No EPUBs Yet"
         }
     }
@@ -229,13 +196,15 @@ struct EPUBLibraryListView: View {
     private var emptyDescription: String {
         switch mode {
         case .folder(let name):
-            "File EPUBs into “\(name)” from the All list's context menu."
+            "File EPUBs into \u{201C}\(name)\u{201D} from the All list's context menu."
         case .inbox:
             "Every opened EPUB has been read. New arrivals gather here until they are opened."
         case .topOfPile:
             "Right-click a book and choose Pin — it gathers here and floats first in every list."
         case .setAside:
             "Right-click a book and choose Set Aside to tuck it out of the lists — it waits here until brought back."
+        case .myEPUBs:
+            "EPUBs whose author field matches your name in Settings → Author will gather here."
         case .timeline where timelineUnreadOnly, .alphabetical where alphabeticalUnreadOnly:
             "Nothing unread — this list is narrowed to unread (right-click its sidebar item to show everything)."
         default:
@@ -261,6 +230,7 @@ func epubListSelection(_ model: AppModel) -> Binding<String?> {
 /// venue lists; their Lists take `epubListSelection`.
 struct EPUBRecordRow: View {
     @Environment(AppModel.self) private var model
+    @AppStorage(AppSettings.listTitleFontKey) private var listTitleFamily = ""
     let record: EPUBRecord
     /// When shown inside a folder or author group, the redundant subtitle
     /// line can be dropped.
@@ -275,6 +245,7 @@ struct EPUBRecordRow: View {
                         .foregroundStyle(EmberIconLabelStyle.ember)
                 }
                 Text(record.title)
+                    .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
                     .fontWeight(model.isUnread(record) ? .bold : .regular)
                     .lineLimit(2)
             }
@@ -299,6 +270,8 @@ struct EPUBRecordRow: View {
         .contextMenu {
             EPUBPileMenu(record: record)
         }
+        .listRowSeparator(.hidden)
+        .padding(.vertical, 3)
     }
 }
 
@@ -518,9 +491,133 @@ struct JournalBooksListView: View {
 
 }
 
+/// The sidebar's "To Acquire" list: books the Vision Pro headset asked for
+/// from its Author Map citation cards. Each entry carries a DOI link when
+/// the citation provided one, and a dismiss button.
+struct AcquisitionsListView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let items = model.acquisitions
+        List {
+            ForEach(items) { wanted in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Circle()
+                        .fill(EmberIconLabelStyle.ember)
+                        .frame(width: 8, height: 8)
+                        .padding(.top, 4)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(wanted.title).lineLimit(2)
+                        HStack(spacing: 6) {
+                            Text([wanted.author,
+                                  wanted.year.map(String.init) ?? ""]
+                                .filter { !$0.isEmpty }
+                                .joined(separator: " \u{00B7} "))
+                            if let doi = wanted.doi, !doi.isEmpty,
+                               let url = URL(string: doi.hasPrefix("http")
+                                    ? doi : "https://doi.org/\(doi)") {
+                                Link("doi", destination: url)
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    }
+                    Spacer()
+                    Button(role: .destructive) {
+                        model.removeAcquisition(wanted.id)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Dismiss this wish")
+                }
+                .listRowSeparator(.hidden)
+                .padding(.vertical, 2)
+            }
+        }
+        .contentMargins(.top, 0, for: .scrollContent)
+        .overlay {
+            if items.isEmpty {
+                ContentUnavailableView {
+                    Label("Nothing to Acquire", systemImage: "checkmark.circle")
+                } description: {
+                    Text("Books requested from the Vision Pro\u{2019}s Author Map appear here.")
+                }
+            }
+        }
+    }
+}
+
+/// A conference or journal's papers filtered by a single author or AI topic.
+/// Selecting a row opens it in the reader; the header navigates back to the
+/// venue's full list.
+struct PublicationFilteredListView: View {
+    @Environment(AppModel.self) private var model
+    let venue: String
+    let filter: PublicationFilter
+
+    private var records: [EPUBRecord] {
+        switch filter {
+        case .author(let name):
+            model.pinnedFirst(
+                model.epubRecords(inPublication: venue).filter { record in
+                    record.authorList.contains {
+                        $0.trimmingCharacters(in: .whitespaces)
+                            .caseInsensitiveCompare(name) == .orderedSame
+                    }
+                }
+            )
+        case .topic(let topic):
+            model.pinnedFirst(model.epubRecords(inPublication: venue, matchingTopic: topic))
+        }
+    }
+
+    var body: some View {
+        let records = records
+        List(selection: epubListSelection(model)) {
+            Section {
+                ForEach(records) { record in
+                    EPUBRecordRow(record: record)
+                }
+            } header: {
+                Button {
+                    model.sidebarSelection = .epubPublication(venue)
+                } label: {
+                    Label(filterLabel, systemImage: "chevron.backward")
+                }
+                .buttonStyle(.plain)
+                .help("Back to \(venue)")
+            }
+        }
+        .contentMargins(.top, 0, for: .scrollContent)
+        .overlay {
+            if records.isEmpty {
+                ContentUnavailableView {
+                    Label(filterLabel, systemImage: "doc.text.magnifyingglass")
+                } description: {
+                    Text("No papers in this venue match \u{201C}\(filterLabel)\u{201D}.")
+                }
+            }
+        }
+    }
+
+    private var filterLabel: String {
+        switch filter {
+        case .author(let name): return name
+        case .topic(let topic): return topic
+        }
+    }
+}
+
+enum PublicationFilter {
+    case author(String)
+    case topic(String)
+}
+
 /// Views ▸ People: the people the user is tracking. Automatic extraction of
 /// names from the EPUBs is a later step; for now this lists what the user
-/// has added (with “Add Person” in the sidebar).
+/// has added (with "Add Person" in the sidebar).
 struct PeopleListView: View {
     @Environment(AppModel.self) private var model
 
@@ -773,6 +870,7 @@ struct DocumentRowMenu: View {
 
 struct DocumentRow: View {
     @Environment(AppModel.self) private var model
+    @AppStorage(AppSettings.listTitleFontKey) private var listTitleFamily = ""
     let entry: IndexEntry
     var showsTime = false
 
@@ -800,6 +898,7 @@ struct DocumentRow: View {
                         .help("For your attention")
                 }
                 Text(entry.doc.title)
+                    .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
                     .fontWeight(isUnread ? .bold : .medium)
                     .lineLimit(1)
                 if isRetracted {

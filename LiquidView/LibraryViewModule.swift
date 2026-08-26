@@ -148,6 +148,7 @@ enum LibraryViewRegistry {
         ZigZagView.module,
         ZZNavigatorView.module,
         HealthDashboardView.module,
+        CitationTreeView.module,
     ]
 
     static func module(id: String) -> LibraryViewModule? {

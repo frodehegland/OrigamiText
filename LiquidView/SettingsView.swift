@@ -36,6 +36,7 @@ enum AppSettings {
     static let readerThemeKey = "readerTheme"
     static let readerBodyFontKey = "readerBodyFont"
     static let readerHeadingFontKey = "readerHeadingFont"
+    static let listTitleFontKey = "listTitleFont"
     static let readerLayoutStyleKey = "readerLayoutStyle"
     static let venueLabelKey = "venueShelfLabel"
     static let tripleClickSelectsSentenceKey = "tripleClickSelectsSentence"
@@ -111,9 +112,28 @@ private struct LayoutSettingsView: View {
     private var connectionPortraits = true
     @AppStorage(AppSettings.venueLabelKey)
     private var venueLabel = "Journals"
+    @AppStorage(AppSettings.listTitleFontKey) private var listTitleFamily = ""
+    private let listFamilies = NSFontManager.shared.availableFontFamilies.sorted()
 
     var body: some View {
         Form {
+            Section {
+                Picker("Title Font", selection: $listTitleFamily) {
+                    Text("System (default)").tag("")
+                    ForEach(listFamilies, id: \.self) { family in
+                        Text(family).tag(family)
+                    }
+                }
+                if !listTitleFamily.isEmpty {
+                    Button("Reset to System") { listTitleFamily = "" }
+                }
+            } header: {
+                Text("Document Lists")
+            } footer: {
+                Text("Typeface for document and book titles in all lists. System uses the default macOS interface font.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 Toggle("Author portraits on connection cards", isOn: $connectionPortraits)
             } footer: {

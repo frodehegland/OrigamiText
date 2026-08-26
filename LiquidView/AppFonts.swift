@@ -20,6 +20,7 @@ enum AppFonts {
     static let headingFamilyKey = "readerHeadingFont"
     static let defaultBodyFamily = "Times New Roman"
     static let defaultHeadingFamily = "Georgia"
+    static let listTitleFamilyKey = "listTitleFont"
 
     static var bodyFamily: String {
         UserDefaults.standard.string(forKey: bodyFamilyKey) ?? defaultBodyFamily

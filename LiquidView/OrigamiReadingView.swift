@@ -3491,6 +3491,17 @@ struct CitationCardSheet: View {
                     }
                     .help("The reference's BibTeX entry, whole")
                 }
+                if let rec = record {
+                    Button("View as Tree", systemImage: "arrow.triangle.branch") {
+                        dismiss()
+                        model.showCitationTree(
+                            title: rec.title,
+                            author: rec.author,
+                            year: Int(rec.year.prefix(4)),
+                            doi: rec.fields["doi"]?.lowercased())
+                    }
+                    .help("Show what this work cites and what cites it")
+                }
                 Spacer()
                 if let address = citedAddress,
                    model.epubRecord(forAddress: address.docID) != nil {
@@ -3516,12 +3527,36 @@ struct CitationCardSheet: View {
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.cancelAction)
                 } else if let url = record?.webURL {
+                    if let rec = record,
+                       !model.acquisitions.contains(where: { $0.id == key }) {
+                        Button("Add to Acquire") {
+                            model.addAcquisition(
+                                key: key,
+                                title: rec.title,
+                                author: rec.displayAuthors,
+                                year: Int(rec.year),
+                                doi: rec.fields["doi"] ?? enrichment?.doi)
+                            dismiss()
+                        }
+                    }
                     Button("Open on the Web") {
                         openURL(url)
                     }
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.defaultAction)
                 } else {
+                    if let rec = record,
+                       !model.acquisitions.contains(where: { $0.id == key }) {
+                        Button("Add to Acquire") {
+                            model.addAcquisition(
+                                key: key,
+                                title: rec.title,
+                                author: rec.displayAuthors,
+                                year: Int(rec.year),
+                                doi: rec.fields["doi"] ?? enrichment?.doi)
+                            dismiss()
+                        }
+                    }
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.defaultAction)
                 }
