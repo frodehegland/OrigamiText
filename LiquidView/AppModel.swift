@@ -2343,7 +2343,11 @@ final class AppModel {
            let legacy = try? JSONDecoder().decode([String: PublicationAnalysis].self, from: data) {
             analysesFile.analyses = legacy
             analysesFile.write(to: folder)
-            UserDefaults.standard.removeObject(forKey: "publicationAnalyses")
+            // Only remove the legacy key once the file is confirmed on disk.
+            let migratedURL = folder.appendingPathComponent(AnalysesFile.filename)
+            if FileManager.default.fileExists(atPath: migratedURL.path) {
+                UserDefaults.standard.removeObject(forKey: "publicationAnalyses")
+            }
         }
         publicationAnalyses = analysesFile.analyses
         globalPinnedAuthors = analysesFile.pinnedAuthors

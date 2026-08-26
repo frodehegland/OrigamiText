@@ -3534,7 +3534,7 @@ struct CitationCardSheet: View {
                                 key: key,
                                 title: rec.title,
                                 author: rec.displayAuthors,
-                                year: Int(rec.year),
+                                year: Int(rec.year.prefix(4)),
                                 doi: rec.fields["doi"] ?? enrichment?.doi)
                             dismiss()
                         }
@@ -3552,7 +3552,7 @@ struct CitationCardSheet: View {
                                 key: key,
                                 title: rec.title,
                                 author: rec.displayAuthors,
-                                year: Int(rec.year),
+                                year: Int(rec.year.prefix(4)),
                                 doi: rec.fields["doi"] ?? enrichment?.doi)
                             dismiss()
                         }
