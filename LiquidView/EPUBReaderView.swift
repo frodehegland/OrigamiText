@@ -486,6 +486,9 @@ struct EPUBReaderScreen: View {
                                           chapter: subpath(of: currentContent),
                                           fraction: fraction)
             },
+            onCitationAnchors: { anchors in
+                model.openDocCitationAnchors = anchors
+            },
             findText: showsFind ? findText : "",
             findStamp: findStamp,
             findForward: findForward)
@@ -697,6 +700,10 @@ struct EPUBReaderView: NSViewRepresentable {
     /// The page's scroll position changed (throttled), as a 0–1 fraction —
     /// the reading-position memory's feed.
     var onProgress: (Double) -> Void = { _ in }
+    /// The inline citation anchors found on the current page changed —
+    /// called after load and after each scroll. The visionOS hallway reads
+    /// this to draw lines from `[N]` markers to their hallway cards.
+    var onCitationAnchors: ([InlineCitationAnchor]) -> Void = { _ in }
     /// Find in the page: each stamp steps to the next (or previous)
     /// match of the text, WebKit's own find doing the walking. An
     /// empty text clears the search.
@@ -732,6 +739,8 @@ struct EPUBReaderView: NSViewRepresentable {
         // listener registers before the bridge's, so a click never
         // doubles as a Step 0 activation or a jump to the References.
         controller.addUserScript(WKUserScript(source: citationScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        controller.addUserScript(WKUserScript(source: citationAnchorScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         // The annotation script's click listener must register before the
         // bridge's, so a click on a highlight opens its popover instead of
@@ -803,6 +812,7 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onRemoveAnnotation = onRemoveAnnotation
         coordinator.onChapterStep = onChapterStep
         coordinator.onProgress = onProgress
+        coordinator.onCitationAnchors = onCitationAnchors
         coordinator.annotations = annotations
         coordinator.chapterIndex = chapterIndex
         coordinator.chapterCount = chapterCount
@@ -898,6 +908,7 @@ struct EPUBReaderView: NSViewRepresentable {
         var onRemoveAnnotation: (String) -> Void = { _ in }
         var onChapterStep: (Int) -> Void = { _ in }
         var onProgress: (Double) -> Void = { _ in }
+        var onCitationAnchors: ([InlineCitationAnchor]) -> Void = { _ in }
         /// A paragraph to scroll to after the current load finishes, consumed
         /// once. Set when this book was opened by following a quote link.
         var pendingFragment: String?
@@ -959,6 +970,19 @@ struct EPUBReaderView: NSViewRepresentable {
             case "citation":
                 onCitation(body["key"] as? String ?? "",
                            body["ref"] as? String ?? "")
+            case "citationAnchors":
+                guard let raw = body["anchors"] as? [[String: Any]] else { break }
+                let anchors: [InlineCitationAnchor] = raw.compactMap { d in
+                    guard let id = d["id"] as? String, !id.isEmpty else { return nil }
+                    return InlineCitationAnchor(
+                        citationID: id,
+                        origamiRef: d["ref"]  as? String ?? "",
+                        hrefTarget: d["href"] as? String ?? "",
+                        normalizedX: (d["nx"] as? NSNumber)?.doubleValue ?? 0,
+                        normalizedY: (d["ny"] as? NSNumber)?.doubleValue ?? 0,
+                        inView: (d["inView"] as? NSNumber)?.boolValue ?? false)
+                }
+                onCitationAnchors(anchors)
             case "endnote":
                 // A dagger asked for its note's words: resolve the id
                 // its href carries and unfold them in place.
@@ -1022,6 +1046,8 @@ struct EPUBReaderView: NSViewRepresentable {
             }
             paintAnnotations(in: webView)
             injectChapterFooter(in: webView)
+            webView.evaluateJavaScript(
+                "if (window.origamiFindCitationAnchors) window.origamiFindCitationAnchors();")
         }
 
         /// Scrolls the loaded page to the element and flashes it once.
@@ -1224,6 +1250,71 @@ struct EPUBReaderView: NSViewRepresentable {
                                  || a.getAttribute('data-citation-key') || '',
                             ref: a.getAttribute('data-origami-ref') || ''});
       }, true);
+    })();
+    """
+
+    /// Locates every inline citation anchor in the document and posts their
+    /// normalised document-space positions as a `citationAnchors` message.
+    /// Runs once on load, then re-runs 150 ms after each scroll so the
+    /// positions stay current as the user moves through the page. Also
+    /// exposes `window.origamiFindCitationAnchors()` for Swift to call
+    /// explicitly (e.g. after a programmatic scroll-to-fragment).
+    private static let citationAnchorScript = """
+    (function(){
+      var bridge = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.origami;
+      if (!bridge) return;
+
+      // Recognises the same citation shapes as citationScript, plus
+      // EPUB noteref anchors for foreign EPUBs.
+      function isCitationAnchor(a) {
+        if (!a || a.tagName !== 'A') return false;
+        if (a.classList.contains('citation')) return true;
+        if (a.getAttribute('data-citation-id')) return true;
+        if (a.getAttribute('data-citation-key')) return true;
+        if ((a.getAttribute('role') || '').indexOf('doc-biblioref') >= 0) return true;
+        if ((a.getAttribute('epub:type') || '').indexOf('biblioref') >= 0) return true;
+        return false;
+      }
+
+      function scan() {
+        var docW = document.documentElement.scrollWidth;
+        var docH = document.documentElement.scrollHeight;
+        if (!docW || !docH) return;
+        var vW = window.innerWidth, vH = window.innerHeight;
+        var sX = window.scrollX,   sY = window.scrollY;
+        var all = document.querySelectorAll('a');
+        var seen = [];
+        var results = [];
+        for (var i = 0; i < all.length; i++) {
+          var a = all[i];
+          if (!isCitationAnchor(a) || seen.indexOf(a) >= 0) continue;
+          seen.push(a);
+          var r = a.getBoundingClientRect();
+          var cx = r.left + r.width  / 2;
+          var cy = r.top  + r.height / 2;
+          results.push({
+            id:   a.getAttribute('data-citation-id')
+                  || a.getAttribute('data-citation-key')
+                  || (a.getAttribute('href') || '').replace(/^#/, ''),
+            ref:  a.getAttribute('data-origami-ref') || '',
+            href: (a.getAttribute('href') || '').replace(/^#/, ''),
+            nx:   (cx + sX) / docW,
+            ny:   (cy + sY) / docH,
+            inView: r.bottom > 0 && r.top < vH && r.right > 0 && r.left < vW
+          });
+        }
+        bridge.postMessage({event: 'citationAnchors', anchors: results});
+      }
+
+      var scrollTimer;
+      window.addEventListener('scroll', function() {
+        clearTimeout(scrollTimer);
+        scrollTimer = setTimeout(scan, 150);
+      }, {passive: true});
+
+      window.origamiFindCitationAnchors = scan;
+      scan();
     })();
     """
 

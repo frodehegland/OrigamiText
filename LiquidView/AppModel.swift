@@ -54,6 +54,9 @@ enum SidebarItem: Hashable {
     case person(String)
     case concepts
     case concept(String)
+    /// The full library-wide Concept Space: all AI-extracted concepts
+    /// merged by name, with co-occurrence relationships and source docs.
+    case conceptSpace
     /// The Time Flows: the data lines standing along the headset's
     /// corridor, curated here for easy access there.
     case timeFlows
@@ -71,6 +74,26 @@ enum ListSortOrder: String, CaseIterable, Identifiable {
     case byDate = "Date"
     case byTitle = "Title"
     var id: String { rawValue }
+}
+
+/// The 2D position of a citation anchor ([1], [2]…) in the reader's WebView,
+/// normalized to the full document's scrollable dimensions. Shared by the
+/// macOS reader (which populates it) and the visionOS hallway (which draws
+/// lines from each anchor to its card in the cited-works wall).
+struct InlineCitationAnchor: Sendable {
+    /// `data-citation-id`, `data-citation-key`, or the href fragment — the
+    /// key used to match this anchor to a hallway EPUBMapItem.
+    let citationID: String
+    /// `data-origami-ref` from the link, empty for external citations.
+    let origamiRef: String
+    /// The bare href fragment (e.g. "fn1", "ref-smith99").
+    let hrefTarget: String
+    /// X centre of the anchor, normalized to the full document width (0–1).
+    let normalizedX: Double
+    /// Y centre of the anchor, normalized to the full document height (0–1).
+    let normalizedY: Double
+    /// Whether the anchor falls inside the WebView's current visible viewport.
+    let inView: Bool
 }
 
 /// App-wide state: the index, navigation history, folder access, and the
@@ -134,6 +157,10 @@ final class AppModel {
     /// The EPUB currently open in the faithful WebView reader, if any. When
     /// set, the detail pane renders it; navigating anywhere else clears it.
     var openEPUB: OpenEPUB?
+    /// The inline citation anchors ([1], [2]…) the faithful reader found on
+    /// the current page, updated on load and after every scroll. Empty when no
+    /// book is open or the page has no recognised citation links.
+    var openDocCitationAnchors: [InlineCitationAnchor] = []
     /// Spine results keyed by folder name — reading container.xml + OPF on
     /// every tap is the main source of selection lag, so we cache on first open.
     private var spineCache: [String: OrigamiEPUBImporter.BookSpine] = [:]
@@ -853,27 +880,36 @@ final class AppModel {
 
         do {
             let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: directory)
-            // The Visual-Meta gives the book its identity, author, and date.
-            let meta = try? OrigamiEPUBImporter.importDocument(at: url)
-            let bookID = meta?.origamiID ?? identity
+            // Read OPF + Visual-Meta only — no body parsing, so large
+            // multi-chapter EPUBs don't block the main thread.
+            let meta = OrigamiEPUBImporter.importMetadata(inUnpackedFolder: directory)
+            let bookID = meta.origamiID ?? identity
             let contentSubpath = unpacked.content.path
                 .replacingOccurrences(of: directory.path + "/", with: "")
             // Rows display the authors joined; the Authors view lists
             // the book under each of them.
-            let authors = meta?.authors ?? []
+            let authors = meta.authors
             // A refreshed book keeps its place in time; only a truly
             // new one arrives at the top as just-opened.
             let openedAt = epubRecords.first(where: { $0.folder == safe })?.openedAt ?? .now
             let record = EPUBRecord(id: bookID, title: unpacked.title,
                                     author: authors.count > 1
                                         ? authors.joined(separator: ", ")
-                                        : (authors.first ?? meta?.author ?? "Unknown"),
+                                        : (authors.first ?? meta.author ?? "Unknown"),
                                     authors: authors.isEmpty ? nil : authors,
-                                    dateISO: meta?.date, folder: safe,
+                                    dateISO: meta.date, folder: safe,
                                     contentSubpath: contentSubpath, openedAt: openedAt,
-                                    publication: meta?.publication ?? "")
+                                    publication: meta.publication ?? "",
+                                    doi: meta.doi)
             epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
             epubRecords.insert(record, at: 0)
+            // When this book carries a DOI that matches a pending
+            // acquisition, the wish is fulfilled — remove it.
+            if let doi = meta.doi {
+                for wanted in acquisitions where wanted.doi == doi {
+                    removeAcquisition(wanted.id)
+                }
+            }
             // A fresh unpack means a new spine — drop the cached one.
             spineCache.removeValue(forKey: safe)
             // The reading cache may hold the pre-refresh text.
@@ -1041,7 +1077,7 @@ final class AppModel {
     /// never parse again — a non-nil publication ("" when the book names
     /// no venue) marks the record checked.
     private func enrichRecordIfNeeded(_ record: EPUBRecord, directory: URL) -> EPUBRecord {
-        guard record.publication == nil,
+        guard record.publication == nil || record.doi == nil,
               let meta = try? OrigamiEPUBImporter.importDocument(inUnpackedFolder: directory)
         else { return record }
         let authors = record.authors ?? (meta.authors.isEmpty ? nil : meta.authors)
@@ -1054,7 +1090,8 @@ final class AppModel {
                                    dateISO: record.dateISO, folder: record.folder,
                                    contentSubpath: record.contentSubpath,
                                    openedAt: record.openedAt,
-                                   publication: meta.publication ?? "")
+                                   publication: meta.publication ?? "",
+                                   doi: record.doi ?? meta.doi)
         if let index = epubRecords.firstIndex(where: { $0.id == record.id }) {
             epubRecords[index] = refreshed
             persistEPUBRecords()
@@ -1072,6 +1109,16 @@ final class AppModel {
         try? FileManager.default.trashItem(at: directory, resultingItemURL: nil)
         try? FileManager.default.removeItem(
             at: ReadingAnalysisStore.fileURL(for: record.id, in: Self.analysesRoot))
+        // Remove from community folder so a subsequent scan doesn't re-import it.
+        if let communityFolder = index.folderURL {
+            let scoped = communityFolder.startAccessingSecurityScopedResource()
+            defer { if scoped { communityFolder.stopAccessingSecurityScopedResource() } }
+            try? FileManager.default.removeItem(
+                at: communityFolder.appendingPathComponent(record.folder + ".epub"))
+            // iCloud placeholder: present when the file hasn't been downloaded locally.
+            try? FileManager.default.removeItem(
+                at: communityFolder.appendingPathComponent("." + record.folder + ".epub.icloud"))
+        }
         epubRecords.removeAll { $0.id == record.id }
         unfileEPUB(record.id)
         if epubTopOfPile.remove(record.id) != nil {

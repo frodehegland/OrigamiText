@@ -85,6 +85,20 @@ struct EPUBMapView: View {
     /// carrying the reader's macOS concepts.
     @State private var conceptLadder = ConceptLadder()
 
+    /// The room-scale Concept Space: AI-generated paper concepts as
+    /// free-floating 3-D cards spread across the room at head height.
+    @State private var conceptSpaceManager = ConceptSpaceManager()
+    /// True while the room-scale Concept Space is open — hallway cards
+    /// and Timeflows step back to make room.
+    @State private var conceptSpaceMode = false
+    /// Where each concept or orbit card was when its drag began.
+    @State private var conceptCardDragStarts: [String: SIMD3<Float>] = [:]
+    /// Double-tap detection: the last tapped concept ID and its timestamp.
+    @State private var lastConceptTapID: String? = nil
+    @State private var lastConceptTapDate = Date.distantPast
+    /// Named room whose layout the Concept Space persists separately.
+    @AppStorage("currentConceptRoom") private var conceptRoom = "Default"
+
     /// Where the fist has carried the whole space — applied to every
     /// seed so newly raised cards land in the moved space.
     @State private var spaceShift = SIMD3<Float>.zero
@@ -131,6 +145,10 @@ struct EPUBMapView: View {
     /// card stood, dragged anywhere by its handle bar — free of the
     /// timeline; an open book is in the hand, not on the shelf.
     @State private var readerPanels = ReaderPanels()
+
+    /// Faint purple lines from each open panel to the hallway cards it
+    /// cites — visible in hallway mode, hidden on the Reading Desk.
+    @State private var citationLines = CitationLineManager()
 
 
     /// Sankey widths or a traditional line graph — the reader's
@@ -440,8 +458,8 @@ struct EPUBMapView: View {
     /// data's own year span — never hidden by a mere deselection; only
     /// their chips put them away.
     private func updateSankey() {
-        // The Reading Desk empties the room: no Timeflows, no floor.
-        let desk = model.readingDeskDocID != nil
+        // The Reading Desk and Concept Space empty the room: no Timeflows, no floor.
+        let desk = model.readingDeskDocID != nil || conceptSpaceMode
         let style = TimeSpreadStyle(rawValue: timeSpreadStyleRaw) ?? .sankey
         let layout = TimeSpreadLayout(rawValue: timeSpreadLayoutRaw) ?? .lanes
         let span = citedYearRange ?? dataYearSpan()
@@ -677,7 +695,8 @@ struct EPUBMapView: View {
                      underside: true),
         ArmMenu.Chip(id: EPUBMapView.documentsChipID, title: "Documents", side: .right),
         ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Graph", side: .right),
-        ArmMenu.Chip(id: EPUBMapView.dataRightChipID, title: "Time Data", side: .right),
+        ArmMenu.Chip(id: EPUBMapView.dataRightChipID, title: "Graph Data", side: .right,
+                     underside: true),
         ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Floor Timeline", side: .right),
         // Standing only while common ground does: the wall reduced to
         // the works every raised article cites — the green alone.
@@ -685,9 +704,9 @@ struct EPUBMapView: View {
         ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .left),
         ArmMenu.Chip(id: EPUBMapView.asideChipID, title: "Set Aside", side: .left),
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
-        // Graph stands above Time Data on the arm.
+        // Graph stands above Graph Data on the arm.
         ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Graph", side: .left),
-        ArmMenu.Chip(id: EPUBMapView.dataChipID, title: "Time Data", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.dataChipID, title: "Graph Data", side: .left),
     ], tracksPlanes: true)   // the flat pose finds the actual desk
 
     /// Only Overlap: the cited wall narrowed to the shared citations.
@@ -718,6 +737,13 @@ struct EPUBMapView: View {
             .onChange(of: model.openDocIDs) {
                 reload()
             }
+            .onChange(of: model.openDocCitations) {
+                citationLines.rebuild(
+                    docCitations: model.openDocCitations,
+                    items: items,
+                    readerPanels: readerPanels,
+                    readingDeskDocID: model.readingDeskDocID)
+            }
             // The pile can change from the Mac (the standing file in
             // the community folder) as well as the arm chips.
             .onChange(of: model.pinnedIDs) {
@@ -736,6 +762,10 @@ struct EPUBMapView: View {
             }
             .onChange(of: model.panelPoses) {
                 readerPanels.applyPoses(model.panelPoses)
+                citationLines.updatePositions(
+                    docCitations: model.openDocCitations,
+                    items: items,
+                    readerPanels: readerPanels)
             }
             .onChange(of: model.readingDeskDocID) {
                 // In or out of the Reading Desk: the panels sweep, the
@@ -744,7 +774,17 @@ struct EPUBMapView: View {
                 readerPanels.hideAll(except: model.readingDeskDocID)
                 if model.readingDeskDocID != nil {
                     conceptLadder.close()
+                    if conceptSpaceMode {
+                        conceptSpaceManager.saveLayout(room: conceptRoom)
+                        conceptSpaceMode = false
+                        conceptSpaceManager.close()
+                    }
                 }
+                citationLines.rebuild(
+                    docCitations: model.openDocCitations,
+                    items: items,
+                    readerPanels: readerPanels,
+                    readingDeskDocID: model.readingDeskDocID)
                 reload()
             }
             .onAppear {
@@ -760,15 +800,22 @@ struct EPUBMapView: View {
                 DragGesture(coordinateSpace: .global)
                     .targetedToAnyEntity()
                     .onChanged { value in
-                        guard let (docID, root) = readerPanels.panel(for: value.entity)
-                        else { return }
-                        let start = readerPanels.dragStart[docID] ?? root.position
-                        readerPanels.dragStart[docID] = start
-                        root.position = start + value.convert(
-                            value.gestureValue.translation3D, from: .local, to: .scene)
+                        if let (docID, root) = readerPanels.panel(for: value.entity) {
+                            let start = readerPanels.dragStart[docID] ?? root.position
+                            readerPanels.dragStart[docID] = start
+                            root.position = start + value.convert(
+                                value.gestureValue.translation3D, from: .local, to: .scene)
+                        } else if let root = conceptSpaceManager.rootDragEntity(for: value.entity) {
+                            let key = root.name
+                            let start = conceptCardDragStarts[key] ?? root.position
+                            conceptCardDragStarts[key] = start
+                            root.position = start + value.convert(
+                                value.gestureValue.translation3D, from: .local, to: .scene)
+                        }
                     }
                     .onEnded { _ in
                         readerPanels.dragStart = [:]
+                        conceptCardDragStarts = [:]
                     })
     }
 
@@ -851,12 +898,13 @@ struct EPUBMapView: View {
                 materialMode: .none)
         }
         view = view.shouldEnableNode { _ in
-            // The Reading Desk: while one document is being read
-            // alone, every card steps away.
-            model.readingDeskDocID == nil
+            // The Reading Desk and Concept Space: while one document is
+            // being read alone, or the concept space is open, the
+            // hallway cards step away.
+            model.readingDeskDocID == nil && !conceptSpaceMode
         }
         view = view.shouldDrawConnectionForNode { item in
-            model.readingDeskDocID == nil && item.isSelected
+            model.readingDeskDocID == nil && !conceptSpaceMode && item.isSelected
         }
         view = view.connectedNodesToNode { item in
             // Lines appear only when two or more articles are selected —
@@ -907,12 +955,14 @@ struct EPUBMapView: View {
             // Only Overlap steps in only when common ground stands.
             armMenu.setChipVisible(Self.onlyOverlapChipID, false)
             conceptLadder.install(in: content)
+            conceptSpaceManager.install(in: content)
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
             floorBandLeft.install(in: content)
             floorBandRight.install(in: content)
             floorDecadeLines.install(in: content)
             readerPanels.install(in: content)
+            citationLines.install(in: content)
             fistGrab.install(
                 in: content,
                 move: { delta in
@@ -1200,11 +1250,39 @@ struct EPUBMapView: View {
             selectConcept(concept)
             return true
         }
+        // A room-scale concept card: single tap selects (shows connections
+        // and document orbit); double-tap (within 0.40 s) opens the detail.
+        if let cid = conceptSpaceManager.conceptID(for: entity) {
+            let now = Date()
+            let isDouble = lastConceptTapID == cid
+                && now.timeIntervalSince(lastConceptTapDate) < 0.40
+            if isDouble {
+                lastConceptTapID = nil
+                if let concept = model.aiPaperConcepts.first(where: { $0.id == cid }) {
+                    conceptSpaceManager.showDetail(for: concept, model: model)
+                }
+            } else {
+                lastConceptTapID = cid
+                lastConceptTapDate = now
+                if let concept = model.aiPaperConcepts.first(where: { $0.id == cid }) {
+                    conceptSpaceManager.selectOrDeselect(cid, concept: concept, model: model)
+                }
+            }
+            return true
+        }
         switch armMenu.chipID(for: entity) {
         case Self.conceptsChipID:
-            // Interatlas's levels: tap Concepts and the reader's
-            // concepts unfold up the forearm; tap again to fold.
-            conceptLadder.toggle(concepts: model.concepts)
+            if conceptSpaceMode {
+                conceptSpaceManager.saveLayout(room: conceptRoom)
+                conceptSpaceMode = false
+                conceptSpaceManager.close()
+                updateSankey()
+            } else {
+                conceptLadder.close()
+                conceptSpaceMode = true
+                conceptSpaceManager.open(concepts: model.aiPaperConcepts, room: conceptRoom)
+                updateSankey()
+            }
             return true
         // Each arm's Time Data curates its own side's graph.
         case Self.dataChipID:
@@ -2007,6 +2085,99 @@ final class ReaderPanels {
         }
         return nil
     }
+
+    /// World-space centre of the panel root for the given document,
+    /// or nil if the panel is not currently installed.
+    func worldPosition(of docID: String) -> SIMD3<Float>? {
+        roots[docID]?.position(relativeTo: nil)
+    }
+}
+
+/// Draws faint lines from each open reader panel to the hallway cards
+/// it cites. Separate from the engine's connection system so the
+/// panel-to-wall direction reads distinctly and needs no selection gate.
+@MainActor
+private final class CitationLineManager {
+    private var root: Entity?
+    private var lineEntities: [String: ModelEntity] = [:]
+
+    func install(in content: RealityViewContent) {
+        let r = Entity()
+        content.add(r)
+        root = r
+    }
+
+    /// Replaces the full line set for the current open docs × cited
+    /// items, placing each line in the same pass as creation.
+    func rebuild(docCitations: [String: Set<String>],
+                 items: [EPUBMapItem],
+                 readerPanels: ReaderPanels,
+                 readingDeskDocID: String?) {
+        guard let root else { return }
+        for line in lineEntities.values { line.removeFromParent() }
+        lineEntities = [:]
+        guard readingDeskDocID == nil else { return }
+        let itemPos = Dictionary(uniqueKeysWithValues: items.compactMap { item in
+            item.position.map { (item.id, $0) }
+        })
+        for (docID, citedIDs) in docCitations {
+            guard let panelPos = readerPanels.worldPosition(of: docID) else { continue }
+            for hallwayID in citedIDs {
+                guard let wallPos = itemPos[hallwayID] else { continue }
+                let key = "\(docID)∥\(hallwayID)"
+                let line = makeLineEntity()
+                positionLine(line, from: panelPos, to: wallPos)
+                root.addChild(line)
+                lineEntities[key] = line
+            }
+        }
+    }
+
+    /// Repositions existing lines without recreating entities — called
+    /// when panel poses change or items update their positions.
+    func updatePositions(docCitations: [String: Set<String>],
+                         items: [EPUBMapItem],
+                         readerPanels: ReaderPanels) {
+        let itemPos = Dictionary(uniqueKeysWithValues: items.compactMap { item in
+            item.position.map { (item.id, $0) }
+        })
+        for (key, line) in lineEntities {
+            let parts = key.components(separatedBy: "∥")
+            guard parts.count == 2,
+                  let panelPos = readerPanels.worldPosition(of: parts[0]),
+                  let wallPos = itemPos[parts[1]] else {
+                line.isEnabled = false
+                continue
+            }
+            positionLine(line, from: panelPos, to: wallPos)
+        }
+    }
+
+    private func makeLineEntity() -> ModelEntity {
+        var mat = UnlitMaterial()
+        mat.color = .init(tint: UIColor(red: 0.55, green: 0.35, blue: 0.85, alpha: 0.22))
+        return ModelEntity(
+            mesh: .generateBox(size: SIMD3<Float>(1.0, 0.003, 0.003)),
+            materials: [mat])
+    }
+
+    private func positionLine(_ entity: ModelEntity,
+                              from a: SIMD3<Float>, to b: SIMD3<Float>) {
+        let diff = b - a
+        let dist = simd_length(diff)
+        guard dist > 0.05 else { entity.isEnabled = false; return }
+        entity.isEnabled = true
+        entity.position = (a + b) / 2
+        entity.scale = SIMD3<Float>(dist, 1, 1)
+        let norm = diff / dist
+        let dot = simd_dot(SIMD3<Float>(1, 0, 0), norm)
+        let cross = simd_cross(SIMD3<Float>(1, 0, 0), norm)
+        let crossLen = simd_length(cross)
+        entity.orientation = crossLen < 1e-6
+            ? simd_quatf(angle: dot < 0 ? Float.pi : 0, axis: SIMD3<Float>(0, 1, 0))
+            : simd_quatf(angle: acos(max(-1, min(1, dot))),
+                         axis: simd_normalize(cross))
+    }
 }
 
 /// The Reading Desk's dress — chosen in Settings, worn by the panel
@@ -2748,6 +2919,356 @@ struct SankeyRibbonView: View {
                     color.opacity(layout == .overlaid ? 0.5 : 0.82)))
             }
         }
+    }
+}
+
+// MARK: - Room-scale Concept Space
+
+/// Manages AI-generated paper concepts as free-floating 3-D cards spread at
+/// head height across the ImmersiveSpace. A single tap shows connection lines
+/// to related concepts and document orbit cards; a double-tap opens a detail
+/// panel. Layout is persisted per named room via SpatialLayoutStore.
+@MainActor
+final class ConceptSpaceManager {
+    private var content: RealityViewContent?
+    private var holder: Entity?
+    private var conceptEntities: [String: Entity] = [:]
+    private var connectionEntities: [Entity] = []
+    private var orbitEntities: [Entity] = []
+    private var detailEntity: Entity?
+    private var highlightEntities: [String: Entity] = [:]
+
+    private(set) var isOpen = false
+    private(set) var selectedConceptID: String? = nil
+
+    static let cardPrefix  = "cs2.card."
+    static let orbitPrefix = "cs2.orbit."
+
+    func install(in content: RealityViewContent) {
+        guard holder == nil else { return }
+        self.content = content
+        let h = Entity()
+        h.name = "cs2.root"
+        h.isEnabled = false
+        content.add(h)
+        holder = h
+    }
+
+    func open(concepts: [MergedConcept], room: String) {
+        guard let holder else { return }
+        for (_, e) in conceptEntities { e.removeFromParent() }
+        conceptEntities = [:]
+        highlightEntities = [:]
+        clearConnections()
+        clearOrbit()
+        hideDetail()
+        selectedConceptID = nil
+
+        let saved = SpatialLayoutStore.load("ConceptSpace-\(room)")
+        let cols = 10
+        let spacingX: Float = 0.50
+        let spacingY: Float = 0.32
+        let totalW = Float(min(concepts.count, cols) - 1) * spacingX
+        let startX = -totalW / 2
+        let startY: Float = 1.70
+        let baseZ: Float = -1.8
+
+        for (i, concept) in concepts.enumerated() {
+            let card = Entity()
+            card.name = Self.cardPrefix + concept.id
+            card.components.set(CollisionComponent(
+                shapes: [.generateBox(size: SIMD3<Float>(0.23, 0.12, 0.015))]))
+            card.components.set(InputTargetComponent())
+            card.components.set(HoverEffectComponent())
+
+            let label = Entity()
+            label.name = "cs2.label." + concept.id
+            label.components.set(ViewAttachmentComponent(
+                rootView: RoomConceptCardView(concept: concept)))
+            label.scale = SIMD3<Float>(repeating: 0.55)
+            card.addChild(label)
+
+            let col = i % cols
+            let row = i / cols
+            let defaultPos = SIMD3<Float>(
+                startX + Float(col) * spacingX,
+                startY - Float(row) * spacingY,
+                baseZ)
+
+            if let sv = saved["c_" + concept.id] {
+                card.position = SIMD3<Float>(Float(sv.x), Float(sv.y), Float(sv.z))
+            } else {
+                card.position = defaultPos
+            }
+
+            holder.addChild(card)
+            conceptEntities[concept.id] = card
+        }
+
+        isOpen = true
+        holder.isEnabled = true
+    }
+
+    func close() {
+        for (_, e) in conceptEntities { e.removeFromParent() }
+        conceptEntities = [:]
+        highlightEntities = [:]
+        clearConnections()
+        clearOrbit()
+        hideDetail()
+        selectedConceptID = nil
+        isOpen = false
+        holder?.isEnabled = false
+    }
+
+    func saveLayout(room: String) {
+        var positions: [String: SIMD3<Double>] = [:]
+        for (id, entity) in conceptEntities {
+            let p = entity.position
+            positions["c_" + id] = SIMD3<Double>(Double(p.x), Double(p.y), Double(p.z))
+        }
+        SpatialLayoutStore.save("ConceptSpace-\(room)", positions)
+    }
+
+    func selectOrDeselect(_ conceptID: String, concept: MergedConcept,
+                          model: VisionModel) {
+        for (_, h) in highlightEntities { h.removeFromParent() }
+        highlightEntities = [:]
+        clearConnections()
+        clearOrbit()
+        hideDetail()
+
+        if selectedConceptID == conceptID {
+            selectedConceptID = nil
+            return
+        }
+        selectedConceptID = conceptID
+
+        guard let holder,
+              let selectedEntity = conceptEntities[conceptID] else { return }
+
+        addHighlight(to: selectedEntity, id: conceptID)
+
+        let fromPos = selectedEntity.position
+        for relatedID in concept.relatedConceptIDs {
+            guard let toEntity = conceptEntities[relatedID] else { continue }
+            let line = makeLine(from: fromPos, to: toEntity.position)
+            holder.addChild(line)
+            connectionEntities.append(line)
+        }
+
+        let docIDs = concept.sourceDocIDs
+        for (i, docID) in docIDs.enumerated() {
+            guard let entry = model.index.byID[docID] else { continue }
+            let angle = 2 * Float.pi * Float(i) / Float(max(docIDs.count, 1))
+            let radius: Float = 0.50
+            let orbitPos = fromPos + SIMD3<Float>(
+                radius * cos(angle), 0, radius * sin(angle))
+
+            let orbitCard = Entity()
+            orbitCard.name = Self.orbitPrefix + docID
+            orbitCard.components.set(CollisionComponent(
+                shapes: [.generateBox(size: SIMD3<Float>(0.18, 0.08, 0.015))]))
+            orbitCard.components.set(InputTargetComponent())
+            orbitCard.components.set(HoverEffectComponent())
+
+            let label = Entity()
+            label.components.set(ViewAttachmentComponent(
+                rootView: RoomDocOrbitCardView(entry: entry)))
+            label.components.set(BillboardComponent())
+            label.scale = SIMD3<Float>(repeating: 0.48)
+            orbitCard.addChild(label)
+            orbitCard.position = orbitPos
+
+            holder.addChild(orbitCard)
+            orbitEntities.append(orbitCard)
+        }
+    }
+
+    func showDetail(for concept: MergedConcept, model: VisionModel) {
+        hideDetail()
+        guard let holder,
+              let cardEntity = conceptEntities[concept.id] else { return }
+        let sourceEntries = concept.sourceDocIDs.compactMap { model.index.byID[$0] }
+        let detail = Entity()
+        detail.name = "cs2.detail." + concept.id
+        detail.components.set(ViewAttachmentComponent(
+            rootView: RoomConceptDetailView(concept: concept,
+                                           sourceEntries: sourceEntries)))
+        detail.components.set(BillboardComponent())
+        detail.scale = SIMD3<Float>(repeating: 0.55)
+        detail.position = cardEntity.position + SIMD3<Float>(0, 0.22, 0)
+        holder.addChild(detail)
+        detailEntity = detail
+    }
+
+    func hideDetail() {
+        detailEntity?.removeFromParent()
+        detailEntity = nil
+    }
+
+    /// Returns the root draggable entity (card or orbit card) that contains
+    /// the given entity, or nil if it is not part of the concept space.
+    func rootDragEntity(for entity: Entity) -> Entity? {
+        guard isOpen else { return nil }
+        var node: Entity? = entity
+        while let n = node {
+            if n.name.hasPrefix(Self.cardPrefix) || n.name.hasPrefix(Self.orbitPrefix) {
+                return n
+            }
+            node = n.parent
+        }
+        return nil
+    }
+
+    /// Returns the concept ID for the tapped entity, or nil.
+    func conceptID(for entity: Entity) -> String? {
+        guard isOpen else { return nil }
+        var node: Entity? = entity
+        while let n = node {
+            if n.name.hasPrefix(Self.cardPrefix) {
+                return String(n.name.dropFirst(Self.cardPrefix.count))
+            }
+            node = n.parent
+        }
+        return nil
+    }
+
+    private func clearConnections() {
+        connectionEntities.forEach { $0.removeFromParent() }
+        connectionEntities = []
+    }
+
+    private func clearOrbit() {
+        orbitEntities.forEach { $0.removeFromParent() }
+        orbitEntities = []
+    }
+
+    private func addHighlight(to card: Entity, id: String) {
+        var mat = UnlitMaterial()
+        mat.color = .init(tint: UIColor.systemPurple.withAlphaComponent(0.18))
+        let highlight = ModelEntity(
+            mesh: .generateBox(size: SIMD3<Float>(0.240, 0.130, 0.005)),
+            materials: [mat])
+        highlight.name = "cs2.highlight." + id
+        highlight.position = SIMD3<Float>(0, 0, -0.010)
+        card.addChild(highlight)
+        highlightEntities[id] = highlight
+    }
+
+    private func makeLine(from: SIMD3<Float>, to: SIMD3<Float>) -> Entity {
+        let diff = to - from
+        let length = simd_length(diff)
+        guard length > 0.01 else { return Entity() }
+        var mat = UnlitMaterial()
+        mat.color = .init(tint: UIColor.systemPurple.withAlphaComponent(0.28))
+        let entity = ModelEntity(
+            mesh: .generateBox(size: SIMD3<Float>(0.004, length, 0.004)),
+            materials: [mat])
+        entity.position = (from + to) / 2
+        let dir = simd_normalize(diff)
+        let up = SIMD3<Float>(0, 1, 0)
+        let dot = simd_dot(up, dir)
+        if abs(dot) < 0.9999 {
+            let axis = simd_normalize(simd_cross(up, dir))
+            entity.orientation = simd_quatf(angle: acos(max(-1, min(1, dot))), axis: axis)
+        } else if dot < 0 {
+            entity.orientation = simd_quatf(angle: Float.pi, axis: SIMD3<Float>(1, 0, 0))
+        }
+        return entity
+    }
+}
+
+// MARK: - Concept Space SwiftUI card views
+
+struct RoomConceptCardView: View {
+    let concept: MergedConcept
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(concept.name)
+                .font(.system(size: 14, weight: .semibold))
+                .lineLimit(2)
+            if !concept.aiDescription.isEmpty {
+                Text(concept.aiDescription)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            HStack(spacing: 4) {
+                Image(systemName: "doc.text").font(.system(size: 9))
+                Text("\(concept.sourceDocIDs.count)").font(.system(size: 9))
+            }
+            .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .frame(width: 180, alignment: .leading)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+struct RoomDocOrbitCardView: View {
+    let entry: IndexEntry
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(entry.doc.title)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(2)
+            Text(entry.doc.displayAuthor)
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(8)
+        .frame(width: 150, alignment: .leading)
+        .background(.thinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.blue.opacity(0.35), lineWidth: 1))
+    }
+}
+
+struct RoomConceptDetailView: View {
+    let concept: MergedConcept
+    let sourceEntries: [IndexEntry]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(concept.name)
+                .font(.title3.weight(.semibold))
+            let description = concept.userDefinition ?? (concept.aiDescription.isEmpty ? nil : concept.aiDescription)
+            if let description {
+                Text(description)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            if !sourceEntries.isEmpty {
+                Divider()
+                Text("Documents (\(sourceEntries.count))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(sourceEntries.prefix(8)) { entry in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(entry.doc.title)
+                            .font(.caption.weight(.medium))
+                            .lineLimit(1)
+                        Text(entry.doc.displayAuthor)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                if sourceEntries.count > 8 {
+                    Text("+\(sourceEntries.count - 8) more")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 260, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 #endif

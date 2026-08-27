@@ -234,3 +234,63 @@ nonisolated enum LibraryScanner {
         return result
     }
 }
+
+/// Derives a library-wide list of merged concepts from every document
+/// in the index, computing co-occurrence relationships between them.
+enum ConceptAggregator {
+
+    /// Builds merged concepts from every library entry. Always called
+    /// from SwiftUI's main-actor context, so @MainActor is appropriate.
+    @MainActor
+    static func aggregate(from entries: [IndexEntry]) -> [MergedConcept] {
+        var byKey: [String: MergedConcept] = [:]
+        // docID → set of concept keys in that document
+        var docConceptKeys: [String: Set<String>] = [:]
+
+        for entry in entries {
+            let doc = entry.doc
+            guard !doc.concepts.isEmpty else { continue }
+            var keys: Set<String> = []
+            for concept in doc.concepts {
+                let key = MergedConcept.key(for: concept.name)
+                guard !key.isEmpty else { continue }
+                keys.insert(key)
+                if byKey[key] == nil {
+                    byKey[key] = MergedConcept(
+                        id: key,
+                        name: concept.name,
+                        aiDescription: concept.description,
+                        userDefinition: concept.userDefinition,
+                        category: concept.tag,
+                        citationIdentifiers: concept.citationIdentifiers,
+                        urls: concept.urls,
+                        sourceDocIDs: [],
+                        relatedConceptIDs: [])
+                }
+                if !byKey[key]!.sourceDocIDs.contains(doc.id) {
+                    byKey[key]!.sourceDocIDs.append(doc.id)
+                }
+                if byKey[key]!.aiDescription.isEmpty, !concept.description.isEmpty {
+                    byKey[key]!.aiDescription = concept.description
+                }
+            }
+            docConceptKeys[doc.id] = keys
+        }
+
+        // Co-occurrence: two concepts are related when they share ≥1 document.
+        for keys in docConceptKeys.values {
+            let keyArray = Array(keys)
+            for key in keyArray {
+                guard byKey[key] != nil else { continue }
+                for other in keyArray where other != key {
+                    if !byKey[key]!.relatedConceptIDs.contains(other) {
+                        byKey[key]!.relatedConceptIDs.append(other)
+                    }
+                }
+            }
+        }
+
+        return byKey.values
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+}

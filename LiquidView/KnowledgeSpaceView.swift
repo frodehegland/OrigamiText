@@ -449,4 +449,281 @@ struct KnowledgeSpaceView: View {
         .frame(width: 420, height: 300)
     }
 }
+
+// MARK: - Concept Space (visionOS)
+
+/// Unified node in the Concept Space — either a concept card or a document
+/// card that orbits the selected concept.
+struct ConceptSpaceNode: Identifiable, Hashable, Sendable {
+    enum Kind: Hashable, Sendable {
+        case concept(MergedConcept)
+        case document(docID: String, forConceptID: String)
+    }
+    let id: String
+    var kind: Kind
+}
+
+/// The Concept Space: all library concepts as draggable 3D cards in a
+/// volume. Single-tap reveals connection lines and document orbit cards;
+/// double-tap opens the full concept sheet. Layout persists per room.
+struct ConceptSpatialView: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    @State private var overrides = ConceptOverrideStore()
+    @State private var selectedConceptID: String?
+    @State private var openedConcept: MergedConcept?
+    @AppStorage("currentConceptRoom") private var currentRoom = "Default"
+
+    private var concepts: [MergedConcept] {
+        var merged = ConceptAggregator.aggregate(from: Array(model.index.byID.values))
+        // Merge AI-extracted paper topics from macOS analysis, read from the shared
+        // _publication-analyses.json in the community folder.
+        var byKey: [String: Int] = Dictionary(uniqueKeysWithValues: merged.enumerated().map { ($1.id, $0) })
+        for (recordID, topics) in model.allPaperTopics {
+            guard let entry = model.index.byID[recordID] else { continue }
+            for topic in topics where !topic.isEmpty {
+                let key = MergedConcept.key(for: topic)
+                if let idx = byKey[key] {
+                    if !merged[idx].sourceDocIDs.contains(entry.doc.id) {
+                        merged[idx].sourceDocIDs.append(entry.doc.id)
+                    }
+                } else {
+                    let concept = MergedConcept(
+                        id: key,
+                        name: MergedConcept.displayName(forKey: key),
+                        aiDescription: "",
+                        userDefinition: nil,
+                        category: "AI Topics",
+                        citationIdentifiers: [],
+                        urls: [],
+                        sourceDocIDs: [entry.doc.id],
+                        relatedConceptIDs: [])
+                    byKey[key] = merged.count
+                    merged.append(concept)
+                }
+            }
+        }
+        return merged.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var items: [ConceptSpaceNode] {
+        var nodes = concepts.map { ConceptSpaceNode(id: "c_" + $0.id, kind: .concept($0)) }
+        if let selID = selectedConceptID,
+           let concept = concepts.first(where: { $0.id == selID }) {
+            for docID in concept.sourceDocIDs {
+                nodes.append(ConceptSpaceNode(id: "d_\(docID)_\(selID)",
+                                              kind: .document(docID: docID, forConceptID: selID)))
+            }
+        }
+        return nodes
+    }
+
+    private var connections: [SpatialCardConnection] {
+        guard let selID = selectedConceptID,
+              let concept = concepts.first(where: { $0.id == selID })
+        else { return [] }
+        var result: [SpatialCardConnection] = []
+        let conceptIDs = Set(concepts.map(\.id))
+        for relatedID in concept.relatedConceptIDs where conceptIDs.contains(relatedID) {
+            result.append(SpatialCardConnection(
+                from: "c_" + selID, to: "c_" + relatedID,
+                fromColor: .purple.opacity(0.55), toColor: .purple.opacity(0.28)))
+        }
+        for docID in concept.sourceDocIDs {
+            result.append(SpatialCardConnection(
+                from: "c_" + selID, to: "d_\(docID)_\(selID)",
+                fromColor: .blue.opacity(0.45), toColor: .blue.opacity(0.22)))
+        }
+        return result
+    }
+
+    private var layoutName: String { "ConceptSpace-\(currentRoom)" }
+
+    var body: some View {
+        SpatialCardPlane(
+            layoutName: layoutName,
+            items: items,
+            countNoun: "concepts",
+            seed: .grid(spacing: CGSize(width: 180, height: 120)),
+            connections: connections,
+            onOpen: { node in
+                switch node.kind {
+                case .concept(let c): openedConcept = c
+                case .document(let docID, _): openWindow(id: "reader", value: docID)
+                }
+            },
+            onSelect: { node in
+                if case .concept(let c) = node.kind {
+                    selectedConceptID = selectedConceptID == c.id ? nil : c.id
+                }
+            },
+            cardFace: { node in conceptCard(for: node) },
+            extraOrnament: { ConceptRoomPicker(currentRoom: $currentRoom) }
+        )
+        .sheet(item: $openedConcept) { c in
+            ConceptInfoSheet(concept: c, overrides: overrides)
+                .environment(model)
+        }
+        .overlay {
+            if concepts.isEmpty {
+                ContentUnavailableView {
+                    Label("No Concepts", systemImage: "sparkles.rectangle.stack")
+                } description: {
+                    Text("AI-extracted concepts from your EPUBs appear here. Open a journal and run AI Analyse.")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func conceptCard(for node: ConceptSpaceNode) -> some View {
+        switch node.kind {
+        case .concept(let c):
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 5) {
+                    Image(systemName: "lightbulb.fill").foregroundStyle(.yellow).font(.system(size: 13))
+                    Text(c.name).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                }
+                if let cat = overrides.category(for: c.id) ?? c.category {
+                    Text(cat).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                if !c.aiDescription.isEmpty {
+                    Text(c.aiDescription)
+                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(3)
+                }
+                Spacer(minLength: 0)
+                HStack(spacing: 3) {
+                    Image(systemName: "doc.text").font(.system(size: 10))
+                    Text("\(c.sourceDocIDs.count)").font(.system(size: 10))
+                }
+                .foregroundStyle(selectedConceptID == c.id ? Color.purple.opacity(0.8) : Color.secondary)
+            }
+            .padding(10)
+            .frame(width: 160, height: 100)
+            .background(selectedConceptID == c.id ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.thinMaterial))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(selectedConceptID == c.id
+                                  ? Color.purple.opacity(0.65) : Color.clear, lineWidth: 2))
+
+        case .document(let docID, _):
+            if let entry = model.index.byID[docID] {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(entry.doc.title)
+                        .font(.system(size: 12, weight: .medium)).lineLimit(2)
+                    Text(entry.doc.displayAuthor)
+                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .padding(8)
+                .frame(width: 140, height: 72)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.blue.opacity(0.4), lineWidth: 1))
+            } else {
+                Color.clear.frame(width: 140, height: 72)
+            }
+        }
+    }
+}
+
+/// Full concept detail sheet, shown on double-tap in the Concept Space.
+struct ConceptInfoSheet: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let concept: MergedConcept
+    let overrides: ConceptOverrideStore
+    @State private var definitionText = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let cat = overrides.category(for: concept.id) ?? concept.category {
+                    Section("Category") { Label(cat, systemImage: "tag") }
+                }
+                if !concept.aiDescription.isEmpty {
+                    Section("AI Description") { Text(concept.aiDescription) }
+                }
+                Section("Your Definition") {
+                    TextField("Add your definition…", text: $definitionText, axis: .vertical)
+                        .lineLimit(3...)
+                        .onChange(of: definitionText) {
+                            overrides.set(definition: definitionText, for: concept.id)
+                        }
+                }
+                if !concept.sourceDocIDs.isEmpty {
+                    Section("Documents (\(concept.sourceDocIDs.count))") {
+                        ForEach(concept.sourceDocIDs, id: \.self) { docID in
+                            if let entry = model.index.byID[docID] {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.doc.title)
+                                        Text(entry.doc.displayAuthor)
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Button("Open in Hallway") {
+                                        model.openDocIDs.insert(docID)
+                                        model.readingDeskDocID = docID
+                                        dismiss()
+                                    }
+                                    .buttonStyle(.bordered).controlSize(.small)
+                                }
+                            }
+                        }
+                    }
+                }
+                if !concept.relatedConceptIDs.isEmpty {
+                    Section("Related Concepts") {
+                        ForEach(concept.relatedConceptIDs.prefix(12), id: \.self) { key in
+                            Label(MergedConcept.displayName(forKey: key), systemImage: "lightbulb")
+                        }
+                    }
+                }
+            }
+            .navigationTitle(concept.name)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+            }
+        }
+        .frame(minWidth: 440, minHeight: 500)
+        .onAppear { definitionText = overrides.definition(for: concept.id) ?? "" }
+    }
+}
+
+/// Location picker in the Concept Space ornament: saves layouts per named
+/// room so a different arrangement can live at work, home, or a coffee shop.
+struct ConceptRoomPicker: View {
+    @Binding var currentRoom: String
+    @AppStorage("conceptSpaceRooms") private var roomsRaw = "Default"
+    @State private var addingRoom = false
+    @State private var newRoomName = ""
+
+    private var rooms: [String] {
+        roomsRaw.components(separatedBy: "|").filter { !$0.isEmpty }
+    }
+
+    var body: some View {
+        Menu("📍 \(currentRoom)") {
+            ForEach(rooms, id: \.self) { room in
+                Button(room) { currentRoom = room }
+            }
+            Divider()
+            Button("Add Location…") { addingRoom = true }
+        }
+        .menuStyle(.button)
+        .alert("New Location", isPresented: $addingRoom) {
+            TextField("Location name", text: $newRoomName)
+            Button("Add") {
+                let name = newRoomName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty, !rooms.contains(name) else { return }
+                roomsRaw = (rooms + [name]).joined(separator: "|")
+                currentRoom = name
+                newRoomName = ""
+            }
+            Button("Cancel", role: .cancel) { newRoomName = "" }
+        }
+    }
+}
 #endif

@@ -195,8 +195,7 @@ struct ContentView: View {
         HStack(spacing: 0) {
             if showsPeekSidebar || peekIsPinned {
                 HStack(spacing: 0) {
-                    peekSidebarList
-                        .scrollContentBackground(.hidden)
+                    SidebarView()
                         .frame(width: 220)
                     if (showsPeekList || peekIsPinned) && peekSelectionHasList {
                         Divider()
@@ -230,48 +229,10 @@ struct ContentView: View {
         .onChange(of: model.current?.doc.id) { dismissPeek() }
         .onChange(of: model.draftEditor?.docID) { dismissPeek() }
         .onChange(of: model.selectedArchivedID) { dismissPeek() }
-    }
-
-    /// The peek's own sidebar: the same places as the split-view sidebar,
-    /// but as explicit buttons — List selection swallows repeat clicks, and
-    /// here every click must answer by unfolding the contents column.
-    private var peekSidebarList: some View {
-        List {
-            ForEach(SidebarCatalog.sections, id: \.title) { section in
-                if section.title.isEmpty {
-                    // The library's "All" stands alone at the top.
-                    Section {
-                        peekRows(of: section)
-                    }
-                } else {
-                    Section(section.title) {
-                        peekRows(of: section)
-                    }
-                }
-            }
-        }
-    }
-
-    private func peekRows(of section: (title: String, places: [SidebarPlace])) -> some View {
-        let places = section.title == "Views"
-            ? model.shownPlaces(of: section.places)
-            : section.places
-        return ForEach(places) { place in
-            Button {
-                model.sidebarSelection = place.item
-                revealPeekListIfAvailable()
-            } label: {
-                Label(place.name, systemImage: place.systemImage)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .listRowBackground(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(model.sidebarSelection == place.item
-                          ? AnyShapeStyle(.selection) : AnyShapeStyle(.clear))
-            )
-        }
+        // Reveal the list pane when the user picks a new place, or when the
+        // peek first opens (so any existing selection shows its list immediately).
+        .onChange(of: model.sidebarSelection) { revealPeekListIfAvailable() }
+        .onChange(of: showsPeekSidebar) { if showsPeekSidebar { revealPeekListIfAvailable() } }
     }
 
     /// Whole-library views have no contents list to unfold; everything
@@ -393,6 +354,8 @@ struct ContentView: View {
             ConceptListView(name: name)
         } else if model.sidebarSelection == .concepts {
             ConceptsListView()
+        } else if model.sidebarSelection == .conceptSpace {
+            ConceptSpaceView()
         } else if model.sidebarSelection == .timeFlows {
             TimeFlowsListView()
         } else if model.sidebarSelection == .timelines {

@@ -308,6 +308,9 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         let id: String
         var name: String
         var description: String = ""
+        /// User-written definition — separate from the AI description,
+        /// compatible with Author's Defined Concept definition field.
+        var userDefinition: String? = nil
         var tag: String? = nil
         /// Citation identifiers this concept rests on — citation node
         /// ids or origami addresses.
@@ -664,6 +667,40 @@ extension LiquidDoc {
         var name: String?
         var positions: [RawPosition]?
         var id: String?
+    }
+}
+
+/// A concept aggregated across every document in the library — the same
+/// name merges into one entry so the Concept Space shows one card per idea
+/// regardless of how many documents discuss it.
+///
+/// Compatible in field shape with Author's Defined Concept: name,
+/// description (AI), userDefinition (user's own words), category (tag).
+struct MergedConcept: Identifiable, Hashable, Sendable {
+    /// Stable key: name lowercased and trimmed — used as the ID.
+    let id: String
+    var name: String
+    /// Best AI description found across source documents.
+    var aiDescription: String
+    /// User-written definition, persisted in ConceptOverrideStore.
+    var userDefinition: String?
+    /// Category: user override first, then the source tag.
+    var category: String?
+    var citationIdentifiers: [String]
+    var urls: [String]
+    /// The document IDs that contain this concept.
+    var sourceDocIDs: [String]
+    /// Keys of concepts that co-appear in ≥1 shared document.
+    var relatedConceptIDs: [String]
+
+    static func key(for name: String) -> String {
+        name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Display name for a related-concept key.
+    static func displayName(forKey key: String) -> String {
+        guard let first = key.first else { return key }
+        return first.uppercased() + key.dropFirst()
     }
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// A remembered EPUB in the reader's library: enough to list it (title,
 /// author, date) and to reopen its rendered page (the unpacked `folder`
@@ -27,6 +28,11 @@ struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
     /// one. "" means the package was checked and names none; nil means
     /// a record written before venues were kept (not yet checked).
     var publication: String? = nil
+
+    /// The Digital Object Identifier the package declares, normalised to
+    /// bare form (e.g. "10.1145/3290605.3300526"). nil for records written
+    /// before DOI tracking was added or for books that carry none.
+    var doi: String? = nil
 
     /// The authors to list the book under: the full list when known,
     /// else the single author of record.
@@ -130,5 +136,53 @@ nonisolated enum EPUBStanding {
             try? data.write(to: folder.appendingPathComponent(fileName), options: .atomic)
         }
         return state.modified
+    }
+}
+
+/// Persists user-written definitions and category overrides for merged
+/// concepts. Stored in Application Support (personal, not community folder)
+/// so the user's annotations are never overwritten by shared library state.
+@Observable
+final class ConceptOverrideStore {
+    private struct Entry: Codable {
+        var definition: String?
+        var category: String?
+    }
+    private var entries: [String: Entry] = [:]
+    private static let fileName = "origami-concept-overrides.json"
+
+    private static var fileURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)
+            .first ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent(fileName)
+    }
+
+    init() {
+        if let data = try? Data(contentsOf: Self.fileURL),
+           let loaded = try? JSONDecoder().decode([String: Entry].self, from: data) {
+            entries = loaded
+        }
+    }
+
+    func definition(for id: String) -> String? { entries[id]?.definition }
+    func category(for id: String) -> String? { entries[id]?.category }
+
+    func set(definition: String?, for id: String) {
+        entries[id, default: Entry()].definition = definition?.isEmpty == true ? nil : definition
+        persist()
+    }
+
+    func set(category: String?, for id: String) {
+        entries[id, default: Entry()].category = category?.isEmpty == true ? nil : category
+        persist()
+    }
+
+    private func persist() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(entries) {
+            try? data.write(to: Self.fileURL, options: .atomic)
+        }
     }
 }

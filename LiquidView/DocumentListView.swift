@@ -675,25 +675,275 @@ struct ConceptsListView: View {
         .overlay {
             if model.viewConcepts.isEmpty {
                 ContentUnavailableView {
-                    Label("No Concepts Yet", systemImage: "lightbulb")
+                    Label("No Tracked Concepts Yet", systemImage: "lightbulb")
                 } description: {
-                    Text("Add concepts with “Add Concept” in the sidebar. Pulling concepts out of the EPUBs automatically is a later step.")
+                    Text("Add concepts with \u{201C}Add Concept\u{201D} in the sidebar, or open the Concept Space to explore all AI-extracted concepts.")
                 }
             }
         }
     }
 }
 
-/// Views ▸ a single concept. Where the documents that contain this concept
-/// will gather once concept extraction is added.
+/// Builds the merged concept list for the macOS Concept Space: Visual-Meta
+/// concepts from the library plus AI-extracted paper topics from analysis.
+private func mergedConcepts(model: AppModel) -> [MergedConcept] {
+    var merged = ConceptAggregator.aggregate(from: Array(model.index.byID.values))
+    var byKey: [String: Int] = Dictionary(uniqueKeysWithValues: merged.enumerated().map { ($1.id, $0) })
+    for (_, analysis) in model.publicationAnalyses {
+        for (recordID, topics) in analysis.paperTopics {
+            guard let entry = model.index.byID[recordID] else { continue }
+            for topic in topics where !topic.isEmpty {
+                let key = MergedConcept.key(for: topic)
+                if let idx = byKey[key] {
+                    if !merged[idx].sourceDocIDs.contains(entry.doc.id) {
+                        merged[idx].sourceDocIDs.append(entry.doc.id)
+                    }
+                } else {
+                    let concept = MergedConcept(
+                        id: key,
+                        name: MergedConcept.displayName(forKey: key),
+                        aiDescription: "",
+                        userDefinition: nil,
+                        category: "AI Topics",
+                        citationIdentifiers: [],
+                        urls: [],
+                        sourceDocIDs: [entry.doc.id],
+                        relatedConceptIDs: [])
+                    byKey[key] = merged.count
+                    merged.append(concept)
+                }
+            }
+        }
+    }
+    return merged.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+}
+
+/// Views ▸ Tracked Concepts ▸ one concept: documents that discuss it.
 struct ConceptListView: View {
+    @Environment(AppModel.self) private var model
     let name: String
 
+    private var concepts: [MergedConcept] { mergedConcepts(model: model) }
+
+    private var sourceDocs: [IndexEntry] {
+        let key = MergedConcept.key(for: name)
+        guard let merged = concepts.first(where: { $0.id == key }) else { return [] }
+        return merged.sourceDocIDs.compactMap { model.index.byID[$0] }
+    }
+
     var body: some View {
-        ContentUnavailableView {
-            Label(name, systemImage: "tag")
-        } description: {
-            Text("Documents containing \(name) will gather here once concepts are pulled from the EPUBs.")
+        Group {
+            if sourceDocs.isEmpty {
+                ContentUnavailableView {
+                    Label(name, systemImage: "lightbulb")
+                } description: {
+                    Text("No documents in the library discuss this concept yet.")
+                }
+            } else {
+                List {
+                    ForEach(sourceDocs) { entry in
+                        DocumentRow(entry: entry)
+                            .onTapGesture(count: 2) { model.openEPUBRecord(withID: entry.doc.id) }
+                    }
+                }
+            }
+        }
+        .navigationTitle(name)
+    }
+}
+
+// MARK: - Concept Space (macOS)
+
+/// The library-wide Concept Space: all AI-extracted concepts merged by
+/// name, related by co-occurrence, with user-editable definitions.
+struct ConceptSpaceView: View {
+    @Environment(AppModel.self) private var model
+    @State private var overrides = ConceptOverrideStore()
+    @State private var selectedID: String?
+    @State private var searchText = ""
+    @State private var editingDefinition = false
+    @State private var definitionText = ""
+
+    private var concepts: [MergedConcept] { mergedConcepts(model: model) }
+
+    private var filtered: [MergedConcept] {
+        guard !searchText.isEmpty else { return concepts }
+        return concepts.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private var selected: MergedConcept? {
+        selectedID.flatMap { id in concepts.first { $0.id == id } }
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            List(filtered, selection: $selectedID) { c in
+                HStack(spacing: 8) {
+                    Image(systemName: "lightbulb")
+                        .foregroundStyle(.yellow.opacity(0.85))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(c.name).font(.body)
+                        if let cat = overrides.category(for: c.id) ?? c.category {
+                            Text(cat).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Text("\(c.sourceDocIDs.count)")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+                .tag(c.id)
+            }
+            .searchable(text: $searchText, prompt: "Filter concepts")
+            .navigationTitle("Concept Space")
+            .overlay {
+                if concepts.isEmpty {
+                    ContentUnavailableView {
+                        Label("No Concepts", systemImage: "sparkles.rectangle.stack")
+                    } description: {
+                        Text("AI-extracted concepts from your EPUBs will appear here. Open a document and run AI Analyse to populate the space.")
+                    }
+                }
+            }
+        } detail: {
+            if let c = selected {
+                conceptDetail(c)
+            } else {
+                ContentUnavailableView("Select a Concept",
+                                       systemImage: "lightbulb",
+                                       description: Text("Choose a concept from the list to see its documents, related ideas, and add your own definition."))
+            }
+        }
+        .sheet(isPresented: $editingDefinition) {
+            if let c = selected {
+                definitionEditor(for: c)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func conceptDetail(_ c: MergedConcept) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(spacing: 8) {
+                    Image(systemName: "lightbulb.fill").foregroundStyle(.yellow).font(.title2)
+                    Text(c.name).font(.title2).fontWeight(.semibold)
+                    Spacer()
+                    if let cat = overrides.category(for: c.id) ?? c.category {
+                        Label(cat, systemImage: "tag").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                if !c.aiDescription.isEmpty {
+                    groupBox("AI Description") { Text(c.aiDescription) }
+                }
+
+                groupBox("Your Definition") {
+                    let def = overrides.definition(for: c.id) ?? ""
+                    Group {
+                        if def.isEmpty {
+                            Text("Click to add your definition…").foregroundStyle(.tertiary).italic()
+                        } else {
+                            Text(def)
+                        }
+                    }
+                    .onTapGesture {
+                        definitionText = def
+                        editingDefinition = true
+                    }
+                }
+
+                if !c.sourceDocIDs.isEmpty {
+                    groupBox("Documents (\(c.sourceDocIDs.count))") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(c.sourceDocIDs, id: \.self) { docID in
+                                if let entry = model.index.byID[docID] {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(entry.doc.title).font(.body)
+                                            Text(entry.doc.displayAuthor)
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Button("Open") {
+                                            model.openEPUBRecord(withID: docID)
+                                        }
+                                        .buttonStyle(.bordered).controlSize(.small)
+                                    }
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !c.relatedConceptIDs.isEmpty {
+                    groupBox("Related Concepts") {
+                        FlowLayout(spacing: 6) {
+                            ForEach(c.relatedConceptIDs.prefix(20), id: \.self) { key in
+                                Button(MergedConcept.displayName(forKey: key)) {
+                                    selectedID = key
+                                }
+                                .buttonStyle(.bordered).controlSize(.small)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding()
+        }
+        .navigationTitle(c.name)
+    }
+
+    @ViewBuilder
+    private func groupBox<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption).foregroundStyle(.secondary).textCase(.uppercase)
+            content()
+        }
+    }
+
+    @ViewBuilder
+    private func definitionEditor(for c: MergedConcept) -> some View {
+        VStack(spacing: 16) {
+            Text("Your Definition for \u{201C}\(c.name)\u{201D}").font(.headline)
+            TextEditor(text: $definitionText)
+                .frame(height: 120)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+            HStack {
+                Button("Cancel") { editingDefinition = false }
+                Spacer()
+                Button("Save") {
+                    overrides.set(definition: definitionText, for: c.id)
+                    editingDefinition = false
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding()
+        .frame(width: 420)
+    }
+}
+
+/// Simple wrapping layout for related-concept chips.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0
+        for sub in subviews {
+            let s = sub.sizeThatFits(.unspecified)
+            if x + s.width > maxWidth && x > 0 { x = 0; y += rowH + spacing; rowH = 0 }
+            rowH = max(rowH, s.height); x += s.width + spacing
+        }
+        return CGSize(width: maxWidth, height: y + rowH)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowH: CGFloat = 0
+        for sub in subviews {
+            let s = sub.sizeThatFits(.unspecified)
+            if x + s.width > bounds.maxX && x > bounds.minX { x = bounds.minX; y += rowH + spacing; rowH = 0 }
+            sub.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
+            rowH = max(rowH, s.height); x += s.width + spacing
         }
     }
 }

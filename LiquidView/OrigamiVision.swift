@@ -41,7 +41,7 @@ struct OrigamiVisionApp: App {
         }
         .defaultSize(width: 460, height: 520)
 
-        // The graphs' data, opened from either arm's Time Data chip —
+        // The graphs' data, opened from either arm's Graph Data chip —
         // each arm curates its own side's graph: the series standing
         // on the corridor's Z axis, and the Ask-for-Data field that
         // brings in more — Liquid Information's + dialog, here.
@@ -66,6 +66,15 @@ struct OrigamiVisionApp: App {
         // 2D arrangement whose cards the hand can pull and push in Z.
         WindowGroup(id: "space") {
             KnowledgeSpaceView()
+                .environment(model)
+        }
+        .windowStyle(.volumetric)
+        .defaultSize(width: 1.6, height: 1.1, depth: 0.7, in: .meters)
+
+        // The Concept Space: library-wide concepts as draggable 3D cards —
+        // connections on tap, full detail on double-tap, layout per room.
+        WindowGroup(id: "concepts") {
+            ConceptSpatialView()
                 .environment(model)
         }
         .windowStyle(.volumetric)
@@ -142,6 +151,7 @@ final class VisionModel {
             UserDefaults.standard.set(bookmark, forKey: Self.bookmarkKey)
         }
         index.setFolder(url)
+        loadAnalyses(from: url)
         scanFolderForEPUBs()
     }
 
@@ -151,7 +161,32 @@ final class VisionModel {
         guard let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &stale),
               url.startAccessingSecurityScopedResource() else { return }
         index.setFolder(url)
+        loadAnalyses(from: url)
         scanFolderForEPUBs()
+    }
+
+    private func loadAnalyses(from folder: URL) {
+        let file = VisionAnalysesFile.read(from: folder)
+        allPaperTopics = file.analyses.values.reduce(into: [:]) { result, pub in
+            result.merge(pub.paperTopics) { existing, _ in existing }
+        }
+    }
+
+    private struct VisionAnalysesFile: Codable {
+        var analyses: [String: VisionPubAnalysis] = [:]
+        static let filename = "_publication-analyses.json"
+
+        struct VisionPubAnalysis: Codable {
+            var paperTopics: [String: [String]] = [:]
+        }
+
+        static func read(from folder: URL) -> VisionAnalysesFile {
+            let url = folder.appendingPathComponent(filename)
+            guard let data = try? Data(contentsOf: url),
+                  let file = try? JSONDecoder().decode(VisionAnalysesFile.self, from: data)
+            else { return VisionAnalysesFile() }
+            return file
+        }
     }
 
     // MARK: - The EPUB shelf
@@ -212,6 +247,120 @@ final class VisionModel {
     /// Each panel's pose: standing, tilted like a drafting board, or
     /// flat on the reading surface — cycled from the panel's toolbar.
     var panelPoses: [String: PanelPose] = [:]
+
+    /// Maps each open document to the set of hallway item IDs it cites —
+    /// populated as each reader panel opens, cleared when it closes.
+    var openDocCitations: [String: Set<String>] = [:]
+
+    /// Flat map from EPUB record id → AI-generated topic keywords, read from
+    /// `_publication-analyses.json` when the folder is set. Populated by macOS
+    /// AI Analyse; visionOS reads but never writes it.
+    private(set) var allPaperTopics: [String: [String]] = [:]
+
+    /// All concept names for the Concepts ladder: manually tracked concepts
+    /// plus unique topic keywords from macOS AI Analyse, sorted alphabetically.
+    var allConceptNames: [String] {
+        var names = Set(concepts)
+        for topics in allPaperTopics.values {
+            names.formUnion(topics.filter { !$0.isEmpty })
+        }
+        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// All merged concepts: glossary entries from every indexed document
+    /// plus AI paper topics from macOS Analyse, sorted alphabetically.
+    /// Used by the Concept Space on visionOS.
+    @MainActor
+    var allMergedConcepts: [MergedConcept] {
+        var merged = ConceptAggregator.aggregate(from: Array(index.byID.values))
+        var byKey: [String: Int] = Dictionary(uniqueKeysWithValues: merged.enumerated().map { ($1.id, $0) })
+        for (recordID, topics) in allPaperTopics {
+            guard let entry = index.byID[recordID] else { continue }
+            for topic in topics where !topic.isEmpty {
+                let key = MergedConcept.key(for: topic)
+                if let idx = byKey[key] {
+                    if !merged[idx].sourceDocIDs.contains(entry.doc.id) {
+                        merged[idx].sourceDocIDs.append(entry.doc.id)
+                    }
+                } else {
+                    let concept = MergedConcept(
+                        id: key,
+                        name: MergedConcept.displayName(forKey: key),
+                        aiDescription: "", userDefinition: nil, category: "AI Topics",
+                        citationIdentifiers: [], urls: [],
+                        sourceDocIDs: [entry.doc.id], relatedConceptIDs: [])
+                    byKey[key] = merged.count
+                    merged.append(concept)
+                }
+            }
+        }
+        return merged.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Concepts built purely from macOS AI Analyse — no glossary entries, no
+    /// manually defined concepts. Used by the room-scale Concept Space on
+    /// visionOS. Related concepts are those sharing at least one source
+    /// document (co-occurrence).
+    @MainActor
+    var aiPaperConcepts: [MergedConcept] {
+        var merged: [MergedConcept] = []
+        var byKey: [String: Int] = [:]
+        var docConceptKeys: [String: Set<String>] = [:]
+        for (recordID, topics) in allPaperTopics {
+            guard let entry = index.byID[recordID] else { continue }
+            let docID = entry.doc.id
+            var keys: Set<String> = []
+            for topic in topics where !topic.isEmpty {
+                let key = MergedConcept.key(for: topic)
+                keys.insert(key)
+                if let idx = byKey[key] {
+                    if !merged[idx].sourceDocIDs.contains(docID) {
+                        merged[idx].sourceDocIDs.append(docID)
+                    }
+                } else {
+                    byKey[key] = merged.count
+                    merged.append(MergedConcept(
+                        id: key,
+                        name: MergedConcept.displayName(forKey: key),
+                        aiDescription: "", userDefinition: nil, category: "AI Topics",
+                        citationIdentifiers: [], urls: [],
+                        sourceDocIDs: [docID], relatedConceptIDs: []))
+                }
+            }
+            if !keys.isEmpty { docConceptKeys[docID] = keys }
+        }
+        // Related = co-occurrence in the same document.
+        for keys in docConceptKeys.values {
+            let keyArray = Array(keys)
+            for key in keyArray {
+                guard let idx = byKey[key] else { continue }
+                for other in keyArray where other != key {
+                    if !merged[idx].relatedConceptIDs.contains(other) {
+                        merged[idx].relatedConceptIDs.append(other)
+                    }
+                }
+            }
+        }
+        return merged.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Resolves an open document's reference list to the "cited:key"
+    /// hallway IDs that should receive a citation line. The key formula
+    /// mirrors CitationGraph.key so IDs match across the hallway build.
+    func populateCitations(forDocID docID: String) {
+        guard let doc = index.byID[docID]?.doc else { return }
+        var ids: Set<String> = []
+        for reference in doc.references {
+            guard let record = BibTeXRecord.records(in: reference.bibtex).first else { continue }
+            let title = !record.title.isEmpty ? record.title : (reference.citedAs ?? "")
+            guard !title.isEmpty else { continue }
+            let author = record.fields["author"] ?? ""
+            let key = (title + "|" + author).lowercased()
+                .replacingOccurrences(of: " ", with: "")
+            ids.insert("cited:" + key)
+        }
+        openDocCitations[docID] = ids
+    }
 
     func pose(of docID: String) -> PanelPose {
         panelPoses[docID] ?? .upright
@@ -699,6 +848,12 @@ struct VisionLibraryView: View {
                         openWindow(id: "space")
                     } label: {
                         Label("Documents", systemImage: "doc.text")
+                    }
+                    .disabled(model.index.folderURL == nil)
+                    Button {
+                        openWindow(id: "concepts")
+                    } label: {
+                        Label("Concepts", systemImage: "sparkles.rectangle.stack")
                     }
                     .disabled(model.index.folderURL == nil)
                     Button {
@@ -1405,8 +1560,14 @@ struct VisionReaderView: View {
             })
             // While this article is open, its card leaves the Map; the
             // card returns the moment the window closes.
-            .onAppear { model.openDocIDs.insert(docID) }
-            .onDisappear { model.openDocIDs.remove(docID) }
+            .onAppear {
+                model.openDocIDs.insert(docID)
+                model.populateCitations(forDocID: docID)
+            }
+            .onDisappear {
+                model.openDocIDs.remove(docID)
+                model.openDocCitations.removeValue(forKey: docID)
+            }
         } else {
             ContentUnavailableView("Document Not Available", systemImage: "doc",
                                    description: Text("This document is not in the library folder."))
@@ -1665,9 +1826,23 @@ struct VisionReaderView: View {
                             .foregroundStyle(.red)
                     }
                 } else {
-                    Label("Apple Intelligence is not available on this device.",
-                          systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
+                    let macTopics = model.allPaperTopics[doc.id] ?? []
+                    if !macTopics.isEmpty {
+                        Text("Topics from macOS Analysis")
+                            .font(.headline)
+                        Text(macTopics.joined(separator: " · "))
+                            .font(.body)
+                        Text("Summarization requires Apple Intelligence, which is not available on this device. These topics were extracted on macOS.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Label("Apple Intelligence is not available on this device.",
+                              systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Text("Run AI Analyse on macOS to generate topics that sync here automatically.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .frame(maxWidth: 640, alignment: .leading)

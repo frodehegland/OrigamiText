@@ -3563,7 +3563,7 @@ struct CitationCardSheet: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 480, maxWidth: 680)
+        .frame(minWidth: 576, maxWidth: 816)
         // What the package left out, the services fill in: the cache
         // answers free; the network is asked only when the record
         // carries no abstract of its own (Settings ▸ Reading turns
@@ -4493,7 +4493,7 @@ struct OrigamiAssetView: View {
                 }
             }
             .padding(14)
-            .frame(minWidth: 260, maxWidth: 420, alignment: .leading)
+            .frame(minWidth: 312, maxWidth: 504, alignment: .leading)
         }
     }
 }

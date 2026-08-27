@@ -139,7 +139,7 @@ struct SidebarView: View {
         switch item {
         case .epubsTopOfPile, .epubsTimeline, .epubsAlphabetical,
              .epubJournals, .myEPUBs, .authors, .annotations,
-             .people, .concepts:
+             .people, .concepts, .conceptSpace:
             true
         case .acquisitions:
             !model.acquisitions.isEmpty
@@ -265,7 +265,10 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
 
-            Label("Concepts", systemImage: "lightbulb")
+            Label("Concept Space", systemImage: "sparkles.rectangle.stack")
+                .tag(SidebarItem.conceptSpace)
+
+            Label("Tracked Concepts", systemImage: "lightbulb")
                 .badge(model.viewConcepts.count)
                 .tag(SidebarItem.concepts)
             ForEach(model.viewConcepts, id: \.self) { name in
@@ -458,13 +461,13 @@ struct SidebarView: View {
                 } else {
                     Text(isAnalysing
                          ? "Analysing\u{2026}"
-                         : "Tap \u{201C}AI Analyse\u{201D} to extract topics")
+                         : "Tap \u{201C}AI Analyse\u{201D} to extract concepts")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .italic()
                 }
             } label: {
-                Label("Topics", systemImage: "tag")
+                Label("Concepts", systemImage: "tag")
                     .font(.caption)
             }
 

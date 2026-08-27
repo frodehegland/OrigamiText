@@ -51,6 +51,9 @@ nonisolated enum OrigamiEPUBImporter {
         /// carries one — the receiving library may keep it, so
         /// citations to the book resolve wherever it arrives.
         let origamiID: String?
+        /// Bare DOI (e.g. "10.1145/3290605.3300526"), when the package
+        /// declares one — used to match the book against acquisition wishes.
+        var doi: String? = nil
         let body: [LiquidDoc.Paragraph]
         var links: [LiquidDoc.Link] = []
         var concepts: [LiquidDoc.Concept] = []
@@ -383,6 +386,7 @@ nonisolated enum OrigamiEPUBImporter {
             .compactMap { document?[$0] as? String }
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty }
+        let doiFromMeta = (document?["doi"] as? String).flatMap(normalizedDOI)
         return ImportResult(
             title: document?["title"] as? String ?? title ?? "Untitled",
             author: metaAuthors.first ?? creator,
@@ -391,6 +395,7 @@ nonisolated enum OrigamiEPUBImporter {
             date: document?["date"] as? String ?? date,
             identifier: document?["identifier"] as? String ?? identifier,
             origamiID: document?["origami-id"] as? String,
+            doi: doiFromMeta ?? extractDOI(from: opf),
             body: body,
             links: links,
             concepts: concepts,
@@ -442,6 +447,71 @@ nonisolated enum OrigamiEPUBImporter {
         return Unpacked(content: content, base: directory, title: title)
     }
 
+    /// Lightweight metadata extracted from an already-unpacked package —
+    /// reads only the OPF and (at most) the first spine document for a
+    /// Visual-Meta check. Does NOT parse body paragraphs, so it stays
+    /// fast even for large multi-chapter books.
+    struct PackageMetadata: Sendable {
+        let origamiID: String?
+        let authors: [String]
+        let author: String?
+        let date: String?
+        let publication: String?
+        var doi: String? = nil
+    }
+
+    static func importMetadata(inUnpackedFolder folder: URL) -> PackageMetadata {
+        let containerURL = folder.appendingPathComponent("META-INF/container.xml")
+        let opfSubpath = (try? String(contentsOf: containerURL, encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") }
+            ?? "package.opf"
+        guard let opf = try? String(
+            contentsOf: folder.appendingPathComponent(opfSubpath), encoding: .utf8)
+        else { return PackageMetadata(origamiID: nil, authors: [], author: nil,
+                                      date: nil, publication: nil) }
+        let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
+        let creators = allTagTexts(in: opf, tag: "dc:creator")
+        let date = firstTagText(in: opf, tag: "dc:date")
+        let opfVenue = [
+            firstCapture(in: opf, pattern: "<meta[^>]*property=\"belongs-to-collection\"[^>]*>([^<]*)</meta>"),
+            firstCapture(in: opf, pattern: "<meta[^>]*property=\"dcterms:isPartOf\"[^>]*>([^<]*)</meta>"),
+            firstCapture(in: opf, pattern: "<meta[^>]*name=\"calibre:series\"[^>]*content=\"([^\"]*)\"")
+        ]
+            .compactMap { $0 }
+            .map(xmlUnescaped)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+
+        // Visual-Meta: package file first, then the first spine document.
+        // Only the metadata block is needed — body parsing is intentionally skipped.
+        let packageVMURL = folder.appendingPathComponent("visual-meta.json")
+        var visualMetaData: Data? = (try? Data(contentsOf: packageVMURL))
+        if visualMetaData == nil, let href = spineContentHref(in: opf),
+           let html = try? String(
+               contentsOf: folder.appendingPathComponent(joinedPath(opfDirectory, href)),
+               encoding: .utf8) {
+            visualMetaData = embeddedVisualMeta(in: html)
+        }
+        let visualMeta = visualMetaData
+            .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+        let document = visualMeta?["document"] as? [String: Any]
+        let metaAuthors = (document?["authors"] as? [String])?
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty } ?? []
+        let metaVenue = ["journal", "proceedings", "publication", "booktitle"]
+            .compactMap { document?[$0] as? String }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty }
+        let doiFromMeta = (document?["doi"] as? String).flatMap(normalizedDOI)
+        return PackageMetadata(
+            origamiID: document?["origami-id"] as? String,
+            authors: metaAuthors.isEmpty ? creators : metaAuthors,
+            author: metaAuthors.first ?? creators.first,
+            date: document?["date"] as? String ?? date,
+            publication: metaVenue ?? opfVenue,
+            doi: doiFromMeta ?? extractDOI(from: opf))
+    }
+
     // MARK: Package plumbing
 
     private static func containerRootFile(in zip: ZipReader) -> String? {
@@ -461,6 +531,32 @@ nonisolated enum OrigamiEPUBImporter {
 
     private static func joinedPath(_ directory: String, _ name: String) -> String {
         directory.isEmpty ? name : "\(directory)/\(name)"
+    }
+
+    /// Extracts the DOI from a package document, or nil when none is found.
+    /// Recognises scheme="doi", prism:doi meta, and any dc:identifier whose
+    /// value begins with "10." after stripping the common URL/prefix forms.
+    static func extractDOI(from opf: String) -> String? {
+        let candidates = [
+            firstCapture(in: opf, pattern: "<dc:identifier[^>]*scheme=[\"']doi[\"'][^>]*>([^<]+)</dc:identifier>"),
+            firstCapture(in: opf, pattern: "<dc:identifier[^>]*opf:scheme=[\"']doi[\"'][^>]*>([^<]+)</dc:identifier>"),
+            firstCapture(in: opf, pattern: "<meta[^>]*property=[\"']prism:doi[\"'][^>]*>([^<]+)</meta>"),
+            firstCapture(in: opf, pattern: "<meta[^>]*property=[\"']schema:doi[\"'][^>]*>([^<]+)</meta>"),
+            firstCapture(in: opf, pattern: "<dc:identifier[^>]*>([^<]*10\\.[0-9]{4,}/[^<]+)</dc:identifier>"),
+        ]
+        return candidates.compactMap { $0 }.compactMap(normalizedDOI).first
+    }
+
+    private static func normalizedDOI(_ raw: String) -> String? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = ["https://doi.org/", "http://doi.org/",
+                        "https://dx.doi.org/", "http://dx.doi.org/",
+                        "doi:", "DOI:"]
+        for p in prefixes where s.lowercased().hasPrefix(p.lowercased()) {
+            s = String(s.dropFirst(p.count))
+            break
+        }
+        return s.hasPrefix("10.") ? s.lowercased() : nil
     }
 
     // MARK: The whole spine (carried over from Knowledge Space)
