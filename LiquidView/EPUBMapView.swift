@@ -19,7 +19,7 @@ struct EPUBMapItem: ItemProtocol {
     /// on the wall behind. citedDeep: the second rank — a work a
     /// selected citation itself cites, raised from the citation graph
     /// while the citation is selected and retired when it is not.
-    enum Kind { case article, cited, citedDeep }
+    enum Kind { case article, cited, citedDeep, concept }
 
     let id: String
     var title: String
@@ -39,8 +39,10 @@ struct EPUBMapItem: ItemProtocol {
     /// Set Aside articles collapse to a half-faded title in the quiet
     /// row beneath the others.
     var isAside = false
+    /// How many raised articles cite this work — drives card depth.
+    var citationCount: Int = 1
 
-    var isAttachmentsEnabled: Bool { false }
+    var isAttachmentsEnabled: Bool { kind == .concept && isSelected }
 
     func isVisuallyEqual(to other: EPUBMapItem) -> Bool {
         // Selection is visual now — the selected card wears an ember
@@ -49,7 +51,7 @@ struct EPUBMapItem: ItemProtocol {
         id == other.id && title == other.title && author == other.author
             && kind == other.kind && isPinned == other.isPinned
             && isAside == other.isAside && isSelected == other.isSelected
-            && isShared == other.isShared
+            && isShared == other.isShared && citationCount == other.citationCount
     }
 }
 
@@ -85,19 +87,9 @@ struct EPUBMapView: View {
     /// carrying the reader's macOS concepts.
     @State private var conceptLadder = ConceptLadder()
 
-    /// The room-scale Concept Space: AI-generated paper concepts as
-    /// free-floating 3-D cards spread across the room at head height.
-    @State private var conceptSpaceManager = ConceptSpaceManager()
-    /// True while the room-scale Concept Space is open — hallway cards
-    /// and Timeflows step back to make room.
+    /// True while concept cards are shown in the hallway — concepts
+    /// join the items array in front of the article wall.
     @State private var conceptSpaceMode = false
-    /// Where each concept or orbit card was when its drag began.
-    @State private var conceptCardDragStarts: [String: SIMD3<Float>] = [:]
-    /// Double-tap detection: the last tapped concept ID and its timestamp.
-    @State private var lastConceptTapID: String? = nil
-    @State private var lastConceptTapDate = Date.distantPast
-    /// Named room whose layout the Concept Space persists separately.
-    @AppStorage("currentConceptRoom") private var conceptRoom = "Default"
 
     /// Where the fist has carried the whole space — applied to every
     /// seed so newly raised cards land in the moved space.
@@ -124,7 +116,10 @@ struct EPUBMapView: View {
 
     /// The physical floor put to work: what lies written along it —
     /// world history by default, or nothing. Chosen in Time Data.
+    @AppStorage("visionTheme") private var visionThemeRaw = VisionTheme.light.rawValue
     @AppStorage("floorShow") private var floorShowRaw = FloorShow.world.rawValue
+    /// The middle lane's timeline — centre of the corridor.
+    @AppStorage("floorShowMiddle") private var floorShowMiddleRaw = FloorShow.nothing.rawValue
     /// The right lane's timeline — the right arm's Time Data sets it.
     @AppStorage("floorShowRight") private var floorShowRightRaw = FloorShow.nothing.rawValue
 
@@ -137,6 +132,7 @@ struct EPUBMapView: View {
     /// Two timelines share the floor: one lane each side of the
     /// corridor's centre, each arm's Time Data choosing its own.
     @State private var floorBandLeft = FloorBand(sideOffset: -0.75)
+    @State private var floorBandMiddle = FloorBand(sideOffset: 0)
     @State private var floorBandRight = FloorBand(sideOffset: 0.75)
     /// Decade rules across the floor, graph to graph.
     @State private var floorDecadeLines = FloorDecadeLines()
@@ -149,6 +145,12 @@ struct EPUBMapView: View {
     /// Faint purple lines from each open panel to the hallway cards it
     /// cites — visible in hallway mode, hidden on the Reading Desk.
     @State private var citationLines = CitationLineManager()
+    /// Per-document colored lines to shared citations (3+ selected).
+    @State private var selectedCitationLines = SelectedCitationLines()
+    /// Blue lines from each concept card to the articles it was extracted from.
+    @State private var conceptConnectionLines = ConceptConnectionLines()
+    /// Amber lines from each selected citation card to the deep works it cites.
+    @State private var citedToDeepLines = CitedToDeepLines()
 
 
     /// Sankey widths or a traditional line graph — the reader's
@@ -179,10 +181,9 @@ struct EPUBMapView: View {
     }
     @State private var citedFacts: [String: CitedFacts] = [:]
 
-    /// Where the reader has placed each card — kept across reloads, so
-    /// a card returning from its reader window (or a returning journal)
-    /// stands where it was left.
-    @State private var placed: [String: SIMD3<Float>] = [:]
+    /// Where the reader has placed each card — persisted to disk so
+    /// positions survive app restarts.
+    @State private var placed: [String: SIMD3<Float>] = EPUBMapLayoutStore.load()
 
     /// How the cited papers occupy their space. Each axis is a mapping,
     /// built to become user-configurable (the controls are coming): XY
@@ -358,7 +359,7 @@ struct EPUBMapView: View {
                 title: record.title,
                 author: record.author,
                 kind: .article,
-                position: SIMD3<Float>(
+                position: placed[record.id] ?? SIMD3<Float>(
                     (Float(column) - Float(asideColumns - 1) / 2) * 0.24,
                     asideTop - Float(row) * 0.08,
                     -1.2) + spaceShift,
@@ -377,12 +378,20 @@ struct EPUBMapView: View {
         let sharedIDs: Set<String> = raisedSets.count >= 2
             ? raisedSets.dropFirst().reduce(raisedSets[0]) { $0.intersection($1) }
             : []
+        // How many raised articles cite each paper — drives card depth.
+        var citationCounts: [String: Int] = [:]
+        for set in raisedSets {
+            for id in set { citationCounts[id, default: 0] += 1 }
+        }
         // The Only Overlap chip stands while common ground does; when
         // it is on, the wall narrows to the shared citations alone —
         // the green cards and their green lines, nothing else.
         sharedCitedStanding = !sharedIDs.isEmpty
         armMenu.setChipVisible(Self.onlyOverlapChipID, !sharedIDs.isEmpty || onlyOverlap)
-        let shownCited = citedWorks.filter {
+        // When 2+ articles are raised but share no common citations,
+        // the wall goes quiet — nothing overlaps, so nothing to show.
+        let noOverlap = raisedArticleIDs.count >= 2 && sharedIDs.isEmpty
+        let shownCited = noOverlap ? [] : citedWorks.filter {
             raisedIDs.contains($0.id)
                 && (!onlyOverlap || sharedIDs.isEmpty || sharedIDs.contains($0.id))
         }
@@ -416,7 +425,8 @@ struct EPUBMapView: View {
                 author: work.year.map { "\(work.author) · \($0)" } ?? work.author,
                 kind: .cited,
                 position: placed[work.id] ?? seed,
-                isShared: sharedIDs.contains(work.id))
+                isShared: sharedIDs.contains(work.id),
+                citationCount: citationCounts[work.id] ?? 1)
         })
         citedTimelineZ = timelineZ
         citedFacts = facts
@@ -448,8 +458,44 @@ struct EPUBMapView: View {
             deepParentIDs = []
             citedYearRange = nil
         }
+        if conceptSpaceMode {
+            items += buildConceptItems()
+        }
         rebuildDeepRank()
         updateSankey()
+        selectedCitationLines.rebuild(items: items)
+        conceptConnectionLines.rebuild(items: items, concepts: model.aiPaperConcepts)
+        citedToDeepLines.rebuild(items: items)
+    }
+
+    /// Concept cards: a row of tiles in front of the article wall.
+    /// Positioned at z = -0.85 (closer to viewer than articles at z = -1.2)
+    /// using the same spaceShift so they move with the fist carry.
+    private func buildConceptItems() -> [EPUBMapItem] {
+        let concepts = model.aiPaperConcepts
+        guard !concepts.isEmpty else { return [] }
+        let cols = 8
+        let spacingX: Float = 0.28
+        let spacingY: Float = 0.20
+        let totalW = Float(min(concepts.count, cols) - 1) * spacingX
+        let startX = -totalW / 2
+        let startY: Float = 1.75
+        let conceptZ: Float = -0.85
+        return concepts.enumerated().map { i, concept in
+            let col = i % cols
+            let row = i / cols
+            let conceptID = "concept:" + concept.id
+            let seed = SIMD3<Float>(
+                startX + Float(col) * spacingX,
+                startY - Float(row) * spacingY,
+                conceptZ) + spaceShift
+            return EPUBMapItem(
+                id: conceptID,
+                title: concept.name,
+                author: concept.aiDescription,
+                kind: .concept,
+                position: placed[conceptID] ?? seed)
+        }
     }
 
     /// The Timeflows follow the corridor: rebuilt whenever the raised
@@ -459,7 +505,7 @@ struct EPUBMapView: View {
     /// their chips put them away.
     private func updateSankey() {
         // The Reading Desk and Concept Space empty the room: no Timeflows, no floor.
-        let desk = model.readingDeskDocID != nil || conceptSpaceMode
+        let desk = model.readingDeskDocID != nil
         let style = TimeSpreadStyle(rawValue: timeSpreadStyleRaw) ?? .sankey
         let layout = TimeSpreadLayout(rawValue: timeSpreadLayoutRaw) ?? .lanes
         let span = citedYearRange ?? dataYearSpan()
@@ -480,22 +526,30 @@ struct EPUBMapView: View {
         // The floor's two lanes: each arm's Time Data chooses its own
         // timeline — a built-in theme, or one of the user's (raw
         // "user:<slug>", curated on the Mac).
+        // Floor and decade lines only appear when citations are visible.
+        let hasCitations = items.contains(where: { $0.kind == .cited || $0.kind == .citedDeep })
         let leftHistory = resolvedFloorHistory(floorShowRaw, desk: desk,
                                                fallback: .world)
+        let middleHistory = resolvedFloorHistory(floorShowMiddleRaw, desk: desk,
+                                                 fallback: .nothing)
         let rightHistory = resolvedFloorHistory(floorShowRightRaw, desk: desk,
                                                 fallback: .nothing)
-        floorBandLeft.update(history: desk ? nil : leftHistory,
+        floorBandLeft.update(history: (desk || !hasCitations) ? nil : leftHistory,
                              years: span ?? historyYearSpan(of: leftHistory),
                              citedSpace: citedSpace,
                              shift: spaceShift)
-        floorBandRight.update(history: desk ? nil : rightHistory,
+        floorBandMiddle.update(history: (desk || !hasCitations) ? nil : middleHistory,
+                               years: span ?? historyYearSpan(of: middleHistory),
+                               citedSpace: citedSpace,
+                               shift: spaceShift)
+        floorBandRight.update(history: (desk || !hasCitations) ? nil : rightHistory,
                               years: span ?? historyYearSpan(of: rightHistory),
                               citedSpace: citedSpace,
                               shift: spaceShift)
         // The decade rules tie graphs and floor lanes to one calendar.
         floorDecadeLines.update(
-            years: desk ? nil : (span ?? historyYearSpan(of: leftHistory)
-                                 ?? historyYearSpan(of: rightHistory)),
+            years: (desk || !hasCitations) ? nil : (span ?? historyYearSpan(of: leftHistory)
+                                                     ?? historyYearSpan(of: rightHistory)),
             citedSpace: citedSpace,
             shift: spaceShift)
     }
@@ -656,6 +710,7 @@ struct EPUBMapView: View {
             case .article: return nil
             case .cited: return String(other.id.dropFirst("cited:".count))
             case .citedDeep: return String(other.id.dropFirst("deep:".count))
+            case .concept: return nil
             }
         }
 
@@ -698,21 +753,23 @@ struct EPUBMapView: View {
         ArmMenu.Chip(id: EPUBMapView.dataRightChipID, title: "Graph Data", side: .right,
                      underside: true),
         ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Floor Timeline", side: .right),
+        ArmMenu.Chip(id: EPUBMapView.floorMiddleChipID, title: "Mid Timeline", side: .left),
         // Standing only while common ground does: the wall reduced to
         // the works every raised article cites — the green alone.
         ArmMenu.Chip(id: EPUBMapView.onlyOverlapChipID, title: "Only Overlap", side: .right),
-        ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .left),
-        ArmMenu.Chip(id: EPUBMapView.asideChipID, title: "Set Aside", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
         // Graph stands above Graph Data on the arm.
         ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Graph", side: .left),
-        ArmMenu.Chip(id: EPUBMapView.dataChipID, title: "Graph Data", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.dataChipID, title: "Graph Data", side: .left, underside: true),
     ], tracksPlanes: true)   // the flat pose finds the actual desk
 
     /// Only Overlap: the cited wall narrowed to the shared citations.
     @State private var onlyOverlap = false
     /// Whether any shared citation stands — the chip's reason to show.
     @State private var sharedCitedStanding = false
+    /// Focus: show only selected items and their direct connections.
+    @State private var focusMode = false
 
     private static let settingsChipID = "map.arm.settings"
     private static let documentsChipID = "map.arm.documents"
@@ -724,7 +781,9 @@ struct EPUBMapView: View {
     private static let timeflowLeftChipID = "map.arm.timeflow.left"
     private static let timeflowRightChipID = "map.arm.timeflow.right"
     private static let floorChipID = "map.arm.floor"
+    private static let floorMiddleChipID = "map.arm.floor.middle"
     private static let onlyOverlapChipID = "map.arm.onlyoverlap"
+    private static let focusChipID = "map.arm.focus"
 
     var body: some View {
         engine
@@ -752,6 +811,9 @@ struct EPUBMapView: View {
             .onChange(of: model.setAsideIDs) {
                 reload()
             }
+            .onChange(of: visionThemeRaw) {
+                reload()
+            }
             // One tick for every setting the diagrams read — a single
             // observed value keeps the modifier chain type-checkable.
             .onChange(of: sankeySettingsTick) {
@@ -775,9 +837,8 @@ struct EPUBMapView: View {
                 if model.readingDeskDocID != nil {
                     conceptLadder.close()
                     if conceptSpaceMode {
-                        conceptSpaceManager.saveLayout(room: conceptRoom)
                         conceptSpaceMode = false
-                        conceptSpaceManager.close()
+                        updateSankey()
                     }
                 }
                 citationLines.rebuild(
@@ -805,17 +866,10 @@ struct EPUBMapView: View {
                             readerPanels.dragStart[docID] = start
                             root.position = start + value.convert(
                                 value.gestureValue.translation3D, from: .local, to: .scene)
-                        } else if let root = conceptSpaceManager.rootDragEntity(for: value.entity) {
-                            let key = root.name
-                            let start = conceptCardDragStarts[key] ?? root.position
-                            conceptCardDragStarts[key] = start
-                            root.position = start + value.convert(
-                                value.gestureValue.translation3D, from: .local, to: .scene)
                         }
                     }
                     .onEnded { _ in
                         readerPanels.dragStart = [:]
-                        conceptCardDragStarts = [:]
                     })
     }
 
@@ -823,7 +877,7 @@ struct EPUBMapView: View {
     /// any of it changing re-lays the Timeflows and the floor.
     private var sankeySettingsTick: String {
         [model.sankey?.modified.description ?? "",
-         timeSpreadStyleRaw, timeSpreadLayoutRaw, floorShowRaw, floorShowRightRaw,
+         timeSpreadStyleRaw, timeSpreadLayoutRaw, floorShowRaw, floorShowMiddleRaw, floorShowRightRaw,
          graphSnapWallLeft.description, graphSnapWallRight.description]
             .joined(separator: "|")
     }
@@ -855,8 +909,14 @@ struct EPUBMapView: View {
             constructorView: { item in
                 AnyView(cardFace(for: item))
             },
-            constructorAttachment: { _, _ in
-                AnyView(EmptyView())
+            constructorAttachment: { _, item -> AnyView in
+                guard item.kind == .concept && item.isSelected else {
+                    return AnyView(EmptyView())
+                }
+                return AnyView(
+                    Button("All") { selectAllConcepts() }
+                        .buttonStyle(.bordered)
+                )
             },
             constructorNodeModelEntity: { item, texturedPlane in
                 cardEntity(for: item, texturedPlane: texturedPlane)
@@ -870,18 +930,61 @@ struct EPUBMapView: View {
             case .article: return 100.0
             case .cited: return 75.0
             case .citedDeep: return 60.0
+            case .concept: return 240.0
             }
         }
-        view = view.onEndMoveNode { _, _, newItems in
+        view = view.attachmentAnchorRule { _, _ in
+            // Centre horizontally, sit at the card's bottom edge,
+            // then drop 2 cm so the button clears the card.
+            AnchorRule(
+                anchor: SIMD3<Float>(0.5, 0, 0.5),
+                offset: SIMD3<Float>(0, -0.02, 0))
+        }
+        view = view.onEndMoveNode { allItems, _, newItems in
+            // Gesture-based set-aside and pin: drag a document to the
+            // floor to set it aside, or lift it above head height to pin
+            // it first in the grid.
+            for moved in newItems where moved.kind == .article {
+                guard let pos = moved.position else { continue }
+                if pos.y < 0.15 && !moved.isAside {
+                    // Floor drop → set aside.
+                    model.toggleSetAside(moved.id)
+                    placed[moved.id] = SIMD3<Float>(pos.x, 0.05, pos.z)
+                    raisedArticleIDs.remove(moved.id)
+                    if let idx = items.firstIndex(where: { $0.id == moved.id }) {
+                        items[idx].isSelected = false
+                    }
+                    reload()
+                    return
+                } else if pos.y > 2.0 && !moved.isPinned {
+                    // Overhead lift → pin.
+                    model.togglePinned(moved.id)
+                    placed[moved.id] = nil
+                    reload()
+                    return
+                } else if moved.isAside && pos.y >= 0.15 && pos.y <= 2.0 {
+                    // Lifted from the aside row back into normal space → restore.
+                    placed[moved.id] = pos
+                    model.toggleSetAside(moved.id)
+                    reload()
+                    return
+                }
+            }
             keepPlacements(of: Array(newItems))
+            selectedCitationLines.rebuild(items: Array(allItems))
+            citedToDeepLines.rebuild(items: Array(allItems))
         }
-        view = view.constrainMovedNode { item, proposed, _ in
-            // A citation lives on the timeline: the hand slides it in
-            // X and Y, but its Z stays its year's — even mid-drag, so
-            // it can never be pulled onto another time.
-            guard item.kind != .article, let z = citedTimelineZ[item.id] else {
-                return proposed
-            }
+        view = view.constrainMovedNode { item, proposed, startPosition in
+            // Articles and concepts move freely in all axes.
+            guard item.kind == .cited || item.kind == .citedDeep else { return proposed }
+            // Citations stay on their year's Z no matter what. Prefer
+            // the canonical timeline table; if that's missing for any
+            // reason, pin to the item's own Z — or the drag's start Z
+            // as a last resort. This way a citation can never escape its
+            // time slot under any circumstance.
+            let z = citedTimelineZ[item.id]
+                ?? item.position?.z
+                ?? startPosition.z
             var held = proposed
             held.z = z
             return held
@@ -893,18 +996,38 @@ struct EPUBMapView: View {
                 // Mid-grey, barely there: visible only when two or more
                 // papers stand selected. Lines to a shared citation wear
                 // green instead (the tint the shared card asks for).
-                color: Color(white: 0.5).opacity(0.05),
+                color: Color(white: 0.5).opacity(0.02),
                 connectionOptions: .none,
                 materialMode: .none)
         }
-        view = view.shouldEnableNode { _ in
-            // The Reading Desk and Concept Space: while one document is
-            // being read alone, or the concept space is open, the
-            // hallway cards step away.
-            model.readingDeskDocID == nil && !conceptSpaceMode
+        view = view.shouldEnableNode { item in
+            guard model.readingDeskDocID == nil else { return false }
+            let n = items.count(where: { $0.kind == .article && $0.isSelected })
+            // With exactly 2 articles raised: only articles and shared
+            // citations are shown — the wall narrows to the overlap.
+            if n == 2 { return item.kind == .article || item.kind == .concept || item.isShared }
+            // Focus: hide everything except selected items and anything
+            // directly connected to them via the citation graph.
+            if focusMode {
+                let selected = items.filter { $0.isSelected }
+                guard !selected.isEmpty else { return true }
+                if item.isSelected { return true }
+                // A selected item references this one (e.g. article → citation).
+                if selected.contains(where: { $0.citedIDs.contains(item.id) }) { return true }
+                // This item references a selected item (e.g. citation → its citing article).
+                if item.citedIDs.contains(where: { id in selected.contains(where: { $0.id == id }) }) {
+                    return true
+                }
+                return false
+            }
+            return true
         }
         view = view.shouldDrawConnectionForNode { item in
-            model.readingDeskDocID == nil && !conceptSpaceMode && item.isSelected
+            guard model.readingDeskDocID == nil else { return false }
+            let n = items.count(where: { $0.kind == .article && $0.isSelected })
+            // 2+ selected: custom colored lines (3+) or no lines (2).
+            // Single selection keeps the default hallway weave.
+            return item.isSelected && n < 2
         }
         view = view.connectedNodesToNode { item in
             // Lines appear only when two or more articles are selected —
@@ -931,9 +1054,9 @@ struct EPUBMapView: View {
                             || links?.outbound.contains($0.id) == true)
                 }
             case .article:
-                // Two or more selected: lines run to the shared
-                // citations — green, as the cards are.
                 return items.filter { $0.isShared && item.citedIDs.contains($0.id) }
+            case .concept:
+                return []
             }
         }
         view = view.onTapNode { tapCount, item in
@@ -943,10 +1066,10 @@ struct EPUBMapView: View {
         // stretches the time-spread deeper into the room; in gathers
         // it back. One pinch, one step.
         view = view.onPinchOut {
-            stepCitedDepth(deeper: true)
+            stepCitedDepth(deeper: false)
         }
         view = view.onPinchIn {
-            stepCitedDepth(deeper: false)
+            stepCitedDepth(deeper: true)
         }
         view = view.defaultMaxWidth(100.0)
         view = view.defaultNodePosition([0.0, 1.4, -1.2])
@@ -955,14 +1078,17 @@ struct EPUBMapView: View {
             // Only Overlap steps in only when common ground stands.
             armMenu.setChipVisible(Self.onlyOverlapChipID, false)
             conceptLadder.install(in: content)
-            conceptSpaceManager.install(in: content)
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
             floorBandLeft.install(in: content)
+            floorBandMiddle.install(in: content)
             floorBandRight.install(in: content)
             floorDecadeLines.install(in: content)
             readerPanels.install(in: content)
             citationLines.install(in: content)
+            selectedCitationLines.install(in: content)
+            conceptConnectionLines.install(in: content)
+            citedToDeepLines.install(in: content)
             fistGrab.install(
                 in: content,
                 move: { delta in
@@ -988,10 +1114,12 @@ struct EPUBMapView: View {
     /// quieter than the journal's own; a Set Aside card collapses to
     /// its title alone; a pinned card wears the pin.
     @ViewBuilder private func cardFace(for item: EPUBMapItem) -> some View {
+        let dark = visionThemeRaw == VisionTheme.dark.rawValue
         if item.isAside {
             // The whole slip fades — the words too, not just the paper.
             Text(item.title)
                 .font(AppFonts.body(5.5, weight: .semibold))
+                .foregroundStyle(dark ? Color.white : Color.primary)
                 .lineLimit(1)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2.5)
@@ -1000,8 +1128,9 @@ struct EPUBMapView: View {
             // Half-size type for the half-size cards.
             let titleSize: CGFloat = switch item.kind {
             case .article: 7.5
-            case .cited: 6
-            case .citedDeep: 5
+            case .cited: 7
+            case .citedDeep: 6
+            case .concept: 6.5
             }
             VStack(spacing: item.kind == .citedDeep ? 1.5 : 2.5) {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
@@ -1011,12 +1140,14 @@ struct EPUBMapView: View {
                             .foregroundStyle(Color(red: 0.72, green: 0.42, blue: 0.06))
                     }
                     Text(item.title)
-                        .font(AppFonts.body(titleSize, weight: .semibold))
+                        .font(AppFonts.body(titleSize,
+                                            weight: item.kind == .concept ? .regular : .semibold))
+                        .foregroundStyle(dark ? Color.white : Color.primary)
                         .lineLimit(item.kind == .citedDeep ? 2 : 3)
                 }
                 Text(item.author)
-                    .font(.system(size: item.kind == .article ? 5.5 : 4.5))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: item.kind == .article ? 5.5 : 5.5))
+                    .foregroundStyle(dark ? Color.white.opacity(0.55) : Color.secondary)
                     .lineLimit(item.kind == .citedDeep ? 1 : 2)
             }
             .multilineTextAlignment(.center)
@@ -1028,16 +1159,43 @@ struct EPUBMapView: View {
         -> (modelEntity: ModelEntity?, collisionShape: ShapeResource) {
         // Set Aside slips stand at half presence — paper and words
         // both; each rank behind the articles reads a step quieter.
-        let opacity: Float = item.isAside ? 0.4
-            : (item.kind == .article ? 1.0 : (item.kind == .cited ? 0.92 : 0.85))
-        let paper: UIColor = switch item.kind {
-        case .article: .white
-        // The common ground reads green: a work every raised article
-        // cites, when two or more stand raised together.
-        case .cited: item.isShared
-            ? UIColor(red: 0.63, green: 0.84, blue: 0.63, alpha: 1)
-            : UIColor(white: 0.82, alpha: 1)
-        case .citedDeep: UIColor(white: 0.72, alpha: 1)
+        // Concepts handle their own background transparency via the
+        // material rather than OpacityComponent, so text stays crisp.
+        let opacity: Float
+        if item.isAside {
+            opacity = 0.4
+        } else {
+            opacity = switch item.kind {
+            case .article: 1.0
+            case .cited: 0.92
+            case .citedDeep: 0.85
+            case .concept: 1.0
+            }
+        }
+        let dark = visionThemeRaw == VisionTheme.dark.rawValue
+        let paper: UIColor
+        if dark {
+            paper = switch item.kind {
+            case .article: UIColor(white: 0.10, alpha: 1)
+            case .cited: UIColor(white: 0.18, alpha: 1)
+            case .citedDeep: UIColor(white: 0.26, alpha: 1)
+            case .concept: UIColor(red: 0.10, green: 0.12, blue: 0.22, alpha: 1)
+            }
+        } else {
+            paper = switch item.kind {
+            case .article: UIColor(white: 0.85, alpha: 1)
+            case .cited: UIColor(white: 0.75, alpha: 1)
+            case .citedDeep: UIColor(white: 0.65, alpha: 1)
+            case .concept: UIColor(red: 0.88, green: 0.92, blue: 1.0, alpha: 1)
+            }
+        }
+        // Cited cards grow deeper with each additional citing article:
+        // 0.5cm for one citation, up to 7cm for heavily-shared works.
+        let cardDepth: Float = switch item.kind {
+        case .concept: 0.005
+        case .cited, .citedDeep:
+            min(0.005 + Float(max(1, item.citationCount) - 1) * 0.010, 0.07)
+        case .article: 0.01
         }
         let box = ModelEntity.box(
             with: texturedPlane,
@@ -1045,7 +1203,7 @@ struct EPUBMapView: View {
             // reader deep in the corridor looks back at standing text.
             backPlane: texturedPlane.clone(recursive: true),
             color: paper,
-            depth: 0.01,
+            depth: cardDepth,
             margins: item.isAside ? 0.004 : 0.006,
             opacity: opacity,
             cornerRadius: 0.01,
@@ -1056,16 +1214,23 @@ struct EPUBMapView: View {
                 ? UIColor(red: 0.72, green: 0.42, blue: 0.06, alpha: 1) : .clear,
             materialMode: .none
         )
+        // Concept cards: transparent background, fully opaque text.
+        // Replace the opaque box material with a blended one so only
+        // the paper fades — the texturedPlane children are unaffected.
+        if item.kind == .concept, var model = box.modelEntity.model {
+            var mat = UnlitMaterial()
+            let conceptTint: UIColor = dark
+                ? UIColor(red: 0.10, green: 0.12, blue: 0.28, alpha: 0.55)
+                : UIColor(red: 0.88, green: 0.92, blue: 1.0, alpha: 0.45)
+            mat.color = .init(tint: conceptTint)
+            mat.blending = .transparent(opacity: 1.0)
+            model.materials = [mat]
+            box.modelEntity.model = model
+        }
         // The fist carries every card; the connection lines re-lay
         // themselves from the cards each frame.
         box.modelEntity.components.set(MapSpaceNodeComponent())
-        // The common ground's lines go green with its card: every line
-        // drawn to a shared citation wears the tint — a shade stronger
-        // than the grey whisper, so the green reads as green.
-        if item.isShared {
-            box.modelEntity.components.set(NodeConnectionTintComponent(
-                tint: UIColor(red: 0.45, green: 0.75, blue: 0.45, alpha: 0.08)))
-        }
+        box.modelEntity.components.set(EPUBNodeIDComponent(id: item.id))
         return box
     }
 
@@ -1080,6 +1245,20 @@ struct EPUBMapView: View {
         where items[index].kind == .article && matches.contains(items[index].id) {
             items[index].isSelected = true
             raisedArticleIDs.insert(items[index].id)
+        }
+        reload()
+    }
+
+    /// Selects all articles associated with ANY concept currently visible —
+    /// the union of all concept-article links in one gesture.
+    private func selectAllConcepts() {
+        for concept in items where concept.kind == .concept {
+            let matches = model.articleIDs(mentioning: concept.title)
+            for index in items.indices
+            where items[index].kind == .article && matches.contains(items[index].id) {
+                items[index].isSelected = true
+                raisedArticleIDs.insert(items[index].id)
+            }
         }
         reload()
     }
@@ -1105,6 +1284,7 @@ struct EPUBMapView: View {
                 placed[item.id] = position
             }
         }
+        EPUBMapLayoutStore.save(placed)
     }
 
     /// Keep the moved positions in the items (so the engine's equality
@@ -1115,8 +1295,9 @@ struct EPUBMapView: View {
     private func keepPlacements(of moved: [EPUBMapItem]) {
         for item in moved {
             var position = item.position
-            if item.kind != .article, let z = citedTimelineZ[item.id] {
-                position?.z = z
+            if item.kind == .cited || item.kind == .citedDeep {
+                let z = citedTimelineZ[item.id] ?? item.position?.z
+                if let z { position?.z = z }
             }
             if let index = items.firstIndex(where: { $0.id == item.id }) {
                 items[index].position = position
@@ -1125,6 +1306,7 @@ struct EPUBMapView: View {
                 placed[item.id] = position
             }
         }
+        EPUBMapLayoutStore.save(placed)
     }
 
     private func handleTap(count: Int, on item: EPUBMapItem) {
@@ -1152,13 +1334,15 @@ struct EPUBMapView: View {
                 }
                 reload()
             case .cited:
-                // A selected citation raises what IT cites behind it.
+                // A selected citation raises what IT cites behind it
+                // and draws lines to those deep works.
                 if willSelect {
                     deepParentIDs.insert(item.id)
                 } else {
                     deepParentIDs.remove(item.id)
                 }
                 rebuildDeepRank()
+                citedToDeepLines.rebuild(items: items)
             case .citedDeep:
                 // The selected card shows every citation leading to it
                 // and away from it, read from the graph.
@@ -1167,6 +1351,10 @@ struct EPUBMapView: View {
                 } else {
                     deepLinks[item.id] = nil
                 }
+            case .concept:
+                // Selection triggers the concept's source-document lines.
+                conceptConnectionLines.rebuild(
+                    items: items, concepts: model.aiPaperConcepts)
             }
         case 2:
             // The card steps off the Map and its reading opens in-situ
@@ -1204,7 +1392,7 @@ struct EPUBMapView: View {
             model.readingDeskDocID = nil
         }
         // The panel flies home first; the card returns as it lands,
-        // and catches it with a wobble.
+        // and settles with a brief squeeze.
         readerPanels.closeAnimated(docID: docID) {
             model.openDocIDs.remove(docID)
         }
@@ -1250,38 +1438,17 @@ struct EPUBMapView: View {
             selectConcept(concept)
             return true
         }
-        // A room-scale concept card: single tap selects (shows connections
-        // and document orbit); double-tap (within 0.40 s) opens the detail.
-        if let cid = conceptSpaceManager.conceptID(for: entity) {
-            let now = Date()
-            let isDouble = lastConceptTapID == cid
-                && now.timeIntervalSince(lastConceptTapDate) < 0.40
-            if isDouble {
-                lastConceptTapID = nil
-                if let concept = model.aiPaperConcepts.first(where: { $0.id == cid }) {
-                    conceptSpaceManager.showDetail(for: concept, model: model)
-                }
-            } else {
-                lastConceptTapID = cid
-                lastConceptTapDate = now
-                if let concept = model.aiPaperConcepts.first(where: { $0.id == cid }) {
-                    conceptSpaceManager.selectOrDeselect(cid, concept: concept, model: model)
-                }
-            }
-            return true
-        }
         switch armMenu.chipID(for: entity) {
         case Self.conceptsChipID:
             if conceptSpaceMode {
-                conceptSpaceManager.saveLayout(room: conceptRoom)
                 conceptSpaceMode = false
-                conceptSpaceManager.close()
                 updateSankey()
+                reload()
             } else {
                 conceptLadder.close()
                 conceptSpaceMode = true
-                conceptSpaceManager.open(concepts: model.aiPaperConcepts, room: conceptRoom)
                 updateSankey()
+                reload()
             }
             return true
         // Each arm's Time Data curates its own side's graph.
@@ -1304,9 +1471,13 @@ struct EPUBMapView: View {
             onlyOverlap.toggle()
             reload()
             return true
+        case Self.focusChipID:
+            // Show only selected items and their direct connections.
+            focusMode.toggle()
+            armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
+            reload()
+            return true
         case Self.floorChipID:
-            // The floor timeline, on and off: off remembers the theme,
-            // on brings it back.
             if floorShowRaw == FloorShow.nothing.rawValue {
                 floorShowRaw = floorShowLastRaw
             } else {
@@ -1314,29 +1485,18 @@ struct EPUBMapView: View {
                 floorShowRaw = FloorShow.nothing.rawValue
             }
             return true
+        case Self.floorMiddleChipID:
+            if floorShowMiddleRaw == FloorShow.nothing.rawValue {
+                floorShowMiddleRaw = FloorShow.world.rawValue
+            } else {
+                floorShowMiddleRaw = FloorShow.nothing.rawValue
+            }
+            return true
         case Self.settingsChipID:
             openWindow(id: "settings")
             return true
         case Self.documentsChipID:
             openWindow(id: "library")
-            return true
-        case Self.pinChipID:
-            // Pin the selected card first in the grid (or unpin it).
-            // Its wandering position clears so the new order shows.
-            if let selected = items.first(where: { $0.isSelected && $0.kind == .article }) {
-                model.togglePinned(selected.id)
-                placed[selected.id] = nil
-                reload()
-            }
-            return true
-        case Self.asideChipID:
-            // Collapse the selected card into the Set Aside row — or
-            // bring it back to the grid.
-            if let selected = items.first(where: { $0.isSelected && $0.kind == .article }) {
-                model.toggleSetAside(selected.id)
-                placed[selected.id] = nil
-                reload()
-            }
             return true
         default:
             return false
@@ -1348,6 +1508,12 @@ struct EPUBMapView: View {
 /// connection lines need no mark — the engine's MovableConnectionsSystem
 /// re-lays them from the cards each frame.
 struct MapSpaceNodeComponent: Component {}
+
+/// Carries the EPUBMapItem ID on each hallway card entity so that
+/// SelectedCitationLines can look up live world positions by item ID.
+struct EPUBNodeIDComponent: Component {
+    let id: String
+}
 
 /// The whole-space grab: close either hand into a fist and the space
 /// follows it; open the hand and the space sets down. Fist detection
@@ -1968,8 +2134,7 @@ final class ReaderPanels {
     private var closing: Set<String> = []
 
     /// The close with its story told: the panel shrinks and flies back
-    /// to where its card stood, and the card catches it with a wobble
-    /// — something thrown back into it.
+    /// to where its card stood, and the card settles with a brief squeeze.
     func closeAnimated(docID: String, onClosed: @escaping @MainActor () -> Void) {
         guard let root = roots[docID], !closing.contains(docID) else { return }
         closing.insert(docID)
@@ -1983,9 +2148,9 @@ final class ReaderPanels {
             guard let self else { return }
             self.close(docID: docID)
             onClosed()   // the card returns with the reload
-            // A beat for the card to stand again, then the catch.
+            // A beat for the card to stand again, then the settle.
             try? await Task.sleep(for: .milliseconds(80))
-            self.wobble(self.cardEntity(for: docID))
+            self.shrink(self.cardEntity(for: docID))
         }
     }
 
@@ -2000,29 +2165,18 @@ final class ReaderPanels {
         }
     }
 
-    /// The catch: a quick tilt, a counter-tilt, and a settle.
-    private func wobble(_ entity: Entity?) {
+    /// The settle: the card squeezes down slightly then springs back to rest.
+    private func shrink(_ entity: Entity?) {
         guard let entity else { return }
         let rest = entity.transform
-        func tilted(_ degrees: Float, grown: Float = 1) -> Transform {
-            var pose = rest
-            pose.rotation = rest.rotation * simd_quatf(
-                angle: degrees * .pi / 180, axis: SIMD3<Float>(0, 0, 1))
-            pose.scale = rest.scale * grown
-            return pose
-        }
-        entity.move(to: tilted(7, grown: 1.06), relativeTo: entity.parent,
-                    duration: 0.09, timingFunction: .easeOut)
+        var small = rest
+        small.scale = rest.scale * 0.88
+        entity.move(to: small, relativeTo: entity.parent,
+                    duration: 0.1, timingFunction: .easeOut)
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(95))
-            entity.move(to: tilted(-5), relativeTo: entity.parent,
-                        duration: 0.1, timingFunction: .easeInOut)
             try? await Task.sleep(for: .milliseconds(105))
-            entity.move(to: tilted(2.5), relativeTo: entity.parent,
-                        duration: 0.09, timingFunction: .easeInOut)
-            try? await Task.sleep(for: .milliseconds(95))
             entity.move(to: rest, relativeTo: entity.parent,
-                        duration: 0.12, timingFunction: .easeOut)
+                        duration: 0.18, timingFunction: .easeOut)
         }
     }
 
@@ -2091,6 +2245,13 @@ final class ReaderPanels {
     func worldPosition(of docID: String) -> SIMD3<Float>? {
         roots[docID]?.position(relativeTo: nil)
     }
+
+    /// World-space TOP edge of the panel — half the panel's real-world
+    /// height (~0.30m) above its centre — for line attachments.
+    func worldTopPosition(of docID: String) -> SIMD3<Float>? {
+        guard let center = roots[docID]?.position(relativeTo: nil) else { return nil }
+        return center + SIMD3<Float>(0, 0.30, 0)
+    }
 }
 
 /// Draws faint lines from each open reader panel to the hallway cards
@@ -2121,7 +2282,7 @@ private final class CitationLineManager {
             item.position.map { (item.id, $0) }
         })
         for (docID, citedIDs) in docCitations {
-            guard let panelPos = readerPanels.worldPosition(of: docID) else { continue }
+            guard let panelPos = readerPanels.worldTopPosition(of: docID) else { continue }
             for hallwayID in citedIDs {
                 guard let wallPos = itemPos[hallwayID] else { continue }
                 let key = "\(docID)∥\(hallwayID)"
@@ -2144,7 +2305,7 @@ private final class CitationLineManager {
         for (key, line) in lineEntities {
             let parts = key.components(separatedBy: "∥")
             guard parts.count == 2,
-                  let panelPos = readerPanels.worldPosition(of: parts[0]),
+                  let panelPos = readerPanels.worldTopPosition(of: parts[0]),
                   let wallPos = itemPos[parts[1]] else {
                 line.isEnabled = false
                 continue
@@ -2177,6 +2338,326 @@ private final class CitationLineManager {
             ? simd_quatf(angle: dot < 0 ? Float.pi : 0, axis: SIMD3<Float>(0, 1, 0))
             : simd_quatf(angle: acos(max(-1, min(1, dot))),
                          axis: simd_normalize(cross))
+    }
+}
+
+/// Per-document colored lines drawn from each selected article to every
+/// shared citation (3+ selected). Lines follow cards live each frame
+/// by querying EPUBNodeIDComponent world positions.
+@MainActor
+private final class SelectedCitationLines {
+    private var root: Entity?
+    private var sceneTick: EventSubscription?
+
+    private struct LineData {
+        let line: ModelEntity
+        let fromID: String
+        let toID: String
+    }
+    private var lineData: [LineData] = []
+
+    static let palette: [UIColor] = [
+        UIColor(red: 0.20, green: 0.75, blue: 0.30, alpha: 0.45),
+        UIColor(red: 0.20, green: 0.45, blue: 0.90, alpha: 0.45),
+        UIColor(red: 0.90, green: 0.80, blue: 0.10, alpha: 0.45),
+        UIColor(red: 0.55, green: 0.55, blue: 0.55, alpha: 0.45),
+        UIColor(red: 0.88, green: 0.20, blue: 0.20, alpha: 0.45),
+    ]
+
+    func install(in content: RealityViewContent) {
+        EPUBNodeIDComponent.registerComponent()
+        let r = Entity()
+        content.add(r)
+        root = r
+        sceneTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+            MainActor.assumeIsolated { self?.tick(scene: event.scene) }
+        }
+    }
+
+    func rebuild(items: [EPUBMapItem]) {
+        guard let root else { return }
+        for data in lineData { data.line.removeFromParent() }
+        lineData = []
+
+        let articles = items.filter { $0.kind == .article && $0.isSelected }
+        guard articles.count >= 2 else { return }
+        let shared = items.filter { $0.isShared }
+        guard !shared.isEmpty else { return }
+
+        for (idx, article) in articles.enumerated() {
+            guard let fromPos = article.position else { continue }
+            let color = Self.palette[idx % Self.palette.count]
+            for citation in shared {
+                guard article.citedIDs.contains(citation.id),
+                      let toPos = citation.position else { continue }
+                let line = makeLine(from: fromPos, to: toPos, color: color)
+                root.addChild(line)
+                lineData.append(LineData(line: line, fromID: article.id, toID: citation.id))
+            }
+        }
+    }
+
+    private func tick(scene: RealityKit.Scene) {
+        guard !lineData.isEmpty else { return }
+        var posMap: [String: SIMD3<Float>] = [:]
+        for entity in scene.performQuery(EntityQuery(where: .has(EPUBNodeIDComponent.self))) {
+            if let comp = entity.components[EPUBNodeIDComponent.self] {
+                posMap[comp.id] = entity.position(relativeTo: nil)
+            }
+        }
+        for data in lineData {
+            guard let from = posMap[data.fromID],
+                  let to = posMap[data.toID] else { continue }
+            positionLine(data.line, from: from, to: to)
+        }
+    }
+
+    private func positionLine(_ line: ModelEntity,
+                               from: SIMD3<Float>, to: SIMD3<Float>) {
+        let diff = to - from
+        let dist = simd_length(diff)
+        guard dist > 0.01 else { line.isEnabled = false; return }
+        line.isEnabled = true
+        line.position = (from + to) / 2
+        line.scale = SIMD3<Float>(dist, 1, 1)
+        let norm = diff / dist
+        let dot = simd_dot(SIMD3<Float>(1, 0, 0), norm)
+        let cross = simd_cross(SIMD3<Float>(1, 0, 0), norm)
+        let crossLen = simd_length(cross)
+        line.orientation = crossLen < 1e-6
+            ? simd_quatf(angle: dot < 0 ? Float.pi : 0, axis: SIMD3<Float>(0, 1, 0))
+            : simd_quatf(angle: acos(max(-1, min(1, dot))), axis: simd_normalize(cross))
+    }
+
+    private func makeLine(from: SIMD3<Float>, to: SIMD3<Float>,
+                          color: UIColor) -> ModelEntity {
+        var mat = UnlitMaterial()
+        mat.color = .init(tint: color)
+        mat.blending = .transparent(opacity: 1.0)
+        let line = ModelEntity(
+            mesh: .generateBox(size: SIMD3<Float>(1.0, 0.003, 0.003)),
+            materials: [mat])
+        positionLine(line, from: from, to: to)
+        return line
+    }
+}
+
+// MARK: - Layout persistence
+
+/// Saves and loads every card's 3D position across app restarts.
+/// Stored in Application Support alongside the Knowledge Space layout.
+nonisolated enum EPUBMapLayoutStore {
+    private struct LayoutFile: Codable {
+        struct Node: Codable {
+            var id: String
+            var x: Float; var y: Float; var z: Float
+        }
+        var nodes: [Node]
+    }
+
+    private static var fileURL: URL {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        try? FileManager.default.createDirectory(
+            at: base, withIntermediateDirectories: true)
+        return base.appendingPathComponent("EPUBMapLayout.json")
+    }
+
+    static func load() -> [String: SIMD3<Float>] {
+        guard let data = try? Data(contentsOf: fileURL),
+              let file = try? JSONDecoder().decode(LayoutFile.self, from: data)
+        else { return [:] }
+        return Dictionary(uniqueKeysWithValues:
+            file.nodes.map { ($0.id, SIMD3<Float>($0.x, $0.y, $0.z)) })
+    }
+
+    static func save(_ positions: [String: SIMD3<Float>]) {
+        let nodes = positions.sorted { $0.key < $1.key }.map {
+            LayoutFile.Node(id: $0.key, x: $0.value.x, y: $0.value.y, z: $0.value.z)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(LayoutFile(nodes: nodes)) else { return }
+        try? data.write(to: fileURL, options: .atomic)
+    }
+}
+
+// MARK: - Concept connection lines
+
+/// Thin lines from each visible concept card to the article(s) it was
+/// extracted from. Rebuilt whenever the items array changes; positions
+/// track live each frame via EPUBNodeIDComponent.
+@MainActor
+private final class ConceptConnectionLines {
+    private var root: Entity?
+    private var sceneTick: EventSubscription?
+    private struct LineData { let line: ModelEntity; let fromID: String; let toID: String }
+    private var lineData: [LineData] = []
+
+    private static let lineColor = UIColor(red: 0.55, green: 0.60, blue: 1.0, alpha: 0.09)
+
+    func install(in content: RealityViewContent) {
+        let r = Entity(); content.add(r); root = r
+        sceneTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+            MainActor.assumeIsolated { self?.tick(scene: event.scene) }
+        }
+    }
+
+    func rebuild(items: [EPUBMapItem], concepts: [MergedConcept]) {
+        guard let root else { return }
+        for data in lineData { data.line.removeFromParent() }
+        lineData = []
+
+        // Article positions keyed by document ID.
+        var articlePos: [String: SIMD3<Float>] = [:]
+        for item in items where item.kind == .article {
+            if let pos = item.position { articlePos[item.id] = pos }
+        }
+        guard !articlePos.isEmpty else { return }
+
+        // For each concept card visible in the scene, draw a line to
+        // every source document that also has a card.
+        for concept in concepts {
+            let conceptID = "concept:" + concept.id
+            guard let conceptItem = items.first(where: { $0.id == conceptID }),
+                  conceptItem.isSelected,
+                  let fromPos = conceptItem.position else { continue }
+            for docID in concept.sourceDocIDs {
+                guard let toPos = articlePos[docID] else { continue }
+                let line = makeLine(from: fromPos, to: toPos)
+                root.addChild(line)
+                lineData.append(LineData(line: line, fromID: conceptID, toID: docID))
+            }
+        }
+    }
+
+    private func tick(scene: RealityKit.Scene) {
+        guard !lineData.isEmpty else { return }
+        var posMap: [String: SIMD3<Float>] = [:]
+        for entity in scene.performQuery(EntityQuery(where: .has(EPUBNodeIDComponent.self))) {
+            if let comp = entity.components[EPUBNodeIDComponent.self] {
+                posMap[comp.id] = entity.position(relativeTo: nil)
+            }
+        }
+        for data in lineData {
+            guard let from = posMap[data.fromID],
+                  let to = posMap[data.toID] else { continue }
+            positionLine(data.line, from: from, to: to)
+        }
+    }
+
+    private func positionLine(_ line: ModelEntity,
+                              from: SIMD3<Float>, to: SIMD3<Float>) {
+        let diff = to - from
+        let dist = simd_length(diff)
+        guard dist > 0.01 else { line.isEnabled = false; return }
+        line.isEnabled = true
+        line.position = (from + to) / 2
+        line.scale = SIMD3<Float>(dist, 1, 1)
+        let norm = diff / dist
+        let dot = simd_dot(SIMD3<Float>(1, 0, 0), norm)
+        let cross = simd_cross(SIMD3<Float>(1, 0, 0), norm)
+        let crossLen = simd_length(cross)
+        line.orientation = crossLen < 1e-6
+            ? simd_quatf(angle: dot < 0 ? Float.pi : 0, axis: SIMD3<Float>(0, 1, 0))
+            : simd_quatf(angle: acos(max(-1, min(1, dot))), axis: simd_normalize(cross))
+    }
+
+    private func makeLine(from: SIMD3<Float>, to: SIMD3<Float>) -> ModelEntity {
+        var mat = UnlitMaterial()
+        mat.color = .init(tint: Self.lineColor)
+        mat.blending = .transparent(opacity: 1.0)
+        let line = ModelEntity(
+            mesh: .generateBox(size: SIMD3<Float>(1.0, 0.002, 0.002)),
+            materials: [mat])
+        positionLine(line, from: from, to: to)
+        return line
+    }
+}
+
+/// Amber lines from a selected citation card to the deep works it cites.
+/// Mirrors ConceptConnectionLines — same EPUBNodeIDComponent live-tracking.
+@MainActor
+private final class CitedToDeepLines {
+    private var root: Entity?
+    private var sceneTick: EventSubscription?
+    private struct LineData { let line: ModelEntity; let fromID: String; let toID: String }
+    private var lineData: [LineData] = []
+
+    private static let lineColor = UIColor(red: 1.0, green: 0.72, blue: 0.3, alpha: 0.08)
+
+    func install(in content: RealityViewContent) {
+        let r = Entity(); content.add(r); root = r
+        sceneTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+            MainActor.assumeIsolated { self?.tick(scene: event.scene) }
+        }
+    }
+
+    func rebuild(items: [EPUBMapItem]) {
+        guard let root else { return }
+        for data in lineData { data.line.removeFromParent() }
+        lineData = []
+
+        // Index all item positions by ID for O(1) lookup.
+        var posMap: [String: SIMD3<Float>] = [:]
+        for item in items {
+            if let pos = item.position { posMap[item.id] = pos }
+        }
+
+        // For each selected citation, draw a line to each deep work it cites.
+        for item in items where item.kind == .cited && item.isSelected {
+            guard let fromPos = posMap[item.id] else { continue }
+            for deepID in item.citedIDs {
+                guard let toPos = posMap[deepID] else { continue }
+                let line = makeLine(from: fromPos, to: toPos)
+                root.addChild(line)
+                lineData.append(LineData(line: line, fromID: item.id, toID: deepID))
+            }
+        }
+    }
+
+    private func tick(scene: RealityKit.Scene) {
+        guard !lineData.isEmpty else { return }
+        var posMap: [String: SIMD3<Float>] = [:]
+        for entity in scene.performQuery(EntityQuery(where: .has(EPUBNodeIDComponent.self))) {
+            if let comp = entity.components[EPUBNodeIDComponent.self] {
+                posMap[comp.id] = entity.position(relativeTo: nil)
+            }
+        }
+        for data in lineData {
+            guard let from = posMap[data.fromID],
+                  let to = posMap[data.toID] else { continue }
+            positionLine(data.line, from: from, to: to)
+        }
+    }
+
+    private func positionLine(_ line: ModelEntity,
+                              from: SIMD3<Float>, to: SIMD3<Float>) {
+        let diff = to - from
+        let dist = simd_length(diff)
+        guard dist > 0.01 else { line.isEnabled = false; return }
+        line.isEnabled = true
+        line.position = (from + to) / 2
+        line.scale = SIMD3<Float>(dist, 1, 1)
+        let norm = diff / dist
+        let dot = simd_dot(SIMD3<Float>(1, 0, 0), norm)
+        let cross = simd_cross(SIMD3<Float>(1, 0, 0), norm)
+        let crossLen = simd_length(cross)
+        line.orientation = crossLen < 1e-6
+            ? simd_quatf(angle: dot < 0 ? Float.pi : 0, axis: SIMD3<Float>(0, 1, 0))
+            : simd_quatf(angle: acos(max(-1, min(1, dot))), axis: simd_normalize(cross))
+    }
+
+    private func makeLine(from: SIMD3<Float>, to: SIMD3<Float>) -> ModelEntity {
+        var mat = UnlitMaterial()
+        mat.color = .init(tint: Self.lineColor)
+        mat.blending = .transparent(opacity: 1.0)
+        let line = ModelEntity(
+            mesh: .generateBox(size: SIMD3<Float>(1.0, 0.002, 0.002)),
+            materials: [mat])
+        positionLine(line, from: from, to: to)
+        return line
     }
 }
 
@@ -2312,10 +2793,6 @@ struct MapReaderPanel: View {
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                }
-                .buttonBorderShape(.circle)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -2408,6 +2885,19 @@ struct CitationCardPanel: View {
 /// What lies written on the physical floor — a themed history, or
 /// nothing. Chosen in Time Data. The world theme keeps the raw value
 /// "history", so the setting from before themes still reads.
+/// Light paper or dark paper — chosen in Graph Data.
+enum VisionTheme: String, CaseIterable, Identifiable {
+    case light
+    case dark
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+}
+
 enum FloorShow: String, CaseIterable, Identifiable {
     case world = "history"
     case hypertext
@@ -2505,31 +2995,28 @@ final class FloorBand {
         guard let content, let history, !history.events.isEmpty,
               let years, years.newest > years.oldest else { return }
 
-        // The image's height is the timeline: drawn near 1000pt per
-        // metre so a year's row lands at its exact depth, capped so
-        // the texture stays sane — beyond the cap the glyphs stretch
-        // with the corridor rather than the texture growing.
-        let faceHeight = min(max(CGFloat(citedSpace.depth) * 1000, 800), 3000)
+        // 1000pt per metre so every year maps to its exact world depth,
+        // at 1x scale so the texture height stays within Metal limits
+        // (max depth 12m → 12 000 px, comfortably below the 16 384 cap).
+        // No Z-scaling on the holder keeps the text crisp and square.
+        let faceHeight = CGFloat(citedSpace.depth) * 1000
         let face = FloorHistoryView(history: history,
-                                    newest: years.newest, oldest: years.oldest)
+                                    newest: years.newest, oldest: years.oldest,
+                                    sideOffset: sideOffset)
             .frame(width: Self.faceWidth, height: faceHeight)
         let renderer = ImageRenderer(content: face)
-        renderer.scale = 2
+        renderer.scale = 1
         renderer.isOpaque = false
         guard let image = renderer.uiImage,
               let plane = ModelEntity.texturedPlane(with: image, ratio: 0.001)
         else { return }
 
         plane.components.set(MapSpaceNodeComponent())
-        // Laid flat, face up: the device showed this single turn reads
-        // toward the walker facing into the corridor — the image's top
-        // lands at the deep (oldest) end, which the drawing matches.
+        // Laid flat, face up; image top = oldest year = far end.
         plane.orientation = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
-        let baseLength = Float(faceHeight) * 0.001
         let holder = ModelEntity()
         holder.components.set(MapSpaceNodeComponent())
         holder.addChild(plane)
-        holder.scale = SIMD3<Float>(1, 1, citedSpace.depth / baseLength)
         // The fist carries the band sideways and along the corridor
         // only — its height is the floor's, never the carry's.
         holder.position = SIMD3<Float>(
@@ -2551,8 +3038,8 @@ final class FloorDecadeLines {
     private var holder: Entity?
     private var floorAnchor: AnchorEntity?
     private var snapTick: EventSubscription?
-    /// Graph to graph: the Timeflows stand at ±1.15 from the centre.
-    private static let halfSpan: Float = 1.15
+    /// Full width: past the outer band edges (bands reach ±1.45 from centre).
+    private static let halfSpan: Float = 1.55
     /// A whisper above the carpet — beneath the bands and their
     /// words, which lie at 0.01.
     private static let height: Float = 0.003
@@ -2595,7 +3082,7 @@ final class FloorDecadeLines {
         let root = Entity()
         root.components.set(MapSpaceNodeComponent())
         var material = UnlitMaterial()
-        material.color = .init(tint: UIColor(white: 1, alpha: 0.07))
+        material.color = .init(tint: UIColor(white: 0.25, alpha: 0.02))
         let mesh = MeshResource.generateBox(
             size: SIMD3<Float>(Self.halfSpan * 2, 0.001, 0.004))
         let firstDecade = (years.oldest / 10 + 1) * 10
@@ -2622,34 +3109,47 @@ struct FloorHistoryView: View {
     let history: SankeySpace.FloorHistory
     let newest: Int
     let oldest: Int
+    // Negative = left band, 0 = centre band, positive = right band.
+    var sideOffset: Float = -1
 
     var body: some View {
         Canvas { context, size in
             let span = CGFloat(newest - oldest)
             guard span > 0 else { return }
-            // Top of the image = the OLDEST year — the deep end, the
-            // way the flat plane lands.
             func y(_ year: Int) -> CGFloat {
                 size.height * CGFloat(year - oldest) / span
             }
 
-            // Decade rules, on the corridor's very depths.
+            // Decade rule lines.
             let firstDecade = (oldest / 10 + 1) * 10
+            // Year labels sit on the OUTSIDE edge of each band (away from
+            // the corridor centre). The centre band carries no year labels.
+            let yearX: CGFloat
+            let yearAnchor: UnitPoint
+            if sideOffset < 0 {
+                yearX = 12             // left edge = outside of the left band
+                yearAnchor = .leading
+            } else if sideOffset > 0 {
+                yearX = size.width - 12  // right edge = outside of the right band
+                yearAnchor = .trailing
+            } else {
+                yearX = size.width / 2
+                yearAnchor = .center
+            }
             for year in stride(from: firstDecade, through: newest, by: 10) {
                 let rule = y(year)
-                var line = Path()
-                line.move(to: CGPoint(x: 0, y: rule))
-                line.addLine(to: CGPoint(x: size.width, y: rule))
-                context.stroke(line, with: .color(.white.opacity(0.18)), lineWidth: 1)
-                context.draw(
-                    Text(String(year)).font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.55)),
-                    at: CGPoint(x: size.width - 12, y: rule - 14),
-                    anchor: .trailing)
+                // Only draw year numbers for the left and right bands.
+                // (The decade rule lines come from FloorDecadeLines, not here.)
+                if sideOffset != 0 {
+                    context.draw(
+                        Text(String(year)).font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.55)),
+                        at: CGPoint(x: yearX, y: rule - 14),
+                        anchor: yearAnchor)
+                }
             }
 
-            // The events: most widely carried first; a year-row only
-            // holds one line, and crowded years yield to bigger events.
+            // Events: most widely carried first.
             let lineHeight: CGFloat = 30
             var taken: [CGFloat] = []
             let ordered = history.events
@@ -2661,21 +3161,31 @@ struct FloorHistoryView: View {
                       !taken.contains(where: { abs($0 - row) < lineHeight }) else { continue }
                 taken.append(row)
                 let words = event.title
-                // A quiet dark bed under the words, so they read on any
-                // carpet.
                 let text = Text(words)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.92))
                 let resolved = context.resolve(text)
                 let measured = resolved.measure(in: CGSize(width: size.width - 80,
                                                            height: lineHeight))
-                let bed = CGRect(x: 28, y: row - measured.height / 2 - 5,
+                let textX: CGFloat
+                let textAnchor: UnitPoint
+                let bedX: CGFloat
+                if sideOffset < 0 {
+                    textX = 40; textAnchor = .leading
+                    bedX = 28
+                } else if sideOffset > 0 {
+                    textX = size.width - 40; textAnchor = .trailing
+                    bedX = size.width - 28 - measured.width - 24
+                } else {
+                    textX = size.width / 2; textAnchor = .center
+                    bedX = (size.width - measured.width - 24) / 2
+                }
+                let bed = CGRect(x: bedX, y: row - measured.height / 2 - 5,
                                  width: measured.width + 24,
                                  height: measured.height + 10)
                 context.fill(Path(roundedRect: bed, cornerRadius: 8),
-                             with: .color(.black.opacity(0.38)))
-                context.draw(resolved,
-                             at: CGPoint(x: 40, y: row), anchor: .leading)
+                             with: .color(.black.opacity(0.08)))
+                context.draw(resolved, at: CGPoint(x: textX, y: row), anchor: textAnchor)
             }
         }
     }
@@ -2926,13 +3436,12 @@ struct SankeyRibbonView: View {
 
 /// Manages AI-generated paper concepts as free-floating 3-D cards spread at
 /// head height across the ImmersiveSpace. A single tap shows connection lines
-/// to related concepts and document orbit cards; a double-tap opens a detail
-/// panel. Layout is persisted per named room via SpatialLayoutStore.
+/// Renders concept cards as rasterized texture planes (same approach as hallway
+/// nodes) so they appear alongside the existing space without hiding anything.
 @MainActor
 final class ConceptSpaceManager {
     private var content: RealityViewContent?
-    private var holder: Entity?
-    private var conceptEntities: [String: Entity] = [:]
+    private var conceptEntities: [String: ModelEntity] = [:]
     private var connectionEntities: [Entity] = []
     private var orbitEntities: [Entity] = []
     private var detailEntity: Entity?
@@ -2945,17 +3454,11 @@ final class ConceptSpaceManager {
     static let orbitPrefix = "cs2.orbit."
 
     func install(in content: RealityViewContent) {
-        guard holder == nil else { return }
         self.content = content
-        let h = Entity()
-        h.name = "cs2.root"
-        h.isEnabled = false
-        content.add(h)
-        holder = h
     }
 
     func open(concepts: [MergedConcept], room: String) {
-        guard let holder else { return }
+        guard let content else { return }
         for (_, e) in conceptEntities { e.removeFromParent() }
         conceptEntities = [:]
         highlightEntities = [:]
@@ -2974,39 +3477,27 @@ final class ConceptSpaceManager {
         let baseZ: Float = -1.8
 
         for (i, concept) in concepts.enumerated() {
-            let card = Entity()
-            card.name = Self.cardPrefix + concept.id
-            card.components.set(CollisionComponent(
-                shapes: [.generateBox(size: SIMD3<Float>(0.23, 0.12, 0.015))]))
-            card.components.set(InputTargetComponent())
-            card.components.set(HoverEffectComponent())
-
-            let label = Entity()
-            label.name = "cs2.label." + concept.id
-            label.components.set(ViewAttachmentComponent(
-                rootView: RoomConceptCardView(concept: concept)))
-            label.scale = SIMD3<Float>(repeating: 0.55)
-            card.addChild(label)
-
             let col = i % cols
             let row = i / cols
             let defaultPos = SIMD3<Float>(
                 startX + Float(col) * spacingX,
                 startY - Float(row) * spacingY,
                 baseZ)
-
+            let pos: SIMD3<Float>
             if let sv = saved["c_" + concept.id] {
-                card.position = SIMD3<Float>(Float(sv.x), Float(sv.y), Float(sv.z))
+                pos = SIMD3<Float>(Float(sv.x), Float(sv.y), Float(sv.z))
             } else {
-                card.position = defaultPos
+                pos = defaultPos
             }
 
-            holder.addChild(card)
-            conceptEntities[concept.id] = card
+            guard let plane = makeCardPlane(concept: concept) else { continue }
+            plane.name = Self.cardPrefix + concept.id
+            plane.position = pos
+            content.add(plane)
+            conceptEntities[concept.id] = plane
         }
 
         isOpen = true
-        holder.isEnabled = true
     }
 
     func close() {
@@ -3018,7 +3509,6 @@ final class ConceptSpaceManager {
         hideDetail()
         selectedConceptID = nil
         isOpen = false
-        holder?.isEnabled = false
     }
 
     func saveLayout(room: String) {
@@ -3044,7 +3534,7 @@ final class ConceptSpaceManager {
         }
         selectedConceptID = conceptID
 
-        guard let holder,
+        guard let content,
               let selectedEntity = conceptEntities[conceptID] else { return }
 
         addHighlight(to: selectedEntity, id: conceptID)
@@ -3053,7 +3543,7 @@ final class ConceptSpaceManager {
         for relatedID in concept.relatedConceptIDs {
             guard let toEntity = conceptEntities[relatedID] else { continue }
             let line = makeLine(from: fromPos, to: toEntity.position)
-            holder.addChild(line)
+            content.add(line)
             connectionEntities.append(line)
         }
 
@@ -3065,41 +3555,62 @@ final class ConceptSpaceManager {
             let orbitPos = fromPos + SIMD3<Float>(
                 radius * cos(angle), 0, radius * sin(angle))
 
-            let orbitCard = Entity()
-            orbitCard.name = Self.orbitPrefix + docID
-            orbitCard.components.set(CollisionComponent(
-                shapes: [.generateBox(size: SIMD3<Float>(0.18, 0.08, 0.015))]))
-            orbitCard.components.set(InputTargetComponent())
-            orbitCard.components.set(HoverEffectComponent())
+            let cardView = RoomDocOrbitCardView(entry: entry)
+                .frame(maxWidth: 150)
+                .fixedSize(horizontal: false, vertical: true)
+            guard let image = UIImage.image(cardView, 150),
+                  let orbitPlane = ModelEntity.texturedPlane(with: image, ratio: 0.001)
+            else { continue }
 
-            let label = Entity()
-            label.components.set(ViewAttachmentComponent(
-                rootView: RoomDocOrbitCardView(entry: entry)))
-            label.components.set(BillboardComponent())
-            label.scale = SIMD3<Float>(repeating: 0.48)
-            orbitCard.addChild(label)
-            orbitCard.position = orbitPos
-
-            holder.addChild(orbitCard)
-            orbitEntities.append(orbitCard)
+            let orbitResult = ModelEntity.box(
+                with: orbitPlane,
+                backPlane: nil,
+                color: .white,
+                depth: 0.005,
+                margins: 0.004,
+                opacity: 0.40,
+                cornerRadius: 0.007,
+                useBorder: true,
+                borderColor: UIColor.systemBlue.withAlphaComponent(0.50)
+            )
+            orbitResult.modelEntity.components.set(CollisionComponent(
+                shapes: [orbitResult.collisionShape], mode: .default))
+            orbitResult.modelEntity.components.set(InputTargetComponent())
+            orbitResult.modelEntity.name = Self.orbitPrefix + docID
+            orbitResult.modelEntity.position = orbitPos
+            content.add(orbitResult.modelEntity)
+            orbitEntities.append(orbitResult.modelEntity)
         }
     }
 
     func showDetail(for concept: MergedConcept, model: VisionModel) {
         hideDetail()
-        guard let holder,
+        guard let content,
               let cardEntity = conceptEntities[concept.id] else { return }
         let sourceEntries = concept.sourceDocIDs.compactMap { model.index.byID[$0] }
-        let detail = Entity()
-        detail.name = "cs2.detail." + concept.id
-        detail.components.set(ViewAttachmentComponent(
-            rootView: RoomConceptDetailView(concept: concept,
-                                           sourceEntries: sourceEntries)))
-        detail.components.set(BillboardComponent())
-        detail.scale = SIMD3<Float>(repeating: 0.55)
-        detail.position = cardEntity.position + SIMD3<Float>(0, 0.22, 0)
-        holder.addChild(detail)
-        detailEntity = detail
+
+        let detailView = RoomConceptDetailView(concept: concept, sourceEntries: sourceEntries)
+            .frame(maxWidth: 260)
+            .fixedSize(horizontal: false, vertical: true)
+        guard let image = UIImage.image(detailView, 260),
+              let plane = ModelEntity.texturedPlane(with: image, ratio: 0.001)
+        else { return }
+
+        let detailResult = ModelEntity.box(
+            with: plane,
+            backPlane: nil,
+            color: .white,
+            depth: 0.007,
+            margins: 0.006,
+            opacity: 0.50,
+            cornerRadius: 0.010,
+            useBorder: false,
+            borderColor: .clear
+        )
+        detailResult.modelEntity.name = "cs2.detail." + concept.id
+        detailResult.modelEntity.position = cardEntity.position + SIMD3<Float>(0, 0.22, 0)
+        content.add(detailResult.modelEntity)
+        detailEntity = detailResult.modelEntity
     }
 
     func hideDetail() {
@@ -3107,8 +3618,7 @@ final class ConceptSpaceManager {
         detailEntity = nil
     }
 
-    /// Returns the root draggable entity (card or orbit card) that contains
-    /// the given entity, or nil if it is not part of the concept space.
+    /// Returns the draggable entity that contains the given entity, or nil.
     func rootDragEntity(for entity: Entity) -> Entity? {
         guard isOpen else { return nil }
         var node: Entity? = entity
@@ -3132,6 +3642,46 @@ final class ConceptSpaceManager {
             node = n.parent
         }
         return nil
+    }
+
+    private func makeCardPlane(concept: MergedConcept) -> ModelEntity? {
+        let cardView = RoomConceptCardView(concept: concept)
+            .frame(maxWidth: 180)
+            .fixedSize(horizontal: false, vertical: true)
+        let plane: ModelEntity
+        if let img = UIImage.image(cardView, 180),
+           let textured = ModelEntity.texturedPlane(with: img, ratio: 0.001) {
+            plane = textured
+        } else {
+            // Image renderer unavailable — bare white slab so cards are
+            // at least tappable and visible.
+            var mat = UnlitMaterial()
+            mat.color = .init(tint: UIColor.white.withAlphaComponent(0.50))
+            plane = ModelEntity(
+                mesh: .generateBox(size: SIMD3<Float>(0.18, 0.10, 0.004)),
+                materials: [mat])
+            plane.components.set(CollisionComponent(
+                shapes: [.generateBox(size: SIMD3<Float>(0.18, 0.10, 0.004))], mode: .default))
+            plane.components.set(InputTargetComponent())
+            plane.components.set(HoverEffectComponent())
+            return plane
+        }
+        let result = ModelEntity.box(
+            with: plane,
+            backPlane: nil,
+            color: .white,
+            depth: 0.006,
+            margins: 0.005,
+            opacity: 0.35,
+            cornerRadius: 0.008,
+            useBorder: false,
+            borderColor: .clear
+        )
+        result.modelEntity.components.set(CollisionComponent(
+            shapes: [result.collisionShape], mode: .default))
+        result.modelEntity.components.set(InputTargetComponent())
+        result.modelEntity.components.set(HoverEffectComponent())
+        return result.modelEntity
     }
 
     private func clearConnections() {
@@ -3201,9 +3751,6 @@ struct RoomConceptCardView: View {
             .foregroundStyle(.secondary)
         }
         .padding(10)
-        .frame(width: 180, alignment: .leading)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -3220,12 +3767,6 @@ struct RoomDocOrbitCardView: View {
                 .lineLimit(1)
         }
         .padding(8)
-        .frame(width: 150, alignment: .leading)
-        .background(.thinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.blue.opacity(0.35), lineWidth: 1))
     }
 }
 
@@ -3266,9 +3807,6 @@ struct RoomConceptDetailView: View {
             }
         }
         .padding(14)
-        .frame(width: 260, alignment: .leading)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 #endif

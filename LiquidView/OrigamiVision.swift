@@ -307,8 +307,10 @@ final class VisionModel {
         var byKey: [String: Int] = [:]
         var docConceptKeys: [String: Set<String>] = [:]
         for (recordID, topics) in allPaperTopics {
-            guard let entry = index.byID[recordID] else { continue }
-            let docID = entry.doc.id
+            // allPaperTopics is keyed by EPUB record IDs which are not in
+            // the liquid-doc index. Use recordID directly as sourceDocID so
+            // topics always surface even when no IndexEntry exists.
+            let docID = index.byID[recordID]?.doc.id ?? recordID
             var keys: Set<String> = []
             for topic in topics where !topic.isEmpty {
                 let key = MergedConcept.key(for: topic)
@@ -1183,9 +1185,11 @@ struct VisionDataView: View {
     /// Lanes apart, or every data set overlaid in one field.
     @AppStorage("timeSpreadLayout") private var timeSpreadLayoutRaw =
         TimeSpreadLayout.lanes.rawValue
+    @AppStorage("visionTheme") private var visionThemeRaw = VisionTheme.light.rawValue
     /// What lies written on the physical floor beneath the corridor —
-    /// two lanes, one per arm: this dialog sets its own side's.
+    /// three bands: left, middle, right.
     @AppStorage("floorShow") private var floorShowRaw = FloorShow.world.rawValue
+    @AppStorage("floorShowMiddle") private var floorShowMiddleRaw = FloorShow.nothing.rawValue
     @AppStorage("floorShowRight") private var floorShowRightRaw = FloorShow.nothing.rawValue
     /// The snap-to-wall option, one per graph — this dialog offers its
     /// own side's.
@@ -1208,12 +1212,32 @@ struct VisionDataView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    Picker("Floor", selection: wall == "left"
-                        ? $floorShowRaw : $floorShowRightRaw) {
+                    Picker("Theme", selection: $visionThemeRaw) {
+                        ForEach(VisionTheme.allCases) { theme in
+                            Text(theme.displayName).tag(theme.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Picker("Left Timeline", selection: $floorShowRaw) {
                         ForEach(FloorShow.allCases) { show in
                             Text(show.displayName).tag(show.rawValue)
                         }
-                        // The user's own timelines, curated on the Mac.
+                        ForEach(model.userFloorEntries) { entry in
+                            Text(entry.name).tag("user:" + entry.slug)
+                        }
+                    }
+                    Picker("Middle Timeline", selection: $floorShowMiddleRaw) {
+                        ForEach(FloorShow.allCases) { show in
+                            Text(show.displayName).tag(show.rawValue)
+                        }
+                        ForEach(model.userFloorEntries) { entry in
+                            Text(entry.name).tag("user:" + entry.slug)
+                        }
+                    }
+                    Picker("Right Timeline", selection: $floorShowRightRaw) {
+                        ForEach(FloorShow.allCases) { show in
+                            Text(show.displayName).tag(show.rawValue)
+                        }
                         ForEach(model.userFloorEntries) { entry in
                             Text(entry.name).tag("user:" + entry.slug)
                         }
@@ -1636,14 +1660,8 @@ struct VisionReaderView: View {
         let pages = horizontalPages(of: doc)
         let pose = model.pose(of: docID)
         let columnWidth: CGFloat = pose == .flat ? 280 : 560
-        // The curve — each column yawing toward the centre, wearing
-        // its own glass — belongs to the ROOM. On the Reading Desk the
-        // document is one continuous sheet: no gaps, no yaw, the
-        // panel's own paper behind everything.
-        let curved = pose == .upright && !isDesk
         let gap: CGFloat = isDesk ? 0 : 12
         let fullWidth = CGFloat(pages.count) * (columnWidth + gap)
-        let centre = Double(pages.count - 1) / 2
         return ScrollView(.horizontal) {
             LazyHStack(alignment: .top, spacing: gap) {
                 ForEach(Array(pages.enumerated()), id: \.offset) { index, page in
@@ -1666,20 +1684,10 @@ struct VisionReaderView: View {
                         }
                         .padding(24)
                     }
-                    // Flat on the table, the columns halve with the type.
                     .frame(width: columnWidth)
                     .containerRelativeFrame(.vertical)
-                    // In the room each column wears its own glass —
-                    // BEFORE the yaw, so the background curves with
-                    // the column and no flat slab pokes through the
-                    // arc. On the desk the panel's paper carries all.
                     .glassBackgroundEffect(in: .rect(cornerRadius: 18),
                                            displayMode: isDesk ? .never : .always)
-                    .rotation3DEffect(
-                        .degrees(curved ? (Double(index) - centre) * -5 : 0),
-                        axis: (x: 0, y: 1, z: 0))
-                    .offset(z: curved
-                        ? CGFloat(pow(Double(index) - centre, 2)) * 14 : 0)
                 }
             }
             .scrollTargetLayout()

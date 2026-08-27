@@ -209,6 +209,13 @@ final class ArmMenu {
     func setChipVisible(_ id: String, _ visible: Bool) {
         items[id]?.isEnabled = visible
     }
+
+    /// Relabels a chip in place — the label child carries the
+    /// ViewAttachmentComponent, so we replace it there.
+    func setChipTitle(_ id: String, _ title: String) {
+        guard let label = items[id]?.children.first else { return }
+        label.components.set(ViewAttachmentComponent(rootView: ArmChipView(text: title)))
+    }
 }
 
 // MARK: -
