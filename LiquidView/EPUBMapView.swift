@@ -41,6 +41,9 @@ struct EPUBMapItem: ItemProtocol {
     var isAside = false
     /// How many raised articles cite this work — drives card depth.
     var citationCount: Int = 1
+    /// Stamped with the current visionTheme at build time so a theme
+    /// switch makes all items visually unequal — forcing a full card rebuild.
+    var visionTheme: String = ""
 
     var isAttachmentsEnabled: Bool { kind == .concept && isSelected }
 
@@ -52,6 +55,7 @@ struct EPUBMapItem: ItemProtocol {
             && kind == other.kind && isPinned == other.isPinned
             && isAside == other.isAside && isSelected == other.isSelected
             && isShared == other.isShared && citationCount == other.citationCount
+            && visionTheme == other.visionTheme
     }
 }
 
@@ -461,11 +465,23 @@ struct EPUBMapView: View {
         if conceptSpaceMode {
             items += buildConceptItems()
         }
+        // Stamp every item with the current theme so a theme switch makes
+        // them visually unequal to their cached counterparts, triggering a
+        // full card face rebuild rather than reusing stale light/dark textures.
+        for i in items.indices { items[i].visionTheme = visionThemeRaw }
         rebuildDeepRank()
         updateSankey()
-        selectedCitationLines.rebuild(items: items)
-        conceptConnectionLines.rebuild(items: items, concepts: model.aiPaperConcepts)
-        citedToDeepLines.rebuild(items: items)
+        // Suppress ALL connecting lines while any reading panel is open.
+        let linesActive = model.openDocIDs.isEmpty
+        citationLines.rebuild(
+            docCitations: linesActive ? model.openDocCitations : [:],
+            items: items,
+            readerPanels: readerPanels,
+            readingDeskDocID: model.readingDeskDocID)
+        selectedCitationLines.rebuild(items: linesActive ? items : [])
+        conceptConnectionLines.rebuild(items: linesActive ? items : [],
+                                       concepts: linesActive ? model.aiPaperConcepts : [])
+        citedToDeepLines.rebuild(items: linesActive ? items : [])
     }
 
     /// Concept cards: a row of tiles in front of the article wall.
@@ -797,11 +813,7 @@ struct EPUBMapView: View {
                 reload()
             }
             .onChange(of: model.openDocCitations) {
-                citationLines.rebuild(
-                    docCitations: model.openDocCitations,
-                    items: items,
-                    readerPanels: readerPanels,
-                    readingDeskDocID: model.readingDeskDocID)
+                reload()
             }
             // The pile can change from the Mac (the standing file in
             // the community folder) as well as the arm chips.
@@ -841,11 +853,6 @@ struct EPUBMapView: View {
                         updateSankey()
                     }
                 }
-                citationLines.rebuild(
-                    docCitations: model.openDocCitations,
-                    items: items,
-                    readerPanels: readerPanels,
-                    readingDeskDocID: model.readingDeskDocID)
                 reload()
             }
             .onAppear {
@@ -1124,6 +1131,37 @@ struct EPUBMapView: View {
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2.5)
                 .opacity(0.5)
+        } else if item.kind == .concept {
+            // Knowledge Space node style: glass card with serif title and
+            // optional description, thin border that brightens on selection.
+            VStack(spacing: 4) {
+                Text(item.title)
+                    .font(.system(size: 12, weight: .semibold, design: .serif))
+                    .foregroundStyle(dark ? Color.white : Color.primary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                if !item.author.isEmpty {
+                    Text(item.author)
+                        .font(.system(size: 9, design: .serif))
+                        .foregroundStyle(dark ? Color.white.opacity(0.65) : Color.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(minWidth: 90, maxWidth: 200)
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(.regularMaterial)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(
+                        item.isSelected ? Color.accentColor : Color.blue.opacity(0.35),
+                        lineWidth: item.isSelected ? 2.5 : 1
+                    )
+            )
         } else {
             // Half-size type for the half-size cards.
             let titleSize: CGFloat = switch item.kind {
@@ -1140,13 +1178,12 @@ struct EPUBMapView: View {
                             .foregroundStyle(Color(red: 0.72, green: 0.42, blue: 0.06))
                     }
                     Text(item.title)
-                        .font(AppFonts.body(titleSize,
-                                            weight: item.kind == .concept ? .regular : .semibold))
+                        .font(AppFonts.body(titleSize, weight: .semibold))
                         .foregroundStyle(dark ? Color.white : Color.primary)
                         .lineLimit(item.kind == .citedDeep ? 2 : 3)
                 }
                 Text(item.author)
-                    .font(.system(size: item.kind == .article ? 5.5 : 5.5))
+                    .font(.system(size: 5.5))
                     .foregroundStyle(dark ? Color.white.opacity(0.55) : Color.secondary)
                     .lineLimit(item.kind == .citedDeep ? 1 : 2)
             }
@@ -1197,6 +1234,9 @@ struct EPUBMapView: View {
             min(0.005 + Float(max(1, item.citationCount) - 1) * 0.010, 0.07)
         case .article: 0.01
         }
+        // Concept cards wear a glass face (SwiftUI .regularMaterial) —
+        // the box body must be invisible so only the SwiftUI overlay shows.
+        let conceptBorder = item.kind == .concept
         let box = ModelEntity.box(
             with: texturedPlane,
             // The same face on the card's back, turned to read — a
@@ -1208,22 +1248,19 @@ struct EPUBMapView: View {
             opacity: opacity,
             cornerRadius: 0.01,
             // The selected card wears the lab's ember — the highlight
-            // that anchors the citation lines.
-            useBorder: item.isSelected,
-            borderColor: item.isSelected
+            // that anchors the citation lines. Concept cards skip this
+            // because their SwiftUI overlay draws the selection border.
+            useBorder: item.isSelected && !conceptBorder,
+            borderColor: item.isSelected && !conceptBorder
                 ? UIColor(red: 0.72, green: 0.42, blue: 0.06, alpha: 1) : .clear,
             materialMode: .none
         )
-        // Concept cards: transparent background, fully opaque text.
-        // Replace the opaque box material with a blended one so only
-        // the paper fades — the texturedPlane children are unaffected.
-        if item.kind == .concept, var model = box.modelEntity.model {
+        // Concept cards: the glass background lives in the SwiftUI cardFace.
+        // Strip the box body to fully transparent so it doesn't double up.
+        if conceptBorder, var model = box.modelEntity.model {
             var mat = UnlitMaterial()
-            let conceptTint: UIColor = dark
-                ? UIColor(red: 0.10, green: 0.12, blue: 0.28, alpha: 0.55)
-                : UIColor(red: 0.88, green: 0.92, blue: 1.0, alpha: 0.45)
-            mat.color = .init(tint: conceptTint)
-            mat.blending = .transparent(opacity: 1.0)
+            mat.color = .init(tint: .clear)
+            mat.blending = .transparent(opacity: 0.0)
             model.materials = [mat]
             box.modelEntity.model = model
         }
