@@ -84,7 +84,10 @@ enum ReaderTheme: String, CaseIterable, Identifiable, Sendable {
     var css: String {
         switch self {
         case .highContrast:
-            return ""
+            // Force light rendering so the html background (visible outside
+            // the EPUB body column) matches the body instead of going dark
+            // in macOS dark mode for EPUBs that only declare a light background.
+            return ":root { color-scheme: light; }"
         case .sepia:
             return themeCSS(lightBackground: "#eee2cc", lightText: "#32281d",
                             darkBackground: "#393329", darkText: "#ede3d3")

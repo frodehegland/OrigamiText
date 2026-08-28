@@ -119,20 +119,24 @@ struct EPUBLibraryListView: View {
             ForEach(records) { record in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        if model.isTopOfPile(record) {
-                            Image(systemName: "pin.fill")
-                                .font(.caption)
-                                .foregroundStyle(EmberIconLabelStyle.ember)
-                        }
+                        Image(systemName: "pin.fill")
+                            .font(.caption)
+                            .foregroundStyle(EmberIconLabelStyle.ember)
+                            .opacity(model.isTopOfPile(record) ? 1 : 0)
                         Text(record.title)
                             .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
                             .fontWeight(model.isUnread(record) ? .bold : .regular)
                             .lineLimit(2)
                     }
-                    HStack(spacing: 6) {
-                        Text(record.author)
-                        if let filed = model.epubFolder(for: record.id), !inFolder {
-                            Text("· \(filed)")
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Image(systemName: "pin.fill")
+                            .font(.caption)
+                            .opacity(0)
+                        HStack(spacing: 6) {
+                            Text(record.author)
+                            if let filed = model.epubFolder(for: record.id), !inFolder {
+                                Text("· \(filed)")
+                            }
                         }
                     }
                     .font(.caption)
@@ -141,11 +145,16 @@ struct EPUBLibraryListView: View {
                     // The reader's whole-document annotation, quiet
                     // lines under the author.
                     if let note = model.documentAnnotationNote(forRecordID: record.id) {
-                        Text(note)
-                            .font(.caption)
-                            .italic()
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(2)
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Image(systemName: "pin.fill")
+                                .font(.caption)
+                                .opacity(0)
+                            Text(note)
+                                .font(.caption)
+                                .italic()
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(2)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -239,30 +248,39 @@ struct EPUBRecordRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
-                if model.isTopOfPile(record) {
-                    Image(systemName: "pin.fill")
-                        .font(.caption)
-                        .foregroundStyle(EmberIconLabelStyle.ember)
-                }
+                Image(systemName: "pin.fill")
+                    .font(.caption)
+                    .foregroundStyle(EmberIconLabelStyle.ember)
+                    .opacity(model.isTopOfPile(record) ? 1 : 0)
                 Text(record.title)
                     .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
                     .fontWeight(model.isUnread(record) ? .bold : .regular)
                     .lineLimit(2)
             }
             if showsSubtitle {
-                Text(record.author)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "pin.fill")
+                        .font(.caption)
+                        .opacity(0)
+                    Text(record.author)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             // The reader's whole-document annotation, quiet lines
             // under the author.
             if let note = model.documentAnnotationNote(forRecordID: record.id) {
-                Text(note)
-                    .font(.caption)
-                    .italic()
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(2)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "pin.fill")
+                        .font(.caption)
+                        .opacity(0)
+                    Text(note)
+                        .font(.caption)
+                        .italic()
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

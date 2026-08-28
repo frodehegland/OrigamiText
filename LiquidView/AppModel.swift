@@ -1118,6 +1118,24 @@ final class AppModel {
             // iCloud placeholder: present when the file hasn't been downloaded locally.
             try? FileManager.default.removeItem(
                 at: communityFolder.appendingPathComponent("." + record.folder + ".epub.icloud"))
+            // Also sweep for files whose identity key maps to this record's
+            // folder — catches cases where the user's original filename
+            // differs from the identity-safe name the app derives from it.
+            if let enumerator = FileManager.default.enumerator(
+                at: communityFolder,
+                includingPropertiesForKeys: [],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
+                for case let url as URL in enumerator
+                where url.pathExtension.lowercased() == "epub" {
+                    let n = url.deletingPathExtension().lastPathComponent
+                    let id = LiquidDoc.identityKeyID(inFileName: n) ?? n
+                    let safe = id.replacingOccurrences(of: "/", with: "_")
+                                 .replacingOccurrences(of: ":", with: "_")
+                    if safe == record.folder {
+                        try? FileManager.default.removeItem(at: url)
+                    }
+                }
+            }
         }
         epubRecords.removeAll { $0.id == record.id }
         unfileEPUB(record.id)

@@ -219,6 +219,7 @@ struct OrigamiReadingView: View {
     /// The windowed measure, Wider/Narrower in the Aa popover.
     @AppStorage("readingMeasure") private var windowedMeasure = 680.0
     @State private var windowState = ReaderWindowState()
+    @State private var showTreeSheet = false
 
     /// The reading column's width: the chosen points in a window; in
     /// full screen, the chosen percentage of this display's width.
@@ -729,6 +730,15 @@ struct OrigamiReadingView: View {
         }
         .sheet(isPresented: $showReferences) {
             ReferencesSheet(doc: doc)
+        }
+        .sheet(isPresented: $showTreeSheet) {
+            CitationTreeView()
+                .environment(model)
+        }
+        .onChange(of: model.citationTreeTarget?.graphKey) {
+            if windowState.isFullScreen {
+                showTreeSheet = true
+            }
         }
         // A tapped citation opens the source's card; a fold-to-concepts
         // term opens its definition; every other link opens as links do.
@@ -1970,7 +1980,7 @@ struct OrigamiReadingView: View {
                                        trailingStretch: trailingStretch,
                                        closeStretch: closeStretch),
                 baseFont: nsFont(for: paragraph),
-                lineSpacing: CGFloat(lineSpacing),
+                lineSpacing: CGFloat(effectiveLineSpacing),
                 inkColor: inkColor(for: paragraph),
                 dimmed: dimmed,
                 dimInk: themeDimmed.map(NSColor.init) ?? .secondaryLabelColor,
@@ -2242,7 +2252,7 @@ struct OrigamiReadingView: View {
     /// reader's ⌘⇧+/⌘⇧− adjustment.
     private func fontSize(for paragraph: LiquidDoc.Paragraph) -> CGFloat {
         guard let level = paragraph.heading else {
-            return max(NSFont.preferredFont(forTextStyle: .body).pointSize + fontDelta, 8)
+            return max(NSFont.preferredFont(forTextStyle: .body).pointSize + effectiveFontDelta, 8)
         }
         return headingPointSize(level: level)
     }
@@ -2273,6 +2283,13 @@ struct OrigamiReadingView: View {
 
     /// The air between paragraphs.
     private var flowSpacing: CGFloat { 18 }
+
+    private var effectiveFontDelta: Double {
+        readerMode == .focus ? fontDelta + 1 : fontDelta
+    }
+    private var effectiveLineSpacing: Double {
+        readerMode == .focus ? lineSpacing * 2 : lineSpacing
+    }
 
     /// One point in either direction, for every window at once,
     /// remembered until changed.

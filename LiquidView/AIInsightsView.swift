@@ -192,7 +192,7 @@ struct AIInsightsView: View {
                         }
                     }
                 } label: {
-                    HStack(spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Image(systemName: unfurledSections.contains(section.id)
                               ? "chevron.down" : "chevron.right")
                             .font(.caption)
@@ -204,8 +204,12 @@ struct AIInsightsView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 6)
+                if let first = section.paragraphs.first {
+                    ParagraphView(paragraph: first, isHighlighted: false)
+                        .padding(.leading, 18)
+                }
                 if unfurledSections.contains(section.id) {
-                    ForEach(section.paragraphs) { paragraph in
+                    ForEach(section.paragraphs.dropFirst()) { paragraph in
                         ParagraphView(paragraph: paragraph, isHighlighted: false)
                     }
                     .padding(.leading, 18)

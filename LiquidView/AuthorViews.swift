@@ -6,6 +6,7 @@ struct AuthorListView: View {
     /// A merge awaiting approval: the folded card shown in the contact
     /// form, and the records it replaces once saved.
     @State private var pendingMerge: PendingMerge?
+    @State private var contactPerson: Person?
 
     private struct PendingMerge: Identifiable {
         let merged: Person
@@ -32,10 +33,15 @@ struct AuthorListView: View {
                 }
                 .tag(author.name)
                 .contextMenu {
+                    Button("View Contact") {
+                        contactPerson = model.people.person(named: author.name)
+                            ?? Person(displayName: author.name)
+                    }
                     // Two spellings, two cards, one person: fold another
                     // author into this one. The merged card shows for
                     // approval before anything changes.
                     if authors.count > 1 {
+                        Divider()
                         Menu("Merge with Another") {
                             ForEach(authors.filter { $0.id != author.id }) { other in
                                 Button(other.name) {
@@ -59,6 +65,11 @@ struct AuthorListView: View {
             PersonFormView(person: merge.merged,
                            heading: "Approve Merge — “\(merge.absorbedName)” folds into this record") { approved in
                 model.approveMergedPerson(approved, replacing: merge.originals)
+            }
+        }
+        .sheet(item: $contactPerson) { person in
+            PersonFormView(person: person, heading: "Contact Record") { updated in
+                model.people.upsert(updated)
             }
         }
     }
