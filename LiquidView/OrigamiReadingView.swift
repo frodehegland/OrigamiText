@@ -206,6 +206,9 @@ struct OrigamiReadingView: View {
     @AppStorage("textColorRules") private var colorRulesRaw =
         TextColorRule.encodeList(TextColorRule.defaultRules)
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+
+    private var readerTheme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
 
     private var coloringMode: TextColoringMode {
         TextColoringMode(rawValue: coloringModeRaw) ?? .off
@@ -328,6 +331,25 @@ struct OrigamiReadingView: View {
     // (p), broken into flow lines (f), and each paragraph's key
     // sentence bolded (b).
     @State private var expandParagraphs = false
+    @State private var showsFocusColorPicker = false
+    @State private var showsFocusFlow = false
+    @AppStorage("bionicReading") private var bionicReading = false
+    @AppStorage("showsReadingRuler") private var showsReadingRuler = false
+    @State private var mouseWindowY: CGFloat? = nil
+    @State private var rulerMonitor: Any?
+    // RSVP
+    @AppStorage("rsvpWPM") private var rsvpWPM = 250.0
+    @State private var showsRSVP = false
+    @State private var rsvpWords: [String] = []
+    @State private var rsvpWordIndex = 0
+    @State private var rsvpPlaying = false
+    // Sentence-at-a-time
+    @State private var sentenceMode = false
+    @State private var sentenceIndex = 0
+    // Read Aloud
+    @State private var readAloud = ReadAloudController()
+    @AppStorage(AppSettings.readAloudRateKey) private var readAloudRate: Double = 1.0
+    @AppStorage(AppSettings.readAloudVoiceIDKey) private var readAloudVoiceID = ""
 
     @State private var boldKeySentences = false
     /// The model's paragraph breaks, cached per paragraph id.
@@ -458,11 +480,11 @@ struct OrigamiReadingView: View {
         OrigamiCitationStyle(rawValue: citationsRaw) ?? .authorDate
     }
 
-    // MARK: - Theme (OT: the system's own inks)
+    // MARK: - Theme
 
-    private var themeText: Color? { nil }
-    private var themeHeading: Color? { nil }
-    private var themeDimmed: Color? { Color.secondary }
+    private var themeText: Color? { readerTheme.textColor(for: colorScheme) }
+    private var themeHeading: Color? { readerTheme.textColor(for: colorScheme) }
+    private var themeDimmed: Color? { readerTheme.textColor(for: colorScheme).map { $0.opacity(0.55) } ?? Color.secondary }
 
     /// A paragraph's ink for the AppKit text view.
     private func inkColor(for paragraph: LiquidDoc.Paragraph) -> NSColor? {
@@ -536,12 +558,13 @@ struct OrigamiReadingView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ReadingFootBar(
                 modes: availableModes,
-                foldLevelLabel: model.readerFindFoldTerm.map { "Finding “\($0)”" }
-                    ?? (foldLevel > 0 ? "Folded — level \(foldLevel)" : nil),
+                foldLevelLabel: model.readerFindFoldTerm.map { "Finding \u{201C}\($0)\u{201D}" }
+                    ?? (foldLevel > 0 ? "Folded \u{2014} level \(foldLevel)" : nil),
                 contentsDisabled: sections.isEmpty,
                 showContents: $showContents,
                 contents: { AnyView(contentsList) },
-                typeMenu: { AnyView(typeMenu) })
+                typeMenu: { AnyView(typeMenu) },
+                accessoryContent: { AnyView(accessoryBarContent) })
         }
         // A fold asked for from the foot (or ⌘−/⌘+) resets the opened
         // sections — the shape changed under them.
@@ -551,7 +574,8 @@ struct OrigamiReadingView: View {
         .onChange(of: foldTargetRaw) {
             expandedFold = []
         }
-        .background(Color(nsColor: .textBackgroundColor).ignoresSafeArea())
+        .background((readerTheme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor))
+            .ignoresSafeArea())
         // Where this window is: full screen or not, and on which kind
         // of display — the full-screen measure follows.
         .background {
@@ -622,6 +646,25 @@ struct OrigamiReadingView: View {
                     window.toggleFullScreen(nil)
                     return nil
                 }
+                // Space — toggle Read Aloud. If already active, pause/resume.
+                // If not active: read selected text, or start from the current page.
+                if event.keyCode == 49 {   // Space
+                    if self.readAloud.isPlaying || self.readAloud.isPaused {
+                        self.readAloud.togglePlayPause()
+                    } else {
+                        let selection = self.readAloud.selectedText()
+                        let currentSections = self.currentReadingSections
+                        let units = self.readAloud.makeUnits(
+                            from: self.doc,
+                            currentSections: currentSections,
+                            selection: selection)
+                        let opts = SpeechOptions(
+                            rate: Float(self.readAloudRate),
+                            voiceID: self.readAloudVoiceID)
+                        self.readAloud.startReading(units, options: opts)
+                    }
+                    return nil
+                }
                 guard let letter = event.charactersIgnoringModifiers?.lowercased(),
                       letter == "p" || letter == "f" || letter == "b"
                 else { return event }
@@ -681,6 +724,14 @@ struct OrigamiReadingView: View {
                 }
                 return nil
             }
+            rulerMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { event in
+                guard self.showsReadingRuler else { return event }
+                if let contentView = (event.window ?? NSApp.keyWindow)?.contentView {
+                    let h = contentView.bounds.height
+                    self.mouseWindowY = h - event.locationInWindow.y
+                }
+                return event
+            }
         }
         .onDisappear {
             if let tabMonitor { NSEvent.removeMonitor(tabMonitor) }
@@ -691,6 +742,9 @@ struct OrigamiReadingView: View {
             pinchMonitor = nil
             if let swipeMonitor { NSEvent.removeMonitor(swipeMonitor) }
             swipeMonitor = nil
+            if let rulerMonitor { NSEvent.removeMonitor(rulerMonitor) }
+            rulerMonitor = nil
+            readAloud.stopReading()
         }
         // A note being written: Save stands its first sentence where
         // the ctrl-click fell — a free slip on the page, touching no
@@ -940,6 +994,198 @@ struct OrigamiReadingView: View {
         }
     }
 
+    // MARK: - Focus mode accessory popovers
+
+    /// A grid of coloured circles — one per theme — for quick theme
+    /// switching from the Focus and Horizontal nav bars.
+    @ViewBuilder private var focusColorView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Colour Theme")
+                .font(.callout.weight(.medium))
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(30), spacing: 4), count: 6),
+                      spacing: 4) {
+                ForEach(ReaderTheme.allCases) { theme in
+                    let isSelected = themeRaw == theme.rawValue
+                    let bg = theme.background(for: colorScheme) ?? Color.white
+                    Button { themeRaw = theme.rawValue } label: {
+                        Circle()
+                            .fill(bg)
+                            .frame(width: 26, height: 26)
+                            .overlay(
+                                Circle().strokeBorder(
+                                    isSelected ? Color.accentColor : Color.clear,
+                                    lineWidth: 2)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(theme.displayName)
+                }
+            }
+        }
+        .padding(12)
+    }
+
+    /// Text size, line spacing, column width, bionic reading, and ruler
+    /// — mirrors the Aa menu but right at hand in Focus / Horizontal.
+    @ViewBuilder private var focusFlowView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            focusFlowRow("Size") {
+                Button { stepFontSize(by: -1) } label: { Image(systemName: "minus.circle") }
+                    .buttonStyle(.plain)
+                Text("\(fontDelta >= 0 ? "+" : "")\(Int(fontDelta))")
+                    .font(.callout.monospacedDigit())
+                    .frame(width: 36, alignment: .center)
+                Button { stepFontSize(by: 1) } label: { Image(systemName: "plus.circle") }
+                    .buttonStyle(.plain)
+            }
+            focusFlowRow("Spacing") {
+                Button { stepLineSpacing(by: -1) } label: { Image(systemName: "minus.circle") }
+                    .buttonStyle(.plain)
+                Text("\(Int(lineSpacing))")
+                    .font(.callout.monospacedDigit())
+                    .frame(width: 36, alignment: .center)
+                Button { stepLineSpacing(by: 1) } label: { Image(systemName: "plus.circle") }
+                    .buttonStyle(.plain)
+            }
+            focusFlowRow("Width") {
+                Button { windowedMeasure = max(windowedMeasure - 40, 380) } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.plain)
+                Text("\(Int(windowedMeasure))")
+                    .font(.callout.monospacedDigit())
+                    .frame(width: 36, alignment: .center)
+                Button { windowedMeasure = min(windowedMeasure + 40, 1200) } label: {
+                    Image(systemName: "plus.circle")
+                }
+                .buttonStyle(.plain)
+            }
+            Divider()
+            Toggle(isOn: $bionicReading) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Bionic Reading")
+                    Text("Bold the first half of each word")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            Toggle(isOn: $showsReadingRuler) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Reading Ruler")
+                    Text("Highlight the line under the cursor")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+        }
+        .padding(12)
+        .frame(minWidth: 220)
+    }
+
+    @ViewBuilder private func focusFlowRow<C: View>(_ label: String,
+                                                    @ViewBuilder controls: () -> C) -> some View {
+        HStack(spacing: 0) {
+            Text(label)
+                .foregroundStyle(.secondary)
+                .frame(width: 60, alignment: .leading)
+            Spacer()
+            controls()
+        }
+    }
+
+    /// Accessibility controls shown in the foot bar across all reading modes.
+    @ViewBuilder private var accessoryBarContent: some View {
+        HStack(spacing: 8) {
+            Button { showsFocusFlow.toggle() } label: {
+                Image(systemName: "textformat.size")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Flow — text size, line spacing, and column width")
+            .popover(isPresented: $showsFocusFlow) { focusFlowView }
+
+            Button { showsFocusColorPicker.toggle() } label: {
+                Image(systemName: "paintpalette")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Colour — reading theme")
+            .popover(isPresented: $showsFocusColorPicker) { focusColorView }
+
+            Button { expandParagraphs.toggle() } label: {
+                Text("¶")
+                    .font(.callout.weight(expandParagraphs ? .semibold : .regular))
+                    .foregroundStyle(expandParagraphs ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(expandParagraphs
+                  ? "AI paragraph breaks on — click to turn off"
+                  : "Paragraphs — AI finds logical breaks in long paragraphs")
+
+            Button {
+                let pages = horizontalPages
+                let idx = min(max(focusIndex, 0), max(pages.count - 1, 0))
+                let allText = idx < pages.count
+                    ? pages[idx].flatMap(\.paragraphs).map(\.text).joined(separator: " ")
+                    : ""
+                rsvpWords = allText
+                    .components(separatedBy: .whitespacesAndNewlines)
+                    .filter { !$0.isEmpty }
+                rsvpWordIndex = 0
+                rsvpPlaying = false
+                showsRSVP = true
+            } label: {
+                Image(systemName: "play.circle")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Speed — read word by word at your chosen pace")
+
+            Button {
+                sentenceIndex = 0
+                sentenceMode.toggle()
+            } label: {
+                Image(systemName: sentenceMode ? "1.circle.fill" : "1.circle")
+                    .foregroundStyle(sentenceMode ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(sentenceMode
+                  ? "Sentence mode on — click to turn off"
+                  : "One sentence at a time — ← → to step")
+
+            Button {
+                if readAloud.isPlaying || readAloud.isPaused {
+                    readAloud.togglePlayPause()
+                } else {
+                    let selection = readAloud.selectedText()
+                    let units = readAloud.makeUnits(
+                        from: doc,
+                        currentSections: currentReadingSections,
+                        selection: selection)
+                    let opts = SpeechOptions(
+                        rate: Float(readAloudRate),
+                        voiceID: readAloudVoiceID)
+                    readAloud.startReading(units, options: opts)
+                }
+            } label: {
+                Image(systemName: readAloud.isPlaying
+                      ? "speaker.wave.2.fill"
+                      : (readAloud.isPaused ? "speaker.fill" : "speaker"))
+                    .foregroundStyle(
+                        (readAloud.isPlaying || readAloud.isPaused)
+                        ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(readAloud.isPlaying
+                  ? "Reading aloud — click or Space to pause"
+                  : (readAloud.isPaused
+                     ? "Paused — click or Space to resume"
+                     : "Read aloud — Space to start"))
+        }
+    }
+
     /// One section into view, whichever mode is reading.
     private func jump(to section: OrigamiSection) {
         if readerMode == .horizontal || readerMode == .focus {
@@ -951,6 +1197,174 @@ struct OrigamiReadingView: View {
         // Folded or flowing: land on the section's first paragraph.
         if let target = section.heading?.id ?? section.paragraphs.first?.id {
             pendingScrollID = target
+        }
+    }
+
+    // MARK: - RSVP
+
+    @ViewBuilder private var rsvpOverlay: some View {
+        if showsRSVP, !rsvpWords.isEmpty {
+            ZStack {
+                (readerTheme.background(for: colorScheme)
+                    ?? Color(nsColor: .textBackgroundColor))
+                    .ignoresSafeArea()
+                VStack(spacing: 24) {
+                    Spacer()
+                    Text(rsvpWords[min(rsvpWordIndex, rsvpWords.count - 1)])
+                        .font(.system(size: 44 + fontDelta, weight: .regular))
+                        .foregroundStyle(themeText.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
+                        .frame(minWidth: 240, alignment: .center)
+                        .contentTransition(.numericText())
+                        .animation(.easeInOut(duration: 0.05), value: rsvpWordIndex)
+                    Text("\(rsvpWordIndex + 1) / \(rsvpWords.count)")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    HStack(spacing: 24) {
+                        Button {
+                            rsvpWordIndex = max(rsvpWordIndex - 5, 0)
+                        } label: {
+                            Image(systemName: "backward.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .help("Back 5 words")
+                        Button {
+                            if rsvpPlaying {
+                                rsvpPlaying = false
+                            } else {
+                                rsvpPlaying = true
+                                stepRSVP()
+                            }
+                        } label: {
+                            Image(systemName: rsvpPlaying ? "pause.fill" : "play.fill")
+                                .font(.title2)
+                        }
+                        .buttonStyle(.plain)
+                        Button {
+                            rsvpWordIndex = min(rsvpWordIndex + 5, rsvpWords.count - 1)
+                        } label: {
+                            Image(systemName: "forward.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .help("Forward 5 words")
+                    }
+                    HStack(spacing: 8) {
+                        Button { rsvpWPM = max(rsvpWPM - 25, 60) } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.plain)
+                        Text("\(Int(rsvpWPM)) wpm")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 80, alignment: .center)
+                        Button { rsvpWPM = min(rsvpWPM + 25, 800) } label: {
+                            Image(systemName: "plus.circle")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Button("Close") {
+                        rsvpPlaying = false
+                        showsRSVP = false
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 16)
+                }
+            }
+        }
+    }
+
+    private func stepRSVP() {
+        guard rsvpPlaying, rsvpWordIndex < rsvpWords.count - 1 else {
+            rsvpPlaying = false
+            return
+        }
+        let delay = 60.0 / rsvpWPM
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
+            guard rsvpPlaying else { return }
+            rsvpWordIndex += 1
+            stepRSVP()
+        }
+    }
+
+    // MARK: - Sentence mode
+
+    private var currentPageSentences: [String] {
+        let pages = horizontalPages
+        let idx = min(max(focusIndex, 0), max(pages.count - 1, 0))
+        guard idx < pages.count else { return [] }
+        return pages[idx].flatMap(\.paragraphs).flatMap { para in
+            OrigamiReading.sentences(of: para.text)
+        }
+    }
+
+    @ViewBuilder private var sentenceDisplay: some View {
+        let sentences = currentPageSentences
+        let idx = sentences.isEmpty ? 0 : min(sentenceIndex, sentences.count - 1)
+        if sentences.isEmpty {
+            ContentUnavailableView("No sentences", systemImage: "text.quote")
+        } else {
+            VStack(spacing: 0) {
+                Spacer()
+                Text(sentences[idx])
+                    .font(.system(size: 18 + fontDelta, weight: .regular))
+                    .foregroundStyle(themeText.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
+                    .multilineTextAlignment(.leading)
+                    .lineSpacing(CGFloat(lineSpacing))
+                    .padding(.horizontal, 40)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: measure, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                Spacer()
+                HStack {
+                    Button {
+                        sentenceIndex = max(sentenceIndex - 1, 0)
+                    } label: {
+                        Label("Prev", systemImage: "chevron.left")
+                    }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    .disabled(idx == 0)
+                    Spacer()
+                    Text("\(idx + 1) of \(sentences.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        sentenceIndex = min(sentenceIndex + 1, sentences.count - 1)
+                    } label: {
+                        Label("Next", systemImage: "chevron.right")
+                    }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                    .disabled(idx >= sentences.count - 1)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+            }
+            .onChange(of: focusIndex) { sentenceIndex = 0 }
+        }
+    }
+
+    // MARK: - Reading ruler overlay
+
+    /// Semi-transparent band at the mouse line. Uses a GeometryReader to
+    /// get the view's origin in screen space, then converts the AppKit
+    /// mouse Y (bottom-left window origin) to a top-left view-local Y.
+    @ViewBuilder private var readingRuler: some View {
+        if showsReadingRuler, let windowY = mouseWindowY {
+            GeometryReader { geo in
+                let screenMinY = geo.frame(in: .global).minY
+                let relativeY = windowY - screenMinY
+                let height = CGFloat(lineSpacing) + 28
+                if relativeY > 0 && relativeY < geo.size.height {
+                    Rectangle()
+                        .fill(Color.accentColor.opacity(0.12))
+                        .frame(height: height)
+                        .frame(maxWidth: .infinity)
+                        .offset(y: relativeY - height / 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            .allowsHitTesting(false)
         }
     }
 
@@ -994,6 +1408,7 @@ struct OrigamiReadingView: View {
         } action: { _, offset in
             noteProgress(offset)
         }
+        .overlay { readingRuler }
     }
 
     /// The document folded to the current level: headings with their
@@ -1527,8 +1942,17 @@ struct OrigamiReadingView: View {
                 ContentUnavailableView("Nothing to Read", systemImage: "doc.text",
                                        description: Text("This document has no body."))
             } else {
-                focusColumn(pages[index], annotations: annotations,
-                            closesBook: index == pages.count - 1)
+                // Content area — switches between modes
+                if showsRSVP {
+                    rsvpOverlay
+                } else if sentenceMode {
+                    sentenceDisplay
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    focusColumn(pages[index], annotations: annotations,
+                                closesBook: index == pages.count - 1)
+                }
+                // Nav bar — always present so controls are always reachable
                 Divider()
                 HStack {
                     Button {
@@ -1537,7 +1961,7 @@ struct OrigamiReadingView: View {
                         Label("Previous", systemImage: "chevron.left")
                     }
                     .keyboardShortcut(.leftArrow, modifiers: [])
-                    .disabled(index == 0)
+                    .disabled(index == 0 || sentenceMode || showsRSVP)
 
                     Spacer()
                     Text(pageLabel(pages: pages, index: index, shown: 1))
@@ -1551,7 +1975,7 @@ struct OrigamiReadingView: View {
                         Label("Next", systemImage: "chevron.right")
                     }
                     .keyboardShortcut(.rightArrow, modifiers: [])
-                    .disabled(index >= pages.count - 1)
+                    .disabled(index >= pages.count - 1 || sentenceMode || showsRSVP)
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
@@ -1562,6 +1986,16 @@ struct OrigamiReadingView: View {
     /// The Horizontal pages — one section each, except that a heading
     /// with no body of its own never breaks to a page alone: it rides
     /// atop the section that follows.
+    /// The sections visible in the current reading mode — used to scope
+    /// Read Aloud to what is on screen rather than the whole document.
+    private var currentReadingSections: [OrigamiSection]? {
+        let mode = readerMode
+        guard mode == .horizontal || mode == .focus else { return nil }
+        let pages = horizontalPages
+        let idx = min(max(focusIndex, 0), max(pages.count - 1, 0))
+        return idx < pages.count ? pages[idx].flatMap { [$0] } : nil
+    }
+
     private var horizontalPages: [[OrigamiSection]] {
         var pages: [[OrigamiSection]] = []
         var pending: [OrigamiSection] = []
@@ -1958,6 +2392,11 @@ struct OrigamiReadingView: View {
                                trailingStretch: trailingStretch,
                                closeStretch: closeStretch,
                                dimmed: dim)
+                .background(
+                    readAloud.activeBlockID == paragraph.id
+                        ? Color.accentColor.opacity(0.10)
+                        : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 3))
         }
     }
 
@@ -1984,6 +2423,7 @@ struct OrigamiReadingView: View {
                 inkColor: inkColor(for: paragraph),
                 dimmed: dimmed,
                 dimInk: themeDimmed.map(NSColor.init) ?? .secondaryLabelColor,
+                bionicReading: bionicReading,
                 entriesFor: { clicked, windowPoint in
                     menuEntries(for: paragraph, highlights: annotations,
                                 clickedSentence: clicked,
@@ -2603,9 +3043,13 @@ struct OrigamiReadingView: View {
 /// are always there to click.
 struct ReadingFootBar: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("readerMode") private var readerModeRaw = EPUBReaderMode.faithful.rawValue
     @AppStorage("readingFoldTarget") private var foldTargetRaw =
         OrigamiReadingView.FoldTarget.headings.rawValue
+    @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+
+    private var readerTheme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
 
     /// The modes the open book offers. Transcript joins only when the
     /// book explicitly is one (its paragraphs carry speakers); Outline
@@ -2623,6 +3067,8 @@ struct ReadingFootBar: View {
     var contents: (() -> AnyView)? = nil
     /// The Aa menu's items; nil hides the Aa button.
     var typeMenu: (() -> AnyView)? = nil
+    /// Accessibility controls rendered to the right of the Aa button.
+    var accessoryContent: (() -> AnyView)? = nil
 
     private var readerMode: EPUBReaderMode {
         EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
@@ -2666,6 +3112,12 @@ struct ReadingFootBar: View {
                     .fixedSize()
                     .help("The reading's type: size, spacing, measure, marks, glossary, colour")
                 }
+                if let accessoryContent {
+                    Rectangle()
+                        .fill(.quaternary)
+                        .frame(width: 1, height: 14)
+                    accessoryContent()
+                }
             }
             // The mode words render last — topmost — so every tap on
             // Default, Scroll, the Outline group's shapes, Horizontal,
@@ -2695,7 +3147,7 @@ struct ReadingFootBar: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(readerTheme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor))
         .overlay(alignment: .top) { Divider() }
     }
 
@@ -3959,6 +4411,9 @@ private struct SelectableParagraph: NSViewRepresentable {
     /// AppKit view into a picture and swallow its clicks.
     let dimmed: Bool
     let dimInk: NSColor
+    /// Bionic Reading: bold the first half of each word to anchor the
+    /// eye and reduce regression — applied after semantic runs are laid.
+    var bionicReading: Bool = false
     /// The paragraph's verbs, built at right-click time with the
     /// sentence under the click (nil when it cannot be told) and the
     /// click's window point — so annotating without a selection takes
@@ -4067,7 +4522,38 @@ private struct SelectableParagraph: NSViewRepresentable {
             }
             out.append(NSAttributedString(string: text, attributes: attributes))
         }
+        if bionicReading { Self.applyBionic(to: out) }
         return out
+    }
+
+    /// Bold the first half of every word — the bionic reading technique.
+    private static func applyBionic(to out: NSMutableAttributedString) {
+        let str = out.string
+        let wordChars = CharacterSet.letters.union(.decimalDigits)
+        var i = str.startIndex
+        while i < str.endIndex {
+            while i < str.endIndex,
+                  !(str[i].unicodeScalars.allSatisfy { wordChars.contains($0) }) {
+                i = str.index(after: i)
+            }
+            guard i < str.endIndex else { break }
+            let wordStart = i
+            while i < str.endIndex,
+                  str[i].unicodeScalars.allSatisfy({ wordChars.contains($0) }) {
+                i = str.index(after: i)
+            }
+            let wordLen = str.distance(from: wordStart, to: i)
+            guard wordLen >= 2 else { continue }
+            let boldEnd = str.index(wordStart, offsetBy: max(1, Int(ceil(Double(wordLen) / 2.0))))
+            let nsRange = NSRange(wordStart..<boldEnd, in: str)
+            out.enumerateAttribute(.font, in: nsRange, options: []) { val, range, _ in
+                guard let font = val as? NSFont else { return }
+                let desc = font.fontDescriptor
+                    .withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.bold))
+                out.addAttribute(.font, value: NSFont(descriptor: desc, size: font.pointSize) ?? font,
+                                 range: range)
+            }
+        }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -4236,6 +4722,30 @@ private struct SelectableParagraph: NSViewRepresentable {
                 }
             }
             super.mouseDown(with: event)
+            // Double-click on whitespace selects both neighboring words.
+            guard event.clickCount == 2,
+                  let layoutManager, let textContainer, let storage = textStorage,
+                  storage.length > 0 else { return }
+            var frac: CGFloat = 0
+            let idx = layoutManager.characterIndex(
+                for: point, in: textContainer,
+                fractionOfDistanceBetweenInsertionPoints: &frac)
+            guard idx < storage.length else { return }
+            let nsStr = storage.string as NSString
+            let len = nsStr.length
+            let ch = nsStr.character(at: idx)
+            let isWS: (unichar) -> Bool = { c in
+                c == 0x0020 || c == 0x0009 || c == 0x00A0   // space, tab, nbsp
+            }
+            guard isWS(ch) else { return }
+            var left = idx
+            while left > 0, !isWS(nsStr.character(at: left - 1)) { left -= 1 }
+            var right = idx
+            while right < len, isWS(nsStr.character(at: right)) { right += 1 }
+            while right < len, !isWS(nsStr.character(at: right)) { right += 1 }
+            if left < right {
+                setSelectedRange(NSRange(location: left, length: right - left))
+            }
         }
     }
 }

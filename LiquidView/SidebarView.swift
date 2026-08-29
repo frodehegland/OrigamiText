@@ -104,6 +104,9 @@ struct SidebarView: View {
     /// What the venues shelf is called — Journals or Proceedings,
     /// chosen in Settings ▸ Layout.
     @AppStorage(AppSettings.venueLabelKey) private var venueLabel = "Journals"
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+    private var theme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
     /// The Unread narrowing for Timeline and Alphabetical, toggled from
     /// their context menus; the lists read the same keys.
     @AppStorage("libraryTimelineUnreadOnly") private var timelineUnreadOnly = false
@@ -139,7 +142,8 @@ struct SidebarView: View {
         switch item {
         case .epubsTopOfPile, .epubsTimeline, .epubsAlphabetical,
              .epubJournals, .myEPUBs, .authors, .annotations,
-             .people, .concepts, .conceptSpace:
+             .people, .concepts, .conceptSpace,
+             .timeFlows, .timelines:
             true
         case .acquisitions:
             !model.acquisitions.isEmpty
@@ -179,7 +183,8 @@ struct SidebarView: View {
                 // The Library shelf of opened EPUBs (the ways through
                 // them, the user's folders, and a "+"), then the Views.
                 librarySection
-                acquisitionsSection
+                foldersSection
+                xrSection
                 viewsSection
             }
             .listStyle(.sidebar)
@@ -222,7 +227,7 @@ struct SidebarView: View {
             .padding(.bottom, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(theme.background(for: colorScheme) ?? Color(nsColor: .controlBackgroundColor))
         .navigationTitle("Origami Text")
         // Wide enough for the longest place names ("Alphabetical",
         // journal names) with their counts beside them, at the large
@@ -342,29 +347,14 @@ struct SidebarView: View {
                 .badge(model.epubPublications.count)
                 .tag(SidebarItem.epubJournals)
             publicationSubmenus
-            // The graphs standing along the headset's corridor —
-            // curated here, carried by the community folder.
-            Label("Graphs", systemImage: "chart.line.uptrend.xyaxis")
-                .tag(SidebarItem.timeFlows)
-            // The histories lying under the corridor — the Wikidata
-            // themes and the user's own timelines.
-            Label("Timelines", systemImage: "calendar.day.timeline.left")
-                .tag(SidebarItem.timelines)
             Label(myLastName, systemImage: "person.fill")
                 .badge(myCount > 0 ? myCount : 0)
                 .tag(SidebarItem.myEPUBs)
-            ForEach(model.epubFolders, id: \.self) { folder in
-                Label(folder, systemImage: "folder")
-                    .badge(model.epubRecords(inFolder: folder).count)
-                    .tag(SidebarItem.epubFolder(folder))
+            if !model.acquisitions.isEmpty {
+                Label("To Acquire", systemImage: "arrow.down.circle")
+                    .badge(model.acquisitions.count)
+                    .tag(SidebarItem.acquisitions)
             }
-            Button {
-                model.promptNewEPUBFolder()
-            } label: {
-                Label("Add Folder", systemImage: "plus")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
         } header: {
             Text("Library")
         }
@@ -505,16 +495,40 @@ struct SidebarView: View {
         }
     }
 
-    /// "To Acquire" — a single selectable sidebar row between Library and
-    /// Views; clicking it shows the full acquisition list in the middle column.
+    /// The XR section: the headset views — the corridor's data graphs and
+    /// the floor timelines. Grouped apart from the flat library so their
+    /// spatial character reads at a glance.
     @ViewBuilder
-    private var acquisitionsSection: some View {
-        if !model.acquisitions.isEmpty {
-            Section {
-                Label("To Acquire", systemImage: "arrow.down.circle")
-                    .badge(model.acquisitions.count)
-                    .tag(SidebarItem.acquisitions)
+    private var xrSection: some View {
+        Section(isExpanded: isExpanded("XR")) {
+            Label("Graphs", systemImage: "chart.line.uptrend.xyaxis")
+                .tag(SidebarItem.timeFlows)
+            Label("Timelines", systemImage: "calendar.day.timeline.left")
+                .tag(SidebarItem.timelines)
+        } header: {
+            Text("XR")
+        }
+    }
+
+    /// User folders: the named buckets the reader has made, with the +
+    /// to add another. Sits between the Library and XR sections.
+    @ViewBuilder
+    private var foldersSection: some View {
+        Section(isExpanded: isExpanded("Folders")) {
+            ForEach(model.epubFolders, id: \.self) { folder in
+                Label(folder, systemImage: "folder")
+                    .badge(model.epubRecords(inFolder: folder).count)
+                    .tag(SidebarItem.epubFolder(folder))
             }
+            Button {
+                model.promptNewEPUBFolder()
+            } label: {
+                Label("Add Folder", systemImage: "plus")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        } header: {
+            Text("Folders")
         }
     }
 

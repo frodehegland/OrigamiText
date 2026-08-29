@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 import ImagePlayground
 import UniformTypeIdentifiers
 
@@ -42,6 +43,9 @@ enum AppSettings {
     static let tripleClickSelectsSentenceKey = "tripleClickSelectsSentence"
     static let readerHeaderColumnWidthKey = "readerHeaderColumnWidth"
     static let connectionPortraitsKey = "connectionPortraits"
+    static let readAloudRateKey = "readAloud.rate"
+    static let readAloudVoiceIDKey = "readAloud.voiceID"
+    static let readAloudEngineKey = "readAloud.engine"
 }
 
 /// Where the reader puts a letter's title, byline, and controls.
@@ -56,7 +60,7 @@ enum ReaderLayoutStyle: String, CaseIterable, Identifiable {
 /// The Settings window's tabs, addressable so other parts of the app can
 /// open Settings onto a particular one.
 enum SettingsTab: Hashable {
-    case author, editor, reading, annotation, layout, library, dialog, ai, modules, openSource
+    case author, editor, reading, assistive, annotation, layout, library, dialog, ai, modules, openSource
 }
 
 /// The app's Settings window (Origami Text → Settings…, ⌘,).
@@ -75,6 +79,9 @@ struct SettingsView: View {
             ReadingSettingsView()
                 .tabItem { Label("Reading", systemImage: "book") }
                 .tag(SettingsTab.reading)
+            AssistiveSettingsView()
+                .tabItem { Label("Assistive", systemImage: "accessibility") }
+                .tag(SettingsTab.assistive)
             AnnotationSettingsView()
                 .tabItem { Label("Annotations", systemImage: "highlighter") }
                 .tag(SettingsTab.annotation)
@@ -97,9 +104,9 @@ struct SettingsView: View {
                 .tabItem { Label("Open Source", systemImage: "shippingbox") }
                 .tag(SettingsTab.openSource)
         }
-        // Wide enough for all ten tab buttons to stand in one row —
+        // Wide enough for all eleven tab buttons to stand in one row —
         // narrower, the toolbar crops the trailing tabs.
-        .frame(width: 800)
+        .frame(width: 880)
         .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -210,6 +217,192 @@ private struct AnnotationSettingsView: View {
     }
 }
 
+// MARK: - Read Aloud settings
+
+private struct ReadAloudSettingsSection: View {
+    @AppStorage(AppSettings.readAloudEngineKey) private var engineID = "apple"
+    @AppStorage(AppSettings.readAloudRateKey) private var rate: Double = 1.0
+    @AppStorage(AppSettings.readAloudVoiceIDKey) private var voiceID = ""
+
+    private var appleVoices: [AVSpeechSynthesisVoice] { AppleSpeechEngine.availableVoices() }
+
+    var body: some View {
+        Picker("Voice", selection: $engineID) {
+            Text("Apple (system voices)").tag("apple")
+            #if arch(arm64)
+            Text("Neural \u{2014} Qwen3-TTS (on-device)").tag("qwen3")
+            #endif
+        }
+        .pickerStyle(.inline)
+
+        if engineID == "apple" {
+            Picker("System voice", selection: $voiceID) {
+                Text("Default").tag("")
+                ForEach(appleVoices, id: \.identifier) { v in
+                    Text(v.name).tag(v.identifier)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+
+        #if arch(arm64)
+        if engineID == "qwen3" {
+            Qwen3InstallRow()
+        }
+        #endif
+
+        HStack {
+            Text("Speed")
+            Slider(value: $rate, in: 0.5...2.0, step: 0.05)
+            Text(String(format: "%.2g\u{00D7}", rate))
+                .monospacedDigit()
+                .frame(width: 36, alignment: .trailing)
+        }
+    }
+}
+
+#if arch(arm64)
+private struct Qwen3InstallRow: View {
+    // Observe the shared installer directly — @Observable propagates changes
+    private var installer: VoiceInstaller { VoiceInstaller.shared }
+
+    @AppStorage("readAloud.qwen3.speaker") private var qwen3Speaker = "Ryan"
+    @AppStorage("readAloud.qwen3.instruct") private var qwen3Instruct = "Speak naturally."
+
+    private let styleOptions = [
+        "Speak naturally.",
+        "Read this as a news anchor.",
+        "Read this slowly and solemnly.",
+        "Speak in a cheerful, upbeat tone."
+    ]
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Neural voice \u{2014} Qwen3-TTS")
+                Text("On-device, ~1.8 GB. Nothing sent anywhere.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            installControl
+        }
+
+        if case .installed = installer.state {
+            Picker("Speaker", selection: $qwen3Speaker) {
+                Text("Ryan").tag("Ryan")
+                Text("Aiden").tag("Aiden")
+            }
+            .pickerStyle(.inline)
+
+            Picker("Style", selection: $qwen3Instruct) {
+                ForEach(styleOptions, id: \.self) { Text($0).tag($0) }
+            }
+            .pickerStyle(.menu)
+        }
+
+        if !VoiceInstaller.isHardwareSupported {
+            Text("Requires Apple silicon with 16 GB memory.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var installControl: some View {
+        switch installer.state {
+        case .notInstalled:
+            if VoiceInstaller.isHardwareSupported {
+                Button("Install Voice") {
+                    Task { await VoiceInstaller.shared.install() }
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Text("Requires Apple Silicon, 16 GB")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+        case .downloading(let fraction, let bps):
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ProgressView(value: fraction)
+                        .frame(width: 140)
+                    Text(downloadLabel(fraction: fraction, bps: bps))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Button {
+                    Task { await VoiceInstaller.shared.cancel() }
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+        case .verifying:
+            HStack(spacing: 6) {
+                ProgressView().scaleEffect(0.7)
+                Text("Checking files\u{2026}").font(.caption).foregroundStyle(.secondary)
+            }
+
+        case .installed(let bytes):
+            HStack(spacing: 8) {
+                Label("Installed \u{00B7} \(formatted(bytes: bytes))",
+                      systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                Button("Remove") {
+                    Task { await VoiceInstaller.shared.uninstall() }
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.red)
+            }
+
+        case .failed(let msg):
+            HStack(spacing: 8) {
+                Text(msg).font(.caption).foregroundStyle(.red)
+                Button("Retry") {
+                    Task { await VoiceInstaller.shared.install() }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func downloadLabel(fraction: Double, bps: Double) -> String {
+        let total = Int64(1_800_000_000)
+        let done = Int64(Double(total) * fraction)
+        let speed = bps > 0 ? " \u{00B7} \(formatted(bytes: Int64(bps)))/s" : ""
+        return "\(formatted(bytes: done)) of \(formatted(bytes: total))\(speed)"
+    }
+
+    private func formatted(bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+#endif
+
+// MARK: - Assistive settings
+
+private struct AssistiveSettingsView: View {
+    var body: some View {
+        Form {
+            Section {
+                ReadAloudSettingsSection()
+            } header: {
+                Text("Read Aloud")
+            } footer: {
+                Text("Press Space to start or stop reading aloud. If text is selected, only the selection is read; otherwise reading begins from the start of the current page.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Reading settings
+
 /// Reading: how EPUBs are presented — the theme (background and text
 /// colours), which follows light and dark mode.
 private struct ReadingSettingsView: View {
@@ -240,11 +433,9 @@ private struct ReadingSettingsView: View {
                         Text(theme.displayName).tag(theme.rawValue)
                     }
                 }
-                .pickerStyle(.inline)
-            } header: {
-                Text("Theme")
+                .pickerStyle(.menu)
             } footer: {
-                Text("The page's background and text colours when reading an EPUB. Text colour applies to headings too; themes follow light and dark mode.")
+                Text("Background and text colour across the whole app — lists, columns, and reading surface. Cream and Soft Peach reduce visual stress for dyslexic readers (BDA). Yellow Tint, Green Tint, and Purple Tint simulate Irlen overlays. Black on Yellow is recommended for macular degeneration. Night and Solarized suit photophobia and low-light reading. Themes follow light and dark mode.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

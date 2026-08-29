@@ -3,6 +3,15 @@ import AppKit
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+    private var theme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
+    private var themeBG: Color {
+        theme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor)
+    }
+    private var themeFG: Color {
+        theme.textColor(for: colorScheme) ?? Color.primary
+    }
     /// Full screen keeps a doorway: hovering the left edge slides the
     /// sidebar in as an overlay; moving away lets it fade.
     @State private var showsPeekSidebar = false
@@ -36,6 +45,8 @@ struct ContentView: View {
                     // The empty state sizes to its text; the peek must
                     // anchor to the window, so the pane is stretched first.
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(themeBG)
+                    .foregroundStyle(themeFG)
                     .overlay(alignment: .leading) {
                         if model.isFullScreen {
                             peekSidebar
@@ -47,23 +58,35 @@ struct ContentView: View {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .toolbar(removing: .sidebarToggle)
+                        .scrollContentBackground(.hidden)
+                        .background(themeBG)
+                        .foregroundStyle(themeFG)
                         .navigationSplitViewColumnWidth(
                             min: venueIsSelected ? 360 : 200,
                             ideal: venueIsSelected ? 440 : 220,
                             max: venueIsSelected ? 540 : 300)
                 } detail: {
                     detailPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(themeBG)
+                        .foregroundStyle(themeFG)
                 }
             } else if wideListMode {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .toolbar(removing: .sidebarToggle)
+                        .scrollContentBackground(.hidden)
+                        .background(themeBG)
+                        .foregroundStyle(themeFG)
                         .navigationSplitViewColumnWidth(
                             min: venueIsSelected ? 360 : 200,
                             ideal: venueIsSelected ? 440 : 220,
                             max: venueIsSelected ? 540 : 300)
                 } detail: {
                     listPane
+                        .scrollContentBackground(.hidden)
+                        .background(themeBG)
+                        .foregroundStyle(themeFG)
                         .safeAreaInset(edge: .bottom, spacing: 0) { findBar }
                 }
                 .onChange(of: model.current) { _, new in
@@ -76,16 +99,25 @@ struct ContentView: View {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .toolbar(removing: .sidebarToggle)
+                        .scrollContentBackground(.hidden)
+                        .background(themeBG)
+                        .foregroundStyle(themeFG)
                         .navigationSplitViewColumnWidth(
                             min: venueIsSelected ? 360 : 200,
                             ideal: venueIsSelected ? 440 : 220,
                             max: venueIsSelected ? 540 : 300)
                 } content: {
                     listPane
-                        .navigationSplitViewColumnWidth(min: 120, ideal: 380, max: 900)
+                        .scrollContentBackground(.hidden)
+                        .background(themeBG)
+                        .foregroundStyle(themeFG)
+                        .navigationSplitViewColumnWidth(min: 260, ideal: 380, max: 900)
                         .safeAreaInset(edge: .bottom, spacing: 0) { findBar }
                 } detail: {
                     detailPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(themeBG)
+                        .foregroundStyle(themeFG)
                 }
             }
         }
@@ -146,6 +178,7 @@ struct ContentView: View {
         // it away with the menu bar, and mousing to the top edge brings
         // it back — carrying the right toolbar's commands.
         .toolbar(.automatic, for: .windowToolbar)
+        .toolbarBackground(themeBG, for: .windowToolbar)
         // The layout swap happens BEFORE the transition on both doors
         // (will-enter and will-exit), deferred one turn out of the
         // notification: the split view and its scroll views must never
@@ -196,6 +229,9 @@ struct ContentView: View {
             if showsPeekSidebar || peekIsPinned {
                 HStack(spacing: 0) {
                     SidebarView()
+                        .scrollContentBackground(.hidden)
+                        .background(themeBG)
+                        .foregroundStyle(themeFG)
                         .frame(width: 220)
                     if (showsPeekList || peekIsPinned) && peekSelectionHasList {
                         Divider()
@@ -287,7 +323,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 7).fill(.background))
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.2)))
             .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(.quaternary))
             Button {
                 wideListMode.toggle()
@@ -310,7 +346,7 @@ struct ContentView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity)
-        .background(.bar)
+        .background(themeBG)
     }
 
     @ViewBuilder private var listPane: some View {
