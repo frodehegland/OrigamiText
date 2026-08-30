@@ -560,9 +560,6 @@ struct OrigamiReadingView: View {
                 modes: availableModes,
                 foldLevelLabel: model.readerFindFoldTerm.map { "Finding \u{201C}\($0)\u{201D}" }
                     ?? (foldLevel > 0 ? "Folded \u{2014} level \(foldLevel)" : nil),
-                contentsDisabled: sections.isEmpty,
-                showContents: $showContents,
-                contents: { AnyView(contentsList) },
                 typeMenu: { AnyView(typeMenu) },
                 accessoryContent: { AnyView(accessoryBarContent) })
         }
@@ -1098,14 +1095,6 @@ struct OrigamiReadingView: View {
     /// Accessibility controls shown in the foot bar across all reading modes.
     @ViewBuilder private var accessoryBarContent: some View {
         HStack(spacing: 8) {
-            Button { showsFocusFlow.toggle() } label: {
-                Image(systemName: "textformat.size")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Flow — text size, line spacing, and column width")
-            .popover(isPresented: $showsFocusFlow) { focusFlowView }
-
             Button { showsFocusColorPicker.toggle() } label: {
                 Image(systemName: "paintpalette")
                     .foregroundStyle(.secondary)
@@ -1174,15 +1163,17 @@ struct OrigamiReadingView: View {
                       ? "speaker.wave.2.fill"
                       : (readAloud.isPaused ? "speaker.fill" : "speaker"))
                     .foregroundStyle(
-                        (readAloud.isPlaying || readAloud.isPaused)
+                        readAloud.fallbackBanner != nil ? Color.orange
+                        : (readAloud.isPlaying || readAloud.isPaused)
                         ? Color.accentColor : .secondary)
             }
             .buttonStyle(.plain)
-            .help(readAloud.isPlaying
-                  ? "Reading aloud — click or Space to pause"
-                  : (readAloud.isPaused
-                     ? "Paused — click or Space to resume"
-                     : "Read aloud — Space to start"))
+            .help(readAloud.fallbackBanner
+                  ?? (readAloud.isPlaying
+                      ? "Reading aloud — click or Space to pause"
+                      : (readAloud.isPaused
+                         ? "Paused — click or Space to resume"
+                         : "Read aloud — Space to start")))
         }
     }
 
