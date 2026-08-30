@@ -32,16 +32,21 @@ private actor Qwen3ModelActor {
     }
 
     /// Stream-synthesise `text` and play it via the ring-buffer player.
+    /// Splits into short chunks so each synthesis starts with a fresh KV cache,
+    /// preventing RTF from degrading as context grows on long paragraphs.
     /// Resolves when the last audio sample has played out.
     func synthesizeAndPlay(text: String, language: String,
                            speaker: String?, instruct: String?) async throws {
         guard let model else { throw EngineError.notLoaded }
         player.resetGeneration()
-        let stream = model.synthesizeStream(text: text, language: language,
-                                            speaker: speaker, instruct: instruct)
-        for try await chunk in stream {
+        for textChunk in TextChunker.chunk(text) {
             try Task.checkCancellation()
-            player.scheduleChunk(chunk.samples)
+            let stream = model.synthesizeStream(text: textChunk, language: language,
+                                                speaker: speaker, instruct: instruct)
+            for try await chunk in stream {
+                try Task.checkCancellation()
+                player.scheduleChunk(chunk.samples)
+            }
         }
         player.markGenerationComplete()
         await player.waitForCompletion()
