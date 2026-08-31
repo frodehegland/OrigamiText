@@ -2189,9 +2189,6 @@ struct OrigamiReadingView: View {
         }
     }
 
-    /// The Horizontal pages — one section each, except that a heading
-    /// with no body of its own never breaks to a page alone: it rides
-    /// atop the section that follows.
     /// The sections visible in the current reading mode — used to scope
     /// Read Aloud to what is on screen rather than the whole document.
     private var currentReadingSections: [OrigamiSection]? {
@@ -2516,7 +2513,7 @@ struct OrigamiReadingView: View {
     /// focused section. Copied citations carry this.
     private var viewState: OrigamiViewState {
         var focusSectionID: String?
-        let pages = horizontalPages
+        let pages = readerMode == .horizontal ? columnPages : horizontalPages
         if readerMode == .horizontal || readerMode == .focus, !pages.isEmpty {
             let index = min(max(focusIndex, 0), pages.count - 1)
             focusSectionID = pages[index].first?.heading?.id
