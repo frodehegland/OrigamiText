@@ -497,10 +497,14 @@ struct EPUBReaderScreen: View {
             findForward = true
             findStamp += 1
         }
-        // Opening a different EPUB resets the reading mode to Default so
-        // the book always opens on its own pages, not whatever mode the
-        // previous book was left in.
+        // Opening a different EPUB or a different paper within the same
+        // proceedings resets the reading mode to Default. book.id is the
+        // folder (shared by all papers in a proceedings), so book.content
+        // must also be watched — it changes when a different paper is tapped.
         .onChange(of: book.id) {
+            readerModeRaw = EPUBReaderMode.faithful.rawValue
+        }
+        .onChange(of: book.content) {
             readerModeRaw = EPUBReaderMode.faithful.rawValue
         }
         // A find-fold landing has shown its matches; the highlight
