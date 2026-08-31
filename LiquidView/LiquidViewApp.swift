@@ -211,6 +211,11 @@ private struct MainWindowConnector: View {
 /// tab bar the user once showed is restored with the window and would still
 /// appear. This reaches the hosting window to disallow tabbing outright and
 /// fold away any tab bar that came back with restored state.
+///
+/// IMPORTANT: setting tabbingMode = .disallowed is an AppKit side-effect
+/// that silently sets .fullScreenNone and clears .fullScreenPrimary on the
+/// window's collectionBehavior. We must re-insert .fullScreenPrimary
+/// afterwards, or ESC / the View menu can no longer enter full screen.
 private struct TabBarRemover: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -220,6 +225,12 @@ private struct TabBarRemover: NSViewRepresentable {
             if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
                 window.toggleTabBar(nil)
             }
+            // Restore full-screen capability that tabbingMode = .disallowed
+            // removes as a side-effect.
+            var cb = window.collectionBehavior
+            cb.remove(.fullScreenNone)
+            cb.insert(.fullScreenPrimary)
+            window.collectionBehavior = cb
         }
         return view
     }
@@ -255,12 +266,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Escape toggles full screen, as in Author and Reader. Sheets and
             // popovers keep Escape for themselves (their windows can't go
             // full screen, so the guard passes the event through).
+            // Guard allows either entering (.fullScreenPrimary set) OR
+            // exiting (.fullScreen in styleMask) — so if collectionBehavior
+            // ever gets corrupted again, ESC can still exit full screen.
             guard event.keyCode == 53,   // Escape
                   modifiers.intersection([.command, .option, .control]).isEmpty,
                   let window = event.window,
                   window.isKeyWindow,
                   window.attachedSheet == nil,
                   window.collectionBehavior.contains(.fullScreenPrimary)
+                      || window.styleMask.contains(.fullScreen)
             else { return event }
             window.toggleFullScreen(nil)
             return nil
