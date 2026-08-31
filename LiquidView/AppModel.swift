@@ -181,6 +181,10 @@ final class AppModel {
         isListHidden.toggle()
     }
 
+    /// Stored by MainWindowConnector so the AppDelegate can open the main
+    /// window from its NSEvent monitor (which can't access SwiftUI environment).
+    var openMainWindow: (() -> Void)?
+
     /// The escape hatch when every column is hidden: restore the full
     /// library layout (and leave full screen if needed).
     func showLibrary() {
@@ -188,6 +192,22 @@ final class AppModel {
         sidebarSelection = .allDocuments
         if let window = NSApp.keyWindow, window.styleMask.contains(.fullScreen) {
             window.toggleFullScreen(nil)
+        }
+    }
+
+    /// Cmd-L / Cmd-0: restore the library layout, and reopen the main
+    /// window if the user closed it.
+    func showLibraryOrOpenWindow() {
+        isListHidden = false
+        sidebarSelection = .allDocuments
+        if let main = NSApp.windows.first(where: {
+            $0.styleMask.contains(.titled) && $0.title == "Origami Text"
+        }) {
+            if main.styleMask.contains(.fullScreen) { main.toggleFullScreen(nil) }
+            main.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            openMainWindow?()
         }
     }
 
@@ -900,7 +920,8 @@ final class AppModel {
                                     dateISO: meta.date, folder: safe,
                                     contentSubpath: contentSubpath, openedAt: openedAt,
                                     publication: meta.publication ?? "",
-                                    doi: meta.doi)
+                                    doi: meta.doi,
+                                    originalFilename: url.lastPathComponent)
             epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
             epubRecords.insert(record, at: 0)
             // When this book carries a DOI that matches a pending
@@ -1319,6 +1340,7 @@ final class AppModel {
         return epubRecords.first { $0.id == canonical }
             ?? epubRecords.first { $0.id == address }
             ?? epubRecords.first { $0.folder == address || $0.folder == canonical }
+            ?? epubRecords.first { $0.originalFilename == address }
     }
 
     /// Follows a cross-document quote link: opens the target book in the
@@ -1659,20 +1681,37 @@ final class AppModel {
     /// The open book as a structured Origami document — the body the
     /// native reading styles (Scroll, Horizontal, Focus, Outline,
     /// Transcript) read, re-imported from the unpacked package and
-    /// cached per book. Nil when the package cannot be read back.
+    /// cached per book. Nil when the package cannot be read back or is
+    /// still loading (the background import posts back to the main actor,
+    /// so observing views re-render automatically when it arrives).
     private var readingDocCache: (bookID: String, doc: LiquidDoc)?
+    /// The book whose structured import is currently running in background,
+    /// so a second call from a re-render doesn't spawn a second task.
+    private var readingDocImporting: String?
 
     func readingDoc(forBook book: OpenEPUB) -> LiquidDoc? {
         if let cached = readingDocCache, cached.bookID == book.id {
             return cached.doc
         }
-        guard let result = try? OrigamiEPUBImporter.importDocument(inUnpackedFolder: book.base)
-        else { return nil }
-        let record = epubRecords.first { $0.folder == book.id }
-        let doc = Self.structuredDoc(from: result, record: record,
-                                     fallbackID: book.id, base: book.base)
-        readingDocCache = (book.id, doc)
-        return doc
+        // Avoid starting a second import while one is already in flight
+        // for the same book (SwiftUI re-renders during the task gap).
+        guard readingDocImporting != book.id else { return nil }
+        readingDocImporting = book.id
+        let base = book.base
+        let bookID = book.id
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = try? OrigamiEPUBImporter.importDocument(inUnpackedFolder: base)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.readingDocImporting = nil
+                guard let result else { return }
+                let record = self.epubRecords.first { $0.folder == bookID }
+                let doc = Self.structuredDoc(from: result, record: record,
+                                             fallbackID: bookID, base: base)
+                self.readingDocCache = (bookID, doc)
+            }
+        }
+        return nil
     }
 
     /// The full structured document standing for an unpacked book — the

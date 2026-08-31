@@ -583,11 +583,14 @@ nonisolated enum OrigamiReading {
     /// Quote variant puts on the clipboard, readable by Author,
     /// reference managers, and anything else that speaks BibTeX.
     /// Extra fields carry what the standard ones cannot: `quote` for
-    /// the cited words, `annotation` for the reader's own note, and
-    /// `vm-id` for the address that reopens the original at its place.
+    /// the cited words, `annotation` for the reader's own note,
+    /// `vm-id` for the address that reopens the original at its place,
+    /// and the `origami-source-*` pair that Author stores so the exported
+    /// EPUB can link back to this document.
     static func bibTeXEntry(title: String, author: String, year: String?,
                             publication: String? = nil, quote: String? = nil,
-                            annotation: String? = nil, address: String) -> String {
+                            annotation: String? = nil, address: String,
+                            sourceFile: String? = nil) -> String {
         var fields: [(String, String)] = []
         if !author.isEmpty { fields.append(("author", author)) }
         fields.append(("title", title))
@@ -596,6 +599,18 @@ nonisolated enum OrigamiReading {
         if let quote, !quote.isEmpty { fields.append(("quote", quote)) }
         if let annotation, !annotation.isEmpty { fields.append(("annotation", annotation)) }
         fields.append(("vm-id", address))
+        // The base document id (no #fragment) — what Author stores as
+        // LACitation.source so its EPUB export can link back to this document.
+        let sourceID = address.components(separatedBy: "#").first ?? address
+        fields.append(("origami-source-id", sourceID))
+        if let sourceFile, !sourceFile.isEmpty {
+            fields.append(("origami-source-file", sourceFile))
+        }
+        // The origamitext:// URL — Author stores this in the citation's urls
+        // array so a re-opened EPUB can navigate back to the original book.
+        // The https carrier is the web-safe form for editors like Pages.
+        fields.append(("url", "origamitext://open/\(sourceID)"))
+        fields.append(("weburl", OrigamiCitation.webCarrierPrefix + sourceID))
 
         let key = "ot" + String(stableHash(of: address).prefix(10))
         var bibtex = "@misc{\(key),\n"

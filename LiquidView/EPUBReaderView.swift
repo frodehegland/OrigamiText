@@ -294,10 +294,11 @@ struct EPUBReaderScreen: View {
     }
 
     private var availableModes: [EPUBReaderMode] {
-        // The Outline group beside Scroll folds the reading now; the
-        // old Outline mode word no longer rides at the end.
+        // Full Width (.scroll) is nested inside the Default group bracket,
+        // not shown as a standalone mode word. Outline mode is also hidden
+        // (its group appears inline beside Default).
         EPUBReaderMode.allCases.filter {
-            $0 != .outline && ($0 != .transcript || isTranscriptBook)
+            $0 != .outline && $0 != .scroll && ($0 != .transcript || isTranscriptBook)
         }
     }
 
@@ -618,7 +619,7 @@ struct EPUBReaderScreen: View {
             findStamp: findStamp,
             findForward: findForward)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            // The same foot the native styles carry — clicking Scroll
+            // The same foot the native styles carry — clicking Full Width
             // (or an Outline shape) leaves the faithful page. The
             // contents button opens the book's own TOC, with the
             // chapter stepper for plain chaptered books.
@@ -753,9 +754,12 @@ struct EPUBReaderScreen: View {
                 publication: record?.publication,
                 quote: text,
                 annotation: model.documentAnnotation(forAddress: address)?.body?.value,
-                address: address))
+                address: address,
+                sourceFile: record?.originalFilename),
+            documentTitle: record?.title ?? book.title,
+            documentFilename: record?.originalFilename)
         CitationClipboard.write(citation)
-        model.showNote("Copied as a BibTeX quote")
+        model.showNote("Copied citation to clipboard")
     }
 }
 
@@ -1151,7 +1155,14 @@ struct EPUBReaderView: NSViewRepresentable {
                 decisionHandler(.cancel); return
             }
             // A clicked web link opens in the user's browser, not in the reader.
+            // Exception: the https://origamitext.app/o/ carrier URL is our own
+            // identity link — intercept it just like origamitext://.
             if (scheme == "http" || scheme == "https"), navigationAction.navigationType == .linkActivated {
+                if let parsed = CitationClipboard.parse(href: url.absoluteString),
+                   !parsed.to.isEmpty {
+                    onFollowLink(parsed.to, parsed.fragment)
+                    decisionHandler(.cancel); return
+                }
                 NSWorkspace.shared.open(url)
                 decisionHandler(.cancel); return
             }
@@ -1974,7 +1985,7 @@ final class ReaderWebView: WKWebView {
                 menu.addItem(annotate)
                 addItem(to: menu, title: "Add Comment…", action: #selector(commentOnSelection(_:)))
             }
-            addItem(to: menu, title: "Copy as Quote", action: #selector(copyAsQuote(_:)))
+            addItem(to: menu, title: "Copy to Cite", action: #selector(copyAsQuote(_:)))
             addItem(to: menu, title: "Copy", action: #selector(copySelection(_:)))
         }
         // With no selection the menu is intentionally empty, so nothing

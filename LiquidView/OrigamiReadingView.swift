@@ -30,7 +30,7 @@ enum EPUBReaderMode: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .faithful: "Default"
-        case .scroll: "Scroll"
+        case .scroll: "Full Width"
         case .horizontal: "Horizontal"
         case .focus: "Focus"
         case .outline: "Outline"
@@ -41,7 +41,7 @@ enum EPUBReaderMode: String, CaseIterable, Identifiable {
     var help: String {
         switch self {
         case .faithful: "The book's own pages, exactly as published"
-        case .scroll: "The document as written, one flow"
+        case .scroll: "The full window width — no column margins"
         case .horizontal: "Pages side by side — two, or more when the window is wide"
         case .focus: "One section alone, to settle into — arrows move through"
         case .outline: "Sections fold under their headings"
@@ -90,11 +90,6 @@ struct ReadingCommands: Commands {
                 get: { model.flowReading },
                 set: { model.flowReading = $0 }))
                 .keyboardShortcut("f", modifiers: [.command, .shift])
-            Picker("Colour Words By", selection: $coloringModeRaw) {
-                ForEach(TextColoringMode.allCases) { mode in
-                    Text(mode.displayName).tag(mode.rawValue)
-                }
-            }
             Divider()
             // Find in the open book — both presentations answer.
             Button("Find in Book") { model.readerFindShow += 1 }
@@ -136,6 +131,7 @@ struct OrigamiReadingView: View {
     @Environment(AppModel.self) private var model   // OT: was AppState
     /// Lift opens the document annotation in its own window.
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let doc: LiquidDoc
 
     /// Find in the book: the screen's ⌘F bar feeds these; each stamp
@@ -160,20 +156,19 @@ struct OrigamiReadingView: View {
     }
 
     private var availableModes: [EPUBReaderMode] {
-        // The Outline group beside Scroll folds the reading now; the
-        // old Outline mode word no longer rides at the end.
-        EPUBReaderMode.allCases.filter {
-            $0 != .outline && ($0 != .transcript || isTranscript)
-        }
+        // Full Width is nested inside Default via the Default group, not
+        // a standalone mode word.
+        var modes: [EPUBReaderMode] = [.faithful, .horizontal]
+        if isTranscript { modes.append(.transcript) }
+        return modes
     }
 
     private var readerMode: EPUBReaderMode {
-        let mode = EPUBReaderMode(rawValue: readerModeRaw) ?? .scroll
+        let mode = EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
         // A transcript mode left over from a transcript book reads as
-        // the flow here; a persisted Outline mode reads as the flow
-        // too, folded or not by the Outline group.
-        if mode == .transcript, !isTranscript { return .scroll }
-        if mode == .outline { return .scroll }
+        // the default flow; a persisted Outline mode does too.
+        if mode == .transcript, !isTranscript { return .faithful }
+        if mode == .outline { return .faithful }
         return mode
     }
 
@@ -346,6 +341,9 @@ struct OrigamiReadingView: View {
     // Sentence-at-a-time
     @State private var sentenceMode = false
     @State private var sentenceIndex = 0
+    // Paragraph-at-a-time
+    @State private var paragraphMode = false
+    @State private var paragraphIndex = 0
     // Read Aloud
     @State private var readAloud = ReadAloudController()
     @AppStorage(AppSettings.readAloudRateKey) private var readAloudRate: Double = 1.0
@@ -561,7 +559,8 @@ struct OrigamiReadingView: View {
                 foldLevelLabel: model.readerFindFoldTerm.map { "Finding \u{201C}\($0)\u{201D}" }
                     ?? (foldLevel > 0 ? "Folded \u{2014} level \(foldLevel)" : nil),
                 typeMenu: { AnyView(typeMenu) },
-                accessoryContent: { AnyView(accessoryBarContent) })
+                accessoryContent: { AnyView(accessoryBarContent) },
+                focusContent: { AnyView(focusGroup) })
         }
         // A fold asked for from the foot (or ⌘−/⌘+) resets the opened
         // sections — the shape changed under them.
@@ -699,7 +698,7 @@ struct OrigamiReadingView: View {
                       readerMode == .horizontal, foldLevel == 0,
                       event.hasPreciseScrollingDeltas else { return event }
                 let shown = horizontalPageCount(width: horizontalViewWidth,
-                                                sections: horizontalPages.count)
+                                                sections: columnPages.count)
                 guard shown > 2 else { return event }
                 if event.phase == .began {
                     swipeAccumulatorX = 0
@@ -843,7 +842,8 @@ struct OrigamiReadingView: View {
             openStretch.insert(stretchID)
         }
         if readerMode == .horizontal || readerMode == .focus {
-            if let page = horizontalPages.firstIndex(where: { page in
+            let pages = readerMode == .horizontal ? columnPages : horizontalPages
+            if let page = pages.firstIndex(where: { page in
                 page.contains { section in
                     section.heading?.id == fragment
                         || section.paragraphs.contains { $0.id == fragment }
@@ -888,7 +888,8 @@ struct OrigamiReadingView: View {
         }
         // Horizontal and Focus turn to the match's page first.
         if readerMode == .horizontal || readerMode == .focus {
-            if let page = horizontalPages.firstIndex(where: { page in
+            let pages = readerMode == .horizontal ? columnPages : horizontalPages
+            if let page = pages.firstIndex(where: { page in
                 page.contains { section in
                     section.heading?.id == target
                         || section.paragraphs.contains { $0.id == target }
@@ -977,11 +978,6 @@ struct OrigamiReadingView: View {
         Picker("Glossary", selection: $glossaryDisplayRaw) {
             ForEach(GlossaryDisplay.allCases) { display in
                 Text(display.displayName).tag(display.rawValue)
-            }
-        }
-        Picker("Colour Words By", selection: $coloringModeRaw) {
-            ForEach(TextColoringMode.allCases) { mode in
-                Text(mode.displayName).tag(mode.rawValue)
             }
         }
         Picker("Stretchtext", selection: $stretchDisplayRaw) {
@@ -1103,6 +1099,30 @@ struct OrigamiReadingView: View {
             .help("Colour — reading theme")
             .popover(isPresented: $showsFocusColorPicker) { focusColorView }
 
+            Menu {
+                ForEach(TextColoringMode.allCases) { mode in
+                    Button {
+                        coloringModeRaw = mode.rawValue
+                    } label: {
+                        if coloringMode == mode {
+                            Label(mode.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(mode.displayName)
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: coloringMode == .off ? "a.circle" : "a.circle.fill")
+                    .foregroundStyle(coloringMode == .off ? AnyShapeStyle(.secondary)
+                                     : AnyShapeStyle(.purple))
+            }
+            .menuIndicator(.hidden)
+            .buttonStyle(.plain)
+            .fixedSize()
+            .help(coloringMode == .off
+                  ? "Colour words — by Grammar, Meaning, or Argument"
+                  : "Colour words: \(coloringMode.displayName) — click to change")
+
             Button { expandParagraphs.toggle() } label: {
                 Text("¶")
                     .font(.callout.weight(expandParagraphs ? .semibold : .regular))
@@ -1113,36 +1133,14 @@ struct OrigamiReadingView: View {
                   ? "AI paragraph breaks on — click to turn off"
                   : "Paragraphs — AI finds logical breaks in long paragraphs")
 
-            Button {
-                let pages = horizontalPages
-                let idx = min(max(focusIndex, 0), max(pages.count - 1, 0))
-                let allText = idx < pages.count
-                    ? pages[idx].flatMap(\.paragraphs).map(\.text).joined(separator: " ")
-                    : ""
-                rsvpWords = allText
-                    .components(separatedBy: .whitespacesAndNewlines)
-                    .filter { !$0.isEmpty }
-                rsvpWordIndex = 0
-                rsvpPlaying = false
-                showsRSVP = true
-            } label: {
-                Image(systemName: "play.circle")
-                    .foregroundStyle(.secondary)
+            Button { model.flowReading.toggle() } label: {
+                Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                    .foregroundStyle(model.flowReading ? Color.accentColor : .secondary)
             }
             .buttonStyle(.plain)
-            .help("Speed — read word by word at your chosen pace")
-
-            Button {
-                sentenceIndex = 0
-                sentenceMode.toggle()
-            } label: {
-                Image(systemName: sentenceMode ? "1.circle.fill" : "1.circle")
-                    .foregroundStyle(sentenceMode ? Color.accentColor : .secondary)
-            }
-            .buttonStyle(.plain)
-            .help(sentenceMode
-                  ? "Sentence mode on — click to turn off"
-                  : "One sentence at a time — ← → to step")
+            .help(model.flowReading
+                  ? "Flow reading on — click to turn off"
+                  : "Flow — one clause per line")
 
             Button {
                 if readAloud.isPlaying || readAloud.isPaused {
@@ -1177,10 +1175,127 @@ struct OrigamiReadingView: View {
         }
     }
 
+    /// The Focus group: when Focus is inactive shows a plain "Focus"
+    /// word; when active expands to [ Section | Sentence | Paragraph | Word ].
+    @ViewBuilder private var focusGroup: some View {
+        if readerMode != .focus {
+            Button {
+                withAnimation(.snappy) {
+                    readerModeRaw = EPUBReaderMode.focus.rawValue
+                    model.readerFoldLevel = 0
+                    model.readingAnalysisKind = nil
+                    model.readerFindFoldTerm = nil
+                }
+            } label: {
+                Text("Focus")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Focus — one section alone to settle into — arrows move through")
+        } else {
+            HStack(spacing: 8) {
+                Text("[")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+                // Focus: default sub-mode — clears sentence/paragraph/word
+                Button {
+                    withAnimation(.snappy) {
+                        sentenceMode = false
+                        paragraphMode = false
+                        showsRSVP = false
+                    }
+                } label: {
+                    let isFocus = !sentenceMode && !paragraphMode && !showsRSVP
+                    Text("Focus")
+                        .font(.callout.weight(isFocus ? .semibold : .regular))
+                        .foregroundStyle(isFocus ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Focus — one section at a time, arrows move through")
+                Rectangle().fill(.quaternary).frame(width: 1, height: 14)
+                // Sentence: toggle overlay — behaves differently, stays in Focus
+                Button {
+                    sentenceIndex = 0
+                    sentenceMode.toggle()
+                } label: {
+                    Text("Sentence")
+                        .font(.callout.weight(sentenceMode ? .semibold : .regular))
+                        .foregroundStyle(sentenceMode ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(sentenceMode
+                      ? "Sentence mode on — click to turn off"
+                      : "One sentence at a time — ← → to step")
+                Rectangle().fill(.quaternary).frame(width: 1, height: 14)
+                // Paragraph: one paragraph at a time
+                Button {
+                    withAnimation(.snappy) {
+                        paragraphIndex = 0
+                        sentenceMode = false
+                        showsRSVP = false
+                        paragraphMode.toggle()
+                    }
+                } label: {
+                    Text("Paragraph")
+                        .font(.callout.weight(paragraphMode ? .semibold : .regular))
+                        .foregroundStyle(paragraphMode ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(paragraphMode
+                      ? "Paragraph mode on — click to turn off"
+                      : "One paragraph at a time — ← → to step")
+                Rectangle().fill(.quaternary).frame(width: 1, height: 14)
+                // Word: RSVP word-by-word reader
+                Button {
+                    let pages = horizontalPages
+                    let idx = min(max(focusIndex, 0), max(pages.count - 1, 0))
+                    let allText = idx < pages.count
+                        ? pages[idx].flatMap(\.paragraphs).map(\.text).joined(separator: " ")
+                        : ""
+                    rsvpWords = allText
+                        .components(separatedBy: .whitespacesAndNewlines)
+                        .filter { !$0.isEmpty }
+                    rsvpWordIndex = 0
+                    rsvpPlaying = false
+                    showsRSVP = true
+                } label: {
+                    Text("Word")
+                        .font(.callout.weight(showsRSVP ? .semibold : .regular))
+                        .foregroundStyle(showsRSVP ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Speed — read word by word at your chosen pace")
+                Text("]")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
     /// One section into view, whichever mode is reading.
     private func jump(to section: OrigamiSection) {
-        if readerMode == .horizontal || readerMode == .focus {
+        if readerMode == .focus {
             if let page = horizontalPages.firstIndex(where: { $0.contains(section) }) {
+                focusIndex = page
+            }
+            return
+        }
+        if readerMode == .horizontal {
+            // columnPages uses synthetic one-paragraph sections; match by ID.
+            let target = section.heading?.id ?? section.paragraphs.first?.id
+            if let target,
+               let page = columnPages.firstIndex(where: { page in
+                   page.contains { s in
+                       s.heading?.id == target
+                           || s.paragraphs.contains { $0.id == target }
+                   }
+               }) {
                 focusIndex = page
             }
             return
@@ -1335,6 +1450,61 @@ struct OrigamiReadingView: View {
         }
     }
 
+    // MARK: - Paragraph mode
+
+    private var currentPageParagraphs: [String] {
+        let pages = horizontalPages
+        let idx = min(max(focusIndex, 0), max(pages.count - 1, 0))
+        guard idx < pages.count else { return [] }
+        return pages[idx].flatMap(\.paragraphs).map(\.text).filter { !$0.isEmpty }
+    }
+
+    @ViewBuilder private var paragraphDisplay: some View {
+        let paragraphs = currentPageParagraphs
+        let idx = paragraphs.isEmpty ? 0 : min(paragraphIndex, paragraphs.count - 1)
+        if paragraphs.isEmpty {
+            ContentUnavailableView("No paragraphs", systemImage: "text.alignleft")
+        } else {
+            VStack(spacing: 0) {
+                Spacer()
+                Text(paragraphs[idx])
+                    .font(.system(size: 18 + fontDelta, weight: .regular))
+                    .foregroundStyle(themeText.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
+                    .multilineTextAlignment(.leading)
+                    .lineSpacing(CGFloat(lineSpacing))
+                    .padding(.horizontal, 40)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: measure, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                Spacer()
+                HStack {
+                    Button {
+                        paragraphIndex = max(paragraphIndex - 1, 0)
+                    } label: {
+                        Label("Prev", systemImage: "chevron.left")
+                    }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    .disabled(idx == 0)
+                    Spacer()
+                    Text("\(idx + 1) of \(paragraphs.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        paragraphIndex = min(paragraphIndex + 1, paragraphs.count - 1)
+                    } label: {
+                        Label("Next", systemImage: "chevron.right")
+                    }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                    .disabled(idx >= paragraphs.count - 1)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+            }
+            .onChange(of: focusIndex) { paragraphIndex = 0 }
+        }
+    }
+
     // MARK: - Reading ruler overlay
 
     /// Semi-transparent band at the mouse line. Uses a GeometryReader to
@@ -1367,6 +1537,18 @@ struct OrigamiReadingView: View {
         }
     }
 
+    // MARK: - Accessibility helpers
+
+    /// All paragraphs that are headings — H1/H2/H3 — for the VoiceOver rotor.
+    private var headingParagraphs: [LiquidDoc.Paragraph] {
+        (doc.body ?? []).filter { $0.heading != nil }
+    }
+
+    /// Reference list as (id, readable text) pairs for the VoiceOver rotor.
+    private var readableRefs: [(id: String, text: String)] {
+        OrigamiReading.readableReferences(of: doc)
+    }
+
     // MARK: - The styles
 
     /// The classic flow: everything in order, one measure — and the
@@ -1387,7 +1569,7 @@ struct OrigamiReadingView: View {
                     referencesSection
                 }
                 .padding([.horizontal, .bottom], 32).padding(.top, 10)
-                .frame(maxWidth: measure, alignment: .leading)
+                .frame(maxWidth: readerMode == .scroll ? .infinity : measure, alignment: .leading)
                 .frame(maxWidth: .infinity)
                 marginNotesLayer
             }
@@ -1400,6 +1582,16 @@ struct OrigamiReadingView: View {
             noteProgress(offset)
         }
         .overlay { readingRuler }
+        .accessibilityRotor("Headings") {
+            ForEach(headingParagraphs) { paragraph in
+                AccessibilityRotorEntry(paragraph.text, id: paragraph.id)
+            }
+        }
+        .accessibilityRotor("References") {
+            ForEach(readableRefs, id: \.id) { ref in
+                AccessibilityRotorEntry(ref.text, id: ref.id)
+            }
+        }
     }
 
     /// The document folded to the current level: headings with their
@@ -1456,6 +1648,16 @@ struct OrigamiReadingView: View {
             .padding([.horizontal, .bottom], 32).padding(.top, 10)
             .frame(maxWidth: measure, alignment: .leading)
             .frame(maxWidth: .infinity)
+        }
+        .accessibilityRotor("Headings") {
+            ForEach(headingParagraphs) { paragraph in
+                AccessibilityRotorEntry(paragraph.text, id: paragraph.id)
+            }
+        }
+        .accessibilityRotor("References") {
+            ForEach(readableRefs, id: \.id) { ref in
+                AccessibilityRotorEntry(ref.text, id: ref.id)
+            }
         }
     }
 
@@ -1729,7 +1931,7 @@ struct OrigamiReadingView: View {
     /// One fold step in either direction, clamped to the document's
     /// ladder — 0 is fully open. Stepping resets the opened sections.
     private func fold(by delta: Int) {
-        withAnimation(.easeInOut(duration: 0.15)) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
             foldLevel = min(max(foldLevel + delta, 0), OrigamiReading.maxFoldLevel(of: doc))
             expandedFold = []
         }
@@ -1858,12 +2060,22 @@ struct OrigamiReadingView: View {
             .frame(maxWidth: measure, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
+        .accessibilityRotor("Headings") {
+            ForEach(headingParagraphs) { paragraph in
+                AccessibilityRotorEntry(paragraph.text, id: paragraph.id)
+            }
+        }
+        .accessibilityRotor("References") {
+            ForEach(readableRefs, id: \.id) { ref in
+                AccessibilityRotorEntry(ref.text, id: ref.id)
+            }
+        }
     }
 
     /// Horizontal — the document as pages side by side: a spread of two
     /// at least, a page more for every 460 points the window offers.
     private func horizontalView(_ annotations: [String: [ResolvedAnnotation]]) -> some View {
-        let pages = horizontalPages
+        let pages = columnPages
         let shown = horizontalPageCount(width: horizontalViewWidth,
                                         sections: pages.count)
         let index = min(max(focusIndex, 0), max(pages.count - 1, 0))
@@ -1936,6 +2148,9 @@ struct OrigamiReadingView: View {
                 // Content area — switches between modes
                 if showsRSVP {
                     rsvpOverlay
+                } else if paragraphMode {
+                    paragraphDisplay
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if sentenceMode {
                     sentenceDisplay
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1952,7 +2167,7 @@ struct OrigamiReadingView: View {
                         Label("Previous", systemImage: "chevron.left")
                     }
                     .keyboardShortcut(.leftArrow, modifiers: [])
-                    .disabled(index == 0 || sentenceMode || showsRSVP)
+                    .disabled(index == 0 || sentenceMode || paragraphMode || showsRSVP)
 
                     Spacer()
                     Text(pageLabel(pages: pages, index: index, shown: 1))
@@ -1966,7 +2181,7 @@ struct OrigamiReadingView: View {
                         Label("Next", systemImage: "chevron.right")
                     }
                     .keyboardShortcut(.rightArrow, modifiers: [])
-                    .disabled(index >= pages.count - 1 || sentenceMode || showsRSVP)
+                    .disabled(index >= pages.count - 1 || sentenceMode || paragraphMode || showsRSVP)
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
@@ -1982,11 +2197,13 @@ struct OrigamiReadingView: View {
     private var currentReadingSections: [OrigamiSection]? {
         let mode = readerMode
         guard mode == .horizontal || mode == .focus else { return nil }
-        let pages = horizontalPages
+        let pages = mode == .horizontal ? columnPages : horizontalPages
         let idx = min(max(focusIndex, 0), max(pages.count - 1, 0))
         return idx < pages.count ? pages[idx].flatMap { [$0] } : nil
     }
 
+    /// Focus mode pages — one semantic section per page (heading + all its paragraphs).
+    /// Used by Focus, RSVP, Sentence mode, and Paragraph mode.
     private var horizontalPages: [[OrigamiSection]] {
         var pages: [[OrigamiSection]] = []
         var pending: [OrigamiSection] = []
@@ -1999,7 +2216,38 @@ struct OrigamiReadingView: View {
             }
         }
         if !pending.isEmpty {
-            // Bare headings at the very end stay with the last page.
+            if pages.isEmpty {
+                pages.append(pending)
+            } else {
+                pages[pages.count - 1] += pending
+            }
+        }
+        return pages
+    }
+
+    /// Horizontal view pages — one paragraph per column so that single-section
+    /// documents (e.g. Author session notes) still spread across columns.
+    /// Each synthetic section carries the real section heading only on its first
+    /// paragraph; subsequent paragraphs of the same section have no heading.
+    private var columnPages: [[OrigamiSection]] {
+        var pages: [[OrigamiSection]] = []
+        var pending: [OrigamiSection] = []
+        for section in sections {
+            if section.paragraphs.isEmpty {
+                pending.append(section)
+                continue
+            }
+            for (i, para) in section.paragraphs.enumerated() {
+                if i == 0 {
+                    let mini = OrigamiSection(heading: section.heading, paragraphs: [para])
+                    pages.append(pending + [mini])
+                    pending = []
+                } else {
+                    pages.append([OrigamiSection(heading: nil, paragraphs: [para])])
+                }
+            }
+        }
+        if !pending.isEmpty {
             if pages.isEmpty {
                 pages.append(pending)
             } else {
@@ -2029,7 +2277,7 @@ struct OrigamiReadingView: View {
 
     /// One whole spread forward or back, clamped to the document.
     private func turnPages(by delta: Int) {
-        let count = horizontalPages.count
+        let count = readerMode == .horizontal ? columnPages.count : horizontalPages.count
         guard count > 0 else { return }
         withAnimation(.easeInOut(duration: 0.2)) {
             focusIndex = min(max(focusIndex + delta, 0), count - 1)
@@ -3060,6 +3308,9 @@ struct ReadingFootBar: View {
     var typeMenu: (() -> AnyView)? = nil
     /// Accessibility controls rendered to the right of the Aa button.
     var accessoryContent: (() -> AnyView)? = nil
+    /// The Focus mode's sub-options — Single Word and Sentence — rendered
+    /// beside the Focus word when Focus is active. Nil hides the group.
+    var focusContent: (() -> AnyView)? = nil
 
     private var readerMode: EPUBReaderMode {
         EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
@@ -3111,27 +3362,54 @@ struct ReadingFootBar: View {
                 }
             }
             // The mode words render last — topmost — so every tap on
-            // Default, Scroll, the Outline group's shapes, Horizontal,
-            // or Focus lands on its word, never on the layer beneath.
+            // Default, its Full Width group, the Outline group's shapes,
+            // Horizontal, or Focus lands on its word, never on the layer beneath.
             HStack(spacing: 14) {
                 // The AI group stands left of Default: the on-device
                 // model's readings of the open book, unfolding in place
                 // like the Outline group.
                 if model.openEPUB != nil {
                     aiGroup
-                    separator
+                    // No | between ] and the first mode word when AI is open,
+                    // or when the Default group's bracket is open.
+                    if !aiShowsExpanded && !defaultShowsExpanded { separator }
                 }
                 ForEach(Array(modes.enumerated()), id: \.element) { index, mode in
                     if index > 0 {
-                        separator
+                        // No | immediately after a ] — suppress when the
+                        // preceding mode's group is open.
+                        let prev = modes[index - 1]
+                        let followsOpen = (prev == .scroll && outlineAvailable && outlineShape != nil)
+                            || (prev == .faithful && !modes.contains(.scroll)
+                                && (outlineAvailable ? outlineShape != nil : defaultShowsExpanded))
+                            || (prev == .horizontal && focusContent != nil && readerMode == .focus)
+                        if !followsOpen { separator }
                     }
-                    modeWord(mode)
-                    // The Outline group rides beside Scroll — the flow
-                    // it folds. Closed, one quiet word; open, its three
-                    // shapes bracketed in place, the active one bold.
-                    if mode == .scroll, outlineAvailable {
-                        separator
-                        outlineGroup
+                    if mode == .faithful, !modes.contains(.scroll) {
+                        // OrigamiReadingView: defaultGroup IS the mode word —
+                        // it handles Default display and Full Width nesting.
+                        defaultGroup
+                        if outlineAvailable {
+                            // No | after ] (defaultShowsExpanded) or before [
+                            // (outlineShape != nil); show | only between two
+                            // collapsed words.
+                            if !defaultShowsExpanded, outlineShape == nil { separator }
+                            outlineGroup
+                        }
+                    } else {
+                        modeWord(mode)
+                        // In EPUBReaderView, Full Width is its own mode word
+                        // and the Outline group rides beside it as before.
+                        if mode == .scroll, outlineAvailable {
+                            if outlineShape == nil { separator }
+                            outlineGroup
+                        }
+                        // The Focus group rides beside Horizontal — closed,
+                        // the "Focus" word; open, its four sub-modes bracketed.
+                        if mode == .horizontal, let focusContent {
+                            if readerMode != .focus { separator }
+                            focusContent()
+                        }
                     }
                 }
             }
@@ -3158,20 +3436,32 @@ struct ReadingFootBar: View {
                 // fold (the Outline group's shapes), find-fold, or AI
                 // reading steps aside first, otherwise it keeps the
                 // screen and the word appears to do nothing.
+                defaultExpanded = false
                 model.readerFoldLevel = 0
                 model.readingAnalysisKind = nil
                 model.readerFindFoldTerm = nil
             }
         } label: {
+            let isActive = readerMode == mode
+                && model.readingAnalysisKind == nil
+                && (mode != .scroll || (model.readerFoldLevel == 0 && model.readerFindFoldTerm == nil))
             Text(mode.displayName)
-                .font(.callout.weight(readerMode == mode ? .semibold : .regular))
-                .foregroundStyle(readerMode == mode ? AnyShapeStyle(.primary)
+                .font(.callout.weight(isActive ? .semibold : .regular))
+                .foregroundStyle(isActive ? AnyShapeStyle(.primary)
                                  : AnyShapeStyle(.secondary))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(mode.help)
     }
+
+    // MARK: The Default group — column or full width, nesting in place
+
+    @State private var defaultExpanded = false
+
+    /// Expanded when explicitly opened, or automatically when Full Width
+    /// is active so the user can always see which sub-mode is selected.
+    private var defaultShowsExpanded: Bool { defaultExpanded || readerMode == .scroll }
 
     // MARK: The AI group — the model's readings, unfolding in place
 
@@ -3246,6 +3536,93 @@ struct ReadingFootBar: View {
         }
         .buttonStyle(.plain)
         .help(kind.help)
+    }
+
+    // MARK: The Default group — column or full width, nesting in place
+
+    @ViewBuilder private var defaultGroup: some View {
+        if !defaultShowsExpanded {
+            // Collapsed: "Default" word — clicking opens the group to
+            // reveal Full Width beside it, same as AI's collapsed word.
+            Button {
+                withAnimation(.snappy) {
+                    defaultExpanded = true
+                    readerModeRaw = EPUBReaderMode.faithful.rawValue
+                    model.readerFoldLevel = 0
+                    model.readingAnalysisKind = nil
+                    model.readerFindFoldTerm = nil
+                }
+            } label: {
+                let isActive = (readerMode == .faithful || readerMode == .scroll)
+                    && model.readingAnalysisKind == nil
+                    && model.readerFoldLevel == 0
+                    && model.readerFindFoldTerm == nil
+                Text("Default")
+                    .font(.callout.weight(isActive ? .semibold : .regular))
+                    .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("The column-width reading — click to see Full Width")
+        } else {
+            // Expanded: [ Default | Full Width ] — active word bold.
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.snappy) {
+                        readerModeRaw = EPUBReaderMode.faithful.rawValue
+                        defaultExpanded = false
+                        model.readerFoldLevel = 0
+                        model.readingAnalysisKind = nil
+                        model.readerFindFoldTerm = nil
+                    }
+                } label: {
+                    Text("[")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Return to the column reading")
+                Button {
+                    withAnimation(.snappy) {
+                        readerModeRaw = EPUBReaderMode.faithful.rawValue
+                        defaultExpanded = false
+                        model.readerFoldLevel = 0
+                        model.readingAnalysisKind = nil
+                        model.readerFindFoldTerm = nil
+                    }
+                } label: {
+                    Text("Default")
+                        .font(.callout.weight(readerMode == .faithful ? .semibold : .regular))
+                        .foregroundStyle(readerMode == .faithful
+                                         ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("The column-width reading — centred, measured")
+                separator
+                Button {
+                    withAnimation(.snappy) {
+                        readerModeRaw = EPUBReaderMode.scroll.rawValue
+                        defaultExpanded = false
+                        model.readerFoldLevel = 0
+                        model.readingAnalysisKind = nil
+                        model.readerFindFoldTerm = nil
+                    }
+                } label: {
+                    Text("Full Width")
+                        .font(.callout.weight(readerMode == .scroll ? .semibold : .regular))
+                        .foregroundStyle(readerMode == .scroll
+                                         ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("The full window width — no column margins")
+                Text("]")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+            }
+        }
     }
 
     // MARK: The Outline group — Author's foot, unfolding in place
@@ -3327,6 +3704,7 @@ struct ReadingFootBar: View {
             }
             // The fold lives on the native flow: whatever mode the
             // reading stood in, folding moves it to Scroll.
+            defaultExpanded = false
             if readerMode != .scroll {
                 readerModeRaw = EPUBReaderMode.scroll.rawValue
             }

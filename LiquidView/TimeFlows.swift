@@ -206,6 +206,13 @@ extension AppModel {
         timeFlowsRevision += 1
     }
 
+    func userFloorQuery(slug: String) -> String? {
+        guard let folder = index.folderURL else { return nil }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        return SankeySpace.readUserFloorHistory(slug: slug, from: folder)?.query
+    }
+
     /// The graph's shown name — every series of the pair takes it.
     func renameTimeFlowPair(_ pair: String, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
@@ -770,6 +777,14 @@ struct TimeFlowRequestView: View {
 
 // MARK: - Timelines
 
+/// A user floor timeline open for editing — same dialog as creation.
+struct EditingFloorTimeline: Identifiable {
+    let slug: String
+    let name: String
+    let query: String?
+    var id: String { slug }
+}
+
 /// Views ▸ Timelines: the histories lying under the headset's corridor
 /// — the built-in Wikidata themes and the user's own, with the + that
 /// makes one from a query or a file.
@@ -779,6 +794,8 @@ struct TimelinesListView: View {
     @State private var fetchingFloor: SankeySpace.FloorTheme?
     @State private var floorError: String?
     @State private var showsAdd = false
+    /// The user timeline whose edit dialog stands open.
+    @State private var editingTimeline: EditingFloorTimeline?
 
     var body: some View {
         // The revision read makes this view live to mirror changes.
@@ -823,12 +840,20 @@ struct TimelinesListView: View {
                 }
                 ForEach(mine, id: \.slug) { entry in
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.name)
-                            Text("\(entry.events) events, fetched \(entry.modified.formatted(date: .abbreviated, time: .omitted))\(entry.hasQuery ? "" : " \u{00B7} imported file")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        Button {
+                            editingTimeline = EditingFloorTimeline(
+                                slug: entry.slug, name: entry.name,
+                                query: model.userFloorQuery(slug: entry.slug))
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.name)
+                                Text("\(entry.events) events, fetched \(entry.modified.formatted(date: .abbreviated, time: .omitted))\(entry.hasQuery ? "" : " \u{00B7} imported file")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                         Spacer()
                         if entry.hasQuery {
                             Button("Refresh") { refreshUserFloor(entry.slug) }
@@ -876,6 +901,10 @@ struct TimelinesListView: View {
             FloorTimelineAddView()
                 .environment(model)
         }
+        .sheet(item: $editingTimeline) { timeline in
+            FloorTimelineAddView(editing: timeline)
+                .environment(model)
+        }
     }
 
     private func addFloor(_ theme: SankeySpace.FloorTheme) {
@@ -916,17 +945,25 @@ struct TimelinesListView: View {
 /// query (which must bind ?itemLabel, ?year, and ?links — the built-in
 /// themes' shape) or the user's own file of years and events.
 struct FloorTimelineAddView: View {
+    var editing: EditingFloorTimeline? = nil
+
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
-    @State private var name = ""
-    @State private var query = ""
+    @State private var name: String
+    @State private var query: String
     /// The plain-words ask, drafted into SPARQL on request.
     @State private var plainWords = ""
     @State private var draftNote: String?
     @State private var isWorking = false
     @State private var errorMessage: String?
     @State private var showsFileImporter = false
+
+    init(editing: EditingFloorTimeline? = nil) {
+        self.editing = editing
+        _name = State(initialValue: editing?.name ?? "")
+        _query = State(initialValue: editing?.query ?? "")
+    }
 
     private var trimmedName: String {
         name.trimmingCharacters(in: .whitespaces)
@@ -1010,7 +1047,7 @@ struct FloorTimelineAddView: View {
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle("Add Floor Timeline")
+            .navigationTitle(editing == nil ? "Add Floor Timeline" : "Edit Floor Timeline")
             .safeAreaInset(edge: .bottom) {
                 // Live as soon as there is something to act on — a
                 // missing name is said in words, never a dead button.
@@ -1094,6 +1131,9 @@ struct FloorTimelineAddView: View {
         Task { @MainActor in
             defer { isWorking = false }
             do {
+                if let slug = editing?.slug {
+                    model.removeUserFloorTimeline(slug: slug)
+                }
                 try await model.addUserFloorTimeline(name: trimmedName, query: query)
                 dismiss()
             } catch {
@@ -1106,6 +1146,9 @@ struct FloorTimelineAddView: View {
         guard named() else { return }
         errorMessage = nil
         do {
+            if let slug = editing?.slug {
+                model.removeUserFloorTimeline(slug: slug)
+            }
             try model.importUserFloorTimeline(name: trimmedName, fileURL: url)
             dismiss()
         } catch {

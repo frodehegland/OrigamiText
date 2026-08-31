@@ -158,6 +158,7 @@ struct EPUBLibraryListView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 6)
                 .tag(record.id)
                 .contextMenu {
                     Menu("File Under") {
@@ -174,7 +175,7 @@ struct EPUBLibraryListView: View {
                     EPUBPileMenu(record: record)
                 }
                 .listRowSeparator(.hidden)
-                .padding(.vertical, 3)
+                .listRowBackground(Color.clear)
             }
 
         }
@@ -284,12 +285,20 @@ struct EPUBRecordRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
         .tag(record.id)
         .contextMenu {
             EPUBPileMenu(record: record)
         }
+        .accessibilityLabel({
+            var parts = [record.title]
+            if !record.author.isEmpty { parts.append("by \(record.author)") }
+            if model.isUnread(record) { parts.append("unread") }
+            return parts.joined(separator: ", ")
+        }())
+        .accessibilityHint("Double-tap to open")
         .listRowSeparator(.hidden)
-        .padding(.vertical, 3)
+        .listRowBackground(Color.clear)
     }
 }
 
@@ -316,6 +325,7 @@ struct AuthorsListView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
             }
         }
         .overlay {
@@ -392,6 +402,7 @@ struct JournalsListView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
                 .contextMenu {
                     // Papers write the same venue slightly differently;
                     // declaring one the same as another folds them.
@@ -551,6 +562,7 @@ struct AcquisitionsListView: View {
                     .help("Dismiss this wish")
                 }
                 .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
                 .padding(.vertical, 2)
             }
         }
@@ -1192,7 +1204,17 @@ struct DocumentRow: View {
         }
         .padding(.vertical, 2)
         .opacity(isRetracted ? 0.55 : 1)
+        .accessibilityLabel({
+            var parts = [entry.doc.title]
+            if !entry.doc.displayAuthor.isEmpty { parts.append("by \(entry.doc.displayAuthor)") }
+            parts.append(dateText)
+            if isUnread { parts.append("unread") }
+            if isRetracted { parts.append("retracted") }
+            return parts.joined(separator: ", ")
+        }())
+        .accessibilityHint("Double-tap to open")
         .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 
     private var dateText: String {

@@ -246,23 +246,55 @@ struct AIInsightsView: View {
             isRunning = false
             return
         }
-        var fullPrompt = prompt
-        fullPrompt += "\n\nTHE DOCUMENTS (\(corpus.includedCount) included"
+        // Corpus passed as the request; instructions live separately so the
+        // model sees them as a system prompt rather than as document content.
+        var request = "THE DOCUMENTS (\(corpus.includedCount) included"
         if corpus.omittedCount > 0 {
-            fullPrompt += ", \(corpus.omittedCount) older omitted for space"
+            request += ", \(corpus.omittedCount) older omitted for space"
         }
-        fullPrompt += "):\n\n" + corpus.text
-        let request = fullPrompt
+        request += "):\n\n" + corpus.text
+        let instructions = prompt
         Task {
             do {
-                let session = LanguageModelSession()
+                // permissiveContentTransformations lets the model reason about
+                // documents that might trigger default guardrails — academic
+                // writing, personal notes, and varied subject matter.
+                let llm = SystemLanguageModel(guardrails: .permissiveContentTransformations)
+                let session = LanguageModelSession(model: llm, instructions: instructions)
                 let response = try await session.respond(to: request)
                 output = response.content
             } catch {
-                errorText = "The model could not respond: \(error.localizedDescription)"
+                if isModelRefusal(error) {
+                    // Refusals are often sampling luck — retry once before
+                    // giving up and surfacing a clear message.
+                    do {
+                        let llm = SystemLanguageModel(guardrails: .permissiveContentTransformations)
+                        let session = LanguageModelSession(model: llm, instructions: instructions)
+                        let response = try await session.respond(to: request)
+                        output = response.content
+                    } catch {
+                        errorText = "Apple Intelligence declined to analyze this library. Try rephrasing the prompt in Settings → AI, or wait a moment and try again."
+                    }
+                } else {
+                    errorText = "The model could not respond: \(error.localizedDescription)"
+                }
             }
             isRunning = false
         }
+    }
+
+    /// Whether the error is the model declining — guardrails or a refusal.
+    /// Checks both the macOS 26 error surface (LanguageModelSession.GenerationError)
+    /// and the macOS 27 surface (LanguageModelError) matched by reflection, since
+    /// naming LanguageModelError directly breaks the build on the older SDK.
+    private func isModelRefusal(_ error: Error) -> Bool {
+        if let genError = error as? LanguageModelSession.GenerationError {
+            if case .guardrailViolation = genError { return true }
+            if case .refusal = genError { return true }
+        }
+        let described = String(reflecting: error)
+        guard described.contains("LanguageModelError") else { return false }
+        return described.contains("guardrailViolation") || described.contains("refusal")
     }
 }
 

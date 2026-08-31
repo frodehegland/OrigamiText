@@ -156,10 +156,21 @@ nonisolated enum OrigamiEPUBImporter {
             (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
         }
 
+        // Author EPUB format: origami.json carries the reference pool and
+        // document metadata. When present it replaces Visual-Meta as the
+        // citation source and signals single-spine layout, so backmatter.xhtml
+        // (bibliography) is not parsed as body content.
+        let origamiJSON: [String: Any]? = visualMeta == nil
+            ? (source.entry("origami.json") ?? source.entryWithSuffix("origami.json"))
+                .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+            : nil
+
         // The citation pool, split back into its two homes: internal
         // citations (an origamitext:// URL names their address) become
         // links again; external records become references.
-        let pool = citationPool(fromVisualMeta: visualMeta)
+        let pool = origamiJSON != nil
+            ? citationPool(fromOrigamiJSON: origamiJSON!)
+            : citationPool(fromVisualMeta: visualMeta)
         let addressByCitationID = pool.addressByCitationID
         let bibtexByAddress = pool.bibtexByAddress
         var references = pool.references
@@ -245,7 +256,7 @@ nonisolated enum OrigamiEPUBImporter {
         var capturedFootnotes: [(id: String, text: String)] = []
         let capture = CitationCapture()
         let spineHrefs = spineContentHrefs(in: opf)
-        if visualMeta == nil, spineHrefs.count > 1 {
+        if visualMeta == nil, origamiJSON == nil, spineHrefs.count > 1 {
             body = []
             bodyAssets = []
             var imageBudget = 12_000_000
@@ -379,19 +390,47 @@ nonisolated enum OrigamiEPUBImporter {
         }
 
         let document = visualMeta?["document"] as? [String: Any]
-        let metaAuthors = (document?["authors"] as? [String])?
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty } ?? []
+        let origamiDoc = origamiJSON?["document"] as? [String: Any]
+        // Visual-Meta authors are strings; origami.json authors are {name:} or
+        // {family:, given:} objects (academic EPUB format).
+        let metaAuthors: [String] = {
+            if let vmAuthors = (document?["authors"] as? [String])?
+                .map({ $0.trimmingCharacters(in: .whitespaces) })
+                .filter({ !$0.isEmpty }), !vmAuthors.isEmpty { return vmAuthors }
+            if let ojAuthors = origamiDoc?["authors"] as? [[String: Any]] {
+                let names = ojAuthors.compactMap { author -> String? in
+                    if let name = author["name"] as? String { return name }
+                    if let family = author["family"] as? String {
+                        let given = (author["given"] as? String ?? "")
+                            .trimmingCharacters(in: .whitespaces)
+                        return given.isEmpty ? family : "\(given) \(family)"
+                    }
+                    return nil
+                }
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                if !names.isEmpty { return names }
+            }
+            return []
+        }()
         let metaVenue = ["journal", "proceedings", "publication", "booktitle"]
             .compactMap { document?[$0] as? String }
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty }
+        // Academic origami.json embeds venue under a "venue" sub-dict.
+        let origamiVenue: String? = {
+            guard let venue = origamiDoc?["venue"] as? [String: Any] else { return nil }
+            return (venue["journal"] as? String)
+                ?? (venue["booktitle"] as? String)
+                ?? (venue["publisher"] as? String)
+        }()
         let doiFromMeta = (document?["doi"] as? String).flatMap(normalizedDOI)
+            ?? (origamiDoc?["doi"] as? String).flatMap(normalizedDOI)
         return ImportResult(
-            title: document?["title"] as? String ?? title ?? "Untitled",
+            title: document?["title"] as? String ?? origamiDoc?["title"] as? String ?? title ?? "Untitled",
             author: metaAuthors.first ?? creator,
             authors: metaAuthors.isEmpty ? creators : metaAuthors,
-            publication: metaVenue ?? opfVenue,
+            publication: metaVenue ?? origamiVenue ?? opfVenue,
             date: document?["date"] as? String ?? date,
             identifier: document?["identifier"] as? String ?? identifier,
             origamiID: document?["origami-id"] as? String,
@@ -494,6 +533,47 @@ nonisolated enum OrigamiEPUBImporter {
         }
         let visualMeta = visualMetaData
             .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+
+        // Author EPUB format: origami.json carries document metadata when
+        // Visual-Meta is absent. Its authors are {name:} objects, not strings.
+        if visualMeta == nil {
+            let origamiURL = folder.appendingPathComponent(joinedPath(opfDirectory, "origami.json"))
+            if let data = (try? Data(contentsOf: origamiURL)),
+               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let doc = json["document"] as? [String: Any] {
+                // Authors may be {name:} objects (Author format) or
+                // {family:, given:} objects (academic EPUB format).
+                let ojAuthors = (doc["authors"] as? [[String: Any]])?
+                    .compactMap { author -> String? in
+                        if let name = author["name"] as? String { return name }
+                        if let family = author["family"] as? String {
+                            let given = (author["given"] as? String ?? "")
+                                .trimmingCharacters(in: .whitespaces)
+                            return given.isEmpty ? family : "\(given) \(family)"
+                        }
+                        return nil
+                    }
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty } ?? []
+                // Prefer the origami.json venue (academic EPUBs embed it)
+                let ojVenue: String? = {
+                    guard let venue = doc["venue"] as? [String: Any] else { return nil }
+                    return (venue["journal"] as? String)
+                        ?? (venue["booktitle"] as? String)
+                        ?? (venue["publisher"] as? String)
+                }()
+                let doi = (doc["doi"] as? String).flatMap(normalizedDOI)
+                    ?? extractDOI(from: opf)
+                return PackageMetadata(
+                    origamiID: nil,
+                    authors: ojAuthors.isEmpty ? creators : ojAuthors,
+                    author: ojAuthors.first ?? creators.first,
+                    date: doc["date"] as? String ?? date,
+                    publication: ojVenue ?? opfVenue,
+                    doi: doi)
+            }
+        }
+
         let document = visualMeta?["document"] as? [String: Any]
         let metaAuthors = (document?["authors"] as? [String])?
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -712,11 +792,22 @@ nonisolated enum OrigamiEPUBImporter {
     }
 
     /// "origamitext://open/f.hegla.093252x" → "f.hegla.093252x".
+    /// Also accepts the https://origamitext.app/o/ carrier form so Author's
+    /// web-safe URLs resolve the same way.
     private static func originalAddress(fromOpenURL url: String) -> String? {
-        let prefix = "origamitext://open/"
-        guard url.hasPrefix(prefix) else { return nil }
-        let address = String(url.dropFirst(prefix.count))
-        return address.isEmpty ? nil : address
+        let origamiPrefix = "origamitext://open/"
+        if url.hasPrefix(origamiPrefix) {
+            let address = String(url.dropFirst(origamiPrefix.count))
+            return address.isEmpty ? nil : address
+        }
+        let webPrefix = OrigamiCitation.webCarrierPrefix
+        if url.hasPrefix(webPrefix) {
+            var rest = String(url.dropFirst(webPrefix.count))
+            if let q = rest.firstIndex(of: "?") { rest = String(rest[..<q]) }
+            if let h = rest.firstIndex(of: "#") { rest = String(rest[..<h]) }
+            return rest.isEmpty ? nil : rest
+        }
+        return nil
     }
 
     private static func dictionaries(_ value: Any?) -> [[String: Any]] {
@@ -777,7 +868,17 @@ nonisolated enum OrigamiEPUBImporter {
                                        capture: CitationCapture? = nil)
         throws -> (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset],
                    footnotes: [(id: String, text: String)]) {
-        let root = try XMLTree.parse(Data(html.utf8))
+        // Strip <script> elements before XML parsing: their JSON/JS content
+        // may contain bare & characters (e.g. bibtex strings) that are valid
+        // JSON but not valid XML, causing NSXMLParser to reject the file.
+        // The visitor never uses script content — metadata is read separately
+        // from origami.json.
+        let sanitized = html.replacingOccurrences(
+            of: #"<script\b[^>]*>[\s\S]*?</script>"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        let root = try XMLTree.parse(Data(sanitized.utf8))
         // The Origami profile wraps the flow in <main>; a plain EPUB's
         // chapters write their content straight into <body>.
         guard let main = root.firstDescendant(named: "main")
@@ -915,21 +1016,36 @@ nonisolated enum OrigamiEPUBImporter {
                 paragraphs.append(LiquidDoc.Paragraph(
                     id: stableID(), heading: headingLevels[element.name], text: text))
             case "p", "blockquote":
-                let text = inlineText(of: element, addressByCitationID: addressByCitationID, capture: capture)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return }
-                var paragraph = LiquidDoc.Paragraph(id: stableID(), heading: nil, text: text)
-                paragraph.stretchID = stretchID
-                // The exporter marks attribution with a speaker strong;
-                // the name also leads the text, per the format.
-                if let first = element.elements.first,
-                   first.name == "strong", first.attributes["class"] == "speaker" {
+                let raw = inlineText(of: element, addressByCitationID: addressByCitationID, capture: capture)
+                // Split at double newlines so that Author-style exports (which pack
+                // multiple logical paragraphs into one <p> separated by \n\n) produce
+                // distinct LiquidDoc.Paragraph entries. Single-paragraph content is
+                // unaffected — it produces exactly one part.
+                let parts = raw.components(separatedBy: "\n\n")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                guard !parts.isEmpty else { return }
+                // Speaker detection applies to the first logical paragraph only.
+                let speaker: String? = {
+                    guard let first = element.elements.first,
+                          first.name == "strong",
+                          first.attributes["class"] == "speaker" else { return nil }
                     let name = first.plainText.trimmingCharacters(in: .whitespaces)
-                    if name.hasSuffix(":") {
-                        paragraph.speaker = String(name.dropLast())
+                    return name.hasSuffix(":") ? String(name.dropLast()) : nil
+                }()
+                for (offset, text) in parts.enumerated() {
+                    let id: String
+                    if offset == 0 {
+                        id = stableID()
+                    } else {
+                        fallbackOrdinal += 1
+                        id = idPrefix + "p\(fallbackOrdinal)"
                     }
+                    var paragraph = LiquidDoc.Paragraph(id: id, heading: nil, text: text)
+                    paragraph.stretchID = stretchID
+                    if offset == 0 { paragraph.speaker = speaker }
+                    paragraphs.append(paragraph)
                 }
-                paragraphs.append(paragraph)
             case "li":
                 // A plain book's list items read as bulleted paragraphs —
                 // never dropped with their container.
@@ -1016,6 +1132,43 @@ nonisolated enum OrigamiEPUBImporter {
         return (references, addressByCitationID, bibtexByAddress)
     }
 
+    /// Citation pool from the Author EPUB `origami.json` format.
+    /// Two layouts are handled:
+    /// - `"references"` dict (UUID-keyed): the Author export format.
+    /// - `"blocks"` array: the academic EPUB format, where blocks with
+    ///   `"type": "reference"` carry BibTeX and `"key"`/`"number"`.
+    static func citationPool(fromOrigamiJSON json: [String: Any])
+        -> (references: [LiquidDoc.Reference],
+            addressByCitationID: [String: String],
+            bibtexByAddress: [String: String]) {
+        var references: [LiquidDoc.Reference] = []
+        // Author export format: top-level UUID-keyed references dict.
+        let origamiRefs = json["references"] as? [String: [String: Any]] ?? [:]
+        for (key, ref) in origamiRefs {
+            let bibtex = (ref["bibtex"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? ""
+            let citedAs = (ref["citedAs"] as? String)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 }
+            let number = (ref["number"] as? NSNumber)?.intValue
+            references.append(LiquidDoc.Reference(
+                id: key, bibtex: bibtex, citedAs: citedAs, number: number))
+        }
+        // Academic EPUB format: "blocks" array with typed entries.
+        if references.isEmpty, let blocks = json["blocks"] as? [[String: Any]] {
+            for block in blocks where (block["type"] as? String) == "reference" {
+                let key = block["key"] as? String ?? block["id"] as? String ?? UUID().uuidString
+                let bibtex = (block["bibtex"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let number = (block["number"] as? NSNumber)?.intValue
+                references.append(LiquidDoc.Reference(
+                    id: key, bibtex: bibtex, citedAs: nil, number: number))
+            }
+        }
+        references.sort { ($0.number ?? Int.max) < ($1.number ?? Int.max) }
+        return (references: references, addressByCitationID: [:], bibtexByAddress: [:])
+    }
+
     /// The abstract folded into a BibTeX record as its own field —
     /// where the citation card (and any re-export) reads it.
     static func withAbstractField(_ bibtex: String, _ abstract: String) -> String {
@@ -1099,6 +1252,9 @@ nonisolated enum OrigamiEPUBImporter {
                 case "rt", "rp":
                     // Ruby readings (furigana): annotation on the base
                     // text, never the words themselves.
+                    break
+                case "script", "style":
+                    // Data scripts and stylesheets are never paragraph text.
                     break
                 case "a":
                     if (inner.attributes["class"] ?? "").contains("ot-stretchtext") {

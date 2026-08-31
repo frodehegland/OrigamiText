@@ -34,6 +34,12 @@ struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
     /// before DOI tracking was added or for books that carry none.
     var doi: String? = nil
 
+    /// The original .epub filename (e.g. "My Paper.epub") — the value Author
+    /// stores as `origami-source-file` in its BibTeX, used as a library
+    /// fallback when UUID lookup fails. nil for records written before this
+    /// field was added.
+    var originalFilename: String? = nil
+
     /// The authors to list the book under: the full list when known,
     /// else the single author of record.
     var authorList: [String] { authors ?? [author] }

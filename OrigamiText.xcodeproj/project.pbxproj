@@ -7,9 +7,18 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		5F72863B304376EC000585CD /* Audio2Face3D in Frameworks */ = {isa = PBXBuildFile; productRef = 5F72863A304376EC000585CD /* Audio2Face3D */; };
+		5F72863D304376EC000585CD /* AudioCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 5F72863C304376EC000585CD /* AudioCommon */; };
+		5F72863F304376EC000585CD /* SpeechCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5F72863E304376EC000585CD /* SpeechCore */; };
+		5F728641304376EC000585CD /* SpeechEnhancement in Frameworks */ = {isa = PBXBuildFile; productRef = 5F728640304376EC000585CD /* SpeechEnhancement */; };
+		5F728643304376EC000585CD /* SpeechLanguageID in Frameworks */ = {isa = PBXBuildFile; productRef = 5F728642304376EC000585CD /* SpeechLanguageID */; };
+		5F728645304376EC000585CD /* audio-server in Frameworks */ = {isa = PBXBuildFile; productRef = 5F728644304376EC000585CD /* audio-server */; };
+		5F728647304376EC000585CD /* speech in Frameworks */ = {isa = PBXBuildFile; productRef = 5F728646304376EC000585CD /* speech */; };
 		5FAFC90C301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
 		5FAFC90D301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
 		5FAFC90E301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
+		5FC2206930438F25001E8E0C /* Qwen3TTS in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC2206830438F25001E8E0C /* Qwen3TTS */; };
+		5FC2206B304391F6001E8E0C /* Qwen3TTS in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC2206A304391F6001E8E0C /* Qwen3TTS */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -158,11 +167,20 @@
 		000000000000000130000000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				5F72863D304376EC000585CD /* AudioCommon in Frameworks */,
+				5FC2206B304391F6001E8E0C /* Qwen3TTS in Frameworks */,
+				5F728643304376EC000585CD /* SpeechLanguageID in Frameworks */,
+				5F72863B304376EC000585CD /* Audio2Face3D in Frameworks */,
+				5F72863F304376EC000585CD /* SpeechCore in Frameworks */,
+				5F728647304376EC000585CD /* speech in Frameworks */,
+				5F728645304376EC000585CD /* audio-server in Frameworks */,
+				5F728641304376EC000585CD /* SpeechEnhancement in Frameworks */,
 			);
 		};
 		5FA61250300CE184002F8851 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				5FC2206930438F25001E8E0C /* Qwen3TTS in Frameworks */,
 			);
 		};
 		5FA6125C300CE184002F8851 /* Frameworks */ = {
@@ -192,6 +210,7 @@
 				5FA61262300CE184002F8851 /* Origami TextTests */,
 				5FA6126C300CE184002F8851 /* Origami TextUITests */,
 				5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */,
+				5FC2206730438F25001E8E0C /* Frameworks */,
 				000000000000000000000020 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -206,6 +225,13 @@
 				5FA61269300CE184002F8851 /* Origami TextUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		5FC2206730438F25001E8E0C /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -225,6 +251,16 @@
 				000000000000000000000010 /* LiquidView */,
 			);
 			name = LiquidView;
+			packageProductDependencies = (
+				5F72863A304376EC000585CD /* Audio2Face3D */,
+				5F72863C304376EC000585CD /* AudioCommon */,
+				5F72863E304376EC000585CD /* SpeechCore */,
+				5F728640304376EC000585CD /* SpeechEnhancement */,
+				5F728642304376EC000585CD /* SpeechLanguageID */,
+				5F728644304376EC000585CD /* audio-server */,
+				5F728646304376EC000585CD /* speech */,
+				5FC2206A304391F6001E8E0C /* Qwen3TTS */,
+			);
 			productName = MyApp;
 			productReference = 000000000000000000000120 /* Origami Text.app */;
 			productType = "com.apple.product-type.application";
@@ -243,6 +279,9 @@
 				5FA61254300CE184002F8851 /* Origami Text */,
 			);
 			name = "Origami Text";
+			packageProductDependencies = (
+				5FC2206830438F25001E8E0C /* Qwen3TTS */,
+			);
 			productName = "Origami Text";
 			productReference = 5FA61253300CE184002F8851 /* Origami Text.app */;
 			productType = "com.apple.product-type.application";
@@ -345,6 +384,9 @@
 			);
 			mainGroup = 000000000000000000000001;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */,
+			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
 			projectDirPath = "";
@@ -998,6 +1040,65 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/soniqo/speech-swift";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5F72863A304376EC000585CD /* Audio2Face3D */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = Audio2Face3D;
+		};
+		5F72863C304376EC000585CD /* AudioCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = AudioCommon;
+		};
+		5F72863E304376EC000585CD /* SpeechCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = SpeechCore;
+		};
+		5F728640304376EC000585CD /* SpeechEnhancement */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = SpeechEnhancement;
+		};
+		5F728642304376EC000585CD /* SpeechLanguageID */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = SpeechLanguageID;
+		};
+		5F728644304376EC000585CD /* audio-server */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = "audio-server";
+		};
+		5F728646304376EC000585CD /* speech */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = speech;
+		};
+		5FC2206830438F25001E8E0C /* Qwen3TTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = Qwen3TTS;
+		};
+		5FC2206A304391F6001E8E0C /* Qwen3TTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = Qwen3TTS;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 000000000000000000000000 /* Project object */;
 }

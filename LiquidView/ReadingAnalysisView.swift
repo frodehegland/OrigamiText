@@ -13,7 +13,7 @@ enum ReadingAnalysisKind: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .summary: "Summary"
+        case .summary: "AI"
         case .proposals: "Proposals"
         case .issues: "Issues"
         }
@@ -464,7 +464,11 @@ struct MarkdownReplyText: View {
 /// Close (or any mode word at the foot) returns to the reading.
 struct ReadingAnalysisScreen: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
     let kind: ReadingAnalysisKind
+
+    private var readerTheme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
 
     @State private var result: ReadingAnalysisResult?
     @State private var created: Date?
@@ -576,7 +580,7 @@ struct ReadingAnalysisScreen: View {
             .frame(maxWidth: 640, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(readerTheme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor))
         .task(id: kind) { await run() }
     }
 

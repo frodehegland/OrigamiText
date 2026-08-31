@@ -7,16 +7,19 @@ struct LiquidViewApp: App {
     @State private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup("Origami Text") {
-            ContentView()
-                .environment(model)
-                .onOpenURL { model.handleURL($0) }
-                .task {
-                    appDelegate.model = model
-                    model.restoreFolderAccess()
-                    model.restoreReaderLibrary()
-                }
-                .background(TabBarRemover())
+        WindowGroup("Origami Text", id: "main") {
+            ZStack {
+                ContentView()
+                MainWindowConnector()
+            }
+            .environment(model)
+            .onOpenURL { model.handleURL($0) }
+            .task {
+                appDelegate.model = model
+                model.restoreFolderAccess()
+                model.restoreReaderLibrary()
+            }
+            .background(TabBarRemover())
         }
         .defaultSize(width: 1240, height: 864)
         .commands {
@@ -74,7 +77,7 @@ struct LiquidViewApp: App {
             // The window toolbar is bare, as in Knowledge Space — these
             // menu items are where its former controls live on.
             CommandGroup(after: .windowArrangement) {
-                Button("Library") { model.showLibrary() }
+                Button("Library") { model.showLibraryOrOpenWindow() }
                     .keyboardShortcut("l", modifiers: .command)
                 Button(model.isListHidden ? "Show Documents" : "Hide Documents") {
                     model.toggleListColumn()
@@ -191,6 +194,19 @@ private struct PageCaptureCommands: Commands {
     }
 }
 
+/// Captures the SwiftUI openWindow action and hands it to AppModel so the
+/// AppKit NSEvent monitor (which has no SwiftUI environment) can reopen the
+/// main window when the user closed it and presses ⌘L or ⌘0.
+private struct MainWindowConnector: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        EmptyView()
+            .onAppear { model.openMainWindow = { openWindow(id: "main") } }
+    }
+}
+
 /// Disallowing automatic tabbing (see AppDelegate) stops new tabs, but a
 /// tab bar the user once showed is restored with the window and would still
 /// appear. This reaches the hosting window to disallow tabbing outright and
@@ -228,10 +244,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
-            // ⌘L → Library: restore all columns, leaving full screen if needed.
+            // ⌘L / ⌘0 → Library: restore all columns; reopen the window if closed.
             if modifiers == .command,
-               event.charactersIgnoringModifiers?.lowercased() == "l" {
-                self?.model?.showLibrary()
+               let ch = event.charactersIgnoringModifiers?.lowercased(),
+               ch == "l" || ch == "0" {
+                self?.model?.showLibraryOrOpenWindow()
                 return nil
             }
 

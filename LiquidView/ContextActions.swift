@@ -30,12 +30,14 @@ enum ContextMode {
     case editing
 }
 
-/// One thing that can be done to a target.
+/// One thing that can be done to a target. When `children` is non-nil the
+/// action renders as a submenu; `perform` is unused in that case.
 struct ContextAction: Identifiable {
     let id: String
     let title: String
     var systemImage: String?
     var isDestructive = false
+    var children: [ContextAction]? = nil
     let perform: @MainActor () -> Void
 }
 
@@ -81,13 +83,15 @@ enum ContextActionBuilder {
             guard !trimmed.isEmpty else { return [] }
             var actions: [ContextAction] = []
             if let doc {
-                actions.append(ContextAction(id: "copy-quote", title: "Copy as Quote",
+                actions.append(ContextAction(id: "copy-quote", title: "Copy to Cite",
                                              systemImage: "quote.opening") {
                     let year = doc.date?.yearText ?? doc.created.formatted(.dateTime.year())
                     CitationClipboard.write(OrigamiCitation(
                         to: doc.id, fragment: nil, rel: "cites",
                         quotedText: trimmed, author: doc.displayAuthor, year: year,
-                        bibtex: OrigamiReading.bibTeXEntry(for: doc, quote: trimmed)))
+                        bibtex: OrigamiReading.bibTeXEntry(for: doc, quote: trimmed),
+                        documentTitle: doc.title,
+                        documentFilename: model.epubRecord(forAddress: doc.id)?.originalFilename))
                 })
             }
             // The selected words as a person: offered when the library
@@ -102,6 +106,25 @@ enum ContextActionBuilder {
                     for: .address(id: match.id, fragment: match.fragment),
                     mode: mode, model: model))
             }
+            // Find submenu: search within the open document or online.
+            let findChildren: [ContextAction] = [
+                ContextAction(id: "find-in-doc", title: "Find in Document",
+                              systemImage: "doc.text.magnifyingglass") {
+                    model.requestReaderFind(trimmed)
+                },
+                ContextAction(id: "find-online", title: "Find Online",
+                              systemImage: "globe") {
+                    let encoded = trimmed.addingPercentEncoding(
+                        withAllowedCharacters: .urlQueryAllowed) ?? trimmed
+                    if let url = URL(string: "https://www.google.com/search?q=\(encoded)") {
+                        NSWorkspace.shared.open(url)
+                    }
+                },
+            ]
+            actions.append(ContextAction(id: "find", title: "Find",
+                                         systemImage: "magnifyingglass",
+                                         children: findChildren,
+                                         perform: {}))
             return actions
 
         case .person(let name):
@@ -226,13 +249,30 @@ enum ContextActionBuilder {
     static func menuItems(for target: ContextTarget, mode: ContextMode,
                           model: AppModel) -> [NSMenuItem] {
         actions(for: target, mode: mode, model: model).map { action in
-            let item = NSMenuItem(title: action.title,
-                                  action: #selector(ContextActionTrampoline.fire(_:)),
-                                  keyEquivalent: "")
-            let trampoline = ContextActionTrampoline(action.perform)
-            item.target = trampoline
-            item.representedObject = trampoline   // retain alongside the item
-            return item
+            if let children = action.children {
+                let item = NSMenuItem(title: action.title, action: nil, keyEquivalent: "")
+                let submenu = NSMenu(title: action.title)
+                for child in children {
+                    let childItem = NSMenuItem(
+                        title: child.title,
+                        action: #selector(ContextActionTrampoline.fire(_:)),
+                        keyEquivalent: "")
+                    let trampoline = ContextActionTrampoline(child.perform)
+                    childItem.target = trampoline
+                    childItem.representedObject = trampoline
+                    submenu.addItem(childItem)
+                }
+                item.submenu = submenu
+                return item
+            } else {
+                let item = NSMenuItem(title: action.title,
+                                      action: #selector(ContextActionTrampoline.fire(_:)),
+                                      keyEquivalent: "")
+                let trampoline = ContextActionTrampoline(action.perform)
+                item.target = trampoline
+                item.representedObject = trampoline
+                return item
+            }
         }
     }
 }
@@ -299,13 +339,35 @@ struct ContextActionItems: View {
 
     var body: some View {
         ForEach(ContextActionBuilder.actions(for: target, mode: mode, model: model)) { action in
-            Button(role: action.isDestructive ? .destructive : nil) {
-                action.perform()
-            } label: {
-                if let systemImage = action.systemImage {
-                    Label(action.title, systemImage: systemImage)
-                } else {
-                    Text(action.title)
+            if let children = action.children {
+                Menu {
+                    ForEach(children) { child in
+                        Button(role: child.isDestructive ? .destructive : nil) {
+                            child.perform()
+                        } label: {
+                            if let img = child.systemImage {
+                                Label(child.title, systemImage: img)
+                            } else {
+                                Text(child.title)
+                            }
+                        }
+                    }
+                } label: {
+                    if let systemImage = action.systemImage {
+                        Label(action.title, systemImage: systemImage)
+                    } else {
+                        Text(action.title)
+                    }
+                }
+            } else {
+                Button(role: action.isDestructive ? .destructive : nil) {
+                    action.perform()
+                } label: {
+                    if let systemImage = action.systemImage {
+                        Label(action.title, systemImage: systemImage)
+                    } else {
+                        Text(action.title)
+                    }
                 }
             }
         }
