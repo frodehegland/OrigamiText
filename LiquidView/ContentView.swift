@@ -204,6 +204,7 @@ struct ContentView: View {
         // hairline unwanted anyway: with the separator off, the
         // registration never happens.
         .background(TitlebarSeparatorDisabler())
+        .background(WindowBackgroundSetter(color: NSColor(themeBG)))
         .environment(\.openURL, OpenURLAction { url in
             // origamitext:// links clicked inside documents navigate in-app,
             // through the same follow path as the links panel.
@@ -564,6 +565,35 @@ private struct TitlebarSeparatorDisabler: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             window?.titlebarSeparatorStyle = .none
+        }
+    }
+}
+
+/// Keeps NSWindow.backgroundColor in step with the app theme. macOS
+/// captures the window's backgroundColor for its full-screen animation
+/// snapshot — if it doesn't match the SwiftUI fill the edges flash the
+/// wrong colour during the transition. updateNSView runs on every render,
+/// so theme and appearance changes are reflected immediately.
+private struct WindowBackgroundSetter: NSViewRepresentable {
+    let color: NSColor
+
+    func makeNSView(context: Context) -> BGSetterView {
+        let view = BGSetterView()
+        view.pendingColor = color
+        return view
+    }
+
+    func updateNSView(_ view: BGSetterView, context: Context) {
+        view.pendingColor = color
+        view.window?.backgroundColor = color
+    }
+
+    final class BGSetterView: NSView {
+        var pendingColor: NSColor = .textBackgroundColor
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.backgroundColor = pendingColor
         }
     }
 }

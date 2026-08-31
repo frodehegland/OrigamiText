@@ -497,6 +497,12 @@ struct EPUBReaderScreen: View {
             findForward = true
             findStamp += 1
         }
+        // Opening a different EPUB resets the reading mode to Default so
+        // the book always opens on its own pages, not whatever mode the
+        // previous book was left in.
+        .onChange(of: book.id) {
+            readerModeRaw = EPUBReaderMode.faithful.rawValue
+        }
         // A find-fold landing has shown its matches; the highlight
         // fades and the find bar folds away.
         .onChange(of: model.readerFindClear) {
