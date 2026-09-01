@@ -497,14 +497,11 @@ struct EPUBReaderScreen: View {
             findForward = true
             findStamp += 1
         }
-        // Opening a different EPUB or a different paper within the same
-        // proceedings resets the reading mode to Default. book.id is the
-        // folder (shared by all papers in a proceedings), so book.content
-        // must also be watched — it changes when a different paper is tapped.
-        .onChange(of: book.id) {
-            readerModeRaw = EPUBReaderMode.faithful.rawValue
-        }
-        .onChange(of: book.content) {
+        // ContentView gives EPUBReaderScreen a .id(epub.id) so SwiftUI
+        // recreates the view on every new book or paper — onChange would
+        // never fire because each instance only ever sees its own book.
+        // onAppear fires on every (re)creation, which is the right moment.
+        .onAppear {
             readerModeRaw = EPUBReaderMode.faithful.rawValue
         }
         // A find-fold landing has shown its matches; the highlight
