@@ -901,6 +901,12 @@ struct EPUBReaderView: NSViewRepresentable {
         configuration.userContentController = controller
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         let webView = ReaderWebView(frame: .zero, configuration: configuration)
+        // Prevent the native WKWebView layer from flashing white during
+        // full-screen transitions. The page CSS controls the visible
+        // background; making the view transparent lets the SwiftUI themed
+        // background show through during any repaint gap.
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.underPageBackgroundColor = .clear
         webView.allowsBackForwardNavigationGestures = false
         webView.navigationDelegate = context.coordinator
         // The subclass owns the page's context menu; it calls back through
