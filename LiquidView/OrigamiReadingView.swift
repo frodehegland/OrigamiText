@@ -4155,9 +4155,21 @@ struct CitationCardSheet: View {
     /// The record's own abstract when it carries one; the services'
     /// stands in otherwise.
     private var recordAbstract: String? {
-        (record?.fields["abstract"])
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .flatMap { $0.isEmpty ? nil : $0 }
+        if let abstract = record?.fields["abstract"],
+           !abstract.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return abstract.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // Annotation-style entries (no title, no author) carry their text
+        // in the BibTeX `note` field. Treat it as the abstract so the card
+        // shows the content and skips the citation-lookup spinner (which
+        // would spin forever with no searchable fields to submit).
+        if let note = record?.fields["note"],
+           record?.title.isEmpty == true,
+           record?.author.isEmpty == true,
+           !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return note.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
     }
 
     var body: some View {
