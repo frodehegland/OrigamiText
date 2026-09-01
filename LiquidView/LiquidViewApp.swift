@@ -194,16 +194,39 @@ private struct PageCaptureCommands: Commands {
     }
 }
 
-/// Captures the SwiftUI openWindow action and hands it to AppModel so the
-/// AppKit NSEvent monitor (which has no SwiftUI environment) can reopen the
-/// main window when the user closed it and presses ⌘L or ⌘0.
+/// Captures the SwiftUI openWindow action and the NSWindow reference so that
+/// the AppKit NSEvent monitor (no SwiftUI environment) can reopen or restore
+/// the main window after it has been closed or minimised.
 private struct MainWindowConnector: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         EmptyView()
+            .background(MainNSWindowCapture())
             .onAppear { model.openMainWindow = { openWindow(id: "main") } }
+    }
+}
+
+/// Captures the hosting NSWindow the moment the view appears and stores a
+/// weak reference in AppModel. The weak reference becomes nil automatically
+/// when the window is closed, which is the signal that a fresh window must
+/// be opened rather than just shown.
+private struct MainNSWindowCapture: NSViewRepresentable {
+    @Environment(AppModel.self) private var model
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            model.mainNSWindow = view.window
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if model.mainNSWindow == nil, let w = nsView.window {
+            model.mainNSWindow = w
+        }
     }
 }
 
@@ -285,6 +308,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         pending.append(contentsOf: urls)
         flushPending()
+    }
+
+    /// Dock-icon click with no visible windows: reopen the main window just
+    /// as Cmd-L does, rather than doing nothing (the default macOS behaviour
+    /// for apps that don't implement this delegate method).
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { model?.showLibraryOrOpenWindow() }
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {

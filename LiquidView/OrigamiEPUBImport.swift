@@ -497,6 +497,7 @@ nonisolated enum OrigamiEPUBImporter {
         let date: String?
         let publication: String?
         var doi: String? = nil
+        var identifier: String? = nil
     }
 
     static func importMetadata(inUnpackedFolder folder: URL) -> PackageMetadata {
@@ -511,6 +512,7 @@ nonisolated enum OrigamiEPUBImporter {
         let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
         let creators = allTagTexts(in: opf, tag: "dc:creator")
         let date = firstTagText(in: opf, tag: "dc:date")
+        let packageID = firstTagText(in: opf, tag: "dc:identifier")
         let opfVenue = [
             firstCapture(in: opf, pattern: "<meta[^>]*property=\"belongs-to-collection\"[^>]*>([^<]*)</meta>"),
             firstCapture(in: opf, pattern: "<meta[^>]*property=\"dcterms:isPartOf\"[^>]*>([^<]*)</meta>"),
@@ -570,7 +572,8 @@ nonisolated enum OrigamiEPUBImporter {
                     author: ojAuthors.first ?? creators.first,
                     date: doc["date"] as? String ?? date,
                     publication: ojVenue ?? opfVenue,
-                    doi: doi)
+                    doi: doi,
+                    identifier: packageID)
             }
         }
 
@@ -589,7 +592,8 @@ nonisolated enum OrigamiEPUBImporter {
             author: metaAuthors.first ?? creators.first,
             date: document?["date"] as? String ?? date,
             publication: metaVenue ?? opfVenue,
-            doi: doiFromMeta ?? extractDOI(from: opf))
+            doi: doiFromMeta ?? extractDOI(from: opf),
+            identifier: packageID)
     }
 
     // MARK: Package plumbing

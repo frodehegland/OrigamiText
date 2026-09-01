@@ -40,6 +40,14 @@ struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
     /// field was added.
     var originalFilename: String? = nil
 
+    /// The EPUB package's own publication identifier (the `dc:identifier`
+    /// value from package.opf, typically a `urn:uuid:…`). Unlike the Origami
+    /// address, this is embedded in the EPUB file itself and therefore
+    /// identical across every installation that opens the same file — used
+    /// as the fallback canonical URI for community annotation services when
+    /// no DOI is available.
+    var packageIdentifier: String? = nil
+
     /// The authors to list the book under: the full list when known,
     /// else the single author of record.
     var authorList: [String] { authors ?? [author] }

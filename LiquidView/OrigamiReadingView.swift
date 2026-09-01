@@ -698,7 +698,7 @@ struct OrigamiReadingView: View {
                       readerMode == .horizontal, foldLevel == 0,
                       event.hasPreciseScrollingDeltas else { return event }
                 let shown = horizontalPageCount(width: horizontalViewWidth,
-                                                sections: columnPages.count)
+                                                sections: horizontalPages.count)
                 guard shown > 2 else { return event }
                 if event.phase == .began {
                     swipeAccumulatorX = 0
@@ -842,7 +842,7 @@ struct OrigamiReadingView: View {
             openStretch.insert(stretchID)
         }
         if readerMode == .horizontal || readerMode == .focus {
-            let pages = readerMode == .horizontal ? columnPages : horizontalPages
+            let pages = horizontalPages
             if let page = pages.firstIndex(where: { page in
                 page.contains { section in
                     section.heading?.id == fragment
@@ -888,7 +888,7 @@ struct OrigamiReadingView: View {
         }
         // Horizontal and Focus turn to the match's page first.
         if readerMode == .horizontal || readerMode == .focus {
-            let pages = readerMode == .horizontal ? columnPages : horizontalPages
+            let pages = horizontalPages
             if let page = pages.firstIndex(where: { page in
                 page.contains { section in
                     section.heading?.id == target
@@ -1287,15 +1287,7 @@ struct OrigamiReadingView: View {
             return
         }
         if readerMode == .horizontal {
-            // columnPages uses synthetic one-paragraph sections; match by ID.
-            let target = section.heading?.id ?? section.paragraphs.first?.id
-            if let target,
-               let page = columnPages.firstIndex(where: { page in
-                   page.contains { s in
-                       s.heading?.id == target
-                           || s.paragraphs.contains { $0.id == target }
-                   }
-               }) {
+            if let page = horizontalPages.firstIndex(where: { $0.contains(section) }) {
                 focusIndex = page
             }
             return
@@ -2075,7 +2067,7 @@ struct OrigamiReadingView: View {
     /// Horizontal — the document as pages side by side: a spread of two
     /// at least, a page more for every 460 points the window offers.
     private func horizontalView(_ annotations: [String: [ResolvedAnnotation]]) -> some View {
-        let pages = columnPages
+        let pages = horizontalPages
         let shown = horizontalPageCount(width: horizontalViewWidth,
                                         sections: pages.count)
         let index = min(max(focusIndex, 0), max(pages.count - 1, 0))
@@ -2194,7 +2186,7 @@ struct OrigamiReadingView: View {
     private var currentReadingSections: [OrigamiSection]? {
         let mode = readerMode
         guard mode == .horizontal || mode == .focus else { return nil }
-        let pages = mode == .horizontal ? columnPages : horizontalPages
+        let pages = horizontalPages
         let idx = min(max(focusIndex, 0), max(pages.count - 1, 0))
         return idx < pages.count ? pages[idx].flatMap { [$0] } : nil
     }
@@ -2210,38 +2202,6 @@ struct OrigamiReadingView: View {
                 pending = []
             } else {
                 pending.append(section)
-            }
-        }
-        if !pending.isEmpty {
-            if pages.isEmpty {
-                pages.append(pending)
-            } else {
-                pages[pages.count - 1] += pending
-            }
-        }
-        return pages
-    }
-
-    /// Horizontal view pages — one paragraph per column so that single-section
-    /// documents (e.g. Author session notes) still spread across columns.
-    /// Each synthetic section carries the real section heading only on its first
-    /// paragraph; subsequent paragraphs of the same section have no heading.
-    private var columnPages: [[OrigamiSection]] {
-        var pages: [[OrigamiSection]] = []
-        var pending: [OrigamiSection] = []
-        for section in sections {
-            if section.paragraphs.isEmpty {
-                pending.append(section)
-                continue
-            }
-            for (i, para) in section.paragraphs.enumerated() {
-                if i == 0 {
-                    let mini = OrigamiSection(heading: section.heading, paragraphs: [para])
-                    pages.append(pending + [mini])
-                    pending = []
-                } else {
-                    pages.append([OrigamiSection(heading: nil, paragraphs: [para])])
-                }
             }
         }
         if !pending.isEmpty {
@@ -2274,7 +2234,7 @@ struct OrigamiReadingView: View {
 
     /// One whole spread forward or back, clamped to the document.
     private func turnPages(by delta: Int) {
-        let count = readerMode == .horizontal ? columnPages.count : horizontalPages.count
+        let count = horizontalPages.count
         guard count > 0 else { return }
         withAnimation(.easeInOut(duration: 0.2)) {
             focusIndex = min(max(focusIndex + delta, 0), count - 1)
@@ -2513,7 +2473,7 @@ struct OrigamiReadingView: View {
     /// focused section. Copied citations carry this.
     private var viewState: OrigamiViewState {
         var focusSectionID: String?
-        let pages = readerMode == .horizontal ? columnPages : horizontalPages
+        let pages = horizontalPages
         if readerMode == .horizontal || readerMode == .focus, !pages.isEmpty {
             let index = min(max(focusIndex, 0), pages.count - 1)
             focusSectionID = pages[index].first?.heading?.id
@@ -2978,51 +2938,45 @@ struct OrigamiReadingView: View {
         lineSpacing = min(max(lineSpacing + delta, 0), 24)
     }
 
-    /// The citation onto the clipboard in both dialects: pure BibTeX as
-    /// the text — usable in Author, reference managers, and anywhere
-    /// else — and Author's private payload beside it, so Author pastes
-    /// it as a real citation. The entry's vm-id addresses the original
-    /// document and paragraph.
+    /// The citation onto the clipboard: all four flavours via CitationClipboard.write —
+    /// JSON, Author's native type, HTML, and plain text. Author reads the richest
+    /// available; other apps fall through to HTML or plain.
     private func copyCitation(for paragraph: LiquidDoc.Paragraph,
                               quote: String? = nil) {
         let payload = OrigamiReading.authorCitationPayload(for: paragraph, in: doc,
                                                            quote: quote)
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(payload.bibtex, forType: .string)
-        let dictionary: [String: Any] = ["Content": payload.content,
-                                         "BibTeX": payload.bibtex]
-        if let data = try? NSKeyedArchiver.archivedData(withRootObject: dictionary,
-                                                        requiringSecureCoding: false) {
-            pasteboard.setData(data, forType:
-                NSPasteboard.PasteboardType("Liquid Author Citation pasteboard type"))
-        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
+        CitationClipboard.write(OrigamiCitation(
+            to: doc.id, fragment: paragraph.id, rel: "cites",
+            quotedText: payload.content,
+            author: doc.displayAuthor, year: year,
+            bibtex: payload.bibtex,
+            documentTitle: doc.title,
+            documentFilename: model.epubRecord(forAddress: doc.id)?.originalFilename))
     }
 
     /// A citation to this document with the reader's own note in its
     /// Annotation field — Copy in an annotation's editor, ready to
     /// paste into Author's citation dialog.
     private func copyAnnotationCitation(paragraphID: String, annotation text: String) {
-        // A margin note has no paragraph of its own: the citation
-        // stands on the document's opening element instead.
         guard let paragraph = (doc.body ?? []).first(where: { $0.id == paragraphID })
             ?? doc.body?.first
         else { return }
         let payload = OrigamiReading.authorCitationPayload(for: paragraph, in: doc,
                                                            annotation: text)
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        // Pure BibTeX as the text — the annotation travels in its
-        // Annotation field, ready for Author's citation dialog.
-        pasteboard.setString(payload.bibtex, forType: .string)
-        let dictionary: [String: Any] = ["Content": payload.content,
-                                         "BibTeX": payload.bibtex,
-                                         "Annotation": text]
-        if let data = try? NSKeyedArchiver.archivedData(withRootObject: dictionary,
-                                                        requiringSecureCoding: false) {
-            pasteboard.setData(data, forType:
-                NSPasteboard.PasteboardType("Liquid Author Citation pasteboard type"))
-        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
+        CitationClipboard.write(OrigamiCitation(
+            to: doc.id, fragment: paragraph.id, rel: "cites",
+            quotedText: payload.content,
+            author: doc.displayAuthor, year: year,
+            bibtex: payload.bibtex,
+            documentTitle: doc.title,
+            documentFilename: model.epubRecord(forAddress: doc.id)?.originalFilename,
+            annotation: text))
         model.showNote("Citation with your annotation copied — paste it in Author")
     }
 

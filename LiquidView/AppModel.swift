@@ -184,6 +184,9 @@ final class AppModel {
     /// Stored by MainWindowConnector so the AppDelegate can open the main
     /// window from its NSEvent monitor (which can't access SwiftUI environment).
     var openMainWindow: (() -> Void)?
+    /// Weak reference to the main window's NSWindow, set by MainNSWindowCapture
+    /// in LiquidViewApp. Becomes nil automatically when the window is closed.
+    weak var mainNSWindow: NSWindow?
 
     /// The escape hatch when every column is hidden: restore the full
     /// library layout (and leave full screen if needed).
@@ -195,20 +198,39 @@ final class AppModel {
         }
     }
 
-    /// Cmd-L / Cmd-0: restore the library layout, and reopen the main
-    /// window if the user closed it.
+    /// Cmd-L / Cmd-0 / dock-icon click: restore the library layout and bring
+    /// the main window to front — or open a fresh one if it was closed.
     func showLibraryOrOpenWindow() {
         isListHidden = false
         sidebarSelection = .allDocuments
-        if let main = NSApp.windows.first(where: {
-            $0.styleMask.contains(.titled) && $0.title == "Origami Text"
-        }) {
+        // Prefer the directly-tracked window (stays valid through title changes
+        // and is nil only when the window has actually been closed).
+        if let main = mainNSWindow {
             if main.styleMask.contains(.fullScreen) { main.toggleFullScreen(nil) }
+            if main.isMiniaturized { main.deminiaturize(nil) }
             main.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
-        } else {
-            openMainWindow?()
+            return
         }
+        // Fallback: scan all windows in case the capture ran late.
+        // A titled, non-utility window with full-screen capability is the main
+        // window (TabBarRemover sets .fullScreenPrimary; other windows don't).
+        if let main = NSApp.windows.first(where: {
+            $0.styleMask.contains(.titled)
+            && !$0.styleMask.contains(.utilityWindow)
+            && ($0.collectionBehavior.contains(.fullScreenPrimary)
+                || $0.title == "Origami Text")
+        }) {
+            mainNSWindow = main
+            if main.styleMask.contains(.fullScreen) { main.toggleFullScreen(nil) }
+            if main.isMiniaturized { main.deminiaturize(nil) }
+            main.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        // Window is fully closed — ask SwiftUI to open a new one.
+        openMainWindow?()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Full screen is a focus mode: only the writing/reading area shows.
@@ -921,7 +943,8 @@ final class AppModel {
                                     contentSubpath: contentSubpath, openedAt: openedAt,
                                     publication: meta.publication ?? "",
                                     doi: meta.doi,
-                                    originalFilename: url.lastPathComponent)
+                                    originalFilename: url.lastPathComponent,
+                                    packageIdentifier: meta.identifier)
             epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
             epubRecords.insert(record, at: 0)
             // When this book carries a DOI that matches a pending
@@ -933,8 +956,10 @@ final class AppModel {
             }
             // A fresh unpack means a new spine — drop the cached one.
             spineCache.removeValue(forKey: safe)
-            // The reading cache may hold the pre-refresh text.
-            readingDocCache = nil
+            // The reading cache and any prior failure record must both go:
+            // a re-imported book deserves a fresh import attempt.
+            clearReadingDocFailure(for: safe)
+            clearReadingDocFailure(for: bookID)
             persistEPUBRecords()
             rebuildEPUBIndex()
             return record
@@ -1688,11 +1713,18 @@ final class AppModel {
     /// The book whose structured import is currently running in background,
     /// so a second call from a re-render doesn't spawn a second task.
     private var readingDocImporting: String?
+    /// Books that failed to import — never retried, so a bad EPUB can't
+    /// spin the app with rapid-fire failing tasks triggered by re-renders.
+    private var readingDocFailed: Set<String> = []
 
     func readingDoc(forBook book: OpenEPUB) -> LiquidDoc? {
         if let cached = readingDocCache, cached.bookID == book.id {
             return cached.doc
         }
+        // A previously failed import is not retried; the faithful WebView
+        // rendering stays up instead. The user can force a fresh attempt
+        // by closing and re-opening the file.
+        guard !readingDocFailed.contains(book.id) else { return nil }
         // Avoid starting a second import while one is already in flight
         // for the same book (SwiftUI re-renders during the task gap).
         guard readingDocImporting != book.id else { return nil }
@@ -1704,14 +1736,25 @@ final class AppModel {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.readingDocImporting = nil
-                guard let result else { return }
-                let record = self.epubRecords.first { $0.folder == bookID }
-                let doc = Self.structuredDoc(from: result, record: record,
-                                             fallbackID: bookID, base: base)
-                self.readingDocCache = (bookID, doc)
+                if let result {
+                    let record = self.epubRecords.first { $0.folder == bookID }
+                    let doc = Self.structuredDoc(from: result, record: record,
+                                                 fallbackID: bookID, base: base)
+                    self.readingDocCache = (bookID, doc)
+                } else {
+                    self.readingDocFailed.insert(bookID)
+                }
             }
         }
         return nil
+    }
+
+    /// Clears any cached failure for `bookID` so the next `readingDoc` call
+    /// can make a fresh import attempt. Call when the EPUB file is re-opened
+    /// or re-imported so a previously bad package gets another chance.
+    func clearReadingDocFailure(for bookID: String) {
+        readingDocFailed.remove(bookID)
+        if readingDocCache?.bookID == bookID { readingDocCache = nil }
     }
 
     /// The full structured document standing for an unpacked book — the
@@ -4384,7 +4427,10 @@ final class AppModel {
             to: doc.id, fragment: paragraphID, rel: "cites",
             quotedText: doc.title, author: doc.displayAuthor, year: year,
             bibtex: OrigamiReading.bibTeXEntry(for: doc, fragment: paragraphID,
-                                               annotation: annotation)))
+                                               annotation: annotation),
+            documentTitle: doc.title,
+            documentFilename: epubRecord(forAddress: doc.id)?.originalFilename,
+            annotation: annotation))
         showNote("Citation copied as BibTeX")
     }
 

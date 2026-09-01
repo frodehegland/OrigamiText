@@ -46,6 +46,18 @@ enum AppSettings {
     static let readAloudRateKey = "readAloud.rate"
     static let readAloudVoiceIDKey = "readAloud.voiceID"
     static let readAloudEngineKey = "readAloud.engine"
+    // Hypermedia / Seed
+    static let seedServerURLKey              = "hypermedia.seed.serverURL"
+    static let seedUsernameKey               = "hypermedia.seed.username"
+    static let hypermediaShareDocKey         = "hypermedia.shareCurrentDocument"
+    static let hypermediaSharePositionKey    = "hypermedia.shareReadingPosition"
+    static let hypermediaShareAnnotationsKey = "hypermedia.shareAnnotations"
+    static let hypermediaShowCommunityKey    = "hypermedia.showCommunityAnnotations"
+    // Hypermedia / Hypothesis
+    static let hypothesisUsernameKey         = "hypothesis.username"
+    static let hypothesisPublicEnabledKey    = "hypothesis.publicAnnotationsEnabled"
+    /// Stable service key used for Keychain storage of the API token.
+    static let hypothesisService             = "https://api.hypothes.is"
 }
 
 /// Where the reader puts a letter's title, byline, and controls.
@@ -60,7 +72,7 @@ enum ReaderLayoutStyle: String, CaseIterable, Identifiable {
 /// The Settings window's tabs, addressable so other parts of the app can
 /// open Settings onto a particular one.
 enum SettingsTab: Hashable {
-    case author, editor, reading, assistive, annotation, layout, library, dialog, ai, modules, openSource
+    case author, editor, reading, assistive, annotation, layout, library, dialog, hypermedia, ai, modules, openSource
 }
 
 /// The app's Settings window (Origami Text → Settings…, ⌘,).
@@ -94,6 +106,9 @@ struct SettingsView: View {
             SharingSettingsView()
                 .tabItem { Label("Dialog", systemImage: "bubble.left.and.bubble.right") }
                 .tag(SettingsTab.dialog)
+            HypermediaSettingsView()
+                .tabItem { Label("Hypermedia", systemImage: "network") }
+                .tag(SettingsTab.hypermedia)
             AISettingsView()
                 .tabItem { Label("AI", systemImage: "sparkles") }
                 .tag(SettingsTab.ai)
@@ -104,9 +119,9 @@ struct SettingsView: View {
                 .tabItem { Label("Open Source", systemImage: "shippingbox") }
                 .tag(SettingsTab.openSource)
         }
-        // Wide enough for all eleven tab buttons to stand in one row —
+        // Wide enough for all twelve tab buttons to stand in one row —
         // narrower, the toolbar crops the trailing tabs.
-        .frame(width: 880)
+        .frame(width: 960)
         .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -1114,3 +1129,252 @@ private struct EditorSettingsView: View {
         .formStyle(.grouped)
     }
 }
+// MARK: - Hypermedia settings
+
+/// Hypermedia: live community connections. Sign in to a provider
+/// (Seed is first) to coordinate reading sessions, broadcast
+/// which EPUB is open and where, and exchange W3C annotations
+/// with others reading the same document.
+private struct HypermediaSettingsView: View {
+
+    @Environment(AppModel.self) private var model
+
+    // Persistent credentials and preferences via AppStorage.
+    @AppStorage(AppSettings.seedServerURLKey)              private var serverURL  = ""
+    @AppStorage(AppSettings.seedUsernameKey)               private var username   = ""
+    @AppStorage(AppSettings.hypermediaShareDocKey)         private var shareDoc       = true
+    @AppStorage(AppSettings.hypermediaSharePositionKey)    private var sharePosition  = true
+    @AppStorage(AppSettings.hypermediaShareAnnotationsKey) private var shareAnnotations = true
+    @AppStorage(AppSettings.hypermediaShowCommunityKey)    private var showCommunity  = true
+
+    // Transient sign-in form state (Seed).
+    @State private var password     = ""
+    @State private var isSigningIn  = false
+
+    // Transient sign-in form state (Hypothesis).
+    @State private var hypothesisToken      = ""
+    @State private var isConnectingHypothesis = false
+
+    // Fetch-by-URL state.
+    @State private var fetchURL     = ""
+    @State private var isFetching   = false
+    @State private var fetchError: String? = nil
+    @State private var fetchSuccess = false
+
+    private var session: HypermediaSession { .shared }
+
+    var body: some View {
+        Form {
+            Section {
+                seedProviderRows
+            } header: {
+                Text("Seed")
+            } footer: {
+                Text("Seed is a federated presence and annotation protocol. Sign in to broadcast which EPUB you are reading, share your reading position, and exchange W3C annotations with others on the same server.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                hypothesisProviderRows
+            } header: {
+                Text("Hypothesis")
+            } footer: {
+                Text("Hypothesis is an open annotation network. Sign in with a personal API token (hypothes.is/account/developer) to publish your annotations. Public annotations from others are visible without signing in.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Show public Hypothesis annotations", isOn: Binding(
+                    get: { session.hypothesisPublicEnabled },
+                    set: { session.hypothesisPublicEnabled = $0 }))
+            } header: {
+                Text("Hypothesis — Incoming")
+            } footer: {
+                Text("Public annotations from other Hypothesis users appear in the reading margin alongside your own. No account required.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Share which document I am reading", isOn: $shareDoc)
+                Toggle("Share reading position", isOn: $sharePosition)
+                Toggle("Send annotations to community", isOn: $shareAnnotations)
+            } header: {
+                Text("Seed — What to Share")
+            } footer: {
+                Text("Only sent to servers you are signed in to. Nothing is sent automatically — each toggle must be on and a server must be connected.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .disabled(!isConnected)
+
+            Section {
+                Toggle("Show community annotations while reading", isOn: $showCommunity)
+            } header: {
+                Text("Seed — Incoming")
+            } footer: {
+                Text("Community annotations from others reading the same document on your Seed server appear in the reading margin — plain notes and tags, displayed alongside your own.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .disabled(!isConnected)
+
+            Section {
+                TextField("Seed document URL", text: $fetchURL,
+                          prompt: Text("https://site.hyper.media/hm/uid/path"))
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { triggerFetch() }
+                if let err = fetchError {
+                    Label(err, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                }
+                if fetchSuccess {
+                    Label("Document imported — find it in Drafts.",
+                          systemImage: "checkmark.circle")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                }
+                HStack {
+                    Button(isFetching ? "Fetching\u{2026}" : "Open") {
+                        triggerFetch()
+                    }
+                    .disabled(fetchURL.trimmingCharacters(in: .whitespaces).isEmpty || isFetching)
+                    if isFetching { ProgressView().scaleEffect(0.7) }
+                }
+            } header: {
+                Text("Open by URL")
+            } footer: {
+                Text("Paste any Seed document URL — https://host/hm/uid/path, https://host/path, or hm://uid/path. The document is fetched, converted to Origami format, and placed in your Drafts, ready to read.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func triggerFetch() {
+        let url = fetchURL.trimmingCharacters(in: .whitespaces)
+        guard !url.isEmpty, !isFetching else { return }
+        fetchError   = nil
+        fetchSuccess = false
+        isFetching   = true
+        Task {
+            do {
+                let result = try await SeedFetcher.fetch(urlString: url)
+                try model.importSeedDocument(result)
+                fetchURL     = ""
+                fetchSuccess = true
+            } catch {
+                fetchError = error.localizedDescription
+            }
+            isFetching = false
+        }
+    }
+
+    private var isConnected: Bool {
+        if case .connected = session.seedState { return true }
+        return false
+    }
+
+    @ViewBuilder private var hypothesisProviderRows: some View {
+        switch session.hypothesisAuthState {
+        case .signedOut, .failed:
+            if case .failed(let msg) = session.hypothesisAuthState {
+                Label(msg, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .font(.caption)
+            }
+            SecureField("Personal API token", text: $hypothesisToken,
+                        prompt: Text("Paste token from hypothes.is/account/developer"))
+                .textFieldStyle(.roundedBorder)
+            Button(isConnectingHypothesis ? "Connecting…" : "Sign in to Hypothesis") {
+                let token = hypothesisToken
+                hypothesisToken = ""
+                Task {
+                    isConnectingHypothesis = true
+                    await HypermediaSession.shared.connectHypothesis(token: token)
+                    isConnectingHypothesis = false
+                }
+            }
+            .disabled(hypothesisToken.isEmpty || isConnectingHypothesis)
+
+        case .connecting:
+            HStack(spacing: 8) {
+                ProgressView().scaleEffect(0.7)
+                Text("Connecting to Hypothesis…").foregroundStyle(.secondary)
+            }
+
+        case .signedIn(let user):
+            LabeledContent("Signed in as") {
+                Text(user).foregroundStyle(.secondary)
+            }
+            Button("Sign out") {
+                HypermediaSession.shared.disconnectHypothesis()
+            }
+            .foregroundStyle(.red)
+        }
+    }
+
+    @ViewBuilder private var seedProviderRows: some View {
+        switch session.seedState {
+        case .disconnected, .failed:
+            if case .failed(let msg) = session.seedState {
+                Label(msg, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .font(.caption)
+            }
+            TextField("Server URL", text: $serverURL,
+                      prompt: Text("https://seed.example.org"))
+                .textFieldStyle(.roundedBorder)
+            TextField("Username or e-mail", text: $username)
+                .textFieldStyle(.roundedBorder)
+            SecureField("Password", text: $password)
+                .textFieldStyle(.roundedBorder)
+            Button(isSigningIn ? "Signing in…" : "Sign in to Seed") {
+                let url  = serverURL
+                let user = username
+                let pass = password
+                password = ""
+                Task {
+                    isSigningIn = true
+                    await HypermediaSession.shared.signInToSeed(
+                        serverURL: url, username: user, password: pass)
+                    isSigningIn = false
+                }
+            }
+            .disabled(serverURL.isEmpty || username.isEmpty || password.isEmpty || isSigningIn)
+
+        case .connecting:
+            HStack(spacing: 8) {
+                ProgressView().scaleEffect(0.7)
+                Text("Connecting to Seed\u{2026}").foregroundStyle(.secondary)
+            }
+
+        case .connected(let user, let url):
+            LabeledContent("Signed in as") {
+                Text(user).foregroundStyle(.secondary)
+            }
+            LabeledContent("Server") {
+                Text(url)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if let title = session.broadcastingTitle {
+                LabeledContent("Broadcasting") {
+                    Text(title)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Button("Sign out") {
+                HypermediaSession.shared.signOutFromSeed()
+            }
+            .foregroundStyle(.red)
+        }
+    }
+}
+

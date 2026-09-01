@@ -148,6 +148,9 @@ nonisolated struct OrigamiCitation: Codable, Sendable {
     /// `{medium:"epub"}` source entry so Origami Text can open the file by
     /// name when the id lookup alone would fail.
     var documentFilename: String?
+    /// Margin note or reader annotation attached to this citation — travels
+    /// in Author's Annotation field and as a BibTeX `annotation` field.
+    var annotation: String? = nil
 
     /// The identity carrier host. The link's *path* is the document id — never
     /// a filesystem location — so a citation resolves by identity inside the
@@ -224,18 +227,23 @@ enum CitationClipboard {
     static func write(_ citation: OrigamiCitation) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        // Three representations, richest first:
         // 1. Private JSON — full fidelity for Author and Origami Text.
         if let data = try? JSONEncoder().encode(citation) {
             pasteboard.setData(data, forType: type)
         }
-        // 2. HTML anchor — fallback for apps that read HTML but not our JSON.
-        //    The origamitext:// href is the primary form; Author's HTML parser
-        //    also accepts the https://origamitext.app/o/ carrier form.
+        // 2. Author's native pasteboard type — Content (the quoted passage),
+        //    BibTeX (full provenance), and Annotation when present. Author
+        //    reads this when the user pastes a citation into its editor.
+        let bibtex = citation.bibtex ?? citation.fallbackBibTeX
+        var authorDict: [String: Any] = ["Content": citation.quotedText, "BibTeX": bibtex]
+        if let annotation = citation.annotation { authorDict["Annotation"] = annotation }
+        if let data = try? NSKeyedArchiver.archivedData(withRootObject: authorDict,
+                                                        requiringSecureCoding: false) {
+            pasteboard.setData(data, forType: .init("Liquid Author Citation pasteboard type"))
+        }
+        // 3. HTML anchor — fallback for apps that read HTML but not our JSON.
         pasteboard.setString(htmlDocument(for: citation), forType: .html)
-        // 3. Plain text — the verbatim quoted passage, so a plain paste
-        //    produces readable prose. Author uses this only as a last resort
-        //    when neither JSON nor HTML is available.
+        // 4. Plain text — the verbatim quoted passage for a plain paste.
         pasteboard.setString(citation.quotedText, forType: .string)
     }
 
