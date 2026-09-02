@@ -86,12 +86,14 @@ enum ContextActionBuilder {
                 actions.append(ContextAction(id: "copy-quote", title: "Copy to Cite",
                                              systemImage: "quote.opening") {
                     let year = doc.date?.yearText ?? doc.created.formatted(.dateTime.year())
+                    let filename = model.epubRecord(forAddress: doc.id)?.originalFilename
                     CitationClipboard.write(OrigamiCitation(
                         to: doc.id, fragment: nil, rel: "cites",
                         quotedText: trimmed, author: doc.displayAuthor, year: year,
-                        bibtex: OrigamiReading.bibTeXEntry(for: doc, quote: trimmed),
+                        bibtex: OrigamiReading.bibTeXEntry(for: doc, quote: trimmed,
+                                                           sourceFile: filename),
                         documentTitle: doc.title,
-                        documentFilename: model.epubRecord(forAddress: doc.id)?.originalFilename))
+                        documentFilename: filename))
                 })
             }
             // The selected words as a person: offered when the library

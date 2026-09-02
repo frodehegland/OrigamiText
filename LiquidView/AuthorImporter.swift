@@ -480,6 +480,13 @@ nonisolated enum AuthorImporter {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .flatMap { $0.isEmpty ? nil : $0 }
         }
+        // When Author stored the OT-supplied BibTeX verbatim (either the
+        // "BibTeX" key from the Origami pasteboard type, or the "bibtex"
+        // key written by AuthorMapExporter), use it directly rather than
+        // synthesising from structured fields — all provenance is intact.
+        if let raw = text("BibTeX") ?? text("bibtex"), raw.hasPrefix("@") {
+            return raw
+        }
         guard let title = text("title") else { return nil }
 
         // "First [Middle] Last", BibTeX order, joined by " and ".

@@ -156,7 +156,8 @@ nonisolated struct OrigamiCitation: Codable, Sendable {
     /// a filesystem location — so a citation resolves by identity inside the
     /// user's folder. The `https://` shape exists only so foreign editors
     /// (Pages especially) keep the hyperlink; nothing is ever fetched from it.
-    /// Both apps agree on this prefix. Change it in one place.
+    /// Cross-app contract: Author writes and parses this prefix; EPUBReaderView
+    /// intercepts it as a back-link. Change it in both apps together.
     static let webCarrierPrefix = "https://origamitext.app/o/"
 
     /// The address as written in the body: `to` or `to#fragment`.
@@ -221,6 +222,7 @@ nonisolated struct OrigamiCitation: Codable, Sendable {
 @MainActor
 enum CitationClipboard {
     /// The private pasteboard type carrying the full citation as JSON.
+    /// Cross-app contract: Author reads this exact string. Do not change without updating Author.
     static let typeName = "info.futuretextlab.origami-citation"
     static var type: NSPasteboard.PasteboardType { .init(typeName) }
 
@@ -234,6 +236,8 @@ enum CitationClipboard {
         // 2. Author's native pasteboard type — Content (the quoted passage),
         //    BibTeX (full provenance), and Annotation when present. Author
         //    reads this when the user pastes a citation into its editor.
+        //    Cross-app contract: the type string, dict keys ("Content", "BibTeX",
+        //    "Annotation"), and NSKeyedArchiver encoding must match Author exactly.
         let bibtex = citation.bibtex ?? citation.fallbackBibTeX
         var authorDict: [String: Any] = ["Content": citation.quotedText, "BibTeX": bibtex]
         if let annotation = citation.annotation { authorDict["Annotation"] = annotation }

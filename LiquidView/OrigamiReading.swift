@@ -570,23 +570,25 @@ nonisolated enum OrigamiReading {
     static func authorCitationPayload(for paragraph: LiquidDoc.Paragraph,
                                       in doc: LiquidDoc,
                                       quote quoted: String? = nil,
-                                      annotation: String? = nil)
+                                      annotation: String? = nil,
+                                      sourceFile: String? = nil)
         -> (content: String, bibtex: String) {
         let quote = plainQuote(quoted ?? paragraph.text, in: doc)
         let bibtex = bibTeXEntry(for: doc, fragment: paragraph.id,
                                  quote: quote.isEmpty ? nil : quote,
-                                 annotation: annotation)
+                                 annotation: annotation,
+                                 sourceFile: sourceFile)
         return (content: quote, bibtex: bibtex)
     }
 
     /// One pure BibTeX entry — the form every Copy to Cite / Copy as
     /// Quote variant puts on the clipboard, readable by Author,
     /// reference managers, and anything else that speaks BibTeX.
-    /// Extra fields carry what the standard ones cannot: `quote` for
-    /// the cited words, `annotation` for the reader's own note,
-    /// `vm-id` for the address that reopens the original at its place,
-    /// and the `origami-source-*` pair that Author stores so the exported
-    /// EPUB can link back to this document.
+    /// Standard fields: `pages` for paragraph ID, `howpublished` for the
+    /// source filename ("citing by name"), `url` for the HTTPS carrier URL.
+    /// Extra fields: `quote` for the cited words, `annotation` for the
+    /// reader's note, `vm-id` for the full address that reopens the
+    /// original at the right paragraph.
     static func bibTeXEntry(title: String, author: String, year: String?,
                             publication: String? = nil, quote: String? = nil,
                             annotation: String? = nil, address: String,
@@ -598,19 +600,23 @@ nonisolated enum OrigamiReading {
         if let publication, !publication.isEmpty { fields.append(("journal", publication)) }
         if let quote, !quote.isEmpty { fields.append(("quote", quote)) }
         if let annotation, !annotation.isEmpty { fields.append(("annotation", annotation)) }
-        fields.append(("vm-id", address))
-        // The base document id (no #fragment) — what Author stores as
-        // LACitation.source so its EPUB export can link back to this document.
-        let sourceID = address.components(separatedBy: "#").first ?? address
-        fields.append(("origami-source-id", sourceID))
-        if let sourceFile, !sourceFile.isEmpty {
-            fields.append(("origami-source-file", sourceFile))
+        // Split address into document ID and optional paragraph fragment.
+        let addressParts = address.components(separatedBy: "#")
+        let sourceID = addressParts[0]
+        let paragraphID = addressParts.count > 1 ? addressParts[1] : nil
+        // pages: paragraph ID stored in the standard BibTeX field.
+        if let paragraphID, !paragraphID.isEmpty {
+            fields.append(("pages", paragraphID))
         }
-        // The origamitext:// URL — Author stores this in the citation's urls
-        // array so a re-opened EPUB can navigate back to the original book.
-        // The https carrier is the web-safe form for editors like Pages.
-        fields.append(("url", "origamitext://open/\(sourceID)"))
-        fields.append(("weburl", OrigamiCitation.webCarrierPrefix + sourceID))
+        // vm-id: full Origami address (docID#paragraphID) for OT-to-OT navigation.
+        fields.append(("vm-id", address))
+        // howpublished: source filename — "citing by document name".
+        if let sourceFile, !sourceFile.isEmpty {
+            fields.append(("howpublished", sourceFile))
+        }
+        // url: HTTPS carrier — a real web URL that OT resolves locally.
+        let fragment = paragraphID.map { "#\($0)" } ?? ""
+        fields.append(("url", OrigamiCitation.webCarrierPrefix + sourceID + fragment))
 
         let key = "ot" + String(stableHash(of: address).prefix(10))
         var bibtex = "@misc{\(key),\n"
@@ -625,14 +631,16 @@ nonisolated enum OrigamiReading {
     /// date (or its creation), the venue as `journal`, the address with
     /// an optional paragraph fragment.
     static func bibTeXEntry(for doc: LiquidDoc, fragment: String? = nil,
-                            quote: String? = nil, annotation: String? = nil) -> String {
+                            quote: String? = nil, annotation: String? = nil,
+                            sourceFile: String? = nil) -> String {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
         return bibTeXEntry(title: doc.title, author: doc.displayAuthor, year: year,
                            publication: doc.publication, quote: quote,
                            annotation: annotation,
-                           address: doc.id + (fragment.map { "#\($0)" } ?? ""))
+                           address: doc.id + (fragment.map { "#\($0)" } ?? ""),
+                           sourceFile: sourceFile)
     }
 
     /// A paragraph's words with the reading conventions resolved away —

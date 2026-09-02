@@ -2943,8 +2943,10 @@ struct OrigamiReadingView: View {
     /// available; other apps fall through to HTML or plain.
     private func copyCitation(for paragraph: LiquidDoc.Paragraph,
                               quote: String? = nil) {
+        let filename = model.epubRecord(forAddress: doc.id)?.originalFilename
         let payload = OrigamiReading.authorCitationPayload(for: paragraph, in: doc,
-                                                           quote: quote)
+                                                           quote: quote,
+                                                           sourceFile: filename)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
@@ -2954,7 +2956,7 @@ struct OrigamiReadingView: View {
             author: doc.displayAuthor, year: year,
             bibtex: payload.bibtex,
             documentTitle: doc.title,
-            documentFilename: model.epubRecord(forAddress: doc.id)?.originalFilename))
+            documentFilename: filename))
     }
 
     /// A citation to this document with the reader's own note in its
@@ -2964,8 +2966,10 @@ struct OrigamiReadingView: View {
         guard let paragraph = (doc.body ?? []).first(where: { $0.id == paragraphID })
             ?? doc.body?.first
         else { return }
+        let filename = model.epubRecord(forAddress: doc.id)?.originalFilename
         let payload = OrigamiReading.authorCitationPayload(for: paragraph, in: doc,
-                                                           annotation: text)
+                                                           annotation: text,
+                                                           sourceFile: filename)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
@@ -2975,7 +2979,7 @@ struct OrigamiReadingView: View {
             author: doc.displayAuthor, year: year,
             bibtex: payload.bibtex,
             documentTitle: doc.title,
-            documentFilename: model.epubRecord(forAddress: doc.id)?.originalFilename,
+            documentFilename: filename,
             annotation: text))
         model.showNote("Citation with your annotation copied — paste it in Author")
     }

@@ -18,6 +18,7 @@ nonisolated enum AuthorMapExporter {
         let key: String            // our identity (origami id, or person name)
         let phrase: String         // the Defined Concept's term
         let description: String
+        let author: String         // credited author, empty for person nodes
         let tag: String?           // "person" etc.; nil for plain concepts
         let url: String?           // origamitext://open/… back-link
         let date: Date
@@ -68,6 +69,10 @@ nonisolated enum AuthorMapExporter {
         }
         var entries = glossary["entries"] as? [String: Any] ?? [:]
         var uuidByKey: [String: String] = [:]
+        // Citation records for document nodes, written to Citations.plist so
+        // Author has title/author/year/vm-id when the user cites these concepts,
+        // and so AuthorImporter can reconstruct full BibTeX on re-import.
+        var citationRecords: [String: Any] = [:]
         var added = 0
         for node in nodes {
             if let existing = entries.first(where: {
@@ -79,13 +84,42 @@ nonisolated enum AuthorMapExporter {
             }
             let uuid = UUID().uuidString
             uuidByKey[node.key] = uuid
+
+            // Citation record (document nodes only — persons have no citable work).
+            var citationID: String? = nil
+            if node.tag != "person", !node.phrase.isEmpty {
+                let cid = UUID().uuidString
+                citationID = cid
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+                let year = calendar.component(.year, from: node.date)
+                // The carrier URL: HTTPS so any app can display it as a link.
+                let carrierURL = OrigamiCitation.webCarrierPrefix + node.key
+                // The full BibTeX for AuthorImporter's raw fallback path.
+                let bibtex = OrigamiReading.bibTeXEntry(
+                    title: node.phrase, author: node.author,
+                    year: String(year), address: node.key)
+                citationRecords[cid] = [
+                    "identifier": cid,
+                    "title": node.phrase,
+                    "authors": node.author.isEmpty ? [] as [String] : [node.author],
+                    "yearComponent": year,
+                    "bibTeXType": "misc",
+                    "vm-id": node.key,
+                    "webAddress": carrierURL,
+                    // Raw BibTeX — AuthorImporter uses this directly when present,
+                    // giving a complete round-trip without schema translation.
+                    "bibtex": bibtex,
+                ] as [String: Any]
+            }
+
             var entry: [String: Any] = [
                 "identifier": uuid,
                 "phrase": node.phrase,
                 "description": node.description,
                 "isLiked": false,
                 "isContext": false,
-                "citationIdentifiers": [] as [String],
+                "citationIdentifiers": citationID.map { [$0] } ?? [] as [String],
                 "urls": node.url.map { [["url": $0]] } ?? [] as [[String: String]],
                 "documentPath": "",
                 "date": node.date.timeIntervalSinceReferenceDate,
@@ -97,6 +131,22 @@ nonisolated enum AuthorMapExporter {
         glossary["entries"] = entries
         try JSONSerialization.data(withJSONObject: glossary, options: [.prettyPrinted, .sortedKeys])
             .write(to: glossaryURL, options: .atomic)
+
+        // Citations.plist — Author's citation store, merged with any existing
+        // records so a re-export doesn't wipe citations the user added in Author.
+        if !citationRecords.isEmpty {
+            let citationsURL = destination.appendingPathComponent("Contents/Citations.plist")
+            var existing: [String: Any] = [:]
+            if let data = try? Data(contentsOf: citationsURL),
+               let stored = try? PropertyListSerialization.propertyList(
+                   from: data, format: nil) as? [String: Any] {
+                existing = stored
+            }
+            for (k, v) in citationRecords { existing[k] = v }
+            try PropertyListSerialization.data(fromPropertyList: existing,
+                                               format: .xml, options: 0)
+                .write(to: citationsURL, options: .atomic)
+        }
 
         // Dynamic view: our web as connections, and a custom layout that
         // keeps the document's existing arrangement and rings ours around it.
