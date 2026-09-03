@@ -254,8 +254,14 @@ struct EPUBMapView: View {
     /// room, pinch in to gather it back to a wall.
     @State private var citedSpace = CitedSpace()
 
+    /// Align to Room's detected wall — read when the chip is tapped.
+    @State private var roomWallAnchor: AnchorEntity?
+
     /// The chosen depth, kept across sessions.
     @AppStorage("citedSpaceDepth") private var citedDepthSetting = 1.0
+    /// The pinch's final step: the spread pressed fully flat, every
+    /// citation at the wall's own plane. Kept across sessions too.
+    @AppStorage("citedSpaceFlat") private var citedSpaceFlat = false
 
     /// The open journal's records as nodes — arranged positions where
     /// the reader has made them, the grid for the rest — and, a level
@@ -463,7 +469,13 @@ struct EPUBMapView: View {
             citedYearRange = nil
         }
         if conceptSpaceMode {
-            items += buildConceptItems()
+            // Concept cards keep their selection through the rebuild,
+            // as the journal's cards do above.
+            var concepts = buildConceptItems()
+            for index in concepts.indices where selected.contains(concepts[index].id) {
+                concepts[index].isSelected = true
+            }
+            items += concepts
         }
         // Stamp every item with the current theme so a theme switch makes
         // them visually unequal to their cached counterparts, triggering a
@@ -488,7 +500,11 @@ struct EPUBMapView: View {
     /// Positioned at z = -0.85 (closer to viewer than articles at z = -1.2)
     /// using the same spaceShift so they move with the fist carry.
     private func buildConceptItems() -> [EPUBMapItem] {
-        let concepts = model.aiPaperConcepts
+        // A hidden concept stays away until Reveal All Concepts
+        // (long-pinch the Concepts chip) brings the set back.
+        let concepts = model.aiPaperConcepts.filter {
+            !hiddenConceptIDs.contains("concept:" + $0.id)
+        }
         guard !concepts.isEmpty else { return [] }
         let cols = 8
         let spacingX: Float = 0.28
@@ -760,25 +776,41 @@ struct EPUBMapView: View {
     /// the right forearm, exactly as in Author's Map; Pin and Set Aside
     /// ride the left, acting on the selected card.
     @State private var armMenu = ArmMenu(chips: [
-        // Settings hangs beneath the forearm — touched rarely, out of
-        // the working row.
+        // Settings and Documents hang beneath the forearm — touched
+        // rarely, out of the working row.
         ArmMenu.Chip(id: EPUBMapView.settingsChipID, title: "Settings", side: .right,
                      underside: true),
-        ArmMenu.Chip(id: EPUBMapView.documentsChipID, title: "Documents", side: .right),
-        ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Graph", side: .right),
-        ArmMenu.Chip(id: EPUBMapView.dataRightChipID, title: "Graph Data", side: .right,
+        ArmMenu.Chip(id: EPUBMapView.documentsChipID, title: "Documents", side: .right,
                      underside: true),
-        ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Floor Timeline", side: .right),
-        ArmMenu.Chip(id: EPUBMapView.floorMiddleChipID, title: "Mid Timeline", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.alignChipID, title: "Align to Room", side: .right,
+                     underside: true),
+        ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Graph", side: .right),
+        // The floor's three timeline lanes hang beneath the left
+        // forearm, in floor order — named for the floor so they are
+        // never mistaken for the wall graphs' controls.
+        ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Floor Left", side: .left,
+                     underside: true),
+        ArmMenu.Chip(id: EPUBMapView.floorMiddleChipID, title: "Floor Middle", side: .left,
+                     underside: true),
+        ArmMenu.Chip(id: EPUBMapView.floorRightChipID, title: "Floor Right", side: .left,
+                     underside: true),
         // Standing only while common ground does: the wall reduced to
         // the works every raised article cites — the green alone.
         ArmMenu.Chip(id: EPUBMapView.onlyOverlapChipID, title: "Only Overlap", side: .right),
         ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
-        // Graph stands above Graph Data on the arm.
+        // Hidden until a long-pinch on Concepts asks for it.
+        ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
+                     side: .left),
         ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Graph", side: .left),
-        ArmMenu.Chip(id: EPUBMapView.dataChipID, title: "Graph Data", side: .left, underside: true),
-    ], tracksPlanes: true)   // the flat pose finds the actual desk
+        // The graphs' data moved off the arms: it lives in Settings'
+        // Graph Data tab now.
+    ], tracksPlanes: true,   // the flat pose finds the actual desk
+       inverted: UserDefaults.standard.bool(forKey: "armMenuInverted"))
+
+    /// The Settings' Swap Arms toggle — every chip on the opposite
+    /// forearm. Read here as well so a change flips the menu live.
+    @AppStorage("armMenuInverted") private var armMenuInverted = false
 
     /// Only Overlap: the cited wall narrowed to the shared citations.
     @State private var onlyOverlap = false
@@ -786,18 +818,27 @@ struct EPUBMapView: View {
     @State private var sharedCitedStanding = false
     /// Focus: show only selected items and their direct connections.
     @State private var focusMode = false
+    /// Concepts put away with their card's Hide button — back via the
+    /// Concepts chip's long-pinch and Reveal All Concepts.
+    @State private var hiddenConceptIDs: Set<String> = []
+    /// A concept's own Focus: only that concept and the articles it
+    /// touches stand. Cleared when the concept is deselected.
+    @State private var focusedConceptID: String?
+    /// The focused concept's articles, resolved once at the tap.
+    @State private var focusedConceptArticleIDs: Set<String> = []
 
     private static let settingsChipID = "map.arm.settings"
     private static let documentsChipID = "map.arm.documents"
+    private static let alignChipID = "map.arm.align"
     private static let pinChipID = "map.arm.pin"
     private static let asideChipID = "map.arm.aside"
     private static let conceptsChipID = "map.arm.concepts"
-    private static let dataChipID = "map.arm.data"
-    private static let dataRightChipID = "map.arm.data.right"
+    private static let revealConceptsChipID = "map.arm.concepts.reveal"
     private static let timeflowLeftChipID = "map.arm.timeflow.left"
     private static let timeflowRightChipID = "map.arm.timeflow.right"
     private static let floorChipID = "map.arm.floor"
     private static let floorMiddleChipID = "map.arm.floor.middle"
+    private static let floorRightChipID = "map.arm.floor.right"
     private static let onlyOverlapChipID = "map.arm.onlyoverlap"
     private static let focusChipID = "map.arm.focus"
 
@@ -808,6 +849,9 @@ struct EPUBMapView: View {
             // run first.
             .onChange(of: model.openJournalVenue) {
                 reload()
+            }
+            .onChange(of: armMenuInverted) {
+                armMenu.setInverted(armMenuInverted)
             }
             .onChange(of: model.openDocIDs) {
                 reload()
@@ -859,6 +903,7 @@ struct EPUBMapView: View {
                 citedSpace.depth = min(
                     max(Float(citedDepthSetting), CitedSpace.depthRange.lowerBound),
                     CitedSpace.depthRange.upperBound)
+                citedSpace.zMapping = citedSpaceFlat ? .flat : .date
                 reload()
             }
             // The in-situ readers' handles: their own drag, beside the
@@ -878,6 +923,17 @@ struct EPUBMapView: View {
                     .onEnded { _ in
                         readerPanels.dragStart = [:]
                     })
+            // A long-pinch on the Concepts chip offers the way back for
+            // hidden concepts: the Reveal All Concepts chip steps out
+            // beside it.
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.6)
+                    .targetedToAnyEntity()
+                    .onEnded { value in
+                        if armMenu.chipID(for: value.entity) == Self.conceptsChipID {
+                            armMenu.setChipVisible(Self.revealConceptsChipID, true)
+                        }
+                    })
     }
 
     /// Everything the diagrams read, folded to one comparable value —
@@ -891,14 +947,28 @@ struct EPUBMapView: View {
 
     /// One pinch, one step: deeper stretches the spread into the room
     /// (the rows squeezing toward walking height so the reader can walk
-    /// the timeline); shallower gathers it back toward the wall.
+    /// the timeline); shallower gathers it back toward the wall — and
+    /// one step past the shallowest presses it fully flat, every
+    /// citation at the wall's own plane.
     private func stepCitedDepth(deeper: Bool) {
-        let next = citedSpace.depth
-            * (deeper ? CitedSpace.depthStep : 1 / CitedSpace.depthStep)
-        citedSpace.depth = min(
-            max(next, CitedSpace.depthRange.lowerBound),
-            CitedSpace.depthRange.upperBound)
-        citedDepthSetting = Double(citedSpace.depth)
+        if citedSpace.zMapping == .flat {
+            // Flat is the floor of the staircase: deeper steps back
+            // into the shallow corridor; shallower has nowhere to go.
+            guard deeper else { return }
+            citedSpace.zMapping = .date
+            citedSpaceFlat = false
+        } else if !deeper,
+                  citedSpace.depth <= CitedSpace.depthRange.lowerBound + 0.001 {
+            citedSpace.zMapping = .flat
+            citedSpaceFlat = true
+        } else {
+            let next = citedSpace.depth
+                * (deeper ? CitedSpace.depthStep : 1 / CitedSpace.depthStep)
+            citedSpace.depth = min(
+                max(next, CitedSpace.depthRange.lowerBound),
+                CitedSpace.depthRange.upperBound)
+            citedDepthSetting = Double(citedSpace.depth)
+        }
         // The pinch re-lays the whole spread — wandering cited cards
         // rejoin the mapping. The reader's article placements hold.
         placed = placed.filter { !$0.key.hasPrefix("cited:") }
@@ -921,8 +991,14 @@ struct EPUBMapView: View {
                     return AnyView(EmptyView())
                 }
                 return AnyView(
-                    Button("All") { selectAllConcepts() }
-                        .buttonStyle(.bordered)
+                    HStack(spacing: 8) {
+                        Button("All") { selectAllConcepts() }
+                        Button(focusedConceptID == item.id ? "Un-Focus" : "Focus") {
+                            focusConcept(item)
+                        }
+                        Button("Hide") { hideConcept(item.id) }
+                    }
+                    .buttonStyle(.bordered)
                 )
             },
             constructorNodeModelEntity: { item, texturedPlane in
@@ -981,6 +1057,15 @@ struct EPUBMapView: View {
             selectedCitationLines.rebuild(items: Array(allItems))
             citedToDeepLines.rebuild(items: Array(allItems))
         }
+        // Selected concepts travel as one: dragging any selected
+        // concept carries every other selected concept by the same
+        // delta. An unselected concept still moves alone.
+        view = view.shouldCheckMoveAnotherNodes { item in
+            item.kind == .concept && item.isSelected
+        }
+        view = view.shouldMoveAnotherNode { item in
+            item.kind == .concept && item.isSelected
+        }
         view = view.constrainMovedNode { item, proposed, startPosition in
             // Articles and concepts move freely in all axes.
             guard item.kind == .cited || item.kind == .citedDeep else { return proposed }
@@ -1013,6 +1098,12 @@ struct EPUBMapView: View {
             // With exactly 2 articles raised: only articles and shared
             // citations are shown — the wall narrows to the overlap.
             if n == 2 { return item.kind == .article || item.kind == .concept || item.isShared }
+            // A concept's own Focus: only that concept and the articles
+            // it touches stand; everything unconnected steps away.
+            if let focusedConceptID {
+                return item.id == focusedConceptID
+                    || focusedConceptArticleIDs.contains(item.id)
+            }
             // Focus: hide everything except selected items and anything
             // directly connected to them via the citation graph.
             if focusMode {
@@ -1084,6 +1175,7 @@ struct EPUBMapView: View {
             armMenu.install(in: content)
             // Only Overlap steps in only when common ground stands.
             armMenu.setChipVisible(Self.onlyOverlapChipID, false)
+            armMenu.setChipVisible(Self.revealConceptsChipID, false)
             conceptLadder.install(in: content)
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
@@ -1096,6 +1188,12 @@ struct EPUBMapView: View {
             selectedCitationLines.install(in: content)
             conceptConnectionLines.install(in: content)
             citedToDeepLines.install(in: content)
+            // Align to Room's wall: a wall-classified vertical plane on
+            // the one tracking session, read when the chip is tapped.
+            let roomWall = AnchorEntity(.plane(.vertical, classification: .wall,
+                                               minimumBounds: SIMD2<Float>(1, 1)))
+            content.add(roomWall)
+            roomWallAnchor = roomWall
             fistGrab.install(
                 in: content,
                 move: { delta in
@@ -1132,18 +1230,22 @@ struct EPUBMapView: View {
                 .padding(.vertical, 2.5)
                 .opacity(0.5)
         } else if item.kind == .concept {
-            // Knowledge Space node style: glass card with serif title and
-            // optional description, thin border that brightens on selection.
+            // Knowledge Space node style: serif title and optional
+            // description, thin border that brightens on selection.
+            // The fill is the theme's concept paper, NOT a material —
+            // this face is rasterized by ImageRenderer, and a SwiftUI
+            // material has no backdrop there and bakes out black.
             VStack(spacing: 4) {
                 Text(item.title)
                     .font(.system(size: 12, weight: .semibold, design: .serif))
-                    .foregroundStyle(dark ? Color.white : Color.primary)
+                    .foregroundStyle(dark ? Color.white : Color(white: 0.10))
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
                 if !item.author.isEmpty {
                     Text(item.author)
                         .font(.system(size: 9, design: .serif))
-                        .foregroundStyle(dark ? Color.white.opacity(0.65) : Color.secondary)
+                        .foregroundStyle(dark ? Color.white.opacity(0.65)
+                                              : Color(white: 0.35))
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                 }
@@ -1151,9 +1253,11 @@ struct EPUBMapView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(minWidth: 90, maxWidth: 200)
+            // Pure white at 80% transparency, both themes — a frosted
+            // slip over the room rather than a painted card.
             .background(
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(.regularMaterial)
+                    .fill(Color.white.opacity(0.2))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
@@ -1286,8 +1390,9 @@ struct EPUBMapView: View {
         reload()
     }
 
-    /// Selects all articles associated with ANY concept currently visible —
-    /// the union of all concept-article links in one gesture.
+    /// Selects every concept card, and with each one all the articles
+    /// it touches — the union of all concept-article links in one
+    /// gesture.
     private func selectAllConcepts() {
         for concept in items where concept.kind == .concept {
             let matches = model.articleIDs(mentioning: concept.title)
@@ -1296,6 +1401,37 @@ struct EPUBMapView: View {
                 items[index].isSelected = true
                 raisedArticleIDs.insert(items[index].id)
             }
+        }
+        for index in items.indices where items[index].kind == .concept {
+            items[index].isSelected = true
+        }
+        reload()
+    }
+
+    /// Focus, on a selected concept's card: only this concept and the
+    /// articles it touches stand — tapped again (or the concept
+    /// deselected), the room fills back in.
+    private func focusConcept(_ item: EPUBMapItem) {
+        if focusedConceptID == item.id {
+            focusedConceptID = nil
+            focusedConceptArticleIDs = []
+        } else {
+            focusedConceptID = item.id
+            focusedConceptArticleIDs = Set(model.articleIDs(mentioning: item.title))
+        }
+        reload()
+    }
+
+    /// Hide, on a selected concept's card: the card leaves the Map —
+    /// back via the Concepts chip's long-pinch, Reveal All Concepts.
+    private func hideConcept(_ id: String) {
+        hiddenConceptIDs.insert(id)
+        if let index = items.firstIndex(where: { $0.id == id }) {
+            items[index].isSelected = false
+        }
+        if focusedConceptID == id {
+            focusedConceptID = nil
+            focusedConceptArticleIDs = []
         }
         reload()
     }
@@ -1322,6 +1458,60 @@ struct EPUBMapView: View {
             }
         }
         EPUBMapLayoutStore.save(placed)
+    }
+
+    /// Align to Room: the whole space slides (the fist-carry's own
+    /// commit) until its right flank rests a hand's breadth off the
+    /// wall standing nearest the right arm — the arm wearing the chip.
+    /// Translation only: the engine's cards all face one way, so the
+    /// space keeps its yaw; recentre (Digital Crown) to turn with it.
+    private func alignSpaceToRoom() {
+        guard let anchor = roomWallAnchor, anchor.isAnchored else {
+            flashAlignChip("No Wall Found")
+            return
+        }
+        let wallPoint = anchor.position(relativeTo: nil)
+        // A plane anchor's local Y is its normal; flattened and pointed
+        // into the room.
+        var normal = anchor.convert(direction: SIMD3<Float>(0, 1, 0), to: nil)
+        normal.y = 0
+        let length = simd_length(normal)
+        guard length > 1e-3 else {
+            flashAlignChip("No Wall Found")
+            return
+        }
+        normal /= length
+        // Measured from the hand wearing the chip; the space's centre
+        // stands in when the hand is briefly untracked.
+        let hand = armMenu.wristPosition(armMenuInverted ? .left : .right)
+            ?? (citedSpace.origin + spaceShift)
+        if simd_dot(normal, hand - wallPoint) < 0 { normal = -normal }
+        // A wall beyond a couple of metres of the hand is not "the
+        // wall at the arm".
+        guard abs(simd_dot(hand - wallPoint, normal)) < 2.5 else {
+            flashAlignChip("No Wall Near")
+            return
+        }
+        // The space's right flank — the right graph's plane, mid-
+        // corridor (its sideOffset, walking height).
+        let flank = SIMD3<Float>(
+            citedSpace.origin.x + 1.15,
+            CitedSpace.walkHeight,
+            citedSpace.origin.z - citedSpace.depth / 2) + spaceShift
+        let standing = simd_dot(flank - wallPoint, normal)
+        commitSpaceShift(normal * (0.05 - standing))
+        // Re-lay everything not driven by items — graphs, floor lanes,
+        // lines — in the shifted space.
+        reload()
+    }
+
+    /// The chip speaks its trouble for a moment, then takes its name back.
+    private func flashAlignChip(_ message: String) {
+        armMenu.setChipTitle(Self.alignChipID, message)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            armMenu.setChipTitle(Self.alignChipID, "Align to Room")
+        }
     }
 
     /// Keep the moved positions in the items (so the engine's equality
@@ -1359,6 +1549,12 @@ struct EPUBMapView: View {
             let willSelect = !item.isSelected
             if let index = items.firstIndex(where: { $0.id == item.id }) {
                 items[index].isSelected = willSelect
+            }
+            // Deselecting a focused concept lifts its Focus — the
+            // room fills back in.
+            if !willSelect, focusedConceptID == item.id {
+                focusedConceptID = nil
+                focusedConceptArticleIDs = []
             }
             switch item.kind {
             case .article:
@@ -1475,10 +1671,26 @@ struct EPUBMapView: View {
             selectConcept(concept)
             return true
         }
+        // The graph key's Edit chip: the data dialog, preset to the
+        // tapped graph's side.
+        var editNode: Entity? = entity
+        while let current = editNode {
+            if current.name.hasPrefix("graph.edit.") {
+                UserDefaults.standard.set(
+                    String(current.name.dropFirst("graph.edit.".count)),
+                    forKey: "graphDataWall")
+                openWindow(id: "graphdata")
+                return true
+            }
+            editNode = current.parent
+        }
         switch armMenu.chipID(for: entity) {
         case Self.conceptsChipID:
             if conceptSpaceMode {
                 conceptSpaceMode = false
+                // The concepts leave, and any concept Focus with them.
+                focusedConceptID = nil
+                focusedConceptArticleIDs = []
                 updateSankey()
                 reload()
             } else {
@@ -1487,13 +1699,6 @@ struct EPUBMapView: View {
                 updateSankey()
                 reload()
             }
-            return true
-        // Each arm's Time Data curates its own side's graph.
-        case Self.dataChipID:
-            openWindow(id: "data", value: "left")
-            return true
-        case Self.dataRightChipID:
-            openWindow(id: "data", value: "right")
             return true
         case Self.timeflowLeftChipID:
             timeflowLeftShown.toggle()
@@ -1529,11 +1734,26 @@ struct EPUBMapView: View {
                 floorShowMiddleRaw = FloorShow.nothing.rawValue
             }
             return true
+        case Self.floorRightChipID:
+            if floorShowRightRaw == FloorShow.nothing.rawValue {
+                floorShowRightRaw = FloorShow.world.rawValue
+            } else {
+                floorShowRightRaw = FloorShow.nothing.rawValue
+            }
+            return true
         case Self.settingsChipID:
             openWindow(id: "settings")
             return true
         case Self.documentsChipID:
             openWindow(id: "library")
+            return true
+        case Self.alignChipID:
+            alignSpaceToRoom()
+            return true
+        case Self.revealConceptsChipID:
+            hiddenConceptIDs = []
+            armMenu.setChipVisible(Self.revealConceptsChipID, false)
+            reload()
             return true
         default:
             return false
@@ -1827,38 +2047,91 @@ final class SankeyWall {
     private var wallAnchor: AnchorEntity?
     private var snapTick: EventSubscription?
     private var snapsToWall = false
-    /// The corridor-given x the graph stands at when no wall claims it.
-    private var baseX: Float = 0
+    /// The corridor-given place the graph stands at when no wall
+    /// claims it — also the pivot everything turns about when one does.
+    private var basePosition = SIMD3<Float>.zero
+    /// The key card's corridor place, so it can ride the graph's turn.
+    private var keyBasePosition = SIMD3<Float>.zero
 
     /// Which side's series this wall carries — an untagged series
     /// stands on both.
     private var side: String { sideOffset < 0 ? "left" : "right" }
 
-    /// The room wall's x, when one has anchored on this graph's own
-    /// side within a room's reach — pulled a hand's breadth off the
-    /// plaster.
-    private func wallX() -> Float? {
+    /// The room wall's pose, when one has anchored on this graph's own
+    /// side within a room's reach: where the graph's centre lands
+    /// (projected onto the plaster, then a hand's breadth off it) and
+    /// the yaw that lays the graph's plane along the wall.
+    private func wallPose() -> (position: SIMD3<Float>, yaw: Float)? {
         guard let wallAnchor, wallAnchor.isAnchored else { return nil }
-        let x = wallAnchor.position(relativeTo: nil).x
-        if sideOffset < 0 {
-            guard x < baseX, x > baseX - 6 else { return nil }
-            return x + 0.05
-        } else {
-            guard x > baseX, x < baseX + 6 else { return nil }
-            return x - 0.05
-        }
+        let wallPoint = wallAnchor.position(relativeTo: nil)
+        // A plane anchor's local Y is the plane's normal; flattened to
+        // horizontal it is the wall's facing, made to point into the
+        // room (toward the graph's corridor place).
+        var normal = wallAnchor.convert(direction: SIMD3<Float>(0, 1, 0), to: nil)
+        normal.y = 0
+        let length = simd_length(normal)
+        guard length > 1e-3 else { return nil }
+        normal /= length
+        if simd_dot(normal, basePosition - wallPoint) < 0 { normal = -normal }
+        // Only a wall on this graph's own side, within a room's reach.
+        let toWall = -normal
+        if sideOffset < 0, toWall.x > 0.3 { return nil }
+        if sideOffset > 0, toWall.x < -0.3 { return nil }
+        let distance = simd_dot(basePosition - wallPoint, normal)
+        guard distance < 6 else { return nil }
+        let position = basePosition - normal * distance + normal * 0.05
+        // At rest the plot's front face reads down +X; on the wall it
+        // should read along the plaster — the left graph's front into
+        // the room, the right graph keeping its back face to the room
+        // as it does in the corridor.
+        let facing = sideOffset < 0 ? normal : -normal
+        let yaw = atan2(-facing.z, facing.x)
+        return (position, yaw)
     }
 
-    /// The graph keeps to the room's wall while the option is on, and
-    /// to its corridor place otherwise — the key and the cylinders
-    /// stepping with it.
+    /// Whether the graph currently stands on a wall — so leaving the
+    /// snap (or losing the wall) restores the corridor place ONCE.
+    /// Off the wall, the per-frame settle must leave the graph alone:
+    /// between updates its position belongs to the fist-carry, and a
+    /// frame-by-frame reset would pin the graph while the room moves.
+    private var standsOnWall = false
+
+    /// The graph keeps to the room's wall while the option is on —
+    /// laid flat along the plaster, turned to its angle — and to its
+    /// corridor place otherwise; the key and the cylinders step and
+    /// turn with it, pivoting about the graph's centre.
     private func settleToWall() {
         guard let entity else { return }
-        let targetX = snapsToWall ? (wallX() ?? baseX) : baseX
-        guard abs(entity.position.x - targetX) > 0.005 else { return }
-        entity.position.x = targetX
-        keyEntity?.position.x = targetX
-        cylinders?.position.x = targetX - baseX
+        guard snapsToWall, let pose = wallPose() else {
+            if standsOnWall {
+                standsOnWall = false
+                entity.position = basePosition
+                entity.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+                keyEntity?.position = keyBasePosition
+                if let cylinders {
+                    cylinders.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+                    cylinders.position = .zero
+                }
+            }
+            return
+        }
+        standsOnWall = true
+        let goal = pose.position
+        let turn = simd_quatf(angle: pose.yaw, axis: SIMD3<Float>(0, 1, 0))
+        guard simd_length(entity.position - goal) > 0.005
+                || abs(simd_dot(entity.orientation.vector, turn.vector)) < 0.99995 else { return }
+        entity.position = goal
+        entity.orientation = turn
+        // The key swings with the graph's near end but keeps facing
+        // the walker — a turned card would read edge-on.
+        keyEntity?.position = goal + turn.act(keyBasePosition - basePosition)
+        // The tubes' points live at world coordinates inside their
+        // holder: orient the holder and place it so the whole run
+        // pivots about the graph's centre.
+        if let cylinders {
+            cylinders.orientation = turn
+            cylinders.position = goal - turn.act(basePosition)
+        }
     }
 
     func update(dataset: SankeySpace.Dataset?,
@@ -1875,7 +2148,13 @@ final class SankeyWall {
         keyEntity?.removeFromParent()
         keyEntity = nil
         snapsToWall = snapToWall
-        baseX = citedSpace.origin.x + sideOffset + shift.x
+        // The rebuilt entities stand at the corridor place; the next
+        // frame's settle walks them to the wall if one still claims it.
+        standsOnWall = false
+        basePosition = SIMD3<Float>(
+            citedSpace.origin.x + sideOffset,
+            Self.height,
+            citedSpace.origin.z - citedSpace.depth / 2) + shift
         let dataset = dataset.map { whole in
             var mine = whole
             mine.series = whole.series.filter { $0.wall == nil || $0.wall == side }
@@ -1923,10 +2202,7 @@ final class SankeyWall {
         let baseLength = Float(Self.faceSize.width) * 0.001
         let along = citedSpace.depth / baseLength
         holder.scale = SIMD3<Float>(1, min(along, 2.4), along)
-        holder.position = SIMD3<Float>(
-            citedSpace.origin.x + sideOffset,
-            Self.height,
-            citedSpace.origin.z - citedSpace.depth / 2) + shift
+        holder.position = basePosition
         content.add(holder)
         entity = holder
 
@@ -1942,10 +2218,23 @@ final class SankeyWall {
             let keyHolder = ModelEntity()
             keyHolder.components.set(MapSpaceNodeComponent())
             keyHolder.addChild(face)   // unrotated: its face reads down +Z, at the walker
-            keyHolder.position = SIMD3<Float>(
+            // The key itself is the door to this graph's data dialog:
+            // tap the legend to edit what the graph is based on. Named
+            // for the tap handler; the collision box wears the card's
+            // own size (image points × the 0.001 ratio).
+            keyHolder.name = "graph.edit.\(side)"
+            keyHolder.components.set(CollisionComponent(
+                shapes: [.generateBox(size: SIMD3<Float>(
+                    Float(keyImage.size.width) * 0.001,
+                    Float(keyImage.size.height) * 0.001,
+                    0.02))]))
+            keyHolder.components.set(InputTargetComponent())
+            keyHolder.components.set(HoverEffectComponent())
+            keyBasePosition = SIMD3<Float>(
                 citedSpace.origin.x + sideOffset,
                 Self.height,
                 citedSpace.origin.z + 0.06) + shift
+            keyHolder.position = keyBasePosition
             content.add(keyHolder)
             keyEntity = keyHolder
         }

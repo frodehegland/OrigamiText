@@ -1313,3 +1313,105 @@ nonisolated enum OrigamiReading {
         }
     }
 }
+
+// MARK: - Copy to Cite: the citation value
+
+// Lives here, not beside CitationClipboard in ReaderQuote.swift: that file
+// is Mac-only (AppKit pasteboard) while this value is pure Foundation and
+// the visionOS target's EPUB import reads webCarrierPrefix.
+
+/// One "Copy to Cite" citation. Written to the clipboard in three flavours
+/// (private JSON, HTML hyperlink, plain quoted text) so the same command is a
+/// usable paste in Word and a full-fidelity link in Origami Text / Author.
+nonisolated struct OrigamiCitation: Codable, Sendable {
+    /// The target document's address — the EPUB's OPF `dc:identifier` (e.g.
+    /// `urn:uuid:…`). Author stores this as `citation.source`; Origami Text
+    /// uses it to find the book in its library when a back-link is clicked.
+    var to: String
+    /// The paragraph id within the target, when the cite is paragraph- or
+    /// span-scoped.
+    var fragment: String?
+    /// Link kind; defaults to `cites`.
+    var rel: String?
+    /// The quoted words (a selection) or the document title (a whole-doc cite)
+    /// — what appears in quotation marks.
+    var quotedText: String
+    var author: String
+    var year: String
+    /// The citation's BibTeX, when known — carried for full provenance.
+    var bibtex: String?
+    /// The source document's title (from `<dc:title>` in the OPF). Author
+    /// stores this as `citation.title` for its panel and bibliography.
+    var documentTitle: String?
+    /// The leaf filename of the source EPUB (e.g. "My Paper.epub"). Author
+    /// stores this as `citation.filename`; the EPUB exporter writes a typed
+    /// `{medium:"epub"}` source entry so Origami Text can open the file by
+    /// name when the id lookup alone would fail.
+    var documentFilename: String?
+    /// Margin note or reader annotation attached to this citation — travels
+    /// in Author's Annotation field and as a BibTeX `annotation` field.
+    var annotation: String? = nil
+
+    /// The identity carrier host. The link's *path* is the document id — never
+    /// a filesystem location — so a citation resolves by identity inside the
+    /// user's folder. The `https://` shape exists only so foreign editors
+    /// (Pages especially) keep the hyperlink; nothing is ever fetched from it.
+    /// Cross-app contract: Author writes and parses this prefix; EPUBReaderView
+    /// intercepts it as a back-link. Change it in both apps together.
+    static let webCarrierPrefix = "https://origamitext.app/o/"
+
+    /// The address as written in the body: `to` or `to#fragment`.
+    var address: String { to + (fragment.map { "#\($0)" } ?? "") }
+
+    /// The in-app URL used inside the EPUB body and the reader:
+    /// `origamitext://open/<to>?q=<quoted>#<fragment>`.
+    var url: String { appendingQuoteAndFragment(to: "origamitext://open/\(to)") }
+
+    /// The Pages/Word-safe carrier written to the clipboard hyperlink:
+    /// `https://origamitext.app/o/<to>?q=<quoted>#<fragment>`. Identity in the
+    /// path; resolved locally, not over the network.
+    var webURL: String { appendingQuoteAndFragment(to: Self.webCarrierPrefix + to) }
+
+    /// Appends the hidden quote (`?q=`) and paragraph (`#fragment`) to a base
+    /// URL — shared by the in-app and carrier forms so they never drift.
+    private func appendingQuoteAndFragment(to base: String) -> String {
+        var string = base
+        if !quotedText.isEmpty {
+            var allowed = CharacterSet.urlQueryAllowed
+            allowed.remove(charactersIn: "&=+#?")
+            let encoded = quotedText.addingPercentEncoding(withAllowedCharacters: allowed) ?? quotedText
+            string += "?q=\(encoded)"
+        }
+        if let fragment, !fragment.isEmpty { string += "#\(fragment)" }
+        return string
+    }
+
+    /// The visible citation marker shown in Word/Pages and as plain text:
+    /// `(Author, Year)`, or `(source)` when neither is known. The quoted words
+    /// are never shown — they live in the link — so the citation reads as one
+    /// tidy package the user is unlikely to edit apart.
+    var marker: String {
+        let inside = [author, year]
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+        return inside.isEmpty ? "(source)" : "(\(inside))"
+    }
+
+    /// The clean, visible sentence — “Quoted” (Author, Year) — kept for the
+    /// native Origami/Author draft editors, which show the quote in full.
+    var displaySentence: String { "“\(quotedText)” (\(author), \(year))" }
+
+    /// The form inserted into an Origami/Author draft: the sentence plus the
+    /// bracketed address, so the editor makes a span-scoped `cites` link on
+    /// save (the quotation before the address becomes the span).
+    var insertionText: String { "\(displaySentence) [\(address)]" }
+
+    /// The entry synthesized when the writer supplied no richer BibTeX —
+    /// the quoted words (or title), author, year, and the vm-id address:
+    /// still one valid entry.
+    var fallbackBibTeX: String {
+        OrigamiReading.bibTeXEntry(title: quotedText, author: author,
+                                   year: year, address: address)
+    }
+}

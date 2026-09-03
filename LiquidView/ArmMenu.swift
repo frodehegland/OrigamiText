@@ -32,6 +32,11 @@ final class ArmMenu {
         var chirality: AnchoringComponent.Target.Chirality {
             self == .left ? .left : .right
         }
+
+        // Origami addition (carry back to Author): Swap Arms support.
+        var opposite: Side {
+            self == .left ? .right : .left
+        }
     }
 
     /// One command on a forearm: an id (used for tap routing), its label, and
@@ -57,10 +62,21 @@ final class ArmMenu {
     /// this so a reading laid flat can find the actual desk. One
     /// session carries both; a second session breaks the device.
     private let tracksPlanes: Bool
+    /// Every chip on the opposite forearm from the one it declared —
+    /// the Settings' Swap Arms toggle. Changed live via setInverted.
+    /// Origami addition (carry back to Author), as are its init
+    /// parameter, effectiveSide, and setInverted below.
+    private var inverted: Bool
 
-    init(chips: [Chip], tracksPlanes: Bool = false) {
+    init(chips: [Chip], tracksPlanes: Bool = false, inverted: Bool = false) {
         self.chips = chips
         self.tracksPlanes = tracksPlanes
+        self.inverted = inverted
+    }
+
+    /// The arm a chip actually rides, the swap applied.
+    private func effectiveSide(of chip: Chip) -> Side {
+        inverted ? chip.side.opposite : chip.side
     }
 
     // MARK: -
@@ -83,7 +99,10 @@ final class ArmMenu {
     func install(in content: RealityViewContent) {
         guard items.isEmpty, !chips.isEmpty else { return }
 
-        for side in Set(chips.map(\.side)) {
+        // Both orientations' arms get a menu and anchors, so a Swap
+        // Arms flip mid-session only re-parents chips — even when the
+        // chips all declared one side.
+        for side in Set(chips.flatMap { [$0.side, $0.side.opposite] }) {
             let menu = Entity()
             menu.name = "arm.menu.\(side)"
             menu.isEnabled = false
@@ -107,7 +126,7 @@ final class ArmMenu {
             label.scale = SIMD3<Float>(repeating: 0.32)
             item.addChild(label)
 
-            menus[chip.side]?.addChild(item)
+            menus[effectiveSide(of: chip)]?.addChild(item)
             items[chip.id] = item
         }
 
@@ -185,24 +204,45 @@ final class ArmMenu {
         guard liftLength > 1e-5 else { return }
         lift /= liftLength
 
-        // ~9 cm of air between skin and text — the underside chips
-        // hang the same distance beneath, in their own row.
-        let sideChips = chips.filter { $0.side == side }
+        // ~7 cm of air between skin and the working row; the underside
+        // chips hang lower, 12 cm beneath, so the two rows read apart
+        // at a glance. (Origami tuning — Interatlas used 9 cm both ways.)
+        let sideChips = chips.filter { effectiveSide(of: $0) == side }
         var topIndex = 0
         var underIndex = 0
         for chip in sideChips {
             guard let item = items[chip.id] else { continue }
             if chip.underside {
-                item.position = alongArm * (0.04 + 0.05 * Float(underIndex)) - lift * 0.09
+                item.position = alongArm * (0.04 + 0.05 * Float(underIndex)) - lift * 0.12
                 underIndex += 1
             } else {
-                item.position = alongArm * (0.04 + 0.05 * Float(topIndex)) + lift * 0.09
+                item.position = alongArm * (0.04 + 0.05 * Float(topIndex)) + lift * 0.07
                 topIndex += 1
             }
         }
     }
 
     // MARK: - Visibility
+
+    /// Moves every chip to the opposite forearm and back — the
+    /// Settings' Swap Arms toggle, honored without reinstalling.
+    func setInverted(_ flag: Bool) {
+        guard flag != inverted else { return }
+        inverted = flag
+        for chip in chips {
+            guard let item = items[chip.id],
+                  let menu = menus[effectiveSide(of: chip)] else { continue }
+            item.setParent(menu)
+        }
+    }
+
+    /// The wrist's place in the room, when that hand is tracked —
+    /// Origami addition (carry back to Author): Align to Room measures
+    /// from the asking arm.
+    func wristPosition(_ side: Side) -> SIMD3<Float>? {
+        guard let anchor = wrist[side], anchor.isAnchored else { return nil }
+        return anchor.position(relativeTo: nil)
+    }
 
     /// Shows or hides one chip — a command that only means something
     /// sometimes steps away otherwise.

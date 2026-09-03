@@ -34,22 +34,24 @@ struct OrigamiVisionApp: App {
         }
         .defaultSize(width: 560, height: 720)
 
-        // Settings, opened from the right arm's Settings chip.
+        // Settings, opened from the right arm's Settings chip. Its
+        // Graph Data tab carries the graphs' Ask-for-Data dialog,
+        // which used to be its own window off the arm chips.
         WindowGroup(id: "settings") {
             VisionSettingsView()
                 .environment(model)
         }
-        .defaultSize(width: 460, height: 520)
+        .defaultSize(width: 480, height: 560)
 
-        // The graphs' data, opened from either arm's Graph Data chip —
-        // each arm curates its own side's graph: the series standing
-        // on the corridor's Z axis, and the Ask-for-Data field that
-        // brings in more — Liquid Information's + dialog, here.
-        WindowGroup(id: "data", for: String.self) { $wall in
-            VisionDataView(wall: wall ?? "left")
+        // The graph's data dialog alone, opened from the Edit chip on
+        // the graph's own key — preset to that graph's side. Settings'
+        // Graph Data tab holds the same dialog for when no graph (and
+        // so no key) stands in the room yet.
+        WindowGroup(id: "graphdata") {
+            VisionDataView()
                 .environment(model)
         }
-        .defaultSize(width: 480, height: 460)
+        .defaultSize(width: 480, height: 560)
 
         // The one immersive space (mixed, so windows and volumes share
         // the room): the Map — Author's engine with EPUBs as nodes —
@@ -1165,13 +1167,14 @@ struct OrigamiSpaceView: View {
 /// the series pairs standing on the corridor, each removable, and a
 /// field that fetches a new city's yearly min/max temperatures from
 /// Open-Meteo. One pair to begin with; the diagram takes as many as
-/// the reader asks for.
+/// the reader asks for. Lives in the Settings window's Graph Data tab.
 struct VisionDataView: View {
     @Environment(VisionModel.self) private var model
-    /// Which graph this dialog curates — "left" or "right"; the arm
-    /// that opened it decides. Untagged series stand on both graphs
-    /// and so appear in both dialogs.
-    let wall: String
+    /// Which graph the dialog curates — "left" or "right", chosen by
+    /// the picker atop the list (the arm chips that used to decide are
+    /// gone). Untagged series stand on both graphs and so appear under
+    /// either choice.
+    @AppStorage("graphDataWall") private var wall = "left"
 
     @State private var city = ""
     @State private var isFetching = false
@@ -1199,6 +1202,14 @@ struct VisionDataView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Graph") {
+                    Picker("Graph", selection: $wall) {
+                        Text("Left Graph").tag("left")
+                        Text("Right Graph").tag("right")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
                 Section("Presentation") {
                     Picker("Style", selection: $timeSpreadStyleRaw) {
                         ForEach(TimeSpreadStyle.allCases) { style in
@@ -1321,7 +1332,7 @@ struct VisionDataView: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .navigationTitle(wall == "left" ? "Left Graph" : "Right Graph")
+            .navigationTitle("Graph Data")
         }
     }
 
@@ -1373,9 +1384,28 @@ struct VisionSettingsView: View {
     /// The Reading Desk's dress — worn while a document is read alone.
     @AppStorage("readingDeskTheme") private var deskThemeRaw =
         ReadingDeskTheme.light.rawValue
+    /// Swap Arms: every wrist chip on the opposite forearm. The Map's
+    /// ArmMenu watches this key and flips live.
+    @AppStorage("armMenuInverted") private var armMenuInverted = false
     @State private var choosingFolder = false
 
     var body: some View {
+        TabView {
+            Tab("General", systemImage: "gearshape") {
+                generalTab
+            }
+            // The graphs' data dialog — its arm chips are gone; this
+            // tab is the one door.
+            Tab("Graph Data", systemImage: "chart.line.uptrend.xyaxis") {
+                VisionDataView()
+            }
+        }
+        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+            if case .success(let url) = result { model.openFolder(url) }
+        }
+    }
+
+    private var generalTab: some View {
         NavigationStack {
             Form {
                 Section("Reading Desk") {
@@ -1388,6 +1418,13 @@ struct VisionSettingsView: View {
                     Text("Worn by the document while it is read alone on the Reading Desk — the Hallway's panels keep their glass.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                Section {
+                    Toggle("Swap Arms", isOn: $armMenuInverted)
+                } header: {
+                    Text("Arm Menus")
+                } footer: {
+                    Text("Moves every wrist chip to the opposite forearm — for wearing the working row on the other arm.")
                 }
                 Section("Community Folder") {
                     LabeledContent("Folder",
@@ -1419,9 +1456,6 @@ struct VisionSettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-        }
-        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result { model.openFolder(url) }
         }
     }
 }
@@ -1567,6 +1601,11 @@ struct VisionReaderView: View {
                     VisionCitationSheet(doc: doc, key: target.key) {
                         citationTarget = nil
                     }
+                    // Lifted toward the reader: Horizontal's glass
+                    // columns render with real depth in front of the
+                    // attachment plane, and a flat overlay would sit
+                    // behind them.
+                    .offset(z: 40)
                 } else if let target = noteTarget {
                     VisionEndnoteSheet(
                         text: OrigamiReading.endnote(withID: target.noteID, in: doc)
