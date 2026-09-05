@@ -815,6 +815,47 @@ final class AppModel {
         }
     }
 
+    // MARK: - ACM XML import (the Digital Library's BITS/JATS markup)
+
+    /// An ACM Digital Library XML paper — the BITS `<book-part-wrapper>`
+    /// the DL serves for proceedings chapters, or a JATS `<article>` —
+    /// turned into an EPUB the same way LaTeX is: parsed into the
+    /// document model, written through the Origami EPUB exporter, and
+    /// filed into the reader's library — then opened. Figures resolve
+    /// beside the .xml when their files are there.
+    func importBITS(at url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let result = try BITSImporter.importFile(at: url)
+            let created = Date.now
+            let author = result.author ?? authorName
+            let id = LiquidAddress.makeID(author: author, created: created)
+            var doc = LiquidDoc(format: LiquidDoc.knownFormat, id: id,
+                                title: result.title, author: author,
+                                created: created, body: result.body,
+                                links: [], wraps: nil,
+                                fileURL: FileManager.default.temporaryDirectory)
+            doc.documentType = LiquidDoc.DocumentType.book.rawValue
+            doc.publication = result.publication
+            doc.references = result.references
+            doc.tables = result.tables
+            doc.assets = result.assets
+            // Through the exporter and straight back in: the EPUB is the
+            // document; the .xml was only ever a carrier.
+            let epubURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(id + ".epub")
+            try OrigamiEPUBExporter.write(doc: doc, resolve: { _ in nil }, to: epubURL)
+            defer { try? FileManager.default.removeItem(at: epubURL) }
+            guard let record = importEPUB(at: epubURL) else { return }
+            openStoredEPUB(record)
+            showNote("Imported \u{201C}\(result.title)\u{201D} from ACM XML")
+        } catch {
+            NSSound.beep()
+            showNote("Could not import the XML: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - EPUB library (opened EPUBs, remembered internally)
 
     /// The root under the app container where opened EPUBs are unpacked and
@@ -3578,7 +3619,7 @@ final class AppModel {
         panel.treatsFilePackagesAsDirectories = false
         // Keep this short: NSOpenPanel lays the message out on one line and
         // grows the window to fit it, then won't shrink below that width.
-        panel.message = "Import a Word, Markdown, PDF, transcript, or LaTeX (zip/.tex) file."
+        panel.message = "Import a Word, Markdown, PDF, transcript, LaTeX (zip/.tex), or ACM XML file."
         panel.prompt = "Import"
         // Room to browse. The panel is user-resizable on its own — touching
         // its style mask breaks the sandboxed panel's dragging — and macOS
@@ -3597,7 +3638,7 @@ final class AppModel {
     /// is treated as a native Origami Document and decoded (see `openFile`).
     static let importableExtensions: Set<String> = [
         "epub", "pdf", "doc", "docx", "md", "markdown", "txt", "rtf", "rtfd", "liquid",
-        "zip", "tex"
+        "zip", "tex", "xml"
     ]
 
     /// Imports one file into a new draft — an Origami Text EPUB, a PDF with
@@ -3631,6 +3672,10 @@ final class AppModel {
                 // A LaTeX project becomes an EPUB in the library, not a
                 // draft — the reverse of Author's LaTeX export.
                 importLaTeX(at: url)
+                return
+            case "xml":
+                // Likewise an ACM Digital Library paper (BITS/JATS XML).
+                importBITS(at: url)
                 return
             case "md", "markdown", "txt":
                 // A file that reads as a meeting transcript (speaker names

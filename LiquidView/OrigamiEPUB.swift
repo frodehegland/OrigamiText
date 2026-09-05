@@ -426,10 +426,16 @@ nonisolated enum OrigamiEPUBExporter {
         let assetsByID = Dictionary(doc.assets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var referencedAssets: [LiquidDoc.Asset] = []
         var seenAssetIDs: Set<String> = []
+        // Drives the schema:alternativeText / accessModeSufficient=textual
+        // claims: one rendered <img> without a non-empty alt withdraws both.
+        var allImagesHaveAltText = true
         for element in body {
             guard let reference = LiquidDoc.imageReference(in: element.paragraph.text),
-                  let asset = assetsByID[reference.id],
-                  seenAssetIDs.insert(asset.id).inserted else { continue }
+                  let asset = assetsByID[reference.id] else { continue }
+            // The same alt the <figure><img> will carry — see element(for:).
+            let alt = reference.alt.isEmpty ? (asset.alt ?? "") : reference.alt
+            if alt.trimmingCharacters(in: .whitespaces).isEmpty { allImagesHaveAltText = false }
+            guard seenAssetIDs.insert(asset.id).inserted else { continue }
             referencedAssets.append(asset)
         }
 
@@ -444,13 +450,23 @@ nonisolated enum OrigamiEPUBExporter {
         try assertWellFormed(html, file: "content/paper.html")
         try assertWellFormed(nav, file: "content/nav.html")
 
+        // Derived from the actual output, never boilerplate: escaped text
+        // renders "<math" as "&lt;math", so the substring only matches a
+        // real MathML element.
+        let accessibility = AccessibilityFacts(
+            hasImages: !referencedAssets.isEmpty,
+            allImagesHaveAltText: allImagesHaveAltText,
+            contentHasMathML: html.contains("<math"),
+            hasSectionHeadings: !headings.isEmpty)
+
         var zip = ZipWriter()
         // The mimetype must be the first entry, uncompressed — every
         // entry here is stored, which is legal EPUB and keeps the
         // writer honest and small.
         zip.add("mimetype", Data("application/epub+zip".utf8))
         zip.add("META-INF/container.xml", Data(containerXML.utf8))
-        zip.add("package.opf", Data(packageOPF(doc: doc, images: referencedAssets).utf8))
+        zip.add("package.opf", Data(packageOPF(doc: doc, images: referencedAssets,
+                                               facts: accessibility).utf8))
         zip.add("content/paper.html", Data(html.utf8))
         zip.add("content/nav.html", Data(nav.utf8))
         zip.add("content/style.css", Data(styleCSS.utf8))
@@ -895,7 +911,80 @@ nonisolated enum OrigamiEPUBExporter {
         """
     }
 
-    private static func packageOPF(doc: LiquidDoc, images: [LiquidDoc.Asset]) -> String {
+    /// What the export actually contains, tracked so the accessibility
+    /// claims in the OPF stay truthful per-document rather than
+    /// boilerplate. One shared helper for every conversion path — mirrors
+    /// Author's `OrigamiTextExporter.buildOPF`.
+    struct AccessibilityFacts {
+        var hasImages = false
+        /// One `<img>` without a non-empty alt withdraws both the
+        /// `alternativeText` feature and `accessModeSufficient=textual`.
+        var allImagesHaveAltText = true
+        var contentHasMathML = false
+        /// Body headings mapped to `<h2>`… in nested `<section>`s —
+        /// required before claiming `structuralNavigation`.
+        var hasSectionHeadings = false
+        /// True of this exporter's output: nav.html is a real
+        /// `nav epub:type="toc"`. A conversion path that skips the nav
+        /// must set this false to withdraw the `tableOfContents` claim.
+        var hasTocNav = true
+        /// True of this exporter's output: the nav carries
+        /// `role="doc-toc"` and note marks carry `role="doc-noteref"`.
+        var hasDPUBARIARoles = true
+    }
+
+    /// EPUB Accessibility 1.1 discovery metadata (schema.org vocabulary —
+    /// the `schema:` prefix is reserved in EPUB 3, no declaration needed),
+    /// one `<meta>` per line, indented for the OPF `<metadata>` block.
+    /// Thorium ≥ 2.2 and the W3C display guide surface these; every claim
+    /// is derived from `facts`, what this export really contains.
+    static func accessibilityMetadataXML(_ facts: AccessibilityFacts) -> String {
+        var lines = ["<meta property=\"schema:accessMode\">textual</meta>"]
+        if facts.hasImages {
+            lines.append("<meta property=\"schema:accessMode\">visual</meta>")
+        }
+        // "textual" alone is sufficient only when nothing visual is left
+        // undescribed — no images, or every image carries alt text.
+        if !facts.hasImages || facts.allImagesHaveAltText {
+            lines.append("<meta property=\"schema:accessModeSufficient\">textual</meta>")
+        }
+        if facts.hasImages {
+            lines.append("<meta property=\"schema:accessModeSufficient\">textual,visual</meta>")
+        }
+        var features: [String] = []
+        if facts.hasTocNav { features.append("tableOfContents") }
+        features.append("readingOrder")
+        if facts.hasSectionHeadings { features.append("structuralNavigation") }
+        if facts.hasDPUBARIARoles { features.append("ARIA") }
+        if facts.hasImages && facts.allImagesHaveAltText { features.append("alternativeText") }
+        if facts.contentHasMathML { features.append("MathML") }
+        for feature in features {
+            lines.append("<meta property=\"schema:accessibilityFeature\">\(feature)</meta>")
+        }
+        // Static text output — revisit if a conversion ever embeds
+        // video, audio, or animation.
+        lines.append("<meta property=\"schema:accessibilityHazard\">none</meta>")
+        var summary: String
+        if facts.hasSectionHeadings {
+            summary = "Reflowable text with full structural navigation: "
+                + "a table of contents, nested section headings, and ARIA landmarks."
+        } else if facts.hasTocNav {
+            summary = "Reflowable text with a table of contents in a single reading order."
+        } else {
+            summary = "Reflowable text in a single reading order."
+        }
+        if facts.contentHasMathML { summary += " Mathematics is expressed in MathML." }
+        if facts.hasImages {
+            summary += facts.allImagesHaveAltText
+                ? " All images have alternative text."
+                : " Some images lack alternative text."
+        }
+        lines.append("<meta property=\"schema:accessibilitySummary\">\(escaped(summary))</meta>")
+        return lines.map { "    " + $0 }.joined(separator: "\n")
+    }
+
+    private static func packageOPF(doc: LiquidDoc, images: [LiquidDoc.Asset],
+                                   facts: AccessibilityFacts) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         let modified = formatter.string(from: Date())
@@ -912,9 +1001,10 @@ nonisolated enum OrigamiEPUBExporter {
             <dc:language>en</dc:language>
             <dc:date>\(documentDate(of: doc))</dc:date>
             <meta property="dcterms:modified">\(modified)</meta>
+        \(accessibilityMetadataXML(facts))
           </metadata>
           <manifest>
-            <item id="paper" href="content/paper.html" media-type="application/xhtml+xml"/>
+            <item id="paper" href="content/paper.html" media-type="application/xhtml+xml"\(facts.contentHasMathML ? " properties=\"mathml\"" : "")/>
             <item id="nav" href="content/nav.html" media-type="application/xhtml+xml" properties="nav"/>
             <item id="css" href="content/style.css" media-type="text/css"/>
             <item id="visual-meta" href="visual-meta.json" media-type="application/json"/>

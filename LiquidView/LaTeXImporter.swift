@@ -43,17 +43,29 @@ nonisolated enum LaTeXImporter {
     /// `\documentclass` and `\begin{document}`; else the largest .tex.
     static func importArchive(at url: URL) throws -> Result {
         let zip = try ZipReader(data: try Data(contentsOf: url))
+        // Sorted: zip.entries is a Dictionary, and every selection rule
+        // below must pick the same file on every run.
         let texNames = zip.entries.keys.filter {
             $0.lowercased().hasSuffix(".tex") && !$0.contains("__MACOSX")
-        }
+        }.sorted()
         guard !texNames.isEmpty else { throw LaTeXImportError.noTeX }
         func text(_ name: String) -> String? {
             zip.entry(name).map { String(decoding: $0, as: UTF8.self) }
         }
+        // The manuscript: main.tex by name; else, among the files that
+        // declare a document, the shallowest path (a stray draft often
+        // hides in a subfolder — ht26-17 ships an old arXiv copy under
+        // Images/), the larger file on a tie; else the largest .tex.
+        let candidates = texNames.filter {
+            let source = text($0) ?? ""
+            return source.contains("\\documentclass") && source.contains("\\begin{document}")
+        }
         let main = texNames.first { ($0 as NSString).lastPathComponent == "main.tex" }
-            ?? texNames.first {
-                let source = text($0) ?? ""
-                return source.contains("\\documentclass") && source.contains("\\begin{document}")
+            ?? candidates.min { lhs, rhs in
+                let leftDepth = lhs.filter { $0 == "/" }.count
+                let rightDepth = rhs.filter { $0 == "/" }.count
+                if leftDepth != rightDepth { return leftDepth < rightDepth }
+                return (zip.entry(lhs)?.count ?? 0) > (zip.entry(rhs)?.count ?? 0)
             }
             ?? texNames.max { (zip.entry($0)?.count ?? 0) < (zip.entry($1)?.count ?? 0) }!
         let mainDir = (main as NSString).deletingLastPathComponent
@@ -514,9 +526,17 @@ nonisolated enum LaTeXImporter {
             }
         }
 
-        // The bibliography: every entry a reference, keys as cited.
+        // The bibliography: only the works the text cites make the
+        // record — a source archive often carries whole personal .bib
+        // libraries beside the paper's own (ht26-17 ships 399 entries;
+        // the paper cites 31). A document with no cite tokens at all
+        // keeps every entry: there is nothing to filter by.
+        let citedKeys = Set(paragraphs.flatMap {
+            captures(in: $0.text, pattern: #"\[cite:([^\]]+)\]"#)
+        })
         let references = BibTeXParser.parse(
             bibliography.trimmingCharacters(in: .whitespacesAndNewlines))
+            .filter { citedKeys.isEmpty || citedKeys.contains($0.key) }
             .map { LiquidDoc.Reference(id: $0.key, bibtex: $0.raw) }
 
         return Result(title: title, author: author, publication: publication,
@@ -783,11 +803,51 @@ nonisolated enum LaTeXImporter {
         for rule in ["\\toprule", "\\midrule", "\\bottomrule", "\\hline", "\\centering"] {
             content = content.replacingOccurrences(of: rule, with: "")
         }
+        // \cmidrule(lr){2-3} is rule geometry, not words.
+        content = content.replacingOccurrences(
+            of: #"\\cmidrule\s*(\([^)]*\))?\s*\{[^}]*\}"#, with: "",
+            options: .regularExpression)
         return content.components(separatedBy: "\\\\")
             .map { row -> [String] in
-                splitUnescaped(row, on: "&").map { inline(convert: $0).text }
+                splitUnescaped(expandingSpans(in: row), on: "&").map { cell in
+                    // A grid cell is a value, not prose: emphasis unwraps
+                    // to bare words — markdown markers would show
+                    // literally in the exported grid and the reader's
+                    // table view, which render cells verbatim.
+                    let plain = cell.replacingOccurrences(
+                        of: #"\\(textbf|textit|emph|texttt)\b"#,
+                        with: #"\\otplain"#, options: .regularExpression)
+                    return inline(convert: plain).text
+                }
             }
             .filter { row in row.contains { !$0.isEmpty } }
+    }
+
+    /// `\multicolumn{3}{c}{words}` spans columns: its words take the
+    /// first cell and empty cells hold the remaining columns, so header
+    /// rows stay aligned with the grid. `\multirow{2}{*}{words}` is just
+    /// its words here — the grid has no row spans.
+    private static func expandingSpans(in row: String) -> String {
+        var text = row
+        for command in ["multicolumn", "multirow"] {
+            while let first = firstBalancedArgument(of: command, in: text) {
+                var end = first.range.upperBound
+                var words = first.value
+                // Two more braced groups follow: alignment (or width),
+                // then the words themselves.
+                for _ in 0..<2 {
+                    let offset = text.distance(from: text.startIndex, to: end)
+                    guard let group = balancedArgument(in: text, afterPrefixLength: offset)
+                    else { break }
+                    words = group.value
+                    end = text.index(text.startIndex, offsetBy: group.consumed)
+                }
+                let span = command == "multicolumn" ? (Int(first.value) ?? 1) : 1
+                let padding = String(repeating: " & ", count: max(0, span - 1))
+                text.replaceSubrange(first.range.lowerBound..<end, with: words + padding)
+            }
+        }
+        return text
     }
 
     /// A list body's `\item` entries (bracket options dropped).
