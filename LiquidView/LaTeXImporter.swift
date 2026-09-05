@@ -140,7 +140,7 @@ nonisolated enum LaTeXImporter {
         var pendingTables = visualMetaTables(in: source)
         var namedTables: [LiquidDoc.Table] = []
 
-        let stripped = strippingComments(from: source)
+        let stripped = expandingSimpleMacros(in: strippingComments(from: source))
 
         // Metadata from the preamble (and Author's in-document topmatter).
         // \title takes an optional short form in brackets first.
@@ -376,17 +376,53 @@ nonisolated enum LaTeXImporter {
                         handled = true
                     case "verbatim", "lstlisting", "minted":
                         flushPlain()
-                        let code = String(rest[range.bodySub(rest)])
-                            .trimmingCharacters(in: .newlines)
-                        if !code.isEmpty {
-                            paragraphs.append(LiquidDoc.Paragraph(
-                                id: nextID(), heading: nil, text: code))
+                        var code = String(rest[range.bodySub(rest)])
+                        var caption: String?
+                        // lstlisting/minted options sit inside the
+                        // environment body ([style=…, caption={…}]) —
+                        // chrome, not code. The caption's words stay,
+                        // following the listing like a figure's. Only a
+                        // bracket adjacent to \begin{…} counts: code
+                        // itself may open with [ on a later line.
+                        if name != "verbatim" {
+                            let spaces = code.prefix(while: { $0 == " " })
+                            if code.dropFirst(spaces.count).first == "[" {
+                                var depth = 0
+                                var index = code.index(code.startIndex, offsetBy: spaces.count)
+                                var optionsEnd: String.Index?
+                                while index < code.endIndex {
+                                    let character = code[index]
+                                    if character == "{" { depth += 1 }
+                                    if character == "}" { depth -= 1 }
+                                    if character == "]", depth == 0 { optionsEnd = index; break }
+                                    index = code.index(after: index)
+                                }
+                                if let optionsEnd {
+                                    let options = String(code[..<optionsEnd])
+                                    if let found = options.range(of: "caption=") {
+                                        let offset = options.distance(from: options.startIndex,
+                                                                      to: found.upperBound)
+                                        caption = balancedArgument(in: options,
+                                                                   afterPrefixLength: offset)?.value
+                                    }
+                                    code = String(code[code.index(after: optionsEnd)...])
+                                }
+                            }
                         }
+                        let cleanCode = code.trimmingCharacters(in: .newlines)
+                        if !cleanCode.isEmpty {
+                            paragraphs.append(LiquidDoc.Paragraph(
+                                id: nextID(), heading: nil, text: cleanCode))
+                        }
+                        if let caption { appendText(caption) }
                         handled = true
                     case "equation", "equation*", "align", "align*",
                          "displaymath", "math", "eqnarray":
                         flushPlain()
+                        // \label is LaTeX plumbing, not mathematics.
                         let math = String(rest[range.bodySub(rest)])
+                            .replacingOccurrences(of: #"\\label\{[^}]*\}"#,
+                                                  with: "", options: .regularExpression)
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         if !math.isEmpty {
                             paragraphs.append(LiquidDoc.Paragraph(
@@ -435,6 +471,8 @@ nonisolated enum LaTeXImporter {
                 if rest.hasPrefix("\\["), let close = rest.range(of: "\\]") {
                     flushPlain()
                     let math = String(rest[rest.index(rest.startIndex, offsetBy: 2)..<close.lowerBound])
+                        .replacingOccurrences(of: #"\\label\{[^}]*\}"#,
+                                              with: "", options: .regularExpression)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !math.isEmpty {
                         paragraphs.append(LiquidDoc.Paragraph(
@@ -534,8 +572,15 @@ nonisolated enum LaTeXImporter {
         let citedKeys = Set(paragraphs.flatMap {
             captures(in: $0.text, pattern: #"\[cite:([^\]]+)\]"#)
         })
-        let references = BibTeXParser.parse(
-            bibliography.trimmingCharacters(in: .whitespacesAndNewlines))
+        // A .bib often opens with % comment lines (five of the HT '26
+        // packages do), which BibTeXParser's paste guard reads as
+        // not-BibTeX. Whole comment lines drop; inline % stays — it is
+        // literal inside entries (URLs carry %20).
+        let bibSource = bibliography.components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("%") }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let references = BibTeXParser.parse(bibSource)
             .filter { citedKeys.isEmpty || citedKeys.contains($0.key) }
             .map { LiquidDoc.Reference(id: $0.key, bibtex: $0.raw) }
 
@@ -738,6 +783,50 @@ nonisolated enum LaTeXImporter {
         return text
     }
 
+    /// Expands no-argument macros — `\newcommand{\ts}{TrainShield\xspace}`
+    /// makes `\title{\ts: Targeted Awareness…}` readable (ht26-38); the
+    /// unknown-command cleanup would otherwise drop the name and leave
+    /// ": Targeted Awareness…". Macros with parameters ([1]) are left
+    /// alone. Substitution runs twice so a macro used inside another
+    /// macro's value still resolves; a self-referential value is skipped.
+    private static func expandingSimpleMacros(in source: String) -> String {
+        var definitions: [(name: String, value: String)] = []
+        let patterns = [
+            #"\\(?:newcommand|renewcommand|providecommand)\s*\{?\\([a-zA-Z]+)\}?\s*(\[[0-9]+\])?\s*\{"#,
+            #"\\def\s*\\([a-zA-Z]+)\s*()\{"#,
+        ]
+        for pattern in patterns {
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+            let ns = source as NSString
+            for match in expression.matches(in: source,
+                                            range: NSRange(location: 0, length: ns.length)) {
+                if match.range(at: 2).location != NSNotFound, match.range(at: 2).length > 0 {
+                    continue   // takes arguments — not expandable here
+                }
+                guard let whole = Range(match.range, in: source),
+                      let nameRange = Range(match.range(at: 1), in: source) else { continue }
+                let name = String(source[nameRange])
+                let bracePosition = source.distance(from: source.startIndex, to: whole.upperBound) - 1
+                guard let argument = balancedArgument(in: source, afterPrefixLength: bracePosition),
+                      !argument.value.contains("\\\(name)")
+                else { continue }
+                definitions.append((name, argument.value))
+            }
+        }
+        guard !definitions.isEmpty else { return source }
+        var text = source
+        for _ in 0..<2 {
+            for (name, value) in definitions {
+                let cleaned = value.replacingOccurrences(of: "\\xspace", with: "")
+                text = text.replacingOccurrences(
+                    of: "\\\\\(name)(?![a-zA-Z])",
+                    with: NSRegularExpression.escapedTemplate(for: cleaned),
+                    options: .regularExpression)
+            }
+        }
+        return text
+    }
+
     /// Comment stripping: an unescaped `%` silences its line's rest.
     private static func strippingComments(from source: String) -> String {
         source.components(separatedBy: "\n").map { line -> String in
@@ -814,13 +903,46 @@ nonisolated enum LaTeXImporter {
                     // to bare words — markdown markers would show
                     // literally in the exported grid and the reader's
                     // table view, which render cells verbatim.
-                    let plain = cell.replacingOccurrences(
+                    let plain = strippingCellDecorations(cell).replacingOccurrences(
                         of: #"\\(textbf|textit|emph|texttt)\b"#,
                         with: #"\\otplain"#, options: .regularExpression)
                     return inline(convert: plain).text
                 }
             }
             .filter { row in row.contains { !$0.isEmpty } }
+    }
+
+    /// `\rotatebox[origin=c]{90}{words}` and kin decorate a cell's words
+    /// with geometry the grid cannot keep — the words stay, the geometry
+    /// goes (ht26-38 rotates its header cells). Two passes, because
+    /// decorations nest: `\multirow{19}{*}{{\rotatebox{90}{\parbox{4em}{…}}}}`.
+    private static func strippingCellDecorations(_ cell: String) -> String {
+        var text = cell
+        for _ in 0..<2 {
+            // Two braced groups: geometry first, then the words.
+            for command in ["rotatebox", "scalebox", "raisebox", "parbox"] {
+                while let first = firstBalancedArgument(of: command, in: text,
+                                                        skippingBracketOption: true) {
+                    let offset = text.distance(from: text.startIndex, to: first.range.upperBound)
+                    if let group = balancedArgument(in: text, afterPrefixLength: offset) {
+                        let end = text.index(text.startIndex, offsetBy: group.consumed)
+                        text.replaceSubrange(first.range.lowerBound..<end, with: group.value)
+                    } else {
+                        text.replaceSubrange(first.range, with: first.value)
+                    }
+                }
+            }
+            // One braced group whose \\ line breaks read as spaces.
+            for command in ["makecell", "shortstack"] {
+                while let argument = firstBalancedArgument(of: command, in: text,
+                                                           skippingBracketOption: true) {
+                    text.replaceSubrange(
+                        argument.range,
+                        with: argument.value.replacingOccurrences(of: "\\\\", with: " "))
+                }
+            }
+        }
+        return text
     }
 
     /// `\multicolumn{3}{c}{words}` spans columns: its words take the
