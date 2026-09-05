@@ -569,18 +569,52 @@ nonisolated enum LaTeXImporter {
         // libraries beside the paper's own (ht26-17 ships 399 entries;
         // the paper cites 31). A document with no cite tokens at all
         // keeps every entry: there is nothing to filter by.
+        // A .bib often opens with % comment lines (five of the HT '26
+        // packages do), which BibTeXParser's paste guard reads as
+        // not-BibTeX; a BOM defeats it the same way (ht26-14). Whole
+        // comment lines drop; inline % stays — it is literal inside
+        // entries (URLs carry %20).
+        let commentFree = bibliography.components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("%") }
+            .joined(separator: "\n")
+        // …and the parse starts at the first entry: a BOM (ht26-14) or a
+        // decorative "===== Section =====" banner (ht26-60) before it
+        // defeats the guard the same way. The parser itself skips junk
+        // between entries; only the start is strict.
+        let bibSource = commentFree.range(of: "@")
+            .map { String(commentFree[$0.lowerBound...]) } ?? ""
+        let entries = BibTeXParser.parse(bibSource)
+
+        // BibTeX matches keys case-insensitively — \cite{docling} finds
+        // @techreport{Docling}. The format's [cite:] tokens are exact,
+        // so body tokens take the bib's canonical casing.
+        let canonicalKey = Dictionary(entries.map { ($0.key.lowercased(), $0.key) },
+                                      uniquingKeysWith: { first, _ in first })
+        for index in paragraphs.indices {
+            let paragraph = paragraphs[index]
+            guard paragraph.text.contains("[cite:") else { continue }
+            var text = paragraph.text
+            for key in captures(in: text, pattern: #"\[cite:([^\]]+)\]"#) {
+                if let proper = canonicalKey[key.lowercased()], proper != key {
+                    text = text.replacingOccurrences(of: "[cite:\(key)]",
+                                                     with: "[cite:\(proper)]")
+                }
+            }
+            if text != paragraph.text {
+                var replacement = LiquidDoc.Paragraph(
+                    id: paragraph.id, heading: paragraph.heading, text: text)
+                replacement.speaker = paragraph.speaker
+                replacement.tableID = paragraph.tableID
+                replacement.stretchID = paragraph.stretchID
+                replacement.provenance = paragraph.provenance
+                paragraphs[index] = replacement
+            }
+        }
+
         let citedKeys = Set(paragraphs.flatMap {
             captures(in: $0.text, pattern: #"\[cite:([^\]]+)\]"#)
         })
-        // A .bib often opens with % comment lines (five of the HT '26
-        // packages do), which BibTeXParser's paste guard reads as
-        // not-BibTeX. Whole comment lines drop; inline % stays — it is
-        // literal inside entries (URLs carry %20).
-        let bibSource = bibliography.components(separatedBy: "\n")
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("%") }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let references = BibTeXParser.parse(bibSource)
+        let references = entries
             .filter { citedKeys.isEmpty || citedKeys.contains($0.key) }
             .map { LiquidDoc.Reference(id: $0.key, bibtex: $0.raw) }
 
@@ -648,7 +682,7 @@ nonisolated enum LaTeXImporter {
             while let argument = firstBalancedArgument(of: command, in: text,
                                                        skippingBracketOption: true) {
                 let tokens = argument.value.split(separator: ",")
-                    .map { "[cite:\($0.trimmingCharacters(in: .whitespaces))]" }
+                    .map { "[cite:\($0.trimmingCharacters(in: .whitespacesAndNewlines))]" }
                     .joined()
                 text.replaceSubrange(argument.range, with: tokens)
             }
