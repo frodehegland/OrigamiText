@@ -71,7 +71,7 @@ struct ContentView: View {
                         .background(themeBG)
                         .foregroundStyle(themeFG)
                 }
-            } else if wideListMode {
+            } else if wideListMode || model.venueRelationsWantWidth {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .toolbar(removing: .sidebarToggle)

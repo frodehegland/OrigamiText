@@ -450,11 +450,40 @@ struct JournalBooksListView: View {
     let name: String
     /// The Set Aside books stay tucked behind the foot pill until asked.
     @State private var showsSetAside = false
+    /// Which face of the venue shows: its documents, or one of the
+    /// relation views over them (see VenueViews.swift).
+    @State private var viewMode: VenueViewMode = .documents
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("View", selection: $viewMode) {
+                ForEach(VenueViewMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            if viewMode == .documents {
+                documentsList
+            } else {
+                VenueRelationsHost(venue: name, mode: viewMode)
+            }
+        }
+        // The relation views need the room the reading pane holds; the
+        // documents list gives it back.
+        .onChange(of: viewMode) {
+            model.venueRelationsWantWidth = viewMode != .documents
+        }
+        .onAppear { model.venueRelationsWantWidth = viewMode != .documents }
+        .onDisappear { model.venueRelationsWantWidth = false }
+    }
+
+    private var documentsList: some View {
         let shown = model.pinnedFirst(model.epubRecords(inPublication: name))
         let aside = model.epubSetAsideRecords(inPublication: name)
-        List(selection: epubListSelection(model)) {
+        return List(selection: epubListSelection(model)) {
             Section {
                 ForEach(shown) { record in
                     EPUBRecordRow(record: record)

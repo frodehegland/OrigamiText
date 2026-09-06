@@ -175,6 +175,12 @@ struct EPUBMapView: View {
     /// slides a citation in X and Y, but its Z settles back here, so
     /// the corridor stays a truthful timeline.
     @State private var citedTimelineZ: [String: Float] = [:]
+    /// EXPERIMENT — journal cards hold their publication year's depth:
+    /// each article's Z, newest nearest, oldest deepest, same convention
+    /// as the cited works. Drags move a card freely on its year's plane
+    /// but never off it. Remove this table (and its two uses) to return
+    /// to free movement.
+    @State private var articleYearZ: [String: Float] = [:]
 
     /// What the references told us about each citation beyond its face
     /// — the abstract and the DOI, for the double-tap card and its
@@ -337,22 +343,45 @@ struct EPUBMapView: View {
         let asides = shown.filter { model.setAsideIDs.contains($0.id) }
 
         let columns = max(1, Int(Double(standing.count * 7).squareRoot() / 2))
+        // EXPERIMENT — the articles' own year scale: newest at the grid's
+        // plane, each older year a step deeper. A single-year proceedings
+        // stands flat as before, only held; a journal spanning years
+        // spreads into time.
+        func articleYear(_ record: EPUBRecord) -> Int? {
+            record.dateISO.flatMap { Int($0.prefix(4)) }
+        }
+        let articleYears = standing.compactMap(articleYear)
+        let newestArticleYear = articleYears.max()
+        let articleSpan = max((newestArticleYear ?? 0) - (articleYears.min() ?? 0), 1)
+        var yearZ: [String: Float] = [:]
         var result: [EPUBMapItem] = standing.enumerated().map { index, record in
             let column = index % columns
             let row = index / columns
+            let agePlace: Float? = articleYear(record).flatMap { year in
+                newestArticleYear.map { Float($0 - year) / Float(articleSpan) }
+            }
+            let depth: Float = -1.2 - (agePlace ?? 0) * min(1.2, Float(articleSpan) * 0.1)
             let seed = SIMD3<Float>(
                 (Float(column) - Float(columns - 1) / 2) * 0.28,
                 1.55 - Float(row) * 0.18,
-                -1.2) + spaceShift
+                depth) + spaceShift
+            yearZ[record.id] = seed.z
+            // A card left elsewhere keeps its place on the plane — the
+            // year reclaims only its depth.
+            var position = placed[record.id] ?? seed
+            position.z = seed.z
             return EPUBMapItem(
                 id: record.id,
                 title: record.title,
-                author: record.author,
+                // The year on the face, so the alignment reads at a glance.
+                author: articleYear(record).map { "\(record.author) · \($0)" }
+                    ?? record.author,
                 kind: .article,
-                position: placed[record.id] ?? seed,
+                position: position,
                 citedIDs: citedIDsByArticle[record.id] ?? [],
                 isPinned: model.pinnedIDs.contains(record.id))
         }
+        articleYearZ = yearZ
 
         // The Set Aside row: title-only slips, half faded, in their own
         // row under the grid — the Mac's journal list, spatialized. A
@@ -1067,7 +1096,15 @@ struct EPUBMapView: View {
             item.kind == .concept && item.isSelected
         }
         view = view.constrainMovedNode { item, proposed, startPosition in
-            // Articles and concepts move freely in all axes.
+            // EXPERIMENT — a journal card stays on its publication
+            // year's plane: free in X and Y, held in Z, like the
+            // citations below. Asides (not in the table) still move free.
+            if item.kind == .article, let z = articleYearZ[item.id] {
+                var held = proposed
+                held.z = z
+                return held
+            }
+            // Concepts move freely in all axes.
             guard item.kind == .cited || item.kind == .citedDeep else { return proposed }
             // Citations stay on their year's Z no matter what. Prefer
             // the canonical timeline table; if that's missing for any
@@ -1444,6 +1481,7 @@ struct EPUBMapView: View {
         spaceShift += delta
         // The timeline travels with the carried space.
         citedTimelineZ = citedTimelineZ.mapValues { $0 + delta.z }
+        articleYearZ = articleYearZ.mapValues { $0 + delta.z }
         for index in items.indices {
             if let position = items[index].position {
                 items[index].position = position + delta

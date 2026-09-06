@@ -696,6 +696,39 @@ final class VisionModel {
         SankeySpace.write(dataset, to: folder)
     }
 
+    /// Opens one EPUB handed to the app directly — Files' Open In, a
+    /// share, or the panel's own Open EPUB… importer. Imported (or
+    /// recognised as already on the shelf) and answered with its record,
+    /// entirely on this device: no Mac, no community folder required.
+    func openEPUBFile(at url: URL) async -> EPUBRecord? {
+        let scoped = url.startAccessingSecurityScopedResource()
+        let changed = importEPUB(at: url)
+        if scoped { url.stopAccessingSecurityScopedResource() }
+        let name = url.deletingPathExtension().lastPathComponent
+        let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
+        let safe = identity.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        guard let record = epubRecords.first(where: { $0.folder == safe }) else { return nil }
+        // This one book parses now, off the main thread, and joins the
+        // index alone — the reader opens at once instead of waiting for
+        // the whole shelf to re-parse behind it.
+        let base = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+        let staged = record
+        let doc: LiquidDoc? = await Task.detached(priority: .userInitiated) {
+            guard let result = try? OrigamiEPUBImporter.importDocument(
+                inUnpackedFolder: base) else { return nil }
+            return Self.structuredDoc(from: result, record: staged, base: base)
+        }.value
+        if let doc { index.upsertEPUBDocument(doc) }
+        if changed { rebuildEPUBIndex() }
+        // A book opened as a file starts on Default — the EPUB's own
+        // page — and stands selected as the desk, on solid paper,
+        // whatever reading view was last in use.
+        UserDefaults.standard.set("faithful", forKey: "visionReaderMode")
+        readingDeskDocID = record.id
+        return record
+    }
+
     /// Unpacks one EPUB into the shelf (once per identity) and remembers
     /// it. Returns whether the shelf changed. The Mac's importEPUB,
     /// without the reader-side niceties.
@@ -737,19 +770,22 @@ final class VisionModel {
                 try? FileManager.default.removeItem(at: stored)
                 try? FileManager.default.copyItem(at: url, to: stored)
             }
-            let meta = try? OrigamiEPUBImporter.importDocument(at: url)
-            let bookID = meta?.origamiID ?? identity
+            // Metadata only — the Mac's discipline: no body parsing here,
+            // so a large book never stalls the import. The index parses
+            // bodies later, off the main thread.
+            let meta = OrigamiEPUBImporter.importMetadata(inUnpackedFolder: directory)
+            let bookID = meta.origamiID ?? identity
             let contentSubpath = unpacked.content.path
                 .replacingOccurrences(of: directory.path + "/", with: "")
-            let authors = meta?.authors ?? []
+            let authors = meta.authors
             let record = EPUBRecord(id: bookID, title: unpacked.title,
                                     author: authors.count > 1
                                         ? authors.joined(separator: ", ")
-                                        : (authors.first ?? meta?.author ?? "Unknown"),
+                                        : (authors.first ?? meta.author ?? "Unknown"),
                                     authors: authors.isEmpty ? nil : authors,
-                                    dateISO: meta?.date, folder: safe,
+                                    dateISO: meta.date, folder: safe,
                                     contentSubpath: contentSubpath, openedAt: .now,
-                                    publication: meta?.publication ?? "")
+                                    publication: meta.publication ?? "")
             epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
             epubRecords.insert(record, at: 0)
             persistEPUBRecords()
@@ -942,6 +978,7 @@ struct VisionOpeningView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.scenePhase) private var scenePhase
     @State private var choosingFolder = false
+    @State private var choosingEPUB = false
     @State private var shelf: Shelf = .journals
 
     private enum Shelf: Hashable { case articles, journals }
@@ -953,10 +990,11 @@ struct VisionOpeningView: View {
             // gate it.
             if model.index.folderURL == nil, model.epubRecords.isEmpty {
                 ContentUnavailableView {
-                    Label("No Community Folder", systemImage: "folder")
+                    Label("Nothing to Read Yet", systemImage: "books.vertical")
                 } description: {
-                    Text("Choose the iCloud folder your community shares. Everything published from your Mac appears here instantly.")
+                    Text("Open an EPUB from Files or iCloud Drive, or choose the iCloud folder your community shares — everything published from a Mac appears here instantly.")
                 } actions: {
+                    Button("Open EPUB…") { choosingEPUB = true }
                     Button("Choose Folder…") { choosingFolder = true }
                 }
             } else {
@@ -964,12 +1002,20 @@ struct VisionOpeningView: View {
                 // a safe-area inset here slid under the Journals tab's
                 // own NavigationStack, the list overlapping the tabs.
                 VStack(spacing: 0) {
-                    Picker("Showing", selection: $shelf) {
-                        Text("Articles").tag(Shelf.articles)
-                        Text("Journals").tag(Shelf.journals)
+                    HStack(spacing: 8) {
+                        Picker("Showing", selection: $shelf) {
+                            Text("Articles").tag(Shelf.articles)
+                            Text("Journals").tag(Shelf.journals)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        Button {
+                            choosingEPUB = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .help("Open an EPUB from Files")
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
                     .padding(.horizontal)
                     .padding(.vertical, 6)
                     switch shelf {
@@ -981,6 +1027,31 @@ struct VisionOpeningView: View {
         }
         .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { model.openFolder(url) }
+        }
+        // An EPUB opened directly — no community folder, no Mac: the
+        // book imports on this device and opens at once. The reviewer's
+        // path, and anyone's first minute with the app.
+        .fileImporter(isPresented: $choosingEPUB,
+                      allowedContentTypes: [.epub],
+                      allowsMultipleSelection: true) { result in
+            guard case .success(let urls) = result else { return }
+            Task {
+                var lastRecord: EPUBRecord?
+                for url in urls {
+                    if let record = await model.openEPUBFile(at: url) { lastRecord = record }
+                }
+                if let lastRecord { openWindow(id: "reader", value: lastRecord.id) }
+            }
+        }
+        // Files' Open In / a shared EPUB lands here (the Info.plist
+        // declares the type): same import, same immediate reading.
+        .onOpenURL { url in
+            guard url.isFileURL, url.pathExtension.lowercased() == "epub" else { return }
+            Task {
+                if let record = await model.openEPUBFile(at: url) {
+                    openWindow(id: "reader", value: record.id)
+                }
+            }
         }
         .onChange(of: scenePhase) {
             if scenePhase == .active {
@@ -1513,7 +1584,7 @@ struct VisionReaderView: View {
     /// every reading view macOS has, plus the on-device AI reading.
     /// Persisted, and read by the hosting panel so Horizontal earns
     /// its width.
-    @AppStorage("visionReaderMode") private var modeRaw = Mode.scroll.rawValue
+    @AppStorage("visionReaderMode") private var modeRaw = Mode.faithful.rawValue
     /// Outline: the sections clicked open, by heading id.
     @State private var expanded: Set<String> = []
     @State private var showsContents = false
@@ -1542,6 +1613,14 @@ struct VisionReaderView: View {
     private var isDesk: Bool { model.readingDeskDocID == docID }
     private var deskTheme: ReadingDeskTheme {
         ReadingDeskTheme(rawValue: deskThemeRaw) ?? .light
+    }
+
+    /// The scheme the reading actually wears: the desk theme's when it
+    /// stands on paper, the room's otherwise. Everything that colours
+    /// ink — the environment AND the attributed text, whose colours are
+    /// baked at build time — must read this, never `colorScheme` raw.
+    private var readingScheme: ColorScheme {
+        isDesk ? deskTheme.scheme : colorScheme
     }
 
     /// A page lying flat on the table is read from above at arm's
@@ -1603,6 +1682,17 @@ struct VisionReaderView: View {
                     scrollBody(doc)
                 }
             }
+            // The selected reading — the desk — stands on solid paper,
+            // not the room's glass, whatever the reading view. The
+            // theme's colour scheme rides with its page: light paper
+            // reads in dark ink, never visionOS's default white.
+            .background {
+                if isDesk { deskTheme.page.ignoresSafeArea() }
+            }
+            .environment(\.colorScheme, readingScheme)
+            // Opening a reading selects it: the newest reading is the
+            // desk, and earlier ones return to glass.
+            .onAppear { model.readingDeskDocID = docID }
             .sheet(item: $browsingSpeaker) { selection in
                 VisionSpeakerStatementsView(name: selection.name)
             }
@@ -2059,7 +2149,7 @@ struct VisionReaderView: View {
         -> AttributedString {
         var out = OrigamiReading.inlineAttributed(paragraph.text, in: doc,
                                                   citations: .authorDate,
-                                                  appearance: colorScheme)
+                                                  appearance: readingScheme)
         if let trailing = trailingStretch,
            let url = URL(string: OrigamiReading.stretchScheme + ":" + trailing.id) {
             var mark = AttributedString(

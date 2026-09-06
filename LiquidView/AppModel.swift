@@ -2748,6 +2748,8 @@ final class AppModel {
         publicationAnalyses = analysesFile.analyses
         globalPinnedAuthors = analysesFile.pinnedAuthors
         globalPinnedTopics = analysesFile.pinnedTopics
+        // Document extractions share the folder the same way.
+        documentExtractions = ExtractionsFile.read(from: folder).extractions
         // The citation graph shares the folder: adopt what other
         // devices fetched, then quietly research a few more works.
         CitationGraph.mirrorFolder = folder
@@ -2882,6 +2884,57 @@ final class AppModel {
         updated.paperTopics = paperTopics
         publicationAnalyses[name] = updated
         saveAnalysesFile()
+    }
+
+    // MARK: Document entity extraction (see EntityExtraction.swift)
+
+    /// Per-document concepts and entities, keyed by record id. Read from
+    /// and written to the community folder so visionOS sees the same.
+    private(set) var documentExtractions: [String: DocumentExtraction] = [:]
+
+    /// Bulk progress — (done, total) while a run is under way, nil at rest.
+    private(set) var extractionProgress: (done: Int, total: Int)?
+
+    /// True while a venue relation view (Shared Ground, Roots, Threads)
+    /// is showing — ContentView answers by giving the list pane the
+    /// whole window, the same way the wide-list toggle does.
+    var venueRelationsWantWidth = false
+
+    private func saveExtractionsFile() {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        var file = ExtractionsFile()
+        file.extractions = documentExtractions
+        file.write(to: folder)
+    }
+
+    /// Reads every paper in the venue for concepts, keywords, people,
+    /// places, technologies, and scientific terms — the whole body, in
+    /// context-window-sized chunks, on the local model (Apple's unless
+    /// the user chose another; endpoint failures fall back to Apple's).
+    /// Already-extracted documents are skipped unless forced; results
+    /// persist after every document, so an interrupted run keeps what
+    /// it finished.
+    func extractEntities(inPublication name: String, force: Bool = false) async {
+        guard extractionProgress == nil else { return }
+        let records = epubRecords(inPublication: name).filter {
+            force || documentExtractions[$0.id]?.isEmpty != false
+        }
+        guard !records.isEmpty else { return }
+        extractionProgress = (0, records.count)
+        defer { extractionProgress = nil }
+        for (position, record) in records.enumerated() {
+            extractionProgress = (position, records.count)
+            guard !Task.isCancelled else { return }
+            let paragraphs = (index.byID[record.id]?.doc.body ?? []).map(\.text)
+            guard !paragraphs.isEmpty else { continue }
+            guard let extraction = try? await EntityExtractor.extract(
+                paragraphs: paragraphs, excluding: record.authorList)
+            else { continue }
+            documentExtractions[record.id] = extraction
+            saveExtractionsFile()
+        }
     }
 
     func pinGlobalAuthor(_ name: String) {

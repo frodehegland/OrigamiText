@@ -62,6 +62,15 @@ final class LibraryIndex {
         rebuild()
     }
 
+    /// Adds or replaces one EPUB document without re-parsing the rest —
+    /// how a just-opened book reads immediately while the whole-shelf
+    /// rebuild continues behind it.
+    func upsertEPUBDocument(_ doc: LiquidDoc) {
+        epubDocs.removeAll { $0.id == doc.id }
+        epubDocs.append(doc)
+        rebuild()
+    }
+
     /// Re-derives byID, backlinks, revisions, and the timeline over both
     /// feeds. The EPUB shelf comes last: on an id both feeds claim, the
     /// book wins.
