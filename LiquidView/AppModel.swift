@@ -760,18 +760,104 @@ final class AppModel {
 
     func openFile(at url: URL) {
         // Origami Text is an EPUB reader now: an EPUB opens in the faithful
-        // WebView reader; a LaTeX project (zip or bare .tex) becomes an
-        // EPUB first — the reverse of Author's LaTeX export. Anything else
-        // (including native JSON documents) is declined.
+        // WebView reader; a LaTeX project (zip or bare .tex) or an ACM
+        // Digital Library XML paper (BITS/JATS) becomes an EPUB first.
+        // A plain folder imports as a batch. Anything else (including
+        // native JSON documents) is declined.
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+           isDirectory.boolValue,
+           !Self.importableExtensions.contains(url.pathExtension.lowercased()) {
+            // Not a document package (.liquid, .rtfd…) — a real folder.
+            importFolder(at: url)
+            return
+        }
         switch url.pathExtension.lowercased() {
         case "epub":
             openEPUBFile(at: url)
         case "zip", "tex":
             importLaTeX(at: url)
+        case "xml":
+            importBITS(at: url)
         default:
             NSSound.beep()
-            showNote("Origami Text opens EPUB files (and imports LaTeX).")
+            showNote("Origami Text opens EPUB files (and imports LaTeX and ACM XML).")
         }
+    }
+
+    /// The outcome of filing one converted document into the library.
+    enum LibraryImportOutcome {
+        case imported
+        case duplicate
+        case failed
+    }
+
+    /// The record a converted document would double, when the library
+    /// already holds it. Conversions mint a fresh identity on every run
+    /// (`created = .now`), so identity cannot spot a re-import — the
+    /// words can: same title and authors, in the acquisitions list's
+    /// title|author key form.
+    private func existingConversion(title: String, author: String) -> EPUBRecord? {
+        func key(_ title: String, _ author: String) -> String {
+            (title + "|" + author).lowercased()
+                .components(separatedBy: .whitespacesAndNewlines).joined()
+        }
+        let wanted = key(title, author)
+        return epubRecords.first { key($0.title, $0.author) == wanted }
+    }
+
+    /// Imports every convertible document in a folder — the HT '26
+    /// proceedings arrive as 59 zips — filing each into the library
+    /// without opening any, then reports one summary. Already-imported
+    /// documents are skipped, so re-running a batch never doubles the
+    /// shelf.
+    func importFolder(at url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+        let convertible = names
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .map { url.appendingPathComponent($0) }
+            .filter { ["epub", "zip", "tex", "xml"].contains($0.pathExtension.lowercased()) }
+        guard !convertible.isEmpty else {
+            NSSound.beep()
+            showNote("No EPUB, LaTeX, or ACM XML files in “\(url.lastPathComponent)”.")
+            return
+        }
+        var imported = 0
+        var duplicates = 0
+        var failed: [String] = []
+        for file in convertible {
+            let outcome: LibraryImportOutcome
+            switch file.pathExtension.lowercased() {
+            case "epub":
+                // importEPUB reuses by identity itself: an unchanged
+                // count means the book was already on the shelf.
+                let before = epubRecords.count
+                outcome = importEPUB(at: file) == nil ? .failed
+                    : (epubRecords.count > before ? .imported : .duplicate)
+            case "zip", "tex":
+                outcome = importLaTeX(at: file, andOpen: false)
+            default:
+                outcome = importBITS(at: file, andOpen: false)
+            }
+            switch outcome {
+            case .imported: imported += 1
+            case .duplicate: duplicates += 1
+            case .failed: failed.append(file.lastPathComponent)
+            }
+        }
+        var parts = ["Imported \(imported) of \(convertible.count)"]
+        if duplicates > 0 { parts.append("\(duplicates) already in the library") }
+        if !failed.isEmpty {
+            parts.append("failed: \(failed.prefix(3).joined(separator: ", "))"
+                + (failed.count > 3 ? " and \(failed.count - 3) more" : ""))
+        }
+        if !failed.isEmpty { NSSound.beep() }
+        showNote(parts.joined(separator: " · "))
+        // The arrivals join the community folder too — once, after the
+        // batch — so the headset's next scan shows the same shelf.
+        if imported > 0 { mirrorShelfToCommunityFolder() }
     }
 
     // MARK: - LaTeX import (the reverse of Author's LaTeX export)
@@ -779,8 +865,10 @@ final class AppModel {
     /// A zipped LaTeX project (Author's export: main.tex, references.bib,
     /// figures/) or a bare .tex file, turned into an EPUB: the source is
     /// parsed into the document model, written through the Origami EPUB
-    /// exporter, and filed into the reader's library — then opened.
-    func importLaTeX(at url: URL) {
+    /// exporter, and filed into the reader's library — then opened,
+    /// unless a batch (`andOpen: false`) is filing quietly.
+    @discardableResult
+    func importLaTeX(at url: URL, andOpen: Bool = true) -> LibraryImportOutcome {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -789,6 +877,13 @@ final class AppModel {
                 : try LaTeXImporter.importArchive(at: url)
             let created = Date.now
             let author = result.author ?? authorName
+            if let existing = existingConversion(title: result.title, author: author) {
+                if andOpen {
+                    openStoredEPUB(existing)
+                    showNote("Already in the library: “\(existing.title)”")
+                }
+                return .duplicate
+            }
             let id = LiquidAddress.makeID(author: author, created: created)
             var doc = LiquidDoc(format: LiquidDoc.knownFormat, id: id,
                                 title: result.title, author: author,
@@ -806,12 +901,21 @@ final class AppModel {
                 .appendingPathComponent(id + ".epub")
             try OrigamiEPUBExporter.write(doc: doc, resolve: { _ in nil }, to: epubURL)
             defer { try? FileManager.default.removeItem(at: epubURL) }
-            guard let record = importEPUB(at: epubURL) else { return }
-            openStoredEPUB(record)
-            showNote("Imported \u{201C}\(result.title)\u{201D} from LaTeX")
+            guard let record = importEPUB(at: epubURL) else { return .failed }
+            if andOpen {
+                openStoredEPUB(record)
+                showNote("Imported \u{201C}\(result.title)\u{201D} from LaTeX")
+                // A single conversion mirrors at once; a batch mirrors
+                // once at its end instead.
+                mirrorShelfToCommunityFolder()
+            }
+            return .imported
         } catch {
-            NSSound.beep()
-            showNote("Could not import LaTeX: \(error.localizedDescription)")
+            if andOpen {
+                NSSound.beep()
+                showNote("Could not import LaTeX: \(error.localizedDescription)")
+            }
+            return .failed
         }
     }
 
@@ -821,15 +925,24 @@ final class AppModel {
     /// the DL serves for proceedings chapters, or a JATS `<article>` —
     /// turned into an EPUB the same way LaTeX is: parsed into the
     /// document model, written through the Origami EPUB exporter, and
-    /// filed into the reader's library — then opened. Figures resolve
-    /// beside the .xml when their files are there.
-    func importBITS(at url: URL) {
+    /// filed into the reader's library — then opened, unless a batch
+    /// (`andOpen: false`) is filing quietly. Figures resolve beside the
+    /// .xml when their files are there.
+    @discardableResult
+    func importBITS(at url: URL, andOpen: Bool = true) -> LibraryImportOutcome {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let result = try BITSImporter.importFile(at: url)
             let created = Date.now
             let author = result.author ?? authorName
+            if let existing = existingConversion(title: result.title, author: author) {
+                if andOpen {
+                    openStoredEPUB(existing)
+                    showNote("Already in the library: “\(existing.title)”")
+                }
+                return .duplicate
+            }
             let id = LiquidAddress.makeID(author: author, created: created)
             var doc = LiquidDoc(format: LiquidDoc.knownFormat, id: id,
                                 title: result.title, author: author,
@@ -847,12 +960,21 @@ final class AppModel {
                 .appendingPathComponent(id + ".epub")
             try OrigamiEPUBExporter.write(doc: doc, resolve: { _ in nil }, to: epubURL)
             defer { try? FileManager.default.removeItem(at: epubURL) }
-            guard let record = importEPUB(at: epubURL) else { return }
-            openStoredEPUB(record)
-            showNote("Imported \u{201C}\(result.title)\u{201D} from ACM XML")
+            guard let record = importEPUB(at: epubURL) else { return .failed }
+            if andOpen {
+                openStoredEPUB(record)
+                showNote("Imported \u{201C}\(result.title)\u{201D} from ACM XML")
+                // A single conversion mirrors at once; a batch mirrors
+                // once at its end instead.
+                mirrorShelfToCommunityFolder()
+            }
+            return .imported
         } catch {
-            NSSound.beep()
-            showNote("Could not import the XML: \(error.localizedDescription)")
+            if andOpen {
+                NSSound.beep()
+                showNote("Could not import the XML: \(error.localizedDescription)")
+            }
+            return .failed
         }
     }
 
@@ -900,6 +1022,75 @@ final class AppModel {
     var openEPUBRecordID: String? {
         guard let open = openEPUB else { return nil }
         return epubRecords.first { $0.folder == open.id }?.id
+    }
+
+    /// The book's own .epub, kept beside its unpacked folder: the
+    /// document IS this file — self-contained, portable, bit-identical
+    /// wherever it goes. The unpacked folder next to it is a derived
+    /// cache the reader serves from, rebuildable from this file.
+    static func storedEPUBURL(inFolder folder: String) -> URL {
+        epubsRoot.appendingPathComponent(folder + ".epub")
+    }
+
+    func storedEPUBURL(for record: EPUBRecord) -> URL {
+        Self.storedEPUBURL(inFolder: record.folder)
+    }
+
+    /// Every record holds its .epub. One that predates the canonical
+    /// store (or lost its copy) gets it packed back from the cache —
+    /// run once at launch, yielding between books so a large shelf
+    /// never stalls the interface.
+    func ensureStoredEPUBs() async {
+        for record in epubRecords {
+            let stored = storedEPUBURL(for: record)
+            guard !FileManager.default.fileExists(atPath: stored.path) else { continue }
+            let unpacked = Self.epubsRoot.appendingPathComponent(record.folder,
+                                                                 isDirectory: true)
+            guard FileManager.default.fileExists(
+                atPath: unpacked.appendingPathComponent(record.contentSubpath).path),
+                  let data = try? OrigamiEPUBExporter.pack(unpackedFolder: unpacked)
+            else { continue }
+            try? data.write(to: stored, options: .atomic)
+            await Task.yield()
+        }
+    }
+
+    /// Reveals the record's .epub in Finder — the document itself, its
+    /// unpacked cache folder beside it, for inspection or handing on.
+    func revealEPUBInFinder(_ record: EPUBRecord) {
+        let stored = storedEPUBURL(for: record)
+        let target = FileManager.default.fileExists(atPath: stored.path)
+            ? stored
+            : Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+        NSWorkspace.shared.activateFileViewerSelecting([target])
+    }
+
+    /// Saves a copy of the book's .epub wherever the reader chooses —
+    /// for a colleague, a browser, another reader. The stored file is
+    /// copied bit-identically; a record still missing one (mid-launch,
+    /// before the migration pass reaches it) packs on the spot.
+    func saveCopyOfEPUB(_ record: EPUBRecord) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = record.folder + ".epub"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        let stored = storedEPUBURL(for: record)
+        do {
+            if FileManager.default.fileExists(atPath: stored.path) {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: stored, to: destination)
+            } else {
+                let unpacked = Self.epubsRoot.appendingPathComponent(record.folder,
+                                                                     isDirectory: true)
+                try OrigamiEPUBExporter.pack(unpackedFolder: unpacked)
+                    .write(to: destination, options: .atomic)
+            }
+        } catch {
+            NSSound.beep()
+            showNote("Could not save the EPUB: \(error.localizedDescription)")
+        }
     }
 
     /// Opens a listed book by its record id — the selection-driven twin
@@ -957,12 +1148,26 @@ final class AppModel {
                 forKeys: [.contentModificationDateKey]))?.contentModificationDate
             if FileManager.default.fileExists(atPath: content.path),
                let sourceStamp, let unpackedStamp, sourceStamp <= unpackedStamp {
+                // A record from before the canonical store gets its
+                // .epub back-filled from the file being opened.
+                let stored = Self.storedEPUBURL(inFolder: safe)
+                if !FileManager.default.fileExists(atPath: stored.path),
+                   stored.path != url.path {
+                    try? FileManager.default.copyItem(at: url, to: stored)
+                }
                 return enrichRecordIfNeeded(existing, directory: directory)
             }
         }
 
         do {
             let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: directory)
+            // The .epub itself is the canonical store, kept beside the
+            // unpacked cache — the document is one self-contained file.
+            let stored = Self.storedEPUBURL(inFolder: safe)
+            if stored.path != url.path {
+                try? FileManager.default.removeItem(at: stored)
+                try? FileManager.default.copyItem(at: url, to: stored)
+            }
             // Read OPF + Visual-Meta only — no body parsing, so large
             // multi-chapter EPUBs don't block the main thread.
             let meta = OrigamiEPUBImporter.importMetadata(inUnpackedFolder: directory)
@@ -1194,6 +1399,8 @@ final class AppModel {
         if openEPUB?.id == record.folder { openEPUB = nil }
         let directory = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
         try? FileManager.default.trashItem(at: directory, resultingItemURL: nil)
+        try? FileManager.default.trashItem(at: storedEPUBURL(for: record),
+                                           resultingItemURL: nil)
         try? FileManager.default.removeItem(
             at: ReadingAnalysisStore.fileURL(for: record.id, in: Self.analysesRoot))
         // Remove from community folder so a subsequent scan doesn't re-import it.
@@ -1260,6 +1467,7 @@ final class AppModel {
             if openEPUB?.id == stale.folder { openEPUB = nil }
             try? FileManager.default.removeItem(
                 at: Self.epubsRoot.appendingPathComponent(stale.folder, isDirectory: true))
+            try? FileManager.default.removeItem(at: storedEPUBURL(for: stale))
             epubRecords.removeAll { $0.id == stale.id }
             persistEPUBRecords()
         }
@@ -2830,14 +3038,21 @@ final class AppModel {
             }
         }
         for record in epubRecords where !present.contains(record.folder) {
+            let destination = folder.appendingPathComponent(record.folder + ".epub")
+            // The canonical .epub publishes bit-identically; a record
+            // still missing one packs from its cache as before.
+            let stored = storedEPUBURL(for: record)
+            if FileManager.default.fileExists(atPath: stored.path) {
+                try? FileManager.default.copyItem(at: stored, to: destination)
+                continue
+            }
             let unpacked = Self.epubsRoot.appendingPathComponent(record.folder,
                                                                  isDirectory: true)
             guard FileManager.default.fileExists(atPath:
                     unpacked.appendingPathComponent(record.contentSubpath).path),
                   let data = try? OrigamiEPUBExporter.pack(unpackedFolder: unpacked)
             else { continue }
-            try? data.write(to: folder.appendingPathComponent(record.folder + ".epub"),
-                            options: .atomic)
+            try? data.write(to: destination, options: .atomic)
         }
     }
 
@@ -3003,6 +3218,9 @@ final class AppModel {
         // The views' index reads the EPUB shelf; build it for the books
         // already on it.
         rebuildEPUBIndex()
+        // Books from before the canonical .epub store get their file
+        // packed back from the cache, once, quietly.
+        Task { await ensureStoredEPUBs() }
     }
 
     /// The place this Mac last resolved — stamped onto a letter at
@@ -3619,7 +3837,7 @@ final class AppModel {
         panel.treatsFilePackagesAsDirectories = false
         // Keep this short: NSOpenPanel lays the message out on one line and
         // grows the window to fit it, then won't shrink below that width.
-        panel.message = "Import a Word, Markdown, PDF, transcript, LaTeX (zip/.tex), or ACM XML file."
+        panel.message = "Import a Word, Markdown, PDF, transcript, LaTeX (zip/.tex), or ACM XML file — or a folder of them."
         panel.prompt = "Import"
         // Room to browse. The panel is user-resizable on its own — touching
         // its style mask breaks the sandboxed panel's dragging — and macOS
@@ -3653,6 +3871,16 @@ final class AppModel {
         // for the open/drop paths.
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        // A plain folder imports as a batch into the library; document
+        // packages (.liquid, .rtfd) are directories too and read on as
+        // single documents.
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+           isDirectory.boolValue,
+           !Self.importableExtensions.contains(url.pathExtension.lowercased()) {
+            importFolder(at: url)
+            return
+        }
         do {
             let title: String
             let author: String

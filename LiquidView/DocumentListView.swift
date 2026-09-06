@@ -59,6 +59,11 @@ struct EPUBPileMenu: View {
             Button("Set Aside") { model.setAside(record) }
         }
         Divider()
+        // The document's own .epub, one click away — for inspection,
+        // or to hand on.
+        Button("Show in Finder") { model.revealEPUBInFinder(record) }
+        Button("Save a Copy as EPUB…") { model.saveCopyOfEPUB(record) }
+        Divider()
         Button("Move to Trash", role: .destructive) { model.trashEPUB(record) }
     }
 }

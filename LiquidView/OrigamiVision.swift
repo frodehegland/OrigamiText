@@ -717,12 +717,26 @@ final class VisionModel {
                 forKeys: [.contentModificationDateKey]))?.contentModificationDate
             if FileManager.default.fileExists(atPath: content.path),
                let sourceStamp, let unpackedStamp, sourceStamp <= unpackedStamp {
+                // A shelf book from before the canonical store gets its
+                // .epub back-filled from the file being scanned.
+                let stored = Self.epubsRoot.appendingPathComponent(safe + ".epub")
+                if !FileManager.default.fileExists(atPath: stored.path),
+                   stored.path != url.path {
+                    try? FileManager.default.copyItem(at: url, to: stored)
+                }
                 return false
             }
         }
 
         do {
             let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: directory)
+            // The .epub itself is the canonical store, kept beside the
+            // unpacked cache — same layout as the Mac's shelf.
+            let stored = Self.epubsRoot.appendingPathComponent(safe + ".epub")
+            if stored.path != url.path {
+                try? FileManager.default.removeItem(at: stored)
+                try? FileManager.default.copyItem(at: url, to: stored)
+            }
             let meta = try? OrigamiEPUBImporter.importDocument(at: url)
             let bookID = meta?.origamiID ?? identity
             let contentSubpath = unpacked.content.path

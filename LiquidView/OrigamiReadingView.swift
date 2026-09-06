@@ -4801,7 +4801,17 @@ private struct SelectableParagraph: NSViewRepresentable {
         // width the view actually has, so every pass agrees.
         let width = proposal.width.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
             ?? (nsView.bounds.width > 0 ? nsView.bounds.width : 680)
-        container.size = NSSize(width: width, height: .greatestFiniteMagnitude)
+        // Only a real width change may touch the container: setting the
+        // same size still invalidates the text layout, which marks the
+        // view as needing constraint updates — and SwiftUI measures
+        // every paragraph many times per pass. In the Horizontal spread
+        // (columns × a proceedings paper's hundreds of paragraphs) the
+        // repeated invalidations compound until AppKit's layout-loop
+        // breaker throws and takes the app down.
+        let target = NSSize(width: width, height: .greatestFiniteMagnitude)
+        if container.size != target {
+            container.size = target
+        }
         layout.ensureLayout(for: container)
         let used = layout.usedRect(for: container)
         return CGSize(width: width, height: ceil(used.height))
