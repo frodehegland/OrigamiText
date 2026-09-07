@@ -16,6 +16,8 @@ struct ReadHomeView: View {
     @State private var choosingEPUB = false
     @State private var choosingFolder = false
     @State private var showsSettings = false
+    /// The Set Aside books stay tucked behind their header until asked.
+    @State private var showsSetAside = false
 
     private enum Shelf: Hashable { case articles, journals, guide }
 
@@ -39,7 +41,26 @@ struct ReadHomeView: View {
                         switch shelf {
                         case .articles:
                             ForEach(model.alphabetical) { record in
-                                row(record)
+                                PhoneShelfRow(record: record)
+                            }
+                            if !model.setAsideRecords.isEmpty {
+                                Section {
+                                    if showsSetAside {
+                                        ForEach(model.setAsideRecords) { record in
+                                            PhoneShelfRow(record: record)
+                                                .opacity(0.55)
+                                        }
+                                    }
+                                } header: {
+                                    Button {
+                                        withAnimation { showsSetAside.toggle() }
+                                    } label: {
+                                        Label("Set Aside (\(model.setAsideRecords.count))",
+                                              systemImage: showsSetAside ? "chevron.down" : "chevron.right")
+                                            .font(.subheadline)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
                         case .journals:
                             ForEach(model.venues, id: \.self) { venue in
@@ -120,20 +141,73 @@ struct ReadHomeView: View {
         }
     }
 
-    private func row(_ record: EPUBRecord) -> some View {
+}
+
+/// One shelf row, shared by the Articles list and the journal pages:
+/// title and author, the pin's mark when it leads the pile, and the
+/// pile verbs three ways — swipe right to pin, swipe left to set
+/// aside, or hold for the menu. The Mac's EPUBPileMenu is the sibling.
+private struct PhoneShelfRow: View {
+    @Environment(PhoneModel.self) private var model
+    let record: EPUBRecord
+
+    var body: some View {
         Button {
             model.readerRecordID = record.id
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(record.title).lineLimit(2)
-                Text(record.author)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if model.isTopOfPile(record) {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(record.title).lineLimit(2)
+                    Text(record.author)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                model.toggleTopOfPile(record)
+            } label: {
+                Label(model.isTopOfPile(record) ? "Unpin" : "Pin",
+                      systemImage: model.isTopOfPile(record) ? "pin.slash" : "pin")
+            }
+            .tint(.orange)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            if model.isSetAside(record) {
+                Button {
+                    model.bringBack(record)
+                } label: {
+                    Label("Bring Back", systemImage: "arrow.uturn.backward")
+                }
+                .tint(.indigo)
+            } else {
+                Button {
+                    model.setAside(record)
+                } label: {
+                    Label("Set Aside", systemImage: "moon.zzz")
+                }
+                .tint(.indigo)
+            }
+        }
+        .contextMenu {
+            Toggle("Pin", isOn: Binding(
+                get: { model.isTopOfPile(record) },
+                set: { _ in model.toggleTopOfPile(record) }))
+            if model.isSetAside(record) {
+                Button("Bring Back") { model.bringBack(record) }
+            } else {
+                Button("Set Aside") { model.setAside(record) }
+            }
+        }
     }
 }
 
@@ -147,19 +221,7 @@ struct PhoneJournalView: View {
 
     var body: some View {
         List(model.records(inVenue: venue)) { record in
-            Button {
-                model.readerRecordID = record.id
-            } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(record.title).lineLimit(2)
-                    Text(record.author)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            PhoneShelfRow(record: record)
         }
         .listStyle(.plain)
         .navigationTitle(venue)
@@ -947,6 +1009,8 @@ private struct PhoneGuideView: View {
                          "Pinch in anywhere while reading and the book folds into its outline. Pinch out and it opens again at the very spot you left. Tap a heading's name to open that section instead; the chevron beside it peeks inside without leaving.")
                 guideRow("quote.closing", "Citations and notes",
                          "Tap a citation — [1] or (Author 2026) — and its source appears as a card, with the full reference a copy away. Tap a ‡ mark for the note behind it. How citations read is yours to choose in Settings.")
+                guideRow("pin", "Pin and set aside",
+                         "Swipe a book right to pin it to the top of every list; swipe left to set it aside for later — or hold for the menu. The standing is shared: your Mac and headset see the same pile.")
                 guideRow("circle.lefthalf.filled", "Looks",
                          "The half-circle in the foot bar holds Light and Dark, the colour themes — sepia through the dyslexia-friendly palettes — and Bionic Reading. Aa makes the words bigger or smaller.")
                 guideRow("text.line.first.and.arrowtriangle.forward", "Focus assists",

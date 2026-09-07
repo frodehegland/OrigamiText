@@ -205,7 +205,7 @@ final class PhoneModel {
     var venues: [String] {
         var counts: [String: Int] = [:]
         var order: [String] = []
-        for record in epubRecords {
+        for record in epubRecords where !isSetAside(record) {
             guard let venue = record.venue else { continue }
             if counts[venue] == nil { order.append(venue) }
             counts[venue, default: 0] += 1
@@ -219,15 +219,94 @@ final class PhoneModel {
     }
 
     func records(inVenue venue: String) -> [EPUBRecord] {
-        epubRecords.filter {
+        pinnedFirst(epubRecords.filter {
             $0.venue?.caseInsensitiveCompare(venue) == .orderedSame
-        }
+                && !isSetAside($0)
+        })
     }
 
     var alphabetical: [EPUBRecord] {
-        epubRecords.sorted {
+        pinnedFirst(epubRecords.filter { !isSetAside($0) }.sorted {
             $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
-        }
+        })
+    }
+
+    // MARK: - Top of Pile and Set Aside
+
+    /// The Mac's pile, here: pinned books lead every list; set-aside
+    /// books wait out of them until brought back. Same UserDefaults
+    /// keys, and the standing travels through the community folder's
+    /// origami-standing.json — last writer wins, as on the Mac and the
+    /// headset (AppModel's is the sibling copy; keep in step).
+    private(set) var epubTopOfPile: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "epubTopOfPile") ?? [])
+    private(set) var epubSetAsideIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "epubSetAside") ?? [])
+    /// Concepts ride the same shared file (a Mac feature); the phone
+    /// carries them through untouched so a publish never clobbers them.
+    @ObservationIgnored private var standingConcepts: [String]?
+    /// When this device last wrote the shared standing — an older file
+    /// read back never clobbers a newer local change.
+    @ObservationIgnored private var standingWrittenAt: Date = .distantPast
+
+    func isTopOfPile(_ record: EPUBRecord) -> Bool { epubTopOfPile.contains(record.id) }
+    func isSetAside(_ record: EPUBRecord) -> Bool { epubSetAsideIDs.contains(record.id) }
+
+    func toggleTopOfPile(_ record: EPUBRecord) {
+        if !epubTopOfPile.insert(record.id).inserted { epubTopOfPile.remove(record.id) }
+        UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
+        publishStanding()
+    }
+
+    func setAside(_ record: EPUBRecord) {
+        epubSetAsideIDs.insert(record.id)
+        UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
+        publishStanding()
+    }
+
+    func bringBack(_ record: EPUBRecord) {
+        epubSetAsideIDs.remove(record.id)
+        UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
+        publishStanding()
+    }
+
+    /// Top of Pile first, otherwise keeping the given order — the Mac's.
+    func pinnedFirst(_ records: [EPUBRecord]) -> [EPUBRecord] {
+        records.filter { isTopOfPile($0) } + records.filter { !isTopOfPile($0) }
+    }
+
+    /// The Set Aside shelf's records, in library order.
+    var setAsideRecords: [EPUBRecord] {
+        epubRecords.filter { epubSetAsideIDs.contains($0.id) }
+    }
+
+    /// Writes the pinned/set-aside standing into the community folder,
+    /// so the Mac and the headset adopt it.
+    private func publishStanding() {
+        guard let folder = folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        // Concepts are the Mac's; pass through what the file holds when
+        // this phone has not read it yet.
+        let concepts = standingConcepts ?? EPUBStanding.read(from: folder)?.concepts ?? []
+        standingConcepts = concepts
+        standingWrittenAt = EPUBStanding.write(pinned: epubTopOfPile,
+                                               setAside: epubSetAsideIDs,
+                                               concepts: concepts,
+                                               to: folder)
+    }
+
+    /// Adopts the shared standing when another device wrote it more
+    /// recently than this phone did. Callers hold the folder's scope.
+    private func adoptStanding(from folder: URL) {
+        guard let state = EPUBStanding.read(from: folder),
+              state.modified > standingWrittenAt else { return }
+        standingWrittenAt = state.modified
+        if let concepts = state.concepts { standingConcepts = concepts }
+        epubTopOfPile = Set(state.pinned)
+        epubSetAsideIDs = Set(state.setAside)
+        UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
+        UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
     }
 
     // MARK: The community folder
@@ -261,6 +340,7 @@ final class PhoneModel {
         guard let folder = folderURL else { return }
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        adoptStanding(from: folder)
         LibraryScanner.requestICloudDownloads(in: folder)
         guard let enumerator = FileManager.default.enumerator(
             at: folder, includingPropertiesForKeys: [.isRegularFileKey],
