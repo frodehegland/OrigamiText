@@ -41,7 +41,19 @@ final class PhoneModel {
         guard let data = UserDefaults.standard.data(forKey: epubRecordsKey),
               let records = try? JSONDecoder().decode([EPUBRecord].self, from: data)
         else { return [] }
-        return records
+        // Self-healing: a record whose unpacked payload has vanished
+        // (reinstall, cleared storage) would open as a silent blank
+        // page — prune it instead; the book returns the next time its
+        // EPUB is opened or the community folder is scanned.
+        let alive = records.filter { record in
+            FileManager.default.fileExists(
+                atPath: epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+                    .appendingPathComponent(record.contentSubpath).path)
+        }
+        if alive.count != records.count, let pruned = try? JSONEncoder().encode(alive) {
+            UserDefaults.standard.set(pruned, forKey: epubRecordsKey)
+        }
+        return alive
     }
 
     private func persistEPUBRecords() {
