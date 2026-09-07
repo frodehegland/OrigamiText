@@ -116,6 +116,18 @@ Author MUST include one `@misc` entry per citation. The BibTeX key is opaque —
 }
 ```
 
+**Optional rendition fields** (present when the citing reader knew them; preserve verbatim, never drop):
+
+```bibtex
+ doi            = {10.1145/317426.317448},          % the WORK, format-independent
+ vm-source-epub = {<doc-id>#<paragraph-id>},        % one field per rendition,
+ vm-source-seed = {hm://<uid>/<path>#<block-id>},   % each with its own
+ vm-source-pdf  = {<doi or url> page=<n>},          % high-resolution anchor
+ vm-source-web  = {https://<publisher page>},
+```
+
+The same cited work may exist in several official renditions (EPUB, PDF, Seed, the publisher's page). `doi` names the work independent of any of them; each `vm-source-<kind>` names one rendition with an anchor at its own finest resolution — an Origami paragraph ID, a Seed block ID (these two are the same string for Seed-imported documents), a PDF page. A reader presenting the citation offers the renditions it can open and lets the reader choose which original counts; the `quote` field is the universal fallback anchor when a rendition has no native one.
+
 **Critical rules:**
 - `vm-id` = `<doc-id>#<paragraph-id>` when a fragment exists; `<doc-id>` alone otherwise.
 - `origami-source-id` = always the base `doc-id` with NO fragment.

@@ -2943,10 +2943,12 @@ struct OrigamiReadingView: View {
     /// available; other apps fall through to HTML or plain.
     private func copyCitation(for paragraph: LiquidDoc.Paragraph,
                               quote: String? = nil) {
-        let filename = model.epubRecord(forAddress: doc.id)?.originalFilename
+        let record = model.epubRecord(forAddress: doc.id)
+        let filename = record?.originalFilename
         let payload = OrigamiReading.authorCitationPayload(for: paragraph, in: doc,
                                                            quote: quote,
-                                                           sourceFile: filename)
+                                                           sourceFile: filename,
+                                                           doi: record?.doi)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
@@ -2966,10 +2968,12 @@ struct OrigamiReadingView: View {
         guard let paragraph = (doc.body ?? []).first(where: { $0.id == paragraphID })
             ?? doc.body?.first
         else { return }
-        let filename = model.epubRecord(forAddress: doc.id)?.originalFilename
+        let record = model.epubRecord(forAddress: doc.id)
+        let filename = record?.originalFilename
         let payload = OrigamiReading.authorCitationPayload(for: paragraph, in: doc,
                                                            annotation: text,
-                                                           sourceFile: filename)
+                                                           sourceFile: filename,
+                                                           doi: record?.doi)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
@@ -4146,6 +4150,13 @@ struct CitationCardSheet: View {
     @State private var graph: CitationGraph.Entry?
     @State private var fetchingGraph = false
 
+    /// The imported reference datasets' answer for this citation, when
+    /// one resolves it, and whether the cited work is also on this shelf
+    /// (worth an Open button even with no dataset imported). See
+    /// ReferenceDatasets.swift.
+    @State private var datasetMatch: ReferenceMatch?
+    @State private var libraryMatch: EPUBRecord?
+
     /// The address a vm-id field carries: the cited document in the
     /// origami id space and, after the #, the very paragraph.
     private var citedAddress: (docID: String, paragraphID: String?)? {
@@ -4267,8 +4278,21 @@ struct CitationCardSheet: View {
                         }
                         .font(.callout)
                     }
+                    renditionsRow(record)
                 }
                 citesSection(record)
+                if let match = datasetMatch {
+                    ReferenceDatasetCardSection(
+                        match: match,
+                        libraryDocumentTitle: libraryMatch?.title,
+                        onOpenLibraryDocument: libraryMatch.map { found in
+                            {
+                                dismiss()
+                                model.openEPUBRecord(withID: found.id)
+                            }
+                        },
+                        onCopyCitation: { copyMergedCitation(match) })
+                }
             } else if let reference {
                 // No parseable BibTeX to render a card from — the raw
                 // entry is all there is to show.
@@ -4375,6 +4399,9 @@ struct CitationCardSheet: View {
         // lookups off entirely).
         .task(id: key) {
             guard let record else { return }
+            // The imported reference datasets' answer, alongside the
+            // services — neither waits for the other.
+            Task { await resolveDatasetMatch(record) }
             // The citation graph's answer, when the quiet prefetch (or
             // an earlier ask) already holds it.
             graph = CitationGraph.cached(forKey: CitationGraph.key(
@@ -4388,6 +4415,115 @@ struct CitationCardSheet: View {
             enrichment = await CitationLookup.enrich(record)
             lookingUp = false
         }
+    }
+
+    /// Asks the reference dataset store with what the citation itself
+    /// carries, then the library independently — a cited paper on this
+    /// shelf earns Open even when no dataset is imported.
+    private func resolveDatasetMatch(_ record: BibTeXRecord) async {
+        let families = (record.fields["author"] ?? "")
+            .components(separatedBy: " and ")
+            .map { name -> String in
+                let trimmed = name.trimmingCharacters(in: .whitespaces)
+                // "Shipman, Frank M." names the family first; otherwise
+                // the last word carries it.
+                if let comma = trimmed.firstIndex(of: ",") {
+                    return String(trimmed[..<comma]).trimmingCharacters(in: .whitespaces)
+                }
+                return trimmed.split(separator: " ").last.map(String.init) ?? trimmed
+            }
+            .filter { !$0.isEmpty }
+        let year = Int(record.year.prefix(4))
+        let match = await model.referenceStore.lookup(CitationQuery(
+            doi: record.fields["doi"],
+            title: record.title.isEmpty ? nil : record.title,
+            year: year,
+            firstAuthorFamily: families.first,
+            authorFamilies: families))
+        datasetMatch = match
+        libraryMatch = model.libraryEPUBRecord(
+            doi: record.fields["doi"],
+            datasetDOI: match?.record.doi,
+            title: record.title.isEmpty ? match?.record.title : record.title,
+            year: year ?? match?.record.year)
+    }
+
+    /// `vm-source-*` fields — the citation carries the same work in more
+    /// than one rendition, each with its own high-resolution anchor; the
+    /// reader chooses which original to open. The EPUB rendition is not
+    /// listed here because vm-id's Open Original already covers it.
+    @ViewBuilder private func renditionsRow(_ record: BibTeXRecord) -> some View {
+        let clean: (String?) -> String? = { value in
+            value.flatMap {
+                let t = $0.trimmingCharacters(in: .whitespaces)
+                return t.isEmpty ? nil : t
+            }
+        }
+        let seed = clean(record.fields["vm-source-seed"])
+        let pdf = clean(record.fields["vm-source-pdf"])
+        let web = clean(record.fields["vm-source-web"])
+        if seed != nil || pdf != nil || web != nil {
+            LabeledContent("Editions") {
+                HStack(spacing: 8) {
+                    if let seed {
+                        Button("Seed") {
+                            dismiss()
+                            Task { await model.openSeedURL(seed) }
+                        }
+                        .help("Open the cited paragraph on the Seed network")
+                    }
+                    if let pdf {
+                        Button("PDF") { openRendition(pdf) }
+                    }
+                    if let web {
+                        Button("Web") { openRendition(web) }
+                    }
+                }
+                .controlSize(.small)
+            }
+            .font(.callout)
+        }
+    }
+
+    /// A rendition address is a URL, or a bare DOI naming the work.
+    private func openRendition(_ address: String) {
+        let target: String
+        if address.hasPrefix("10.") {
+            let doi = address.components(separatedBy: " ").first ?? address
+            target = "https://doi.org/\(doi)"
+        } else {
+            target = address
+        }
+        if let url = URL(string: target) { openURL(url) }
+    }
+
+    /// Copy the citation with the dataset record's fields filling what
+    /// the entry itself lacks — DOI is the common case.
+    private func copyMergedCitation(_ match: ReferenceMatch) {
+        guard let reference else { return }
+        var bibtex = reference.bibtex
+        if let closing = bibtex.lastIndex(of: "}") {
+            let fields = record?.fields ?? [:]
+            func missing(_ key: String) -> Bool {
+                (fields[key] ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+            }
+            var additions: [String] = []
+            if missing("doi"), let doi = match.record.doi {
+                additions.append("  doi = {\(doi)}")
+            }
+            if missing("url"), let url = match.record.url {
+                additions.append("  url = {\(url.absoluteString)}")
+            }
+            if missing("keywords"), !match.record.keywords.isEmpty {
+                additions.append("  keywords = {\(match.record.keywords.joined(separator: "; "))}")
+            }
+            if !additions.isEmpty {
+                bibtex.insert(contentsOf: ",\n" + additions.joined(separator: ",\n") + "\n",
+                              at: closing)
+            }
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(bibtex, forType: .string)
     }
 
     /// What this work itself cites — the second-order references the

@@ -52,11 +52,20 @@
 		5FB2A9F3300CE66F00FF680B /* Exceptions for "LiquidView" folder in "Origami Text" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				BibTeX.swift,
 				DocumentRelation.swift,
+				EPUBShelf.swift,
+				LATable.swift,
+				LibraryIndex.swift,
 				LiquidAddress.swift,
 				LiquidDate.swift,
 				LiquidDoc.swift,
 				LiquidDocWriting.swift,
+				OrigamiEPUBImport.swift,
+				OrigamiMath.swift,
+				OrigamiReading.swift,
+				ReaderTheme.swift,
+				TextColoring.swift,
 				VisualMeta.swift,
 			);
 			target = 5FA61252300CE184002F8851 /* Origami Text */;
@@ -107,7 +116,9 @@
 				OrigamiMath.swift,
 				OrigamiReading.swift,
 				OrigamiVision.swift,
+				ReaderTheme.swift,
 				SankeySpace.swift,
+				TextColoring.swift,
 				VisualMeta.swift,
 				ZZStructure.swift,
 			);

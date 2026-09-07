@@ -41,6 +41,7 @@ struct LiquidViewApp: App {
                     .keyboardShortcut("o", modifiers: .command)
                 Button("Import…") { model.importDocumentFile() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
+                Button("Import Reference Dataset…") { model.importReferenceDatasetPanel() }
                 Button("Export to XR (Author Map)…") { model.showXRExport = true }
                 Button("Export Library Manifest…") { model.exportLibraryManifest() }
                 Divider()

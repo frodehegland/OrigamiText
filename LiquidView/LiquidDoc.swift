@@ -42,6 +42,11 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// recorded it — a place name, free-form. Notes captured on the move
     /// (some by voice, outside Origami Text) carry one.
     var location: String? = nil
+    /// Where the document came from, when it was imported from an online
+    /// system — the canonical origin URL (a Seed hm:// address, a web
+    /// page). Copy to Cite emits it as a rendition source (`vm-source-*`)
+    /// so a citation can point back at the origin, at the paragraph.
+    var sourceURL: String? = nil
     /// The journal or proceedings the document is part of, when it
     /// declares one — "37th ACM Conference on Hypertext". Captured at
     /// import (LaTeX's \acmJournal/\acmConference, an EPUB's own
@@ -488,6 +493,10 @@ extension LiquidDoc {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .flatMap { $0.isEmpty ? nil : $0 }
 
+        let sourceURL = raw.sourceURL
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+
         // Tolerant, like links: a concept or position missing its
         // essentials is skipped, never fatal.
         let concepts: [Concept] = (raw.concepts ?? []).compactMap { rawConcept in
@@ -550,6 +559,7 @@ extension LiquidDoc {
                          onBehalfOf: onBehalfOf,
                          documentType: documentType,
                          location: location,
+                         sourceURL: sourceURL,
                          publication: publication,
                          concepts: concepts,
                          layouts: layouts,
@@ -586,6 +596,7 @@ extension LiquidDoc {
         var onBehalfOf: String?
         var documentType: String?
         var location: String?
+        var sourceURL: String?
         var publication: String?
         var concepts: [RawConcept]?
         var layouts: [RawLayout]?

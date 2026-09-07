@@ -571,13 +571,15 @@ nonisolated enum OrigamiReading {
                                       in doc: LiquidDoc,
                                       quote quoted: String? = nil,
                                       annotation: String? = nil,
-                                      sourceFile: String? = nil)
+                                      sourceFile: String? = nil,
+                                      doi: String? = nil)
         -> (content: String, bibtex: String) {
         let quote = plainQuote(quoted ?? paragraph.text, in: doc)
         let bibtex = bibTeXEntry(for: doc, fragment: paragraph.id,
                                  quote: quote.isEmpty ? nil : quote,
                                  annotation: annotation,
-                                 sourceFile: sourceFile)
+                                 sourceFile: sourceFile,
+                                 doi: doi)
         return (content: quote, bibtex: bibtex)
     }
 
@@ -585,14 +587,21 @@ nonisolated enum OrigamiReading {
     /// Quote variant puts on the clipboard, readable by Author,
     /// reference managers, and anything else that speaks BibTeX.
     /// Standard fields: `pages` for paragraph ID, `howpublished` for the
-    /// source filename ("citing by name"), `url` for the HTTPS carrier URL.
+    /// source filename ("citing by name"), `url` for the HTTPS carrier URL,
+    /// `doi` for the work's format-independent identity.
     /// Extra fields: `quote` for the cited words, `annotation` for the
     /// reader's note, `vm-id` for the full address that reopens the
-    /// original at the right paragraph.
+    /// original at the right paragraph, and one `vm-source-<kind>` per
+    /// rendition the citing document knows about (epub, seed, pdf, web) —
+    /// each an address with its own high-resolution anchor, so a future
+    /// reader chooses which original to open. All additions here must be
+    /// additive: Author and the tests rely on the existing fields.
     static func bibTeXEntry(title: String, author: String, year: String?,
                             publication: String? = nil, quote: String? = nil,
                             annotation: String? = nil, address: String,
-                            sourceFile: String? = nil) -> String {
+                            sourceFile: String? = nil,
+                            doi: String? = nil,
+                            renditions: [(kind: String, address: String)] = []) -> String {
         var fields: [(String, String)] = []
         if !author.isEmpty { fields.append(("author", author)) }
         fields.append(("title", title))
@@ -617,6 +626,12 @@ nonisolated enum OrigamiReading {
         // url: HTTPS carrier — a real web URL that OT resolves locally.
         let fragment = paragraphID.map { "#\($0)" } ?? ""
         fields.append(("url", OrigamiCitation.webCarrierPrefix + sourceID + fragment))
+        // doi: the work, independent of any rendition.
+        if let doi, !doi.isEmpty { fields.append(("doi", doi)) }
+        // vm-source-*: the renditions, each with its own anchor.
+        for rendition in renditions where !rendition.address.isEmpty {
+            fields.append(("vm-source-\(rendition.kind)", rendition.address))
+        }
 
         let key = "ot" + String(stableHash(of: address).prefix(10))
         var bibtex = "@misc{\(key),\n"
@@ -632,15 +647,29 @@ nonisolated enum OrigamiReading {
     /// an optional paragraph fragment.
     static func bibTeXEntry(for doc: LiquidDoc, fragment: String? = nil,
                             quote: String? = nil, annotation: String? = nil,
-                            sourceFile: String? = nil) -> String {
+                            sourceFile: String? = nil, doi: String? = nil) -> String {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
+        let suffix = fragment.map { "#\($0)" } ?? ""
+        let address = doc.id + suffix
+        // Every rendition this document knows itself in, each with the
+        // paragraph-level anchor. The EPUB address is always one; a
+        // document imported from an online system also names its origin
+        // (a Seed-imported doc's paragraph IDs ARE its block IDs, so the
+        // same fragment anchors both).
+        var renditions: [(kind: String, address: String)] = [("epub", address)]
+        if let origin = doc.sourceURL, !origin.isEmpty, !origin.contains("#") {
+            let kind = (origin.hasPrefix("hm://") || origin.contains("/hm/")) ? "seed" : "web"
+            renditions.append((kind, origin + suffix))
+        }
         return bibTeXEntry(title: doc.title, author: doc.displayAuthor, year: year,
                            publication: doc.publication, quote: quote,
                            annotation: annotation,
-                           address: doc.id + (fragment.map { "#\($0)" } ?? ""),
-                           sourceFile: sourceFile)
+                           address: address,
+                           sourceFile: sourceFile,
+                           doi: doi,
+                           renditions: renditions)
     }
 
     /// A paragraph's words with the reading conventions resolved away —

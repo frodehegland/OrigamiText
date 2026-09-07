@@ -19,12 +19,26 @@ private let log = Logger(subsystem: "com.origami.letters", category: "letters")
 /// reads and writes letters.
 @main
 struct OrigamiLettersApp: App {
-    @State private var model = LettersModel()
+    /// The reader, based on the visionOS shelf (PhoneShelf.swift):
+    /// Articles and Journals, nothing else — as on the headset. The
+    /// letters composer remains in the codebase for its return.
+    @State private var shelf = PhoneModel()
 
     var body: some Scene {
         WindowGroup {
-            LettersHomeView()
-                .environment(model)
+            ReadHomeView()
+                .environment(shelf)
+                // An EPUB from Files or a share opens straight into
+                // reading — imported on this phone, no Mac, no folder
+                // required.
+                .onOpenURL { url in
+                    guard url.isFileURL, url.pathExtension.lowercased() == "epub" else { return }
+                    Task {
+                        if let record = await shelf.openEPUBFile(at: url) {
+                            shelf.readerRecordID = record.id
+                        }
+                    }
+                }
         }
     }
 }

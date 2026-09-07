@@ -1050,10 +1050,11 @@ struct InboxListView: View {
             }
         }
         // Drop an EPUB — or a LaTeX project (an Overleaf/Author zip,
-        // or a bare .tex) — onto the inbox to bring it in.
+        // or a bare .tex), or a reference dataset's JSON file(s) — onto
+        // the inbox to bring it in.
         .dropDestination(for: URL.self) { urls, _ in
             let importable = urls.filter {
-                ["epub", "zip", "tex"].contains($0.pathExtension.lowercased())
+                ["epub", "zip", "tex", "json"].contains($0.pathExtension.lowercased())
             }
             guard !importable.isEmpty else { return false }
             for url in importable { model.openFile(at: url) }

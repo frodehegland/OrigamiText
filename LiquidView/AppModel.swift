@@ -762,8 +762,9 @@ final class AppModel {
         // Origami Text is an EPUB reader now: an EPUB opens in the faithful
         // WebView reader; a LaTeX project (zip or bare .tex) or an ACM
         // Digital Library XML paper (BITS/JATS) becomes an EPUB first.
-        // A plain folder imports as a batch. Anything else (including
-        // native JSON documents) is declined.
+        // A plain folder imports as a batch; a JSON file is tried as a
+        // reference dataset (§ReferenceDatasets.swift). Anything else
+        // is declined.
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
            isDirectory.boolValue,
@@ -779,9 +780,111 @@ final class AppModel {
             importLaTeX(at: url)
         case "xml":
             importBITS(at: url)
+        case "json":
+            queueReferenceDatasetImport(url)
         default:
             NSSound.beep()
             showNote("Origami Text opens EPUB files (and imports LaTeX and ACM XML).")
+        }
+    }
+
+    // MARK: - Reference datasets (ReferenceDatasets.swift)
+
+    /// Imported bibliographies — the actor owns them and answers citation
+    /// queries; this mirror feeds the Settings pane.
+    let referenceStore = ReferenceDatasetStore()
+    var referenceDatasetSummaries: [ReferenceDatasetSummary] = []
+    private var pendingReferenceDatasetURLs: [URL] = []
+
+    func refreshReferenceDatasets() {
+        Task { referenceDatasetSummaries = await referenceStore.summaries() }
+    }
+
+    /// File ▸ Import Reference Dataset… — nodes alone, or nodes and
+    /// edges together, in any order.
+    func importReferenceDatasetPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose the dataset's JSON files — the nodes file alone, or nodes and edges together."
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        importReferenceDatasetFiles(panel.urls)
+    }
+
+    /// A drop of two JSON files reaches openFile(at:) one URL at a time;
+    /// a moment's coalescing turns the pair back into a single import.
+    private func queueReferenceDatasetImport(_ url: URL) {
+        pendingReferenceDatasetURLs.append(url)
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !pendingReferenceDatasetURLs.isEmpty else { return }
+            let urls = pendingReferenceDatasetURLs
+            pendingReferenceDatasetURLs = []
+            importReferenceDatasetFiles(urls)
+        }
+    }
+
+    func importReferenceDatasetFiles(_ urls: [URL]) {
+        Task {
+            do {
+                let summary = try await referenceStore.importDataset(from: urls)
+                referenceDatasetSummaries = await referenceStore.summaries()
+                showNote(summary.message)
+            } catch {
+                NSSound.beep()
+                showNote(error.localizedDescription)
+            }
+        }
+    }
+
+    func removeReferenceDataset(_ id: UUID) {
+        Task {
+            await referenceStore.remove(id)
+            referenceDatasetSummaries = await referenceStore.summaries()
+        }
+    }
+
+    func setReferenceDatasetEnabled(_ id: UUID, _ enabled: Bool) {
+        Task {
+            await referenceStore.setEnabled(id, enabled)
+            referenceDatasetSummaries = await referenceStore.summaries()
+        }
+    }
+
+    func renameReferenceDataset(_ id: UUID, to name: String) {
+        Task {
+            await referenceStore.rename(id, to: name)
+            referenceDatasetSummaries = await referenceStore.summaries()
+        }
+    }
+
+    func setReferenceDatasetURLTemplate(_ id: UUID, to template: String) {
+        Task {
+            await referenceStore.setRecordURLTemplate(id, to: template)
+            referenceDatasetSummaries = await referenceStore.summaries()
+        }
+    }
+
+    /// The library cross-match: a cited work that is on this shelf is
+    /// worth an Open button even when no dataset is imported. The DOI
+    /// answers first (the citation's own, then the dataset record's);
+    /// title + year stands in when there is none.
+    func libraryEPUBRecord(doi: String?, datasetDOI: String?,
+                           title: String?, year: Int?) -> EPUBRecord? {
+        let keys = Set([doi, datasetDOI].compactMap { $0.flatMap(ReferenceKeys.doiKey) })
+        if !keys.isEmpty,
+           let hit = epubRecords.first(where: { record in
+               record.doi.map { keys.contains($0.lowercased()) } == true
+           }) {
+            return hit
+        }
+        guard let title, !title.isEmpty, let year else { return nil }
+        let titleKey = ReferenceKeys.titleKey(title)
+        guard !titleKey.isEmpty else { return nil }
+        return epubRecords.first { record in
+            guard ReferenceKeys.titleKey(record.title) == titleKey else { return false }
+            guard let iso = record.dateISO, let recordYear = Int(iso.prefix(4)) else { return true }
+            return abs(recordYear - year) <= 1
         }
     }
 
@@ -4751,13 +4854,15 @@ final class AppModel {
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
         let annotation = documentAnnotation(forAddress: doc.id)?.body?.value
+        let record = epubRecord(forAddress: doc.id)
         CitationClipboard.write(OrigamiCitation(
             to: doc.id, fragment: paragraphID, rel: "cites",
             quotedText: doc.title, author: doc.displayAuthor, year: year,
             bibtex: OrigamiReading.bibTeXEntry(for: doc, fragment: paragraphID,
-                                               annotation: annotation),
+                                               annotation: annotation,
+                                               doi: record?.doi),
             documentTitle: doc.title,
-            documentFilename: epubRecord(forAddress: doc.id)?.originalFilename,
+            documentFilename: record?.originalFilename,
             annotation: annotation))
         showNote("Citation copied as BibTeX")
     }

@@ -301,10 +301,16 @@ nonisolated enum SeedFetcher {
         var paragraphs: [LiquidDoc.Paragraph] = []
         var counter = 0
 
-        func add(heading: Int?, text: String) {
+        // The Seed block ID becomes the paragraph ID, so a block
+        // reference and an Origami paragraph address are the same
+        // string — hm://uid/path#block and origamiDocID#block map onto
+        // each other mechanically, in both directions. The counter
+        // stands in only for a block that arrived without an ID.
+        func add(heading: Int?, text: String, blockID: String? = nil) {
             guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
             counter += 1
-            paragraphs.append(LiquidDoc.Paragraph(id: "p\(counter)", heading: heading, text: text))
+            let id = blockID.flatMap { $0.isEmpty ? nil : $0 } ?? "p\(counter)"
+            paragraphs.append(LiquidDoc.Paragraph(id: id, heading: heading, text: text))
         }
 
         func process(_ node: SeedBlockNode) {
@@ -320,10 +326,10 @@ nonisolated enum SeedFetcher {
                 default:                   raw = 1
                 }
                 let level = min(max(raw, 1), 3)
-                add(heading: level, text: text)
+                add(heading: level, text: text, blockID: b.id)
 
             case "Paragraph":
-                add(heading: nil, text: text)
+                add(heading: nil, text: text, blockID: b.id)
 
             case "Code":
                 let raw  = b.text ?? ""
@@ -332,24 +338,24 @@ nonisolated enum SeedFetcher {
                 case .some(.string(let s)): lang = s
                 default:                   lang = ""
                 }
-                if !raw.isEmpty { add(heading: nil, text: "```\(lang)\n\(raw)\n```") }
+                if !raw.isEmpty { add(heading: nil, text: "```\(lang)\n\(raw)\n```", blockID: b.id) }
 
             case "Math":
                 let raw = b.text ?? ""
-                if !raw.isEmpty { add(heading: nil, text: "$$\n\(raw)\n$$") }
+                if !raw.isEmpty { add(heading: nil, text: "$$\n\(raw)\n$$", blockID: b.id) }
 
             case "Image":
                 if let link = b.link, !link.isEmpty {
                     let caption = text.isEmpty ? link : text
-                    add(heading: nil, text: "[\(caption)](\(link))")
+                    add(heading: nil, text: "[\(caption)](\(link))", blockID: b.id)
                 }
 
             default:
                 // Embed, Button, WebEmbed, Query, Table, Nostr, …
                 if !text.isEmpty {
-                    add(heading: nil, text: text)
+                    add(heading: nil, text: text, blockID: b.id)
                 } else if let link = b.link, !link.isEmpty {
-                    add(heading: nil, text: "[\(b.type): \(link)]")
+                    add(heading: nil, text: "[\(b.type): \(link)]", blockID: b.id)
                 }
             }
 

@@ -1051,6 +1051,23 @@ private struct LibrarySettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section {
+                if model.referenceDatasetSummaries.isEmpty {
+                    Text("No reference datasets imported.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(model.referenceDatasetSummaries) { dataset in
+                    ReferenceDatasetSettingsRow(dataset: dataset)
+                }
+                Button("Import Reference Dataset…") { model.importReferenceDatasetPanel() }
+                    .onAppear { model.refreshReferenceDatasets() }
+            } header: {
+                Text("Reference Datasets")
+            } footer: {
+                Text("An imported bibliography (such as Mark Anderson's ACM Hypertext dataset) enriches citation cards with abstracts, keywords, citation counts and links whenever a cited work resolves to one of its records. Datasets are stored with this Mac's library; import them per device.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 HStack {
                     Button("Create Sample Community") { model.createSampleCommunity() }
                         .disabled(model.index.folderURL == nil)
@@ -1089,6 +1106,63 @@ private struct LibrarySettingsView: View {
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         panel.message = message
         return panel.runModal() == .OK ? panel.url?.path : nil
+    }
+}
+
+/// One imported reference dataset in Settings ▸ Library: the toggle and
+/// counts on the row, provenance and the editable record-page URL
+/// template behind the disclosure.
+private struct ReferenceDatasetSettingsRow: View {
+    @Environment(AppModel.self) private var model
+    let dataset: ReferenceDatasetSummary
+
+    @State private var name = ""
+    @State private var template = ""
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            TextField("Name", text: $name)
+                .onSubmit { model.renameReferenceDataset(dataset.id, to: name) }
+            LabeledContent("Imported",
+                           value: dataset.importedAt.formatted(date: .abbreviated, time: .omitted))
+            LabeledContent("Records",
+                           value: "\(dataset.recordCount.formatted()) (\(dataset.recordsWithDOI.formatted()) with DOI)")
+            LabeledContent("Citation links", value: dataset.edgeCount.formatted())
+            TextField("Record page URL template", text: $template,
+                      prompt: Text("https://…?selectedPaper={id}"))
+                .onSubmit { model.setReferenceDatasetURLTemplate(dataset.id, to: template) }
+                .help("{id} is replaced with the record's identifier; the page name changes with each dataset release.")
+            Text(dataset.attribution)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            HStack {
+                if let home = dataset.homeURL {
+                    Link("Dataset home", destination: home)
+                        .font(.caption)
+                }
+                Spacer()
+                Button("Remove", role: .destructive) {
+                    model.removeReferenceDataset(dataset.id)
+                }
+            }
+        } label: {
+            Toggle(isOn: Binding(
+                get: { dataset.isEnabled },
+                set: { model.setReferenceDatasetEnabled(dataset.id, $0) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(dataset.name) \u{00B7} \(dataset.versionLabel)")
+                    Text("\(dataset.recordCount.formatted()) records \u{00B7} \(dataset.licence)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .onAppear {
+            name = dataset.name
+            template = dataset.recordURLTemplate ?? ""
+        }
     }
 }
 

@@ -24,7 +24,7 @@
                             </label>
                         </subviews>
                         <viewLayoutGuide key="safeArea" id="Bcu-3y-fUS"/>
-                        <color key="backgroundColor" white="0.93" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                        <color key="backgroundColor" systemColor="systemBackgroundColor"/>
                         <constraints>
                             <constraint firstItem="kTi-tl-eLb" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="cXk-ay-Fj1"/>
                             <constraint firstItem="kTi-tl-eLb" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" id="cYk-ay-Fj2"/>
@@ -39,6 +39,9 @@
     <resources>
         <systemColor name="labelColor">
             <color red="0.0" green="0.0" blue="0.0" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+        </systemColor>
+        <systemColor name="systemBackgroundColor">
+            <color white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
         </systemColor>
     </resources>
 </document>
