@@ -110,26 +110,36 @@ nonisolated enum VenueRelations {
             weight[coupling.a, default: [:]][coupling.b] = coupling.weight
             weight[coupling.b, default: [:]][coupling.a] = coupling.weight
         }
+        // Spelled out step by step: tuple-comparison one-liners here sent
+        // an archive machine's compiler into type-check timeout.
+        func totalWeight(_ id: String) -> Int {
+            weight[id]?.values.reduce(0, +) ?? 0
+        }
         var remaining = records.map {
             Paper(id: $0.id, title: $0.title, author: $0.author)
         }
         var ordered: [Paper] = []
-        var current = remaining.max {
-            weight[$0.id]?.values.reduce(0, +) ?? 0 < weight[$1.id]?.values.reduce(0, +) ?? 0
-        }
+        var current = remaining.max { totalWeight($0.id) < totalWeight($1.id) }
         while let paper = current {
             ordered.append(paper)
             remaining.removeAll { $0.id == paper.id }
-            current = remaining.max {
-                (weight[paper.id]?[$0.id] ?? 0, weight[$0.id]?.values.reduce(0, +) ?? 0)
-                    < (weight[paper.id]?[$1.id] ?? 0, weight[$1.id]?.values.reduce(0, +) ?? 0)
+            current = remaining.max { lhs, rhs in
+                let leftNear = weight[paper.id]?[lhs.id] ?? 0
+                let rightNear = weight[paper.id]?[rhs.id] ?? 0
+                if leftNear != rightNear { return leftNear < rightNear }
+                return totalWeight(lhs.id) < totalWeight(rhs.id)
             }
         }
         analysis.papers = ordered
 
         analysis.workByKey = works
         analysis.canon = works.values.filter { $0.citedBy.count >= 2 }
-            .sorted { ($0.citedBy.count, $1.year ?? 0) > ($1.citedBy.count, $0.year ?? 0) }
+            .sorted { lhs, rhs in
+                if lhs.citedBy.count != rhs.citedBy.count {
+                    return lhs.citedBy.count > rhs.citedBy.count
+                }
+                return (lhs.year ?? 0) < (rhs.year ?? 0)
+            }
 
         var years: [Int: Int] = [:]
         for work in works.values {
@@ -484,7 +494,12 @@ struct VenueThreadsView: View {
             }
             return byTopic.filter { $0.value.count >= 2 }
                 .map { Thread(name: $0.key, paperIDs: $0.value.sorted()) }
-                .sorted { ($0.paperIDs.count, $1.name) > ($1.paperIDs.count, $0.name) }
+                .sorted { lhs, rhs in
+                    if lhs.paperIDs.count != rhs.paperIDs.count {
+                        return lhs.paperIDs.count > rhs.paperIDs.count
+                    }
+                    return lhs.name < rhs.name
+                }
         }
         // Title terms otherwise: words at least two papers share.
         let stop: Set<String> = ["a", "an", "the", "of", "and", "for", "in", "on",
@@ -502,7 +517,12 @@ struct VenueThreadsView: View {
         }
         return byTerm.filter { $0.value.count >= 2 }
             .map { Thread(name: $0.key, paperIDs: $0.value.sorted()) }
-            .sorted { ($0.paperIDs.count, $1.name) > ($1.paperIDs.count, $0.name) }
+            .sorted { lhs, rhs in
+                    if lhs.paperIDs.count != rhs.paperIDs.count {
+                        return lhs.paperIDs.count > rhs.paperIDs.count
+                    }
+                    return lhs.name < rhs.name
+                }
     }
 
     /// Extraction categories aggregated across the venue: every item and
@@ -522,7 +542,12 @@ struct VenueThreadsView: View {
         return order.compactMap { category in
             guard let items = perCategory[category] else { return nil }
             let threads = items.map { Thread(name: $0.key, paperIDs: $0.value.sorted()) }
-                .sorted { ($0.paperIDs.count, $1.name) > ($1.paperIDs.count, $0.name) }
+                .sorted { lhs, rhs in
+                    if lhs.paperIDs.count != rhs.paperIDs.count {
+                        return lhs.paperIDs.count > rhs.paperIDs.count
+                    }
+                    return lhs.name < rhs.name
+                }
             return (category, threads)
         }
     }

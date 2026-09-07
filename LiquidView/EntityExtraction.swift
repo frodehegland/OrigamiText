@@ -273,26 +273,27 @@ nonisolated enum EntityExtractor {
         #endif
     }
 
-    /// The two FoundationModels error enums both name these conditions;
-    /// classify against both, and match endpoint overflows by message.
+    /// The two FoundationModels error enums both name these conditions.
+    /// GenerationError is matched by type; the newer LanguageModelError
+    /// exists only in current SDKs, so it is matched by its case NAME —
+    /// naming the type would fail to compile on the SDK an archive
+    /// machine may still carry.
     static func isContextOverflow(_ error: Error) -> Bool {
         #if canImport(FoundationModels)
         if let generation = error as? LanguageModelSession.GenerationError,
            case .exceededContextWindowSize = generation { return true }
-        if #available(macOS 27.0, *), let model = error as? LanguageModelError,
-           case .contextSizeExceeded = model { return true }
         #endif
-        return "\(error)".localizedCaseInsensitiveContains("context")
+        let text = String(describing: error)
+        return text.contains("contextSizeExceeded")
+            || text.localizedCaseInsensitiveContains("context")
     }
 
     static func isGuardrail(_ error: Error) -> Bool {
         #if canImport(FoundationModels)
         if let generation = error as? LanguageModelSession.GenerationError,
            case .guardrailViolation = generation { return true }
-        if #available(macOS 27.0, *), let model = error as? LanguageModelError,
-           case .guardrailViolation = model { return true }
         #endif
-        return false
+        return String(describing: error).contains("guardrailViolation")
     }
 }
 
