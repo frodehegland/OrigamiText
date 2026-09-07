@@ -61,6 +61,7 @@
 				LiquidDate.swift,
 				LiquidDoc.swift,
 				LiquidDocWriting.swift,
+				OrigamiEPUB.swift,
 				OrigamiEPUBImport.swift,
 				OrigamiMath.swift,
 				OrigamiReading.swift,
@@ -112,6 +113,7 @@
 				"NodeImmersiveView+System.swift",
 				"NodeImmersiveView+Tools.swift",
 				"NodeImmersiveView+Typealias.swift",
+				OrigamiEPUB.swift,
 				OrigamiEPUBImport.swift,
 				OrigamiMath.swift,
 				OrigamiReading.swift,
@@ -757,6 +759,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Origami-Text-Info.plist";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Saved voice notes can be marked in a dedicated “Origami Text” calendar at the moment they were spoken. The app never reads your existing events.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "A note carries the place it was made. Your location is used once, when a note is created, to name that place — it is never stored as coordinates.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The microphone carries your voice into a note while you dictate. Nothing is recorded or kept — only the transcribed words.";
@@ -797,6 +800,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Origami-Text-Info.plist";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Saved voice notes can be marked in a dedicated “Origami Text” calendar at the moment they were spoken. The app never reads your existing events.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "A note carries the place it was made. Your location is used once, when a note is created, to name that place — it is never stored as coordinates.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The microphone carries your voice into a note while you dictate. Nothing is recorded or kept — only the transcribed words.";

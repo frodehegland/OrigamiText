@@ -138,10 +138,10 @@ final class PhoneModel {
         }.value
         if let doc { index.upsertEPUBDocument(doc) }
         if changed { rebuildEPUBIndex() }
-        // A book opened as a file starts on Default — the EPUB's own
-        // page — whatever reading view was last in use, as on the
-        // headset. Shelf opens keep the reader's last view.
-        UserDefaults.standard.set("faithful", forKey: "phoneReaderMode")
+        // A book opened as a file starts on Scroll — the whole text,
+        // one clean column — whatever reading view was last in use.
+        // Shelf opens keep the reader's last view.
+        UserDefaults.standard.set("scroll", forKey: "phoneReaderMode")
         return record
     }
 

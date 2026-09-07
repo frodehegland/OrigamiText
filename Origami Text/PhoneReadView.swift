@@ -1,12 +1,11 @@
 import SwiftUI
-import WebKit
 import UniformTypeIdentifiers
 
 // The phone's reading end, based on the visionOS reader: the shelf as
 // Articles and Journals, books arriving from Files or the community
-// folder, and a reader with the same views — Default (the EPUB's own
-// pages), Scroll, Focus, and Outline — sized for a hand instead of a
-// room. Keep in step with VisionOpeningView / VisionReaderView.
+// folder, and a reader with Scroll and Focus views, the Outline a
+// pinch away — sized for a hand instead of a room. Keep in step with
+// VisionOpeningView / VisionReaderView.
 
 // MARK: - The shelf
 
@@ -234,13 +233,13 @@ struct PhoneReaderView: View {
     @Environment(PhoneModel.self) private var model
     let docID: String
 
-    /// The Mac's reading views, sized for the hand: Default (the EPUB's
-    /// own pages), Scroll, Focus, Outline.
+    /// The Mac's reading views, sized for the hand: Scroll (one clean
+    /// column) and Focus, with the Outline a pinch away. A persisted
+    /// "faithful" from earlier builds decodes to nil and lands on Scroll.
     private enum Mode: String, CaseIterable {
-        case faithful, scroll, focus, outline
+        case scroll, focus, outline
         var word: String {
             switch self {
-            case .faithful: "Default"
             case .scroll: "Scroll"
             case .focus: "Focus"
             case .outline: "Outline"
@@ -248,7 +247,7 @@ struct PhoneReaderView: View {
         }
     }
 
-    @AppStorage("phoneReaderMode") private var modeRaw = Mode.faithful.rawValue
+    @AppStorage("phoneReaderMode") private var modeRaw = Mode.scroll.rawValue
     @AppStorage("phoneReaderFontDelta") private var fontDelta = 0.0
     /// The reading's appearance — the headset's Reading Desk choice, same key.
     @AppStorage("readingDeskTheme") private var themeRaw = PhoneReadingTheme.light.rawValue
@@ -269,14 +268,11 @@ struct PhoneReaderView: View {
     /// Pinch in and the reading folds into its outline; pinch out and it
     /// opens again — at the same spot, because the reading stays alive
     /// under the outline overlay. This remembers which view to return to.
-    @State private var outlineReturnRaw = Mode.faithful.rawValue
+    @State private var outlineReturnRaw = Mode.scroll.rawValue
     /// A heading tapped in the outline: the return lands there instead.
     @State private var outlineJumpID: String?
     /// The scroll view's pending jump (consumed by ScrollViewReader).
     @State private var scrollJumpID: String?
-    /// The faithful page's pending jump; the token marks each new ask.
-    @State private var faithfulScrollTarget: String?
-    @State private var faithfulScrollToken = 0
     /// The tapped citation's reference key, card-presented; the tapped
     /// dagger's endnote id likewise — the Mac's interactions, here.
     @State private var citationKey: String?
@@ -294,8 +290,8 @@ struct PhoneReaderView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
 
-    private var mode: Mode { Mode(rawValue: modeRaw) ?? .faithful }
-    private var outlineReturnMode: Mode { Mode(rawValue: outlineReturnRaw) ?? .faithful }
+    private var mode: Mode { Mode(rawValue: modeRaw) ?? .scroll }
+    private var outlineReturnMode: Mode { Mode(rawValue: outlineReturnRaw) ?? .scroll }
     /// The window's top safe-area inset — the notch band's height on
     /// iPhone; 0 on flat-topped screens.
     private var notchInset: CGFloat {
@@ -335,11 +331,8 @@ struct PhoneReaderView: View {
         Group {
             if let doc = model.index.byID[docID]?.doc {
                 reading(doc)
-            } else if let record = model.epubRecords.first(where: { $0.id == docID }) {
-                // The index is still parsing — the faithful page needs
-                // only files, so it reads meanwhile.
-                faithful(record)
             } else {
+                // The index is parsing the book — moments, not minutes.
                 ProgressView()
             }
         }
@@ -416,13 +409,7 @@ struct PhoneReaderView: View {
         let contentMode = mode == .outline ? outlineReturnMode : mode
         Group {
             switch contentMode {
-            case .faithful, .outline:
-                if let record = model.epubRecords.first(where: { $0.id == docID }) {
-                    faithful(record)
-                } else {
-                    scrollBody(sections, doc: doc)
-                }
-            case .scroll:
+            case .scroll, .outline:
                 scrollBody(sections, doc: doc)
             case .focus:
                 focusBody(sections, doc: doc)
@@ -431,17 +418,13 @@ struct PhoneReaderView: View {
         // Links and citations wear the body's ink, never link-blue —
         // a tap answers with a card, so the words need no costume.
         .tint(inkStyle)
-        // Pinch in: the reading folds into its outline. (The faithful
-        // web view routes its own pinches here — see PhoneFaithfulWebView.)
+        // Pinch in: the reading folds into its outline.
         .simultaneousGesture(MagnifyGesture().onEnded { value in
             guard mode != .outline, value.magnification < 0.75 else { return }
             enterOutline()
         })
-        // The native readings stand on the theme's page, its scheme
-        // riding along; Default wears the theme through injected CSS.
-        .background {
-            if contentMode != .faithful { pageColor.ignoresSafeArea() }
-        }
+        // The readings stand on the theme's page, its scheme riding along.
+        .background { pageColor.ignoresSafeArea() }
         .overlay {
             if mode == .outline {
                 outlineBody(sections, doc: doc)
@@ -458,8 +441,8 @@ struct PhoneReaderView: View {
         .overlay {
             if showsRSVP { rsvpOverlay }
         }
-        .environment(\.colorScheme, contentMode == .faithful ? colorScheme : readingScheme)
-        .scrollContentBackground(contentMode == .faithful ? .automatic : .hidden)
+        .environment(\.colorScheme, readingScheme)
+        .scrollContentBackground(.hidden)
     }
 
     /// Fold into the outline, remembering the view to come back to.
@@ -488,30 +471,9 @@ struct PhoneReaderView: View {
             }
         case .scroll:
             scrollJumpID = jump
-        case .faithful:
-            faithfulScrollTarget = jump
-            faithfulScrollToken += 1
         case .outline:
             break
         }
-    }
-
-    private func faithful(_ record: EPUBRecord) -> some View {
-        let folder = PhoneModel.epubsRoot
-            .appendingPathComponent(record.folder, isDirectory: true)
-        return PhoneFaithfulWebView(
-            page: folder.appendingPathComponent(record.contentSubpath),
-            base: folder,
-            themeCSS: readerTheme.css,
-            pageColor: pageColor,
-            onCitation: { citationKey = $0 },
-            onNote: { noteID = $0 },
-            onPinchIn: { enterOutline() },
-            scrollTarget: faithfulScrollTarget,
-            scrollToken: faithfulScrollToken)
-            .id(readerTheme.rawValue)   // a theme change reloads the page dressed anew
-            .background(pageColor.ignoresSafeArea())
-            .ignoresSafeArea(edges: .bottom)
     }
 
     // MARK: Scroll
@@ -526,6 +488,10 @@ struct PhoneReaderView: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
+                // A readable measure on wide screens: the column holds a
+                // book's width, centred. Phones are narrower than the cap.
+                .frame(maxWidth: 680)
+                .frame(maxWidth: .infinity)
             }
             // A heading tapped in the outline lands here.
             .onChange(of: scrollJumpID) {
@@ -975,8 +941,8 @@ private struct PhoneGuideView: View {
                     .foregroundStyle(.secondary)
                 guideRow("books.vertical", "Getting books in",
                          "Tap the gear and Open EPUB…, open one straight from the Files app or a share sheet, or choose the iCloud folder your community shares — everything published from a Mac appears on the shelf by itself.")
-                guideRow("book", "Three ways to read",
-                         "Default shows the book's own pages. Scroll lays the text in one continuous column. Focus holds one section at a time — with Previous and Next at the bottom.")
+                guideRow("book", "Two ways to read",
+                         "Scroll lays the whole text in one clean column. Focus holds one section at a time — with Previous and Next at the bottom.")
                 guideRow("arrow.down.right.and.arrow.up.left", "Pinch for the outline",
                          "Pinch in anywhere while reading and the book folds into its outline. Pinch out and it opens again at the very spot you left. Tap a heading's name to open that section instead; the chevron beside it peeks inside without leaving.")
                 guideRow("quote.closing", "Citations and notes",
@@ -1100,207 +1066,5 @@ private struct PhoneEndnoteCard: View {
                 }
             }
         }
-    }
-}
-
-// MARK: - The faithful page
-
-/// The EPUB's own page, as published — WebKit reading the unpacked
-/// files directly, the visionOS FaithfulWebView's sibling.
-private struct PhoneFaithfulWebView: UIViewRepresentable {
-    let page: URL
-    let base: URL
-    /// The colour theme's CSS, injected over the book's own — the
-    /// Mac's faithful reader does the same — and its page colour for
-    /// the web view's own backing, so the safe areas match the page.
-    var themeCSS: String = ""
-    var pageColor: Color = .white
-    /// A citation anchor was tapped — the key of its entry in the
-    /// document's reference pool. The Mac's faithful reader answers a
-    /// click with the card, never a jump down to the References list;
-    /// this is the same interception, phone-sized.
-    var onCitation: ((String) -> Void)? = nil
-    /// An endnote dagger (‡) was tapped — the note's id from its href.
-    var onNote: ((String) -> Void)? = nil
-    /// A pinch closed on the page — the reader folds into its outline.
-    var onPinchIn: (() -> Void)? = nil
-    /// Scroll to the element with this id (a heading tapped in the
-    /// outline); the token marks each new ask.
-    var scrollTarget: String? = nil
-    var scrollToken: Int = 0
-
-    /// Recognises every citation shape a package may carry — this app's
-    /// exports (class "citation", data-citation-id) and Author's
-    /// biblioref anchors — plus the endnote daggers' doc-noteref, and
-    /// posts the key instead of navigating.
-    private static let citationScript = """
-    (function(){
-      var bridge = window.webkit && window.webkit.messageHandlers
-        && window.webkit.messageHandlers.origami;
-      function isCitation(a){
-        if (!a) return false;
-        if (a.classList && a.classList.contains('citation')) return true;
-        if (a.getAttribute('data-citation-id')) return true;
-        if (a.getAttribute('data-citation-key')) return true;
-        if ((a.getAttribute('role') || '').indexOf('doc-biblioref') >= 0) return true;
-        if ((a.getAttribute('epub:type') || '').indexOf('biblioref') >= 0) return true;
-        return false;
-      }
-      function isNote(a){
-        if (!a) return false;
-        if ((a.getAttribute('role') || '').indexOf('doc-noteref') >= 0) return true;
-        if ((a.getAttribute('epub:type') || '').indexOf('noteref') >= 0) return true;
-        return false;
-      }
-      document.addEventListener('click', function(e){
-        var a = e.target.closest ? e.target.closest('a') : null;
-        if (!a) return;
-        if (isCitation(a)) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          if (bridge) bridge.postMessage({event:'citation',
-                              key: a.getAttribute('data-citation-id')
-                                   || a.getAttribute('data-citation-key') || ''});
-        } else if (isNote(a)) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          if (bridge) bridge.postMessage({event:'note',
-                              id: (a.getAttribute('href') || '').replace(/^#/, '')});
-        }
-      }, true);
-    })();
-    """
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onCitation: onCitation, onNote: onNote, onPinchIn: onPinchIn)
-    }
-
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
-                             UIGestureRecognizerDelegate {
-        let onCitation: ((String) -> Void)?
-        let onNote: ((String) -> Void)?
-        let onPinchIn: (() -> Void)?
-        /// The last outline-jump ask this page has answered.
-        var executedScrollToken = 0
-        init(onCitation: ((String) -> Void)?, onNote: ((String) -> Void)?,
-             onPinchIn: (() -> Void)?) {
-            self.onCitation = onCitation
-            self.onNote = onNote
-            self.onPinchIn = onPinchIn
-        }
-
-        /// The web view's scroll view owns pinching; riding alongside it
-        /// is the only way to hear the gesture at all.
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            true
-        }
-
-        @objc func pinched(_ gesture: UIPinchGestureRecognizer) {
-            guard gesture.state == .ended, gesture.scale < 0.75 else { return }
-            onPinchIn?()
-        }
-
-        func userContentController(_ controller: WKUserContentController,
-                                   didReceive message: WKScriptMessage) {
-            guard let body = message.body as? [String: Any],
-                  let event = body["event"] as? String else { return }
-            switch event {
-            case "citation":
-                if let key = body["key"] as? String, !key.isEmpty { onCitation?(key) }
-            case "note":
-                if let id = body["id"] as? String, !id.isEmpty { onNote?(id) }
-            default:
-                break
-            }
-        }
-
-        func webView(_ webView: WKWebView,
-                     decidePolicyFor navigationAction: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            guard navigationAction.navigationType == .linkActivated,
-                  let url = navigationAction.request.url else {
-                decisionHandler(.allow)
-                return
-            }
-            // A web link leaves for Safari; the book stays open here.
-            if url.scheme == "http" || url.scheme == "https" {
-                UIApplication.shared.open(url)
-                decisionHandler(.cancel)
-                return
-            }
-            decisionHandler(.allow)
-        }
-    }
-
-    func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        // A readable measure on wide screens: the column caps at a book
-        // width and centres. Phones are narrower than the cap, so this
-        // only shapes iPad and landscape.
-        let measureCSS = "body { max-width: 38em; margin-left: auto; margin-right: auto; }"
-        // Links and citations wear the body's ink, never link-blue —
-        // last in the cascade so it outranks the book's and the theme's
-        // own link colours.
-        let linkCSS = "a, a:link, a:visited { color: inherit; }"
-        let css = measureCSS + "\n" + themeCSS + "\n" + linkCSS
-        do {
-            let escaped = css
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "`", with: "\\`")
-            let script = WKUserScript(
-                source: "const s = document.createElement('style'); s.textContent = `\(escaped)`; document.documentElement.appendChild(s);",
-                injectionTime: .atDocumentEnd, forMainFrameOnly: true)
-            configuration.userContentController.addUserScript(script)
-        }
-        configuration.userContentController.addUserScript(WKUserScript(
-            source: Self.citationScript,
-            injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        configuration.userContentController.add(context.coordinator, name: "origami")
-        let view = WKWebView(frame: .zero, configuration: configuration)
-        view.navigationDelegate = context.coordinator
-        view.isOpaque = false
-        view.backgroundColor = UIColor(pageColor)
-        view.scrollView.backgroundColor = UIColor(pageColor)
-        let pinch = UIPinchGestureRecognizer(target: context.coordinator,
-                                             action: #selector(Coordinator.pinched(_:)))
-        pinch.delegate = context.coordinator
-        view.scrollView.addGestureRecognizer(pinch)
-        view.loadFileURL(page, allowingReadAccessTo: base)
-        return view
-    }
-
-    func updateUIView(_ view: WKWebView, context: Context) {
-        // A heading tapped in the outline: the page scrolls to it. The
-        // page lives on under the outline overlay, so this reaches the
-        // same web view the reader left. The document model's paragraph
-        // id is the element's data-id (or id); chaptered imports prefix
-        // ids the page never saw, so the bare id is tried too.
-        if context.coordinator.executedScrollToken != scrollToken, let target = scrollTarget {
-            context.coordinator.executedScrollToken = scrollToken
-            let escaped = target
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "'", with: "\\'")
-            let js = """
-            (function(){
-              function find(t){
-                // The data-id element is the heading block itself; a
-                // bare-id match may be an invisible anchor beside it.
-                return document.querySelector('[data-id="' + t + '"]')
-                    || document.getElementById(t);
-              }
-              var t = '\(escaped)';
-              var el = find(t);
-              if (!el) { var m = t.match(/^s\\d+-(.+)$/); if (m) el = find(m[1]); }
-              if (el) el.scrollIntoView({block: 'start'});
-            })();
-            """
-            view.evaluateJavaScript(js)
-        }
-    }
-
-    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
-        view.configuration.userContentController.removeScriptMessageHandler(forName: "origami")
     }
 }
