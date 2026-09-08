@@ -280,6 +280,83 @@ final class PhoneModel {
         epubRecords.filter { epubSetAsideIDs.contains($0.id) }
     }
 
+    // MARK: - Annotations (the reader's highlights and notes)
+
+    /// Sidecars live in one folder beside the unpacked books, keyed by
+    /// book address, exactly the Mac's layout (AppModel's annotations
+    /// section is the sibling copy; keep in step). The book itself is
+    /// never modified — the book is the author's; the annotations are
+    /// the reader's.
+    static var annotationsRoot: URL {
+        epubsRoot.appendingPathComponent("Annotations", isDirectory: true)
+    }
+
+    /// Bumped whenever a book's annotations change, so the reader
+    /// repaints its highlights.
+    private(set) var annotationsStamp = 0
+
+    /// One live selection in the reader: the book, the paragraph, and
+    /// the exact words with their disambiguating neighbours.
+    struct ReaderSelection {
+        let address: String
+        let paragraphID: String?
+        let text: String
+        let prefix: String?
+        let suffix: String?
+    }
+
+    /// Every annotation on the given book, oldest first.
+    func annotations(forAddress address: String) -> [WebAnnotation] {
+        AnnotationStore.load(for: address, in: Self.annotationsRoot)
+    }
+
+    /// Stamps one of the reader's judgments (Important, Disagree, …) on
+    /// the selection — a W3C tagging annotation; plain Highlight carries
+    /// no tag body.
+    func addTag(_ kind: ReaderAnnotationKind, on selection: ReaderSelection) {
+        if kind == .highlight {
+            addAnnotation(motivation: WebAnnotation.Motivation.highlighting,
+                          note: nil, on: selection)
+        } else {
+            addAnnotation(motivation: WebAnnotation.Motivation.tagging,
+                          note: kind.rawValue, purpose: "tagging", on: selection)
+        }
+    }
+
+    /// Attaches the reader's note to the selection.
+    func addComment(_ note: String, on selection: ReaderSelection) {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        addAnnotation(motivation: WebAnnotation.Motivation.commenting,
+                      note: trimmed, on: selection)
+    }
+
+    private func addAnnotation(motivation: String, note: String?,
+                               purpose: String? = nil, on selection: ReaderSelection) {
+        guard !selection.text.isEmpty else { return }
+        // The anchoring ladder, most robust first: the paragraph's
+        // stable id, then the exact words with disambiguating context.
+        var selectors: [WebAnnotation.Selector] = []
+        if let fragment = selection.paragraphID, !fragment.isEmpty {
+            selectors.append(.fragment(value: fragment,
+                                       conformsTo: WebAnnotation.fragmentConformsTo))
+        }
+        selectors.append(.quote(exact: selection.text,
+                                prefix: selection.prefix?.isEmpty == false ? selection.prefix : nil,
+                                suffix: selection.suffix?.isEmpty == false ? selection.suffix : nil))
+        let name = UserDefaults.standard.string(forKey: "authorName") ?? "Reader"
+        let annotation = WebAnnotation(
+            motivation: motivation,
+            creator: WebAnnotation.Person(name: name),
+            body: note.map { WebAnnotation.TextualBody(value: $0, purpose: purpose) },
+            target: WebAnnotation.Target(source: "origamitext://open/" + selection.address,
+                                         selectors: selectors))
+        var all = AnnotationStore.load(for: selection.address, in: Self.annotationsRoot)
+        all.append(annotation)
+        AnnotationStore.save(all, for: selection.address, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
     /// Writes the pinned/set-aside standing into the community folder,
     /// so the Mac and the headset adopt it.
     private func publishStanding() {

@@ -52,6 +52,7 @@
 		5FB2A9F3300CE66F00FF680B /* Exceptions for "LiquidView" folder in "Origami Text" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				AnnotationStore.swift,
 				BibTeX.swift,
 				DocumentRelation.swift,
 				EPUBShelf.swift,
@@ -68,6 +69,7 @@
 				ReaderTheme.swift,
 				TextColoring.swift,
 				VisualMeta.swift,
+				WebAnnotation.swift,
 			);
 			target = 5FA61252300CE184002F8851 /* Origami Text */;
 		};
@@ -88,6 +90,7 @@
 		5FD0139B30057D5B00F5A4F0 /* Exceptions for "LiquidView" folder in "Origami Text Vision" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				AnnotationStore.swift,
 				AppFonts.swift,
 				ArmMenu.swift,
 				BibTeX.swift,
@@ -122,6 +125,7 @@
 				SankeySpace.swift,
 				TextColoring.swift,
 				VisualMeta.swift,
+				WebAnnotation.swift,
 				ZZStructure.swift,
 			);
 			target = 5FD0137E3005785700F5A4F0 /* Origami Text Vision */;

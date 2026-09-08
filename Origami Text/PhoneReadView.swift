@@ -339,6 +339,9 @@ struct PhoneReaderView: View {
     /// dagger's endnote id likewise — the Mac's interactions, here.
     @State private var citationKey: String?
     @State private var noteID: String?
+    /// The selection a Note… is being written for, and its words.
+    @State private var noteTarget: SelectionNoteTarget?
+    @State private var noteDraft = ""
     /// Focus's assists — the Mac's: one sentence, one paragraph, or one
     /// word (RSVP) at a time.
     private enum Assist: String { case none, sentence, paragraph }
@@ -443,6 +446,34 @@ struct PhoneReaderView: View {
                 PhoneCitationCard(doc: doc, key: tapped.key)
                     .presentationDetents([.medium, .large])
             }
+        }
+        .sheet(item: $noteTarget) { target in
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("\u{201C}\(target.selection.text)\u{201D}")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                    TextEditor(text: $noteDraft)
+                        .font(.body)
+                }
+                .padding()
+                .navigationTitle("Note")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { noteTarget = nil }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            model.addComment(noteDraft, on: target.selection)
+                            noteTarget = nil
+                        }
+                        .disabled(noteDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
+            .presentationDetents([.medium])
         }
         .sheet(item: Binding(
             get: { noteID.map { TappedNote(id: $0) } },
@@ -586,12 +617,106 @@ struct PhoneReaderView: View {
         if paragraph.text == "---" {
             Divider()
         } else {
-            Text(rendered(paragraph.text, doc: doc))
-                .font(.system(size: bodySize, design: .serif))
-                .foregroundStyle(inkStyle)
-                .lineSpacing(4)
+            PhoneSelectableParagraph(
+                attributed: rendered(paragraph.text, doc: doc, paragraphID: paragraph.id),
+                baseSize: bodySize,
+                inkColor: inkUIColor,
+                lineSpacing: 4,
+                onLink: { url in
+                    if let key = OrigamiReading.citationKey(from: url) {
+                        citationKey = key
+                        return true
+                    }
+                    if let id = OrigamiReading.noteID(from: url) {
+                        noteID = id
+                        return true
+                    }
+                    return false
+                },
+                onCopyCitation: { selected in
+                    copySelectionCitation(doc, paragraph: paragraph, selected: selected)
+                },
+                onHighlight: { kind, selected, prefix, suffix in
+                    model.addTag(kind, on: PhoneModel.ReaderSelection(
+                        address: docID, paragraphID: paragraph.id,
+                        text: selected, prefix: prefix, suffix: suffix))
+                },
+                onNote: { selected, prefix, suffix in
+                    noteDraft = ""
+                    noteTarget = SelectionNoteTarget(selection: PhoneModel.ReaderSelection(
+                        address: docID, paragraphID: paragraph.id,
+                        text: selected, prefix: prefix, suffix: suffix))
+                })
                 .id(paragraph.id)
         }
+    }
+
+    private struct SelectionNoteTarget: Identifiable {
+        let id = UUID()
+        let selection: PhoneModel.ReaderSelection
+    }
+
+    /// The theme's ink as UIKit sees it, for the selectable paragraphs.
+    private var inkUIColor: UIColor? {
+        readerTheme.textColor(for: readingScheme).map { UIColor($0) }
+    }
+
+    /// The Mac's citation clipboard, phone-sized: the private JSON for
+    /// Author and Origami Text, the quoted words for everyone else.
+    /// Cross-app contract: the type string matches CitationClipboard.
+    private func copySelectionCitation(_ doc: LiquidDoc,
+                                       paragraph: LiquidDoc.Paragraph,
+                                       selected: String) {
+        let record = model.epubRecords.first { $0.id == docID }
+        let payload = OrigamiReading.authorCitationPayload(
+            for: paragraph, in: doc, quote: selected,
+            sourceFile: record?.originalFilename, doi: record?.doi)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let year = doc.date?.yearText
+            ?? String(calendar.component(.year, from: doc.created))
+        let citation = OrigamiCitation(
+            to: doc.id, fragment: paragraph.id, rel: "cites",
+            quotedText: payload.content,
+            author: doc.displayAuthor, year: year,
+            bibtex: payload.bibtex,
+            documentTitle: doc.title,
+            documentFilename: record?.originalFilename)
+        var item: [String: Any] = [UTType.utf8PlainText.identifier: payload.content]
+        if let data = try? JSONEncoder().encode(citation) {
+            item["info.futuretextlab.origami-citation"] = data
+        }
+        UIPasteboard.general.items = [item]
+    }
+
+    /// Paints the reader's annotations over the paragraph's words — the
+    /// kind's colour behind the exact quote.
+    private func painted(_ attributed: AttributedString,
+                         paragraphID: String) -> AttributedString {
+        _ = model.annotationsStamp   // repaint when the sidecar changes
+        let annotations = model.annotations(forAddress: docID)
+        guard !annotations.isEmpty else { return attributed }
+        var out = attributed
+        let plain = String(out.characters)
+        for annotation in annotations {
+            var fragment: String?
+            var quote: String?
+            for selector in annotation.target.selectors {
+                switch selector {
+                case .fragment(let value, _): fragment = fragment ?? value
+                case .quote(let exact, _, _): quote = quote ?? exact
+                default: break
+                }
+            }
+            guard let quote else { continue }
+            if let fragment, fragment != paragraphID { continue }
+            guard let range = plain.range(of: quote),
+                  let attrRange = Range(range, in: out) else { continue }
+            let kind = ReaderAnnotationKind.kind(of: annotation) ?? .highlight
+            out[attrRange].backgroundColor =
+                PhoneAnnotationInk.color(of: kind).opacity(0.35)
+        }
+        return out
     }
 
     // MARK: Focus
@@ -732,11 +857,13 @@ struct PhoneReaderView: View {
 
     /// The paragraph's attributed text: tokens resolved, the theme's
     /// appearance, and — when asked — the bionic bolding.
-    private func rendered(_ text: String, doc: LiquidDoc) -> AttributedString {
+    private func rendered(_ text: String, doc: LiquidDoc,
+                          paragraphID: String? = nil) -> AttributedString {
         var out = OrigamiReading.inlineAttributed(text, in: doc,
                                                   citations: citationStyle,
                                                   appearance: readingScheme)
         if bionicReading { out = Self.bionic(out) }
+        if let paragraphID { out = painted(out, paragraphID: paragraphID) }
         return out
     }
 
@@ -987,6 +1114,193 @@ struct PhoneReaderView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Selectable paragraphs
+
+/// The annotation kinds' inks — the Mac's AnnotationKindStyle, phone-
+/// sized: the same UserDefaults keys and default colours, so a kind
+/// renamed or recoloured on the Mac reads the same here. Keep in step
+/// (AnnotationsListView.swift holds the original).
+enum PhoneAnnotationInk {
+    static func displayName(of kind: ReaderAnnotationKind) -> String {
+        let names = UserDefaults.standard.dictionary(forKey: "annotationKindNames")
+            as? [String: String]
+        let custom = names?[kind.rawValue]?.trimmingCharacters(in: .whitespaces)
+        return custom?.isEmpty == false ? custom! : kind.rawValue
+    }
+
+    static func defaultHex(of kind: ReaderAnnotationKind) -> String {
+        switch kind {
+        case .important: "E4572E"
+        case .quotable: "2E8B8B"
+        case .great: "3A9B35"
+        case .disagree: "C93C3C"
+        case .languageIssue: "8E5BC0"
+        case .problematic: "D98E1B"
+        case .whatIsThis: "3B6FD4"
+        case .highlight: "E8C51D"
+        case .strikethrough: "8A8A8A"
+        }
+    }
+
+    static func color(of kind: ReaderAnnotationKind) -> Color {
+        let colors = UserDefaults.standard.dictionary(forKey: "annotationKindColors")
+            as? [String: String]
+        let hex = colors?[kind.rawValue] ?? defaultHex(of: kind)
+        return Color(hexCode: hex) ?? .yellow
+    }
+}
+
+/// One paragraph as a real text view: live selection with the reader's
+/// verbs on it — Copy, Copy Citation, Highlight, Note — the Mac's
+/// SelectableParagraph, phone-sized. Links route to the reader's cards
+/// and wear the body's ink, never blue.
+private struct PhoneSelectableParagraph: UIViewRepresentable {
+    let attributed: AttributedString
+    let baseSize: CGFloat
+    let inkColor: UIColor?
+    let lineSpacing: CGFloat
+    /// A link was tapped; true means the reader handled it.
+    let onLink: (URL) -> Bool
+    let onCopyCitation: (String) -> Void
+    /// The judgment, the exact words, and their neighbours for the anchor.
+    let onHighlight: (ReaderAnnotationKind, String, String?, String?) -> Void
+    let onNote: (String, String?, String?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: PhoneSelectableParagraph
+        init(_ parent: PhoneSelectableParagraph) { self.parent = parent }
+
+        func textView(_ textView: UITextView, shouldInteractWith url: URL,
+                      in characterRange: NSRange,
+                      interaction: UITextItemInteraction) -> Bool {
+            !parent.onLink(url)
+        }
+
+        /// The selection and its neighbours (32 characters each side),
+        /// the annotation's disambiguating context.
+        private func pieces(of textView: UITextView, in range: NSRange)
+            -> (selected: String, prefix: String?, suffix: String?)? {
+            let full = textView.text ?? ""
+            guard range.length > 0, let swiftRange = Range(range, in: full) else { return nil }
+            let selected = String(full[swiftRange])
+            guard !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            let prefix = String(full[..<swiftRange.lowerBound].suffix(32))
+            let suffix = String(full[swiftRange.upperBound...].prefix(32))
+            return (selected, prefix.isEmpty ? nil : prefix, suffix.isEmpty ? nil : suffix)
+        }
+
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
+                      suggestedActions: [UIMenuElement]) -> UIMenu? {
+            guard let pieces = pieces(of: textView, in: range) else { return nil }
+            let parent = parent
+            let copy = UIAction(title: "Copy",
+                                image: UIImage(systemName: "doc.on.doc")) { _ in
+                UIPasteboard.general.string = pieces.selected
+            }
+            let cite = UIAction(title: "Copy Citation",
+                                image: UIImage(systemName: "quote.opening")) { _ in
+                parent.onCopyCitation(pieces.selected)
+            }
+            let highlight = UIMenu(title: "Highlight",
+                                   image: UIImage(systemName: "highlighter"),
+                                   children: ReaderAnnotationKind.allCases.map { kind in
+                UIAction(title: PhoneAnnotationInk.displayName(of: kind),
+                         image: UIImage(systemName: kind.systemImage)) { _ in
+                    parent.onHighlight(kind, pieces.selected, pieces.prefix, pieces.suffix)
+                }
+            })
+            let note = UIAction(title: "Note\u{2026}",
+                                image: UIImage(systemName: "square.and.pencil")) { _ in
+                parent.onNote(pieces.selected, pieces.prefix, pieces.suffix)
+            }
+            return UIMenu(children: [copy, cite, highlight, note])
+        }
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = false
+        view.backgroundColor = .clear
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.adjustsFontForContentSizeCategory = false
+        view.delegate = context.coordinator
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.parent = self
+        view.linkTextAttributes = [.foregroundColor: inkColor ?? UIColor.label]
+        let converted = converted()
+        // Replacing the text drops any live selection; only real
+        // content changes are worth that.
+        if view.attributedText?.isEqual(to: converted) != true {
+            view.attributedText = converted
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView,
+                      context: Context) -> CGSize? {
+        // Measure at the proposed width; when none is proposed, at the
+        // width the view actually has, so every pass agrees (the Mac's
+        // SelectableParagraph learnt this the hard way).
+        let width = proposal.width.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            ?? (uiView.bounds.width > 0 ? uiView.bounds.width : 360)
+        let size = uiView.sizeThatFits(
+            CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: ceil(size.height))
+    }
+
+    /// The AttributedString with its semantic runs resolved into UIKit
+    /// attributes — presentation intents to bold/italic/monospace on the
+    /// serif base, colours and links carried across. The Mac's
+    /// SelectableParagraph.converted() is the sibling; keep in step.
+    private func converted() -> NSAttributedString {
+        let plain = UIFont.systemFont(ofSize: baseSize)
+        let serif = plain.fontDescriptor.withDesign(.serif)
+            .map { UIFont(descriptor: $0, size: baseSize) } ?? plain
+        let out = NSMutableAttributedString()
+        for run in attributed.runs {
+            let text = String(attributed.characters[run.range])
+            var font = serif
+            if let intent = run.inlinePresentationIntent {
+                if intent.contains(.code) {
+                    font = .monospacedSystemFont(ofSize: baseSize * 0.92, weight: .regular)
+                }
+                var traits: UIFontDescriptor.SymbolicTraits = []
+                if intent.contains(.stronglyEmphasized) { traits.insert(.traitBold) }
+                if intent.contains(.emphasized) { traits.insert(.traitItalic) }
+                if !traits.isEmpty,
+                   let descriptor = font.fontDescriptor.withSymbolicTraits(
+                       font.fontDescriptor.symbolicTraits.union(traits)) {
+                    font = UIFont(descriptor: descriptor, size: baseSize)
+                }
+            }
+            let ink = run.foregroundColor.map(UIColor.init) ?? inkColor ?? .label
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.lineSpacing = lineSpacing
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: ink,
+                .paragraphStyle: paragraphStyle,
+            ]
+            if let background = run.backgroundColor {
+                attributes[.backgroundColor] = UIColor(background)
+            }
+            if let link = run.link {
+                attributes[.link] = link
+            }
+            out.append(NSAttributedString(string: text, attributes: attributes))
+        }
+        return out
     }
 }
 
