@@ -1239,10 +1239,6 @@ private struct HypermediaSettingsView: View {
 
     var body: some View {
         Form {
-            // The community's dialog — letters through Mail — lives
-            // here too: one pane for every way the app talks to the
-            // world beyond the community folder.
-            LetterSharingSections()
             Section {
                 seedProviderRows
             } header: {
@@ -1268,6 +1264,7 @@ private struct HypermediaSettingsView: View {
                 }
             }
 
+            if Self.showsHypothesis {
             Section {
                 Toggle("Show public Hypothesis annotations", isOn: Binding(
                     get: { session.hypothesisPublicEnabled },
@@ -1278,6 +1275,7 @@ private struct HypermediaSettingsView: View {
                 Text("Public annotations from other Hypothesis users appear in the reading margin alongside your own. No account required.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
             }
 
             Section {
