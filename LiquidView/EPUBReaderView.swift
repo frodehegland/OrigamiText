@@ -1791,12 +1791,12 @@ final class ReaderWebView: WKWebView {
         // reach them. Turning off plug-ins keeps them off the menu.
         menu.allowsContextMenuPlugIns = false
 
+        menuLocation = convert(event.locationInWindow, from: nil)
         let text = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty {
             // Selected words the book's glossary defines: the definition
             // leads the menu and pops up in place (glossary terms are
             // deliberately not links — this is the way to a definition).
-            menuLocation = convert(event.locationInWindow, from: nil)
             if let entry = resolveDefinition(text) {
                 pendingDefinition = entry
                 addItem(to: menu, title: "Show Definition", action: #selector(showDefinition(_:)))
@@ -1828,9 +1828,45 @@ final class ReaderWebView: WKWebView {
             addItem(to: menu, title: "Copy to Cite", action: #selector(copyAsQuote(_:)))
             addItem(to: menu, title: "Copy", action: #selector(copySelection(_:)))
         }
-        // With no selection the menu is intentionally empty, so nothing
-        // extraneous appears. New commands (Define, Copy Link, Add to
-        // Concepts, …) go here.
+        if text.isEmpty {
+            // Nothing selected: a comment can still land — anchored to
+            // the paragraph under the ctrl-click, found by its stable id.
+            addItem(to: menu, title: "Add Comment\u{2026}",
+                    action: #selector(commentAtPoint(_:)))
+        }
+        // New commands (Define, Copy Link, Add to Concepts, …) go here.
+    }
+
+    /// The paragraph under the ctrl-click, by the nearest ancestor with
+    /// a stable id — the comment's anchor when no words are selected.
+    @objc private func commentAtPoint(_ sender: Any?) {
+        let js = """
+        (function(){
+          var el = document.elementFromPoint(\(menuLocation.x), \(menuLocation.y));
+          while (el && !(el.getAttribute && (el.getAttribute('data-id') || el.id))) {
+            el = el.parentElement;
+          }
+          if (!el || el === document.body || el === document.documentElement) {
+            // The margins: the block nearest the click's height.
+            var best = null, bestD = 1e9;
+            document.querySelectorAll('[data-id]').forEach(function(c){
+              var r = c.getBoundingClientRect();
+              var d = Math.abs((r.top + r.bottom) / 2 - \(menuLocation.y));
+              if (d < bestD) { bestD = d; best = c; }
+            });
+            el = best;
+          }
+          if (!el) return '';
+          return el.getAttribute('data-id') || el.id || '';
+        })();
+        """
+        evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self else { return }
+            let fragment = (result as? String) ?? ""
+            self.onAddComment(ReaderSelection(text: "",
+                                              fragment: fragment.isEmpty ? nil : fragment,
+                                              prefix: nil, suffix: nil))
+        }
     }
 
     @objc private func showDefinition(_ sender: Any?) {
@@ -1954,7 +1990,11 @@ private struct ReaderCommentSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Comment")
                 .font(.headline)
-            Text("“\(selection.text)”")
+            // No words selected: the comment stands on the paragraph
+            // under the click, and the preview says so.
+            Text(selection.text.isEmpty
+                 ? "On this paragraph"
+                 : "“\(selection.text)”")
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
             TextEditor(text: $note)

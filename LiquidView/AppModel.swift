@@ -1955,7 +1955,11 @@ final class AppModel {
 
     private func addAnnotation(motivation: String, note: String?,
                                purpose: String? = nil, on selection: ReaderSelection) {
-        guard let book = openEPUB, !selection.text.isEmpty else { return }
+        // Words, or at least a paragraph: a comment made with nothing
+        // selected anchors by the element's id alone.
+        guard let book = openEPUB,
+              !selection.text.isEmpty || selection.fragment?.isEmpty == false
+        else { return }
         // The anchoring ladder, most robust first: the enclosing element's
         // stable id, then the exact words with disambiguating context.
         var selectors: [WebAnnotation.Selector] = []
@@ -1963,9 +1967,11 @@ final class AppModel {
             selectors.append(.fragment(value: fragment,
                                        conformsTo: WebAnnotation.fragmentConformsTo))
         }
-        selectors.append(.quote(exact: selection.text,
-                                prefix: selection.prefix?.isEmpty == false ? selection.prefix : nil,
-                                suffix: selection.suffix?.isEmpty == false ? selection.suffix : nil))
+        if !selection.text.isEmpty {
+            selectors.append(.quote(exact: selection.text,
+                                    prefix: selection.prefix?.isEmpty == false ? selection.prefix : nil,
+                                    suffix: selection.suffix?.isEmpty == false ? selection.suffix : nil))
+        }
         let address = annotationAddress(forBook: book)
         let annotation = WebAnnotation(
             motivation: motivation,
