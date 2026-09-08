@@ -42,7 +42,6 @@ struct ReadHomeView: View {
                     PhoneGuideView()
                 } else if shelf == .lineage {
                     PhoneLineageView()
-                        .ignoresSafeArea(edges: .bottom)
                 } else if model.epubRecords.isEmpty {
                     ContentUnavailableView {
                         Label("Nothing to Read Yet", systemImage: "books.vertical")

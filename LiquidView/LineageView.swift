@@ -432,7 +432,7 @@ struct LineageView: View {
             Text("Every paper in this collection, and every work their references name.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("\(graph.shelfCount) papers · \(citedOnly) cited works · \(graph.edges.count) citations")
+            Text("\(counted(graph.shelfCount, "paper")) · \(counted(citedOnly, "cited work")) · \(counted(graph.edges.count, "citation"))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
@@ -484,7 +484,7 @@ struct LineageView: View {
         } else if searching {
             line = matchCount == 0
                 ? Text("No works match.")
-                : Text("\(matchCount) works match. Return opens the most cited.")
+                : Text("\(counted(matchCount, "work")) match\(matchCount == 1 ? "es" : ""). Return opens the most cited.")
         } else {
             line = Text("Hover or tap a work to see ")
                 + Text("\u{25CF} what it drew on").foregroundStyle(roots)
@@ -628,21 +628,21 @@ private struct LineageDetailPanel: View {
                 }
 
                 lineageList(
-                    title: "Drew on \(node.cites.count) works in this web",
+                    title: "Drew on \(counted(node.cites.count, "work")) in this web",
                     empty: "Drew on no works in this web.",
                     indices: node.cites,
                     hex: LineageStyle.roots,
                     expanded: $rootsExpanded)
 
                 lineageList(
-                    title: "Built on by \(node.citedBy.count) papers here",
+                    title: "Built on by \(counted(node.citedBy.count, "paper")) here",
                     empty: "No paper in this collection cites it — yet.",
                     indices: node.citedBy,
                     hex: LineageStyle.influence,
                     expanded: $influenceExpanded)
 
                 Divider()
-                Text("\(graph.collectionName) — \(graph.shelfCount) papers and the works their references name.")
+                Text("\(graph.collectionName) — \(counted(graph.shelfCount, "paper")) and the works their references name.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -695,6 +695,11 @@ private struct LineageDetailPanel: View {
         }
         .padding(.top, 4)
     }
+}
+
+/// "1 paper", "2 papers" — the counts lines read like sentences.
+private func counted(_ count: Int, _ noun: String) -> String {
+    count == 1 ? "1 \(noun)" : "\(count) \(noun)s"
 }
 
 // MARK: - Preview
