@@ -150,6 +150,9 @@ struct ReadHomeView: View {
 private struct PhoneShelfRow: View {
     @Environment(PhoneModel.self) private var model
     let record: EPUBRecord
+    /// The whole-document note being written or rewritten.
+    @State private var editingNote = false
+    @State private var noteDraft = ""
 
     var body: some View {
         Button {
@@ -167,6 +170,15 @@ private struct PhoneShelfRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    // The reader's whole-document note, quiet lines
+                    // under the author — as on the Mac's shelf rows.
+                    if let note = model.documentNote(forAddress: record.id)?.body?.value {
+                        Text(note)
+                            .font(.caption)
+                            .italic()
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
+                    }
                 }
             }
             .contentShape(Rectangle())
@@ -207,6 +219,43 @@ private struct PhoneShelfRow: View {
             } else {
                 Button("Set Aside") { model.setAside(record) }
             }
+            Divider()
+            // A note on the book itself — no words selected, none
+            // needed: the one "describing" annotation the Mac's shelf
+            // shows under the row.
+            Button(model.documentNote(forAddress: record.id) == nil
+                   ? "Note\u{2026}" : "Edit Note\u{2026}") {
+                noteDraft = model.documentNote(forAddress: record.id)?.body?.value ?? ""
+                editingNote = true
+            }
+        }
+        .sheet(isPresented: $editingNote) {
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(record.title)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    TextEditor(text: $noteDraft)
+                        .font(.body)
+                }
+                .padding()
+                .navigationTitle("Note")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { editingNote = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        // Save with emptied text removes the note.
+                        Button("Save") {
+                            model.setDocumentNote(noteDraft, forAddress: record.id)
+                            editingNote = false
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
         }
     }
 }

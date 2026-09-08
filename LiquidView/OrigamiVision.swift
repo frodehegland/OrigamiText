@@ -621,6 +621,46 @@ final class VisionModel {
         annotationsStamp += 1
     }
 
+    /// The reader's one note describing the whole document — a
+    /// "describing" annotation with no selectors, one per book. The
+    /// Mac's documentAnnotation is the sibling; keep in step.
+    func documentNote(forAddress address: String) -> WebAnnotation? {
+        _ = annotationsStamp
+        return AnnotationStore.load(for: address, in: Self.annotationsRoot).first {
+            $0.motivation == WebAnnotation.Motivation.describing
+                && $0.target.selectors.isEmpty
+        }
+    }
+
+    /// Writes or rewrites the document note; empty text removes it.
+    func setDocumentNote(_ text: String, forAddress address: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        if let index = all.firstIndex(where: {
+            $0.motivation == WebAnnotation.Motivation.describing
+                && $0.target.selectors.isEmpty
+        }) {
+            if trimmed.isEmpty {
+                all.remove(at: index)
+            } else {
+                all[index].body = WebAnnotation.TextualBody(value: trimmed,
+                                                            purpose: "describing")
+                all[index].modified = .now
+            }
+        } else {
+            guard !trimmed.isEmpty else { return }
+            let name = UserDefaults.standard.string(forKey: "authorName") ?? "Reader"
+            all.append(WebAnnotation(
+                motivation: WebAnnotation.Motivation.describing,
+                creator: WebAnnotation.Person(name: name),
+                body: WebAnnotation.TextualBody(value: trimmed, purpose: "describing"),
+                target: WebAnnotation.Target(source: "origamitext://open/" + address,
+                                             selectors: [])))
+        }
+        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
     private func addAnnotation(motivation: String, note: String?,
                                purpose: String? = nil, on selection: ReaderSelection) {
         guard !selection.text.isEmpty else { return }
@@ -1226,19 +1266,76 @@ struct VisionOpeningView: View {
             }
         } else {
             List(records) { record in
-                Button {
+                VisionShelfRow(record: record) {
                     openWindow(id: "reader", value: record.id)
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(record.title)
-                            .lineLimit(2)
-                        Text(record.author)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                }
+            }
+        }
+    }
+}
+
+/// One shelf row: title and author, the reader's whole-document note
+/// beneath, and — on a long pinch — Note… to write or rewrite it: a
+/// comment on the book itself, no words selected, none needed. The
+/// phone's PhoneShelfRow is the sibling; keep in step.
+private struct VisionShelfRow: View {
+    @Environment(VisionModel.self) private var model
+    let record: EPUBRecord
+    let open: () -> Void
+    @State private var editingNote = false
+    @State private var noteDraft = ""
+
+    var body: some View {
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(record.title)
+                    .lineLimit(2)
+                Text(record.author)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let note = model.documentNote(forAddress: record.id)?.body?.value {
+                    Text(note)
+                        .font(.caption)
+                        .italic()
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .contextMenu {
+            Button(model.documentNote(forAddress: record.id) == nil
+                   ? "Note\u{2026}" : "Edit Note\u{2026}") {
+                noteDraft = model.documentNote(forAddress: record.id)?.body?.value ?? ""
+                editingNote = true
+            }
+        }
+        .sheet(isPresented: $editingNote) {
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(record.title)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    TextEditor(text: $noteDraft)
+                        .font(.body)
+                }
+                .padding()
+                .navigationTitle("Note")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { editingNote = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        // Save with emptied text removes the note.
+                        Button("Save") {
+                            model.setDocumentNote(noteDraft, forAddress: record.id)
+                            editingNote = false
+                        }
                     }
                 }
             }
+            .frame(minWidth: 460, minHeight: 320)
         }
     }
 }
