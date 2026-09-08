@@ -872,8 +872,10 @@ nonisolated enum OrigamiReading {
         for match in matches.reversed() {
             let id = out.substring(with: match.range(at: 1))
             let escaped = id.addingPercentEncoding(withAllowedCharacters: keyAllowed) ?? id
+            // The double dagger, as the EPUB export renders the same
+            // token — one mark for the note on every surface.
             out = out.replacingCharacters(in: match.range,
-                                          with: "[\u{2020}](\(noteScheme):\(escaped))") as NSString
+                                          with: "[\u{2021}](\(noteScheme):\(escaped))") as NSString
         }
         return out as String
     }
