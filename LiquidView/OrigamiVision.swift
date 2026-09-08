@@ -34,6 +34,15 @@ struct OrigamiVisionApp: App {
         }
         .defaultSize(width: 560, height: 720)
 
+        // Lineage — the shelf's citation web: every book and every
+        // work their references name, years as columns, citations as
+        // arcs. Opened from the shelf panel's web button.
+        WindowGroup(id: "lineage") {
+            VisionLineageWindow()
+                .environment(model)
+        }
+        .defaultSize(width: 1280, height: 820)
+
         // Settings, opened from the right arm's Settings chip. Its
         // Graph Data tab carries the graphs' Ask-for-Data dialog,
         // which used to be its own window off the arm chips.
@@ -1161,6 +1170,12 @@ struct VisionOpeningView: View {
                             Image(systemName: "plus")
                         }
                         .help("Open an EPUB from Files")
+                        Button {
+                            openWindow(id: "lineage")
+                        } label: {
+                            Image(systemName: "point.3.filled.connected.trianglepath.dotted")
+                        }
+                        .help("Lineage — the shelf's citation web")
                     }
                     .padding(.horizontal)
                     .padding(.vertical, 6)

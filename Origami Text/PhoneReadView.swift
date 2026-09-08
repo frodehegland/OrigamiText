@@ -22,7 +22,7 @@ struct ReadHomeView: View {
     /// Journals by name.
     @State private var searchText = ""
 
-    private enum Shelf: Hashable { case articles, journals, guide }
+    private enum Shelf: Hashable { case articles, journals, lineage, guide }
 
     /// A book answers the Find field by its title or any of its authors.
     private func matchesSearch(_ record: EPUBRecord) -> Bool {
@@ -40,6 +40,9 @@ struct ReadHomeView: View {
             Group {
                 if shelf == .guide {
                     PhoneGuideView()
+                } else if shelf == .lineage {
+                    PhoneLineageView()
+                        .ignoresSafeArea(edges: .bottom)
                 } else if model.epubRecords.isEmpty {
                     ContentUnavailableView {
                         Label("Nothing to Read Yet", systemImage: "books.vertical")
@@ -93,7 +96,7 @@ struct ReadHomeView: View {
                                     }
                                 }
                             }
-                        case .guide:
+                        case .lineage, .guide:
                             EmptyView()
                         }
                     }
@@ -109,6 +112,7 @@ struct ReadHomeView: View {
                     Picker("Showing", selection: $shelf) {
                         Text("Articles").tag(Shelf.articles)
                         Text("Journals").tag(Shelf.journals)
+                        Text("Lineage").tag(Shelf.lineage)
                         Text("Guide").tag(Shelf.guide)
                     }
                     .pickerStyle(.segmented)
