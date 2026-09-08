@@ -97,7 +97,6 @@ struct EmberIconLabelStyle: LabelStyle {
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
-    @AppStorage(AppSettings.seedServerURLKey) private var seedServerURL = ""
     /// Sections the user has folded shut, by title — remembered across
     /// launches, the way Finder remembers its sidebar.
     @State private var collapsed: Set<String> =
@@ -152,6 +151,10 @@ struct SidebarView: View {
             true
         case .epubFolder(let name):
             model.epubFolders.contains(name)
+        case .hypermediaSpace(let domain):
+            model.hypermedia.space(for: domain) != nil
+        case .hypermediaTimeline, .hypermediaPinned:
+            !model.hypermediaDocs.isEmpty
         case .person(let name):
             model.viewPeople.contains(name)
         case .concept(let name):
@@ -362,35 +365,6 @@ struct SidebarView: View {
         }
     }
 
-    /// The network's shelf, under the EPUBs: documents fetched from the
-    /// hypermedia server (Seed), the ways through them — or, before any
-    /// server is known, the door to adding one.
-    @ViewBuilder
-    private var hypermediaSection: some View {
-        Section(isExpanded: isExpanded("Hypermedia")) {
-            if seedServerURL.trimmingCharacters(in: .whitespaces).isEmpty {
-                Button {
-                    model.settingsTab = .hypermedia
-                    openSettings()
-                } label: {
-                    Label("Add Server", systemImage: "plus.circle")
-                }
-                .buttonStyle(.plain)
-                .help("Sign in to a hypermedia server — Settings \u{25B8} Hypermedia")
-            } else {
-                Label("Timeline", systemImage: "clock")
-                    .badge(model.hypermediaDocs.count)
-                    .tag(SidebarItem.hypermediaTimeline)
-                Label("Pinned", systemImage: "pin")
-                    .badge(model.hypermediaDocs.filter {
-                        model.epubTopOfPile.contains($0.id)
-                    }.count)
-                    .tag(SidebarItem.hypermediaPinned)
-            }
-        } header: {
-            Text("Hypermedia")
-        }
-    }
 
     /// Which venue is currently in focus — either selected directly or via
     /// a topic/author filter within it. Drives `publicationSubmenus`.
@@ -561,6 +535,44 @@ struct SidebarView: View {
             .buttonStyle(.plain)
         } header: {
             Text("Folders")
+        }
+    }
+
+    /// The network's shelf, under the EPUBs: the Hypermedia spaces the
+    /// reader follows (Settings ▸ Hypermedia), each a list of its
+    /// documents — or, before any is followed, the door to adding one —
+    /// and the ways through everything read from them.
+    @ViewBuilder
+    private var hypermediaSection: some View {
+        Section(isExpanded: isExpanded("Hypermedia")) {
+            ForEach(model.hypermedia.spaces) { space in
+                Label(space.title, systemImage: "globe")
+                    .badge(model.hypermedia.documents(for: space.domain)?.count ?? 0)
+                    .tag(SidebarItem.hypermediaSpace(space.domain))
+                    .help(space.domain)
+            }
+            if !model.hypermediaDocs.isEmpty {
+                Label("Timeline", systemImage: "clock")
+                    .badge(model.hypermediaDocs.count)
+                    .tag(SidebarItem.hypermediaTimeline)
+                Label("Pinned", systemImage: "pin")
+                    .badge(model.hypermediaDocs.filter {
+                        model.epubTopOfPile.contains($0.id)
+                    }.count)
+                    .tag(SidebarItem.hypermediaPinned)
+            }
+            Button {
+                model.settingsTab = .hypermedia
+                openSettings()
+            } label: {
+                Label(model.hypermedia.spaces.isEmpty ? "Add Space" : "Edit Spaces",
+                      systemImage: model.hypermedia.spaces.isEmpty ? "plus.circle" : "slider.horizontal.3")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Follow a Hypermedia space — Settings \u{25B8} Hypermedia")
+        } header: {
+            Text("Hypermedia")
         }
     }
 

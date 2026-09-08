@@ -46,13 +46,10 @@ enum AppSettings {
     static let readAloudRateKey = "readAloud.rate"
     static let readAloudVoiceIDKey = "readAloud.voiceID"
     static let readAloudEngineKey = "readAloud.engine"
-    // Hypermedia / Seed
-    static let seedServerURLKey              = "hypermedia.seed.serverURL"
-    static let seedUsernameKey               = "hypermedia.seed.username"
-    static let hypermediaShareDocKey         = "hypermedia.shareCurrentDocument"
-    static let hypermediaSharePositionKey    = "hypermedia.shareReadingPosition"
-    static let hypermediaShareAnnotationsKey = "hypermedia.shareAnnotations"
-    static let hypermediaShowCommunityKey    = "hypermedia.showCommunityAnnotations"
+    // Hypermedia protocol: the followed spaces, as JSON ([HypermediaSpace]),
+    // and the name the account was created with.
+    static let hypermediaSpacesKey           = "hypermedia.spaces"
+    static let hypermediaAccountNameKey      = "hypermedia.account.name"
     // Hypermedia / Hypothesis
     static let hypothesisUsernameKey         = "hypothesis.username"
     static let hypothesisPublicEnabledKey    = "hypothesis.publicAnnotationsEnabled"
@@ -1202,35 +1199,26 @@ private struct EditorSettingsView: View {
 }
 // MARK: - Hypermedia settings
 
-/// Hypermedia: live community connections. Sign in to a provider
-/// (Seed is first) to coordinate reading sessions, broadcast
-/// which EPUB is open and where, and exchange W3C annotations
-/// with others reading the same document.
+/// Hypermedia: the spaces the reader follows on the Hypermedia protocol
+/// (each becomes a list of its documents in the sidebar), the account
+/// they speak as there, and the Hypothesis annotation network.
 private struct HypermediaSettingsView: View {
 
     @Environment(AppModel.self) private var model
 
-    // Persistent credentials and preferences via AppStorage.
-    @AppStorage(AppSettings.seedServerURLKey)              private var serverURL  = ""
-    @AppStorage(AppSettings.seedUsernameKey)               private var username   = ""
-    @AppStorage(AppSettings.hypermediaShareDocKey)         private var shareDoc       = true
-    @AppStorage(AppSettings.hypermediaSharePositionKey)    private var sharePosition  = true
-    @AppStorage(AppSettings.hypermediaShareAnnotationsKey) private var shareAnnotations = true
-    @AppStorage(AppSettings.hypermediaShowCommunityKey)    private var showCommunity  = true
+    // Follow-a-space form state.
+    @State private var newDomain   = ""
+    @State private var isAdding    = false
+    @State private var addError: String? = nil
 
-    // Transient sign-in form state (Seed).
-    @State private var password     = ""
-    @State private var isSigningIn  = false
+    // Account state.
+    @State private var showCreateAccount = false
+    @State private var isPublishingProfile = false
+    @State private var profileNote: String? = nil
 
     // Transient sign-in form state (Hypothesis).
     @State private var hypothesisToken      = ""
     @State private var isConnectingHypothesis = false
-
-    // Fetch-by-URL state.
-    @State private var fetchURL     = ""
-    @State private var isFetching   = false
-    @State private var fetchError: String? = nil
-    @State private var fetchSuccess = false
 
     /// Hypothesis waits offstage until its integration resumes.
     private static let showsHypothesis = false
@@ -1240,11 +1228,12 @@ private struct HypermediaSettingsView: View {
     var body: some View {
         Form {
             Section {
-                seedProviderRows
+                accountRows
+                spaceRows
             } header: {
-                Text("Seed")
+                Text("Hypermedia protocol")
             } footer: {
-                Text("Seed is a federated presence and annotation protocol. Sign in to broadcast which EPUB you are reading, share your reading position, and exchange W3C annotations with others on the same server.")
+                Text("Spaces on the Hypermedia protocol publish their documents openly. Type a space's domain to follow it; it appears under Hypermedia in the sidebar, with every document it holds, ready to read. An account is a signing key kept in your Keychain and a profile with your name, published to every space you follow — it is what lets you comment.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1265,100 +1254,125 @@ private struct HypermediaSettingsView: View {
             }
 
             if Self.showsHypothesis {
-            Section {
-                Toggle("Show public Hypothesis annotations", isOn: Binding(
-                    get: { session.hypothesisPublicEnabled },
-                    set: { session.hypothesisPublicEnabled = $0 }))
-            } header: {
-                Text("Hypothesis — Incoming")
-            } footer: {
-                Text("Public annotations from other Hypothesis users appear in the reading margin alongside your own. No account required.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            }
-
-            Section {
-                Toggle("Share which document I am reading", isOn: $shareDoc)
-                Toggle("Share reading position", isOn: $sharePosition)
-                Toggle("Send annotations to community", isOn: $shareAnnotations)
-            } header: {
-                Text("Seed — What to Share")
-            } footer: {
-                Text("Only sent to servers you are signed in to. Nothing is sent automatically — each toggle must be on and a server must be connected.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .disabled(!isConnected)
-
-            Section {
-                Toggle("Show community annotations while reading", isOn: $showCommunity)
-            } header: {
-                Text("Seed — Incoming")
-            } footer: {
-                Text("Community annotations from others reading the same document on your Seed server appear in the reading margin — plain notes and tags, displayed alongside your own.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .disabled(!isConnected)
-
-            Section {
-                TextField("Seed document URL", text: $fetchURL,
-                          prompt: Text("https://site.hyper.media/hm/uid/path"))
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { triggerFetch() }
-                if let err = fetchError {
-                    Label(err, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
+                Section {
+                    Toggle("Show public Hypothesis annotations", isOn: Binding(
+                        get: { session.hypothesisPublicEnabled },
+                        set: { session.hypothesisPublicEnabled = $0 }))
+                } header: {
+                    Text("Hypothesis — Incoming")
+                } footer: {
+                    Text("Public annotations from other Hypothesis users appear in the reading margin alongside your own. No account required.")
                         .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                if fetchSuccess {
-                    Label("Document imported — find it in Drafts.",
-                          systemImage: "checkmark.circle")
-                        .foregroundStyle(.green)
-                        .font(.caption)
-                }
-                HStack {
-                    Button(isFetching ? "Fetching\u{2026}" : "Open") {
-                        triggerFetch()
-                    }
-                    .disabled(fetchURL.trimmingCharacters(in: .whitespaces).isEmpty || isFetching)
-                    if isFetching { ProgressView().scaleEffect(0.7) }
-                }
-            } header: {
-                Text("Open by URL")
-            } footer: {
-                Text("Paste any Seed document URL — https://host/hm/uid/path, https://host/path, or hm://uid/path. The document is fetched, converted to Origami format, and placed in your Drafts, ready to read.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-    }
-
-    private func triggerFetch() {
-        let url = fetchURL.trimmingCharacters(in: .whitespaces)
-        guard !url.isEmpty, !isFetching else { return }
-        fetchError   = nil
-        fetchSuccess = false
-        isFetching   = true
-        Task {
-            do {
-                let result = try await SeedFetcher.fetch(urlString: url)
-                try model.importSeedDocument(result)
-                fetchURL     = ""
-                fetchSuccess = true
-            } catch {
-                fetchError = error.localizedDescription
-            }
-            isFetching = false
+        .sheet(isPresented: $showCreateAccount) {
+            CreateHypermediaAccountSheet()
         }
     }
 
-    private var isConnected: Bool {
-        if case .connected = session.seedState { return true }
-        return false
+    // MARK: Account
+
+    @ViewBuilder private var accountRows: some View {
+        if let identity = model.hypermedia.identity {
+            LabeledContent("Account") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(model.hypermedia.accountName)
+                    Text(identity.uid)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+            }
+            HStack {
+                Button(isPublishingProfile ? "Publishing\u{2026}" : "Publish Profile Again") {
+                    isPublishingProfile = true
+                    profileNote = nil
+                    Task {
+                        let failed = await model.hypermedia.publishProfile()
+                        profileNote = failed.isEmpty
+                            ? "Profile published to every followed space."
+                            : "Could not reach: \(failed.joined(separator: ", "))."
+                        isPublishingProfile = false
+                    }
+                }
+                .disabled(isPublishingProfile)
+                if isPublishingProfile { ProgressView().scaleEffect(0.7) }
+            }
+            if let note = profileNote {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            Button("Create an Account") { showCreateAccount = true }
+        }
     }
+
+    // MARK: Spaces
+
+    @ViewBuilder private var spaceRows: some View {
+        ForEach(model.hypermedia.spaces) { space in
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(space.title)
+                    Text(space.domain)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    model.hypermedia.remove(space)
+                    if model.sidebarSelection == .hypermediaSpace(space.domain) {
+                        model.sidebarSelection = .epubsTimeline
+                    }
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Stop following \(space.title)")
+            }
+        }
+        if let err = addError {
+            Label(err, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.red)
+                .font(.caption)
+        }
+        HStack {
+            TextField("Space domain", text: $newDomain, prompt: Text("hyper.media"))
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { addSpace() }
+            Button(isAdding ? "Adding\u{2026}" : "Add") { addSpace() }
+                .disabled(newDomain.trimmingCharacters(in: .whitespaces).isEmpty || isAdding)
+            if isAdding { ProgressView().scaleEffect(0.7) }
+        }
+    }
+
+    private func addSpace() {
+        let domain = newDomain.trimmingCharacters(in: .whitespaces)
+        guard !domain.isEmpty, !isAdding else { return }
+        addError = nil
+        isAdding = true
+        Task {
+            do {
+                let space = try await model.hypermedia.add(domain: domain)
+                newDomain = ""
+                // The new space's list starts loading now, so the sidebar
+                // badge and the list are ready when the user gets there.
+                await model.hypermedia.loadIfNeeded(space)
+            } catch {
+                addError = error.localizedDescription
+            }
+            isAdding = false
+        }
+    }
+
+    // MARK: Hypothesis
 
     @ViewBuilder private var hypothesisProviderRows: some View {
         switch session.hypothesisAuthState {
@@ -1398,63 +1412,63 @@ private struct HypermediaSettingsView: View {
             .foregroundStyle(.red)
         }
     }
+}
 
-    @ViewBuilder private var seedProviderRows: some View {
-        switch session.seedState {
-        case .disconnected, .failed:
-            if case .failed(let msg) = session.seedState {
-                Label(msg, systemImage: "exclamationmark.triangle")
+/// Create an Account: a name, and a signing key made on the spot. The
+/// profile goes out to every followed space at once.
+private struct CreateHypermediaAccountSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var isCreating = false
+    @State private var error: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Create an Account")
+                .font(.headline)
+            Text("Your account is a signing key, kept in your Keychain, and a profile carrying the name below. The profile is published to every space you follow, so people there know who is speaking.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("Username", text: $name, prompt: Text("Your name"))
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { create() }
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
                     .font(.caption)
             }
-            TextField("Server URL", text: $serverURL,
-                      prompt: Text("https://seed.example.org"))
-                .textFieldStyle(.roundedBorder)
-            TextField("Username or e-mail", text: $username)
-                .textFieldStyle(.roundedBorder)
-            SecureField("Password", text: $password)
-                .textFieldStyle(.roundedBorder)
-            Button(isSigningIn ? "Signing in…" : "Sign in to Seed") {
-                let url  = serverURL
-                let user = username
-                let pass = password
-                password = ""
-                Task {
-                    isSigningIn = true
-                    await HypermediaSession.shared.signInToSeed(
-                        serverURL: url, username: user, password: pass)
-                    isSigningIn = false
-                }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isCreating)
+                Button(isCreating ? "Creating\u{2026}" : "Create") { create() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || isCreating)
             }
-            .disabled(serverURL.isEmpty || username.isEmpty || password.isEmpty || isSigningIn)
+        }
+        .padding(20)
+        .frame(width: 420)
+        .onAppear {
+            if name.isEmpty { name = model.authorIdentity.name }
+        }
+    }
 
-        case .connecting:
-            HStack(spacing: 8) {
-                ProgressView().scaleEffect(0.7)
-                Text("Connecting to Seed\u{2026}").foregroundStyle(.secondary)
+    private func create() {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !isCreating else { return }
+        isCreating = true
+        error = nil
+        Task {
+            do {
+                try await model.hypermedia.createAccount(name: trimmed)
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
             }
-
-        case .connected(let user, let url):
-            LabeledContent("Signed in as") {
-                Text(user).foregroundStyle(.secondary)
-            }
-            LabeledContent("Server") {
-                Text(url)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            if let title = session.broadcastingTitle {
-                LabeledContent("Broadcasting") {
-                    Text(title)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            Button("Sign out") {
-                HypermediaSession.shared.signOutFromSeed()
-            }
-            .foregroundStyle(.red)
+            isCreating = false
         }
     }
 }

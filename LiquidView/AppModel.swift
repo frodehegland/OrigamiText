@@ -44,8 +44,9 @@ enum SidebarItem: Hashable {
     case epubsSetAside
     case epubFolder(String)
     case acquisitions
-    // Hypermedia: documents fetched from the network (Seed), the ways
-    // through them.
+    // Hypermedia: the followed spaces, each its own list, and the ways
+    // through everything read from them.
+    case hypermediaSpace(String)
     case hypermediaTimeline
     case hypermediaPinned
     // Views: ways into the opened EPUBs by who and what they hold.
@@ -797,6 +798,10 @@ final class AppModel {
     /// Imported bibliographies — the actor owns them and answers citation
     /// queries; this mirror feeds the Settings pane.
     let referenceStore = ReferenceDatasetStore()
+
+    /// The Hypermedia spaces the reader follows (Settings ▸ Hypermedia) and
+    /// the documents read from them this session — see HypermediaSpaces.
+    let hypermedia = HypermediaSpaces()
     var referenceDatasetSummaries: [ReferenceDatasetSummary] = []
     private var pendingReferenceDatasetURLs: [URL] = []
 
@@ -2478,11 +2483,10 @@ final class AppModel {
         publishStanding()
     }
 
-    /// Documents fetched from the hypermedia network — drafts carrying
-    /// an online origin (SeedImport writes it), newest first.
+    /// Documents read from Hypermedia spaces this session, newest first —
+    /// the spaces keep the record, so this is what has been opened here.
     var hypermediaDocs: [LiquidDoc] {
-        drafts.documents.filter { $0.sourceURL?.isEmpty == false }
-            .sorted { $0.created > $1.created }
+        hypermedia.documentCache.values.sorted { $0.created > $1.created }
     }
 
     func setAside(_ record: EPUBRecord) {

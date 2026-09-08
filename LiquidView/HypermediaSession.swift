@@ -1,23 +1,7 @@
 import Foundation
 import Security
 
-// MARK: - Provider
-
-/// Registered hypermedia annotation providers. Seed is the first;
-/// others can be added as new cases when their APIs are known.
-enum HypermediaProvider: String, CaseIterable, Identifiable {
-    case seed = "Seed"
-    var id: String { rawValue }
-}
-
 // MARK: - Connection states
-
-enum SeedConnectionState: Equatable {
-    case disconnected
-    case connecting
-    case connected(username: String, serverURL: String)
-    case failed(String)
-}
 
 /// Hypothesis authentication state. Note that reading public annotations
 /// does not require authentication — `signedOut` does not block fetching.
@@ -30,20 +14,15 @@ enum HypothesisAuthState: Equatable {
 
 // MARK: - Session
 
-/// Runtime state for live hypermedia connections.
-/// Persistent settings (what to share, server URL, username) live in
-/// UserDefaults/Keychain; this class holds only what is in flux.
+/// Runtime state for live hypermedia connections (Hypothesis today).
+/// Persistent settings (username) live in UserDefaults/Keychain; this
+/// class holds only what is in flux. Hypermedia protocol spaces need no
+/// session at all — see HypermediaSites.
 @Observable
 @MainActor
 final class HypermediaSession {
 
     static let shared = HypermediaSession()
-
-    // MARK: Seed
-    var seedState: SeedConnectionState = .disconnected
-    /// The EPUB that is currently being broadcast to connected servers.
-    var broadcastingAddress: String? = nil
-    var broadcastingTitle: String? = nil
 
     // MARK: Hypothesis
     var hypothesisAuthState: HypothesisAuthState = .signedOut
@@ -58,54 +37,7 @@ final class HypermediaSession {
     var communityAnnotations: [WebAnnotation] = []
 
     private init() {
-        restoreSeedSession()
         restoreHypothesisSession()
-    }
-
-    // MARK: - Auto-restore
-
-    /// Re-connects from persisted credentials so the user does not
-    /// have to sign in again after a relaunch.
-    private func restoreSeedSession() {
-        let url  = UserDefaults.standard.string(forKey: AppSettings.seedServerURLKey) ?? ""
-        let user = UserDefaults.standard.string(forKey: AppSettings.seedUsernameKey)  ?? ""
-        guard !url.isEmpty, !user.isEmpty else { return }
-        guard HypermediaKeychain.load(service: url, account: user) != nil else { return }
-        seedState = .connected(username: user, serverURL: url)
-    }
-
-    // MARK: - Sign in / out
-
-    func signInToSeed(serverURL: String, username: String, password: String) async {
-        seedState = .connecting
-
-        // TODO: Replace with real Seed handshake once the API docs arrive.
-        // The placeholder below persists credentials and immediately succeeds
-        // so the rest of the UI (sharing toggles, broadcast stubs) is testable.
-        try? await Task.sleep(for: .milliseconds(400))
-
-        let trimmedURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedURL.isEmpty else {
-            seedState = .failed("Server URL is empty.")
-            return
-        }
-
-        UserDefaults.standard.set(trimmedURL,  forKey: AppSettings.seedServerURLKey)
-        UserDefaults.standard.set(username,    forKey: AppSettings.seedUsernameKey)
-        HypermediaKeychain.save(service: trimmedURL, account: username, password: password)
-
-        seedState = .connected(username: username, serverURL: trimmedURL)
-    }
-
-    func signOutFromSeed() {
-        if case .connected(let user, let url) = seedState {
-            HypermediaKeychain.delete(service: url, account: user)
-        }
-        UserDefaults.standard.removeObject(forKey: AppSettings.seedServerURLKey)
-        UserDefaults.standard.removeObject(forKey: AppSettings.seedUsernameKey)
-        seedState = .disconnected
-        broadcastingAddress = nil
-        broadcastingTitle   = nil
     }
 
     // MARK: - Hypothesis sign in / out
@@ -144,38 +76,6 @@ final class HypermediaSession {
         UserDefaults.standard.removeObject(forKey: AppSettings.hypothesisUsernameKey)
         hypothesisAuthState = .signedOut
         communityAnnotations = []
-    }
-
-    // MARK: - Broadcast stubs
-    // Each method is a no-op until the Seed API is wired; callers
-    // (EPUBReaderView, AnnotationStore) can already invoke them safely.
-
-    /// Call when the user opens or switches to a different EPUB.
-    func documentOpened(address: String, title: String) async {
-        guard case .connected = seedState else { return }
-        let shareDoc = UserDefaults.standard.object(forKey: AppSettings.hypermediaShareDocKey) as? Bool ?? true
-        guard shareDoc else { return }
-        broadcastingAddress = address
-        broadcastingTitle   = title
-        // TODO: POST document presence to Seed server
-    }
-
-    /// Call when the reading position changes significantly.
-    func readingPositionChanged(documentAddress: String, progression: Double, fragmentID: String?) async {
-        guard case .connected = seedState else { return }
-        let sharePos = UserDefaults.standard.object(forKey: AppSettings.hypermediaSharePositionKey) as? Bool ?? true
-        guard sharePos else { return }
-        // TODO: POST position update to Seed server
-    }
-
-    /// Call immediately after a W3C WebAnnotation is saved locally.
-    /// The annotation is already properly encoded as JSON-LD — pass it
-    /// straight through once the Seed POST endpoint is known.
-    func annotationCreated(_ annotation: WebAnnotation) async {
-        guard case .connected = seedState else { return }
-        let shareAnno = UserDefaults.standard.object(forKey: AppSettings.hypermediaShareAnnotationsKey) as? Bool ?? true
-        guard shareAnno else { return }
-        // TODO: POST W3C annotation JSON-LD to Seed server
     }
 }
 

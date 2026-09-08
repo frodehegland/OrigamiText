@@ -4459,18 +4459,18 @@ struct CitationCardSheet: View {
                 return t.isEmpty ? nil : t
             }
         }
-        let seed = clean(record.fields["vm-source-seed"])
+        let hypermedia = clean(record.fields["vm-source-seed"])
         let pdf = clean(record.fields["vm-source-pdf"])
         let web = clean(record.fields["vm-source-web"])
-        if seed != nil || pdf != nil || web != nil {
+        if hypermedia != nil || pdf != nil || web != nil {
             LabeledContent("Editions") {
                 HStack(spacing: 8) {
-                    if let seed {
-                        Button("Seed") {
+                    if let hypermedia {
+                        Button("Hypermedia") {
                             dismiss()
-                            Task { await model.openSeedURL(seed) }
+                            Task { await model.openHypermediaURL(hypermedia) }
                         }
-                        .help("Open the cited paragraph on the Seed network")
+                        .help("Open the cited paragraph on its Hypermedia site")
                     }
                     if let pdf {
                         Button("PDF") { openRendition(pdf) }

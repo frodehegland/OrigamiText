@@ -513,6 +513,13 @@ struct DocumentDetailView: View {
                             }
                         }
                     }
+                    // A document read from a Hypermedia space brings its
+                    // conversation with it: the space's comments, threaded,
+                    // under the words they are about.
+                    if let source = doc.sourceURL, source.hasPrefix("hm://") {
+                        HypermediaCommentsView(canonicalID: source)
+                            .padding(.top, 28)
+                    }
                     DocumentFooter(doc: doc)
                 }
                 .frame(maxWidth: model.isFullScreen ? CGFloat(fullScreenContentWidth)
@@ -656,6 +663,11 @@ struct DocumentDetailView: View {
         }
         if url.scheme?.lowercased() == "origamitext" {
             model.handleURL(url)
+            return .handled
+        }
+        // A Hypermedia address opens through the same reader.
+        if url.scheme?.lowercased() == "hm" || HypermediaAddress.parse(url.absoluteString) != nil {
+            Task { await model.openHypermediaURL(url.absoluteString) }
             return .handled
         }
         return .systemAction

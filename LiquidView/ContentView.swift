@@ -212,6 +212,11 @@ struct ContentView: View {
                 model.handleURL(url)
                 return .handled
             }
+            // hm:// addresses (and gateway URLs) read here, not in a browser.
+            if url.scheme?.lowercased() == "hm" || HypermediaAddress.parse(url.absoluteString) != nil {
+                Task { await model.openHypermediaURL(url.absoluteString) }
+                return .handled
+            }
             return .systemAction
         })
     }
@@ -381,6 +386,8 @@ struct ContentView: View {
             EPUBLibraryListView(mode: .setAside)
         } else if case .epubFolder(let folder)? = model.sidebarSelection {
             EPUBLibraryListView(mode: .folder(folder))
+        } else if case .hypermediaSpace(let domain)? = model.sidebarSelection {
+            HypermediaSpaceListView(domain: domain)
         } else if model.sidebarSelection == .authors {
             AuthorsListView()
         } else if case .epubAuthor(let name)? = model.sidebarSelection {
