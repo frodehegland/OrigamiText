@@ -1232,6 +1232,9 @@ private struct HypermediaSettingsView: View {
     @State private var fetchError: String? = nil
     @State private var fetchSuccess = false
 
+    /// Hypothesis waits offstage until its integration resumes.
+    private static let showsHypothesis = false
+
     private var session: HypermediaSession { .shared }
 
     var body: some View {
@@ -1250,14 +1253,19 @@ private struct HypermediaSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section {
-                hypothesisProviderRows
-            } header: {
-                Text("Hypothesis")
-            } footer: {
-                Text("Hypothesis is an open annotation network. Sign in with a personal API token (hypothes.is/account/developer) to publish your annotations. Public annotations from others are visible without signing in.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            // Hypothesis stays built but off the pane for now — the
+            // integration is paused (Phase 0, the DOI spike); flip this
+            // when the work resumes.
+            if Self.showsHypothesis {
+                Section {
+                    hypothesisProviderRows
+                } header: {
+                    Text("Hypothesis")
+                } footer: {
+                    Text("Hypothesis is an open annotation network. Sign in with a personal API token (hypothes.is/account/developer) to publish your annotations. Public annotations from others are visible without signing in.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section {
