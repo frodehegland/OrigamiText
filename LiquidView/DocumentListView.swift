@@ -49,6 +49,12 @@ struct EPUBPileMenu: View {
     @Environment(AppModel.self) private var model
     let record: EPUBRecord
 
+    private var exportTargets: [EPUBRecord] {
+        let ids = model.epubListSelectionIDs
+        guard ids.count > 1, ids.contains(record.id) else { return [record] }
+        return model.epubRecords.filter { ids.contains($0.id) }
+    }
+
     var body: some View {
         Toggle("Pin", isOn: Binding(
             get: { model.isTopOfPile(record) },
@@ -63,6 +69,14 @@ struct EPUBPileMenu: View {
         // or to hand on.
         Button("Show in Finder") { model.revealEPUBInFinder(record) }
         Button("Save a Copy as EPUB…") { model.saveCopyOfEPUB(record) }
+        // The papers file under their DOIs, as the ACM DL names its
+        // files. Acts on the ⌘-click selection when the click lands
+        // inside it, on this paper alone otherwise — the Finder's rule.
+        Button(exportTargets.count > 1
+               ? "Export \(exportTargets.count) with DOI Names…"
+               : "Export with DOI Name…") {
+            model.exportWithDOINames(exportTargets)
+        }
         Divider()
         Button("Move to Trash", role: .destructive) { model.trashEPUB(record) }
     }
@@ -231,11 +245,17 @@ struct EPUBLibraryListView: View {
 /// The book lists' shared selection: the highlighted row is the book
 /// open in the reader, and selecting a row opens it.
 @MainActor
-func epubListSelection(_ model: AppModel) -> Binding<String?> {
+func epubListSelection(_ model: AppModel) -> Binding<Set<String>> {
     Binding(
-        get: { model.openEPUBRecordID },
-        set: { id in
-            if let id { model.openEPUBRecord(withID: id) }
+        get: { model.epubListSelectionIDs },
+        set: { ids in
+            // A plain click lands one id and opens it, as always; a
+            // ⌘-click gathers more without opening, so a set of papers
+            // can be acted on together (Export with DOI Names…).
+            model.epubListSelectionIDs = ids
+            if ids.count == 1, let id = ids.first, id != model.openEPUBRecordID {
+                model.openEPUBRecord(withID: id)
+            }
         }
     )
 }

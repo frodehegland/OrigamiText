@@ -1606,7 +1606,14 @@ struct OrigamiReadingView: View {
                                              ?? AnyShapeStyle(.primary))
                             .contentShape(Rectangle())
                             .contextMenu {
-                                menuView(menuEntries(for: paragraph, highlights: []))
+                                // The heading's own annotations, and the
+                                // section's comments — so a comment under
+                                // this fold can be removed right here.
+                                menuView(menuEntries(
+                                    for: paragraph,
+                                    highlights: annotations[paragraph.id] ?? [],
+                                    sectionComments: sectionAnnotations(
+                                        under: paragraph, annotations: annotations)))
                             }
                             .onTapGesture { toggleFoldSection(paragraph.id) }
                             .help(expandedFold.isEmpty
@@ -2641,6 +2648,7 @@ struct OrigamiReadingView: View {
     /// staying out.
     private func menuEntries(for paragraph: LiquidDoc.Paragraph,
                              highlights: [ResolvedAnnotation],
+                             sectionComments: [ResolvedAnnotation] = [],
                              clickedSentence: String? = nil,
                              clickWindowPoint: NSPoint? = nil) -> [ParagraphMenuEntry] {
         var entries: [ParagraphMenuEntry] = []
@@ -2703,6 +2711,23 @@ struct OrigamiReadingView: View {
                         annotationEditor = AnnotationEditTarget(
                             annotation: entry.annotation,
                             paragraphID: paragraph.id)
+                    })
+                }
+                // A comment standing on this paragraph — or, from a
+                // folded heading, anywhere in its section — leaves
+                // through the menu, its opening words naming which one
+                // goes.
+                var seenComments = Set<String>()
+                for entry in highlights + sectionComments {
+                    guard entry.annotation.motivation == WebAnnotation.Motivation.commenting,
+                          seenComments.insert(entry.annotation.id).inserted else { continue }
+                    let words = (entry.annotation.body?.value ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let snippet = words.count > 24 ? String(words.prefix(24)) + "…" : words
+                    entries.append(.action(
+                        title: snippet.isEmpty ? "Remove Comment" : "Remove Comment “\(snippet)”",
+                        symbol: "trash") {
+                        model.removeAnnotation(entry.annotation, for: doc)
                     })
                 }
             case .concepts:

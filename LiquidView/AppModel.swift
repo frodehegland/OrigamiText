@@ -1124,6 +1124,11 @@ final class AppModel {
         epubRecords.map { IndexEntry(doc: epubListingDoc($0)) }
     }
 
+    /// The rows the book lists hold selected — one from a plain click
+    /// (which also opens), several from ⌘-clicks, for the actions that
+    /// take a set of papers at once.
+    var epubListSelectionIDs: Set<String> = []
+
     /// The record of the book open in the reader — what the book lists
     /// highlight as their selection.
     var openEPUBRecordID: String? {
@@ -1181,19 +1186,8 @@ final class AppModel {
         panel.nameFieldStringValue = record.folder + ".epub"
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        let stored = storedEPUBURL(for: record)
         do {
-            if FileManager.default.fileExists(atPath: stored.path) {
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    try FileManager.default.removeItem(at: destination)
-                }
-                try FileManager.default.copyItem(at: stored, to: destination)
-            } else {
-                let unpacked = Self.epubsRoot.appendingPathComponent(record.folder,
-                                                                     isDirectory: true)
-                try OrigamiEPUBExporter.pack(unpackedFolder: unpacked)
-                    .write(to: destination, options: .atomic)
-            }
+            try writeEPUBCopy(of: record, to: destination)
         } catch {
             NSSound.beep()
             showNote("Could not save the EPUB: \(error.localizedDescription)")
@@ -2496,6 +2490,79 @@ final class AppModel {
         epubSetAsideIDs.remove(record.id)
         UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
         publishStanding()
+    }
+
+    /// The record's .epub written to `destination`: the canonical stored
+    /// file when it stands, else the unpacked folder packed afresh.
+    func writeEPUBCopy(of record: EPUBRecord, to destination: URL) throws {
+        let stored = storedEPUBURL(for: record)
+        if FileManager.default.fileExists(atPath: stored.path) {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.copyItem(at: stored, to: destination)
+        } else {
+            let unpacked = Self.epubsRoot.appendingPathComponent(record.folder,
+                                                                 isDirectory: true)
+            try OrigamiEPUBExporter.pack(unpackedFolder: unpacked)
+                .write(to: destination, options: .atomic)
+        }
+    }
+
+    /// The DOI a paper files under: the record's own, else the imported
+    /// reference datasets' answer for its title and year — the
+    /// pre-publication packages carry none, but Mark Anderson's dataset
+    /// names the proceedings' DOIs.
+    func doiForExport(_ record: EPUBRecord) async -> String? {
+        if let doi = record.doi, !doi.isEmpty { return doi.lowercased() }
+        let year = record.dateISO.flatMap { Int($0.prefix(4)) }
+        let family = record.authorList.first?
+            .split(separator: " ").last.map(String.init)
+        let match = await referenceStore.lookup(CitationQuery(
+            doi: nil, title: record.title, year: year,
+            firstAuthorFamily: family, authorFamilies: []))
+        guard let match, match.confidence != .possible else { return nil }
+        return match.record.doi
+    }
+
+    /// Export with DOI Names: the chosen papers written into a folder as
+    /// `<doi-suffix>.epub` — the ACM Digital Library's own file naming
+    /// (10.1145/3800935.3830868 files as 3800935.3830868.epub). Papers
+    /// whose DOI cannot be told are skipped and named in the note.
+    func exportWithDOINames(_ records: [EPUBRecord]) {
+        guard !records.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Export"
+        panel.message = "Choose the folder the DOI-named EPUBs are written into."
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        Task {
+            var exported = 0
+            var skipped: [String] = []
+            for record in records {
+                guard let doi = await doiForExport(record), doi.contains("/") else {
+                    skipped.append(record.title)
+                    continue
+                }
+                let suffix = String(doi.split(separator: "/", maxSplits: 1)[1])
+                    .replacingOccurrences(of: "/", with: "-")
+                do {
+                    try writeEPUBCopy(of: record,
+                                      to: folder.appendingPathComponent(suffix + ".epub"))
+                    exported += 1
+                } catch {
+                    skipped.append(record.title)
+                }
+            }
+            var note = "Exported \(exported) EPUB\(exported == 1 ? "" : "s") with DOI names"
+            if !skipped.isEmpty {
+                note += " \u{00B7} \(skipped.count) without a DOI: "
+                    + skipped.map { String($0.prefix(28)) }.joined(separator: "; ")
+            }
+            showNote(note)
+        }
     }
 
     /// When this device last wrote the shared standing file — an older

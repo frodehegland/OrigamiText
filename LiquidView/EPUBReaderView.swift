@@ -785,6 +785,15 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.annotations = annotations
         coordinator.chapterIndex = chapterIndex
         coordinator.chapterCount = chapterCount
+        // The paragraphs carrying comments, by their stable ids — the
+        // bare ctrl-click's Remove Comment resolves against this.
+        if let readerView = webView as? ReaderWebView {
+            readerView.commentsByFragment = Dictionary(
+                grouping: annotations.filter {
+                    $0.kind == "comment" && $0.fragment?.isEmpty == false
+                }, by: { $0.fragment ?? "" }
+            ).mapValues { $0.map(\.id) }
+        }
         if coordinator.loadedID != (content ?? book.content).path {
             coordinator.themeCSS = css
             // A chapter change scrolls to the TOC's fragment; a book change
@@ -1771,6 +1780,10 @@ final class ReaderWebView: WKWebView {
     var onAddComment: (ReaderSelection) -> Void = { _ in }
     /// Invoked when Remove is chosen in an annotation's popover.
     var onRemoveAnnotation: (String) -> Void = { _ in }
+    /// The comments standing on paragraphs, by the paragraph's stable
+    /// id — filled from the sidecar so the bare ctrl-click can offer
+    /// their removal.
+    var commentsByFragment: [String: [String]] = [:]
     /// Resolves selected text to the open book's glossary entry, when the
     /// words are a defined concept — what puts "Show Definition" on the menu.
     var resolveDefinition: (String) -> (name: String, description: String)? = { _ in nil }
@@ -1833,21 +1846,25 @@ final class ReaderWebView: WKWebView {
             // the paragraph under the ctrl-click, found by its stable id.
             addItem(to: menu, title: "Add Comment\u{2026}",
                     action: #selector(commentAtPoint(_:)))
+            // And where one already stands, it can leave the same way.
+            if !commentsByFragment.isEmpty {
+                addItem(to: menu, title: "Remove Comment",
+                        action: #selector(removeCommentAtPoint(_:)))
+            }
         }
         // New commands (Define, Copy Link, Add to Concepts, …) go here.
     }
 
-    /// The paragraph under the ctrl-click, by the nearest ancestor with
-    /// a stable id — the comment's anchor when no words are selected.
-    @objc private func commentAtPoint(_ sender: Any?) {
-        let js = """
+    /// The element-at-point climb: the nearest ancestor with a stable
+    /// id; in the margins, the block nearest the click's height.
+    private var fragmentAtPointJS: String {
+        """
         (function(){
           var el = document.elementFromPoint(\(menuLocation.x), \(menuLocation.y));
           while (el && !(el.getAttribute && (el.getAttribute('data-id') || el.id))) {
             el = el.parentElement;
           }
           if (!el || el === document.body || el === document.documentElement) {
-            // The margins: the block nearest the click's height.
             var best = null, bestD = 1e9;
             document.querySelectorAll('[data-id]').forEach(function(c){
               var r = c.getBoundingClientRect();
@@ -1860,12 +1877,29 @@ final class ReaderWebView: WKWebView {
           return el.getAttribute('data-id') || el.id || '';
         })();
         """
-        evaluateJavaScript(js) { [weak self] result, _ in
+    }
+
+    /// The paragraph under the ctrl-click, by the nearest ancestor with
+    /// a stable id — the comment's anchor when no words are selected.
+    @objc private func commentAtPoint(_ sender: Any?) {
+        evaluateJavaScript(fragmentAtPointJS) { [weak self] result, _ in
             guard let self else { return }
             let fragment = (result as? String) ?? ""
             self.onAddComment(ReaderSelection(text: "",
                                               fragment: fragment.isEmpty ? nil : fragment,
                                               prefix: nil, suffix: nil))
+        }
+    }
+
+    /// The comment standing on the paragraph under the ctrl-click,
+    /// removed — Add Comment's counterpart, through the same climb.
+    @objc private func removeCommentAtPoint(_ sender: Any?) {
+        evaluateJavaScript(fragmentAtPointJS) { [weak self] result, _ in
+            guard let self,
+                  let fragment = result as? String, !fragment.isEmpty else { return }
+            for id in self.commentsByFragment[fragment] ?? [] {
+                self.onRemoveAnnotation(id)
+            }
         }
     }
 
