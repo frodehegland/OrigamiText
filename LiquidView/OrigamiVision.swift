@@ -2567,7 +2567,11 @@ private struct VisionCitationSheet: View {
     let onClose: () -> Void
 
     var body: some View {
+        // An internal citation's key is the cited document's address —
+        // the link to it carries its own BibTeX, as on the Mac.
         let reference = doc.references.first { $0.id == key }
+            ?? doc.links.first { $0.to == key }?.bibtex
+                .map { LiquidDoc.Reference(id: key, bibtex: $0) }
         let fields = reference.flatMap { BibTeXParser.first($0.bibtex)?.fields } ?? [:]
         let title = fields["title"] ?? reference?.citedAs ?? key
         let author = fields["author"] ?? ""

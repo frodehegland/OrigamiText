@@ -676,7 +676,8 @@ nonisolated enum OrigamiReading {
     /// citations in author–date words, note daggers and mark/emphasis
     /// syntax gone — fit for a quotation field.
     static func plainQuote(_ text: String, in doc: LiquidDoc) -> String {
-        var out = citationsResolved(text, in: doc, style: .authorDate)
+        var out = addressCitationsResolved(
+            citationsResolved(text, in: doc, style: .authorDate), in: doc)
         if let regex = try? NSRegularExpression(pattern: #"\[i?note:[^\]]+\]"#) {
             let ns = out as NSString
             out = regex.stringByReplacingMatches(
@@ -778,8 +779,43 @@ nonisolated enum OrigamiReading {
                                  markStyle: MarkedTextStyle = .orange,
                                  appearance: ColorScheme = .light) -> AttributedString {
         inlineAttributed(noteTokensResolved(
-            citationsResolved(text, in: doc, style: style, linked: true)),
+            addressCitationsResolved(
+                citationsResolved(text, in: doc, style: style, linked: true),
+                in: doc, linked: true)),
             markStyle: markStyle, appearance: appearance)
+    }
+
+    /// Typed-address citations — `[cites:address#paragraph]`, the form a
+    /// letter writes to cite a library document by identity — resolved
+    /// to readable words instead of the raw token: the author–date from
+    /// the link's own BibTeX where the document carries it, the cited
+    /// work's clipped title next, a plain → when nothing is known. Each
+    /// links on the citation scheme; the readers' cards resolve an
+    /// address key through `doc.links`.
+    static func addressCitationsResolved(_ text: String, in doc: LiquidDoc,
+                                         linked: Bool = false) -> String {
+        guard text.contains("[cites:") else { return text }
+        guard let regex = try? NSRegularExpression(pattern: #"\[cites:([^\]\s]+)\]"#) else {
+            return text
+        }
+        var out = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: out.length))
+        for match in matches.reversed() {
+            let target = out.substring(with: match.range(at: 1))
+            let base = target.components(separatedBy: "#").first ?? target
+            let record = (doc.links.first { $0.to == base }?.bibtex
+                ?? doc.references.first { $0.id == base }?.bibtex)
+                .flatMap { BibTeXRecord.records(in: $0).first }
+            var label = record.flatMap(authorDateLabel).map { "(\($0))" }
+                ?? record.flatMap { $0.title.isEmpty ? nil : "(\(clippedLabel($0.title)))" }
+                ?? "\u{2192}"
+            if linked {
+                let escaped = base.addingPercentEncoding(withAllowedCharacters: keyAllowed) ?? base
+                label = "[\(label)](\(citationScheme):\(escaped))"
+            }
+            out = out.replacingCharacters(in: match.range, with: label) as NSString
+        }
+        return out as String
     }
 
     /// The URL scheme the stretchtext toggles carry: the closed `»`,
