@@ -2719,7 +2719,8 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
                                 image: UIImage(systemName: "square.and.pencil")) { _ in
                 parent.onNote(pieces.selected, pieces.prefix, pieces.suffix)
             }
-            return UIMenu(children: [copy, cite, highlight, note])
+            // Copy stands last — the reader's own verbs lead.
+            return UIMenu(children: [cite, highlight, note, copy])
         }
     }
 
