@@ -518,15 +518,28 @@ final class VisionModel {
             options: [.skipsPackageDescendants]) else { return }
         var changed = false
         var placeholdersRemain = false
+        var present: Set<String> = []
         for case let url as URL in enumerator {
             let name = url.lastPathComponent
             if name.hasSuffix(".icloud"), name.contains(".epub") {
                 placeholdersRemain = true
+                // Undownloaded is not removed: a placeholder's book
+                // counts as present, so nothing retires mid-sync.
+                var trimmed = name
+                if trimmed.hasPrefix(".") { trimmed.removeFirst() }
+                trimmed = String(trimmed.dropLast(".icloud".count))
+                if trimmed.lowercased().hasSuffix(".epub") {
+                    present.insert(EPUBSupersession.folderName(
+                        forFileName: String(trimmed.dropLast(".epub".count))))
+                }
                 continue
             }
             guard url.pathExtension.lowercased() == "epub" else { continue }
+            present.insert(EPUBSupersession.folderName(
+                forFileName: url.deletingPathExtension().lastPathComponent))
             if importEPUB(at: url) { changed = true }
         }
+        retireSuperseded(presentFolders: present)
         if changed { rebuildEPUBIndex() }
         adoptStanding()
         // The citation graph the Mac researched — what the cited works
@@ -549,6 +562,34 @@ final class VisionModel {
 
     /// Downloads in flight are retried a few times, never forever.
     @ObservationIgnored private var scanRetries = 0
+
+    /// A re-published edition supersedes the old copy (see
+    /// EPUBSupersession): standing and annotations move to the
+    /// successor; the old unpack and record leave the shelf.
+    private func retireSuperseded(presentFolders: Set<String>) {
+        let retirements = EPUBSupersession.retirements(
+            records: epubRecords, presentFolders: presentFolders)
+        guard !retirements.isEmpty else { return }
+        for (old, successor) in retirements {
+            let oldSidecar = Self.annotationsRoot
+                .appendingPathComponent(old.id + ".annotations.jsonld")
+            let newSidecar = Self.annotationsRoot
+                .appendingPathComponent(successor.id + ".annotations.jsonld")
+            if FileManager.default.fileExists(atPath: oldSidecar.path),
+               !FileManager.default.fileExists(atPath: newSidecar.path) {
+                try? FileManager.default.moveItem(at: oldSidecar, to: newSidecar)
+            }
+            if pinnedIDs.remove(old.id) != nil { pinnedIDs.insert(successor.id) }
+            if setAsideIDs.remove(old.id) != nil { setAsideIDs.insert(successor.id) }
+            try? FileManager.default.removeItem(
+                at: Self.epubsRoot.appendingPathComponent(old.folder, isDirectory: true))
+            epubRecords.removeAll { $0.id == old.id }
+        }
+        UserDefaults.standard.set(pinnedIDs.sorted(), forKey: "epubTopOfPile")
+        UserDefaults.standard.set(setAsideIDs.sorted(), forKey: "epubSetAside")
+        persistEPUBRecords()
+        rebuildEPUBIndex()
+    }
 
     // MARK: - Annotations (the reader's highlights and notes)
 

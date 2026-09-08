@@ -200,3 +200,56 @@ final class ConceptOverrideStore {
         }
     }
 }
+
+/// Community supersession: when a shelf book's own file has left the
+/// community folder while a same-titled sibling's file is present, the
+/// absent one has been re-published — a corrected conversion, a
+/// DOI-named replacement — and the old copy retires in the successor's
+/// favour. Decision logic only, shared by the phone and the headset;
+/// each model carries out its own retirements (standing and
+/// annotations move to the successor first). The Mac needs none of
+/// this: its mirror republishes anything the folder lacks, so absence
+/// cannot arise there.
+nonisolated enum EPUBSupersession {
+
+    /// Case-, diacritic- and punctuation-blind title identity.
+    static func titleKey(_ title: String) -> String {
+        title.folding(options: [.diacriticInsensitive, .caseInsensitive],
+                      locale: nil)
+            .unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) }
+            .map(String.init)
+            .joined()
+    }
+
+    /// The unpack-folder name a file would import under — the same
+    /// derivation `importEPUB` uses, so presence in the community
+    /// folder can be matched against `EPUBRecord.folder`.
+    static func folderName(forFileName name: String) -> String {
+        let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
+        return identity.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+    }
+
+    /// The records to retire, each with its successor: the record's own
+    /// file is absent from the folder while a same-titled sibling's is
+    /// present. An iCloud placeholder counts as present — undownloaded
+    /// is not removed, and no book retires mid-sync.
+    static func retirements(records: [EPUBRecord], presentFolders: Set<String>)
+        -> [(old: EPUBRecord, successor: EPUBRecord)] {
+        var presentByTitle: [String: EPUBRecord] = [:]
+        for record in records where presentFolders.contains(record.folder) {
+            let key = titleKey(record.title)
+            if !key.isEmpty, presentByTitle[key] == nil {
+                presentByTitle[key] = record
+            }
+        }
+        var retirements: [(EPUBRecord, EPUBRecord)] = []
+        for record in records where !presentFolders.contains(record.folder) {
+            guard let successor = presentByTitle[titleKey(record.title)],
+                  successor.id != record.id else { continue }
+            retirements.append((record, successor))
+        }
+        return retirements
+    }
+}
