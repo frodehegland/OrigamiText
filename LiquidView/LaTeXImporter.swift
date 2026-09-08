@@ -1,4 +1,6 @@
 import Foundation
+import CoreGraphics
+import ImageIO
 
 /// LaTeX in, an Origami document out — the reverse of Author's LaTeX
 /// export. Reads a zipped LaTeX project (Author's export: `main.tex`,
@@ -34,6 +36,10 @@ nonisolated enum LaTeXImporter {
         var references: [LiquidDoc.Reference] = []
         var tables: [LiquidDoc.Table] = []
         var assets: [LiquidDoc.Asset] = []
+        /// The paper's own DOI, from `\acmDOI` — carried into the
+        /// EPUB's Visual-Meta so citations to the paper resolve and a
+        /// DOI-named export needs no lookup.
+        var doi: String? = nil
     }
 
     // MARK: - Entry points
@@ -88,11 +94,29 @@ nonisolated enum LaTeXImporter {
             .map { String(decoding: $0.value, as: UTF8.self) }
             .joined(separator: "\n")
 
+        // Some sources nest another zip beside the manuscript (ht26-2
+        // ships its preview bundle, holding images the outer archive
+        // lacks) — those entries answer as a last resort, opened once.
+        var nestedEntries: [String: Data]?
         let resources: (String) -> Data? = { path in
             let name = (path as NSString).lastPathComponent
-            return zip.entry(joined(mainDir, path))
+            if let direct = zip.entry(joined(mainDir, path))
                 ?? zip.entry(path)
-                ?? zip.entries.first { $0.key.hasSuffix("/" + name) || $0.key == name }?.value
+                ?? zip.entries.first(where: { $0.key.hasSuffix("/" + name) || $0.key == name })?.value {
+                return direct
+            }
+            if nestedEntries == nil {
+                nestedEntries = [:]
+                for (entryName, data) in zip.entries
+                where entryName.lowercased().hasSuffix(".zip") && !entryName.contains("__MACOSX") {
+                    guard let inner = try? ZipReader(data: data) else { continue }
+                    for (innerName, innerData) in inner.entries {
+                        nestedEntries?[innerName] = innerData
+                    }
+                }
+            }
+            return nestedEntries?[path]
+                ?? nestedEntries?.first { $0.key.hasSuffix("/" + name) || $0.key == name }?.value
         }
         return importTeX(tex, bibliography: bibliography, resources: resources,
                          fallbackTitle: url.deletingPathExtension().lastPathComponent)
@@ -147,6 +171,9 @@ nonisolated enum LaTeXImporter {
         let title = firstBalancedArgument(of: "title", in: stripped,
                                           skippingBracketOption: true)
             .map { inline(convert: $0.value).text }
+            // A print line-break inside the title is one line here —
+            // the title travels into citations and shelf rows.
+            .map { $0.replacingOccurrences(of: "\n", with: " ") }
             .flatMap { $0.isEmpty ? nil : $0 }
             ?? fallbackTitle
         let authors = balancedArguments(of: "author", in: stripped,
@@ -168,6 +195,11 @@ nonisolated enum LaTeXImporter {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty }
 
+        // The paper's own DOI, from the preamble.
+        let doi = firstBalancedArgument(of: "acmDOI", in: stripped)
+            .map { $0.value.trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.contains("/") ? $0 : nil }
+
         // The words live between \begin{document} and \end{document};
         // a fragment with neither reads whole.
         var body = stripped
@@ -178,19 +210,25 @@ nonisolated enum LaTeXImporter {
             body = String(body[..<end.lowerBound])
         }
 
+        // LaTeX's printed numbers, recovered before the scan: headings
+        // gain them, and \ref/\autoref/\cref become the words the PDF
+        // prints — "3.2", "Figure 4", "Appendix A".
+        body = resolvingCrossReferences(in: body)
+
         var paragraphs: [LiquidDoc.Paragraph] = []
         var assets: [LiquidDoc.Asset] = []
         var notes: [(id: String, text: String)] = []
         var ordinal = 0
         var assetOrdinal = 0
         var tableOrdinal = 0
+        var noteOrdinal = 0
 
         func nextID() -> String {
             ordinal += 1
             return "p\(ordinal)"
         }
         func appendText(_ raw: String) {
-            let converted = inline(convert: raw)
+            let converted = inline(convert: raw, noteCounter: &noteOrdinal)
             for (id, note) in converted.notes { notes.append((id, note)) }
             let text = converted.text
             guard !text.isEmpty else { return }
@@ -232,12 +270,24 @@ nonisolated enum LaTeXImporter {
             var resolved = resources(path)
             var resolvedName = (path as NSString).lastPathComponent
             if resolved == nil {
-                for probe in ["jpg", "jpeg", "png", "pdf", "tiff"] {
+                for probe in ["jpg", "jpeg", "png", "pdf", "tiff",
+                              "JPG", "JPEG", "PNG", "PDF"] {
                     if let data = resources(path + "." + probe) {
                         resolved = data
                         resolvedName += "." + probe
                         break
                     }
+                }
+            }
+            // A PDF figure becomes pixels: WebKit would show it, the
+            // native readers would not.
+            if let data = resolved,
+               resolvedName.lowercased().hasSuffix(".pdf")
+                || data.starts(with: Array("%PDF".utf8)) {
+                if let png = rasterizedPDF(data) {
+                    resolved = png
+                    resolvedName = ((resolvedName as NSString)
+                        .deletingPathExtension) + ".png"
                 }
             }
             let paragraphID = nextID()
@@ -254,8 +304,14 @@ nonisolated enum LaTeXImporter {
                 paragraphs.append(LiquidDoc.Paragraph(
                     id: paragraphID, heading: nil, text: "![\(caption)](asset:\(assetID))"))
             } else {
+                // The archive does not carry the file (ht26-2 ships
+                // without seven of its images): the caption stands,
+                // with a quiet note where the picture would be.
+                let words = caption.isEmpty
+                    ? "(A figure the source archive does not include.)"
+                    : caption + " (The source archive does not include this figure's image.)"
                 paragraphs.append(LiquidDoc.Paragraph(
-                    id: paragraphID, heading: nil, text: "![\(caption)](\(path))"))
+                    id: paragraphID, heading: nil, text: words))
             }
         }
         func appendTable(body tableBody: String) {
@@ -311,7 +367,7 @@ nonisolated enum LaTeXImporter {
                 }
                 number += 1
                 let marker = numbered ? "\(number). " : "\u{2022} "
-                let converted = inline(convert: rest)
+                let converted = inline(convert: rest, noteCounter: &noteOrdinal)
                 for (id, note) in converted.notes { notes.append((id, note)) }
                 if !converted.text.isEmpty {
                     paragraphs.append(LiquidDoc.Paragraph(
@@ -353,6 +409,13 @@ nonisolated enum LaTeXImporter {
                     case "abstract":
                         flushPlain()
                         appendHeading("Abstract", level: 1)
+                        scan(String(rest[range.bodySub(rest)]))
+                        handled = true
+                    case "acks":
+                        // acmart's acknowledgments: the PDF prints the
+                        // heading; the words follow.
+                        flushPlain()
+                        appendHeading("Acknowledgments", level: 1)
                         scan(String(rest[range.bodySub(rest)]))
                         handled = true
                     case "figure", "figure*":
@@ -587,15 +650,24 @@ nonisolated enum LaTeXImporter {
 
         // BibTeX matches keys case-insensitively — \cite{docling} finds
         // @techreport{Docling}. The format's [cite:] tokens are exact,
-        // so body tokens take the bib's canonical casing.
+        // so body tokens take the bib's canonical casing. A second,
+        // punctuation-blind index catches a body and bibliography that
+        // drifted apart in the separators alone — ht26-54 cites
+        // ca-nurnberg-99 while its .bib says ca-nurnberg+99.
         let canonicalKey = Dictionary(entries.map { ($0.key.lowercased(), $0.key) },
                                       uniquingKeysWith: { first, _ in first })
+        func folded(_ key: String) -> String {
+            key.lowercased().filter { $0.isLetter || $0.isNumber }
+        }
+        let foldedKey = Dictionary(entries.map { (folded($0.key), $0.key) },
+                                   uniquingKeysWith: { first, _ in first })
         for index in paragraphs.indices {
             let paragraph = paragraphs[index]
             guard paragraph.text.contains("[cite:") else { continue }
             var text = paragraph.text
             for key in captures(in: text, pattern: #"\[cite:([^\]]+)\]"#) {
-                if let proper = canonicalKey[key.lowercased()], proper != key {
+                let proper = canonicalKey[key.lowercased()] ?? foldedKey[folded(key)]
+                if let proper, proper != key {
                     text = text.replacingOccurrences(of: "[cite:\(key)]",
                                                      with: "[cite:\(proper)]")
                 }
@@ -620,7 +692,196 @@ nonisolated enum LaTeXImporter {
 
         return Result(title: title, author: author, publication: publication,
                       body: paragraphs, references: references,
-                      tables: namedTables, assets: assets)
+                      tables: namedTables, assets: assets, doi: doi)
+    }
+
+    // MARK: - Cross-references
+
+    /// LaTeX's printed numbers, recovered: sections, figures, tables
+    /// and equations counted in document order (`\appendix` switching
+    /// sections to letters), every `\label` bound to the number it
+    /// stands beside, and every `\ref`/`\autoref`/`\cref`/`\Cref`
+    /// replaced by the words the PDF prints. Section headings gain
+    /// their numbers too, so the words a reference names are the words
+    /// the outline shows. A label nothing defines renders as "?", as
+    /// LaTeX itself would.
+    private static func resolvingCrossReferences(in body: String) -> String {
+        struct Target { let phrase: String; let number: String }
+        var targets: [String: Target] = [:]
+        var edits: [(range: Range<String.Index>, replacement: String)] = []
+
+        let eventPattern = #"\\(section|subsection|subsubsection)(\*)?\s*(?=[\[{])|\\begin\{(figure\*?|teaserfigure|table\*?|equation|align|eqnarray|gather|lstlisting|minted)\}|\\appendix\b|\\label\{([^}]*)\}"#
+        guard let events = try? NSRegularExpression(pattern: eventPattern) else { return body }
+        let ns = body as NSString
+        var c1 = 0, c2 = 0, c3 = 0
+        var appendixMode = false
+        var figureCount = 0, tableCount = 0, equationCount = 0, listingCount = 0
+        struct EnvSpan { let range: NSRange; let phrase: String; let number: String }
+        var envSpans: [EnvSpan] = []
+        var currentSection: Target?
+
+        func sectionNumber() -> String {
+            let first = appendixMode
+                ? String(UnicodeScalar(64 + min(max(c1, 1), 26))!)
+                : String(c1)
+            // LaTeX keeps the zero: a \subsubsection straight under a
+            // \section prints as 6.0.1, never 6.1.
+            var parts = [first]
+            if c3 > 0 { parts.append(String(c2)); parts.append(String(c3)) }
+            else if c2 > 0 { parts.append(String(c2)) }
+            return parts.joined(separator: ".")
+        }
+
+        let wholeRange = NSRange(location: 0, length: ns.length)
+        for match in events.matches(in: body, range: wholeRange) {
+            if match.range(at: 1).location != NSNotFound {
+                let command = ns.substring(with: match.range(at: 1))
+                let starred = match.range(at: 2).location != NSNotFound
+                if starred {
+                    // Unnumbered: labels beside it have nothing to print.
+                    currentSection = nil
+                    continue
+                }
+                switch command {
+                case "section": c1 += 1; c2 = 0; c3 = 0
+                case "subsection": c2 += 1; c3 = 0
+                default: c3 += 1
+                }
+                let number = sectionNumber()
+                currentSection = Target(
+                    phrase: appendixMode ? "Appendix \(number)" : "Section \(number)",
+                    number: number)
+                // The heading's printed number, inserted into its title
+                // argument. The brace may follow an optional [short].
+                var probe = match.range.upperBound
+                if probe < ns.length, ns.character(at: probe) == UInt16(UnicodeScalar("[").value) {
+                    let close = ns.range(of: "]", options: [],
+                                         range: NSRange(location: probe,
+                                                        length: ns.length - probe))
+                    if close.location != NSNotFound { probe = close.upperBound }
+                }
+                let braceSearch = NSRange(location: probe,
+                                          length: min(4, ns.length - probe))
+                let brace = ns.range(of: "{", options: [], range: braceSearch)
+                if brace.location != NSNotFound,
+                   let insertAt = Range(NSRange(location: brace.location + 1, length: 0),
+                                        in: body) {
+                    edits.append((insertAt, "\(number) "))
+                }
+            } else if match.range(at: 3).location != NSNotFound {
+                let env = ns.substring(with: match.range(at: 3))
+                let phrase: String
+                let number: String
+                if env.hasPrefix("fig") || env == "teaserfigure" {
+                    figureCount += 1; number = String(figureCount); phrase = "Figure \(number)"
+                } else if env.hasPrefix("table") {
+                    tableCount += 1; number = String(tableCount); phrase = "Table \(number)"
+                } else if env == "lstlisting" || env == "minted" {
+                    listingCount += 1; number = String(listingCount); phrase = "Listing \(number)"
+                } else {
+                    equationCount += 1; number = String(equationCount); phrase = "Equation \(number)"
+                }
+                guard let start = Range(match.range, in: body) else { continue }
+                let tail = String(body[start.lowerBound...])
+                if let range = environmentRange(named: env, in: tail) {
+                    let whole = NSRange(range.whole, in: tail)
+                    envSpans.append(EnvSpan(
+                        range: NSRange(location: match.range.location,
+                                       length: whole.location + whole.length),
+                        phrase: phrase, number: number))
+                }
+                // Listings name their label in the options, not with
+                // \label: [caption=…, label={lst:hidden}].
+                if env == "lstlisting" || env == "minted" {
+                    let optionSearch = NSRange(
+                        location: match.range.upperBound,
+                        length: min(400, ns.length - match.range.upperBound))
+                    if let optionMatch = try? NSRegularExpression(
+                        pattern: #"^\s*\[[^\]]*label\s*=\s*\{?([^,\]\}]+)"#)
+                        .firstMatch(in: body, range: optionSearch),
+                       optionMatch.range(at: 1).location != NSNotFound {
+                        let key = ns.substring(with: optionMatch.range(at: 1))
+                            .trimmingCharacters(in: .whitespaces)
+                        if targets[key] == nil {
+                            targets[key] = Target(phrase: phrase, number: number)
+                        }
+                    }
+                }
+            } else if match.range(at: 4).location != NSNotFound {
+                let key = ns.substring(with: match.range(at: 4))
+                    .trimmingCharacters(in: .whitespaces)
+                guard targets[key] == nil else { continue }
+                let offset = match.range.location
+                if let enclosing = envSpans.last(where: { NSLocationInRange(offset, $0.range) }) {
+                    targets[key] = Target(phrase: enclosing.phrase, number: enclosing.number)
+                } else if let currentSection {
+                    targets[key] = currentSection
+                }
+            } else {
+                // \appendix: sections restart as letters.
+                appendixMode = true
+                c1 = 0; c2 = 0; c3 = 0
+            }
+        }
+
+        // Pass 2: the references become printed words.
+        guard let refs = try? NSRegularExpression(
+            pattern: #"\\(autoref|cref|Cref|ref|pageref)\{([^}]*)\}"#) else { return body }
+        for match in refs.matches(in: body, range: wholeRange) {
+            let kind = ns.substring(with: match.range(at: 1))
+            let keys = ns.substring(with: match.range(at: 2))
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            let words = keys.map { key -> String in
+                guard let target = targets[key] else { return "?" }
+                switch kind {
+                case "ref", "pageref": return target.number
+                case "cref":
+                    return target.phrase.prefix(1).lowercased() + target.phrase.dropFirst()
+                default: return target.phrase
+                }
+            }.joined(separator: " and ")
+            if let range = Range(match.range, in: body) {
+                edits.append((range, words))
+            }
+        }
+
+        var text = body
+        for edit in edits.sorted(by: { $0.range.lowerBound > $1.range.lowerBound }) {
+            text.replaceSubrange(edit.range, with: edit.replacement)
+        }
+        return text
+    }
+
+    /// A PDF figure rasterised to PNG: WebKit shows a one-page PDF in
+    /// an `<img>`, but the native readers — and the phone — cannot, so
+    /// the EPUB carries pixels. Twice the media box, white-backed.
+    private static func rasterizedPDF(_ data: Data) -> Data? {
+        guard let provider = CGDataProvider(data: data as CFData),
+              let document = CGPDFDocument(provider),
+              let page = document.page(at: 1) else { return nil }
+        let box = page.getBoxRect(.mediaBox)
+        guard box.width > 1, box.height > 1 else { return nil }
+        let scale = min(2, 2200 / max(box.width, box.height))
+        let width = Int(box.width * scale)
+        let height = Int(box.height * scale)
+        guard width > 0, height > 0,
+              let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+        context.scaleBy(x: scale, y: scale)
+        context.translateBy(x: -box.minX, y: -box.minY)
+        context.drawPDFPage(page)
+        guard let image = context.makeImage() else { return nil }
+        let out = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            out, "public.png" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        return CGImageDestinationFinalize(destination) ? out as Data : nil
     }
 
     // MARK: - Inline conversion
@@ -631,14 +892,44 @@ nonisolated enum LaTeXImporter {
     /// escapes and accents resolved, leftover commands unwrapped, inline
     /// math kept verbatim.
     static func inline(convert raw: String) -> (text: String, notes: [(String, String)]) {
+        var counter = 0
+        return inline(convert: raw, noteCounter: &counter)
+    }
+
+    /// The counter threads through every call converting one document's
+    /// body, so note ids stay unique across paragraphs — `fn1` twice
+    /// would give two endnotes the same address.
+    static func inline(convert raw: String,
+                       noteCounter: inout Int) -> (text: String, notes: [(String, String)]) {
         var text = raw
         var notes: [(String, String)] = []
+
+        // TeX's other inline form, \( … \), normalises to $ … $ first.
+        while let range = text.range(of: #"\\\((.+?)\\\)"#, options: .regularExpression) {
+            let inner = String(text[range]).dropFirst(2).dropLast(2)
+            text.replaceSubrange(range, with: "$\(inner)$")
+        }
 
         // Inline math is TeX's own and stays verbatim — shield it.
         var mathSpans: [String] = []
         while let range = text.range(of: #"\$[^$\n]+\$"#, options: .regularExpression) {
             mathSpans.append(String(text[range]))
             text.replaceSubrange(range, with: "\u{FFFC}MATH\(mathSpans.count - 1)\u{FFFC}")
+        }
+
+        // \texorpdfstring{tex}{plain}: the second argument is the
+        // plain-text form — exactly what a plain-text document wants.
+        // Before the escapes pass: the tex argument may hold \\, which
+        // the escapes would otherwise split mid-group.
+        while let tex = firstBalancedArgument(of: "texorpdfstring", in: text) {
+            var replacement = ""
+            var end = tex.range.upperBound
+            let after = String(text[tex.range.upperBound...])
+            if let plain = balancedArgument(in: after, afterPrefixLength: 0) {
+                replacement = plain.value
+                end = text.index(tex.range.upperBound, offsetBy: plain.consumed)
+            }
+            text.replaceSubrange(tex.range.lowerBound..<end, with: replacement)
         }
 
         // Escaped specials become placeholders so the generic cleanup
@@ -669,8 +960,9 @@ nonisolated enum LaTeXImporter {
         // Footnotes out first — their words go to the endnotes, a
         // dagger token stays.
         while let argument = firstBalancedArgument(of: "footnote", in: text) {
-            let id = "fn\(notes.count + 1)"
-            let note = inline(convert: argument.value)
+            noteCounter += 1
+            let id = "fn\(noteCounter)"
+            let note = inline(convert: argument.value, noteCounter: &noteCounter)
             notes.append((id, note.text))
             notes.append(contentsOf: note.notes)
             text.replaceSubrange(argument.range, with: "[note:\(id)]")
@@ -685,6 +977,31 @@ nonisolated enum LaTeXImporter {
                     .map { "[cite:\($0.trimmingCharacters(in: .whitespacesAndNewlines))]" }
                     .joined()
                 text.replaceSubrange(argument.range, with: tokens)
+            }
+        }
+
+        // A label is an address, never words — inside a heading's own
+        // braces the scanner cannot strip it, so it goes here.
+        text = text.replacingOccurrences(of: #"\\label\{[^}]*\}"#, with: "",
+                                         options: .regularExpression)
+
+        // In-document hyperlink plumbing: \hypertarget{key}{} drops
+        // whole; \hyperlink{key}{words} keeps its words.
+        while let target = firstBalancedArgument(of: "hypertarget", in: text) {
+            var end = target.range.upperBound
+            let after = String(text[target.range.upperBound...])
+            if let words = balancedArgument(in: after, afterPrefixLength: 0) {
+                end = text.index(target.range.upperBound, offsetBy: words.consumed)
+            }
+            text.replaceSubrange(target.range.lowerBound..<end, with: "")
+        }
+        while let link = firstBalancedArgument(of: "hyperlink", in: text) {
+            let after = String(text[link.range.upperBound...])
+            if let words = balancedArgument(in: after, afterPrefixLength: 0) {
+                let end = text.index(link.range.upperBound, offsetBy: words.consumed)
+                text.replaceSubrange(link.range.lowerBound..<end, with: words.value)
+            } else {
+                text.replaceSubrange(link.range, with: "")
             }
         }
 
@@ -711,7 +1028,8 @@ nonisolated enum LaTeXImporter {
                                           ("textit", "*", "*"), ("texttt", "`", "`"),
                                           ("textsc", "", ""), ("underline", "", "")] {
             while let argument = firstBalancedArgument(of: command, in: text) {
-                let innerResult = inline(convert: argument.value)
+                let innerResult = inline(convert: argument.value,
+                                         noteCounter: &noteCounter)
                 notes.append(contentsOf: innerResult.notes)
                 text.replaceSubrange(argument.range,
                                      with: opener + innerResult.text + closer)
@@ -728,7 +1046,9 @@ nonisolated enum LaTeXImporter {
         for (mark, accent) in symbolMarks {
             let pattern = "\\\\\(NSRegularExpression.escapedPattern(for: String(mark)))\\{?([a-zA-Z])\\}?"
             while let range = text.range(of: pattern, options: .regularExpression) {
-                let letter = text[range].last.map(String.init) ?? ""
+                // The accented letter is the match's last LETTER — its
+                // last character may be the closing brace of {\'e}.
+                let letter = text[range].last { $0.isLetter }.map(String.init) ?? ""
                 text.replaceSubrange(range,
                                      with: (letter + accent).precomposedStringWithCanonicalMapping)
             }
@@ -825,6 +1145,10 @@ nonisolated enum LaTeXImporter {
     /// macro's value still resolves; a self-referential value is skipped.
     private static func expandingSimpleMacros(in source: String) -> String {
         var definitions: [(name: String, value: String)] = []
+        // Macros WITH parameters expand too, by substitution — ht26-8's
+        // \secLink{sec:x}{words} becomes \hyperref[sec:x]{words}, which
+        // the link handling then reads properly.
+        var parameterized: [(name: String, count: Int, body: String)] = []
         let patterns = [
             #"\\(?:newcommand|renewcommand|providecommand)\s*\{?\\([a-zA-Z]+)\}?\s*(\[[0-9]+\])?\s*\{"#,
             #"\\def\s*\\([a-zA-Z]+)\s*()\{"#,
@@ -834,9 +1158,6 @@ nonisolated enum LaTeXImporter {
             let ns = source as NSString
             for match in expression.matches(in: source,
                                             range: NSRange(location: 0, length: ns.length)) {
-                if match.range(at: 2).location != NSNotFound, match.range(at: 2).length > 0 {
-                    continue   // takes arguments — not expandable here
-                }
                 guard let whole = Range(match.range, in: source),
                       let nameRange = Range(match.range(at: 1), in: source) else { continue }
                 let name = String(source[nameRange])
@@ -844,10 +1165,19 @@ nonisolated enum LaTeXImporter {
                 guard let argument = balancedArgument(in: source, afterPrefixLength: bracePosition),
                       !argument.value.contains("\\\(name)")
                 else { continue }
+                if match.range(at: 2).location != NSNotFound, match.range(at: 2).length > 0 {
+                    let digits = ns.substring(with: match.range(at: 2))
+                        .filter(\.isNumber)
+                    if let count = Int(digits), (1...3).contains(count),
+                       !argument.value.contains("#\(count + 1)") {
+                        parameterized.append((name, count, argument.value))
+                    }
+                    continue
+                }
                 definitions.append((name, argument.value))
             }
         }
-        guard !definitions.isEmpty else { return source }
+        guard !definitions.isEmpty || !parameterized.isEmpty else { return source }
         var text = source
         for _ in 0..<2 {
             for (name, value) in definitions {
@@ -856,6 +1186,44 @@ nonisolated enum LaTeXImporter {
                     of: "\\\\\(name)(?![a-zA-Z])",
                     with: NSRegularExpression.escapedTemplate(for: cleaned),
                     options: .regularExpression)
+            }
+        }
+        for (name, count, body) in parameterized {
+            // A plain scan, not firstBalancedArgument: the macro's own
+            // definition site (\providecommand{\secLink}…) is a match
+            // without arguments and must be stepped over, not stop the
+            // search.
+            var cursor = text.startIndex
+            var guarded = 0
+            while guarded < 400,
+                  let hit = text.range(of: "\\\(name)",
+                                       range: cursor..<text.endIndex) {
+                guarded += 1
+                guard hit.upperBound < text.endIndex,
+                      text[hit.upperBound] == "{" else {
+                    cursor = hit.upperBound
+                    continue
+                }
+                var arguments: [String] = []
+                var end = hit.upperBound
+                var complete = true
+                for _ in 0..<count {
+                    let after = String(text[end...])
+                    guard after.first == "{",
+                          let next = balancedArgument(in: after, afterPrefixLength: 0)
+                    else { complete = false; break }
+                    arguments.append(next.value)
+                    end = text.index(end, offsetBy: next.consumed)
+                }
+                guard complete else { cursor = hit.upperBound; continue }
+                var expanded = body.replacingOccurrences(of: "\\xspace", with: "")
+                for (position, value) in arguments.enumerated() {
+                    expanded = expanded.replacingOccurrences(of: "#\(position + 1)",
+                                                             with: value)
+                }
+                guard !expanded.contains("\\\(name)") else { cursor = hit.upperBound; continue }
+                text.replaceSubrange(hit.lowerBound..<end, with: expanded)
+                cursor = text.startIndex
             }
         }
         return text
@@ -918,10 +1286,23 @@ nonisolated enum LaTeXImporter {
     /// A tabular body's rows: split at `\\`, rules dropped, cells at
     /// unescaped `&`, each cell inline-converted.
     private static func tabularRows(_ body: String) -> [[String]] {
-        // The column spec is the first braced group.
+        // The column spec is the leading braced group — two of them for
+        // tabularx ({width}{spec}), with an optional [t] between. A
+        // leading group is chrome, not a cell, whenever it holds no
+        // cell separators; a real first cell is never braced alone.
         var content = body
-        if let spec = balancedArgument(in: content, afterPrefixLength: 0) {
-            content = String(content.dropFirst(spec.consumed))
+        for _ in 0..<3 {
+            let trimmed = content.drop { $0 == " " || $0 == "\n" || $0 == "\t" }
+            if trimmed.first == "[", let close = trimmed.firstIndex(of: "]") {
+                content = String(trimmed[trimmed.index(after: close)...])
+                continue
+            }
+            guard trimmed.first == "{",
+                  let spec = balancedArgument(in: String(trimmed), afterPrefixLength: 0),
+                  !spec.value.contains("&"), !spec.value.contains("\\\\"),
+                  spec.value.count < 160
+            else { break }
+            content = String(trimmed.dropFirst(spec.consumed))
         }
         for rule in ["\\toprule", "\\midrule", "\\bottomrule", "\\hline", "\\centering"] {
             content = content.replacingOccurrences(of: rule, with: "")
@@ -931,6 +1312,15 @@ nonisolated enum LaTeXImporter {
             of: #"\\cmidrule\s*(\([^)]*\))?\s*\{[^}]*\}"#, with: "",
             options: .regularExpression)
         return content.components(separatedBy: "\\\\")
+            .map { row -> String in
+                // \\[.5ex] leaves its spacing option at the head of the
+                // next row — geometry, not words.
+                let trimmed = row.drop { $0 == " " || $0 == "\n" || $0 == "\t" }
+                if trimmed.first == "[", let close = trimmed.firstIndex(of: "]") {
+                    return String(trimmed[trimmed.index(after: close)...])
+                }
+                return row
+            }
             .map { row -> [String] in
                 splitUnescaped(expandingSpans(in: row), on: "&").map { cell in
                     // A grid cell is a value, not prose: emphasis unwraps

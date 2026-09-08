@@ -72,7 +72,7 @@ nonisolated enum OrigamiEPUBExporter {
             let abstract = ""
             let keywords: [String] = []
             let isbn = ""
-            let doi = ""
+            var doi = ""
         }
 
         struct Structure: Encodable {
@@ -379,7 +379,8 @@ nonisolated enum OrigamiEPUBExporter {
                 date: documentDate(of: doc),
                 identifier: identifier(of: doc),
                 publication: doc.publication,
-                origamiID: doc.id),
+                origamiID: doc.id,
+                doi: doc.doi ?? ""),
             structure: VisualMetaDocument.Structure(headings: headings),
             concepts: doc.concepts.map { concept in
                 VisualMetaDocument.ConceptNode(

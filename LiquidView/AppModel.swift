@@ -999,6 +999,7 @@ final class AppModel {
                                 fileURL: FileManager.default.temporaryDirectory)
             doc.documentType = LiquidDoc.DocumentType.book.rawValue
             doc.publication = result.publication
+            doc.doi = result.doi
             doc.references = result.references
             doc.tables = result.tables
             doc.assets = result.assets
