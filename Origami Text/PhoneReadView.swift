@@ -439,6 +439,9 @@ struct PhoneReaderView: View {
     /// The vertical selection menu: the words, their paragraph, and
     /// where on screen they stand.
     @State private var selectionMenu: SelectionMenuState?
+    /// Bumped when the menu closes, so the paragraph drops its grey
+    /// selection — acted on or not, the words stand clean again.
+    @State private var selectionClearToken = 0
     /// The words being sought — Find paints every occurrence and the
     /// Outline narrows to the sections that answer.
     @State private var findQuery: String?
@@ -651,42 +654,48 @@ struct PhoneReaderView: View {
                     anchor: menu.anchor,
                     highlightsPresent: true,
                     onFind: {
-                        selectionMenu = nil
+                        closeSelectionMenu()
                         enterOutline()
                         findQuery = menu.selected.trimmingCharacters(in: .whitespaces)
                     },
                     onCopyCitation: {
-                        selectionMenu = nil
+                        closeSelectionMenu()
                         copySelectionCitation(menu.doc, paragraph: menu.paragraph,
                                               selected: menu.selected)
                     },
                     onHighlight: { kind in
-                        selectionMenu = nil
+                        closeSelectionMenu()
                         model.addTag(kind, on: PhoneModel.ReaderSelection(
                             address: docID, paragraphID: menu.paragraph.id,
                             text: menu.selected, prefix: menu.prefix, suffix: menu.suffix))
                     },
                     onRemoveHighlights: {
-                        selectionMenu = nil
+                        closeSelectionMenu()
                         removeHighlights(doc: menu.doc, paragraph: menu.paragraph,
                                          selected: menu.selected)
                     },
                     onNote: {
-                        selectionMenu = nil
+                        closeSelectionMenu()
                         noteDraft = ""
                         noteTarget = SelectionNoteTarget(selection: PhoneModel.ReaderSelection(
                             address: docID, paragraphID: menu.paragraph.id,
                             text: menu.selected, prefix: menu.prefix, suffix: menu.suffix))
                     },
                     onCopy: {
-                        selectionMenu = nil
+                        closeSelectionMenu()
                         UIPasteboard.general.string = menu.selected
                     },
-                    onDismiss: { selectionMenu = nil })
+                    onDismiss: { closeSelectionMenu() })
             }
         }
         .environment(\.colorScheme, readingScheme)
         .scrollContentBackground(.hidden)
+    }
+
+    /// Puts the selection menu away and drops the grey selection with it.
+    private func closeSelectionMenu() {
+        selectionMenu = nil
+        selectionClearToken += 1
     }
 
     /// Fold into the outline, remembering the view to come back to.
@@ -793,7 +802,8 @@ struct PhoneReaderView: View {
                     selectionMenu = SelectionMenuState(
                         paragraph: paragraph, doc: doc, selected: selected,
                         prefix: prefix, suffix: suffix, anchor: anchor)
-                })
+                },
+                clearSelectionToken: selectionClearToken)
                 .id(paragraph.id)
         }
     }
@@ -1503,11 +1513,15 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
     /// neighbours, and where the words stand on screen (window
     /// coordinates) — the reader shows its own vertical menu there.
     let onSelectionMenu: (String, String?, String?, CGRect) -> Void
+    /// Bumped by the reader when its menu closes: the selection drops.
+    var clearSelectionToken: Int = 0
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: PhoneSelectableParagraph
+        /// The last clear ask this paragraph has answered.
+        var clearedSelectionToken = 0
         init(_ parent: PhoneSelectableParagraph) { self.parent = parent }
 
         func textView(_ textView: UITextView, shouldInteractWith url: URL,
@@ -1566,6 +1580,10 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
 
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self
+        if context.coordinator.clearedSelectionToken != clearSelectionToken {
+            context.coordinator.clearedSelectionToken = clearSelectionToken
+            view.selectedTextRange = nil
+        }
         view.linkTextAttributes = [.foregroundColor: inkColor ?? UIColor.label]
         let converted = converted()
         // Replacing the text drops any live selection; only real
