@@ -18,8 +18,21 @@ struct ReadHomeView: View {
     @State private var showsSettings = false
     /// The Set Aside books stay tucked behind their header until asked.
     @State private var showsSetAside = false
+    /// The Find field's words — narrowing Articles by title and author,
+    /// Journals by name.
+    @State private var searchText = ""
 
     private enum Shelf: Hashable { case articles, journals, guide }
+
+    /// A book answers the Find field by its title or any of its authors.
+    private func matchesSearch(_ record: EPUBRecord) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return true }
+        if record.title.localizedCaseInsensitiveContains(query) { return true }
+        return record.authorList.contains {
+            $0.localizedCaseInsensitiveContains(query)
+        }
+    }
 
     var body: some View {
         @Bindable var model = model
@@ -40,13 +53,13 @@ struct ReadHomeView: View {
                     List {
                         switch shelf {
                         case .articles:
-                            ForEach(model.alphabetical) { record in
+                            ForEach(model.alphabetical.filter(matchesSearch)) { record in
                                 PhoneShelfRow(record: record)
                             }
                             if !model.setAsideRecords.isEmpty {
                                 Section {
                                     if showsSetAside {
-                                        ForEach(model.setAsideRecords) { record in
+                                        ForEach(model.setAsideRecords.filter(matchesSearch)) { record in
                                             PhoneShelfRow(record: record)
                                                 .opacity(0.55)
                                         }
@@ -63,7 +76,10 @@ struct ReadHomeView: View {
                                 }
                             }
                         case .journals:
-                            ForEach(model.venues, id: \.self) { venue in
+                            ForEach(model.venues.filter { venue in
+                                searchText.isEmpty
+                                    || venue.localizedCaseInsensitiveContains(searchText)
+                            }, id: \.self) { venue in
                                 NavigationLink {
                                     PhoneJournalView(venue: venue)
                                 } label: {
@@ -97,7 +113,12 @@ struct ReadHomeView: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                ToolbarItem(placement: .status) {
+            }
+            // The shelf's foot: the gear on the left, the Find field
+            // beside it — titles, authors and journal names narrow as
+            // the words are typed.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                HStack(spacing: 10) {
                     Menu {
                         Button("Open EPUB…") { choosingEPUB = true }
                         Button(model.folderURL == nil
@@ -109,8 +130,32 @@ struct ReadHomeView: View {
                         Image(systemName: "gear")
                             .font(.subheadline)
                             .imageScale(.small)
+                            .foregroundStyle(.secondary)
                     }
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        TextField("Find", text: $searchText)
+                            .textFieldStyle(.plain)
+                            .autocorrectionDisabled()
+                        if !searchText.isEmpty {
+                            Button {
+                                searchText = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(.quaternary.opacity(0.5), in: Capsule())
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.bar)
             }
             .navigationDestination(item: $model.readerRecordID) { recordID in
                 PhoneReaderView(docID: recordID)
