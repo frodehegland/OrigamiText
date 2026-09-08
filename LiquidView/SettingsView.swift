@@ -72,7 +72,7 @@ enum ReaderLayoutStyle: String, CaseIterable, Identifiable {
 /// The Settings window's tabs, addressable so other parts of the app can
 /// open Settings onto a particular one.
 enum SettingsTab: Hashable {
-    case author, editor, reading, assistive, annotation, layout, library, dialog, hypermedia, ai, modules, openSource
+    case author, editor, reading, assistive, annotation, layout, library, hypermedia, ai, modules, openSource
 }
 
 /// The app's Settings window (Origami Text → Settings…, ⌘,).
@@ -103,9 +103,6 @@ struct SettingsView: View {
             LibrarySettingsView()
                 .tabItem { Label("Library", systemImage: "books.vertical") }
                 .tag(SettingsTab.library)
-            SharingSettingsView()
-                .tabItem { Label("Dialog", systemImage: "bubble.left.and.bubble.right") }
-                .tag(SettingsTab.dialog)
             HypermediaSettingsView()
                 .tabItem { Label("Hypermedia", systemImage: "network") }
                 .tag(SettingsTab.hypermedia)
@@ -119,7 +116,7 @@ struct SettingsView: View {
                 .tabItem { Label("Open Source", systemImage: "shippingbox") }
                 .tag(SettingsTab.openSource)
         }
-        // Wide enough for all twelve tab buttons to stand in one row —
+        // Wide enough for all the tab buttons to stand in one row —
         // narrower, the toolbar crops the trailing tabs.
         .frame(width: 960)
         .fixedSize(horizontal: false, vertical: true)
@@ -1239,6 +1236,10 @@ private struct HypermediaSettingsView: View {
 
     var body: some View {
         Form {
+            // The community's dialog — letters through Mail — lives
+            // here too: one pane for every way the app talks to the
+            // world beyond the community folder.
+            LetterSharingSections()
             Section {
                 seedProviderRows
             } header: {

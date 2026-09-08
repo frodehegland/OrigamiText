@@ -435,7 +435,10 @@ final class LetterPostStore {
 
 /// Settings → Sharing: the carrier, when letters go, how often to look
 /// for arriving ones, and the levers to do either right now.
-struct SharingSettingsView: View {
+/// The letters-through-Mail sections — carrier, location, sending and
+/// receiving — bare of their Form so the Hypermedia pane can hold them
+/// beside the network providers.
+struct LetterSharingSections: View {
     @Environment(AppModel.self) private var model
     @AppStorage(AppSettings.letterPostCarrierKey) private var carrier = LetterCarrier.off.rawValue
     @AppStorage(AppSettings.letterPostSendTimingKey) private var sendTiming = LetterSendTiming.immediately.rawValue
@@ -448,7 +451,7 @@ struct SharingSettingsView: View {
     private var mailChosen: Bool { carrier == LetterCarrier.appleMail.rawValue }
 
     var body: some View {
-        Form {
+        Group {
             Section {
                 Picker("Share letters through", selection: $carrier) {
                     ForEach(LetterCarrier.allCases) { choice in
@@ -537,7 +540,6 @@ struct SharingSettingsView: View {
                 }
             }
         }
-        .formStyle(.grouped)
     }
 
     /// The scheduled hour as a date, stored as minutes from midnight.
