@@ -541,6 +541,82 @@ final class VisionModel {
     /// Downloads in flight are retried a few times, never forever.
     @ObservationIgnored private var scanRetries = 0
 
+    // MARK: - Annotations (the reader's highlights and notes)
+
+    /// Sidecars live in one folder beside the unpacked books, keyed by
+    /// book address — the Mac's and the phone's layout exactly
+    /// (AppModel and PhoneModel hold the sibling copies; keep in step).
+    /// The book itself is never modified.
+    static var annotationsRoot: URL {
+        epubsRoot.appendingPathComponent("Annotations", isDirectory: true)
+    }
+
+    /// Bumped whenever a book's annotations change, so the reader
+    /// repaints its highlights.
+    private(set) var annotationsStamp = 0
+
+    /// One live selection in the reader: the book, the paragraph, and
+    /// the exact words with their disambiguating neighbours.
+    struct ReaderSelection {
+        let address: String
+        let paragraphID: String?
+        let text: String
+        let prefix: String?
+        let suffix: String?
+    }
+
+    /// Every annotation on the given book, oldest first.
+    func annotations(forAddress address: String) -> [WebAnnotation] {
+        AnnotationStore.load(for: address, in: Self.annotationsRoot)
+    }
+
+    /// Stamps one of the reader's judgments (Important, Disagree, …) on
+    /// the selection — a W3C tagging annotation; plain Highlight carries
+    /// no tag body.
+    func addTag(_ kind: ReaderAnnotationKind, on selection: ReaderSelection) {
+        if kind == .highlight {
+            addAnnotation(motivation: WebAnnotation.Motivation.highlighting,
+                          note: nil, on: selection)
+        } else {
+            addAnnotation(motivation: WebAnnotation.Motivation.tagging,
+                          note: kind.rawValue, purpose: "tagging", on: selection)
+        }
+    }
+
+    /// Attaches the reader's note to the selection.
+    func addComment(_ note: String, on selection: ReaderSelection) {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        addAnnotation(motivation: WebAnnotation.Motivation.commenting,
+                      note: trimmed, on: selection)
+    }
+
+    private func addAnnotation(motivation: String, note: String?,
+                               purpose: String? = nil, on selection: ReaderSelection) {
+        guard !selection.text.isEmpty else { return }
+        // The anchoring ladder, most robust first: the paragraph's
+        // stable id, then the exact words with disambiguating context.
+        var selectors: [WebAnnotation.Selector] = []
+        if let fragment = selection.paragraphID, !fragment.isEmpty {
+            selectors.append(.fragment(value: fragment,
+                                       conformsTo: WebAnnotation.fragmentConformsTo))
+        }
+        selectors.append(.quote(exact: selection.text,
+                                prefix: selection.prefix?.isEmpty == false ? selection.prefix : nil,
+                                suffix: selection.suffix?.isEmpty == false ? selection.suffix : nil))
+        let name = UserDefaults.standard.string(forKey: "authorName") ?? "Reader"
+        let annotation = WebAnnotation(
+            motivation: motivation,
+            creator: WebAnnotation.Person(name: name),
+            body: note.map { WebAnnotation.TextualBody(value: $0, purpose: purpose) },
+            target: WebAnnotation.Target(source: "origamitext://open/" + selection.address,
+                                         selectors: selectors))
+        var all = AnnotationStore.load(for: selection.address, in: Self.annotationsRoot)
+        all.append(annotation)
+        AnnotationStore.save(all, for: selection.address, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
     // MARK: - The time-spread's data lines
 
     /// The Sankey's series — yearly values standing on the corridor's
@@ -1606,6 +1682,9 @@ struct VisionReaderView: View {
     @State private var openStretch: Set<String> = []
     @State private var citationTarget: CitationTarget?
     @State private var noteTarget: NoteTarget?
+    /// The selection a Note… is being written for, and the words typed.
+    @State private var annotating: VisionModel.ReaderSelection?
+    @State private var noteDraft = ""
     @Environment(\.colorScheme) private var colorScheme
 
     private var mode: Mode { Mode(rawValue: modeRaw) ?? .scroll }
@@ -1709,6 +1788,14 @@ struct VisionReaderView: View {
                     // columns render with real depth in front of the
                     // attachment plane, and a flat overlay would sit
                     // behind them.
+                    .offset(z: 40)
+                } else if let selection = annotating {
+                    VisionNotePanel(quote: selection.text, draft: $noteDraft,
+                                    onCancel: { annotating = nil },
+                                    onSave: {
+                        model.addComment(noteDraft, on: selection)
+                        annotating = nil
+                    })
                     .offset(z: 40)
                 } else if let target = noteTarget {
                     VisionEndnoteSheet(
@@ -2150,6 +2237,7 @@ struct VisionReaderView: View {
         var out = OrigamiReading.inlineAttributed(paragraph.text, in: doc,
                                                   citations: .authorDate,
                                                   appearance: readingScheme)
+        out = painted(out, paragraphID: paragraph.id)
         if let trailing = trailingStretch,
            let url = URL(string: OrigamiReading.stretchScheme + ":" + trailing.id) {
             var mark = AttributedString(
@@ -2216,12 +2304,28 @@ struct VisionReaderView: View {
                 .help(expanded.contains(paragraph.id)
                       ? "Fold this section" : "Open this section")
             } else {
-                // Links wear the body's own ink (tint), and selection
-                // stays off the flowing text so a pinch always lands
-                // on the link, not a selection gesture.
-                Text(inline(paragraph, doc: doc, trailingStretch: trailingStretch))
-                    .font(font(for: paragraph))
-                    .tint(.primary)
+                // Links wear the body's own ink, and the words select:
+                // the selection carries the reader's verbs — Copy, Copy
+                // Citation, Highlight, Note — as on the phone.
+                VisionSelectableParagraph(
+                    attributed: inline(paragraph, doc: doc, trailingStretch: trailingStretch),
+                    baseSize: max((paragraphBaseSize(paragraph) + fontDelta) * typeScale, 6),
+                    baseBold: paragraph.effectiveHeading != nil,
+                    onLink: { handle($0, doc: doc) },
+                    onCopyCitation: { selected in
+                        copySelectionCitation(doc, paragraph: paragraph, selected: selected)
+                    },
+                    onHighlight: { kind, selected, prefix, suffix in
+                        model.addTag(kind, on: VisionModel.ReaderSelection(
+                            address: docID, paragraphID: paragraph.id,
+                            text: selected, prefix: prefix, suffix: suffix))
+                    },
+                    onNote: { selected, prefix, suffix in
+                        noteDraft = ""
+                        annotating = VisionModel.ReaderSelection(
+                            address: docID, paragraphID: paragraph.id,
+                            text: selected, prefix: prefix, suffix: suffix)
+                    })
             }
         }
         .padding(.bottom, 12)
@@ -2332,14 +2436,75 @@ struct VisionReaderView: View {
     }
 
     private func font(for paragraph: LiquidDoc.Paragraph) -> Font {
-        let base: CGFloat = switch paragraph.effectiveHeading {
+        AppFonts.body(max((paragraphBaseSize(paragraph) + fontDelta) * typeScale, 6),
+                      weight: paragraph.effectiveHeading == nil ? .regular : .bold)
+    }
+
+    private func paragraphBaseSize(_ paragraph: LiquidDoc.Paragraph) -> CGFloat {
+        switch paragraph.effectiveHeading {
         case 1: 28
         case 2: 23
         case 3: 19
         default: 17
         }
-        return AppFonts.body(max((base + fontDelta) * typeScale, 6),
-                             weight: paragraph.effectiveHeading == nil ? .regular : .bold)
+    }
+
+    /// Paints the reader's annotations over the paragraph's words — the
+    /// kind's colour behind the exact quote. The phone's sibling.
+    private func painted(_ attributed: AttributedString,
+                         paragraphID: String) -> AttributedString {
+        _ = model.annotationsStamp   // repaint when the sidecar changes
+        let annotations = model.annotations(forAddress: docID)
+        guard !annotations.isEmpty else { return attributed }
+        var out = attributed
+        let plain = String(out.characters)
+        for annotation in annotations {
+            var fragment: String?
+            var quote: String?
+            for selector in annotation.target.selectors {
+                switch selector {
+                case .fragment(let value, _): fragment = fragment ?? value
+                case .quote(let exact, _, _): quote = quote ?? exact
+                default: break
+                }
+            }
+            guard let quote else { continue }
+            if let fragment, fragment != paragraphID { continue }
+            guard let range = plain.range(of: quote),
+                  let attrRange = Range(range, in: out) else { continue }
+            let kind = ReaderAnnotationKind.kind(of: annotation) ?? .highlight
+            out[attrRange].backgroundColor =
+                VisionAnnotationInk.color(of: kind).opacity(0.35)
+        }
+        return out
+    }
+
+    /// The Mac's citation clipboard, headset-sized: the private JSON for
+    /// Author and Origami Text, the quoted words for everyone else.
+    /// Cross-app contract: the type string matches CitationClipboard.
+    private func copySelectionCitation(_ doc: LiquidDoc,
+                                       paragraph: LiquidDoc.Paragraph,
+                                       selected: String) {
+        let record = model.epubRecords.first { $0.id == docID }
+        let payload = OrigamiReading.authorCitationPayload(
+            for: paragraph, in: doc, quote: selected,
+            sourceFile: record?.originalFilename, doi: record?.doi)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let year = doc.date?.yearText
+            ?? String(calendar.component(.year, from: doc.created))
+        let citation = OrigamiCitation(
+            to: doc.id, fragment: paragraph.id, rel: "cites",
+            quotedText: payload.content,
+            author: doc.displayAuthor, year: year,
+            bibtex: payload.bibtex,
+            documentTitle: doc.title,
+            documentFilename: record?.originalFilename)
+        var item: [String: Any] = ["public.utf8-plain-text": payload.content]
+        if let data = try? JSONEncoder().encode(citation) {
+            item["info.futuretextlab.origami-citation"] = data
+        }
+        UIPasteboard.general.items = [item]
     }
 }
 
@@ -2449,6 +2614,249 @@ private struct VisionEndnoteSheet: View {
             }
         }
         .frame(width: 420, height: 280)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .shadow(radius: 12)
+    }
+}
+
+/// The annotation kinds' inks — the Mac's AnnotationKindStyle, headset-
+/// sized: the same UserDefaults keys and default colours, so a kind
+/// renamed or recoloured on the Mac reads the same here. Keep in step
+/// (AnnotationsListView.swift holds the original; PhoneReadView's
+/// PhoneAnnotationInk is the phone sibling).
+enum VisionAnnotationInk {
+    static func displayName(of kind: ReaderAnnotationKind) -> String {
+        let names = UserDefaults.standard.dictionary(forKey: "annotationKindNames")
+            as? [String: String]
+        let custom = names?[kind.rawValue]?.trimmingCharacters(in: .whitespaces)
+        return custom?.isEmpty == false ? custom! : kind.rawValue
+    }
+
+    static func defaultHex(of kind: ReaderAnnotationKind) -> String {
+        switch kind {
+        case .important: "E4572E"
+        case .quotable: "2E8B8B"
+        case .great: "3A9B35"
+        case .disagree: "C93C3C"
+        case .languageIssue: "8E5BC0"
+        case .problematic: "D98E1B"
+        case .whatIsThis: "3B6FD4"
+        case .highlight: "E8C51D"
+        case .strikethrough: "8A8A8A"
+        }
+    }
+
+    static func color(of kind: ReaderAnnotationKind) -> Color {
+        let colors = UserDefaults.standard.dictionary(forKey: "annotationKindColors")
+            as? [String: String]
+        let hex = colors?[kind.rawValue] ?? defaultHex(of: kind)
+        return Color(hexCode: hex) ?? .yellow
+    }
+}
+
+/// One paragraph as a real text view: live selection with the reader's
+/// verbs on it — Copy, Copy Citation, Highlight, Note — the phone's
+/// PhoneSelectableParagraph, headset-sized; keep the two in step. Links
+/// route to the reading's cards and wear the body's ink.
+private struct VisionSelectableParagraph: UIViewRepresentable {
+    let attributed: AttributedString
+    let baseSize: CGFloat
+    let baseBold: Bool
+    /// A link was tapped; true means the reading handled it.
+    let onLink: (URL) -> Bool
+    let onCopyCitation: (String) -> Void
+    /// The judgment, the exact words, and their neighbours for the anchor.
+    let onHighlight: (ReaderAnnotationKind, String, String?, String?) -> Void
+    let onNote: (String, String?, String?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: VisionSelectableParagraph
+        init(_ parent: VisionSelectableParagraph) { self.parent = parent }
+
+        func textView(_ textView: UITextView, shouldInteractWith url: URL,
+                      in characterRange: NSRange,
+                      interaction: UITextItemInteraction) -> Bool {
+            !parent.onLink(url)
+        }
+
+        /// The selection and its neighbours (32 characters each side),
+        /// the annotation's disambiguating context.
+        private func pieces(of textView: UITextView, in range: NSRange)
+            -> (selected: String, prefix: String?, suffix: String?)? {
+            let full = textView.text ?? ""
+            guard range.length > 0, let swiftRange = Range(range, in: full) else { return nil }
+            let selected = String(full[swiftRange])
+            guard !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            let prefix = String(full[..<swiftRange.lowerBound].suffix(32))
+            let suffix = String(full[swiftRange.upperBound...].prefix(32))
+            return (selected, prefix.isEmpty ? nil : prefix, suffix.isEmpty ? nil : suffix)
+        }
+
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
+                      suggestedActions: [UIMenuElement]) -> UIMenu? {
+            guard let pieces = pieces(of: textView, in: range) else { return nil }
+            let parent = parent
+            let copy = UIAction(title: "Copy",
+                                image: UIImage(systemName: "doc.on.doc")) { _ in
+                UIPasteboard.general.string = pieces.selected
+            }
+            let cite = UIAction(title: "Copy Citation",
+                                image: UIImage(systemName: "quote.opening")) { _ in
+                parent.onCopyCitation(pieces.selected)
+            }
+            let highlight = UIMenu(title: "Highlight",
+                                   image: UIImage(systemName: "highlighter"),
+                                   children: ReaderAnnotationKind.allCases.map { kind in
+                UIAction(title: VisionAnnotationInk.displayName(of: kind),
+                         image: UIImage(systemName: kind.systemImage)) { _ in
+                    parent.onHighlight(kind, pieces.selected, pieces.prefix, pieces.suffix)
+                }
+            })
+            let note = UIAction(title: "Note\u{2026}",
+                                image: UIImage(systemName: "square.and.pencil")) { _ in
+                parent.onNote(pieces.selected, pieces.prefix, pieces.suffix)
+            }
+            return UIMenu(children: [copy, cite, highlight, note])
+        }
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = false
+        view.backgroundColor = .clear
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.adjustsFontForContentSizeCategory = false
+        view.delegate = context.coordinator
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.parent = self
+        view.linkTextAttributes = [.foregroundColor: UIColor.label]
+        let converted = converted()
+        // Replacing the text drops any live selection; only real
+        // content changes are worth that.
+        if view.attributedText?.isEqual(to: converted) != true {
+            view.attributedText = converted
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView,
+                      context: Context) -> CGSize? {
+        // Measure at the proposed width; when none is proposed, at the
+        // width the view actually has, so every pass agrees.
+        let width = proposal.width.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            ?? (uiView.bounds.width > 0 ? uiView.bounds.width : 560)
+        let size = uiView.sizeThatFits(
+            CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: ceil(size.height))
+    }
+
+    /// The reading's own family at this size — AppFonts.body as UIKit
+    /// sees it, the serif system face standing in for unknown names.
+    private func baseUIFont() -> UIFont {
+        if let named = UIFont(name: AppFonts.bodyFamily, size: baseSize) {
+            return baseBold
+                ? UIFont(descriptor: named.fontDescriptor.withSymbolicTraits(.traitBold)
+                    ?? named.fontDescriptor, size: baseSize)
+                : named
+        }
+        let plain = UIFont.systemFont(ofSize: baseSize,
+                                      weight: baseBold ? .bold : .regular)
+        return plain.fontDescriptor.withDesign(.serif)
+            .map { UIFont(descriptor: $0, size: baseSize) } ?? plain
+    }
+
+    /// The AttributedString with its semantic runs resolved into UIKit
+    /// attributes — presentation intents to bold/italic/monospace on the
+    /// reading face, colours and links carried across. The Mac's
+    /// SelectableParagraph.converted() is the original; keep in step.
+    private func converted() -> NSAttributedString {
+        let base = baseUIFont()
+        let out = NSMutableAttributedString()
+        for run in attributed.runs {
+            let text = String(attributed.characters[run.range])
+            var font = base
+            if let intent = run.inlinePresentationIntent {
+                if intent.contains(.code) {
+                    font = .monospacedSystemFont(ofSize: baseSize * 0.92, weight: .regular)
+                }
+                var traits: UIFontDescriptor.SymbolicTraits = []
+                if intent.contains(.stronglyEmphasized) { traits.insert(.traitBold) }
+                if intent.contains(.emphasized) { traits.insert(.traitItalic) }
+                if !traits.isEmpty,
+                   let descriptor = font.fontDescriptor.withSymbolicTraits(
+                       font.fontDescriptor.symbolicTraits.union(traits)) {
+                    font = UIFont(descriptor: descriptor, size: baseSize)
+                }
+            }
+            let ink = run.foregroundColor.map(UIColor.init) ?? .label
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.lineSpacing = 3
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: ink,
+                .paragraphStyle: paragraphStyle,
+            ]
+            if let background = run.backgroundColor {
+                attributes[.backgroundColor] = UIColor(background)
+            }
+            if let link = run.link {
+                attributes[.link] = link
+            }
+            out.append(NSAttributedString(string: text, attributes: attributes))
+        }
+        return out
+    }
+}
+
+/// The Note being written over a selection: a glass card in the reading's
+/// overlay plane (sheets have no window to present in here), the quoted
+/// words above the editor, Save filing the note into the sidecar.
+private struct VisionNotePanel: View {
+    let quote: String
+    @Binding var draft: String
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Note")
+                    .font(.headline)
+                Spacer()
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                }
+                .buttonBorderShape(.circle)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                Text("\u{201C}\(quote)\u{201D}")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                TextEditor(text: $draft)
+                    .font(AppFonts.body(17))
+                    .scrollContentBackground(.hidden)
+                    .background(.quaternary.opacity(0.5),
+                                in: RoundedRectangle(cornerRadius: 12))
+                Button("Save", action: onSave)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .padding(16)
+        }
+        .frame(width: 460, height: 340)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
         .shadow(radius: 12)
     }
