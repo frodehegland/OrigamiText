@@ -1590,6 +1590,58 @@ final class AppModel {
         UserDefaults.standard.set(Self.introGuideVersion, forKey: versionKey)
     }
 
+    /// Settings ▸ Open Source: a bundled Markdown document read HERE,
+    /// converted to an Origami EPUB on the shelf — never handed to
+    /// whatever app owns Markdown. Re-exported when the bundled copy
+    /// changes; already-converted copies just open.
+    func openBundledSpec(resource: String, title: String) {
+        guard let source = Bundle.main.url(forResource: resource, withExtension: "md") else {
+            NSSound.beep()
+            showNote("The bundled document \(resource).md was not found.")
+            return
+        }
+        let id = "origami-spec-" + resource.lowercased()
+        let stampKey = "openSourceDocStamp-" + resource
+        let modified = (try? source.resourceValues(
+            forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?.timeIntervalSince1970 ?? 0
+        if UserDefaults.standard.double(forKey: stampKey) != modified,
+           let stale = epubRecords.first(where: { $0.id == id }) {
+            if openEPUB?.id == stale.folder { openEPUB = nil }
+            try? FileManager.default.removeItem(
+                at: Self.epubsRoot.appendingPathComponent(stale.folder, isDirectory: true))
+            try? FileManager.default.removeItem(at: storedEPUBURL(for: stale))
+            epubRecords.removeAll { $0.id == id }
+            persistEPUBRecords()
+        }
+        if let record = epubRecords.first(where: { $0.id == id }) {
+            openStoredEPUB(record)
+            return
+        }
+        do {
+            let imported = try MarkdownImporter.importFile(at: source)
+            let doc = LiquidDoc(
+                format: LiquidDoc.knownFormat,
+                id: id,
+                title: imported.title.isEmpty ? title : imported.title,
+                author: imported.author ?? "Future Text Lab",
+                created: .now,
+                body: imported.body,
+                links: [],
+                wraps: nil,
+                fileURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent(id + ".liquid"))
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(title + ".epub")
+            try OrigamiEPUBExporter.write(doc: doc, resolve: { _ in nil }, to: url)
+            openEPUBFile(at: url)
+            UserDefaults.standard.set(modified, forKey: stampKey)
+        } catch {
+            NSSound.beep()
+            showNote("Could not open \(title): \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Cross-document quote links (live + transclusion)
 
     /// A paragraph the reader should scroll to and flash after the next EPUB

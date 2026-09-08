@@ -959,27 +959,30 @@ private struct ModulesSettingsView: View {
 /// from here. This is the open-source doorway: everything needed to
 /// build a compatible app, in two Markdown files.
 private struct OpenSourceSettingsView: View {
+    @Environment(AppModel.self) private var model
+
     var body: some View {
         Form {
             Section {
                 LabeledContent("The Origami Document Format") {
-                    Button("Open") { open("ORIGAMI-DOCUMENT-FORMAT") }
+                    Button("Open") {
+                        model.openBundledSpec(resource: "ORIGAMI-DOCUMENT-FORMAT",
+                                              title: "The Origami Document Format")
+                    }
                 }
                 LabeledContent("Origami Text — What We Have Built") {
-                    Button("Open") { open("ORIGAMI-TEXT-OVERVIEW") }
+                    Button("Open") {
+                        model.openBundledSpec(resource: "ORIGAMI-TEXT-OVERVIEW",
+                                              title: "Origami Text — What We Have Built")
+                    }
                 }
             } footer: {
-                Text("The complete .origamitext specification, self-contained, and the account of what Origami Text does and why. Both open in your default Markdown app. Together they should be enough for your own AI, in a coding environment such as Xcode, to produce an app such as this — apart from the community's views, which travel as modules.")
+                Text("The complete .origamitext specification, self-contained, and the account of what Origami Text does and why. Both open right here, converted to Origami EPUBs on your shelf — the app reading its own story. Together they should be enough for your own AI, in a coding environment such as Xcode, to produce an app such as this — apart from the community's views, which travel as modules.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-    }
-
-    private func open(_ resource: String) {
-        guard let url = Bundle.main.url(forResource: resource, withExtension: "md") else { return }
-        NSWorkspace.shared.open(url)
     }
 }
 
