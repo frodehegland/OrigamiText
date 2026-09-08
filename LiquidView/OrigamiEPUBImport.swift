@@ -1307,8 +1307,14 @@ nonisolated enum OrigamiEPUBImporter {
                         // endnotes, where the token's id finds them.
                         // The ‡ the anchor shows plain readers is
                         // chrome here, not content.
-                        if let href = inner.attributes["href"],
-                           let hash = href.firstIndex(of: "#") {
+                        // data-note-id carries the token's stable id;
+                        // the href points at the exported purple number
+                        // (what standard readers resolve). Older
+                        // exports carried the id in the href itself.
+                        if let id = inner.attributes["data-note-id"], !id.isEmpty {
+                            out += "[inote:\(id)]"
+                        } else if let href = inner.attributes["href"],
+                                  let hash = href.firstIndex(of: "#") {
                             out += "[inote:\(href[href.index(after: hash)...])]"
                         }
                     } else if (inner.attributes["epub:type"] ?? "").contains("noteref")
@@ -1316,8 +1322,10 @@ nonisolated enum OrigamiEPUBImporter {
                         // The endnote's mark: a token carrying the
                         // note's id, rendered at reading time as a
                         // clickable dagger that reveals the note.
-                        if let href = inner.attributes["href"],
-                           let hash = href.firstIndex(of: "#") {
+                        if let id = inner.attributes["data-note-id"], !id.isEmpty {
+                            out += "[note:\(id)]"
+                        } else if let href = inner.attributes["href"],
+                                  let hash = href.firstIndex(of: "#") {
                             out += "[note:\(href[href.index(after: hash)...])]"
                         } else {
                             out += content

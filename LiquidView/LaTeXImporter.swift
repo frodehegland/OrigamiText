@@ -94,6 +94,14 @@ nonisolated enum LaTeXImporter {
             .map { String(decoding: $0.value, as: UTF8.self) }
             .joined(separator: "\n")
 
+        // The typeset bibliography, when the archive ships one — its
+        // \bibitem order is the numbering the printed PDF shows.
+        let printedBibliography = zip.entries
+            .filter { $0.key.lowercased().hasSuffix(".bbl") && !$0.key.contains("__MACOSX") }
+            .sorted { $0.key < $1.key }
+            .map { String(decoding: $0.value, as: UTF8.self) }
+            .joined(separator: "\n")
+
         // Some sources nest another zip beside the manuscript (ht26-2
         // ships its preview bundle, holding images the outer archive
         // lacks) — those entries answer as a last resort, opened once.
@@ -118,7 +126,9 @@ nonisolated enum LaTeXImporter {
             return nestedEntries?[path]
                 ?? nestedEntries?.first { $0.key.hasSuffix("/" + name) || $0.key == name }?.value
         }
-        return importTeX(tex, bibliography: bibliography, resources: resources,
+        return importTeX(tex, bibliography: bibliography,
+                         printedBibliography: printedBibliography,
+                         resources: resources,
                          fallbackTitle: url.deletingPathExtension().lastPathComponent)
     }
 
@@ -157,6 +167,7 @@ nonisolated enum LaTeXImporter {
     // MARK: - The parse
 
     static func importTeX(_ source: String, bibliography: String,
+                          printedBibliography: String = "",
                           resources: @escaping (String) -> Data?,
                           fallbackTitle: String) -> Result {
         // Author's live tables ride in a machine-readable comment block —
@@ -256,7 +267,9 @@ nonisolated enum LaTeXImporter {
             let caption = balancedArguments(of: "caption", in: figureBody).first
                 .map { inline(convert: $0).text }
                 .map { text in
-                    text.replacingOccurrences(of: #"\[cite:[^\]]+\]"#, with: "",
+                    text.replacingOccurrences(of: #"\[i?note:[^\]]+\]"#, with: "",
+                                              options: .regularExpression)
+                        .replacingOccurrences(of: #"\[cite:[^\]]+\]"#, with: "",
                                               options: .regularExpression)
                         .replacingOccurrences(of: "[", with: "(")
                         .replacingOccurrences(of: "]", with: ")")
@@ -686,9 +699,74 @@ nonisolated enum LaTeXImporter {
         let citedKeys = Set(paragraphs.flatMap {
             captures(in: $0.text, pattern: #"\[cite:([^\]]+)\]"#)
         })
-        let references = entries
-            .filter { citedKeys.isEmpty || citedKeys.contains($0.key) }
-            .map { LiquidDoc.Reference(id: $0.key, bibtex: $0.raw) }
+        // The references in the PRINTED order — the numbers readers see
+        // beside each citation must be the numbers the PDF shows. The
+        // archive's own typeset bibliography (.bbl, or a thebibliography
+        // block in the source) is exact; without one, ACM-Reference-
+        // Format's rule is emulated: alphabetical by the first author's
+        // surname, then year, then title.
+        let bibitemSource = strippingComments(from: printedBibliography + "\n" + source)
+        let bibitemKeys = captures(in: bibitemSource,
+                                   pattern: #"\\bibitem(?:\[[^\]]*\])?\s*\{([^}]*)\}"#)
+        // What the record keeps: with a printed bibliography, exactly
+        // its entries — the print can include works cited from places
+        // the body tokens cannot reach (ht26-26 cites one from a note
+        // inside another reference). Without one, the body's citations.
+        // (`folded` is the punctuation-blind key form from the cite
+        // remap above.)
+        let bibitemSet = Set(bibitemKeys.map(folded))
+        var cited = entries.filter { entry in
+            if !bibitemSet.isEmpty { return bibitemSet.contains(folded(entry.key)) }
+            return citedKeys.isEmpty || citedKeys.contains(entry.key)
+        }
+        if cited.isEmpty {
+            cited = entries.filter { citedKeys.isEmpty || citedKeys.contains($0.key) }
+        }
+        if bibitemKeys.isEmpty {
+            func surname(_ entry: BibTeXEntry) -> String {
+                let first = (entry.fields["author"] ?? entry.fields["editor"] ?? "")
+                    .components(separatedBy: " and ").first ?? ""
+                let name: String
+                if first.contains(",") {
+                    name = first.split(separator: ",").first
+                        .map { $0.trimmingCharacters(in: .whitespaces) } ?? first
+                } else {
+                    name = first.split(separator: " ").last.map(String.init) ?? first
+                }
+                return name.folding(options: [.diacriticInsensitive, .caseInsensitive],
+                                    locale: nil)
+            }
+            let keyed = cited.map { entry in
+                (entry, surname(entry), entry.year ?? "", (entry.title ?? "").lowercased())
+            }
+            cited = keyed.sorted {
+                if $0.1 != $1.1 { return $0.1 < $1.1 }
+                if $0.2 != $1.2 { return $0.2 < $1.2 }
+                return $0.3 < $1.3
+            }.map(\.0)
+        } else {
+            // Keys matched punctuation-blind: a .bbl and its .bib can
+            // drift apart in the separators (ca-nurnberg-99 vs +99).
+            var position: [String: Int] = [:]
+            for (index, key) in bibitemKeys.enumerated() {
+                let folded = key.lowercased().filter { $0.isLetter || $0.isNumber }
+                if position[folded] == nil { position[folded] = index }
+            }
+            let keyed = cited.enumerated().map { offset, entry in
+                (entry,
+                 position[entry.key.lowercased().filter { $0.isLetter || $0.isNumber }]
+                    ?? (bibitemKeys.count + offset))
+            }
+            cited = keyed.sorted { $0.1 < $1.1 }.map(\.0)
+        }
+
+        // Each reference carries its printed number, so every platform
+        // shows the same [n] the paper prints.
+        let references = cited.enumerated().map { offset, entry -> LiquidDoc.Reference in
+            var reference = LiquidDoc.Reference(id: entry.key, bibtex: entry.raw)
+            reference.number = offset + 1
+            return reference
+        }
 
         return Result(title: title, author: author, publication: publication,
                       body: paragraphs, references: references,

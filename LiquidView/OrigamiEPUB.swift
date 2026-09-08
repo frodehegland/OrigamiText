@@ -618,6 +618,14 @@ nonisolated enum OrigamiEPUBExporter {
         <main>
         """)
 
+        // Every element's exported anchor, by its stable id: a note
+        // dagger must point at the id a standard reader resolves — the
+        // purple number — never the data-id only this app's own readers
+        // consult ("#fn1" finds nothing out there; "#60B" is the note).
+        let addressByStableID = Dictionary(
+            body.map { (stableID($0), $0.address) },
+            uniquingKeysWith: { first, _ in first })
+
         // Defined concepts get their first occurrence wrapped in <dfn>
         // (spec C5) — the definition itself lives only in the JSON.
         var pendingConcepts = doc.concepts.filter { $0.tag != "heading" }.map(\.name)
@@ -648,7 +656,8 @@ nonisolated enum OrigamiEPUBExporter {
             }
             var html = self.element(for: element, citations: citations,
                                     stableID: stableID, assetsByID: assetsByID,
-                                    tablesByID: tablesByID)
+                                    tablesByID: tablesByID,
+                                    noteAddresses: addressByStableID)
             for name in pendingConcepts {
                 if let wrapped = wrappingFirstOccurrence(of: name, in: html) {
                     html = wrapped
@@ -732,7 +741,8 @@ nonisolated enum OrigamiEPUBExporter {
                                 citations: [Citation],
                                 stableID: (AddressedElement) -> String,
                                 assetsByID: [String: LiquidDoc.Asset],
-                                tablesByID: [String: LiquidDoc.Table] = [:]) -> String {
+                                tablesByID: [String: LiquidDoc.Table] = [:],
+                                noteAddresses: [String: String] = [:]) -> String {
         let paragraph = element.paragraph
         let trimmed = paragraph.text.trimmingCharacters(in: .whitespaces)
         let anchors = "id=\"\(element.address)\" data-id=\"\(escaped(stableID(element)))\""
@@ -759,13 +769,14 @@ nonisolated enum OrigamiEPUBExporter {
         if trimmed.count >= 3, trimmed.allSatisfy({ $0 == "-" }) {
             return "<hr \(anchors) />"
         }
-        let inline = inlineHTML(from: element.text, citations: citations)
+        let inline = inlineHTML(from: element.text, citations: citations,
+                                noteAddresses: noteAddresses)
         if let level = element.headingLevel {
             return "<h\(level + 1) \(anchors)>\(inline)</h\(level + 1)>"
         }
         if let speaker = paragraph.speaker, element.text.hasPrefix("\(speaker):") {
             let rest = inlineHTML(from: String(element.text.dropFirst(speaker.count + 1)),
-                                  citations: citations)
+                                  citations: citations, noteAddresses: noteAddresses)
             return "<p \(anchors)><strong class=\"speaker\">\(escaped(speaker)):</strong>\(rest)</p>"
         }
         return "<p \(anchors)>\(inline)</p>"
@@ -775,7 +786,8 @@ nonisolated enum OrigamiEPUBExporter {
     /// code/bold/italic/links, and bracketed origami addresses as the
     /// profile's numbered citation markers, linked to References with
     /// their stable citation id (spec C6).
-    private static func inlineHTML(from text: String, citations: [Citation]) -> String {
+    private static func inlineHTML(from text: String, citations: [Citation],
+                                   noteAddresses: [String: String] = [:]) -> String {
         var html = escaped(text)
         html = html.replacingOccurrences(of: "`([^`]+)`", with: "<code>$1</code>",
                                          options: .regularExpression)
@@ -791,14 +803,23 @@ nonisolated enum OrigamiEPUBExporter {
         // (class ot-inline-note), [note:] the plain endnote mark. Both
         // point at the Notes paragraphs the body closes with; the
         // importer reads the fragment back into the same token.
-        html = html.replacingOccurrences(
-            of: "\\[inote:([A-Za-z0-9._:-]+)\\]",
-            with: "<a class=\"ot-inline-note\" role=\"doc-noteref\" href=\"#$1\">\u{2021}</a>",
-            options: .regularExpression)
-        html = html.replacingOccurrences(
-            of: "\\[note:([A-Za-z0-9._:-]+)\\]",
-            with: "<a role=\"doc-noteref\" href=\"#$1\">\u{2021}</a>",
-            options: .regularExpression)
+        // The href must carry the note element's EXPORTED id — its
+        // purple number — because standard readers resolve ids, not
+        // data-ids; the token's own id rides in data-note-id so a
+        // re-import recovers the token exactly (fn1, never 60B).
+        func resolveNoteTokens(_ token: String, extraClass: String) {
+            let pattern = "\\[\(token):([A-Za-z0-9._:-]+)\\]"
+            while let range = html.range(of: pattern, options: .regularExpression) {
+                let id = String(html[range].dropFirst(token.count + 2).dropLast())
+                let target = noteAddresses[id] ?? id
+                html.replaceSubrange(range, with:
+                    "<a\(extraClass) role=\"doc-noteref\""
+                    + " data-note-id=\"\(attributeEscaped(id))\""
+                    + " href=\"#\(attributeEscaped(target))\">\u{2021}</a>")
+            }
+        }
+        resolveNoteTokens("inote", extraClass: " class=\"ot-inline-note\"")
+        resolveNoteTokens("note", extraClass: "")
         for citation in citations {
             guard let address = citation.address else {
                 // An external reference, cited by its BibTeX key — the
