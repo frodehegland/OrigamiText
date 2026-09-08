@@ -436,6 +436,21 @@ struct PhoneReaderView: View {
     /// The selection a Note… is being written for, and its words.
     @State private var noteTarget: SelectionNoteTarget?
     @State private var noteDraft = ""
+    /// The vertical selection menu: the words, their paragraph, and
+    /// where on screen they stand.
+    @State private var selectionMenu: SelectionMenuState?
+    /// The words being sought — Find paints every occurrence and the
+    /// Outline narrows to the sections that answer.
+    @State private var findQuery: String?
+
+    private struct SelectionMenuState {
+        let paragraph: LiquidDoc.Paragraph
+        let doc: LiquidDoc
+        let selected: String
+        let prefix: String?
+        let suffix: String?
+        let anchor: CGRect   // window coordinates
+    }
     /// Focus's assists — the Mac's: one sentence, one paragraph, or one
     /// word (RSVP) at a time.
     private enum Assist: String { case none, sentence, paragraph }
@@ -628,15 +643,59 @@ struct PhoneReaderView: View {
         .overlay {
             if showsRSVP { rsvpOverlay }
         }
+        // The selection's own menu: vertical from the start — every verb
+        // visible at once, where the system bar showed two and a ">".
+        .overlay {
+            if let menu = selectionMenu {
+                SelectionMenuCard(
+                    anchor: menu.anchor,
+                    highlightsPresent: true,
+                    onFind: {
+                        selectionMenu = nil
+                        enterOutline()
+                        findQuery = menu.selected.trimmingCharacters(in: .whitespaces)
+                    },
+                    onCopyCitation: {
+                        selectionMenu = nil
+                        copySelectionCitation(menu.doc, paragraph: menu.paragraph,
+                                              selected: menu.selected)
+                    },
+                    onHighlight: { kind in
+                        selectionMenu = nil
+                        model.addTag(kind, on: PhoneModel.ReaderSelection(
+                            address: docID, paragraphID: menu.paragraph.id,
+                            text: menu.selected, prefix: menu.prefix, suffix: menu.suffix))
+                    },
+                    onRemoveHighlights: {
+                        selectionMenu = nil
+                        removeHighlights(doc: menu.doc, paragraph: menu.paragraph,
+                                         selected: menu.selected)
+                    },
+                    onNote: {
+                        selectionMenu = nil
+                        noteDraft = ""
+                        noteTarget = SelectionNoteTarget(selection: PhoneModel.ReaderSelection(
+                            address: docID, paragraphID: menu.paragraph.id,
+                            text: menu.selected, prefix: menu.prefix, suffix: menu.suffix))
+                    },
+                    onCopy: {
+                        selectionMenu = nil
+                        UIPasteboard.general.string = menu.selected
+                    },
+                    onDismiss: { selectionMenu = nil })
+            }
+        }
         .environment(\.colorScheme, readingScheme)
         .scrollContentBackground(.hidden)
     }
 
     /// Fold into the outline, remembering the view to come back to.
+    /// A fresh fold starts clean; Find sets its words right after.
     private func enterOutline() {
         guard mode != .outline else { return }
         outlineReturnRaw = mode.rawValue
         outlineJumpID = nil
+        findQuery = nil
         expanded = []
         showsRSVP = false
         withAnimation { modeRaw = Mode.outline.rawValue }
@@ -651,7 +710,10 @@ struct PhoneReaderView: View {
         guard let jump else { return }
         switch outlineReturnMode {
         case .focus:
-            if let index = sections.firstIndex(where: { $0.id == jump }) {
+            // The jump may name a section or one of its paragraphs.
+            if let index = sections.firstIndex(where: { section in
+                section.id == jump || section.paragraphs.contains { $0.id == jump }
+            }) {
                 focusIndex = index
                 sentenceIndex = 0
                 paragraphIndex = 0
@@ -727,22 +789,10 @@ struct PhoneReaderView: View {
                     }
                     return false
                 },
-                onCopyCitation: { selected in
-                    copySelectionCitation(doc, paragraph: paragraph, selected: selected)
-                },
-                onHighlight: { kind, selected, prefix, suffix in
-                    model.addTag(kind, on: PhoneModel.ReaderSelection(
-                        address: docID, paragraphID: paragraph.id,
-                        text: selected, prefix: prefix, suffix: suffix))
-                },
-                onNote: { selected, prefix, suffix in
-                    noteDraft = ""
-                    noteTarget = SelectionNoteTarget(selection: PhoneModel.ReaderSelection(
-                        address: docID, paragraphID: paragraph.id,
-                        text: selected, prefix: prefix, suffix: suffix))
-                },
-                onRemoveHighlights: { selected in
-                    removeHighlights(doc: doc, paragraph: paragraph, selected: selected)
+                onSelectionMenu: { selected, prefix, suffix, anchor in
+                    selectionMenu = SelectionMenuState(
+                        paragraph: paragraph, doc: doc, selected: selected,
+                        prefix: prefix, suffix: suffix, anchor: anchor)
                 })
                 .id(paragraph.id)
         }
@@ -938,18 +988,74 @@ struct PhoneReaderView: View {
 
     // MARK: Outline
 
+    /// Whether a paragraph answers the sought words, on the rendered text.
+    private func matchesFind(_ paragraph: LiquidDoc.Paragraph, doc: LiquidDoc) -> Bool {
+        guard let query = findQuery?.trimmingCharacters(in: .whitespaces),
+              !query.isEmpty else { return true }
+        return String(rendered(paragraph.text, doc: doc).characters)
+            .localizedCaseInsensitiveContains(query)
+    }
+
     private func outlineBody(_ sections: [OrigamiSection], doc: LiquidDoc) -> some View {
-        List {
-            ForEach(sections) { section in
-                DisclosureGroup(isExpanded: Binding(
-                    get: { expanded.contains(section.id) },
-                    set: { open in
-                        if open { expanded.insert(section.id) }
-                        else { expanded.remove(section.id) }
-                    })) {
-                    ForEach(section.paragraphs) { paragraph in
-                        paragraphView(paragraph, doc: doc)
-                            .listRowSeparator(.hidden)
+        let finding = findQuery?.trimmingCharacters(in: .whitespaces).isEmpty == false
+        let shown = finding
+            ? sections.filter { section in
+                section.paragraphs.contains { matchesFind($0, doc: doc) }
+            }
+            : sections
+        return List {
+            if finding, let query = findQuery {
+                // The Find header: what is sought, how many sections
+                // answer, and the way out.
+                HStack {
+                    Label("\u{201C}\(query)\u{201D}", systemImage: "magnifyingglass")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("\(shown.count) section\(shown.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    Button {
+                        findQuery = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listRowSeparator(.hidden)
+            }
+            ForEach(shown) { section in
+                DisclosureGroup(isExpanded: finding
+                    ? .constant(true)
+                    : Binding(
+                        get: { expanded.contains(section.id) },
+                        set: { open in
+                            if open { expanded.insert(section.id) }
+                            else { expanded.remove(section.id) }
+                        })) {
+                    ForEach(finding
+                            ? section.paragraphs.filter { matchesFind($0, doc: doc) }
+                            : section.paragraphs) { paragraph in
+                        if finding {
+                            // A found paragraph is a door: tap it and
+                            // the reading opens right there.
+                            Text(rendered(paragraph.text, doc: doc,
+                                          paragraphID: paragraph.id))
+                                .font(.system(size: bodySize, design: .serif))
+                                .foregroundStyle(inkStyle)
+                                .lineLimit(4)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    outlineJumpID = paragraph.id
+                                    leaveOutline(sections)
+                                }
+                                .listRowSeparator(.hidden)
+                        } else {
+                            paragraphView(paragraph, doc: doc)
+                                .listRowSeparator(.hidden)
+                        }
                     }
                 } label: {
                     // The title is a door: tap it and the reading opens
@@ -977,6 +1083,19 @@ struct PhoneReaderView: View {
                                                   appearance: readingScheme)
         if bionicReading { out = Self.bionic(out) }
         if let paragraphID { out = painted(out, paragraphID: paragraphID) }
+        // Find's marks: every occurrence of the sought words, wherever
+        // the reading shows this paragraph.
+        if let query = findQuery?.trimmingCharacters(in: .whitespaces), !query.isEmpty {
+            let plain = String(out.characters)
+            var from = plain.startIndex
+            while let found = plain.range(of: query, options: .caseInsensitive,
+                                          range: from..<plain.endIndex) {
+                if let attrRange = Range(found, in: out) {
+                    out[attrRange].backgroundColor = Color.yellow.opacity(0.45)
+                }
+                from = found.upperBound
+            }
+        }
         return out
     }
 
@@ -1230,6 +1349,109 @@ struct PhoneReaderView: View {
     }
 }
 
+// MARK: - The selection menu
+
+/// The selection's verbs as a vertical card — every one visible at
+/// once, anchored beside the selected words. Highlight unfolds its
+/// kinds in place; a tap anywhere else puts the card away.
+private struct SelectionMenuCard: View {
+    let anchor: CGRect   // window coordinates
+    let highlightsPresent: Bool
+    let onFind: () -> Void
+    let onCopyCitation: () -> Void
+    let onHighlight: (ReaderAnnotationKind) -> Void
+    let onRemoveHighlights: () -> Void
+    let onNote: () -> Void
+    let onCopy: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var showsKinds = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let frame = geo.frame(in: .global)
+            let width: CGFloat = 240
+            let rowHeight: CGFloat = 40
+            let height = rowHeight * 5
+                + (showsKinds ? rowHeight * CGFloat(ReaderAnnotationKind.allCases.count + 1) : 0)
+            // Beside the words: below when there is room, above otherwise,
+            // clamped to the reading's edges.
+            let x = min(max(anchor.midX - frame.minX, width / 2 + 12),
+                        frame.width - width / 2 - 12)
+            let below = anchor.maxY - frame.minY + height / 2 + 10
+            let above = anchor.minY - frame.minY - height / 2 - 10
+            let y = below + height / 2 < frame.height - 20
+                ? below
+                : max(above, height / 2 + 10)
+
+            ZStack {
+                // The way out: any tap beside the card.
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .onTapGesture(perform: onDismiss)
+                VStack(spacing: 0) {
+                    row("Find", symbol: "magnifyingglass", action: onFind)
+                    Divider()
+                    row("Copy Citation", symbol: "quote.opening", action: onCopyCitation)
+                    Divider()
+                    Button {
+                        withAnimation(.snappy) { showsKinds.toggle() }
+                    } label: {
+                        HStack {
+                            Label("Highlight", systemImage: "highlighter")
+                            Spacer()
+                            Image(systemName: showsKinds ? "chevron.down" : "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 40)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if showsKinds {
+                        ForEach(ReaderAnnotationKind.allCases) { kind in
+                            Divider().padding(.leading, 14)
+                            row(PhoneAnnotationInk.displayName(of: kind),
+                                symbol: kind.systemImage,
+                                indented: true) { onHighlight(kind) }
+                        }
+                        Divider().padding(.leading, 14)
+                        row("Remove", symbol: "eraser", indented: true,
+                            destructive: true, action: onRemoveHighlights)
+                    }
+                    Divider()
+                    row("Note\u{2026}", symbol: "square.and.pencil", action: onNote)
+                    Divider()
+                    row("Copy", symbol: "doc.on.doc", action: onCopy)
+                }
+                .frame(width: width)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.quaternary))
+                .shadow(radius: 14, y: 4)
+                .position(x: x, y: y)
+            }
+        }
+    }
+
+    private func row(_ title: String, symbol: String, indented: Bool = false,
+                     destructive: Bool = false,
+                     action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Label(title, systemImage: symbol)
+                    .foregroundStyle(destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                Spacer()
+            }
+            .padding(.leading, indented ? 28 : 14)
+            .padding(.trailing, 14)
+            .frame(height: 40)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Selectable paragraphs
 
 /// The annotation kinds' inks — the Mac's AnnotationKindStyle, phone-
@@ -1277,12 +1499,10 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
     let lineSpacing: CGFloat
     /// A link was tapped; true means the reader handled it.
     let onLink: (URL) -> Bool
-    let onCopyCitation: (String) -> Void
-    /// The judgment, the exact words, and their neighbours for the anchor.
-    let onHighlight: (ReaderAnnotationKind, String, String?, String?) -> Void
-    let onNote: (String, String?, String?) -> Void
-    /// The selection whose touching highlights should be cleared.
-    let onRemoveHighlights: (String) -> Void
+    /// A selection asked for its menu: the exact words, their
+    /// neighbours, and where the words stand on screen (window
+    /// coordinates) — the reader shows its own vertical menu there.
+    let onSelectionMenu: (String, String?, String?, CGRect) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -1313,37 +1533,21 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
                       suggestedActions: [UIMenuElement]) -> UIMenu? {
             guard let pieces = pieces(of: textView, in: range) else { return nil }
-            let parent = parent
-            let copy = UIAction(title: "Copy",
-                                image: UIImage(systemName: "doc.on.doc")) { _ in
-                UIPasteboard.general.string = pieces.selected
+            // Where the selected words stand, in window coordinates —
+            // the reader anchors its own menu there.
+            var rect = textView.bounds
+            if let start = textView.position(from: textView.beginningOfDocument,
+                                             offset: range.location),
+               let end = textView.position(from: start, offset: range.length),
+               let textRange = textView.textRange(from: start, to: end) {
+                rect = textView.firstRect(for: textRange)
             }
-            let cite = UIAction(title: "Copy Citation",
-                                image: UIImage(systemName: "quote.opening")) { _ in
-                parent.onCopyCitation(pieces.selected)
-            }
-            var kinds: [UIMenuElement] = ReaderAnnotationKind.allCases.map { kind in
-                UIAction(title: PhoneAnnotationInk.displayName(of: kind),
-                         image: UIImage(systemName: kind.systemImage)) { _ in
-                    parent.onHighlight(kind, pieces.selected, pieces.prefix, pieces.suffix)
-                }
-            }
-            // The eraser closes the list: any highlight the selection
-            // touches, gone — the Mac's Remove Annotations.
-            kinds.append(UIAction(title: "Remove",
-                                  image: UIImage(systemName: "eraser"),
-                                  attributes: .destructive) { _ in
-                parent.onRemoveHighlights(pieces.selected)
-            })
-            let highlight = UIMenu(title: "Highlight",
-                                   image: UIImage(systemName: "highlighter"),
-                                   children: kinds)
-            let note = UIAction(title: "Note\u{2026}",
-                                image: UIImage(systemName: "square.and.pencil")) { _ in
-                parent.onNote(pieces.selected, pieces.prefix, pieces.suffix)
-            }
-            // Copy stands last — the reader's own verbs lead.
-            return UIMenu(children: [cite, highlight, note, copy])
+            let global = textView.convert(rect, to: nil)
+            parent.onSelectionMenu(pieces.selected, pieces.prefix, pieces.suffix, global)
+            // The system's horizontal bar steps aside: two visible verbs
+            // and a > was too little room. An empty menu suppresses it;
+            // the reader's vertical card carries every verb instead.
+            return UIMenu(children: [])
         }
     }
 
