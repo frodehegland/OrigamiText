@@ -646,6 +646,9 @@ struct PhoneReaderView: View {
                     noteTarget = SelectionNoteTarget(selection: PhoneModel.ReaderSelection(
                         address: docID, paragraphID: paragraph.id,
                         text: selected, prefix: prefix, suffix: suffix))
+                },
+                onRemoveHighlights: { selected in
+                    removeHighlights(doc: doc, paragraph: paragraph, selected: selected)
                 })
                 .id(paragraph.id)
         }
@@ -687,6 +690,22 @@ struct PhoneReaderView: View {
             item["info.futuretextlab.origami-citation"] = data
         }
         UIPasteboard.general.items = [item]
+    }
+
+
+    /// Clears any highlight or judgment the selection touches — quotes
+    /// and selection are compared as ranges over the rendered words,
+    /// the same text they were captured from.
+    private func removeHighlights(doc: LiquidDoc, paragraph: LiquidDoc.Paragraph,
+                                  selected: String) {
+        let plain = String(rendered(paragraph.text, doc: doc).characters)
+        let selectedRange = plain.range(of: selected)
+        model.removeAnnotations(inParagraph: paragraph.id, at: docID) { quote in
+            if let selectedRange, let quoteRange = plain.range(of: quote) {
+                return selectedRange.overlaps(quoteRange)
+            }
+            return quote.contains(selected) || selected.contains(quote)
+        }
     }
 
     /// Paints the reader's annotations over the paragraph's words — the
@@ -1168,6 +1187,8 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
     /// The judgment, the exact words, and their neighbours for the anchor.
     let onHighlight: (ReaderAnnotationKind, String, String?, String?) -> Void
     let onNote: (String, String?, String?) -> Void
+    /// The selection whose touching highlights should be cleared.
+    let onRemoveHighlights: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -1207,14 +1228,22 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
                                 image: UIImage(systemName: "quote.opening")) { _ in
                 parent.onCopyCitation(pieces.selected)
             }
-            let highlight = UIMenu(title: "Highlight",
-                                   image: UIImage(systemName: "highlighter"),
-                                   children: ReaderAnnotationKind.allCases.map { kind in
+            var kinds: [UIMenuElement] = ReaderAnnotationKind.allCases.map { kind in
                 UIAction(title: PhoneAnnotationInk.displayName(of: kind),
                          image: UIImage(systemName: kind.systemImage)) { _ in
                     parent.onHighlight(kind, pieces.selected, pieces.prefix, pieces.suffix)
                 }
+            }
+            // The eraser closes the list: any highlight the selection
+            // touches, gone — the Mac's Remove Annotations.
+            kinds.append(UIAction(title: "Remove",
+                                  image: UIImage(systemName: "eraser"),
+                                  attributes: .destructive) { _ in
+                parent.onRemoveHighlights(pieces.selected)
             })
+            let highlight = UIMenu(title: "Highlight",
+                                   image: UIImage(systemName: "highlighter"),
+                                   children: kinds)
             let note = UIAction(title: "Note\u{2026}",
                                 image: UIImage(systemName: "square.and.pencil")) { _ in
                 parent.onNote(pieces.selected, pieces.prefix, pieces.suffix)

@@ -331,6 +331,36 @@ final class PhoneModel {
                       note: trimmed, on: selection)
     }
 
+
+    /// Clears the highlights and judgments on one paragraph whose quoted
+    /// words satisfy `matches` — the Highlight submenu's eraser. Notes
+    /// are left standing; they have words of their own to lose.
+    func removeAnnotations(inParagraph paragraphID: String?, at address: String,
+                           where matches: (String) -> Bool) {
+        var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        let before = all.count
+        all.removeAll { annotation in
+            guard annotation.motivation == WebAnnotation.Motivation.highlighting
+                || annotation.motivation == WebAnnotation.Motivation.tagging
+            else { return false }
+            var fragment: String?
+            var quote: String?
+            for selector in annotation.target.selectors {
+                switch selector {
+                case .fragment(let value, _): fragment = fragment ?? value
+                case .quote(let exact, _, _): quote = quote ?? exact
+                default: break
+                }
+            }
+            if let fragment, let paragraphID, fragment != paragraphID { return false }
+            guard let quote else { return false }
+            return matches(quote)
+        }
+        guard all.count != before else { return }
+        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
     private func addAnnotation(motivation: String, note: String?,
                                purpose: String? = nil, on selection: ReaderSelection) {
         guard !selection.text.isEmpty else { return }

@@ -591,6 +591,36 @@ final class VisionModel {
                       note: trimmed, on: selection)
     }
 
+
+    /// Clears the highlights and judgments on one paragraph whose quoted
+    /// words satisfy `matches` — the Highlight submenu's eraser. Notes
+    /// are left standing; they have words of their own to lose.
+    func removeAnnotations(inParagraph paragraphID: String?, at address: String,
+                           where matches: (String) -> Bool) {
+        var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        let before = all.count
+        all.removeAll { annotation in
+            guard annotation.motivation == WebAnnotation.Motivation.highlighting
+                || annotation.motivation == WebAnnotation.Motivation.tagging
+            else { return false }
+            var fragment: String?
+            var quote: String?
+            for selector in annotation.target.selectors {
+                switch selector {
+                case .fragment(let value, _): fragment = fragment ?? value
+                case .quote(let exact, _, _): quote = quote ?? exact
+                default: break
+                }
+            }
+            if let fragment, let paragraphID, fragment != paragraphID { return false }
+            guard let quote else { return false }
+            return matches(quote)
+        }
+        guard all.count != before else { return }
+        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        annotationsStamp += 1
+    }
+
     private func addAnnotation(motivation: String, note: String?,
                                purpose: String? = nil, on selection: ReaderSelection) {
         guard !selection.text.isEmpty else { return }
@@ -2325,6 +2355,9 @@ struct VisionReaderView: View {
                         annotating = VisionModel.ReaderSelection(
                             address: docID, paragraphID: paragraph.id,
                             text: selected, prefix: prefix, suffix: suffix)
+                    },
+                    onRemoveHighlights: { selected in
+                        removeHighlights(doc: doc, paragraph: paragraph, selected: selected)
                     })
             }
         }
@@ -2446,6 +2479,22 @@ struct VisionReaderView: View {
         case 2: 23
         case 3: 19
         default: 17
+        }
+    }
+
+
+    /// Clears any highlight or judgment the selection touches — quotes
+    /// and selection are compared as ranges over the rendered words,
+    /// the same text they were captured from.
+    private func removeHighlights(doc: LiquidDoc, paragraph: LiquidDoc.Paragraph,
+                                  selected: String) {
+        let plain = String(inline(paragraph, doc: doc).characters)
+        let selectedRange = plain.range(of: selected)
+        model.removeAnnotations(inParagraph: paragraph.id, at: docID) { quote in
+            if let selectedRange, let quoteRange = plain.range(of: quote) {
+                return selectedRange.overlaps(quoteRange)
+            }
+            return quote.contains(selected) || selected.contains(quote)
         }
     }
 
@@ -2668,6 +2717,8 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
     /// The judgment, the exact words, and their neighbours for the anchor.
     let onHighlight: (ReaderAnnotationKind, String, String?, String?) -> Void
     let onNote: (String, String?, String?) -> Void
+    /// The selection whose touching highlights should be cleared.
+    let onRemoveHighlights: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -2707,14 +2758,22 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
                                 image: UIImage(systemName: "quote.opening")) { _ in
                 parent.onCopyCitation(pieces.selected)
             }
-            let highlight = UIMenu(title: "Highlight",
-                                   image: UIImage(systemName: "highlighter"),
-                                   children: ReaderAnnotationKind.allCases.map { kind in
+            var kinds: [UIMenuElement] = ReaderAnnotationKind.allCases.map { kind in
                 UIAction(title: VisionAnnotationInk.displayName(of: kind),
                          image: UIImage(systemName: kind.systemImage)) { _ in
                     parent.onHighlight(kind, pieces.selected, pieces.prefix, pieces.suffix)
                 }
+            }
+            // The eraser closes the list: any highlight the selection
+            // touches, gone — the Mac's Remove Annotations.
+            kinds.append(UIAction(title: "Remove",
+                                  image: UIImage(systemName: "eraser"),
+                                  attributes: .destructive) { _ in
+                parent.onRemoveHighlights(pieces.selected)
             })
+            let highlight = UIMenu(title: "Highlight",
+                                   image: UIImage(systemName: "highlighter"),
+                                   children: kinds)
             let note = UIAction(title: "Note\u{2026}",
                                 image: UIImage(systemName: "square.and.pencil")) { _ in
                 parent.onNote(pieces.selected, pieces.prefix, pieces.suffix)
