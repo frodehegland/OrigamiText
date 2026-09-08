@@ -212,12 +212,15 @@ the dataset caught it.)
 
 In rough order of value:
 
-1. **Move the anchor-integrity check into the exporter.**
-   `OrigamiEPUBExporter.write` already refuses malformed XML
-   (`malformedContent`); it should equally refuse an EPUB with an
-   internal `href` whose target id does not exist. That turns our
-   strongest batch check into a guarantee for every export from any
-   source — Author imports, Markdown, Word, Seed — forever.
+1. **Move the anchor-integrity check into the exporter.** *Done, same
+   day:* `OrigamiEPUBExporter.write` now refuses a dangling internal
+   anchor (`danglingAnchor`) exactly as it refuses malformed XML — in
+   the content document and from the navigation document into it. One
+   subtlety the guard itself taught: `data-note-id="fn9"` contains the
+   characters `id="fn9"`, so id collection requires a real attribute
+   boundary or a dead anchor masks itself behind the very attribute
+   that names it. Proven against a fabricated dead note (refused) and
+   the full 59-paper corpus (0 false refusals).
 2. **A per-paper conversion note.** The importer already knows what it
    dropped (references without a parsable year, figures without files,
    unresolvable labels). Emit those counts into the conversion report

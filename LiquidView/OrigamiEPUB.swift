@@ -21,11 +21,18 @@ nonisolated enum OrigamiEPUBExportError: LocalizedError {
     /// A generated XHTML document is not well-formed — export is refused so
     /// a broken EPUB (one that shows the reader an error page) never ships.
     case malformedContent(file: String, line: Int, column: Int, detail: String)
+    /// An internal anchor points at an id no element carries — export is
+    /// refused so a dead link (a footnote dagger that goes nowhere in a
+    /// standard reader, the HT '26 lesson) never ships.
+    case danglingAnchor(file: String, target: String)
 
     var errorDescription: String? {
         switch self {
         case let .malformedContent(file, line, column, detail):
             "The exported \(file) was not valid XML (line \(line), column \(column): \(detail)). "
+                + "This is a bug in Origami Text — please report it; the document was not exported."
+        case let .danglingAnchor(file, target):
+            "The exported \(file) links to #\(target), but no element carries that id. "
                 + "This is a bug in Origami Text — please report it; the document was not exported."
         }
     }
@@ -447,9 +454,13 @@ nonisolated enum OrigamiEPUBExporter {
 
         // Self-check: the content documents are served as XHTML, so a stray
         // unescaped character would show the reader an error page. Refuse to
-        // ship one — validate before writing anything.
+        // ship one — validate before writing anything. The same bar for
+        // anchors: every internal href must land on a real id, in this
+        // document and from the navigation document into it.
         try assertWellFormed(html, file: "content/paper.html")
         try assertWellFormed(nav, file: "content/nav.html")
+        try assertAnchorsResolve(in: html, file: "content/paper.html")
+        try assertAnchorsResolve(in: nav, file: "content/nav.html", targetsIn: html)
 
         // Derived from the actual output, never boilerplate: escaped text
         // renders "<math" as "&lt;math", so the substring only matches a
@@ -885,6 +896,40 @@ nonisolated enum OrigamiEPUBExporter {
                 line: parser.lineNumber,
                 column: parser.columnNumber,
                 detail: parser.parserError?.localizedDescription ?? "not well-formed")
+        }
+    }
+
+    /// Throws unless every internal anchor resolves — an `href` fragment
+    /// whose id no element carries is a dead link in every standard
+    /// reader (the HT '26 footnote lesson: daggers pointed at data-ids
+    /// only this app's readers consult). Same-document fragments check
+    /// against the document itself; the navigation document's
+    /// `paper.html#…` links check against the content document.
+    private static func assertAnchorsResolve(in xhtml: String, file: String,
+                                             targetsIn idSource: String? = nil) throws {
+        let source = idSource ?? xhtml
+        var ids = Set<String>()
+        var rest = source[...]
+        // The attribute must stand alone: `data-note-id="fn9"` contains
+        // the characters `id="fn9"`, and matching those would let a dead
+        // anchor mask itself behind the very attribute that names it.
+        while let range = rest.range(of: ##"(?<=[\s<])id="([^"]+)""##,
+                                     options: .regularExpression) {
+            ids.insert(String(source[range].dropFirst(4).dropLast()))
+            rest = rest[range.upperBound...]
+        }
+        for prefix in ["href=\"#", "href=\"paper.html#"] {
+            var rest = xhtml[...]
+            while let open = rest.range(of: prefix) {
+                rest = rest[open.upperBound...]
+                guard let close = rest.firstIndex(of: "\"") else { break }
+                let target = String(rest[..<close])
+                guard ids.contains(target) else {
+                    throw OrigamiEPUBExportError.danglingAnchor(file: file,
+                                                                target: target)
+                }
+                rest = rest[rest.index(after: close)...]
+            }
         }
     }
 
