@@ -97,6 +97,7 @@ struct EmberIconLabelStyle: LabelStyle {
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
+    @AppStorage(AppSettings.seedServerURLKey) private var seedServerURL = ""
     /// Sections the user has folded shut, by title — remembered across
     /// launches, the way Finder remembers its sidebar.
     @State private var collapsed: Set<String> =
@@ -183,6 +184,7 @@ struct SidebarView: View {
                 // The Library shelf of opened EPUBs (the ways through
                 // them, the user's folders, and a "+"), then the Views.
                 librarySection
+                hypermediaSection
                 foldersSection
                 xrSection
                 viewsSection
@@ -356,7 +358,37 @@ struct SidebarView: View {
                     .tag(SidebarItem.acquisitions)
             }
         } header: {
-            Text("Library")
+            Text("EPUB")
+        }
+    }
+
+    /// The network's shelf, under the EPUBs: documents fetched from the
+    /// hypermedia server (Seed), the ways through them — or, before any
+    /// server is known, the door to adding one.
+    @ViewBuilder
+    private var hypermediaSection: some View {
+        Section(isExpanded: isExpanded("Hypermedia")) {
+            if seedServerURL.trimmingCharacters(in: .whitespaces).isEmpty {
+                Button {
+                    model.settingsTab = .hypermedia
+                    openSettings()
+                } label: {
+                    Label("Add Server", systemImage: "plus.circle")
+                }
+                .buttonStyle(.plain)
+                .help("Sign in to a hypermedia server — Settings \u{25B8} Hypermedia")
+            } else {
+                Label("Timeline", systemImage: "clock")
+                    .badge(model.hypermediaDocs.count)
+                    .tag(SidebarItem.hypermediaTimeline)
+                Label("Pinned", systemImage: "pin")
+                    .badge(model.hypermediaDocs.filter {
+                        model.epubTopOfPile.contains($0.id)
+                    }.count)
+                    .tag(SidebarItem.hypermediaPinned)
+            }
+        } header: {
+            Text("Hypermedia")
         }
     }
 

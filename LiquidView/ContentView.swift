@@ -371,6 +371,10 @@ struct ContentView: View {
             PublicationFilteredListView(venue: venue, filter: .author(author))
         } else if case .epubPublicationTopic(let venue, let topic)? = model.sidebarSelection {
             PublicationFilteredListView(venue: venue, filter: .topic(topic))
+        } else if model.sidebarSelection == .hypermediaTimeline {
+            HypermediaDocsListView(pinnedOnly: false)
+        } else if model.sidebarSelection == .hypermediaPinned {
+            HypermediaDocsListView(pinnedOnly: true)
         } else if model.sidebarSelection == .acquisitions {
             AcquisitionsListView()
         } else if model.sidebarSelection == .epubsSetAside {

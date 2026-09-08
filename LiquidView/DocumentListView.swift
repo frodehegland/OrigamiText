@@ -1299,3 +1299,61 @@ extension AppModel {
         )
     }
 }
+
+// MARK: - Hypermedia
+
+/// The network's documents — fetched from the hypermedia server and
+/// filed as drafts with their origin — newest first, or the pinned
+/// alone. Pin from a row's context menu; the choice rides the same
+/// standing as the EPUB pile, so every device agrees.
+struct HypermediaDocsListView: View {
+    @Environment(AppModel.self) private var model
+    let pinnedOnly: Bool
+
+    var body: some View {
+        let docs = model.hypermediaDocs.filter {
+            !pinnedOnly || model.epubTopOfPile.contains($0.id)
+        }
+        List {
+            ForEach(docs, id: \.id) { doc in
+                Button {
+                    model.open(doc)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if model.epubTopOfPile.contains(doc.id) {
+                            Image(systemName: "pin.fill")
+                                .font(.caption)
+                                .foregroundStyle(EmberIconLabelStyle.ember)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(doc.title).lineLimit(2)
+                            Text("\(doc.displayAuthor) \u{00B7} \(doc.listedDateText)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Toggle("Pin", isOn: Binding(
+                        get: { model.epubTopOfPile.contains(doc.id) },
+                        set: { _ in model.toggleTopOfPile(id: doc.id) }))
+                }
+                .listRowSeparator(.hidden)
+            }
+        }
+        .overlay {
+            if docs.isEmpty {
+                ContentUnavailableView {
+                    Label(pinnedOnly ? "Nothing Pinned" : "Nothing Fetched Yet",
+                          systemImage: pinnedOnly ? "pin" : "network")
+                } description: {
+                    Text(pinnedOnly
+                         ? "Pin a document from the Timeline's context menu."
+                         : "Fetch a document by URL in Settings \u{25B8} Hypermedia — it joins this timeline.")
+                }
+            }
+        }
+    }
+}

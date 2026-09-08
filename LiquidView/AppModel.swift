@@ -44,6 +44,10 @@ enum SidebarItem: Hashable {
     case epubsSetAside
     case epubFolder(String)
     case acquisitions
+    // Hypermedia: documents fetched from the network (Seed), the ways
+    // through them.
+    case hypermediaTimeline
+    case hypermediaPinned
     // Views: ways into the opened EPUBs by who and what they hold.
     // Authors is automatic (the authors of record); People and Concepts
     // are user-curated buckets, added the way folders are.
@@ -2464,10 +2468,21 @@ final class AppModel {
     func isTopOfPile(_ record: EPUBRecord) -> Bool { epubTopOfPile.contains(record.id) }
     func isSetAside(_ record: EPUBRecord) -> Bool { epubSetAsideIDs.contains(record.id) }
 
-    func toggleTopOfPile(_ record: EPUBRecord) {
-        if !epubTopOfPile.insert(record.id).inserted { epubTopOfPile.remove(record.id) }
+    func toggleTopOfPile(_ record: EPUBRecord) { toggleTopOfPile(id: record.id) }
+
+    /// The pile by bare address — hypermedia documents pin through the
+    /// same standing, so the choice travels with the EPUB pile's.
+    func toggleTopOfPile(id: String) {
+        if !epubTopOfPile.insert(id).inserted { epubTopOfPile.remove(id) }
         UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
         publishStanding()
+    }
+
+    /// Documents fetched from the hypermedia network — drafts carrying
+    /// an online origin (SeedImport writes it), newest first.
+    var hypermediaDocs: [LiquidDoc] {
+        drafts.documents.filter { $0.sourceURL?.isEmpty == false }
+            .sorted { $0.created > $1.created }
     }
 
     func setAside(_ record: EPUBRecord) {
