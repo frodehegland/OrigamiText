@@ -390,17 +390,24 @@ struct PhoneReaderView: View {
     let docID: String
 
     /// The Mac's reading views, sized for the hand: Scroll (one clean
-    /// column) and Focus, with the Outline a pinch away. A persisted
-    /// "faithful" from earlier builds decodes to nil and lands on Scroll.
+    /// column) and Focus — and on iPad, Horizontal, the sections side
+    /// by side — with the Outline a pinch away. A persisted "faithful"
+    /// from earlier builds decodes to nil and lands on Scroll.
     private enum Mode: String, CaseIterable {
-        case scroll, focus, outline
+        case scroll, horizontal, focus, outline
         var word: String {
             switch self {
             case .scroll: "Scroll"
+            case .horizontal: "Horizontal"
             case .focus: "Focus"
             case .outline: "Outline"
             }
         }
+    }
+
+    /// Horizontal needs a table's width; the phone reads in one column.
+    private var offersHorizontal: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad
     }
 
     @AppStorage("phoneReaderMode") private var modeRaw = Mode.scroll.rawValue
@@ -467,7 +474,12 @@ struct PhoneReaderView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
 
-    private var mode: Mode { Mode(rawValue: modeRaw) ?? .scroll }
+    private var mode: Mode {
+        let chosen = Mode(rawValue: modeRaw) ?? .scroll
+        // A Horizontal persisted on an iPad never cramps an iPhone.
+        if chosen == .horizontal, !offersHorizontal { return .scroll }
+        return chosen
+    }
     private var outlineReturnMode: Mode { Mode(rawValue: outlineReturnRaw) ?? .scroll }
     /// The window's top safe-area inset — the notch band's height on
     /// iPhone; 0 on flat-topped screens.
@@ -616,6 +628,8 @@ struct PhoneReaderView: View {
             switch contentMode {
             case .scroll, .outline:
                 scrollBody(sections, doc: doc)
+            case .horizontal:
+                horizontalBody(sections, doc: doc)
             case .focus:
                 focusBody(sections, doc: doc)
             }
@@ -729,6 +743,12 @@ struct PhoneReaderView: View {
             }
         case .scroll:
             scrollJumpID = jump
+        case .horizontal:
+            // The jump names a section or a paragraph within one; the
+            // spread scrolls its column into view.
+            scrollJumpID = sections.first { section in
+                section.id == jump || section.paragraphs.contains { $0.id == jump }
+            }?.id ?? jump
         case .outline:
             break
         }
@@ -756,6 +776,34 @@ struct PhoneReaderView: View {
                 guard let id = scrollJumpID else { return }
                 scrollJumpID = nil
                 withAnimation { proxy.scrollTo(id, anchor: .top) }
+            }
+        }
+    }
+
+    // MARK: Horizontal — the sections side by side (iPad)
+
+    private func horizontalBody(_ sections: [OrigamiSection], doc: LiquidDoc) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 32) {
+                    ForEach(sections) { section in
+                        ScrollView(.vertical) {
+                            VStack(alignment: .leading, spacing: 14) {
+                                sectionView(section, doc: doc)
+                            }
+                            .padding(.vertical, 16)
+                        }
+                        .frame(width: 420)
+                        .id(section.id)
+                    }
+                }
+                .padding(.horizontal, 28)
+            }
+            // A heading tapped in the outline lands on its column.
+            .onChange(of: scrollJumpID) {
+                guard let id = scrollJumpID else { return }
+                scrollJumpID = nil
+                withAnimation { proxy.scrollTo(id, anchor: .leading) }
             }
         }
     }
@@ -1285,8 +1333,9 @@ struct PhoneReaderView: View {
         // chevron-and-menus row rather than between its ends.
         .overlay {
             HStack(spacing: 6) {
-                ForEach(Array(Mode.allCases.filter { $0 != .outline }.enumerated()),
-                        id: \.offset) { index, word in
+                ForEach(Array(Mode.allCases.filter {
+                    $0 != .outline && ($0 != .horizontal || offersHorizontal)
+                }.enumerated()), id: \.offset) { index, word in
                     if index > 0 { separator }
                     modeWord(word.word,
                              chosen: mode == word
@@ -1663,8 +1712,8 @@ private struct PhoneGuideView: View {
                     .foregroundStyle(.secondary)
                 guideRow("books.vertical", "Getting books in",
                          "Tap the gear and Open EPUB…, open one straight from the Files app or a share sheet, or choose the iCloud folder your community shares — everything published from a Mac appears on the shelf by itself.")
-                guideRow("book", "Two ways to read",
-                         "Scroll lays the whole text in one clean column. Focus holds one section at a time — with Previous and Next at the bottom.")
+                guideRow("book", "Ways to read",
+                         "Scroll lays the whole text in one clean column. Focus holds one section at a time — with Previous and Next at the bottom. On iPad, Horizontal stands the sections side by side, each its own column.")
                 guideRow("arrow.down.right.and.arrow.up.left", "Pinch for the outline",
                          "Pinch in anywhere while reading and the book folds into its outline. Pinch out and it opens again at the very spot you left. Tap a heading's name to open that section instead; the chevron beside it peeks inside without leaving.")
                 guideRow("quote.closing", "Citations and notes",
