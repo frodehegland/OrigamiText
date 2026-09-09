@@ -450,6 +450,7 @@ extension BibTeXParser {
             .replacingOccurrences(of: "~", with: "\u{00A0}")
             .replacingOccurrences(of: "{", with: "")
             .replacingOccurrences(of: "}", with: "")
+        text = typographicQuotes(text)
 
         return text.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
@@ -458,6 +459,38 @@ extension BibTeXParser {
 }
 
 extension BibTeXParser {
+
+    /// Straight quotes become their typographic forms, the way the
+    /// audience reads them: a bare ' is an apostrophe or a closing
+    /// quote (\u{2019}) unless it opens a quoted word — after a space
+    /// or an opener, before a letter (so Tinderbox's and the '90s both
+    /// come out right); a bare " opens (\u{201C}) after a space or an
+    /// opener and closes (\u{201D}) everywhere else. TeX's own forms
+    /// (`` '' ` ') are mapped before this runs; these are the strays
+    /// authors typed straight.
+    nonisolated static func typographicQuotes(_ text: String) -> String {
+        guard text.contains("'") || text.contains("\"") else { return text }
+        let characters = Array(text)
+        var out = ""
+        out.reserveCapacity(characters.count)
+        for index in characters.indices {
+            let character = characters[index]
+            guard character == "'" || character == "\"" else {
+                out.append(character)
+                continue
+            }
+            let previous = out.last ?? "\n"
+            let next = index + 1 < characters.count ? characters[index + 1] : " "
+            let afterOpener = previous.isWhitespace || previous.isNewline
+                || "([{\u{201C}\u{2018}\u{2014}\u{2013}/".contains(previous)
+            if character == "'" {
+                out.append(afterOpener && next.isLetter ? "\u{2018}" : "\u{2019}")
+            } else {
+                out.append(afterOpener && !next.isWhitespace ? "\u{201C}" : "\u{201D}")
+            }
+        }
+        return out
+    }
 
     /// TeX's symbol commands as the characters they mean — Greek,
     /// operators, arrows. Whole-command matches only (maximal munch:

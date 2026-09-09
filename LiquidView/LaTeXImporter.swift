@@ -336,7 +336,7 @@ nonisolated enum LaTeXImporter {
                 // with a quiet note where the picture would be.
                 let words = caption.isEmpty
                     ? "(A figure the source archive does not include.)"
-                    : caption + " (The source archive does not include this figure's image.)"
+                    : caption + " (The source archive does not include this figure\u{2019}s image.)"
                 paragraphs.append(LiquidDoc.Paragraph(
                     id: paragraphID, heading: nil, text: words))
             }
@@ -1222,7 +1222,10 @@ nonisolated enum LaTeXImporter {
         text = text.replacingOccurrences(of: #"\\[a-zA-Z]+\*?(\[[^\]]*\])?"#,
                                          with: "", options: .regularExpression)
 
-        // TeX's typography back to the words: quotes, dashes, ties.
+        // TeX's typography back to the words: quotes, dashes, ties —
+        // then the straight quotes authors typed pair typographically
+        // (Tinderbox's needs its \u{2019}; "[[ ]]" its \u{201C}…\u{201D}).
+        // Math is still shielded here, so a prime stays a prime.
         text = text.replacingOccurrences(of: "``", with: "\u{201C}")
             .replacingOccurrences(of: "''", with: "\u{201D}")
             .replacingOccurrences(of: "---", with: "\u{2014}")
@@ -1230,6 +1233,7 @@ nonisolated enum LaTeXImporter {
             .replacingOccurrences(of: "`", with: "\u{2018}")
             .replacingOccurrences(of: "~\u{FFFC}T\u{FFFC}", with: "~")
             .replacingOccurrences(of: "~", with: "\u{00A0}")
+        text = BibTeXParser.typographicQuotes(text)
 
         // Stray braces (Author's braced capitals in titles) vanish.
         text = text.replacingOccurrences(of: "{", with: "")
