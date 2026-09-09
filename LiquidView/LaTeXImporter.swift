@@ -49,6 +49,10 @@ nonisolated enum LaTeXImporter {
         /// camera PDF prints it — the one place it exists whole (acmart
         /// composes it at build; the page count lives nowhere else).
         var acmReference: String? = nil
+        /// Each author's ORCID, keyed by the author's name as parsed —
+        /// \\orcid follows its \\author in acmart, so pairing is by
+        /// position in the preamble.
+        var authorORCIDs: [String: String] = [:]
     }
 
     // MARK: - Entry points
@@ -295,6 +299,35 @@ nonisolated enum LaTeXImporter {
             .map { inline(convert: $0).text }
             .filter { !$0.isEmpty }
         let author = authors.isEmpty ? nil : authors.joined(separator: ", ")
+
+        // Each \\orcid pairs with the \\author it follows.
+        var authorORCIDs: [String: String] = [:]
+        do {
+            var currentAuthor: String?
+            var rest = stripped[...]
+            while let range = rest.range(of: "\\\\(author|orcid)\\s*\\{",
+                                         options: .regularExpression) {
+                let isAuthor = rest[range].contains("author")
+                let after = String(rest[range.lowerBound...])
+                guard let argument = firstBalancedArgument(
+                    of: isAuthor ? "author" : "orcid", in: after) else {
+                    rest = rest[range.upperBound...]
+                    continue
+                }
+                if isAuthor {
+                    let name = inline(convert: argument.value).text
+                        .trimmingCharacters(in: .whitespaces)
+                    currentAuthor = name.isEmpty ? nil : name
+                } else if let name = currentAuthor {
+                    // Bare id kept; a pasted URL sheds its prefix.
+                    let id = argument.value
+                        .replacingOccurrences(of: "https://orcid.org/", with: "")
+                        .trimmingCharacters(in: .whitespaces)
+                    if !id.isEmpty { authorORCIDs[name] = id }
+                }
+                rest = rest[range.upperBound...]
+            }
+        }
 
         // The printed affiliations, under the authors as in the PDF.
         var affiliations: [String] = []
@@ -1083,7 +1116,7 @@ nonisolated enum LaTeXImporter {
         return Result(title: title, author: author, publication: publication,
                       body: paragraphs, references: references,
                       tables: namedTables, assets: assets, doi: doi,
-                      affiliations: affiliations)
+                      affiliations: affiliations, authorORCIDs: authorORCIDs)
     }
 
     // MARK: - Cross-references

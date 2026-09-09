@@ -65,6 +65,7 @@ nonisolated enum OrigamiEPUBExporter {
                 case abstract, keywords, isbn, doi, publication
                 case affiliations
                 case acmReference = "acm-reference"
+                case authorORCIDs = "author-orcids"
             }
 
             let title: String
@@ -76,6 +77,8 @@ nonisolated enum OrigamiEPUBExporter {
             var affiliations: [String] = []
             /// The paper's ACM Reference Format, verbatim.
             var acmReference: String? = nil
+            /// Each author's ORCID, keyed by name.
+            var authorORCIDs: [String: String] = [:]
             /// The journal or proceedings the document is part of, when
             /// it declares one — the reader's Journals view groups by it.
             var publication: String? = nil
@@ -394,6 +397,7 @@ nonisolated enum OrigamiEPUBExporter {
                 identifier: identifier(of: doc),
                 affiliations: doc.affiliations,
                 acmReference: doc.acmReference,
+                authorORCIDs: doc.authorORCIDs,
                 publication: doc.publication,
                 origamiID: doc.id,
                 doi: doc.doi ?? ""),
@@ -798,7 +802,14 @@ nonisolated enum OrigamiEPUBExporter {
             }
         }
         for author in authors {
-            lines.append("<p class=\"author\">\(escaped(author))</p>")
+            // The author's ORCID rides as the official iD link beside
+            // the name, as the publisher's pages carry it.
+            if let orcid = doc.authorORCIDs[author], !orcid.isEmpty {
+                lines.append("<p class=\"author\">\(escaped(author)) "
+                    + "<a class=\"orcid\" href=\"https://orcid.org/\(attributeEscaped(orcid))\">iD</a></p>")
+            } else {
+                lines.append("<p class=\"author\">\(escaped(author))</p>")
+            }
         }
         for affiliation in doc.affiliations {
             lines.append("<p class=\"affiliation\">\(escaped(affiliation))</p>")
@@ -814,7 +825,14 @@ nonisolated enum OrigamiEPUBExporter {
         // The publisher's self-citation, exactly as page 1 prints it —
         // the reference this paper asks to be cited by.
         if let reference = doc.acmReference, !reference.isEmpty {
-            lines.append("<p class=\"acm-reference\"><strong>ACM Reference Format:</strong><br/>\(escaped(reference))</p>")
+            // The DOI at the block's end is a live link.
+            var block = escaped(reference)
+            if let range = reference.range(of: "https://doi.org/") {
+                let url = String(reference[range.lowerBound...])
+                block = escaped(String(reference[..<range.lowerBound]))
+                    + "<a href=\"\(attributeEscaped(url))\">\(escaped(url))</a>"
+            }
+            lines.append("<p class=\"acm-reference\"><strong>ACM Reference Format:</strong><br/>\(block)</p>")
         }
         lines.append("</header>")
         return lines.joined(separator: "\n")
@@ -1286,6 +1304,7 @@ nonisolated enum OrigamiEPUBExporter {
     .affiliation { color: #555555; margin: 0.1em 0; }
     .byline { color: #555555; font-style: italic; margin-top: 0.5em; margin-bottom: 0; }
     .acm-reference { text-align: left; font-size: 0.85em; color: #555555; max-width: 34em; margin: 1.4em auto 0; }
+    a.orcid { font-size: 0.7em; vertical-align: super; color: #a6ce39; text-decoration: none; font-weight: bold; }
     h2 { font-size: 1.4em; margin-top: 1.6em; }
     h3 { font-size: 1.2em; }
     h4 { font-size: 1.05em; }

@@ -65,6 +65,9 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// camera PDF — the publisher's self-citation, carried through
     /// Visual-Meta and printed in the exported front matter.
     var acmReference: String? = nil
+    /// Each author's ORCID, keyed by name — rendered as the iD link on
+    /// the exported author lines, carried through Visual-Meta.
+    var authorORCIDs: [String: String] = [:]
     /// Defined Concepts — the document's glossary: a shared pool of
     /// nodes (id, name, definition) that spatial layouts arrange and
     /// citations attach to. Books and papers carry them; the EPUB

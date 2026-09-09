@@ -48,6 +48,8 @@ nonisolated enum OrigamiEPUBImporter {
         var affiliations: [String] = []
         /// The paper's ACM Reference Format, from Visual-Meta.
         var acmReference: String? = nil
+        /// Each author's ORCID, keyed by name, from Visual-Meta.
+        var authorORCIDs: [String: String] = [:]
         /// YYYY-MM-DD from the package metadata.
         let date: String?
         /// The publication identifier (urn:uuid:…), for provenance.
@@ -441,6 +443,7 @@ nonisolated enum OrigamiEPUBImporter {
                 .filter { !$0.isEmpty } ?? [],
             acmReference: (document?["acm-reference"] as? String)
                 .flatMap { $0.isEmpty ? nil : $0 },
+            authorORCIDs: (document?["author-orcids"] as? [String: String]) ?? [:],
             date: document?["date"] as? String ?? date,
             identifier: document?["identifier"] as? String ?? identifier,
             origamiID: document?["origami-id"] as? String,
