@@ -1267,6 +1267,7 @@ final class AppModel {
         }
     }
 
+    #if DEBUG || EDITOR
     // MARK: - Editor Mode (the publisher's corrections; see EDITOR-MODE-PLAN.md)
 
     /// The gate: a defaults flag with no Settings UI — Editor Mode is
@@ -1381,6 +1382,8 @@ final class AppModel {
         alert.informativeText = text
         alert.runModal()
     }
+
+    #endif
 
     // MARK: - The source PDF beside the conversion (a reviewing aid)
 

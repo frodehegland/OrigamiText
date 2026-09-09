@@ -81,15 +81,18 @@ struct EPUBPileMenu: View {
                : "Export with DOI Name…") {
             model.exportWithDOINames(exportTargets)
         }
+        #if DEBUG || EDITOR
         if model.isEditorModeOn {
             Divider()
             // The publisher's door (Editor Mode, a hidden defaults
-            // flag): correcting the record itself. Readers never see it.
+            // flag, in publisher builds only): correcting the record
+            // itself. Readers' builds do not carry this code.
             Button("Edit Document\u{2026}") {
                 model.beginEdit(record)
                 openWindow(id: "epub-editor")
             }
         }
+        #endif
         Divider()
         Button("Move to Trash", role: .destructive) { model.trashEPUB(record) }
     }

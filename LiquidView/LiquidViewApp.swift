@@ -134,13 +134,15 @@ struct LiquidViewApp: App {
         .defaultSize(width: 560, height: 440)
 
         // Editor Mode's window — the publisher's corrections (see
-        // EDITOR-MODE-PLAN.md). Reached only through the gated context
-        // menu entry; readers never see either.
+        // EDITOR-MODE-PLAN.md). Compiled only into publisher builds;
+        // a Release build carries no editor at all.
+        #if DEBUG || EDITOR
         Window("Edit Document", id: "epub-editor") {
             DocumentEditorView()
                 .environment(model)
         }
         .defaultSize(width: 900, height: 940)
+        #endif
 
         // File ▸ Hold Up a Page… — the camera reads a printed page and
         // opens its document in the main window at the page's place.

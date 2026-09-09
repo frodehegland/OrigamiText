@@ -28,13 +28,22 @@ with the original always recoverable.*
 5. **The exporter's guards gate everything.** Well-formed XML and
    zero dangling anchors are already refusal conditions at export; an
    edition that breaks either simply does not get written.
-6. **Editing is invisible to end users.** No Settings UI at all: a
-   defaults flag gates the whole capability —
-   `defaults write info.futuretextlab.origamitext editorMode -bool YES`
-   — so ordinary readers can never stumble into it. iOS and visionOS
-   never see any of it. (The no-hidden-options rule bends here by
-   design: this is the one capability that is explicitly not for
-   readers.)
+6. **Editing is absent from readers' builds, not hidden in them.**
+   Every editor site compiles only under `#if DEBUG || EDITOR`: the
+   Debug builds we and ACM's editors run from Xcode carry the editor
+   (still behind the `editorMode` defaults flag —
+   `defaults write info.futuretextlab.origamitext editorMode -bool YES`);
+   a Release build — what readers are given — contains none of the
+   code. Verified by symbol inspection: the Release binary has zero
+   EditorSession symbols and none of the editor's strings, while
+   unguarded features remain. Since the repo is public anyone can
+   build the editor themselves — as they could edit an EPUB with any
+   zip tool — so the line that holds is (a) distributed reader builds
+   are structurally clean, and (b) authority comes from who publishes
+   into the distribution channels, not from the tool. A future
+   shippable "Publisher" build for ACM staff is one new Xcode build
+   configuration defining EDITOR; no code change. iOS and visionOS
+   never see any of it.
 
 ## 2. The Editor's flow
 
