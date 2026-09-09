@@ -1178,6 +1178,102 @@ final class AppModel {
         NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
+    // MARK: - The source PDF beside the conversion (a reviewing aid)
+
+    /// Opens the camera-ready PDF from the paper's source archive — the
+    /// ground truth a conversion is reviewed against. The folder of
+    /// publisher .zip archives is asked for once and remembered; the
+    /// paper's archive answers by name (the record's unpack folder, for
+    /// papers still under their TAPS numbers) or by the DOI its
+    /// manuscript declares in \acmDOI.
+    func showSourcePDF(for record: EPUBRecord) {
+        guard let folder = sourceArchivesFolder() else { return }
+        guard let archive = sourceArchive(for: record, in: folder) else {
+            NSSound.beep()
+            showNote("No archive in \(folder.lastPathComponent) matches \u{201C}\(record.title)\u{201D}.")
+            return
+        }
+        do {
+            let reader = try ZipReader(data: Data(contentsOf: archive))
+            // The camera-ready copy lives under pdf/; a source-side
+            // main.pdf only answers when nothing better exists.
+            let candidates = reader.entries.keys
+                .filter { $0.lowercased().hasSuffix(".pdf") && !$0.contains("__MACOSX") }
+                .sorted { lhs, rhs in
+                    let left = lhs.lowercased().contains("pdf/") ? 0 : 1
+                    let right = rhs.lowercased().contains("pdf/") ? 0 : 1
+                    return left == right ? lhs < rhs : left < right
+                }
+            guard let entry = candidates.first, let data = reader.entry(entry) else {
+                NSSound.beep()
+                showNote("\(archive.lastPathComponent) carries no PDF.")
+                return
+            }
+            let out = FileManager.default.temporaryDirectory
+                .appendingPathComponent(record.folder + ".pdf")
+            try data.write(to: out, options: .atomic)
+            NSWorkspace.shared.open(out)
+        } catch {
+            NSSound.beep()
+            showNote("Could not open the source PDF: \(error.localizedDescription)")
+        }
+    }
+
+    private static let sourceArchivesKey = "sourceArchivesFolder"
+
+    private func sourceArchivesFolder() -> URL? {
+        if let path = UserDefaults.standard.string(forKey: Self.sourceArchivesKey) {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the folder of publisher source archives (.zip) whose PDFs to show beside the conversions."
+        panel.prompt = "Choose"
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        UserDefaults.standard.set(url.path, forKey: Self.sourceArchivesKey)
+        return url
+    }
+
+    /// DOI -> archive, indexed once per folder per launch. Scanning
+    /// every zip for its \acmDOI takes a moment on first use — a
+    /// reviewing aid's price, paid once.
+    @ObservationIgnored private var sourceArchiveIndex: [String: URL] = [:]
+    @ObservationIgnored private var sourceArchiveIndexedFolder: String?
+
+    private func sourceArchive(for record: EPUBRecord, in folder: URL) -> URL? {
+        let archives = ((try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension.lowercased() == "zip" }
+        if let direct = archives.first(where: {
+            $0.deletingPathExtension().lastPathComponent == record.folder
+        }) {
+            return direct
+        }
+        guard let doi = record.doi?.lowercased(), !doi.isEmpty else { return nil }
+        if sourceArchiveIndexedFolder != folder.path {
+            sourceArchiveIndex = [:]
+            for archive in archives {
+                guard let reader = try? ZipReader(data: Data(contentsOf: archive)) else { continue }
+                for (name, data) in reader.entries
+                where name.lowercased().hasSuffix(".tex") && !name.contains("__MACOSX") {
+                    let text = String(decoding: data, as: UTF8.self)
+                    guard let range = text.range(of: #"\\acmDOI\{([^}]+)\}"#,
+                                                 options: .regularExpression) else { continue }
+                    let declared = String(text[range].dropFirst("\\acmDOI{".count).dropLast())
+                        .trimmingCharacters(in: .whitespaces).lowercased()
+                    if declared.contains("/"), sourceArchiveIndex[declared] == nil {
+                        sourceArchiveIndex[declared] = archive
+                    }
+                }
+            }
+            sourceArchiveIndexedFolder = folder.path
+        }
+        return sourceArchiveIndex[doi]
+    }
+
     /// Saves a copy of the book's .epub wherever the reader chooses —
     /// for a colleague, a browser, another reader. The stored file is
     /// copied bit-identically; a record still missing one (mid-launch,

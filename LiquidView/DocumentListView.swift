@@ -68,6 +68,9 @@ struct EPUBPileMenu: View {
         // The document's own .epub, one click away — for inspection,
         // or to hand on.
         Button("Show in Finder") { model.revealEPUBInFinder(record) }
+        // Reviewing aid: the camera-ready PDF from the paper's source
+        // archive — the ground truth the conversion answers to.
+        Button("Show PDF") { model.showSourcePDF(for: record) }
         Button("Save a Copy as EPUB…") { model.saveCopyOfEPUB(record) }
         // The papers file under their DOIs, as the ACM DL names its
         // files. Acts on the ⌘-click selection when the click lands
