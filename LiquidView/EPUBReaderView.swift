@@ -1062,6 +1062,15 @@ struct EPUBReaderView: NSViewRepresentable {
                 NSWorkspace.shared.open(url)
                 decisionHandler(.cancel); return
             }
+            // Any other external scheme a link carries — mailto above
+            // all (the author lines' addresses) — goes to the system;
+            // the web view cannot navigate there, so .allow reads as a
+            // dead click. file:// stays: in-page jumps and chapters.
+            if navigationAction.navigationType == .linkActivated,
+               let scheme, scheme != "file" {
+                NSWorkspace.shared.open(url)
+                decisionHandler(.cancel); return
+            }
             decisionHandler(.allow)
         }
 
