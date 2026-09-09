@@ -1014,6 +1014,41 @@ nonisolated enum LaTeXImporter {
         var text = BibTeXParser.convertingTeXSymbols(in: raw)
         var notes: [(String, String)] = []
 
+        // Cyrillic arrives from TAPS in encoding chrome the symbol pass
+        // can't see through: \UseTextSymbol{T2A}{\CYRO} wrappers (the
+        // inner command is already its letter by now), \char<byte>
+        // codes in the T2A block — which shares its upper half with
+        // CP1251 — and \foreignlanguage{russian}{…} around either.
+        if text.contains("\\UseTextSymbol") {
+            text = text.replacingOccurrences(
+                of: #"\\UseTextSymbol\{[^{}]*\}\{([^{}]*)\}"#,
+                with: "$1", options: .regularExpression)
+        }
+        while let range = text.range(of: #"\\char\d+ ?(\{\})?"#, options: .regularExpression) {
+            let digits = text[range].drop { !$0.isNumber }.prefix { $0.isNumber }
+            var decoded = ""
+            if let code = Int(digits) {
+                if code < 128, let scalar = UnicodeScalar(code) {
+                    decoded = String(scalar)
+                } else if code < 256 {
+                    decoded = String(bytes: [UInt8(code)], encoding: .windowsCP1251) ?? ""
+                } else if let scalar = UnicodeScalar(code) {
+                    decoded = String(scalar)
+                }
+            }
+            text.replaceSubrange(range, with: decoded)
+        }
+        while let language = firstBalancedArgument(of: "foreignlanguage", in: text) {
+            var replacement = ""
+            var end = language.range.upperBound
+            let after = String(text[language.range.upperBound...])
+            if let words = balancedArgument(in: after, afterPrefixLength: 0) {
+                replacement = words.value
+                end = text.index(language.range.upperBound, offsetBy: words.consumed)
+            }
+            text.replaceSubrange(language.range.lowerBound..<end, with: replacement)
+        }
+
         // TeX's other inline form, \( … \), normalises to $ … $ first.
         while let range = text.range(of: #"\\\((.+?)\\\)"#, options: .regularExpression) {
             let inner = String(text[range]).dropFirst(2).dropLast(2)
@@ -1397,16 +1432,40 @@ nonisolated enum LaTeXImporter {
 
     /// Comment stripping: an unescaped `%` silences its line's rest.
     private static func strippingComments(from source: String) -> String {
-        source.components(separatedBy: "\n").map { line -> String in
+        // TeX's % eats through the end of the line INCLUDING the
+        // newline, and the next line's leading blanks — that is how a
+        // source spells one word across many lines (\CYRO%⏎\CYRG%⏎…
+        // must read ОГ, not О Г). A blank line after a commented line
+        // still breaks the paragraph, as it does in TeX.
+        var out = ""
+        var first = true
+        var glue = false
+        for line in source.components(separatedBy: "\n") {
+            var content = line[...]
+            var commented = false
             var previous: Character = " "
             for (offset, character) in line.enumerated() {
                 if character == "%", previous != "\\" {
-                    return String(line.prefix(offset))
+                    content = line.prefix(offset)
+                    commented = true
+                    break
                 }
                 previous = character
             }
-            return line
-        }.joined(separator: "\n")
+            if first {
+                out += content
+                first = false
+            } else if glue {
+                let continued = content.drop { $0 == " " || $0 == "\t" }
+                if continued.isEmpty && !commented { out += "\n" }
+                out += continued
+            } else {
+                out += "\n"
+                out += content
+            }
+            glue = commented
+        }
+        return out
     }
 
     /// Author's live tables, read from the VISUALMETA:TABLES comment

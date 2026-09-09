@@ -60,6 +60,16 @@ output of the last:
 2. **Strip comments.** Before anything pattern-matches — a commented-out
    `\acmConference` template line must not become the venue, and `%`
    line-continuations inside `.bbl` must not hide `\bibitem` keys.
+   With TeX's own newline rule: `%` eats through the end of the line
+   *including* the newline and the next line's leading blanks. That is
+   how a source spells one word across lines (`\CYRO%⏎\CYRG%⏎…` is ОГ,
+   not О Г), and it is also how sources that separate sentences with
+   bare `%` lines (ht26-44, ht26-60 — no blank line anywhere) print as
+   flowing paragraphs: keeping the newline once split those into a
+   paragraph per sentence, and even mid-sentence (ht26-1 broke at
+   "…increasingly ⏐ acute"). A blank line after a commented line still
+   breaks the paragraph, exactly as in TeX. Verified against camera
+   PDFs: sampled join sites all continue mid-line in print.
 3. **Expand private macros.** Argument-less macros substitute textually;
    parameterised ones (`\secLink{key}{words}` → `\hyperref[key]{words}`)
    expand by `#n` substitution, stepping over their own definition site.
@@ -91,7 +101,14 @@ output of the last:
    unknown environments unwrap — markup drops, words stay.
 7. **Convert inline text**, in an order that is itself load-bearing:
    TeX symbol commands become their characters (\lambda is λ in prose
-   and mathematics alike — the shared table in BibTeXParser.texSymbols)
+   and mathematics alike — the shared table in BibTeXParser.texSymbols,
+   which also knows the T2A Cyrillic names: \CYRO is О, \cyrishrt is й)
+   → encoding chrome unwraps: `\UseTextSymbol{T2A}{\CYRO}` keeps its
+   inner symbol, `\char<byte>` decodes through CP1251 — the T2A font
+   block shares its upper half with it (`\char196` is Д) — and
+   `\foreignlanguage{russian}{…}` keeps its words (TAPS spells Mark
+   Anderson's Russian all three ways; before this, ОГАС printed as
+   four "T2A"s and a proverb as its byte values)
    → `\(…\)` normalises to `$…$` → math shields behind placeholders
    (returning readable when nothing structural remains:
    $\lambda_\delta$ → λ_δ, x^2 → x², \sum_{i=1}^{n} → ∑ᵢ₌₁ⁿ,

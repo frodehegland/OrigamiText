@@ -537,6 +537,28 @@ extension BibTeXParser {
         "left": "", "right": "", "quad": " ", "qquad": "  ",
         "langle": "⟨", "rangle": "⟩", "lfloor": "⌊", "rfloor": "⌋",
         "lceil": "⌈", "rceil": "⌉", "mid": "|", "setminus": "∖",
+        // Cyrillic, as the T2A font encoding names each letter —
+        // TAPS spells Russian text one \CYR-command at a time.
+        "CYRA": "А", "CYRB": "Б", "CYRV": "В", "CYRG": "Г",
+        "CYRD": "Д", "CYRE": "Е", "CYRYO": "Ё", "CYRZH": "Ж",
+        "CYRZ": "З", "CYRI": "И", "CYRISHRT": "Й", "CYRK": "К",
+        "CYRL": "Л", "CYRM": "М", "CYRN": "Н", "CYRO": "О",
+        "CYRP": "П", "CYRR": "Р", "CYRS": "С", "CYRT": "Т",
+        "CYRU": "У", "CYRF": "Ф", "CYRH": "Х", "CYRC": "Ц",
+        "CYRCH": "Ч", "CYRSH": "Ш", "CYRSHCH": "Щ", "CYRHRDSN": "Ъ",
+        "CYRERY": "Ы", "CYRSFTSN": "Ь", "CYREREV": "Э", "CYRYU": "Ю",
+        "CYRYA": "Я", "CYRII": "І", "CYRYI": "Ї", "CYRIE": "Є",
+        "CYRGUP": "Ґ", "CYRUSHRT": "Ў",
+        "cyra": "а", "cyrb": "б", "cyrv": "в", "cyrg": "г",
+        "cyrd": "д", "cyre": "е", "cyryo": "ё", "cyrzh": "ж",
+        "cyrz": "з", "cyri": "и", "cyrishrt": "й", "cyrk": "к",
+        "cyrl": "л", "cyrm": "м", "cyrn": "н", "cyro": "о",
+        "cyrp": "п", "cyrr": "р", "cyrs": "с", "cyrt": "т",
+        "cyru": "у", "cyrf": "ф", "cyrh": "х", "cyrc": "ц",
+        "cyrch": "ч", "cyrsh": "ш", "cyrshch": "щ", "cyrhrdsn": "ъ",
+        "cyrery": "ы", "cyrsftsn": "ь", "cyrerev": "э", "cyryu": "ю",
+        "cyrya": "я", "cyrii": "і", "cyryi": "ї", "cyrie": "є",
+        "cyrgup": "ґ", "cyrushrt": "ў",
     ]
 
     /// Every `\command` the table knows becomes its character; unknown
