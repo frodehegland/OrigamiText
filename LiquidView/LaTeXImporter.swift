@@ -53,6 +53,9 @@ nonisolated enum LaTeXImporter {
         /// \\orcid follows its \\author in acmart, so pairing is by
         /// position in the preamble.
         var authorORCIDs: [String: String] = [:]
+        /// Each author's email, keyed by name — the first \\email after
+        /// the \\author (a shared address never overwrites it).
+        var authorEmails: [String: String] = [:]
     }
 
     // MARK: - Entry points
@@ -302,28 +305,40 @@ nonisolated enum LaTeXImporter {
 
         // Each \\orcid pairs with the \\author it follows.
         var authorORCIDs: [String: String] = [:]
+        var authorEmails: [String: String] = [:]
         do {
             var currentAuthor: String?
             var rest = stripped[...]
-            while let range = rest.range(of: "\\\\(author|orcid)\\s*\\{",
+            while let range = rest.range(of: "\\\\(author|orcid|email)\\s*\\{",
                                          options: .regularExpression) {
-                let isAuthor = rest[range].contains("author")
+                let token = rest[range]
+                let command = token.contains("author") ? "author"
+                    : token.contains("orcid") ? "orcid" : "email"
                 let after = String(rest[range.lowerBound...])
-                guard let argument = firstBalancedArgument(
-                    of: isAuthor ? "author" : "orcid", in: after) else {
+                guard let argument = firstBalancedArgument(of: command, in: after) else {
                     rest = rest[range.upperBound...]
                     continue
                 }
-                if isAuthor {
+                switch command {
+                case "author":
                     let name = inline(convert: argument.value).text
                         .trimmingCharacters(in: .whitespaces)
                     currentAuthor = name.isEmpty ? nil : name
-                } else if let name = currentAuthor {
-                    // Bare id kept; a pasted URL sheds its prefix.
-                    let id = argument.value
-                        .replacingOccurrences(of: "https://orcid.org/", with: "")
-                        .trimmingCharacters(in: .whitespaces)
-                    if !id.isEmpty { authorORCIDs[name] = id }
+                case "orcid":
+                    if let name = currentAuthor {
+                        // Bare id kept; a pasted URL sheds its prefix.
+                        let id = argument.value
+                            .replacingOccurrences(of: "https://orcid.org/", with: "")
+                            .trimmingCharacters(in: .whitespaces)
+                        if !id.isEmpty { authorORCIDs[name] = id }
+                    }
+                default:
+                    if let name = currentAuthor, authorEmails[name] == nil {
+                        let address = argument.value
+                            .replacingOccurrences(of: "\\_", with: "_")
+                            .trimmingCharacters(in: .whitespaces)
+                        if address.contains("@") { authorEmails[name] = address }
+                    }
                 }
                 rest = rest[range.upperBound...]
             }
@@ -1116,7 +1131,8 @@ nonisolated enum LaTeXImporter {
         return Result(title: title, author: author, publication: publication,
                       body: paragraphs, references: references,
                       tables: namedTables, assets: assets, doi: doi,
-                      affiliations: affiliations, authorORCIDs: authorORCIDs)
+                      affiliations: affiliations, authorORCIDs: authorORCIDs,
+                      authorEmails: authorEmails)
     }
 
     // MARK: - Cross-references

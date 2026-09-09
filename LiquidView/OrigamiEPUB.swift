@@ -66,6 +66,7 @@ nonisolated enum OrigamiEPUBExporter {
                 case affiliations
                 case acmReference = "acm-reference"
                 case authorORCIDs = "author-orcids"
+                case authorEmails = "author-emails"
             }
 
             let title: String
@@ -79,6 +80,8 @@ nonisolated enum OrigamiEPUBExporter {
             var acmReference: String? = nil
             /// Each author's ORCID, keyed by name.
             var authorORCIDs: [String: String] = [:]
+            /// Each author's email, keyed by name.
+            var authorEmails: [String: String] = [:]
             /// The journal or proceedings the document is part of, when
             /// it declares one — the reader's Journals view groups by it.
             var publication: String? = nil
@@ -398,6 +401,7 @@ nonisolated enum OrigamiEPUBExporter {
                 affiliations: doc.affiliations,
                 acmReference: doc.acmReference,
                 authorORCIDs: doc.authorORCIDs,
+                authorEmails: doc.authorEmails,
                 publication: doc.publication,
                 origamiID: doc.id,
                 doi: doc.doi ?? ""),
@@ -802,13 +806,18 @@ nonisolated enum OrigamiEPUBExporter {
             }
         }
         for author in authors {
-            // The author's ORCID rides as the official iD link beside
-            // the name, as the publisher's pages carry it.
+            lines.append("<p class=\"author\">\(escaped(author))</p>")
+            // The email and the ORCID, written out and live, on a quiet
+            // line under the name — as the page prints them.
+            var details: [String] = []
+            if let email = doc.authorEmails[author], !email.isEmpty {
+                details.append("<a href=\"mailto:\(attributeEscaped(email))\">\(escaped(email))</a>")
+            }
             if let orcid = doc.authorORCIDs[author], !orcid.isEmpty {
-                lines.append("<p class=\"author\">\(escaped(author)) "
-                    + "<a class=\"orcid\" href=\"https://orcid.org/\(attributeEscaped(orcid))\">iD</a></p>")
-            } else {
-                lines.append("<p class=\"author\">\(escaped(author))</p>")
+                details.append("<a class=\"orcid\" href=\"https://orcid.org/\(attributeEscaped(orcid))\">\(escaped(orcid))</a>")
+            }
+            if !details.isEmpty {
+                lines.append("<p class=\"author-detail\">\(details.joined(separator: " \u{00B7} "))</p>")
             }
         }
         for affiliation in doc.affiliations {
@@ -1304,7 +1313,8 @@ nonisolated enum OrigamiEPUBExporter {
     .affiliation { color: #555555; margin: 0.1em 0; }
     .byline { color: #555555; font-style: italic; margin-top: 0.5em; margin-bottom: 0; }
     .acm-reference { text-align: left; font-size: 0.85em; color: #555555; max-width: 34em; margin: 1.4em auto 0; }
-    a.orcid { font-size: 0.7em; vertical-align: super; color: #a6ce39; text-decoration: none; font-weight: bold; }
+    .author-detail { font-size: 0.8em; color: #555555; margin: 0 0 0.3em; }
+    .author-detail a { color: inherit; }
     h2 { font-size: 1.4em; margin-top: 1.6em; }
     h3 { font-size: 1.2em; }
     h4 { font-size: 1.05em; }

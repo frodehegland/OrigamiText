@@ -68,6 +68,9 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// Each author's ORCID, keyed by name — rendered as the iD link on
     /// the exported author lines, carried through Visual-Meta.
     var authorORCIDs: [String: String] = [:]
+    /// Each author's email, keyed by name — live mailto links on the
+    /// exported author lines, carried through Visual-Meta.
+    var authorEmails: [String: String] = [:]
     /// Defined Concepts — the document's glossary: a shared pool of
     /// nodes (id, name, definition) that spatial layouts arrange and
     /// citations attach to. Books and papers carry them; the EPUB
