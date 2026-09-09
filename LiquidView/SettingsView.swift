@@ -477,7 +477,7 @@ private struct ReadingSettingsView: View {
             } header: {
                 Text("Citations & Notes")
             } footer: {
-                Text("How citations and note marks read in the native reading styles: citations as (Hegland 2025), [3], or the number raised; notes as the raised number the paper prints (the default), bracketed, or a quiet ‡. A raised number must mean exactly one thing, so choosing Superscript for one moves the other off it. The click is the same in every style — the source's card, or the note. The Faithful view shows the page exactly as published.")
+                Text("How citations and note marks read: citations as (Hegland 2025), [3], or the number raised; notes as the raised number the paper prints (the default), bracketed, a quiet ‡, or the [] fold — stretchtext's offer, which in the Faithful view opens the note's words in place. A raised number must mean exactly one thing, so choosing Superscript for one moves the other off it. The click is the same in every style — the source's card, or the note.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

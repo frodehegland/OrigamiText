@@ -382,6 +382,9 @@ nonisolated enum ReaderNoteStyle: String, CaseIterable, Identifiable, Sendable {
     case bracketed
     /// ‡ — one quiet mark for every note.
     case dagger
+    /// [] — stretchtext's offer: in the Faithful view a click unfolds
+    /// the note's words in place, [ before and ] after.
+    case fold
 
     static let defaultsKey = "origamiNoteStyle"
 
@@ -398,6 +401,7 @@ nonisolated enum ReaderNoteStyle: String, CaseIterable, Identifiable, Sendable {
         case .superscript: "Superscript"
         case .bracketed: "[Number]"
         case .dagger: "Mark (\u{2021})"
+        case .fold: "Fold [ ]"
         }
     }
 }
@@ -946,6 +950,8 @@ nonisolated enum OrigamiReading {
             return "[\(digits)]"
         case .dagger:
             return "\u{2021}"
+        case .fold:
+            return "[]"
         }
     }
 

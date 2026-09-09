@@ -5055,11 +5055,17 @@ private struct SelectableParagraph: NSViewRepresentable {
                 // Body ink with a quiet underline — the format's rule
                 // for links, never browser blue. The stretch toggle
                 // and the glossary daggers are controls, not
-                // references: no underline.
+                // references: no underline. A bracketed or raised
+                // citation is its own affordance too — [1] and ³ read
+                // as marks already — so only author–date citations
+                // keep the underline.
                 attributes[.link] = link
+                let numberedCitation = link.scheme == OrigamiReading.citationScheme
+                    && OrigamiCitationStyle(rawValue: UserDefaults.standard.string(
+                        forKey: "origamiCitationStyle") ?? "") ?? .authorDate != .authorDate
                 if link.scheme != "origami-stretch", link.scheme != "origami-gloss",
                    link.scheme != "origami-note", link.scheme != "origami-inote",
-                   link.scheme != "origami-conceptcard" {
+                   link.scheme != "origami-conceptcard", !numberedCitation {
                     attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
                     attributes[.underlineColor] = ink.withAlphaComponent(0.35)
                 }

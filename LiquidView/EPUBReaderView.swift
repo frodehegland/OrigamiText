@@ -114,8 +114,13 @@ struct EPUBReaderScreen: View {
     // Edited theme colours apply live: every override write bumps this,
     // and the changed CSS reinstalls on the WebView without a reload.
     @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
+    // The Notes style: a change re-renders this view, and the wrapped
+    // WebView swaps its endnote marks live.
+    @AppStorage(ReaderNoteStyle.defaultsKey) private var noteStyleRaw =
+        ReaderNoteStyle.superscript.rawValue
     private var theme: ReaderTheme {
         _ = themeEditTick
+        _ = noteStyleRaw
         return ReaderTheme(rawValue: themeRaw) ?? .highContrast
     }
 
@@ -691,7 +696,8 @@ struct EPUBReaderView: NSViewRepresentable {
     /// then the metadata toggle button, the stretchtext toggler (before the
     /// bridge, so a marker click never doubles as a Step 0 activation), the
     /// Step 0 semantic bridge, and the quote-link enhancer.
-    private static func installUserScripts(into controller: WKUserContentController, themeCSS: String) {
+    private static func installUserScripts(into controller: WKUserContentController, themeCSS: String,
+                                           noteFolds: Bool) {
         controller.addUserScript(WKUserScript(source: themeScript(css: themeCSS),
                                               injectionTime: .atDocumentStart, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: hideScript,
@@ -704,7 +710,7 @@ struct EPUBReaderView: NSViewRepresentable {
         // stretchtext script's in-page-link handler, so a dagger click
         // unfolds its note instead of jumping (or navigating away to
         // the backmatter chapter).
-        controller.addUserScript(WKUserScript(source: endnoteScript,
+        controller.addUserScript(WKUserScript(source: endnoteScript(foldMarks: noteFolds),
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: stretchtextScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -730,9 +736,11 @@ struct EPUBReaderView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let controller = WKUserContentController()
-        Self.installUserScripts(into: controller, themeCSS: css)
+        let noteFolds = ReaderNoteStyle.current == .fold
+        Self.installUserScripts(into: controller, themeCSS: css, noteFolds: noteFolds)
         controller.add(context.coordinator, name: Self.bridgeName)
         context.coordinator.themeCSS = css
+        context.coordinator.noteFolds = noteFolds
 
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = controller
@@ -853,12 +861,17 @@ struct EPUBReaderView: NSViewRepresentable {
         }
         // A theme or font change: re-inject the style live, no reload, so the
         // reader's scroll position holds.
-        if coordinator.themeCSS != css {
+        let noteFolds = ReaderNoteStyle.current == .fold
+        if coordinator.themeCSS != css || coordinator.noteFolds != noteFolds {
             coordinator.themeCSS = css
+            coordinator.noteFolds = noteFolds
             let controller = webView.configuration.userContentController
             controller.removeAllUserScripts()
-            Self.installUserScripts(into: controller, themeCSS: css)
+            Self.installUserScripts(into: controller, themeCSS: css, noteFolds: noteFolds)
             webView.evaluateJavaScript(Self.themeScript(css: css))
+            // The marks swap live too — the guard at the script's top
+            // makes a re-run a re-application, never a second listener.
+            webView.evaluateJavaScript(Self.endnoteScript(foldMarks: noteFolds))
         }
     }
 
@@ -882,6 +895,8 @@ struct EPUBReaderView: NSViewRepresentable {
         /// book keeps it, so the restored scroll position applies only once.
         var openedBookID: String?
         var themeCSS: String = ""
+        /// Whether the endnote marks read as [] folds (Notes style).
+        var noteFolds = false
         var onActivate: (EPUBElementRef) -> Void = { _ in }
         var onSelect: (String) -> Void = { _ in }
         var onCopyQuote: (String) -> Void = { _ in }
@@ -1313,16 +1328,20 @@ struct EPUBReaderView: NSViewRepresentable {
     })();
     """
 
-    /// The endnote daggers, made stretchtext: the export's ‡ (a plain
-    /// reader's mark) reads here as the format's fold — `[]` closed; a
-    /// click unfolds the note in place, `[` standing to the left of the
-    /// words and `]` after, every part a click to fold again. Never a
-    /// jump to the appendix (or, worse, a navigation off to the
-    /// backmatter chapter). The words come from Swift
-    /// (`origamiInsertEndnote`), which finds the note by its id in any
-    /// of the book's chapters.
-    private static let endnoteScript = """
+    /// The endnote daggers, made stretchtext: a click unfolds the note
+    /// in place, a second click (on mark or words) folds it back —
+    /// never a jump to the appendix (or, worse, a navigation off to
+    /// the backmatter chapter). The closed mark follows the reader's
+    /// Notes style: the page's own printed mark (the superscript
+    /// number — the default), or the format's `[]` fold, which opens as
+    /// `[` words `]`. The words come from Swift (`origamiInsertEndnote`),
+    /// which finds the note by its id in any of the book's chapters.
+    /// Re-running the script only re-applies the marks
+    /// (`origamiSetNoteFolds`) — the click listener registers once.
+    private static func endnoteScript(foldMarks: Bool) -> String {
+    """
     (function(){
+      if (window.origamiSetNoteFolds) { window.origamiSetNoteFolds(\(foldMarks)); return; }
       var bridge = window.webkit && window.webkit.messageHandlers
         && window.webkit.messageHandlers.origami;
 
@@ -1333,7 +1352,8 @@ struct EPUBReaderView: NSViewRepresentable {
         + 'a.origami-note-fold:hover{opacity:1;}'
         + 'a.origami-note-fold.open{opacity:1;}'
         + '.origami-note-inline{font-style:italic;cursor:pointer;}'
-        + '.origami-note-inline::after{content:"]";font-style:normal;}';
+        + '.origami-note-inline::after{content:"]";font-style:normal;}'
+        + '.origami-note-bracketed::before{content:" [";font-style:normal;}';
       (document.head || document.documentElement).appendChild(style);
 
       function isDagger(a){
@@ -1344,21 +1364,31 @@ struct EPUBReaderView: NSViewRepresentable {
         return false;
       }
 
-      // The printed mark (‡, a number) gives way to the fold's []: the
-      // note is an offer to stretch the text, not a footnote to chase.
-      var daggers = document.querySelectorAll('a');
-      Array.prototype.forEach.call(daggers, function(a){
-        if (!isDagger(a)) return;
-        a.classList.add('origami-note-fold');
-        a.textContent = '[]';
-      });
+      var foldMarks = \(foldMarks);
+      // Closed marks in the chosen style: the fold's [] — the note as
+      // an offer to stretch the text — or the page's own printed mark.
+      function applyMarks(){
+        var daggers = document.querySelectorAll('a');
+        Array.prototype.forEach.call(daggers, function(a){
+          if (!isDagger(a)) return;
+          a.classList.add('origami-note-fold');
+          if (a.dataset.otNoteMark === undefined) a.dataset.otNoteMark = a.innerHTML;
+          if (!a.classList.contains('open')) {
+            if (foldMarks) { a.textContent = '[]'; }
+            else { a.innerHTML = a.dataset.otNoteMark; }
+          }
+        });
+      }
+      window.origamiSetNoteFolds = function(f){ foldMarks = f; applyMarks(); };
+      applyMarks();
 
       function fold(a){
         var open = a.nextElementSibling;
         if (open && open.classList && open.classList.contains('origami-note-inline')) {
           open.remove();
         }
-        a.textContent = '[]';
+        if (foldMarks) { a.textContent = '[]'; }
+        else { a.innerHTML = a.dataset.otNoteMark || a.innerHTML; }
         a.classList.remove('open');
       }
 
@@ -1393,17 +1423,24 @@ struct EPUBReaderView: NSViewRepresentable {
         var a = pending[reqId];
         delete pending[reqId];
         if (!a) return;
-        // Open: the anchor is the [ to the left of the stretched text;
-        // the words follow, ] closing them.
-        a.textContent = '[';
-        a.classList.add('open');
+        if (a.dataset.otNoteMark === undefined) a.dataset.otNoteMark = a.innerHTML;
         var span = document.createElement('span');
-        span.className = 'origami-note-inline';
         span.textContent = text;
+        if (foldMarks) {
+          // Open: the anchor is the [ to the left of the stretched
+          // text; the words follow, ] closing them.
+          a.textContent = '[';
+          span.className = 'origami-note-inline';
+        } else {
+          // The printed mark stays; the words follow in [brackets].
+          span.className = 'origami-note-inline origami-note-bracketed';
+        }
+        a.classList.add('open');
         a.insertAdjacentElement('afterend', span);
       };
     })();
     """
+    }
 
     /// Author's stretchtext (§ "Do Not Expand ››"): a contracted span ships
     /// as an `a.ot-stretchtext` marker in the running text plus a hidden
