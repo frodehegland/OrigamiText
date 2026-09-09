@@ -115,7 +115,15 @@ output of the last:
    come out right; a bare " opens after a space or an opener, closes
    elsewhere; math is still shielded so primes stay primes; verbatim
    and listings never pass through here, so code keeps its straight
-   quotes).
+   quotes). Two shields matter to this step: `\texttt` becomes a
+   placeholder — not a backtick — until after quote pairing, or a
+   prose backtick-quote beside it merges into a curly double quote
+   (`` `\texttt{[[ ]]}' `` must read ‘`[[ ]]`’, not “[[ ]]‘’); and
+   every placeholder restore (math, backslash, braces, texttt) must
+   run over the *lifted footnote texts* as well as the paragraph —
+   footnote words leave the text before the restores, so a note like
+   ht26-11's ReSB$^2$ otherwise ships an object-replacement glyph
+   where ² belongs.
 8. **Assemble the bibliography:**
    - *Inclusion:* with a printed bibliography, exactly its entries — the
      print can cite from places body tokens cannot reach (ht26-26 cites

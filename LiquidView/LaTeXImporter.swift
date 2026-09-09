@@ -1134,8 +1134,13 @@ nonisolated enum LaTeXImporter {
         }
 
         // Emphasis, innermost first through recursion.
+        // \texttt's markdown backticks are shielded until after the
+        // typography step — a prose open-quote backtick beside a code
+        // span otherwise merges with it into a double quote
+        // (`\texttt{[[ ]]}' lost its code and grew stray marks).
+        let codeMark = "\u{FFFC}BT\u{FFFC}"
         for (command, opener, closer) in [("textbf", "**", "**"), ("emph", "*", "*"),
-                                          ("textit", "*", "*"), ("texttt", "`", "`"),
+                                          ("textit", "*", "*"), ("texttt", codeMark, codeMark),
                                           ("textsc", "", ""), ("underline", "", "")] {
             while let argument = firstBalancedArgument(of: command, in: text) {
                 let innerResult = inline(convert: argument.value,
@@ -1234,6 +1239,7 @@ nonisolated enum LaTeXImporter {
             .replacingOccurrences(of: "~\u{FFFC}T\u{FFFC}", with: "~")
             .replacingOccurrences(of: "~", with: "\u{00A0}")
         text = BibTeXParser.typographicQuotes(text)
+        text = text.replacingOccurrences(of: codeMark, with: "`")
 
         // Stray braces (Author's braced capitals in titles) vanish.
         text = text.replacingOccurrences(of: "{", with: "")
@@ -1245,12 +1251,26 @@ nonisolated enum LaTeXImporter {
         for (index, span) in mathSpans.enumerated() {
             let inner = String(span.dropFirst().dropLast())
             let restored = BibTeXParser.readableMath(inner) ?? span
-            text = text.replacingOccurrences(of: "\u{FFFC}MATH\(index)\u{FFFC}",
-                                             with: restored)
+            let placeholder = "\u{FFFC}MATH\(index)\u{FFFC}"
+            text = text.replacingOccurrences(of: placeholder, with: restored)
+            // A footnote's words were lifted out before this restore —
+            // their math placeholders restore here too, or a note reads
+            // as an object-replacement glyph (ReSB$^2$ in ht26-11).
+            for noteIndex in notes.indices {
+                notes[noteIndex].1 = notes[noteIndex].1
+                    .replacingOccurrences(of: placeholder, with: restored)
+            }
         }
         text = text.replacingOccurrences(of: "\u{FFFC}BS\u{FFFC}", with: "\\")
             .replacingOccurrences(of: "\u{FFFC}LB\u{FFFC}", with: "{")
             .replacingOccurrences(of: "\u{FFFC}RB\u{FFFC}", with: "}")
+        for noteIndex in notes.indices {
+            notes[noteIndex].1 = notes[noteIndex].1
+                .replacingOccurrences(of: "\u{FFFC}BS\u{FFFC}", with: "\\")
+                .replacingOccurrences(of: "\u{FFFC}LB\u{FFFC}", with: "{")
+                .replacingOccurrences(of: "\u{FFFC}RB\u{FFFC}", with: "}")
+                .replacingOccurrences(of: codeMark, with: "`")
+        }
 
         // One paragraph, one line (the \\ newlines stay as breaks).
         let lines = text.components(separatedBy: "\n").map { line in
