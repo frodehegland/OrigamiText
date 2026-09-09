@@ -1185,12 +1185,28 @@ final class AppModel {
     /// publisher .zip archives is asked for once and remembered; the
     /// paper's archive answers by name (the record's unpack folder, for
     /// papers still under their TAPS numbers) or by the DOI its
-    /// manuscript declares in \acmDOI.
+    /// manuscript declares in \acmDOI. A reviewing aid speaks plainly:
+    /// every failure is an alert with the reason, never just a beep.
     func showSourcePDF(for record: EPUBRecord) {
         guard let folder = sourceArchivesFolder() else { return }
-        guard let archive = sourceArchive(for: record, in: folder) else {
-            NSSound.beep()
-            showNote("No archive in \(folder.lastPathComponent) matches \u{201C}\(record.title)\u{201D}.")
+        var archives = zipArchives(in: folder)
+        if archives.isEmpty {
+            // Unreadable (macOS privacy protects Downloads and friends
+            // until a panel grant) or moved or empty: choosing through
+            // the panel both grants access and fixes the path.
+            UserDefaults.standard.removeObject(forKey: Self.sourceArchivesKey)
+            sourceArchiveIndexedFolder = nil
+            guard let chosen = sourceArchivesFolder() else { return }
+            archives = zipArchives(in: chosen)
+            guard !archives.isEmpty else {
+                sourcePDFAlert("No readable .zip archives in \(chosen.path).")
+                return
+            }
+        }
+        guard let archive = sourceArchive(for: record, in: archives) else {
+            sourcePDFAlert("No archive matches \u{201C}\(record.title)\u{201D}"
+                + (record.doi.map { " (DOI \($0))" } ?? " (no DOI on record)")
+                + " among \(archives.count) archives.")
             return
         }
         do {
@@ -1205,8 +1221,7 @@ final class AppModel {
                     return left == right ? lhs < rhs : left < right
                 }
             guard let entry = candidates.first, let data = reader.entry(entry) else {
-                NSSound.beep()
-                showNote("\(archive.lastPathComponent) carries no PDF.")
+                sourcePDFAlert("\(archive.lastPathComponent) carries no PDF.")
                 return
             }
             let out = FileManager.default.temporaryDirectory
@@ -1214,12 +1229,24 @@ final class AppModel {
             try data.write(to: out, options: .atomic)
             NSWorkspace.shared.open(out)
         } catch {
-            NSSound.beep()
-            showNote("Could not open the source PDF: \(error.localizedDescription)")
+            sourcePDFAlert("Could not open the source PDF: \(error.localizedDescription)")
         }
     }
 
     private static let sourceArchivesKey = "sourceArchivesFolder"
+
+    private func sourcePDFAlert(_ text: String) {
+        let alert = NSAlert()
+        alert.messageText = "Show PDF"
+        alert.informativeText = text
+        alert.runModal()
+    }
+
+    private func zipArchives(in folder: URL) -> [URL] {
+        ((try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension.lowercased() == "zip" }
+    }
 
     private func sourceArchivesFolder() -> URL? {
         if let path = UserDefaults.standard.string(forKey: Self.sourceArchivesKey) {
@@ -1243,17 +1270,15 @@ final class AppModel {
     @ObservationIgnored private var sourceArchiveIndex: [String: URL] = [:]
     @ObservationIgnored private var sourceArchiveIndexedFolder: String?
 
-    private func sourceArchive(for record: EPUBRecord, in folder: URL) -> URL? {
-        let archives = ((try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.pathExtension.lowercased() == "zip" }
+    private func sourceArchive(for record: EPUBRecord, in archives: [URL]) -> URL? {
         if let direct = archives.first(where: {
             $0.deletingPathExtension().lastPathComponent == record.folder
         }) {
             return direct
         }
         guard let doi = record.doi?.lowercased(), !doi.isEmpty else { return nil }
-        if sourceArchiveIndexedFolder != folder.path {
+        let cacheKey = archives.first?.deletingLastPathComponent().path ?? ""
+        if sourceArchiveIndexedFolder != cacheKey {
             sourceArchiveIndex = [:]
             for archive in archives {
                 guard let reader = try? ZipReader(data: Data(contentsOf: archive)) else { continue }
@@ -1269,7 +1294,7 @@ final class AppModel {
                     }
                 }
             }
-            sourceArchiveIndexedFolder = folder.path
+            sourceArchiveIndexedFolder = cacheKey
         }
         return sourceArchiveIndex[doi]
     }
