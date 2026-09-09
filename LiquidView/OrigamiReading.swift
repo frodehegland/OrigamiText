@@ -878,12 +878,25 @@ nonisolated enum OrigamiReading {
         for match in matches.reversed() {
             let id = out.substring(with: match.range(at: 1))
             let escaped = id.addingPercentEncoding(withAllowedCharacters: keyAllowed) ?? id
-            // The double dagger, as the EPUB export renders the same
-            // token — one mark for the note on every surface.
+            // The note's printed number, superscript, as the EPUB
+            // export renders the same token — the number the PDF
+            // printed (fn24 → ²⁴), ‡ only when the id carries none.
             out = out.replacingCharacters(in: match.range,
-                                          with: "[\u{2021}](\(noteScheme):\(escaped))") as NSString
+                                          with: "[\(noteMark(for: id))](\(noteScheme):\(escaped))") as NSString
         }
         return out as String
+    }
+
+    /// The visible mark for a note id: its trailing digits in
+    /// superscript form (fn24 → ²⁴, en-3 → ³), else the ‡ fallback.
+    static func noteMark(for id: String) -> String {
+        let digits = String(id.reversed().prefix { $0.isNumber }.reversed())
+        guard !digits.isEmpty else { return "\u{2021}" }
+        let superscripts: [Character: Character] = [
+            "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+            "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+        ]
+        return String(digits.map { superscripts[$0] ?? $0 })
     }
 
     /// The URL scheme an inline note's fold carries: closed, the []

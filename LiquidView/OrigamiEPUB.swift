@@ -641,6 +641,29 @@ nonisolated enum OrigamiEPUBExporter {
             body.map { (stableID($0), $0.address) },
             uniquingKeysWith: { first, _ in first })
 
+        // Every endnote's printed number, in the order the body first
+        // cites it: the trailing digits of its stable id (fn24 → 24,
+        // en-3 → 3) — the number the PDF printed — else its position
+        // in citation order. The mark shows this number, never a
+        // generic ‡; the note paragraph opens with it as a back link
+        // to the first citing mark (a note can be cited many times;
+        // the first instance is the one that carries the fnref id).
+        var noteNumbers: [String: String] = [:]
+        for element in body {
+            var rest = element.text[...]
+            while let range = rest.range(of: #"\[note:([A-Za-z0-9._:-]+)\]"#,
+                                         options: .regularExpression) {
+                let id = String(rest[range].dropFirst("[note:".count).dropLast())
+                if noteNumbers[id] == nil {
+                    let digits = id.reversed().prefix { $0.isNumber }.reversed()
+                    noteNumbers[id] = digits.isEmpty
+                        ? String(noteNumbers.count + 1) : String(digits)
+                }
+                rest = rest[range.upperBound...]
+            }
+        }
+        let anchoredNoteRefs = NoteRefAnchors()
+
         // Defined concepts get their first occurrence wrapped in <dfn>
         // (spec C5) — the definition itself lives only in the JSON.
         var pendingConcepts = doc.concepts.filter { $0.tag != "heading" }.map(\.name)
@@ -672,7 +695,9 @@ nonisolated enum OrigamiEPUBExporter {
             var html = self.element(for: element, citations: citations,
                                     stableID: stableID, assetsByID: assetsByID,
                                     tablesByID: tablesByID,
-                                    noteAddresses: addressByStableID)
+                                    noteAddresses: addressByStableID,
+                                    noteNumbers: noteNumbers,
+                                    anchoredNoteRefs: anchoredNoteRefs)
             for name in pendingConcepts {
                 if let wrapped = wrappingFirstOccurrence(of: name, in: html) {
                     html = wrapped
@@ -749,6 +774,13 @@ nonisolated enum OrigamiEPUBExporter {
         return parts.joined(separator: " · ")
     }
 
+    /// The note ids whose citing mark already carries the `fnref-` id —
+    /// only the first mark does (ids are unique), and the note's back
+    /// link points there.
+    private final class NoteRefAnchors {
+        var seen: Set<String> = []
+    }
+
     /// One element, carrying its address as the anchor (spec A1) and its
     /// stable id in `data-id` (spec A2) — the paragraph's own id, or the
     /// heading's Map-node UUID when the concept pool knows it.
@@ -757,7 +789,9 @@ nonisolated enum OrigamiEPUBExporter {
                                 stableID: (AddressedElement) -> String,
                                 assetsByID: [String: LiquidDoc.Asset],
                                 tablesByID: [String: LiquidDoc.Table] = [:],
-                                noteAddresses: [String: String] = [:]) -> String {
+                                noteAddresses: [String: String] = [:],
+                                noteNumbers: [String: String] = [:],
+                                anchoredNoteRefs: NoteRefAnchors? = nil) -> String {
         let paragraph = element.paragraph
         let trimmed = paragraph.text.trimmingCharacters(in: .whitespaces)
         let anchors = "id=\"\(element.address)\" data-id=\"\(escaped(stableID(element)))\""
@@ -785,13 +819,32 @@ nonisolated enum OrigamiEPUBExporter {
             return "<hr \(anchors) />"
         }
         let inline = inlineHTML(from: element.text, citations: citations,
-                                noteAddresses: noteAddresses)
+                                noteAddresses: noteAddresses,
+                                noteNumbers: noteNumbers,
+                                anchoredNoteRefs: anchoredNoteRefs)
         if let level = element.headingLevel {
             return "<h\(level + 1) \(anchors)>\(inline)</h\(level + 1)>"
         }
+        // An endnote opens with its printed number as a back link to
+        // the first mark that cites it. The number may already lead the
+        // text (a re-imported export keeps it as words) — then it is
+        // wrapped, never doubled.
+        let stable = stableID(element)
+        if element.headingLevel == nil, let number = noteNumbers[stable] {
+            let back = "<a class=\"ot-note-back\" role=\"doc-backlink\""
+                + " href=\"#fnref-\(attributeEscaped(stable))\">\(number).</a>"
+            var words = inline
+            if words.hasPrefix("\(number).") {
+                words = String(words.dropFirst("\(number).".count))
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            return "<p \(anchors) role=\"doc-endnote\">\(back) \(words)</p>"
+        }
         if let speaker = paragraph.speaker, element.text.hasPrefix("\(speaker):") {
             let rest = inlineHTML(from: String(element.text.dropFirst(speaker.count + 1)),
-                                  citations: citations, noteAddresses: noteAddresses)
+                                  citations: citations, noteAddresses: noteAddresses,
+                                  noteNumbers: noteNumbers,
+                                  anchoredNoteRefs: anchoredNoteRefs)
             return "<p \(anchors)><strong class=\"speaker\">\(escaped(speaker)):</strong>\(rest)</p>"
         }
         return "<p \(anchors)>\(inline)</p>"
@@ -802,7 +855,9 @@ nonisolated enum OrigamiEPUBExporter {
     /// profile's numbered citation markers, linked to References with
     /// their stable citation id (spec C6).
     private static func inlineHTML(from text: String, citations: [Citation],
-                                   noteAddresses: [String: String] = [:]) -> String {
+                                   noteAddresses: [String: String] = [:],
+                                   noteNumbers: [String: String] = [:],
+                                   anchoredNoteRefs: NoteRefAnchors? = nil) -> String {
         var html = escaped(text)
         html = html.replacingOccurrences(of: "`([^`]+)`", with: "<code>$1</code>",
                                          options: .regularExpression)
@@ -827,10 +882,24 @@ nonisolated enum OrigamiEPUBExporter {
             while let range = html.range(of: pattern, options: .regularExpression) {
                 let id = String(html[range].dropFirst(token.count + 2).dropLast())
                 let target = noteAddresses[id] ?? id
+                // An endnote mark shows the note's printed number, as
+                // the PDF did — ‡ only when no number is known (inline
+                // stretchtext notes, which fold in place). The first
+                // mark citing a note carries the fnref- id the note's
+                // back link returns to.
+                var mark = "\u{2021}"
+                var anchorID = ""
+                if token == "note", let number = noteNumbers[id] {
+                    mark = "<sup>\(number)</sup>"
+                    if let anchored = anchoredNoteRefs, !anchored.seen.contains(id) {
+                        anchored.seen.insert(id)
+                        anchorID = " id=\"fnref-\(attributeEscaped(id))\""
+                    }
+                }
                 html.replaceSubrange(range, with:
-                    "<a\(extraClass) role=\"doc-noteref\""
+                    "<a\(extraClass)\(anchorID) role=\"doc-noteref\""
                     + " data-note-id=\"\(attributeEscaped(id))\""
-                    + " href=\"#\(attributeEscaped(target))\">\u{2021}</a>")
+                    + " href=\"#\(attributeEscaped(target))\">\(mark)</a>")
             }
         }
         resolveNoteTokens("inote", extraClass: " class=\"ot-inline-note\"")
