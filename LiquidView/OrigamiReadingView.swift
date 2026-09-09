@@ -4542,7 +4542,7 @@ struct CitationCardSheet: View {
                             doi: rec.fields["doi"]?.lowercased())
                     }
                     .help("Show what this work cites and what cites it")
-                    Button("Search", systemImage: "magnifyingglass") {
+                    Button("Online") {
                         var terms = ["\"\(rec.title)\""]
                         let authors = rec.displayAuthors
                         if !authors.isEmpty { terms.append(authors) }
@@ -4616,7 +4616,7 @@ struct CitationCardSheet: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 576, maxWidth: 816)
+        .frame(minWidth: 680, maxWidth: 900)
         // What the package left out, the services fill in: the cache
         // answers free; the network is asked only when the record
         // carries no abstract of its own (Settings ▸ Reading turns
