@@ -1819,6 +1819,21 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
             }
             if let link = run.link {
                 attributes[.link] = link
+                // The Mac's rule travels: body-ink links with a quiet
+                // underline, so a jump or a web link shows it can be
+                // tapped. Controls (notes, glossary, stretch) and
+                // bracketed or raised citations — marks already —
+                // carry none.
+                let numberedCitation = link.scheme == "origami-cite"
+                    && OrigamiCitationStyle(rawValue: UserDefaults.standard.string(
+                        forKey: "origamiCitationStyle") ?? "") ?? .authorDate != .authorDate
+                let control = ["origami-note", "origami-inote", "origami-gloss",
+                               "origami-stretch", "origami-conceptcard"]
+                    .contains(link.scheme ?? "")
+                if !control, !numberedCitation {
+                    attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                    attributes[.underlineColor] = ink.withAlphaComponent(0.35)
+                }
             }
             out.append(NSAttributedString(string: text, attributes: attributes))
         }
@@ -1844,7 +1859,7 @@ private struct PhoneGuideView: View {
                 guideRow("arrow.down.right.and.arrow.up.left", "Pinch for the outline",
                          "Pinch in anywhere while reading and the book folds into its outline. Pinch out and it opens again at the very spot you left. Tap a heading's name to open that section instead; the chevron beside it peeks inside without leaving.")
                 guideRow("quote.closing", "Citations and notes",
-                         "Tap a citation — [1] or (Author 2026) — and its source appears as a card, with the full reference a copy away. Tap a ‡ mark for the note behind it. How citations read is yours to choose in Settings.")
+                         "Tap a citation — [1] or (Author 2026) — and its source appears as a card, with the full reference a copy away. Tap a note's raised number (or its ‡ mark) for the note behind it. How citations and notes read is yours to choose in Settings.")
                 guideRow("pin", "Pin and set aside",
                          "Swipe a book right to pin it to the top of every list; swipe left to set it aside for later — or hold for the menu. The standing is shared: your Mac and headset see the same pile.")
                 guideRow("circle.lefthalf.filled", "Looks",
