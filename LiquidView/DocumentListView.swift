@@ -111,6 +111,11 @@ struct EPUBLibraryListView: View {
     @AppStorage(AppSettings.listTitleFontKey) private var listTitleFamily = ""
 
     private var records: [EPUBRecord] {
+        // Find at the foot of the list narrows every mode the same way.
+        model.searchFilteredEPUBs(unsearchedRecords)
+    }
+
+    private var unsearchedRecords: [EPUBRecord] {
         switch mode {
         case .all:
             return model.pinnedFirst(model.epubRecords(inFolder: nil))
@@ -522,8 +527,9 @@ struct JournalBooksListView: View {
     }
 
     private var documentsList: some View {
-        let shown = model.pinnedFirst(model.epubRecords(inPublication: name))
-        let aside = model.epubSetAsideRecords(inPublication: name)
+        let shown = model.searchFilteredEPUBs(
+            model.pinnedFirst(model.epubRecords(inPublication: name)))
+        let aside = model.searchFilteredEPUBs(model.epubSetAsideRecords(inPublication: name))
         return List(selection: epubListSelection(model)) {
             Section {
                 ForEach(shown) { record in
@@ -665,16 +671,17 @@ struct PublicationFilteredListView: View {
     private var records: [EPUBRecord] {
         switch filter {
         case .author(let name):
-            model.pinnedFirst(
+            model.searchFilteredEPUBs(model.pinnedFirst(
                 model.epubRecords(inPublication: venue).filter { record in
                     record.authorList.contains {
                         $0.trimmingCharacters(in: .whitespaces)
                             .caseInsensitiveCompare(name) == .orderedSame
                     }
                 }
-            )
+            ))
         case .topic(let topic):
-            model.pinnedFirst(model.epubRecords(inPublication: venue, matchingTopic: topic))
+            model.searchFilteredEPUBs(model.pinnedFirst(
+                model.epubRecords(inPublication: venue, matchingTopic: topic)))
         }
     }
 

@@ -3189,6 +3189,28 @@ final class AppModel {
         return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
+    /// Find, applied to the Library's book lists: a book stays when the
+    /// words match its title, an author, its venue — or, once the index
+    /// has built it, any paragraph of its text.
+    func searchFilteredEPUBs(_ records: [EPUBRecord]) -> [EPUBRecord] {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return records }
+        return records.filter { record in
+            if record.title.localizedCaseInsensitiveContains(query) { return true }
+            if record.authorList.contains(where: {
+                $0.localizedCaseInsensitiveContains(query) }) { return true }
+            if record.publication?.localizedCaseInsensitiveContains(query) == true {
+                return true
+            }
+            if let doc = index.byID[record.id]?.doc,
+               (doc.body ?? []).contains(where: {
+                   $0.text.localizedCaseInsensitiveContains(query) }) {
+                return true
+            }
+            return false
+        }
+    }
+
     /// The opened EPUBs that are part of a given journal or proceedings,
     /// under whichever of its names their pages carry.
     func epubRecords(inPublication name: String) -> [EPUBRecord] {
