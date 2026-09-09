@@ -1000,6 +1000,32 @@ struct PhoneReaderView: View {
                                             doc: LiquidDoc) -> some View {
         if paragraph.text == "---" {
             Divider()
+        } else if let reference = LiquidDoc.imageReference(in: paragraph.text) {
+            // A figure: the image with its printed caption beneath — a
+            // double-tap lifts it into the figure card, as the Mac's
+            // double-click lifts it into a window.
+            VStack(alignment: .leading, spacing: 6) {
+                if let asset = doc.assets.first(where: { $0.id == reference.id }),
+                   let data = asset.data, let image = UIImage(data: data) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxHeight: 480)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .onTapGesture(count: 2) { jumpFigureID = paragraph.id }
+                    if let caption = asset.alt, !caption.isEmpty {
+                        Text(caption)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if !reference.alt.isEmpty {
+                    // The words stand in when the pixels are absent.
+                    Text(reference.alt)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .id(paragraph.id)
         } else if let code = OrigamiReading.fencedCode(in: paragraph.text) {
             // A code block, as the page prints it: monospace in a quiet
             // box, whitespace exactly as written.
