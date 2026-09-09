@@ -709,8 +709,25 @@ struct PhoneReaderView: View {
         if let paragraph = (doc.body ?? []).first(where: { $0.id == target }),
            LiquidDoc.imageReference(in: paragraph.text) != nil {
             jumpFigureID = target
-        } else {
+            return true
+        }
+        // The landing is the target's SECTION — the id the readings
+        // register. Horizontal's paragraphs live inside nested column
+        // scrolls the outer proxy cannot reach, lazy stacks register
+        // no unrealized ids, and Focus shows one section at a time —
+        // so a bare paragraph id would land nowhere at all.
+        let sections = OrigamiSection.build(from: doc)
+        guard let index = sections.firstIndex(where: { section in
+            section.heading?.id == target
+                || section.paragraphs.contains { $0.id == target }
+        }) else {
             scrollJumpID = target
+            return true
+        }
+        if mode == .focus {
+            withAnimation { focusIndex = index }
+        } else {
+            scrollJumpID = sections[index].id
         }
         return true
     }
