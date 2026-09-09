@@ -100,6 +100,10 @@ output of the last:
    passed through untouched) →
    `\texorpdfstring` takes its plain arm → escapes → `\label` strip
    (a label inside a heading's own braces is invisible to the scanner)
+   (an accent's optional brace is consumed only when it was opened:
+   `\textnormal{Kenk\=o}` keeps its wrapper's brace — eating it once
+   mangled everything after; the sweep asserts no combining mark ever
+   follows a non-letter)
    → **footnotes out** (one document-wide counter — per-paragraph
    counters gave ht26-18's 33 notes the same id 33 times) → citations
    to `[cite:key]` tokens → hyperlink plumbing (`\hypertarget` drops

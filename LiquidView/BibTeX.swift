@@ -381,7 +381,10 @@ extension BibTeXParser {
             "\"": "\u{0308}", "~": "\u{0303}", "=": "\u{0304}", ".": "\u{0307}",
         ]
         for (mark, accent) in symbolMarks {
-            let pattern = "\\\\\(NSRegularExpression.escapedPattern(for: String(mark)))\\{?([a-zA-Z])\\}?"
+            // Either a braced letter or a bare one — never a bare letter
+            // plus someone else's closing brace (\textnormal{Kenk\=o}
+            // must keep its wrapper's brace; eating it mangled the rest).
+            let pattern = "\\\\\(NSRegularExpression.escapedPattern(for: String(mark)))(?:\\{([a-zA-Z])\\}|([a-zA-Z]))"
             while let range = text.range(of: pattern, options: .regularExpression) {
                 let letter = text[range].last { $0.isLetter }.map(String.init) ?? ""
                 text.replaceSubrange(range,
