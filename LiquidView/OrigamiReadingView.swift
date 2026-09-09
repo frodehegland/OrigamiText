@@ -2962,7 +2962,13 @@ struct OrigamiReadingView: View {
     private func followJump(_ paragraphID: String) {
         let target = (doc.body ?? []).first { $0.id == paragraphID }
         if let target, LiquidDoc.imageReference(in: target.text) != nil {
+            #if os(macOS)
+            // The image in its own window, beside the reading, closed
+            // when the reader is done with it.
+            openWindow(value: FigureWindowValue(docID: doc.id, paragraphID: paragraphID))
+            #else
             figureTarget = FigureTarget(paragraphID: paragraphID)
+            #endif
         } else {
             if let stretchID = target?.stretchID { openStretch.insert(stretchID) }
             pendingScrollID = paragraphID
@@ -4195,11 +4201,61 @@ private struct ConceptSheet: View {
     }
 }
 
-/// The figure a jump link names, shown in place — the reader sees the
-/// image without leaving the words. Shared by the native styles and
-/// the faithful view's bridge. visionOS groundwork: Lift into Space
-/// posts .origamiLiftImage (docID, assetID) for the vision scene to
-/// stand the image in the room beside the reading.
+/// One figure window's identity: the document and the image
+/// paragraph. The window resolves the pixels itself, so the value
+/// stays small enough to route through the scene system.
+struct FigureWindowValue: Codable, Hashable {
+    /// The document's address — or, from the faithful view, the book's
+    /// shelf folder; the resolver answers to either.
+    let docID: String
+    let paragraphID: String
+}
+
+/// The figure in its own window (macOS): the image with its printed
+/// caption, standing beside the reading until the reader closes it.
+struct FigureWindowView: View {
+    @Environment(AppModel.self) private var model
+    let target: FigureWindowValue
+
+    private var resolved: (doc: LiquidDoc, asset: LiquidDoc.Asset)? {
+        guard let doc = model.figureWindowDoc(id: target.docID),
+              let paragraph = doc.body?.first(where: { $0.id == target.paragraphID }),
+              let reference = LiquidDoc.imageReference(in: paragraph.text),
+              let asset = doc.assets.first(where: { $0.id == reference.id })
+        else { return nil }
+        return (doc, asset)
+    }
+
+    var body: some View {
+        Group {
+            if let resolved {
+                ScrollView {
+                    OrigamiAssetView(asset: resolved.asset, doc: resolved.doc)
+                        .padding(16)
+                }
+            } else {
+                Text("The figure is not in this library's copy of the document.")
+                    .foregroundStyle(.secondary)
+                    .padding(30)
+            }
+        }
+        .navigationTitle(resolved.flatMap { figureLabel($0.asset) } ?? "Figure")
+    }
+
+    /// "Figure 3" from the caption's own opening, when it carries one.
+    private func figureLabel(_ asset: LiquidDoc.Asset) -> String? {
+        guard let alt = asset.alt,
+              let match = alt.range(of: #"^(Figure|Table) \d+"#,
+                                    options: .regularExpression)
+        else { return nil }
+        return String(alt[match])
+    }
+}
+
+/// The figure a jump link names, shown in place — the visionOS form,
+/// where the sheet carries Lift into Space (.origamiLiftImage) so the
+/// scene can stand the image in the room beside the reading. On the
+/// Mac the figure opens in its own window instead (FigureWindowView).
 struct FigureJumpSheet: View {
     @Environment(\.dismiss) private var dismiss
     let doc: LiquidDoc

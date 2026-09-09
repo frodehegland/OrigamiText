@@ -3189,6 +3189,19 @@ final class AppModel {
         return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
+    /// The document behind a figure window, by the id its jump carried:
+    /// the document's address, or — from the faithful view — the book's
+    /// shelf folder. The reading cache answers first, then the index.
+    func figureWindowDoc(id docID: String) -> LiquidDoc? {
+        if let cached = readingDocCache.last(where: {
+            $0.bookID == docID || $0.doc.id == docID }) {
+            return cached.doc
+        }
+        if let entry = index.byID[docID] { return entry.doc }
+        if let memo = epubIndexMemo[docID] { return memo.doc }
+        return epubIndexMemo.values.first { $0.doc.id == docID }?.doc
+    }
+
     /// Find, applied to the Library's book lists: a book stays when the
     /// words match its title, an author, its venue — or, once the index
     /// has built it, any paragraph of its text.

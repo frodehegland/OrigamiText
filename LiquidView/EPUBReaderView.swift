@@ -173,20 +173,14 @@ struct EPUBReaderScreen: View {
     /// The citation whose card is up — the same card the native styles
     /// show, over the faithful page.
     @State private var citationCard: FaithfulCitation?
+    /// A figure jump opens the image in its own window.
+    @Environment(\.openWindow) private var openWindow
 
     private struct FaithfulCitation: Identifiable {
         let key: String
         var id: String { key }
     }
 
-    /// A figure jump from the faithful page: the target paragraph's
-    /// stable id, shown as the image card.
-    @State private var figureJump: FaithfulFigureJump?
-
-    private struct FaithfulFigureJump: Identifiable {
-        let paragraphID: String
-        var id: String { paragraphID }
-    }
 
     // MARK: Find in the book (⌘F, ⌘G, ⇧⌘G)
 
@@ -369,17 +363,6 @@ struct EPUBReaderScreen: View {
                 model.addComment(note, on: selection)
             }
         }
-        .sheet(item: $figureJump) { target in
-            // The image a jump link names, without leaving the page —
-            // as a citation shows its card.
-            if let doc = model.readingDoc(forBook: book) {
-                FigureJumpSheet(doc: doc, paragraphID: target.paragraphID)
-            } else {
-                Text("The figure is still being read from the book…")
-                    .foregroundStyle(.secondary)
-                    .padding(30)
-            }
-        }
         .sheet(item: $citationCard) { citation in
             // The same card the native styles show — the book's
             // structured document supplies the reference pool, or the
@@ -485,7 +468,8 @@ struct EPUBReaderScreen: View {
                 model.openDocCitationAnchors = anchors
             },
             onFigureJump: { targetID in
-                if !targetID.isEmpty { figureJump = FaithfulFigureJump(paragraphID: targetID) }
+                guard !targetID.isEmpty else { return }
+                openWindow(value: FigureWindowValue(docID: book.id, paragraphID: targetID))
             },
             findText: showsFind ? findText : "",
             findStamp: findStamp,

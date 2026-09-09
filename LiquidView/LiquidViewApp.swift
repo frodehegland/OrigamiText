@@ -133,6 +133,17 @@ struct LiquidViewApp: App {
         }
         .defaultSize(width: 560, height: 440)
 
+        // A figure lifted from a jump link: the image in its own
+        // window, beside the reading, closed when the reader is done —
+        // several can stand open at once.
+        WindowGroup("Figure", for: FigureWindowValue.self) { $target in
+            if let target {
+                FigureWindowView(target: target)
+                    .environment(model)
+            }
+        }
+        .defaultSize(width: 640, height: 560)
+
         // Editor Mode's window — the publisher's corrections (see
         // EDITOR-MODE-PLAN.md). Compiled only into publisher builds;
         // a Release build carries no editor at all.
