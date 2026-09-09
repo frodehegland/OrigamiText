@@ -4542,6 +4542,18 @@ struct CitationCardSheet: View {
                             doi: rec.fields["doi"]?.lowercased())
                     }
                     .help("Show what this work cites and what cites it")
+                    Button("Search", systemImage: "magnifyingglass") {
+                        var terms = ["\"\(rec.title)\""]
+                        let authors = rec.displayAuthors
+                        if !authors.isEmpty { terms.append(authors) }
+                        let year = String(rec.year.prefix(4))
+                        if !year.isEmpty { terms.append(year) }
+                        var components = URLComponents(string: "https://www.google.com/search")!
+                        components.queryItems = [URLQueryItem(name: "q",
+                                                              value: terms.joined(separator: " "))]
+                        if let url = components.url { openURL(url) }
+                    }
+                    .help("Search the web for this work — title, author, year")
                 }
                 Spacer()
                 if let address = citedAddress,
@@ -4570,7 +4582,7 @@ struct CitationCardSheet: View {
                 } else if let url = record?.webURL {
                     if let rec = record,
                        !model.acquisitions.contains(where: { $0.id == key }) {
-                        Button("Add to Acquire") {
+                        Button("Acquire") {
                             model.addAcquisition(
                                 key: key,
                                 title: rec.title,
@@ -4588,7 +4600,7 @@ struct CitationCardSheet: View {
                 } else {
                     if let rec = record,
                        !model.acquisitions.contains(where: { $0.id == key }) {
-                        Button("Add to Acquire") {
+                        Button("Acquire") {
                             model.addAcquisition(
                                 key: key,
                                 title: rec.title,
