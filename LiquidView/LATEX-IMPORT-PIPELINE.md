@@ -70,6 +70,13 @@ output of the last:
    "…increasingly ⏐ acute"). A blank line after a commented line still
    breaks the paragraph, exactly as in TeX. Verified against camera
    PDFs: sampled join sites all continue mid-line in print.
+   The comment *package*'s environment and `\iffalse…\fi` strip here
+   too — nothing inside prints: not words, not figures, and above all
+   not float counters (ht26-2 hides six figures in a comment block;
+   counting them once shifted every number after). And TAPS's
+   `\aptLtoX{XML arm}{LaTeX arm}` renders exactly one arm — we keep
+   the first (the XML arm: same content, no print chrome); keeping
+   both counted the same tables twice (ht26-12, ht26-17).
 3. **Expand private macros.** Argument-less macros substitute textually;
    parameterised ones (`\secLink{key}{words}` → `\hyperref[key]{words}`)
    expand by `#n` substitution, stepping over their own definition site.
@@ -99,6 +106,20 @@ output of the last:
    lists, quotes, verbatim/listings, display math made readable when
    simple — see below — else kept as verbatim TeX);
    unknown environments unwrap — markup drops, words stay.
+   Floats carry their printed labels: every caption opens
+   "Figure 3: " / "Table 2: " with the same number a `\ref` resolves
+   to, and the counter belongs to the **caption**, exactly as in
+   LaTeX — a figure* holding two captioned minipages is two figures
+   (ht26-23's Figures 3 and 4), a captionless float consumes no
+   number, `\caption*` never counts, and a `\caption` inside
+   subfigure/subtable is a subcaption on its own counter. Images pair
+   with the caption they stand beside (before it as typeset, or just
+   after when the author writes the caption first); table captions
+   print above their grid, as ACM does. teaserfigure is a figure
+   (acmart's Figure 1) — except the template's own sampleteaser,
+   which TAPS never prints: skipped, counted nowhere. The caption
+   rides as the image marker's alt text and exports as a visible
+   `<figcaption>` (an alt attribute alone is words no reader shows).
 7. **Convert inline text**, in an order that is itself load-bearing:
    TeX symbol commands become their characters (\lambda is λ in prose
    and mathematics alike — the shared table in BibTeXParser.texSymbols,

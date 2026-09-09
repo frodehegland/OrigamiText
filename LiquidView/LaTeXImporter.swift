@@ -175,7 +175,8 @@ nonisolated enum LaTeXImporter {
         var pendingTables = visualMetaTables(in: source)
         var namedTables: [LiquidDoc.Table] = []
 
-        let stripped = expandingSimpleMacros(in: strippingComments(from: source))
+        let stripped = expandingSimpleMacros(
+            in: resolvingAptLtoX(in: strippingComments(from: source)))
 
         // Metadata from the preamble (and Author's in-document topmatter).
         // \title takes an optional short form in brackets first.
@@ -247,6 +248,12 @@ nonisolated enum LaTeXImporter {
         var assetOrdinal = 0
         var tableOrdinal = 0
         var noteOrdinal = 0
+        // The printed float numbers, counted exactly as the
+        // cross-reference pre-pass counts them (every figure/teaserfigure
+        // environment; table environments but never a bare tabular) — the
+        // caption's "Figure 3:" must be the same 3 a \ref resolves to.
+        var figureNumber = 0
+        var tableNumber = 0
 
         func nextID() -> String {
             ordinal += 1
@@ -264,33 +271,22 @@ nonisolated enum LaTeXImporter {
             guard !text.isEmpty else { return }
             paragraphs.append(LiquidDoc.Paragraph(id: nextID(), heading: level, text: text))
         }
-        func appendFigure(body figureBody: String) {
-            // \includegraphics[options]{path} + \caption{...}
-            guard let path = balancedArguments(
-                of: "includegraphics", in: figureBody, skippingBracketOption: true).first
-            else {
-                // A figure with no image: keep its caption as words.
-                if let caption = balancedArguments(of: "caption", in: figureBody).first {
-                    appendText(caption)
-                }
-                return
-            }
-            // The caption becomes the marker's alt text: cite tokens and
-            // brackets give way to plain words, so the `![alt](asset:id)`
-            // form stays parseable everywhere.
-            let caption = balancedArguments(of: "caption", in: figureBody).first
-                .map { inline(convert: $0).text }
-                .map { text in
-                    text.replacingOccurrences(of: #"\[i?note:[^\]]+\]"#, with: "",
-                                              options: .regularExpression)
-                        .replacingOccurrences(of: #"\[cite:[^\]]+\]"#, with: "",
-                                              options: .regularExpression)
-                        .replacingOccurrences(of: "[", with: "(")
-                        .replacingOccurrences(of: "]", with: ")")
-                        .replacingOccurrences(of: #"\s+"#, with: " ",
-                                              options: .regularExpression)
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                } ?? ""
+        // The caption as the marker's alt text: cite tokens and
+        // brackets give way to plain words, so the `![alt](asset:id)`
+        // form stays parseable everywhere.
+        func plainCaption(_ raw: String) -> String {
+            inline(convert: raw).text
+                .replacingOccurrences(of: #"\[i?note:[^\]]+\]"#, with: "",
+                                      options: .regularExpression)
+                .replacingOccurrences(of: #"\[cite:[^\]]+\]"#, with: "",
+                                      options: .regularExpression)
+                .replacingOccurrences(of: "[", with: "(")
+                .replacingOccurrences(of: "]", with: ")")
+                .replacingOccurrences(of: #"\s+"#, with: " ",
+                                      options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        func emitImage(path: String, caption: String) {
             // An extensionless \includegraphics resolves by probing; the
             // extension that answered names the asset, so bytes, file
             // name, and media type always agree.
@@ -341,18 +337,107 @@ nonisolated enum LaTeXImporter {
                     id: paragraphID, heading: nil, text: words))
             }
         }
-        func appendTable(body tableBody: String) {
+        func appendFigure(body figureBody: String, numbered: Bool = true) {
+            // One printed figure per counted \caption — LaTeX's counter
+            // belongs to the caption, not the environment. A figure*
+            // holding two captioned minipages is two figures (ht26-23's
+            // Figures 3 and 4); a captionless float never counts; a
+            // \caption inside subfigure/subtable is a subcaption on its
+            // own counter. Images pair with the caption they stand
+            // beside — before it as typeset, or just after when the
+            // author writes the caption first. A lone \includegraphics
+            // in the flow is not a float: no number, as in print.
+            var segments: [(images: [String], caption: String?)] = []
+            var images: [String] = []
+            var depth = 0
+            var rest = figureBody[...]
+            let token = try? NSRegularExpression(pattern:
+                #"\\begin\{sub(?:figure|table)\*?\}|\\end\{sub(?:figure|table)\*?\}|\\caption\s*[\[{]|\\includegraphics\b"#)
+            while let regex = token,
+                  let match = regex.firstMatch(
+                    in: String(rest), range: NSRange(location: 0, length: (String(rest) as NSString).length)),
+                  let matchRange = Range(match.range, in: String(rest)) {
+                let slice = String(rest)
+                let word = String(slice[matchRange])
+                let sliceFrom = String(slice[matchRange.lowerBound...])
+                var consumed = slice.distance(from: slice.startIndex, to: matchRange.upperBound)
+                if word.hasPrefix("\\begin") {
+                    depth += 1
+                } else if word.hasPrefix("\\end") {
+                    depth = max(0, depth - 1)
+                } else if word.hasPrefix("\\caption") {
+                    if let argument = firstBalancedArgument(of: "caption", in: sliceFrom,
+                                                            skippingBracketOption: true) {
+                        if depth == 0 {
+                            segments.append((images, argument.value))
+                            images = []
+                        }
+                        consumed = slice.distance(from: slice.startIndex, to: matchRange.lowerBound)
+                            + sliceFrom.distance(from: sliceFrom.startIndex, to: argument.range.upperBound)
+                    }
+                } else if let argument = firstBalancedArgument(of: "includegraphics", in: sliceFrom,
+                                                               skippingBracketOption: true) {
+                    images.append(argument.value)
+                    consumed = slice.distance(from: slice.startIndex, to: matchRange.lowerBound)
+                        + sliceFrom.distance(from: sliceFrom.startIndex, to: argument.range.upperBound)
+                }
+                rest = rest[rest.index(rest.startIndex, offsetBy: consumed)...]
+            }
+            if !images.isEmpty { segments.append((images, nil)) }
+            // Caption written above its image: give it the images that
+            // follow, up to the next caption.
+            for index in segments.indices
+            where segments[index].caption != nil && segments[index].images.isEmpty {
+                if index + 1 < segments.count, segments[index + 1].caption == nil {
+                    segments[index].images = segments[index + 1].images
+                    segments[index + 1].images = []
+                }
+            }
+            for segment in segments {
+                var label = ""
+                if numbered, segment.caption != nil {
+                    figureNumber += 1
+                    label = "Figure \(figureNumber): "
+                }
+                if let path = segment.images.first {
+                    let caption = segment.caption.map { label + plainCaption($0) } ?? ""
+                    emitImage(path: path, caption: caption)
+                } else if let caption = segment.caption {
+                    // A figure with no image: its caption as words.
+                    appendText(label + caption)
+                }
+            }
+        }
+        func appendTable(body tableBody: String, numbered: Bool = true) {
             // Author's VISUALMETA block carries the same tables live
             // (values + formulas), in order — those win over re-parsing
             // the printed tabular.
             tableOrdinal += 1
+            // The counter belongs to the caption, exactly as the
+            // cross-reference pass counts: a captionless table env
+            // consumes no number, a second caption consumes one more.
+            let counted = countedCaptionRanges(in: tableBody)
+            var label = ""
+            if numbered, !counted.isEmpty {
+                tableNumber += 1
+                label = "Table \(tableNumber): "
+                tableNumber += counted.count - 1
+            }
+            // The caption, with its printed label — and ABOVE the grid,
+            // where ACM prints table captions (a bare tabular has no
+            // caption and no number).
+            func appendCaption() {
+                if let caption = balancedArguments(of: "caption", in: tableBody).first {
+                    appendText(label + caption)
+                }
+            }
             let table: LiquidDoc.Table
             if !pendingTables.isEmpty {
                 table = pendingTables.removeFirst()
             } else if let inner = environmentBody(named: "tabular", in: tableBody)
                         ?? environmentBody(named: "tabularx", in: tableBody) {
                 let rows = tabularRows(inner)
-                guard !rows.isEmpty else { return }
+                guard !rows.isEmpty else { appendCaption(); return }
                 let columns = rows.map(\.count).max() ?? 0
                 table = LiquidDoc.Table(
                     identifier: "tex-table-\(tableOrdinal)",
@@ -363,11 +448,10 @@ nonisolated enum LaTeXImporter {
                         }
                     })
             } else {
-                if let caption = balancedArguments(of: "caption", in: tableBody).first {
-                    appendText(caption)
-                }
+                appendCaption()
                 return
             }
+            appendCaption()
             namedTables.append(table)
             var paragraph = LiquidDoc.Paragraph(
                 id: nextID(), heading: nil,
@@ -376,9 +460,6 @@ nonisolated enum LaTeXImporter {
                 }.joined(separator: "\n"))
             paragraph.tableID = table.identifier
             paragraphs.append(paragraph)
-            if let caption = balancedArguments(of: "caption", in: tableBody).first {
-                appendText(caption)
-            }
         }
         func appendList(body listBody: String, numbered: Bool) {
             var number = 0
@@ -445,15 +526,24 @@ nonisolated enum LaTeXImporter {
                         appendHeading("Acknowledgments", level: 1)
                         scan(String(rest[range.bodySub(rest)]))
                         handled = true
-                    case "figure", "figure*":
+                    case "figure", "figure*", "teaserfigure":
+                        // teaserfigure counts as a figure in print (it
+                        // is acmart's Figure 1) — and its image must
+                        // not unwrap into nothing. The template's own
+                        // sampleteaser, though, never prints: skipped,
+                        // exactly as the cross-reference pass skips it.
                         flushPlain()
-                        appendFigure(body: String(rest[range.bodySub(rest)]))
+                        let figureBody = String(rest[range.bodySub(rest)])
+                        if name != "teaserfigure" || !figureBody.contains("sampleteaser") {
+                            appendFigure(body: figureBody)
+                        }
                         handled = true
                     case "table", "table*", "tabular", "tabularx":
                         flushPlain()
                         appendTable(body: name.hasPrefix("tab")
                                     ? String(rest[range.wholeSub(rest)])
-                                    : String(rest[range.bodySub(rest)]))
+                                    : String(rest[range.bodySub(rest)]),
+                                    numbered: name == "table" || name == "table*")
                         handled = true
                     case "itemize", "enumerate":
                         flushPlain()
@@ -582,7 +672,8 @@ nonisolated enum LaTeXImporter {
                 if rest.hasPrefix("\\includegraphics"),
                    let range = commandRange(of: "includegraphics", at: rest) {
                     flushPlain()
-                    appendFigure(body: String(rest[..<range.upperBound]))
+                    appendFigure(body: String(rest[..<range.upperBound]),
+                                 numbered: false)
                     rest = rest[range.upperBound...]
                     continue
                 }
@@ -804,6 +895,28 @@ nonisolated enum LaTeXImporter {
 
     // MARK: - Cross-references
 
+    /// The `\caption` commands that increment a float's counter within
+    /// an environment body: `\caption*` never counts, and a `\caption`
+    /// inside subfigure/subtable is a subcaption on its own counter.
+    private static func countedCaptionRanges(in envBody: String) -> [Range<String.Index>] {
+        guard let regex = try? NSRegularExpression(pattern:
+            #"\\begin\{sub(?:figure|table)\*?\}|\\end\{sub(?:figure|table)\*?\}|\\caption\s*[\[{]"#)
+        else { return [] }
+        let ns = envBody as NSString
+        var depth = 0
+        var out: [Range<String.Index>] = []
+        for match in regex.matches(in: envBody,
+                                   range: NSRange(location: 0, length: ns.length)) {
+            let token = ns.substring(with: match.range)
+            if token.hasPrefix("\\begin") { depth += 1 }
+            else if token.hasPrefix("\\end") { depth = max(0, depth - 1) }
+            else if depth == 0, let range = Range(match.range, in: envBody) {
+                out.append(range)
+            }
+        }
+        return out
+    }
+
     /// LaTeX's printed numbers, recovered: sections, figures, tables
     /// and equations counted in document order (`\appendix` switching
     /// sections to letters), every `\label` bound to the number it
@@ -877,13 +990,57 @@ nonisolated enum LaTeXImporter {
                 }
             } else if match.range(at: 3).location != NSNotFound {
                 let env = ns.substring(with: match.range(at: 3))
+                // acmart's template teaser (sampleteaser), left live in
+                // several sources: TAPS does not print it, so it counts
+                // for nothing — here and in the body scan alike.
+                if env == "teaserfigure",
+                   let start = Range(match.range, in: body) {
+                    let tail = String(body[start.lowerBound...])
+                    if let range = environmentRange(named: env, in: tail),
+                       tail[range.body].contains("sampleteaser") {
+                        continue
+                    }
+                }
+                let isFigure = env.hasPrefix("fig") || env == "teaserfigure"
+                let isTable = env.hasPrefix("table")
+                if isFigure || isTable {
+                    // Floats count per \caption, not per environment —
+                    // two captioned minipages in one figure* are Figures
+                    // 3 AND 4 (ht26-23), a captionless float counts for
+                    // nothing, a subcaption counts on its own counter.
+                    // Each caption owns a segment of the environment,
+                    // so a \label binds to the caption it follows.
+                    guard let start = Range(match.range, in: body) else { continue }
+                    let tail = String(body[start.lowerBound...])
+                    guard let range = environmentRange(named: env, in: tail) else { continue }
+                    let envBody = String(tail[range.body])
+                    let bodyStart = match.range.location + NSRange(range.body, in: tail).location
+                    let whole = NSRange(range.whole, in: tail)
+                    let envEnd = match.range.location + whole.location + whole.length
+                    let captions = countedCaptionRanges(in: envBody)
+                    var segmentStart = match.range.location
+                    for index in captions.indices {
+                        let number: String
+                        let phrase: String
+                        if isFigure {
+                            figureCount += 1; number = String(figureCount); phrase = "Figure \(number)"
+                        } else {
+                            tableCount += 1; number = String(tableCount); phrase = "Table \(number)"
+                        }
+                        let segmentEnd = index + 1 < captions.count
+                            ? bodyStart + NSRange(captions[index + 1], in: envBody).location
+                            : envEnd
+                        envSpans.append(EnvSpan(
+                            range: NSRange(location: segmentStart,
+                                           length: max(0, segmentEnd - segmentStart)),
+                            phrase: phrase, number: number))
+                        segmentStart = segmentEnd
+                    }
+                    continue
+                }
                 let phrase: String
                 let number: String
-                if env.hasPrefix("fig") || env == "teaserfigure" {
-                    figureCount += 1; number = String(figureCount); phrase = "Figure \(number)"
-                } else if env.hasPrefix("table") {
-                    tableCount += 1; number = String(tableCount); phrase = "Table \(number)"
-                } else if env == "lstlisting" || env == "minted" {
+                if env == "lstlisting" || env == "minted" {
                     listingCount += 1; number = String(listingCount); phrase = "Listing \(number)"
                 } else {
                     equationCount += 1; number = String(equationCount); phrase = "Equation \(number)"
@@ -1465,7 +1622,41 @@ nonisolated enum LaTeXImporter {
             }
             glue = commented
         }
+        // The comment package's environment and TeX's \iffalse…\fi:
+        // nothing inside prints — not words, not figures, and above
+        // all not float counters (ht26-2 hides six figures in a
+        // comment block; counting them shifted every number after).
+        while let start = out.range(of: "\\begin{comment}"),
+              let end = out.range(of: "\\end{comment}",
+                                   range: start.upperBound..<out.endIndex) {
+            out.removeSubrange(start.lowerBound..<end.upperBound)
+        }
+        while let start = out.range(of: #"\\iffalse\b"#, options: .regularExpression),
+              let end = out.range(of: #"\\fi\b"#, options: .regularExpression,
+                                  range: start.upperBound..<out.endIndex) {
+            out.removeSubrange(start.lowerBound..<end.upperBound)
+        }
         return out
+    }
+
+    /// TAPS's `\aptLtoX[options]{XML arm}{LaTeX arm}` renders exactly
+    /// one arm — the camera PDF the LaTeX one, their XML pipeline the
+    /// first. Both say the same thing; the XML arm says it without
+    /// print chrome (no rotated headers), which is the arm a structured
+    /// reader wants. Keeping both counted phantom tables (ht26-12's
+    /// Table 3, ht26-17's Tables 5–6 were the same tables twice).
+    private static func resolvingAptLtoX(in source: String) -> String {
+        var text = source
+        while let argument = firstBalancedArgument(of: "aptLtoX", in: text,
+                                                   skippingBracketOption: true) {
+            var end = argument.range.upperBound
+            let after = String(text[argument.range.upperBound...])
+            if let second = balancedArgument(in: after, afterPrefixLength: 0) {
+                end = text.index(argument.range.upperBound, offsetBy: second.consumed)
+            }
+            text.replaceSubrange(argument.range.lowerBound..<end, with: argument.value)
+        }
+        return text
     }
 
     /// Author's live tables, read from the VISUALMETA:TABLES comment

@@ -980,7 +980,18 @@ nonisolated enum OrigamiEPUBImporter {
                     for child in element.elements { visit(child, stretchID: stretchID) }
                     return
                 }
-                let alt = image.attributes["alt"] ?? ""
+                // The visible caption first — the <figcaption> IS the
+                // caption; the img's alt repeats it (or, in a foreign
+                // EPUB, may say something else). Either way one line of
+                // words rides the marker, never two elements.
+                let figcaption = element.name == "figure"
+                    ? element.firstDescendant(named: "figcaption")?.plainText
+                        .replacingOccurrences(of: #"\s+"#, with: " ",
+                                              options: .regularExpression)
+                        .trimmingCharacters(in: .whitespaces)
+                    : nil
+                let alt = figcaption.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? image.attributes["alt"] ?? ""
                 let paragraphID = stableID()
                 if let data = resolveImage(src), !data.isEmpty {
                     assetOrdinal += 1

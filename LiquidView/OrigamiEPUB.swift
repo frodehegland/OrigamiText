@@ -800,7 +800,10 @@ nonisolated enum OrigamiEPUBExporter {
         if let reference = LiquidDoc.imageReference(in: paragraph.text),
            let asset = assetsByID[reference.id] {
             let alt = reference.alt.isEmpty ? (asset.alt ?? "") : reference.alt
-            return "<figure \(anchors)><img src=\"images/\(attributeEscaped(asset.filename))\" alt=\"\(attributeEscaped(alt))\" /></figure>"
+            // The caption is visible words, not only an alt attribute —
+            // a browser never shows alt; a <figcaption> every reader does.
+            let caption = alt.isEmpty ? "" : "<figcaption>\(escaped(alt))</figcaption>"
+            return "<figure \(anchors)><img src=\"images/\(attributeEscaped(asset.filename))\" alt=\"\(attributeEscaped(alt))\" />\(caption)</figure>"
         }
         // A live table renders as a real grid, its `data-table-id` tying
         // the placement to the Visual-Meta tables entry (values and
@@ -1197,6 +1200,7 @@ nonisolated enum OrigamiEPUBExporter {
     .speaker { font-weight: bold; }
     figure { margin-left: 0; margin-right: 0; }
     figure img { max-width: 100%; height: auto; }
+    figcaption { font-size: 0.9em; color: #555555; margin-top: 0.4em; }
     a.citation { text-decoration: none; }
     dfn { font-style: normal; border-bottom: 0.08em dotted #999999; }
     #references li { margin-bottom: 0.6em; }
