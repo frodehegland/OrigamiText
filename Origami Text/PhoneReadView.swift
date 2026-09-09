@@ -113,7 +113,8 @@ struct ReadHomeView: View {
                     Picker("Showing", selection: $shelf) {
                         Text("Articles").tag(Shelf.articles)
                         Text("Journals").tag(Shelf.journals)
-                        Text("Lineage").tag(Shelf.lineage)
+                        // Lineage sits out for now — the view keeps
+                        // compiling; restore the tag to bring it back.
                         Text("Guide").tag(Shelf.guide)
                     }
                     .pickerStyle(.segmented)
@@ -213,13 +214,21 @@ struct ReadHomeView: View {
 private struct PhoneShelfRow: View {
     @Environment(PhoneModel.self) private var model
     let record: EPUBRecord
+    /// Set, the row pushes its reader from where it stands (a journal's
+    /// list), so Back returns there — not to the shelf's top. Nil, the
+    /// row uses the shelf's own destination at the stack's root.
+    var opensLocally: Binding<String?>? = nil
     /// The whole-document note being written or rewritten.
     @State private var editingNote = false
     @State private var noteDraft = ""
 
     var body: some View {
         Button {
-            model.readerRecordID = record.id
+            if let opensLocally {
+                opensLocally.wrappedValue = record.id
+            } else {
+                model.readerRecordID = record.id
+            }
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if model.isTopOfPile(record) {
@@ -330,14 +339,21 @@ private struct PhoneShelfRow: View {
 struct PhoneJournalView: View {
     @Environment(PhoneModel.self) private var model
     let venue: String
+    /// The journal's own reader push: Back from the paper returns to
+    /// this list, not the shelf's top (the root destination would pop
+    /// the journal on its way in).
+    @State private var readerID: String?
 
     var body: some View {
         List(model.records(inVenue: venue)) { record in
-            PhoneShelfRow(record: record)
+            PhoneShelfRow(record: record, opensLocally: $readerID)
         }
         .listStyle(.plain)
         .navigationTitle(venue)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(item: $readerID) { recordID in
+            PhoneReaderView(docID: recordID)
+        }
     }
 }
 
