@@ -612,8 +612,13 @@ nonisolated enum LaTeXImporter {
                         }
                         let cleanCode = code.trimmingCharacters(in: .newlines)
                         if !cleanCode.isEmpty {
+                            // Fenced, the format's block-code convention
+                            // (as SeedFetcher writes it): the export
+                            // renders a real <pre>, the native styles a
+                            // monospaced block — never plain prose.
                             paragraphs.append(LiquidDoc.Paragraph(
-                                id: nextID(), heading: nil, text: cleanCode))
+                                id: nextID(), heading: nil,
+                                text: "```\n\(cleanCode)\n```"))
                         }
                         if let caption { appendText(caption) }
                         handled = true

@@ -925,6 +925,18 @@ nonisolated enum OrigamiReading {
         return out as String
     }
 
+    /// The code inside a fenced block paragraph (```lang⏎…⏎```) — nil
+    /// for anything else. The fence is the format's block-code
+    /// convention: the LaTeX import writes listings this way, Seed
+    /// blocks arrive this way, and the EPUB round-trips through <pre>.
+    static func fencedCode(in text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("```"), trimmed.hasSuffix("```"), trimmed.count > 6,
+              let fenceEnd = trimmed.firstIndex(of: "\n") else { return nil }
+        return String(trimmed[trimmed.index(after: fenceEnd)...].dropLast(3))
+            .trimmingCharacters(in: .newlines)
+    }
+
     /// The visible mark for a note id, in the reader's chosen style
     /// (Settings ▸ Reading): its trailing digits raised (fn24 → ²⁴,
     /// en-3 → ³), bracketed, or the quiet ‡ — which is also the

@@ -2601,6 +2601,20 @@ struct OrigamiReadingView: View {
                     menuView(menuEntries(for: paragraph, highlights: []))
                 }
                 .dimmedForStretch(dim)
+        } else if let code = OrigamiReading.fencedCode(in: paragraph.text) {
+            // A code block, as the page prints it: monospace in a
+            // quiet box, whitespace exactly as written.
+            Text(code)
+                .font(.system(.callout, design: .monospaced))
+                .foregroundStyle(themeText.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
+                .textSelection(.enabled)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                .contextMenu {
+                    menuView(menuEntries(for: paragraph, highlights: []))
+                }
+                .dimmedForStretch(dim)
         } else if paragraph.text == "---" {
             Divider()
                 .dimmedForStretch(dim)

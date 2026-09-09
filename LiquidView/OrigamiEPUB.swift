@@ -858,6 +858,20 @@ nonisolated enum OrigamiEPUBExporter {
         if trimmed.count >= 3, trimmed.allSatisfy({ $0 == "-" }) {
             return "<hr \(anchors) />"
         }
+        // A fenced code block (```lang⏎…⏎```) is a real <pre> — words
+        // exactly as written, monospace, never markdown-converted (code
+        // is full of asterisks and brackets that mean nothing here).
+        // The fence's language rides in data-language for the round trip.
+        if trimmed.hasPrefix("```"), trimmed.hasSuffix("```"), trimmed.count > 6,
+           let fenceEnd = trimmed.firstIndex(of: "\n") {
+            let language = trimmed[trimmed.index(trimmed.startIndex, offsetBy: 3)..<fenceEnd]
+                .trimmingCharacters(in: .whitespaces)
+            let code = trimmed[trimmed.index(after: fenceEnd)...].dropLast(3)
+                .trimmingCharacters(in: .newlines)
+            let languageAttribute = language.isEmpty
+                ? "" : " data-language=\"\(attributeEscaped(language))\""
+            return "<pre \(anchors)\(languageAttribute)><code>\(escaped(code))</code></pre>"
+        }
         let inline = inlineHTML(from: element.text, citations: citations,
                                 noteAddresses: noteAddresses,
                                 noteNumbers: noteNumbers,
@@ -1252,6 +1266,8 @@ nonisolated enum OrigamiEPUBExporter {
     th { text-align: left; border-bottom: 0.5px solid; padding: 0.3em 1.2em 0.3em 0; }
     td { text-align: left; vertical-align: top; padding: 0.25em 1.2em 0.25em 0; }
     th:last-child, td:last-child { padding-right: 0; }
+    pre { background: rgba(127, 127, 127, 0.12); padding: 0.8em 1em; border-radius: 4px; overflow-x: auto; }
+    pre code { font-size: 0.85em; white-space: pre-wrap; }
     a.citation { text-decoration: none; }
     dfn { font-style: normal; border-bottom: 0.08em dotted #999999; }
     #references li { margin-bottom: 0.6em; }

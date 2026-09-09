@@ -946,6 +946,16 @@ nonisolated enum OrigamiEPUBImporter {
                 }
             case "hr":
                 paragraphs.append(LiquidDoc.Paragraph(id: stableID(), heading: nil, text: "---"))
+            case "pre":
+                // A code block comes back as the fenced paragraph the
+                // exporter wrote it from — whitespace exactly as is.
+                let language = element.attributes["data-language"] ?? ""
+                let code = element.plainText.trimmingCharacters(in: .newlines)
+                if !code.isEmpty {
+                    paragraphs.append(LiquidDoc.Paragraph(
+                        id: stableID(), heading: nil,
+                        text: "```\(language)\n\(code)\n```"))
+                }
             case "model":
                 // An EPUB's embedded 3D model (the <model> element): the
                 // marker carries the model file's package-relative path —
