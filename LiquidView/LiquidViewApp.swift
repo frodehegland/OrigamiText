@@ -142,7 +142,6 @@ struct LiquidViewApp: App {
                     .environment(model)
             }
         }
-        .defaultSize(width: 640, height: 560)
 
         // Editor Mode's window — the publisher's corrections (see
         // EDITOR-MODE-PLAN.md). Compiled only into publisher builds;

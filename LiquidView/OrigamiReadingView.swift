@@ -4239,17 +4239,51 @@ struct FigureWindowView: View {
     var body: some View {
         Group {
             if let resolved {
-                ScrollView {
-                    OrigamiAssetView(asset: resolved.asset, doc: resolved.doc)
-                        .padding(16)
+                VStack(spacing: 10) {
+                    if let data = resolved.asset.data, let image = NSImage(data: data) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        Label(resolved.asset.filename, systemImage: "photo")
+                            .foregroundStyle(.secondary)
+                    }
+                    if let caption = resolved.asset.alt, !caption.isEmpty {
+                        Text(caption)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
+                .padding(14)
             } else {
                 Text("The figure is not in this library's copy of the document.")
                     .foregroundStyle(.secondary)
                     .padding(30)
             }
         }
+        // The window opens at the image's own proportions — fit within
+        // a sane cap, the caption's allowance added — and stays freely
+        // resizable, the image scaling with it.
+        .frame(minWidth: 320, idealWidth: fittedSize.width,
+               minHeight: 240, idealHeight: fittedSize.height)
         .navigationTitle(resolved.flatMap { figureLabel($0.asset) } ?? "Figure")
+    }
+
+    /// The image's proportions as a window size: fit under 900 points a
+    /// side (never enlarged past 1.5×), the caption's lines allowed for.
+    private var fittedSize: CGSize {
+        guard let asset = resolved?.asset, let data = asset.data,
+              let image = NSImage(data: data),
+              image.size.width > 0, image.size.height > 0
+        else { return CGSize(width: 640, height: 560) }
+        let maxSide: CGFloat = 900
+        let scale = min(1.5, maxSide / image.size.width, maxSide / image.size.height)
+        let captionAllowance: CGFloat =
+            (resolved?.asset.alt?.isEmpty == false) ? 64 : 0
+        return CGSize(width: max(320, image.size.width * scale + 28),
+                      height: max(240, image.size.height * scale + captionAllowance + 28))
     }
 
     /// "Figure 3" from the caption's own opening, when it carries one.
