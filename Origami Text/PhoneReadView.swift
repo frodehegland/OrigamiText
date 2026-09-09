@@ -505,6 +505,9 @@ struct PhoneReaderView: View {
     /// An in-document jump to a figure: the image card, as a citation
     /// shows its source.
     @State private var jumpFigureID: String?
+    /// The inline notes standing open — [] folded, the words in place
+    /// when open, exactly the Mac's stretchtext manner.
+    @State private var openInlineNotes: Set<String> = []
     @State private var noteID: String?
     /// The selection a Note… is being written for, and its words.
     @State private var noteTarget: SelectionNoteTarget?
@@ -625,6 +628,16 @@ struct PhoneReaderView: View {
             }
             if let id = OrigamiReading.noteID(from: url) {
                 noteID = id
+                return .handled
+            }
+            if let inlineID = OrigamiReading.inlineNoteID(from: url) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if openInlineNotes.contains(inlineID) {
+                        openInlineNotes.remove(inlineID)
+                    } else {
+                        openInlineNotes.insert(inlineID)
+                    }
+                }
                 return .handled
             }
             if followJump(url) { return .handled }
@@ -900,7 +913,10 @@ struct PhoneReaderView: View {
         // landscape, sized to the width they share — and a swipe steps
         // one column along, never a loose glide (view-aligned snapping,
         // limited to a single step per gesture).
-        GeometryReader { geometry in
+        // A heading with nothing under it but another heading shares
+        // that heading's column — a lone title never spends a column.
+        let groups = Self.horizontalColumns(sections)
+        return GeometryReader { geometry in
             let landscape = geometry.size.width > geometry.size.height
             let columns = CGFloat(landscape ? 3 : 2)
             let spacing: CGFloat = 28
@@ -911,29 +927,56 @@ struct PhoneReaderView: View {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: spacing) {
-                        ForEach(sections) { section in
+                        ForEach(groups, id: \.first!.id) { group in
                             ScrollView(.vertical) {
                                 VStack(alignment: .leading, spacing: 14) {
-                                    sectionView(section, doc: doc)
+                                    ForEach(group) { section in
+                                        sectionView(section, doc: doc)
+                                    }
                                 }
                                 .padding(.vertical, 16)
                             }
                             .frame(width: columnWidth, height: geometry.size.height)
-                            .id(section.id)
+                            .id(group.first!.id)
                         }
                     }
                     .scrollTargetLayout()
                     .padding(.horizontal, sidePadding)
                 }
                 .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
-                // A heading tapped in the outline lands on its column.
+                // A heading tapped in the outline (or a jump link) lands
+                // on the column that HOLDS its section — which may be a
+                // merged group under an earlier heading.
                 .onChange(of: scrollJumpID) {
                     guard let id = scrollJumpID else { return }
                     scrollJumpID = nil
-                    withAnimation { proxy.scrollTo(id, anchor: .leading) }
+                    let target = groups.first { group in
+                        group.contains { section in
+                            section.id == id || section.heading?.id == id
+                                || section.paragraphs.contains { $0.id == id }
+                        }
+                    }?.first?.id ?? id
+                    withAnimation { proxy.scrollTo(target, anchor: .leading) }
                 }
             }
         }
+    }
+
+    /// The Horizontal columns: sections in order, each column ending
+    /// with the first section that carries words — heading-only
+    /// sections ride with the section that follows them.
+    static func horizontalColumns(_ sections: [OrigamiSection]) -> [[OrigamiSection]] {
+        var groups: [[OrigamiSection]] = []
+        var pending: [OrigamiSection] = []
+        for section in sections {
+            pending.append(section)
+            if !section.paragraphs.isEmpty {
+                groups.append(pending)
+                pending = []
+            }
+        }
+        if !pending.isEmpty { groups.append(pending) }
+        return groups
     }
 
     @ViewBuilder private func sectionView(_ section: OrigamiSection,
@@ -980,6 +1023,16 @@ struct PhoneReaderView: View {
                     }
                     if let id = OrigamiReading.noteID(from: url) {
                         noteID = id
+                        return true
+                    }
+                    if let inlineID = OrigamiReading.inlineNoteID(from: url) {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            if openInlineNotes.contains(inlineID) {
+                                openInlineNotes.remove(inlineID)
+                            } else {
+                                openInlineNotes.insert(inlineID)
+                            }
+                        }
                         return true
                     }
                     if followJump(url) { return true }
@@ -1278,6 +1331,10 @@ struct PhoneReaderView: View {
         var out = OrigamiReading.inlineAttributed(text, in: doc,
                                                   citations: citationStyle,
                                                   appearance: readingScheme)
+        out = OrigamiReading.inlineNotesResolved(out, in: doc,
+                                                 open: openInlineNotes,
+                                                 citations: citationStyle,
+                                                 appearance: readingScheme)
         if bionicReading { out = Self.bionic(out) }
         if let paragraphID { out = painted(out, paragraphID: paragraphID) }
         // Find's marks: every occurrence of the sought words, wherever
