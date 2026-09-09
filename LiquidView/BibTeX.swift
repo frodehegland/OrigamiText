@@ -344,6 +344,14 @@ extension BibTeXParser {
     nonisolated static func displayText(_ raw: String) -> String {
         var text = raw
 
+        // Inline math in a field ($\lambda$-calculus): readable when
+        // simple; its characters, sans dollars, either way.
+        while let range = text.range(of: #"\$([^$\n]+)\$"#, options: .regularExpression) {
+            let inner = String(text[range].dropFirst().dropLast())
+            text.replaceSubrange(range, with: readableMath(inner)
+                ?? convertingTeXSymbols(in: inner))
+        }
+
         // Escaped specials first, shielded so later cleanup cannot
         // mistake them for syntax.
         for (from, to) in [("\\&", "&"), ("\\%", "%"), ("\\#", "#"),
@@ -443,5 +451,231 @@ extension BibTeXParser {
         return text.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+}
+
+extension BibTeXParser {
+
+    /// TeX's symbol commands as the characters they mean — Greek,
+    /// operators, arrows. Whole-command matches only (maximal munch:
+    /// \intro never reads as \int + ro).
+    nonisolated static let texSymbols: [String: String] = [
+        // Greek, lower
+        "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ",
+        "epsilon": "ε", "varepsilon": "ε", "zeta": "ζ", "eta": "η",
+        "theta": "θ", "vartheta": "ϑ", "iota": "ι", "kappa": "κ",
+        "lambda": "λ", "mu": "μ", "nu": "ν", "xi": "ξ", "pi": "π",
+        "varpi": "ϖ", "rho": "ρ", "varrho": "ϱ", "sigma": "σ",
+        "varsigma": "ς", "tau": "τ", "upsilon": "υ", "phi": "ϕ",
+        "varphi": "φ", "chi": "χ", "psi": "ψ", "omega": "ω",
+        // Greek, upper
+        "Gamma": "Γ", "Delta": "Δ", "Theta": "Θ", "Lambda": "Λ",
+        "Xi": "Ξ", "Pi": "Π", "Sigma": "Σ", "Upsilon": "Υ",
+        "Phi": "Φ", "Psi": "Ψ", "Omega": "Ω",
+        // Operators and relations
+        "pm": "±", "mp": "∓", "times": "×", "cdot": "·", "div": "÷",
+        "leq": "≤", "le": "≤", "geq": "≥", "ge": "≥", "neq": "≠",
+        "ne": "≠", "approx": "≈", "sim": "∼", "simeq": "≃",
+        "equiv": "≡", "propto": "∝", "infty": "∞", "partial": "∂",
+        "nabla": "∇", "forall": "∀", "exists": "∃", "neg": "¬",
+        "land": "∧", "lor": "∨", "cup": "∪", "cap": "∩",
+        "subset": "⊂", "supset": "⊃", "subseteq": "⊆", "supseteq": "⊇",
+        "in": "∈", "notin": "∉", "ni": "∋", "emptyset": "∅",
+        "oplus": "⊕", "otimes": "⊗", "perp": "⊥", "parallel": "∥",
+        "angle": "∠", "circ": "∘", "bullet": "•", "star": "⋆",
+        "dagger": "†", "ddagger": "‡", "ell": "ℓ", "hbar": "ℏ",
+        "Re": "ℜ", "Im": "ℑ", "aleph": "ℵ", "prime": "′",
+        "sum": "∑", "prod": "∏", "int": "∫", "sqrt": "√",
+        "cdots": "⋯", "ldots": "…", "dots": "…", "vdots": "⋮",
+        // Arrows
+        "rightarrow": "→", "to": "→", "leftarrow": "←", "gets": "←",
+        "Rightarrow": "⇒", "Leftarrow": "⇐", "leftrightarrow": "↔",
+        "Leftrightarrow": "⇔", "mapsto": "↦", "uparrow": "↑",
+        "downarrow": "↓", "longrightarrow": "⟶", "implies": "⟹",
+        // Named operators stay their names
+        "log": "log", "ln": "ln", "exp": "exp", "sin": "sin",
+        "cos": "cos", "tan": "tan", "min": "min", "max": "max",
+        "arg": "arg", "det": "det", "dim": "dim", "mod": "mod",
+        // Delimiter and spacing chrome
+        "lvert": "|", "rvert": "|", "lVert": "‖", "rVert": "‖",
+        "left": "", "right": "", "quad": " ", "qquad": "  ",
+        "langle": "⟨", "rangle": "⟩", "lfloor": "⌊", "rfloor": "⌋",
+        "lceil": "⌈", "rceil": "⌉", "mid": "|", "setminus": "∖",
+    ]
+
+    /// Every `\command` the table knows becomes its character; unknown
+    /// commands stay for the caller's own rules. Prose and math alike —
+    /// a `\lambda` means λ wherever it stands.
+    nonisolated static func convertingTeXSymbols(in text: String) -> String {
+        guard text.contains("\\") else { return text }
+        var out = ""
+        out.reserveCapacity(text.count)
+        var rest = text[...]
+        while let backslash = rest.firstIndex(of: "\\") {
+            out += rest[..<backslash]
+            let after = rest[rest.index(after: backslash)...]
+            let letters = after.prefix { $0.isLetter }
+            if !letters.isEmpty, let symbol = texSymbols[String(letters)] {
+                out += symbol
+                rest = after[after.index(after.startIndex, offsetBy: letters.count)...]
+                // TeX eats the space after a command name; so do we.
+                if rest.first == " ", symbol.last?.isLetter == false {
+                    // keep the space — symbols read better spaced
+                }
+            } else {
+                out += "\\"
+                rest = after
+            }
+        }
+        out += rest
+        return out
+    }
+
+    private nonisolated static let subscriptForms: [Character: Character] = [
+        "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅",
+        "6": "₆", "7": "₇", "8": "₈", "9": "₉", "+": "₊", "-": "₋",
+        "=": "₌", "(": "₍", ")": "₎", "a": "ₐ", "e": "ₑ", "h": "ₕ",
+        "i": "ᵢ", "j": "ⱼ", "k": "ₖ", "l": "ₗ", "m": "ₘ", "n": "ₙ",
+        "o": "ₒ", "p": "ₚ", "r": "ᵣ", "s": "ₛ", "t": "ₜ", "u": "ᵤ",
+        "v": "ᵥ", "x": "ₓ", "β": "ᵦ", "γ": "ᵧ", "ρ": "ᵨ", "φ": "ᵩ",
+        "χ": "ᵪ",
+    ]
+    private nonisolated static let superscriptForms: [Character: Character] = [
+        "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵",
+        "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹", "+": "⁺", "-": "⁻",
+        "=": "⁼", "(": "⁽", ")": "⁾", "n": "ⁿ", "i": "ⁱ", "a": "ᵃ",
+        "b": "ᵇ", "c": "ᶜ", "d": "ᵈ", "e": "ᵉ", "f": "ᶠ", "g": "ᵍ",
+        "h": "ʰ", "j": "ʲ", "k": "ᵏ", "l": "ˡ", "m": "ᵐ", "o": "ᵒ",
+        "p": "ᵖ", "r": "ʳ", "s": "ˢ", "t": "ᵗ", "u": "ᵘ", "v": "ᵛ",
+        "w": "ʷ", "x": "ˣ", "y": "ʸ", "z": "ᶻ", "T": "ᵀ", "*": "*",
+    ]
+
+    /// A math span's inside made readable, or nil when structure the
+    /// table cannot speak for remains (a fraction, a matrix — those
+    /// stay verbatim TeX). Wrappers unwrap to their words (\text,
+    /// \mathrm, \operatorname), letter styles restyle (\mathcal,
+    /// \mathbf), accents compose (\hat, \bar, \tilde, \vec), then
+    /// sub- and superscripts take their Unicode forms where every
+    /// character has one — else they keep a plain _ or ^, honest and
+    /// legible ("λ_δ").
+    nonisolated static func readableMath(_ inner: String) -> String? {
+        var text = convertingTeXSymbols(in: inner)
+
+        // Wrappers: the argument's words stay.
+        for wrapper in ["text", "textrm", "textit", "textbf", "texttt",
+                        "mathrm", "mathit", "mathsf", "mathtt",
+                        "operatorname", "mathop", "boldsymbol"] {
+            while let range = text.range(of: "\\\(wrapper){") {
+                guard let (value, whole) = bracedArgument(in: text, from: range) else { break }
+                // Braces stay for now, so a following _ or ^ still sees
+                // its group; they shed at the end.
+                text.replaceSubrange(whole, with: "{" + value + "}")
+            }
+        }
+        // Letter styles.
+        let calligraphic: [Character: String] = [
+            "A": "𝒜", "B": "ℬ", "C": "𝒞", "D": "𝒟", "E": "ℰ", "F": "ℱ",
+            "G": "𝒢", "H": "ℋ", "I": "ℐ", "J": "𝒥", "K": "𝒦", "L": "ℒ",
+            "M": "ℳ", "N": "𝒩", "O": "𝒪", "P": "𝒫", "Q": "𝒬", "R": "ℛ",
+            "S": "𝒮", "T": "𝒯", "U": "𝒰", "V": "𝒱", "W": "𝒲", "X": "𝒳",
+            "Y": "𝒴", "Z": "𝒵",
+        ]
+        while let range = text.range(of: "\\mathcal{") {
+            guard let (value, whole) = bracedArgument(in: text, from: range) else { break }
+            let styled = value.map { character -> String in
+                calligraphic[character] ?? String(character)
+            }.joined()
+            text.replaceSubrange(whole, with: "{" + styled + "}")
+        }
+        while let range = text.range(of: "\\mathbf{") {
+            guard let (value, whole) = bracedArgument(in: text, from: range) else { break }
+            text.replaceSubrange(whole, with: value)
+        }
+        // Accents.
+        for (accent, mark) in [("hat", "\u{0302}"), ("bar", "\u{0304}"),
+                               ("tilde", "\u{0303}"), ("vec", "\u{20D7}"),
+                               ("dot", "\u{0307}"), ("overline", "\u{0304}")] {
+            while let range = text.range(of: "\\\(accent){") {
+                guard let (value, whole) = bracedArgument(in: text, from: range) else { break }
+                let composed = value.count == 1
+                    ? (value + mark).precomposedStringWithCanonicalMapping
+                    : value
+                text.replaceSubrange(whole, with: composed)
+            }
+        }
+        // Spacing commands.
+        for (from, to) in [("\\,", " "), ("\\;", " "), ("\\:", " "),
+                           ("\\!", ""), ("\\ ", " ")] {
+            text = text.replacingOccurrences(of: from, with: to)
+        }
+
+        guard !text.contains("\\") else { return nil }
+
+        // Sub- and superscripts.
+        for (marker, forms) in [("_", subscriptForms), ("^", superscriptForms)] {
+            var out = ""
+            var rest = text[...]
+            while let mark = rest.firstIndex(of: Character(marker)) {
+                out += rest[..<mark]
+                var group = ""
+                var next = rest.index(after: mark)
+                if next < rest.endIndex, rest[next] == "{" {
+                    var depth = 0
+                    var cursor = next
+                    var closing: String.Index?
+                    while cursor < rest.endIndex {
+                        if rest[cursor] == "{" { depth += 1 }
+                        if rest[cursor] == "}" { depth -= 1; if depth == 0 { closing = cursor; break } }
+                        cursor = rest.index(after: cursor)
+                    }
+                    if let closing {
+                        group = String(rest[rest.index(after: next)..<closing])
+                        next = rest.index(after: closing)
+                    }
+                } else if next < rest.endIndex {
+                    group = String(rest[next])
+                    next = rest.index(after: next)
+                }
+                let mapped = group.map { forms[$0].map(String.init) }
+                if !group.isEmpty, mapped.allSatisfy({ $0 != nil }) {
+                    out += mapped.compactMap { $0 }.joined()
+                } else {
+                    out += marker + group
+                }
+                rest = rest[next...]
+            }
+            out += rest
+            text = out
+        }
+
+        // Stray braces shed; whitespace settles.
+        text = text.replacingOccurrences(of: "{", with: "")
+            .replacingOccurrences(of: "}", with: "")
+        return text.components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The braced argument starting at `range`'s trailing "{": its value
+    /// and the whole command's range, or nil when unbalanced.
+    private nonisolated static func bracedArgument(
+        in text: String, from range: Range<String.Index>)
+        -> (value: String, whole: Range<String.Index>)? {
+        let open = text.index(before: range.upperBound)
+        var depth = 0
+        var cursor = open
+        while cursor < text.endIndex {
+            if text[cursor] == "{" { depth += 1 }
+            if text[cursor] == "}" {
+                depth -= 1
+                if depth == 0 {
+                    let value = String(text[text.index(after: open)..<cursor])
+                    return (value, range.lowerBound..<text.index(after: cursor))
+                }
+            }
+            cursor = text.index(after: cursor)
+        }
+        return nil
     }
 }

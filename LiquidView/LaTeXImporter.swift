@@ -501,8 +501,12 @@ nonisolated enum LaTeXImporter {
                                                   with: "", options: .regularExpression)
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         if !math.isEmpty {
+                            // Readable when simple; verbatim TeX (its
+                            // symbols at least as characters) otherwise.
+                            let shown = BibTeXParser.readableMath(math)
+                                ?? BibTeXParser.convertingTeXSymbols(in: math)
                             paragraphs.append(LiquidDoc.Paragraph(
-                                id: nextID(), heading: nil, text: math))
+                                id: nextID(), heading: nil, text: shown))
                         }
                         handled = true
                     case "CCSXML", "thebibliography", "titlepage":
@@ -551,8 +555,10 @@ nonisolated enum LaTeXImporter {
                                               with: "", options: .regularExpression)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !math.isEmpty {
+                        let shown = BibTeXParser.readableMath(math)
+                            ?? BibTeXParser.convertingTeXSymbols(in: math)
                         paragraphs.append(LiquidDoc.Paragraph(
-                            id: nextID(), heading: nil, text: math))
+                            id: nextID(), heading: nil, text: shown))
                     }
                     rest = rest[close.upperBound...]
                     continue
@@ -988,7 +994,10 @@ nonisolated enum LaTeXImporter {
     /// would give two endnotes the same address.
     static func inline(convert raw: String,
                        noteCounter: inout Int) -> (text: String, notes: [(String, String)]) {
-        var text = raw
+        // Symbol commands become their characters before anything else
+        // — a \lambda means λ in prose and mathematics alike, and the
+        // math shield below then protects readable spans, not TeX.
+        var text = BibTeXParser.convertingTeXSymbols(in: raw)
         var notes: [(String, String)] = []
 
         // TeX's other inline form, \( … \), normalises to $ … $ first.
@@ -1209,9 +1218,14 @@ nonisolated enum LaTeXImporter {
         text = text.replacingOccurrences(of: "{", with: "")
             .replacingOccurrences(of: "}", with: "")
 
-        // The shielded pieces return.
+        // The shielded pieces return — readable when nothing structural
+        // remains ($\lambda_\delta$ comes back as λ_δ, x^2 as x²); a
+        // fraction or a matrix stays verbatim TeX, dollars and all.
         for (index, span) in mathSpans.enumerated() {
-            text = text.replacingOccurrences(of: "\u{FFFC}MATH\(index)\u{FFFC}", with: span)
+            let inner = String(span.dropFirst().dropLast())
+            let restored = BibTeXParser.readableMath(inner) ?? span
+            text = text.replacingOccurrences(of: "\u{FFFC}MATH\(index)\u{FFFC}",
+                                             with: restored)
         }
         text = text.replacingOccurrences(of: "\u{FFFC}BS\u{FFFC}", with: "\\")
             .replacingOccurrences(of: "\u{FFFC}LB\u{FFFC}", with: "{")
