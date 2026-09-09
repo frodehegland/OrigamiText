@@ -442,6 +442,11 @@ struct JournalsListView: View {
                 .buttonStyle(.plain)
                 .listRowBackground(Color.clear)
                 .contextMenu {
+                    // The publisher's handoff: the venue's whole set,
+                    // clean, to the Desktop — DOI-named files and a
+                    // manifest.
+                    Button("Export Proceedings") { model.exportProceedings(venue) }
+                    Divider()
                     // Papers write the same venue slightly differently;
                     // declaring one the same as another folds them.
                     Menu("Is the Same As") {

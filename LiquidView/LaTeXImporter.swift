@@ -197,13 +197,27 @@ nonisolated enum LaTeXImporter {
         // \acmConference[HT '26]{37th ACM Conference on Hypertext}{…}{…},
         // else the full proceedings title. Comments are already
         // stripped, so a commented-out template line cannot mislead.
+        // The LAST declaration of each command wins, as it does in
+        // LaTeX — a paper that keeps the template line above its real
+        // one (ht26-27) declares both. And the template's own words are
+        // never a venue: "Make sure to enter the correct conference
+        // title" filed two papers under a junk journal.
+        func isPlaceholderVenue(_ value: String) -> Bool {
+            value.localizedCaseInsensitiveContains("make sure to enter")
+                || value.localizedCaseInsensitiveContains("conference acronym")
+                || value.localizedCaseInsensitiveContains("woodstock")
+        }
         let publication = ["acmJournal", "acmConference", "acmBooktitle"].lazy
-            .compactMap { command in
-                firstBalancedArgument(of: command, in: stripped,
-                                      skippingBracketOption: true)
-                    .map { inline(convert: $0.value).text }
+            .compactMap { command -> String? in
+                balancedArguments(of: command, in: stripped,
+                                  skippingBracketOption: true)
+                    .map { inline(convert: $0).text
+                        // One line, like a title: a print line-break
+                        // inside the name is not part of the name.
+                        .replacingOccurrences(of: "\n", with: " ")
+                        .trimmingCharacters(in: .whitespaces) }
+                    .last { !$0.isEmpty && !isPlaceholderVenue($0) }
             }
-            .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty }
 
         // The paper's own DOI, from the preamble.

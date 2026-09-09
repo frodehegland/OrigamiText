@@ -1178,6 +1178,66 @@ final class AppModel {
         NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
+    // MARK: - Export Proceedings
+
+    /// One venue's whole set, written clean: a fresh folder named for
+    /// the venue (on the Desktop unless told otherwise), every paper's
+    /// canonical .epub under its DOI-suffix name — the Digital
+    /// Library's file convention — or its shelf name when no DOI is
+    /// known, and a MANIFEST.txt pairing files to titles. "Clean"
+    /// means exactly this export: any older folder of the same name
+    /// is replaced whole.
+    func exportProceedings(_ venue: String, to destination: URL? = nil) {
+        let records = epubRecords(inPublication: venue)
+        guard !records.isEmpty else {
+            NSSound.beep()
+            showNote("No books declare \(venue).")
+            return
+        }
+        let base = destination ?? FileManager.default.urls(
+            for: .desktopDirectory, in: .userDomainMask)[0]
+        let safeName = venue
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: " -")
+        let folder = base.appendingPathComponent(safeName, isDirectory: true)
+        do {
+            try? FileManager.default.removeItem(at: folder)
+            try FileManager.default.createDirectory(at: folder,
+                                                    withIntermediateDirectories: true)
+            var manifest: [String] = [
+                "\(venue)",
+                "Exported \(Date.now.formatted(date: .abbreviated, time: .shortened)) \u{2014} \(records.count) papers.",
+                "",
+            ]
+            var used = Set<String>()
+            let ordered = records.sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+            for record in ordered {
+                var name = record.doi.flatMap { doi -> String? in
+                    guard let slash = doi.firstIndex(of: "/") else { return nil }
+                    let suffix = String(doi[doi.index(after: slash)...])
+                    return suffix.isEmpty ? nil : suffix
+                } ?? record.folder
+                while used.contains(name) { name += " 2" }
+                used.insert(name)
+                try writeEPUBCopy(of: record,
+                                  to: folder.appendingPathComponent(name + ".epub"))
+                manifest.append("\(name).epub  =  \(record.title)")
+            }
+            try manifest.joined(separator: "\n")
+                .write(to: folder.appendingPathComponent("MANIFEST.txt"),
+                       atomically: true, encoding: .utf8)
+            if destination == nil {
+                NSWorkspace.shared.activateFileViewerSelecting([folder])
+            }
+            showNote("Exported \(records.count) papers of \(venue).")
+        } catch {
+            NSSound.beep()
+            showNote("Export Proceedings failed: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Editor Mode (the publisher's corrections; see EDITOR-MODE-PLAN.md)
 
     /// The gate: a defaults flag with no Settings UI — Editor Mode is
