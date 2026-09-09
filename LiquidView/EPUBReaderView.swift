@@ -80,6 +80,10 @@ enum ReaderStyle {
         a[role="doc-glossref"], a[data-glossary-id] { text-decoration: none; cursor: text; }
         img { max-width: 100%; height: auto; }
         figure { margin-left: 0; margin-right: 0; }
+        table { border-collapse: collapse; margin: 1.2em auto; border-top: 1px solid; border-bottom: 1px solid; }
+        th { text-align: left; border-bottom: 0.5px solid; padding: 0.3em 1.2em 0.3em 0; }
+        td { text-align: left; vertical-align: top; padding: 0.25em 1.2em 0.25em 0; }
+        th:last-child, td:last-child { padding-right: 0; }
         \(theme.css)
         """
     }
