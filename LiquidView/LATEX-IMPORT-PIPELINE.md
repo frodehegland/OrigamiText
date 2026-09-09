@@ -145,7 +145,12 @@ output of the last:
    → **footnotes out** (one document-wide counter — per-paragraph
    counters gave ht26-18's 33 notes the same id 33 times) → citations
    to `[cite:key]` tokens → hyperlink plumbing (`\hypertarget` drops
-   whole, `\hyperlink` keeps its words) → links → emphasis → accents
+   whole, `\hyperlink` keeps its words) → links → emphasis (the marks
+   hug their words: `\textbf{words. }AI` carries its space inside the
+   braces, but `**words. **` is no strong run to CommonMark — the
+   asterisks showed as themselves in ht26-34's run-in headings; edge
+   whitespace, read from the raw braces since the recursive conversion
+   trims its own, steps outside the marks) → accents
    (composed onto the last *letter* of the match, never the closing
    brace of `{\'e}`) → generic unwrap of what remains → straight
    quotes pair typographically (a bare ' is an apostrophe or a closing

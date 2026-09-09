@@ -1338,8 +1338,24 @@ nonisolated enum LaTeXImporter {
                 let innerResult = inline(convert: argument.value,
                                          noteCounter: &noteCounter)
                 notes.append(contentsOf: innerResult.notes)
-                text.replaceSubrange(argument.range,
-                                     with: opener + innerResult.text + closer)
+                // The marks must hug their words: \textbf{words. }AI
+                // carries its space inside the braces, but "**words. **"
+                // is no strong run to CommonMark — the asterisks showed
+                // as themselves (ht26-34's run-in headings). Edge
+                // whitespace steps outside the marks; an all-whitespace
+                // group keeps its space and earns none.
+                // The edge whitespace comes from the RAW braced words —
+                // the recursive conversion has already trimmed its own.
+                let core = innerResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let replacement: String
+                if opener.isEmpty || core.isEmpty {
+                    replacement = innerResult.text
+                } else {
+                    let leading = String(argument.value.prefix { $0.isWhitespace })
+                    let trailing = String(argument.value.reversed().prefix { $0.isWhitespace }.reversed())
+                    replacement = leading + opener + core + closer + trailing
+                }
+                text.replaceSubrange(argument.range, with: replacement)
             }
         }
 
