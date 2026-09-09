@@ -22,9 +22,15 @@ nonisolated struct BibTeXRecord: Sendable {
     let key: String
     let fields: [String: String]
 
-    var author: String { fields["author"] ?? fields["editor"] ?? "" }
-    var title: String { fields["title"] ?? "" }
-    var year: String { fields["year"] ?? "" }
+    // Display accessors are TeX-cleaned: the raw record keeps its
+    // accents as commands (F\'elix), but no screen ever shows one —
+    // every surface reading a cited work through this bridge (citation
+    // cards, the Books shelf, Lineage) gets "Félix".
+    var author: String {
+        BibTeXParser.displayText(fields["author"] ?? fields["editor"] ?? "")
+    }
+    var title: String { BibTeXParser.displayText(fields["title"] ?? "") }
+    var year: String { BibTeXParser.displayText(fields["year"] ?? "") }
 
     /// True for the book-shaped entry types.
     var isBook: Bool { entryType.localizedCaseInsensitiveContains("book") }

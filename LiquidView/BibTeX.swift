@@ -8,8 +8,8 @@ nonisolated struct BibTeXEntry {
     /// The entry exactly as pasted, kept verbatim for the references block.
     let raw: String
 
-    var title: String? { fields["title"] }
-    var year: String? { fields["year"] }
+    var title: String? { fields["title"].map(BibTeXParser.displayText) }
+    var year: String? { fields["year"].map(BibTeXParser.displayText) }
 
     var hasMultipleAuthors: Bool {
         (fields["author"] ?? "").contains(" and ")
@@ -17,7 +17,7 @@ nonisolated struct BibTeXEntry {
 
     /// First author in "First Last" order (accepts "Last, First").
     var firstAuthor: String? {
-        guard let raw = fields["author"] else { return nil }
+        guard let raw = fields["author"].map(BibTeXParser.displayText) else { return nil }
         let first = raw.components(separatedBy: " and ").first ?? raw
         if first.contains(",") {
             let parts = first.split(separator: ",", maxSplits: 1)

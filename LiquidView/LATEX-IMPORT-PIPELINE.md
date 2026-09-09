@@ -156,6 +156,12 @@ identifier, not a registered DOI (doi.org answers 404), so those link
 to `dl.acm.org/doi/…` instead. Cleaning happens where the `Citation`
 is built, so the Visual-Meta pool and CSL-JSON carry clean text too.
 
+The same display cleaning applies at reading time through the
+`BibTeXRecord`/`BibTeXEntry` display accessors — the raw `data-bibtex`
+in an EPUB keeps its accents as commands (by design), but no screen
+shows one: citation cards, the Books shelf and Lineage all read
+"Félix Guattari", never "F\'elix".
+
 Verified across the corpus: 2,145 references, zero TeX residue in
 visible text, 1,853 italic venues (the rest genuinely have no venue),
 1,135 live links; every sampled DOI resolves at doi.org (publisher
