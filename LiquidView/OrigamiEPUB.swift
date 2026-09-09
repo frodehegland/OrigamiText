@@ -864,7 +864,14 @@ nonisolated enum OrigamiEPUBExporter {
         var html = escaped(text)
         html = html.replacingOccurrences(of: "`([^`]+)`", with: "<code>$1</code>",
                                          options: .regularExpression)
-        html = html.replacingOccurrences(of: "\\*\\*([^*]+)\\*\\*", with: "<strong>$1</strong>",
+        // A strong run may hold italic ones (***i1* Illegal Hate
+        // Speech.**, **designing *experiences*** — ht26-34): the
+        // content is plain words or COMPLETE *em* pairs, so the em
+        // converted next always nests inside, never across. The atomic
+        // group is load-bearing: without it, a paragraph full of stars
+        // with no closing ** backtracks exponentially.
+        html = html.replacingOccurrences(of: "\\*\\*((?>[^*]+|\\*[^*]+\\*)+)\\*\\*",
+                                         with: "<strong>$1</strong>",
                                          options: .regularExpression)
         html = html.replacingOccurrences(of: "\\*([^*]+)\\*", with: "<em>$1</em>",
                                          options: .regularExpression)
