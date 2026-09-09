@@ -1372,6 +1372,18 @@ struct EPUBReaderView: NSViewRepresentable {
         bridge.postMessage({event:'figurejump',
                             targetID: a.getAttribute('data-target-id') || ''});
       }, true);
+      // A double-click on any image lifts it into the same window.
+      document.addEventListener('dblclick', function(e){
+        var img = e.target.closest ? e.target.closest('figure img, figure') : null;
+        if (!img) return;
+        var figure = img.closest('figure');
+        if (!figure) return;
+        var id = figure.getAttribute('data-id');
+        if (!id) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        bridge.postMessage({event:'figurejump', targetID: id});
+      }, true);
     })();
     """
 

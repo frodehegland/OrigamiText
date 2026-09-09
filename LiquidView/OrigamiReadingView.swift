@@ -2593,6 +2593,11 @@ struct OrigamiReadingView: View {
                 asset: asset,
                 fallback: OrigamiAssetView.imageCitation(after: paragraph, in: doc),
                 doc: doc)
+                // Any image lifts into its own window on a double-click,
+                // the same window a figure jump opens.
+                .onTapGesture(count: 2) {
+                    openFigureWindow(paragraphID: paragraph.id)
+                }
                 .dimmedForStretch(dim)
         } else if let tableID = paragraph.tableID,
                   let table = doc.tables.first(where: { $0.identifier == tableID }) {
@@ -2956,19 +2961,24 @@ struct OrigamiReadingView: View {
         return NSWorkspace.shared.open(url)
     }
 
+    /// The image in its own window, beside the reading, closed when
+    /// the reader is done with it (visionOS keeps the sheet, which
+    /// carries Lift into Space).
+    private func openFigureWindow(paragraphID: String) {
+        #if os(macOS)
+        openWindow(value: FigureWindowValue(docID: doc.id, paragraphID: paragraphID))
+        #else
+        figureTarget = FigureTarget(paragraphID: paragraphID)
+        #endif
+    }
+
     /// An in-document jump: a figure shows itself in place — the whole
     /// point is seeing the image BEFORE reading further (Mark) — and
     /// anything else scrolls the reading to the target.
     private func followJump(_ paragraphID: String) {
         let target = (doc.body ?? []).first { $0.id == paragraphID }
         if let target, LiquidDoc.imageReference(in: target.text) != nil {
-            #if os(macOS)
-            // The image in its own window, beside the reading, closed
-            // when the reader is done with it.
-            openWindow(value: FigureWindowValue(docID: doc.id, paragraphID: paragraphID))
-            #else
-            figureTarget = FigureTarget(paragraphID: paragraphID)
-            #endif
+            openFigureWindow(paragraphID: paragraphID)
         } else {
             if let stretchID = target?.stretchID { openStretch.insert(stretchID) }
             pendingScrollID = paragraphID
