@@ -1178,7 +1178,7 @@ final class AppModel {
         NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
-    #if EDITOR
+    #if DEBUG || EDITOR
     // MARK: - Export Proceedings (the publisher's handoff — parked
     // with Editor Mode until the next proceedings pass; the Publisher
     // build configuration, Release + EDITOR, carries both)
@@ -1271,7 +1271,7 @@ final class AppModel {
     }
     #endif
 
-    #if EDITOR
+    #if DEBUG || EDITOR
     // MARK: - Editor Mode (the publisher's corrections; see EDITOR-MODE-PLAN.md)
 
     /// The gate: a defaults flag with no Settings UI — Editor Mode is

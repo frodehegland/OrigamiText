@@ -29,15 +29,15 @@ with the original always recoverable.*
    zero dangling anchors are already refusal conditions at export; an
    edition that breaks either simply does not get written.
 6. **Editing is absent from readers' builds, not hidden in them.**
-   Every editor site compiles only under `#if EDITOR` (tightened from
-   `DEBUG || EDITOR` on 9 Sep 2026, so a Debug build handed to testers
-   carries neither the editor nor Export Proceedings): enabling them
-   again is one Xcode build setting — add EDITOR to
-   SWIFT_ACTIVE_COMPILATION_CONDITIONS, the planned Publisher
-   configuration — plus the `editorMode` defaults flag
-   (`defaults write info.futuretextlab.origamitext editorMode -bool YES`);
-   a Release build — what readers are given — contains none of the
-   code. Verified by symbol inspection: the Release binary has zero
+   Every editor site — and Export Proceedings with them, since 9 Sep
+   2026 — compiles only under `#if DEBUG || EDITOR`: Debug builds (our
+   own Xcode runs) always carry the publisher's tools (the Edit entry
+   still behind the `editorMode` defaults flag —
+   `defaults write info.futuretextlab.origamitext editorMode -bool YES`);
+   a Release build — what readers and testers are given — contains
+   none of the code, until this gate changes here on purpose. A
+   shippable "Publisher" build for ACM staff stays one build
+   configuration away: Release + EDITOR. Verified by symbol inspection: the Release binary has zero
    EditorSession symbols and none of the editor's strings, while
    unguarded features remain. Since the repo is public anyone can
    build the editor themselves — as they could edit an EPUB with any

@@ -146,7 +146,7 @@ struct LiquidViewApp: App {
         // Editor Mode's window — the publisher's corrections (see
         // EDITOR-MODE-PLAN.md). Compiled only into publisher builds;
         // a Release build carries no editor at all.
-        #if EDITOR
+        #if DEBUG || EDITOR
         Window("Edit Document", id: "epub-editor") {
             DocumentEditorView()
                 .environment(model)
