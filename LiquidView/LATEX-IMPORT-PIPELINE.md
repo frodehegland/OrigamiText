@@ -109,7 +109,13 @@ output of the last:
    to `[cite:key]` tokens → hyperlink plumbing (`\hypertarget` drops
    whole, `\hyperlink` keeps its words) → links → emphasis → accents
    (composed onto the last *letter* of the match, never the closing
-   brace of `{\'e}`) → generic unwrap of what remains.
+   brace of `{\'e}`) → generic unwrap of what remains → straight
+   quotes pair typographically (a bare ' is an apostrophe or a closing
+   quote unless it opens a quoted word — Tinderbox's and the '90s both
+   come out right; a bare " opens after a space or an opener, closes
+   elsewhere; math is still shielded so primes stay primes; verbatim
+   and listings never pass through here, so code keeps its straight
+   quotes).
 8. **Assemble the bibliography:**
    - *Inclusion:* with a printed bibliography, exactly its entries — the
      print can cite from places body tokens cannot reach (ht26-26 cites
