@@ -47,6 +47,7 @@ enum LibraryListMode: Hashable {
 /// Aside shelf — or back), then Move to Trash.
 struct EPUBPileMenu: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     let record: EPUBRecord
 
     private var exportTargets: [EPUBRecord] {
@@ -79,6 +80,15 @@ struct EPUBPileMenu: View {
                ? "Export \(exportTargets.count) with DOI Names…"
                : "Export with DOI Name…") {
             model.exportWithDOINames(exportTargets)
+        }
+        if model.isEditorModeOn {
+            Divider()
+            // The publisher's door (Editor Mode, a hidden defaults
+            // flag): correcting the record itself. Readers never see it.
+            Button("Edit Document\u{2026}") {
+                model.beginEdit(record)
+                openWindow(id: "epub-editor")
+            }
         }
         Divider()
         Button("Move to Trash", role: .destructive) { model.trashEPUB(record) }

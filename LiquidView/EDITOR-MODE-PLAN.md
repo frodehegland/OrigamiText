@@ -1,6 +1,6 @@
 # Editor Mode — correcting an EPUB safely
 
-*Plan, 9 September 2026. An Admin capability for Editors (macOS only),
+*Plan, 9 September 2026 — built the same day; §1–§2 as amended by Frode (publisher semantics: identity immutable, export authoritative, gate hidden). An Admin capability for Editors (macOS only),
 never shown to end users. The goal: when review finds a mistake in a
 converted EPUB, an Editor can fix it, export the corrected edition as a
 separate file, review it, and only then adopt it for distribution —
@@ -12,14 +12,15 @@ with the original always recoverable.*
    on an in-memory copy of the document; nothing on disk changes until
    an explicit export or adopt.
 2. **Export and adopt are different acts.** Export writes a separate
-   `(edited)` file for review, touching neither the shelf nor the
-   community folder. Adopt — a second, deliberate step — replaces the
+   file for review, touching neither the shelf nor the community
+   folder. Adopt — a second, deliberate step — replaces the
    distributed copy.
-3. **The identity survives; the edition is marked.** The document keeps
-   its `origami-id` (so annotations, citations and Map positions keep
-   resolving — the intro-guide precedent) and its DOI; Visual-Meta
-   gains `revision` (2, 3, …) and `revised` (ISO date), so an edited
-   edition is never mistaken for the publisher's conversion.
+3. **Nothing about the identity changes — the export IS the
+   authoritative version.** This is a publisher's tool (ours, with
+   ACM): the document keeps its `origami-id`, its DOI, and every
+   untouched paragraph id, and the corrected EPUB carries no edition
+   markers — it simply is the record, corrected. The audit trail lives
+   locally (Editions/ backups and edit logs), never in the file.
 4. **The original is kept before it is replaced.** Adopt first files
    the outgoing .epub under `EPUBs/Editions/<id>/` with a dated name,
    beside an edit log (which blocks changed, when). Recovery is a copy
@@ -27,14 +28,17 @@ with the original always recoverable.*
 5. **The exporter's guards gate everything.** Well-formed XML and
    zero dangling anchors are already refusal conditions at export; an
    edition that breaks either simply does not get written.
-6. **Editing is invisible to end users.** A single "Editor Mode"
-   toggle in Settings (macOS), default off. iOS and visionOS never see
-   any of it. (The no-hidden-options rule bends here by design: this is
-   the one capability that is explicitly not for readers.)
+6. **Editing is invisible to end users.** No Settings UI at all: a
+   defaults flag gates the whole capability —
+   `defaults write info.futuretextlab.origamitext editorMode -bool YES`
+   — so ordinary readers can never stumble into it. iOS and visionOS
+   never see any of it. (The no-hidden-options rule bends here by
+   design: this is the one capability that is explicitly not for
+   readers.)
 
 ## 2. The Editor's flow
 
-1. Settings ▸ turn on **Editor Mode**.
+1. Enable the `editorMode` defaults flag (editors only; no UI).
 2. Right-click a book ▸ **Edit Document…** (present only in Editor
    Mode) → the Editor window opens on a working copy, loaded through
    the same structured import the index uses — the Editor sees exactly
@@ -53,11 +57,13 @@ with the original always recoverable.*
      undo); nothing else records until export.
 4. **Preview** renders the working copy in the normal reading view,
    in-window — no import, no shelf entry, no duplicate.
-5. **Export Edited EPUB…** writes `<name> (edited).epub` wherever the
-   Editor chooses, revision bumped, both exporter guards enforced. This
-   file can travel — to another reviewer, another reader, Apple Books.
-6. **Adopt Edition** (in the Editor, or by re-importing the reviewed
-   `(edited)` file back onto its book):
+5. **Export Authoritative EPUB…** writes the corrected document under
+   its own canonical filename wherever the Editor chooses — no edition
+   suffix, no revision marker; what is exported is the authoritative
+   version. Both exporter guards enforced. The file can travel — to
+   another reviewer, another reader, ACM.
+6. **Adopt** (in the Editor, or by re-importing the reviewed file —
+   same name, same identity — onto its book):
    - files the outgoing original under `EPUBs/Editions/<id>/` with the
      edit log;
    - writes the new .epub under the book's **original filename** into
@@ -88,17 +94,16 @@ with the original always recoverable.*
 2. `DocumentEditorView`: block list with in-place editing, references
    pane, tables grid, change list sidebar; Preview via the existing
    native reading view on the session's doc.
-3. Export path: revision bump into Visual-Meta document info
-   (`revision`, `revised` — additive keys the importer tolerates),
-   `(edited)` filename, exporter guards.
+3. Export path: the canonical filename, identity untouched, exporter
+   guards.
 4. Adopt path: backup + edit log to `EPUBs/Editions/<id>/`, canonical
    replace under the original name, unpack refresh, mirror.
-5. Settings toggle + `Edit Document…` menu entry, gated.
+5. Defaults-flag gate + `Edit Document…` menu entry.
 6. Verification: edit one block of a real paper → export → re-import →
-   assert one changed block, same ids elsewhere, annotations preserved
-   on a book that has them, revision == 2 in Visual-Meta, both guards
-   green; adopt → shelf and community byte-identical, record id
-   unchanged.
+   assert one changed block, same ids elsewhere, identity untouched,
+   both guards green; adopt → shelf and community byte-identical,
+   record id unchanged. (Run 9 Sep: 217/217 ids preserved, fresh id
+   present, edit round-trips, references intact, origami-id PRESERVED.)
 
 ## 5. Out of scope for v1
 

@@ -176,6 +176,22 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         /// Where this paragraph came from (a transcription's page, a
         /// speaker's turn), when the document says.
         var provenance: String? = nil
+
+        /// A copy with different words (and, when given, a different
+        /// heading level) — the Editor's change. The id and every rider
+        /// travel unchanged; the id above all, since annotations and
+        /// citations anchor to it.
+        func replacing(text newText: String,
+                       heading newHeading: Int?? = nil) -> Paragraph {
+            var copy = Paragraph(id: id,
+                                 heading: newHeading ?? heading,
+                                 text: newText)
+            copy.speaker = speaker
+            copy.tableID = tableID
+            copy.stretchID = stretchID
+            copy.provenance = provenance
+            return copy
+        }
     }
 
     /// One live table: a row-major grid of cells, each a pre-computed
@@ -349,6 +365,35 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     struct MapConnection: Hashable, Sendable {
         let from: String
         let to: String
+    }
+
+    /// A copy with a different body (and, when given, a corrected
+    /// title) — the Editor's working surface becoming a document again.
+    /// Identity and every other field travel unchanged. When the struct
+    /// gains a stored property, carry it here too: this is the one
+    /// place a document is rebuilt around new content.
+    func replacingBody(_ newBody: [Paragraph],
+                       title newTitle: String? = nil) -> LiquidDoc {
+        var copy = LiquidDoc(format: format, id: id,
+                             title: newTitle ?? title, author: author,
+                             created: created, body: newBody, links: links,
+                             wraps: wraps, fileURL: fileURL)
+        copy.attention = attention
+        copy.date = date
+        copy.aiOnBehalf = aiOnBehalf
+        copy.onBehalfOf = onBehalfOf
+        copy.documentType = documentType
+        copy.location = location
+        copy.sourceURL = sourceURL
+        copy.publication = publication
+        copy.doi = doi
+        copy.concepts = concepts
+        copy.layouts = layouts
+        copy.mapConnections = mapConnections
+        copy.references = references
+        copy.tables = tables
+        copy.assets = assets
+        return copy
     }
 
     static let knownFormat = "origami/0.1"

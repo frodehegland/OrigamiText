@@ -1178,6 +1178,121 @@ final class AppModel {
         NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
+    // MARK: - Editor Mode (the publisher's corrections; see EDITOR-MODE-PLAN.md)
+
+    /// The gate: a defaults flag with no Settings UI — Editor Mode is
+    /// for the editors who answer for the EPUBs, invisible to readers.
+    /// `defaults write info.futuretextlab.origamitext editorMode -bool YES`
+    static let editorModeKey = "editorMode"
+    var isEditorModeOn: Bool { UserDefaults.standard.bool(forKey: Self.editorModeKey) }
+
+    /// The one correction session (one book at a time).
+    var editorSession: EditorSession?
+
+    /// Opens a correction session on the book's structured import — the
+    /// same parse the readers see, worked on as an in-memory copy.
+    func beginEdit(_ record: EPUBRecord) {
+        let base = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+        guard let result = try? OrigamiEPUBImporter.importDocument(inUnpackedFolder: base) else {
+            NSSound.beep()
+            showNote("Could not load \u{201C}\(record.title)\u{201D} for editing.")
+            return
+        }
+        let doc = Self.structuredDoc(from: result, record: record,
+                                     fallbackID: record.folder, base: base)
+        editorSession = EditorSession(record: record, doc: doc)
+    }
+
+    /// Writes the corrected document as the authoritative EPUB wherever
+    /// the editor chooses — same identity, same default filename; the
+    /// exporter's guards (well-formed XML, no dangling anchors) gate it.
+    func exportAuthoritativeEdition(_ session: EditorSession) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = session.record.folder + ".epub"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        do {
+            try writeEdition(session, to: destination)
+            showNote("Exported the corrected \u{201C}\(session.title)\u{201D}.")
+        } catch {
+            editionAlert("Export refused: \(error.localizedDescription)")
+        }
+    }
+
+    /// Adopt: the corrected edition replaces the distributed copy — the
+    /// shelf's canonical .epub, its unpacked cache, and the community
+    /// folder's file, all under the original name so every device
+    /// refreshes in place. The outgoing original and an edit log are
+    /// filed under Editions/ first; recovery is a copy back.
+    func adoptEdition(_ session: EditorSession) {
+        let confirm = NSAlert()
+        confirm.messageText = "Adopt this corrected edition?"
+        confirm.informativeText = "\u{201C}\(session.title)\u{201D} replaces the distributed copy on this shelf and in the community folder. The outgoing version is kept under Editions."
+        confirm.addButton(withTitle: "Adopt")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        let record = session.record
+        do {
+            // 1. File the outgoing original and the edit log.
+            let editions = Self.epubsRoot
+                .appendingPathComponent("Editions", isDirectory: true)
+                .appendingPathComponent(record.folder, isDirectory: true)
+            try FileManager.default.createDirectory(at: editions,
+                                                    withIntermediateDirectories: true)
+            let stamp = ISO8601DateFormatter().string(from: .now)
+                .replacingOccurrences(of: ":", with: "-")
+            let stored = storedEPUBURL(for: record)
+            if FileManager.default.fileExists(atPath: stored.path) {
+                try? FileManager.default.copyItem(
+                    at: stored,
+                    to: editions.appendingPathComponent("\(record.folder) before \(stamp).epub"))
+            }
+            if let log = session.editLogJSON {
+                try? log.write(to: editions.appendingPathComponent("edit-log \(stamp).json"))
+            }
+            // 2. The corrected EPUB under the canonical name, through
+            // the normal import — same identity, refresh in place.
+            let staging = FileManager.default.temporaryDirectory
+                .appendingPathComponent(record.folder + ".epub")
+            try? FileManager.default.removeItem(at: staging)
+            try writeEdition(session, to: staging)
+            guard let refreshed = importEPUB(at: staging) else {
+                editionAlert("The corrected EPUB would not re-import; nothing was replaced.")
+                return
+            }
+            // 3. The community copy, replaced by the same bytes.
+            if let folder = index.folderURL {
+                let scoped = folder.startAccessingSecurityScopedResource()
+                defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+                let mirrored = folder.appendingPathComponent(record.folder + ".epub")
+                try? FileManager.default.removeItem(at: mirrored)
+                try? FileManager.default.copyItem(at: staging, to: mirrored)
+            }
+            try? FileManager.default.removeItem(at: staging)
+            rebuildEPUBIndex()
+            editorSession = nil
+            showNote("Adopted \u{201C}\(refreshed.title)\u{201D} — the shelf and the community folder carry the corrected edition.")
+        } catch {
+            editionAlert("Adopt refused: \(error.localizedDescription). Nothing was replaced.")
+        }
+    }
+
+    private func writeEdition(_ session: EditorSession, to url: URL) throws {
+        let doc = session.assembledDoc()
+        try OrigamiEPUBExporter.write(
+            doc: doc,
+            resolve: { [weak self] id in self?.index.byID[id]?.doc },
+            to: url)
+    }
+
+    private func editionAlert(_ text: String) {
+        let alert = NSAlert()
+        alert.messageText = "Editor Mode"
+        alert.informativeText = text
+        alert.runModal()
+    }
+
     // MARK: - The source PDF beside the conversion (a reviewing aid)
 
     /// Opens the camera-ready PDF from the paper's source archive — the
