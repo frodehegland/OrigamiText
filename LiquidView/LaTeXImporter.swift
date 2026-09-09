@@ -40,6 +40,10 @@ nonisolated enum LaTeXImporter {
         /// EPUB's Visual-Meta so citations to the paper resolve and a
         /// DOI-named export needs no lookup.
         var doi: String? = nil
+        /// The printed affiliations — each \affiliation's institution,
+        /// city, and country as one line, deduplicated in order — for
+        /// the exported front matter, as the PDF prints them.
+        var affiliations: [String] = []
     }
 
     // MARK: - Entry points
@@ -193,6 +197,23 @@ nonisolated enum LaTeXImporter {
             .map { inline(convert: $0).text }
             .filter { !$0.isEmpty }
         let author = authors.isEmpty ? nil : authors.joined(separator: ", ")
+
+        // The printed affiliations, under the authors as in the PDF.
+        var affiliations: [String] = []
+        for block in balancedArguments(of: "affiliation", in: stripped,
+                                       skippingBracketOption: true) {
+            let parts = ["institution", "city", "state", "country"].compactMap { part in
+                balancedArguments(of: part, in: block).first
+                    .map { inline(convert: $0).text
+                        .replacingOccurrences(of: "\n", with: " ")
+                        .trimmingCharacters(in: .whitespaces) }
+                    .flatMap { $0.isEmpty ? nil : $0 }
+            }
+            let line = parts.joined(separator: ", ")
+            if !line.isEmpty, !affiliations.contains(line) {
+                affiliations.append(line)
+            }
+        }
 
         // The venue: a journal's name, else the conference name from
         // \acmConference[HT '26]{37th ACM Conference on Hypertext}{…}{…},
@@ -890,7 +911,8 @@ nonisolated enum LaTeXImporter {
 
         return Result(title: title, author: author, publication: publication,
                       body: paragraphs, references: references,
-                      tables: namedTables, assets: assets, doi: doi)
+                      tables: namedTables, assets: assets, doi: doi,
+                      affiliations: affiliations)
     }
 
     // MARK: - Cross-references

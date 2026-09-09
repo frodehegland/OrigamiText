@@ -43,6 +43,9 @@ nonisolated enum OrigamiEPUBImporter {
         /// when it does — Visual-Meta first, then the package's own
         /// collection declarations.
         var publication: String? = nil
+        /// The printed affiliations from Visual-Meta — the exported
+        /// front matter rebuilds from these.
+        var affiliations: [String] = []
         /// YYYY-MM-DD from the package metadata.
         let date: String?
         /// The publication identifier (urn:uuid:…), for provenance.
@@ -431,6 +434,9 @@ nonisolated enum OrigamiEPUBImporter {
             author: metaAuthors.first ?? creator,
             authors: metaAuthors.isEmpty ? creators : metaAuthors,
             publication: metaVenue ?? origamiVenue ?? opfVenue,
+            affiliations: (document?["affiliations"] as? [String])?
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty } ?? [],
             date: document?["date"] as? String ?? date,
             identifier: document?["identifier"] as? String ?? identifier,
             origamiID: document?["origami-id"] as? String,

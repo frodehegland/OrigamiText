@@ -2539,6 +2539,7 @@ final class AppModel {
         doc.date = (record?.dateISO ?? result.date).flatMap(LiquidDate.init(isoString:))
         doc.documentType = LiquidDoc.DocumentType.book.rawValue
         doc.publication = result.publication ?? record?.publication
+        doc.affiliations = result.affiliations
         doc.concepts = result.concepts
         doc.layouts = result.layouts
         doc.mapConnections = result.mapConnections

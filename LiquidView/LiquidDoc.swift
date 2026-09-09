@@ -57,6 +57,10 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// declared one (LaTeX's \acmDOI, an EPUB's Visual-Meta) — written
     /// into the EPUB export's Visual-Meta document info.
     var doi: String? = nil
+    /// The authors' affiliations as printed — "Institution, City,
+    /// Country" lines for the exported front matter — carried through
+    /// the EPUB export's Visual-Meta.
+    var affiliations: [String] = []
     /// Defined Concepts — the document's glossary: a shared pool of
     /// nodes (id, name, definition) that spatial layouts arrange and
     /// citations attach to. Books and papers carry them; the EPUB

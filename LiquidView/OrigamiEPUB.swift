@@ -63,12 +63,16 @@ nonisolated enum OrigamiEPUBExporter {
                 case title, authors, date, identifier
                 case origamiID = "origami-id"
                 case abstract, keywords, isbn, doi, publication
+                case affiliations
             }
 
             let title: String
             let authors: [String]
             let date: String
             let identifier: String
+            /// The printed affiliations, for the front matter a
+            /// receiving reader may rebuild.
+            var affiliations: [String] = []
             /// The journal or proceedings the document is part of, when
             /// it declares one — the reader's Journals view groups by it.
             var publication: String? = nil
@@ -385,6 +389,7 @@ nonisolated enum OrigamiEPUBExporter {
                 authors: [doc.displayAuthor],
                 date: documentDate(of: doc),
                 identifier: identifier(of: doc),
+                affiliations: doc.affiliations,
                 publication: doc.publication,
                 origamiID: doc.id,
                 doi: doc.doi ?? ""),
@@ -626,10 +631,7 @@ nonisolated enum OrigamiEPUBExporter {
           <link rel="stylesheet" type="text/css" href="style.css" />
         </head>
         <body>
-        <header>
-          <h1>\(escaped(doc.title))</h1>
-          <p class="byline">\(escaped(byline(for: doc)))</p>
-        </header>
+        \(headerHTML(for: doc))
         <main>
         """)
 
@@ -772,6 +774,41 @@ nonisolated enum OrigamiEPUBExporter {
             ?? doc.created.formatted(date: .long, time: .omitted))
         if let location = doc.location { parts.append(location) }
         return parts.joined(separator: " · ")
+    }
+
+    /// The front matter as the paper prints it: the title, each author
+    /// on a line, the affiliations, then venue and date — centered by
+    /// the stylesheet, as LaTeX centers the title block. The names
+    /// split from the joined author string only when every chunk reads
+    /// as a full name — "Doe, John" stays one line.
+    private static func headerHTML(for doc: LiquidDoc) -> String {
+        var lines = ["<header>", "<h1>\(escaped(doc.title))</h1>"]
+        let display = doc.displayAuthor
+        var authors = [display]
+        if !display.contains(" on behalf of ") {
+            let chunks = display.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if chunks.count > 1, chunks.allSatisfy({ $0.contains(" ") }) {
+                authors = chunks
+            }
+        }
+        for author in authors {
+            lines.append("<p class=\"author\">\(escaped(author))</p>")
+        }
+        for affiliation in doc.affiliations {
+            lines.append("<p class=\"affiliation\">\(escaped(affiliation))</p>")
+        }
+        var parts: [String] = []
+        if let publication = doc.publication, !publication.isEmpty {
+            parts.append(publication)
+        }
+        parts.append(doc.date?.displayText
+            ?? doc.created.formatted(date: .long, time: .omitted))
+        if let location = doc.location { parts.append(location) }
+        lines.append("<p class=\"byline\">\(escaped(parts.joined(separator: " · ")))</p>")
+        lines.append("</header>")
+        return lines.joined(separator: "\n")
     }
 
     /// The note ids whose citing mark already carries the `fnref-` id —
@@ -1199,8 +1236,11 @@ nonisolated enum OrigamiEPUBExporter {
     /// the profile forbids.
     private static let styleCSS = """
     body { font-family: Georgia, serif; line-height: 1.5; margin: 6% 12%; }
-    header h1 { font-size: 1.8em; margin-bottom: 0.2em; }
-    .byline { color: #555555; font-style: italic; margin-top: 0; }
+    header { text-align: center; margin-bottom: 2.5em; }
+    header h1 { font-size: 1.7em; margin-bottom: 0.6em; }
+    .author { font-size: 1.1em; margin: 0.1em 0; }
+    .affiliation { color: #555555; margin: 0.1em 0; }
+    .byline { color: #555555; font-style: italic; margin-top: 0.5em; margin-bottom: 0; }
     h2 { font-size: 1.4em; margin-top: 1.6em; }
     h3 { font-size: 1.2em; }
     h4 { font-size: 1.05em; }
