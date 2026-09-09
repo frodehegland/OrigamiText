@@ -18,6 +18,8 @@ struct ReadHomeView: View {
     @State private var showsSettings = false
     /// The Set Aside books stay tucked behind their header until asked.
     @State private var showsSetAside = false
+    /// The file a failed Open EPUB… names, driving its alert.
+    @State private var openFailedName: String?
     /// The Find field's words — narrowing Articles by title and author,
     /// Journals by name.
     @State private var searchText = ""
@@ -173,8 +175,21 @@ struct ReadHomeView: View {
                 for url in urls {
                     if let record = await model.openEPUBFile(at: url) { last = record }
                 }
-                if let last { model.readerRecordID = last.id }
+                if let last {
+                    model.readerRecordID = last.id
+                } else if !urls.isEmpty {
+                    // A failed open must say so — a silent no-op reads
+                    // as a dead button.
+                    openFailedName = urls.first?.lastPathComponent ?? "the file"
+                }
             }
+        }
+        .alert("Could Not Open", isPresented: Binding(
+            get: { openFailedName != nil },
+            set: { if !$0 { openFailedName = nil } })) {
+            Button("OK", role: .cancel) { openFailedName = nil }
+        } message: {
+            Text("\(openFailedName ?? "The file") would not open as an EPUB. If it lives in iCloud Drive, make sure it has finished downloading, then try again.")
         }
         .fileImporter(isPresented: $choosingFolder,
                       allowedContentTypes: [.folder]) { result in
@@ -1343,6 +1358,11 @@ struct PhoneReaderView: View {
                     modeWord(word.word,
                              chosen: mode == word
                                  || (mode == .outline && outlineReturnMode == word)) {
+                        // A mode word always shows its own view: the
+                        // word-reader steps aside first, or Scroll
+                        // appears to do nothing under its overlay.
+                        rsvpPlaying = false
+                        showsRSVP = false
                         modeRaw = word.rawValue
                         if word == .focus { focusIndex = 0 }
                     }

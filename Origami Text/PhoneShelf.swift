@@ -122,7 +122,21 @@ final class PhoneModel {
     /// thread so the reader opens at once, and answered with its record.
     func openEPUBFile(at url: URL) async -> EPUBRecord? {
         let scoped = url.startAccessingSecurityScopedResource()
-        let changed = importEPUB(at: url)
+        // Files often hands over an iCloud item that is not local yet:
+        // a coordinated read forces the download and yields readable
+        // bytes; the import then works from a local copy.
+        let local = FileManager.default.temporaryDirectory
+            .appendingPathComponent(url.lastPathComponent)
+        try? FileManager.default.removeItem(at: local)
+        var coordinationError: NSError?
+        var copied = false
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [],
+                                       error: &coordinationError) { readURL in
+            copied = (try? FileManager.default.copyItem(at: readURL, to: local)) != nil
+        }
+        let source = copied ? local : url
+        let changed = importEPUB(at: source)
+        if copied { try? FileManager.default.removeItem(at: local) }
         if scoped { url.stopAccessingSecurityScopedResource() }
         let name = url.deletingPathExtension().lastPathComponent
         let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
