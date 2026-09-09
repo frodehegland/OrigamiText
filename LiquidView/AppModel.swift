@@ -1178,7 +1178,10 @@ final class AppModel {
         NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
-    // MARK: - Export Proceedings
+    #if EDITOR
+    // MARK: - Export Proceedings (the publisher's handoff — parked
+    // with Editor Mode until the next proceedings pass; the Publisher
+    // build configuration, Release + EDITOR, carries both)
 
     /// One venue's whole set, written clean: a fresh folder named for
     /// the venue (on the Desktop unless told otherwise), every paper's
@@ -1266,8 +1269,9 @@ final class AppModel {
             return false
         }
     }
+    #endif
 
-    #if DEBUG || EDITOR
+    #if EDITOR
     // MARK: - Editor Mode (the publisher's corrections; see EDITOR-MODE-PLAN.md)
 
     /// The gate: a defaults flag with no Settings UI — Editor Mode is

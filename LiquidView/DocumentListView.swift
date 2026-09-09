@@ -81,7 +81,7 @@ struct EPUBPileMenu: View {
                : "Export with DOI Name…") {
             model.exportWithDOINames(exportTargets)
         }
-        #if DEBUG || EDITOR
+        #if EDITOR
         if model.isEditorModeOn {
             Divider()
             // The publisher's door (Editor Mode, a hidden defaults
@@ -450,11 +450,14 @@ struct JournalsListView: View {
                 .buttonStyle(.plain)
                 .listRowBackground(Color.clear)
                 .contextMenu {
+                    #if EDITOR
                     // The publisher's handoff: the venue's whole set,
                     // clean, to the Desktop — DOI-named files and a
-                    // manifest.
+                    // manifest. Parked with Editor Mode until the next
+                    // proceedings pass.
                     Button("Export Proceedings") { model.exportProceedings(venue) }
                     Divider()
+                    #endif
                     // Papers write the same venue slightly differently;
                     // declaring one the same as another folds them.
                     Menu("Is the Same As") {

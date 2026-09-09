@@ -4,7 +4,7 @@ import SwiftUI
 // builds we and ACM's editors run from Xcode) and any configuration
 // that defines EDITOR. A distributed Release build contains none of
 // this — not hidden, absent.
-#if DEBUG || EDITOR
+#if EDITOR
 
 // Editor Mode — the publisher's door (see EDITOR-MODE-PLAN.md). Hidden
 // from readers behind the `editorMode` defaults flag; for the editors
