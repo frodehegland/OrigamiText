@@ -573,6 +573,7 @@ struct OrigamiReadingView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ReadingFootBar(
                 modes: availableModes,
+                title: doc.title,
                 foldLevelLabel: model.readerFindFoldTerm.map { "Finding \u{201C}\($0)\u{201D}" }
                     ?? (foldLevel > 0 ? "Folded \u{2014} level \(foldLevel)" : nil),
                 typeMenu: { AnyView(typeMenu) },
@@ -3361,6 +3362,9 @@ struct ReadingFootBar: View {
     var modes: [EPUBReaderMode] = EPUBReaderMode.allCases.filter {
         $0 != .transcript && $0 != .outline
     }
+    /// The open document's title — shown in Horizontal, where the
+    /// spread hides the title page; cropped with … when long.
+    var title: String? = nil
     /// "Folded — level 2" while the reading is folded; nil otherwise.
     var foldLevelLabel: String? = nil
     /// Whether the book folds at all (its structured document reads).
@@ -3387,6 +3391,15 @@ struct ReadingFootBar: View {
             // the folded-state caption least of all — may shadow a tap
             // on the words or the Outline group.
             HStack(spacing: 14) {
+                if readerMode == .horizontal, let title, !title.isEmpty {
+                    Text(title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: 420, alignment: .leading)
+                        .allowsHitTesting(false)
+                }
                 if let foldLevelLabel {
                     Text(foldLevelLabel)
                         .font(.caption)

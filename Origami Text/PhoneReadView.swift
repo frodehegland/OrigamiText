@@ -1447,7 +1447,7 @@ struct PhoneReaderView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .frame(maxWidth: 150, alignment: .leading)
+                    .frame(maxWidth: 420, alignment: .leading)
             }
             Spacer(minLength: 8)
             Menu {
@@ -1484,8 +1484,12 @@ struct PhoneReaderView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
         // On iPad the bar's controls hold to a book's width, centred,
-        // instead of flying to the screen's far corners.
-        .frame(maxWidth: 640)
+        // instead of flying to the screen's far corners — except in
+        // Horizontal, whose full-width spread earns a full-width bar
+        // with room for the title.
+        .frame(maxWidth: mode == .horizontal
+               || (mode == .outline && outlineReturnMode == .horizontal)
+               ? .infinity : 640)
         // The mode words sit dead centre of the bar, riding over the
         // chevron-and-menus row rather than between its ends.
         .overlay {

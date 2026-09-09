@@ -480,6 +480,7 @@ struct EPUBReaderScreen: View {
             // contents button opens the book's own TOC, with the
             // chapter stepper for plain chaptered books.
             ReadingFootBar(modes: availableModes,
+                           title: book.title,
                            outlineAvailable: model.readingDoc(forBook: book) != nil,
                            showContents: $showsContents,
                            contents: { AnyView(faithfulContents) })
