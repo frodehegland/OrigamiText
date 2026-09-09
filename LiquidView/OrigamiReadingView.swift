@@ -300,6 +300,9 @@ struct OrigamiReadingView: View {
     }
     @State private var conceptTarget: LiquidDoc.Concept?
     @State private var citationTarget: CitationTarget?
+    /// A jump link to a figure shows the figure in place, as a
+    /// citation shows its card.
+    @State private var figureTarget: FigureTarget?
     @State private var noteTarget: NoteTarget?
     @State private var showReferences = false
     /// The header pill's editor for the whole-document annotation.
@@ -481,6 +484,11 @@ struct OrigamiReadingView: View {
     private struct NoteTarget: Identifiable {
         let noteID: String
         var id: String { noteID }
+    }
+
+    private struct FigureTarget: Identifiable {
+        let paragraphID: String
+        var id: String { paragraphID }
     }
 
     private var citationStyle: OrigamiCitationStyle {
@@ -787,6 +795,9 @@ struct OrigamiReadingView: View {
                 .map { rendered($0.text) }
                 ?? AttributedString("The document carries no note \(target.noteID)."))
         }
+        .sheet(item: $figureTarget) { target in
+            FigureJumpSheet(doc: doc, paragraphID: target.paragraphID)
+        }
         .sheet(isPresented: $showReferences) {
             ReferencesSheet(doc: doc)
         }
@@ -804,6 +815,10 @@ struct OrigamiReadingView: View {
         .environment(\.openURL, OpenURLAction { url in
             if let key = OrigamiReading.citationKey(from: url) {
                 citationTarget = CitationTarget(key: key)
+                return .handled
+            }
+            if url.scheme == "origami-jump" {
+                followJump(String(url.absoluteString.dropFirst("origami-jump:".count)))
                 return .handled
             }
             if url.scheme == "origami-conceptcard" {
@@ -2926,6 +2941,10 @@ struct OrigamiReadingView: View {
             citationTarget = CitationTarget(key: key)
             return true
         }
+        if url.scheme == "origami-jump" {
+            followJump(String(url.absoluteString.dropFirst("origami-jump:".count)))
+            return true
+        }
         // A cross-document quote link opens in this library.
         if url.scheme?.lowercased() == "origamitext" {
             let link = EPUBReaderView.Coordinator.parseOrigamiURL(url.absoluteString)
@@ -2935,6 +2954,19 @@ struct OrigamiReadingView: View {
             }
         }
         return NSWorkspace.shared.open(url)
+    }
+
+    /// An in-document jump: a figure shows itself in place — the whole
+    /// point is seeing the image BEFORE reading further (Mark) — and
+    /// anything else scrolls the reading to the target.
+    private func followJump(_ paragraphID: String) {
+        let target = (doc.body ?? []).first { $0.id == paragraphID }
+        if let target, LiquidDoc.imageReference(in: target.text) != nil {
+            figureTarget = FigureTarget(paragraphID: paragraphID)
+        } else {
+            if let stretchID = target?.stretchID { openStretch.insert(stretchID) }
+            pendingScrollID = paragraphID
+        }
     }
 
     /// The rank's point size — the platform's text style plus the
@@ -4160,6 +4192,54 @@ private struct ConceptSheet: View {
         }
         .padding(20)
         .frame(minWidth: 420, maxWidth: 520)
+    }
+}
+
+/// The figure a jump link names, shown in place — the reader sees the
+/// image without leaving the words. Shared by the native styles and
+/// the faithful view's bridge. visionOS groundwork: Lift into Space
+/// posts .origamiLiftImage (docID, assetID) for the vision scene to
+/// stand the image in the room beside the reading.
+struct FigureJumpSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let doc: LiquidDoc
+    let paragraphID: String
+
+    private var asset: LiquidDoc.Asset? {
+        guard let paragraph = doc.body?.first(where: { $0.id == paragraphID }),
+              let reference = LiquidDoc.imageReference(in: paragraph.text)
+        else { return nil }
+        return doc.assets.first { $0.id == reference.id }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let asset {
+                ScrollView {
+                    OrigamiAssetView(asset: asset, doc: doc)
+                }
+            } else {
+                Text("The figure is not in this copy of the document.")
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                #if os(visionOS)
+                Button("Lift into Space") {
+                    if let asset {
+                        NotificationCenter.default.post(
+                            name: .origamiLiftImage, object: nil,
+                            userInfo: ["docID": doc.id, "assetID": asset.id])
+                    }
+                    dismiss()
+                }
+                #endif
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 400, maxWidth: 680, maxHeight: 640)
     }
 }
 

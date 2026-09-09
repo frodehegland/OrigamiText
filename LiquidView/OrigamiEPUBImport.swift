@@ -1375,6 +1375,12 @@ nonisolated enum OrigamiEPUBImporter {
                         } else {
                             out += content
                         }
+                    } else if let target = inner.attributes["data-target-id"],
+                              !target.isEmpty,
+                              (inner.attributes["class"] ?? "").contains("ot-jump") {
+                        // An in-document jump comes back as its token,
+                        // the stable id intact.
+                        out += "[\(content)](origami-jump:\(target))"
                     } else if let href = inner.attributes["href"], href.hasPrefix("http") {
                         out += "[\(content)](\(href))"
                     } else {

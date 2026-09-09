@@ -929,6 +929,27 @@ nonisolated enum OrigamiEPUBExporter {
         html = html.replacingOccurrences(
             of: "\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)",
             with: "<a href=\"$2\">$1</a>", options: .regularExpression)
+        // In-document jumps — the import's resolved \\ref links: a real
+        // anchor to the target's exported address (what any reader
+        // follows), the stable id in data-target-id for the round trip
+        // and the reading views' figure popover. A target the address
+        // map does not know degrades to its words.
+        while let range = html.range(of: #"\[([^\]\[]+)\]\(origami-jump:([A-Za-z0-9:._-]+)\)"#,
+                                     options: .regularExpression) {
+            let match = String(html[range])
+            let words = String(match.dropFirst().prefix { $0 != "]" })
+            let id = match.range(of: "origami-jump:").map {
+                String(match[$0.upperBound...].dropLast())
+            } ?? ""
+            let replacement: String
+            if let address = noteAddresses[id] {
+                replacement = "<a class=\"ot-jump\" data-target-id=\"\(attributeEscaped(id))\""
+                    + " href=\"#\(attributeEscaped(address))\">\(words)</a>"
+            } else {
+                replacement = words
+            }
+            html.replaceSubrange(range, with: replacement)
+        }
         // Note tokens become dagger anchors, their href carrying the
         // note's stable id: [inote:] the in-place stretchtext kind
         // (class ot-inline-note), [note:] the plain endnote mark. Both

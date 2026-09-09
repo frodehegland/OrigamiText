@@ -100,7 +100,17 @@ output of the last:
      as LaTeX itself prints `??` (ht26-2 cites a table its source no
      longer contains; we stay honest about it).
    This *must* precede the body scan: the scan destroys the `\label`s
-   the resolution needs.
+   the resolution needs. The resolved words are not bare: each ships as
+   a jump token the scan turns into an active in-document link — every
+   `\label` binds to the paragraph it stands beside (floats bind theirs
+   to their first paragraph; nextID is the single gate that binds
+   pending labels), and after the scan each token becomes
+   `[words](origami-jump:stable-id)`. The export writes a real anchor
+   to the target's address, data-target-id carrying the stable id for
+   the round trip; a jump to a figure shows the image in place in the
+   readers (Mark: you might need to see it BEFORE reading further); a
+   token whose label nothing carries — or one inside a table grid or
+   an image caption — keeps its printed words alone.
 6. **Scan the body** into paragraphs: known environments handled
    (abstract → heading, acks → "Acknowledgments", figures, tables,
    lists, quotes, verbatim/listings, display math made readable when

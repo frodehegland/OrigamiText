@@ -368,6 +368,15 @@ nonisolated enum OrigamiCitationStyle: String, CaseIterable, Identifiable, Senda
     }
 }
 
+extension Notification.Name {
+    /// visionOS groundwork: a reader asked to lift a figure into the
+    /// room. userInfo carries "docID" and "assetID" (both String). The
+    /// vision scene observes this to stand the image in its own volume
+    /// beside the reading window; on the Mac the figure popover is the
+    /// whole story and nothing posts it yet.
+    static let origamiLiftImage = Notification.Name("origamiLiftImage")
+}
+
 /// How endnote and footnote marks read in the body: the note's printed
 /// number raised superscript (as the paper prints it — the default),
 /// bracketed, or one quiet mark. Only the displayed text changes; the

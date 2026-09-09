@@ -179,6 +179,15 @@ struct EPUBReaderScreen: View {
         var id: String { key }
     }
 
+    /// A figure jump from the faithful page: the target paragraph's
+    /// stable id, shown as the image card.
+    @State private var figureJump: FaithfulFigureJump?
+
+    private struct FaithfulFigureJump: Identifiable {
+        let paragraphID: String
+        var id: String { paragraphID }
+    }
+
     // MARK: Find in the book (⌘F, ⌘G, ⇧⌘G)
 
     @State private var showsFind = false
@@ -360,6 +369,17 @@ struct EPUBReaderScreen: View {
                 model.addComment(note, on: selection)
             }
         }
+        .sheet(item: $figureJump) { target in
+            // The image a jump link names, without leaving the page —
+            // as a citation shows its card.
+            if let doc = model.readingDoc(forBook: book) {
+                FigureJumpSheet(doc: doc, paragraphID: target.paragraphID)
+            } else {
+                Text("The figure is still being read from the book…")
+                    .foregroundStyle(.secondary)
+                    .padding(30)
+            }
+        }
         .sheet(item: $citationCard) { citation in
             // The same card the native styles show — the book's
             // structured document supplies the reference pool, or the
@@ -463,6 +483,9 @@ struct EPUBReaderScreen: View {
             },
             onCitationAnchors: { anchors in
                 model.openDocCitationAnchors = anchors
+            },
+            onFigureJump: { targetID in
+                if !targetID.isEmpty { figureJump = FaithfulFigureJump(paragraphID: targetID) }
             },
             findText: showsFind ? findText : "",
             findStamp: findStamp,
@@ -684,6 +707,9 @@ struct EPUBReaderView: NSViewRepresentable {
     /// called after load and after each scroll. The visionOS hallway reads
     /// this to draw lines from `[N]` markers to their hallway cards.
     var onCitationAnchors: ([InlineCitationAnchor]) -> Void = { _ in }
+    /// A jump link to a figure was clicked — the target's stable id;
+    /// the reader shows the image in place, as a citation shows its card.
+    var onFigureJump: (String) -> Void = { _ in }
     /// Find in the page: each stamp steps to the next (or previous)
     /// match of the text, WebKit's own find doing the walking. An
     /// empty text clears the search.
@@ -722,6 +748,8 @@ struct EPUBReaderView: NSViewRepresentable {
         controller.addUserScript(WKUserScript(source: citationScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: citationAnchorScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        controller.addUserScript(WKUserScript(source: figureJumpScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         // The annotation script's click listener must register before the
         // bridge's, so a click on a highlight opens its popover instead of
@@ -802,6 +830,7 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onChapterStep = onChapterStep
         coordinator.onProgress = onProgress
         coordinator.onCitationAnchors = onCitationAnchors
+        coordinator.onFigureJump = onFigureJump
         coordinator.annotations = annotations
         coordinator.chapterIndex = chapterIndex
         coordinator.chapterCount = chapterCount
@@ -899,6 +928,8 @@ struct EPUBReaderView: NSViewRepresentable {
         var themeCSS: String = ""
         /// Whether the endnote marks read as [] folds (Notes style).
         var noteFolds = false
+        /// A jump link to a figure asked for its image (stable id).
+        var onFigureJump: (String) -> Void = { _ in }
         var onActivate: (EPUBElementRef) -> Void = { _ in }
         var onSelect: (String) -> Void = { _ in }
         var onCopyQuote: (String) -> Void = { _ in }
@@ -975,6 +1006,10 @@ struct EPUBReaderView: NSViewRepresentable {
             case "citation":
                 onCitation(body["key"] as? String ?? "",
                            body["ref"] as? String ?? "")
+            case "figurejump":
+                // A jump link to a figure: the image shows in place, as
+                // a citation shows its card.
+                onFigureJump(body["targetID"] as? String ?? "")
             case "citationAnchors":
                 guard let raw = body["anchors"] as? [[String: Any]] else { break }
                 let anchors: [InlineCitationAnchor] = raw.compactMap { d in
@@ -1327,6 +1362,32 @@ struct EPUBReaderView: NSViewRepresentable {
 
       window.origamiFindCitationAnchors = scan;
       scan();
+    })();
+    """
+
+    /// A jump link whose target is a figure shows the image in place —
+    /// the whole point is seeing it BEFORE reading further — instead of
+    /// scrolling away; every other in-document jump keeps the anchor's
+    /// own navigation. Registers before the bridge so the click never
+    /// doubles as a Step 0 activation.
+    private static let figureJumpScript = """
+    (function(){
+      var bridge = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.origami;
+      if (!bridge) return;
+      document.addEventListener('click', function(e){
+        var a = e.target.closest ? e.target.closest('a.ot-jump') : null;
+        if (!a) return;
+        var id = (a.getAttribute('href') || '').replace(/^#/, '');
+        var target = id ? document.getElementById(id) : null;
+        if (!target) return;
+        var figure = target.closest ? target.closest('figure') : null;
+        if (!figure && target.tagName !== 'FIGURE') return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        bridge.postMessage({event:'figurejump',
+                            targetID: a.getAttribute('data-target-id') || ''});
+      }, true);
     })();
     """
 

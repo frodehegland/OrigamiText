@@ -276,9 +276,31 @@ nonisolated enum LaTeXImporter {
         var figureNumber = 0
         var tableNumber = 0
 
+        // Every \label bound to the paragraph it stands beside — the
+        // in-document jump links' targets. Labels seen before the next
+        // paragraph (or lifted from a float's body) wait in
+        // pendingLabels; nextID, the single gate every paragraph
+        // passes, binds and clears them.
+        var labelParagraphs: [String: String] = [:]
+        var pendingLabels: [String] = []
+        func captureLabels(in source: String) {
+            var rest = source[...]
+            while let range = rest.range(of: #"\\label\{([^}]*)\}"#,
+                                         options: .regularExpression) {
+                let key = String(rest[range].dropFirst("\\label{".count).dropLast())
+                    .trimmingCharacters(in: .whitespaces)
+                if !key.isEmpty { pendingLabels.append(key) }
+                rest = rest[range.upperBound...]
+            }
+        }
         func nextID() -> String {
             ordinal += 1
-            return "p\(ordinal)"
+            let id = "p\(ordinal)"
+            for key in pendingLabels where labelParagraphs[key] == nil {
+                labelParagraphs[key] = id
+            }
+            pendingLabels.removeAll()
+            return id
         }
         func appendText(_ raw: String) {
             let converted = inline(convert: raw, noteCounter: &noteOrdinal)
@@ -297,6 +319,8 @@ nonisolated enum LaTeXImporter {
         // form stays parseable everywhere.
         func plainCaption(_ raw: String) -> String {
             inline(convert: raw).text
+                .replacingOccurrences(of: #"\[jump:[^|\]]*\|([^\]]*)\]"#, with: "$1",
+                                      options: .regularExpression)
                 .replacingOccurrences(of: #"\[i?note:[^\]]+\]"#, with: "",
                                       options: .regularExpression)
                 .replacingOccurrences(of: #"\[cite:[^\]]+\]"#, with: "",
@@ -359,6 +383,9 @@ nonisolated enum LaTeXImporter {
             }
         }
         func appendFigure(body figureBody: String, numbered: Bool = true) {
+            // The float's labels bind to its first paragraph — where a
+            // \ref jump lands, and the figure the popover shows.
+            captureLabels(in: figureBody)
             // One printed figure per counted \caption — LaTeX's counter
             // belongs to the caption, not the environment. A figure*
             // holding two captioned minipages is two figures (ht26-23's
@@ -430,6 +457,7 @@ nonisolated enum LaTeXImporter {
             }
         }
         func appendTable(body tableBody: String, numbered: Bool = true) {
+            captureLabels(in: tableBody)
             // Author's VISUALMETA block carries the same tables live
             // (values + formulas), in order — those win over re-parsing
             // the printed tabular.
@@ -625,6 +653,7 @@ nonisolated enum LaTeXImporter {
                     case "equation", "equation*", "align", "align*",
                          "displaymath", "math", "eqnarray":
                         flushPlain()
+                        captureLabels(in: String(rest[range.bodySub(rest)]))
                         // \label is LaTeX plumbing, not mathematics.
                         let math = String(rest[range.bodySub(rest)])
                             .replacingOccurrences(of: #"\\label\{[^}]*\}"#,
@@ -666,6 +695,7 @@ nonisolated enum LaTeXImporter {
                            let argument = balancedArgument(
                                 in: String(rest), afterPrefixLength: form.count - 1) {
                             flushPlain()
+                            captureLabels(in: argument.value)
                             appendHeading(argument.value, level: level)
                             rest = rest[rest.index(rest.startIndex,
                                                    offsetBy: argument.consumed)...]
@@ -680,6 +710,7 @@ nonisolated enum LaTeXImporter {
                 // Display math \[ ... \]
                 if rest.hasPrefix("\\["), let close = rest.range(of: "\\]") {
                     flushPlain()
+                    captureLabels(in: String(rest[..<close.lowerBound]))
                     let math = String(rest[rest.index(rest.startIndex, offsetBy: 2)..<close.lowerBound])
                         .replacingOccurrences(of: #"\\label\{[^}]*\}"#,
                                               with: "", options: .regularExpression)
@@ -732,6 +763,13 @@ nonisolated enum LaTeXImporter {
                             in: String(rest), afterPrefixLength: form.count - 1,
                             opener: form.hasSuffix("[") ? "[" : "{",
                             closer: form.hasSuffix("[") ? "]" : "}") {
+                            // A dropped \label binds to the paragraph
+                            // being gathered — the jump links' target.
+                            if command == "label" {
+                                let key = argument.value
+                                    .trimmingCharacters(in: .whitespaces)
+                                if !key.isEmpty { pendingLabels.append(key) }
+                            }
                             var consumed = argument.consumed
                             // Trailing braced groups on the same line
                             // belong to the same command
@@ -775,6 +813,36 @@ nonisolated enum LaTeXImporter {
             for (id, note) in notes {
                 paragraphs.append(LiquidDoc.Paragraph(id: id, heading: nil, text: note))
             }
+        }
+
+        // Every jump token becomes an active in-document link to the
+        // paragraph its \label binds — Mark: the whole point is that
+        // you might need to see the figure BEFORE reading further. A
+        // token whose label nothing carries, or one standing where a
+        // link cannot render (a table grid, an image marker), keeps
+        // its printed words alone.
+        for index in paragraphs.indices {
+            let paragraph = paragraphs[index]
+            guard paragraph.text.contains("[jump:") else { continue }
+            let linked = paragraph.tableID == nil
+                && LiquidDoc.imageReference(in: paragraph.text) == nil
+            var text = paragraph.text
+            while let range = text.range(of: #"\[jump:([^|\]]*)\|([^\]]*)\]"#,
+                                         options: .regularExpression) {
+                let inner = text[range].dropFirst("[jump:".count).dropLast()
+                let parts = inner.split(separator: "|", maxSplits: 1,
+                                        omittingEmptySubsequences: false)
+                let key = String(parts.first ?? "")
+                let words = parts.count > 1 ? String(parts[1]) : key
+                let replacement: String
+                if linked, let target = labelParagraphs[key] {
+                    replacement = "[\(words)](origami-jump:\(target))"
+                } else {
+                    replacement = words
+                }
+                text.replaceSubrange(range, with: replacement)
+            }
+            paragraphs[index] = paragraph.replacing(text: text)
         }
 
         // The bibliography: only the works the text cites make the
@@ -1125,12 +1193,18 @@ nonisolated enum LaTeXImporter {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
             let words = keys.map { key -> String in
                 guard let target = targets[key] else { return "?" }
+                let shown: String
                 switch kind {
-                case "ref", "pageref": return target.number
+                case "ref", "pageref": shown = target.number
                 case "cref":
-                    return target.phrase.prefix(1).lowercased() + target.phrase.dropFirst()
-                default: return target.phrase
+                    shown = target.phrase.prefix(1).lowercased() + target.phrase.dropFirst()
+                default: shown = target.phrase
                 }
+                // Not bare words: a jump token, resolved to an active
+                // in-document link once the scan has bound each \\label
+                // to its paragraph (Mark: "the jump link 'Figure 1'
+                // should be an active in-doc HTML jump link").
+                return "[jump:\(key)|\(shown)]"
             }.joined(separator: " and ")
             if let range = Range(match.range, in: body) {
                 edits.append((range, words))
@@ -1825,6 +1899,10 @@ nonisolated enum LaTeXImporter {
                 }
             }
         }
+        // A \ref in a cell keeps its printed words — the grid renders
+        // values, not links.
+        text = text.replacingOccurrences(of: #"\[jump:[^|\]]*\|([^\]]*)\]"#,
+                                         with: "$1", options: .regularExpression)
         return text
     }
 
