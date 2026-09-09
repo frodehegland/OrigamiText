@@ -577,21 +577,25 @@ nonisolated enum OrigamiEPUBExporter {
 
     private static func citation(number: Int, nodeID: String, address: String?,
                                  entry: BibTeXEntry, bibtex: String) -> Citation {
+        // Display fields are TeX-cleaned here, at the source: the visible
+        // reference line, the Visual-Meta pool, and the CSL-JSON all read
+        // "Luís Borges" while data-bibtex keeps the raw record verbatim.
         let authors = (entry.fields["author"] ?? "")
             .components(separatedBy: " and ")
-            .map { familyFirst($0) }
+            .map { familyFirst(BibTeXParser.displayText($0)) }
             .filter { !$0.isEmpty }
         return Citation(
             number: number,
             nodeID: nodeID,
             address: address,
-            title: entry.title ?? nodeID,
+            title: BibTeXParser.displayText(entry.title ?? nodeID),
             authors: authors,
-            year: entry.year ?? "",
-            publication: entry.fields["journal"] ?? entry.fields["booktitle"]
-                ?? entry.fields["publisher"] ?? "",
-            doi: entry.fields["doi"] ?? "",
-            url: entry.fields["url"],
+            year: BibTeXParser.displayText(entry.year ?? ""),
+            publication: BibTeXParser.displayText(
+                entry.fields["journal"] ?? entry.fields["booktitle"]
+                    ?? entry.fields["publisher"] ?? ""),
+            doi: entry.fields["doi"]?.trimmingCharacters(in: .whitespaces) ?? "",
+            url: entry.fields["url"]?.trimmingCharacters(in: .whitespaces),
             bibtex: bibtex)
     }
 
@@ -707,7 +711,7 @@ nonisolated enum OrigamiEPUBExporter {
                 let cslData = (try? JSONSerialization.data(
                     withJSONObject: citation.cslJSON, options: [.sortedKeys])) ?? Data()
                 let cslAttribute = attributeEscaped(String(decoding: cslData, as: UTF8.self))
-                lines.append("<li id=\"ref-\(citation.number)\" data-bibtex=\"\(bibtexAttribute)\" data-csl-json=\"\(cslAttribute)\">\(escaped(citation.formatted))</li>")
+                lines.append("<li id=\"ref-\(citation.number)\" data-bibtex=\"\(bibtexAttribute)\" data-csl-json=\"\(cslAttribute)\">\(referenceHTML(for: citation))</li>")
             }
             lines.append("</ol>")
             lines.append("</section>")
@@ -897,6 +901,34 @@ nonisolated enum OrigamiEPUBExporter {
                 column: parser.columnNumber,
                 detail: parser.parserError?.localizedDescription ?? "not well-formed")
         }
+    }
+
+    /// The visible reference line, ACM-shaped: authors, year, title
+    /// roman, the venue in italic, and the way out — DOI, else URL —
+    /// live as a link, never inert text.
+    private static func referenceHTML(for citation: Citation) -> String {
+        var parts: [String] = []
+        if !citation.authors.isEmpty {
+            parts.append(escaped(citation.authors.joined(separator: "; ")))
+        }
+        if !citation.year.isEmpty { parts.append("(\(escaped(citation.year))).") }
+        if !citation.title.isEmpty { parts.append("\(escaped(citation.title)).") }
+        if !citation.publication.isEmpty {
+            parts.append("<em>\(escaped(citation.publication))</em>.")
+        }
+        if !citation.doi.isEmpty {
+            // ACM's 10.5555 prefix is a Digital Library identifier, not
+            // a registered DOI — doi.org answers 404; the DL answers.
+            let link = citation.doi.hasPrefix("10.5555/")
+                ? "https://dl.acm.org/doi/\(citation.doi)"
+                : "https://doi.org/\(citation.doi)"
+            parts.append("<a href=\"\(attributeEscaped(link))\">\(escaped(link))</a>")
+        } else if let url = citation.url, !url.isEmpty {
+            parts.append("<a href=\"\(attributeEscaped(url))\">\(escaped(url))</a>")
+        } else if let address = citation.address {
+            parts.append(escaped("[\(address)]"))
+        }
+        return parts.joined(separator: " ")
     }
 
     /// Throws unless every internal anchor resolves — an `href` fragment

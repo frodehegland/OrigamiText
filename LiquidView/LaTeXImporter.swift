@@ -1126,6 +1126,20 @@ nonisolated enum LaTeXImporter {
         // Accents compose onto their letter: \'{e} and \'e alike for the
         // symbol marks; the letter marks (\c, \v) only in their braced
         // form — a bare \c would swallow \centering's opening letters.
+        // An accent over TeX's dotless \i or \j with its braces already
+        // shed upstream (Lu\'\is): drop the inner backslash so the mark
+        // composes onto a plain letter.
+        text = text.replacingOccurrences(of: #"\\(['`^"~=.])\\([ij])"#,
+                                         with: #"\\$1$2"#,
+                                         options: .regularExpression)
+
+        // TeX's dotless \i and \j exist only so an accent can sit
+        // cleanly; the plain letter composes correctly ("Luís").
+        text = text.replacingOccurrences(of: #"\\i(?![a-zA-Z])\s*"#, with: "i",
+                                         options: .regularExpression)
+        text = text.replacingOccurrences(of: #"\\j(?![a-zA-Z])\s*"#, with: "j",
+                                         options: .regularExpression)
+
         let symbolMarks: [Character: String] = [
             "'": "\u{0301}", "`": "\u{0300}", "^": "\u{0302}",
             "\"": "\u{0308}", "~": "\u{0303}", "=": "\u{0304}", ".": "\u{0307}",
@@ -1156,6 +1170,16 @@ nonisolated enum LaTeXImporter {
                            ("\\aa{}", "\u{00E5}"), ("\\AA{}", "\u{00C5}"),
                            ("\\l{}", "\u{0142}"), ("\\L{}", "\u{0141}")] {
             text = text.replacingOccurrences(of: from, with: to)
+        }
+
+        // An accent mark that never found its letter — the authors'
+        // typo, which LaTeX prints as a floating accent — degrades to
+        // the spacing accent character, never a raw backslash.
+        for (mark, spacing) in [("'", "\u{00B4}"), ("`", "\u{02CB}"),
+                                ("^", "\u{02C6}"), ("\"", "\u{00A8}"),
+                                ("~", "\u{02DC}"), ("=", "\u{00AF}"),
+                                (".", "\u{02D9}")] {
+            text = text.replacingOccurrences(of: "\\" + mark, with: spacing)
         }
 
         // Whatever command remains unwraps to its argument (twice, for

@@ -332,3 +332,116 @@ enum ReferenceVerification {
         return verifiers
     }
 }
+
+extension BibTeXParser {
+
+    /// A BibTeX field as display text: TeX accents composed onto their
+    /// letters, escapes resolved, emphasis unwrapped to its words,
+    /// braces shed, dashes and quotes typographic. The raw record stays
+    /// raw — this is only for the words a reader sees (the HT '26
+    /// conversion shipped "Lu\'\is Borges" into a reference list; the
+    /// PDF prints "Luís Borges").
+    nonisolated static func displayText(_ raw: String) -> String {
+        var text = raw
+
+        // Escaped specials first, shielded so later cleanup cannot
+        // mistake them for syntax.
+        for (from, to) in [("\\&", "&"), ("\\%", "%"), ("\\#", "#"),
+                           ("\\$", "$"), ("\\_", "_"),
+                           ("\\textbackslash{}", "\\"), ("\\ ", " "),
+                           ("\\,", " "), ("\\-", "")] {
+            text = text.replacingOccurrences(of: from, with: to)
+        }
+
+        // An accent over TeX's dotless \i or \j with its braces already
+        // shed upstream (Lu\'\is): drop the inner backslash so the mark
+        // composes onto a plain letter.
+        text = text.replacingOccurrences(of: #"\\(['`^"~=.])\\([ij])"#,
+                                         with: #"\\$1$2"#,
+                                         options: .regularExpression)
+
+        // TeX's dotless \i and \j exist only so an accent can sit
+        // cleanly; the plain letter composes correctly ("Luís").
+        text = text.replacingOccurrences(of: #"\\i(?![a-zA-Z])\s*"#, with: "i",
+                                         options: .regularExpression)
+        text = text.replacingOccurrences(of: #"\\j(?![a-zA-Z])\s*"#, with: "j",
+                                         options: .regularExpression)
+
+        // Accents compose onto their letter — \'{e}, \'e, {\'e} alike.
+        let symbolMarks: [Character: String] = [
+            "'": "\u{0301}", "`": "\u{0300}", "^": "\u{0302}",
+            "\"": "\u{0308}", "~": "\u{0303}", "=": "\u{0304}", ".": "\u{0307}",
+        ]
+        for (mark, accent) in symbolMarks {
+            let pattern = "\\\\\(NSRegularExpression.escapedPattern(for: String(mark)))\\{?([a-zA-Z])\\}?"
+            while let range = text.range(of: pattern, options: .regularExpression) {
+                let letter = text[range].last { $0.isLetter }.map(String.init) ?? ""
+                text.replaceSubrange(range,
+                                     with: (letter + accent).precomposedStringWithCanonicalMapping)
+            }
+        }
+        let letterMarks: [Character: String] = ["c": "\u{0327}", "v": "\u{030C}"]
+        for (mark, accent) in letterMarks {
+            let pattern = "\\\\\(mark)\\{([a-zA-Z])\\}"
+            while let range = text.range(of: pattern, options: .regularExpression) {
+                let letter = text[range].dropLast().last.map(String.init) ?? ""
+                text.replaceSubrange(range,
+                                     with: (letter + accent).precomposedStringWithCanonicalMapping)
+            }
+        }
+        for (from, to) in [("\\ss{}", "\u{00DF}"), ("\\ss", "\u{00DF}"),
+                           ("\\o{}", "\u{00F8}"), ("\\O{}", "\u{00D8}"),
+                           ("\\ae{}", "\u{00E6}"), ("\\AE{}", "\u{00C6}"),
+                           ("\\oe{}", "\u{0153}"), ("\\OE{}", "\u{0152}"),
+                           ("\\aa{}", "\u{00E5}"), ("\\AA{}", "\u{00C5}"),
+                           ("\\l{}", "\u{0142}"), ("\\L{}", "\u{0141}")] {
+            text = text.replacingOccurrences(of: from, with: to)
+        }
+
+        // An accent mark that never found its letter — the authors'
+        // typo, which LaTeX prints as a floating accent — degrades to
+        // the spacing accent character, never a raw backslash.
+        for (mark, spacing) in [("'", "\u{00B4}"), ("`", "\u{02CB}"),
+                                ("^", "\u{02C6}"), ("\"", "\u{00A8}"),
+                                ("~", "\u{02DC}"), ("=", "\u{00AF}"),
+                                (".", "\u{02D9}")] {
+            text = text.replacingOccurrences(of: "\\" + mark, with: spacing)
+        }
+
+        // Whatever command remains unwraps to its argument (twice, for
+        // nesting) — \emph{words} keeps its words — then bare commands drop.
+        for _ in 0..<2 {
+            while let range = text.range(of: #"\\[a-zA-Z]+\*?\{"#, options: .regularExpression) {
+                let start = text.distance(from: text.startIndex, to: range.lowerBound)
+                guard let open = text[range.lowerBound...].firstIndex(of: "{") else { break }
+                var depth = 0
+                var end: String.Index?
+                var cursor = open
+                while cursor < text.endIndex {
+                    if text[cursor] == "{" { depth += 1 }
+                    if text[cursor] == "}" { depth -= 1; if depth == 0 { end = cursor; break } }
+                    cursor = text.index(after: cursor)
+                }
+                guard let end else { break }
+                let inner = String(text[text.index(after: open)..<end])
+                text.replaceSubrange(range.lowerBound...end, with: inner)
+                _ = start
+            }
+        }
+        text = text.replacingOccurrences(of: #"\\[a-zA-Z]+\*?"#,
+                                         with: "", options: .regularExpression)
+
+        // Typography, then the braces vanish.
+        text = text.replacingOccurrences(of: "``", with: "\u{201C}")
+            .replacingOccurrences(of: "''", with: "\u{201D}")
+            .replacingOccurrences(of: "---", with: "\u{2014}")
+            .replacingOccurrences(of: "--", with: "\u{2013}")
+            .replacingOccurrences(of: "~", with: "\u{00A0}")
+            .replacingOccurrences(of: "{", with: "")
+            .replacingOccurrences(of: "}", with: "")
+
+        return text.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+}

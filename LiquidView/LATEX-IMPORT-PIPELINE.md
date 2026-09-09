@@ -127,6 +127,29 @@ output of the last:
     options are geometry, `\multicolumn`/`\multirow` spread their words,
     cell decorations (`\rotatebox` and kin) shed their geometry.
 
+### 3b. Rendering the reference list — display is its own layer
+
+The visible reference line is built from TeX-cleaned display fields —
+the raw BibTeX travels untouched in `data-bibtex`, but the words a
+reader sees pass through `BibTeXParser.displayText`: accents composed
+(both `\'{e}` and the brace-stripped `\'\i` dotless forms), escapes
+resolved, emphasis unwrapped, braces shed, quotes and dashes
+typographic. An accent mark that never finds its letter — an author's
+typo, which LaTeX prints as a floating accent — degrades to the
+spacing accent character, never a raw backslash. The line itself is
+ACM-shaped: authors, year, title roman, the venue in `<em>` italic,
+and the way out live as a real `<a>` link — DOI first, else URL.
+One routing rule: ACM's `10.5555` prefix is a Digital Library internal
+identifier, not a registered DOI (doi.org answers 404), so those link
+to `dl.acm.org/doi/…` instead. Cleaning happens where the `Citation`
+is built, so the Visual-Meta pool and CSL-JSON carry clean text too.
+
+Verified across the corpus: 2,145 references, zero TeX residue in
+visible text, 1,853 italic venues (the rest genuinely have no venue),
+1,135 live links; every sampled DOI resolves at doi.org (publisher
+sites may 403 a non-browser client — that is a bot wall, not a dead
+link; registration is checked at doi.org without following).
+
 ## 4. The identity contract at export — the footnote lesson
 
 The exported HTML carries **two identity systems** (per the EPUB spec):
