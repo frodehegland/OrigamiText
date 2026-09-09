@@ -3426,9 +3426,12 @@ struct ReadingFootBar: View {
                 model.readerFindFoldTerm = nil
             }
         } label: {
+            // A standing outline (or find-fold, or AI reading) owns the
+            // bar: no word outside its group may read as active.
+            let foldFree = model.readerFoldLevel == 0 && model.readerFindFoldTerm == nil
             let isActive = readerMode == mode
                 && model.readingAnalysisKind == nil
-                && (mode != .scroll || (model.readerFoldLevel == 0 && model.readerFindFoldTerm == nil))
+                && (!(mode == .scroll || mode == .faithful) || foldFree)
             Text(mode.displayName)
                 .font(.callout.weight(isActive ? .semibold : .regular))
                 .foregroundStyle(isActive ? AnyShapeStyle(.primary)
@@ -3444,8 +3447,15 @@ struct ReadingFootBar: View {
     @State private var defaultExpanded = false
 
     /// Expanded when explicitly opened, or automatically when Full Width
-    /// is active so the user can always see which sub-mode is selected.
-    private var defaultShowsExpanded: Bool { defaultExpanded || readerMode == .scroll }
+    /// is active so the user can always see which sub-mode is selected —
+    /// but never while an outline shape, a find-fold, or an AI reading
+    /// stands: the active group owns the bar then.
+    private var defaultShowsExpanded: Bool {
+        let foldStanding = model.readerFoldLevel > 0
+            || model.readingAnalysisKind != nil
+            || model.readerFindFoldTerm != nil
+        return defaultExpanded || (readerMode == .scroll && !foldStanding)
+    }
 
     // MARK: The AI group — the model's readings, unfolding in place
 
@@ -3576,9 +3586,13 @@ struct ReadingFootBar: View {
                         model.readerFindFoldTerm = nil
                     }
                 } label: {
+                    let quiet = model.readerFoldLevel > 0
+                        || model.readingAnalysisKind != nil
+                        || model.readerFindFoldTerm != nil
                     Text("Default")
-                        .font(.callout.weight(readerMode == .faithful ? .semibold : .regular))
-                        .foregroundStyle(readerMode == .faithful
+                        .font(.callout.weight(readerMode == .faithful && !quiet
+                                              ? .semibold : .regular))
+                        .foregroundStyle(readerMode == .faithful && !quiet
                                          ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                         .contentShape(Rectangle())
                 }
@@ -3594,9 +3608,13 @@ struct ReadingFootBar: View {
                         model.readerFindFoldTerm = nil
                     }
                 } label: {
+                    let quietWide = model.readerFoldLevel > 0
+                        || model.readingAnalysisKind != nil
+                        || model.readerFindFoldTerm != nil
                     Text("Full Width")
-                        .font(.callout.weight(readerMode == .scroll ? .semibold : .regular))
-                        .foregroundStyle(readerMode == .scroll
+                        .font(.callout.weight(readerMode == .scroll && !quietWide
+                                              ? .semibold : .regular))
+                        .foregroundStyle(readerMode == .scroll && !quietWide
                                          ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                         .contentShape(Rectangle())
                 }

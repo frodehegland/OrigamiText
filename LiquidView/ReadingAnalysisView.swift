@@ -64,18 +64,27 @@ enum ReadingAnalysisKind: String, CaseIterable, Identifiable {
             """
         case .issues:
             """
-            Read the document as a careful, honest reviewer. Report in \
+            You are helping a knowledgeable reader engage critically with \
+            a published, peer-reviewed paper. Your role is a reading aid, \
+            not a gatekeeper: the paper has passed review and is written \
+            for an expert audience, so do not fault it for assuming \
+            background knowledge, using field-standard terms without \
+            definition, or leaving unstated what such a reader can supply \
+            themselves. Flag only issues substantive enough to change how \
+            an informed reader would weigh the paper's claims. Report in \
             three parts, in this order. 1. Logic: contradictions, circular \
             arguments, conclusions that outrun the evidence, or \
             unsupported leaps — name the specific passage each issue lives \
             in. 2. Factual correctness: claims that are wrong or doubtful \
             on their face, judged only from what you know — say plainly \
             when you are unsure. 3. Structure: what the paper's shape \
-            obscures, and anything important left out or missing — an \
-            unaddressed counterargument, an undefined key term, missing \
-            limitations, or an evaluation the claims would need. Be \
-            specific and brief; where a part has no issues, say so rather \
-            than inventing any.
+            obscures, and anything genuinely missing for an expert reader \
+            — an unaddressed counterargument that materially weakens the \
+            case, a term the paper coins but never pins down, or \
+            limitations or an evaluation the central claims still need. \
+            Be specific and brief; where a part has no issues, say so \
+            rather than inventing any — with a strong published paper, \
+            sparse or empty parts are the expected result, not a failure.
             """
         }
     }
