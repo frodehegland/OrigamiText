@@ -1226,9 +1226,18 @@ struct EPUBReaderView: NSViewRepresentable {
         + 'cursor:pointer;border:1px solid currentColor;border-radius:6px;'
         + 'background:transparent;color:inherit;opacity:0.7;';
       btn.addEventListener('click', function(){
-        var hidden = (vm.style.display === 'none' || vm.style.display === '');
-        vm.style.display = hidden ? 'block' : 'none';
-        btn.textContent = hidden ? 'Hide Metadata' : 'Metadata';
+        // The export ships the section hidden (the attribute); older
+        // books shipped it bare — cover both.
+        var isHidden = vm.hasAttribute('hidden') || vm.style.display === 'none';
+        if (isHidden) {
+          vm.removeAttribute('hidden');
+          vm.style.display = 'block';
+          btn.textContent = 'Hide Metadata';
+        } else {
+          vm.setAttribute('hidden', 'hidden');
+          vm.style.display = 'none';
+          btn.textContent = 'Metadata';
+        }
       });
       vm.parentNode.insertBefore(btn, vm);
     })();

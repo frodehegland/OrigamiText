@@ -759,7 +759,7 @@ nonisolated enum OrigamiEPUBExporter {
         // split so it cannot close the section early.
         let safePayload = visualMetaText.replacingOccurrences(of: "]]>", with: "]]]]><![CDATA[>")
         lines.append("""
-        <section id="visual-meta">
+        <section id="visual-meta" hidden="hidden">
         <h2>Visual-Meta</h2>
         <p>The following is the metadata for this document, presented here for robust, long term preservation.</p>
         <p>@visual-meta-start</p>
