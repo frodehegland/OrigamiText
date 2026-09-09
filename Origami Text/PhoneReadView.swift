@@ -387,6 +387,10 @@ enum PhoneReadingTheme: String, CaseIterable, Identifiable {
 struct PhoneSettingsView: View {
     @AppStorage("origamiCitationStyle")
     private var citationStyleRaw = OrigamiCitationStyle.authorDate.rawValue
+    /// How note marks read — the Mac's rule travels: a raised number
+    /// must mean exactly one thing, never citations and notes at once.
+    @AppStorage(ReaderNoteStyle.defaultsKey)
+    private var noteStyleRaw = ReaderNoteStyle.superscript.rawValue
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -404,6 +408,31 @@ struct PhoneSettingsView: View {
                     Text("Citations")
                 } footer: {
                     Text(OrigamiCitationStyle(rawValue: citationStyleRaw)?.blurb ?? "")
+                }
+                Section {
+                    Picker("Endnotes & Footnotes", selection: $noteStyleRaw) {
+                        ForEach(ReaderNoteStyle.allCases) { style in
+                            Text(style.displayName).tag(style.rawValue)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } header: {
+                    Text("Endnotes & Footnotes")
+                } footer: {
+                    Text("How note marks read: the raised number the paper prints (the default), bracketed, a quiet ‡, or the [] fold. A raised number must mean exactly one thing, so choosing Superscript for one moves the other off it.")
+                }
+                .onChange(of: citationStyleRaw) {
+                    if citationStyleRaw == OrigamiCitationStyle.superscript.rawValue,
+                       noteStyleRaw == ReaderNoteStyle.superscript.rawValue {
+                        noteStyleRaw = ReaderNoteStyle.bracketed.rawValue
+                    }
+                }
+                .onChange(of: noteStyleRaw) {
+                    if noteStyleRaw == ReaderNoteStyle.superscript.rawValue,
+                       citationStyleRaw == OrigamiCitationStyle.superscript.rawValue {
+                        citationStyleRaw = OrigamiCitationStyle.numeric.rawValue
+                    }
                 }
             }
             .navigationTitle("Settings")
@@ -473,6 +502,9 @@ struct PhoneReaderView: View {
     /// The tapped citation's reference key, card-presented; the tapped
     /// dagger's endnote id likewise — the Mac's interactions, here.
     @State private var citationKey: String?
+    /// An in-document jump to a figure: the image card, as a citation
+    /// shows its source.
+    @State private var jumpFigureID: String?
     @State private var noteID: String?
     /// The selection a Note… is being written for, and its words.
     @State private var noteTarget: SelectionNoteTarget?
@@ -595,6 +627,7 @@ struct PhoneReaderView: View {
                 noteID = id
                 return .handled
             }
+            if followJump(url) { return .handled }
             return .systemAction
         })
         .sheet(item: Binding(
@@ -642,6 +675,14 @@ struct PhoneReaderView: View {
                     .presentationDetents([.medium])
             }
         }
+        .sheet(item: Binding(
+            get: { jumpFigureID.map { TappedFigure(id: $0) } },
+            set: { jumpFigureID = $0?.id })) { tapped in
+            if let doc = model.index.byID[docID]?.doc {
+                PhoneFigureCard(doc: doc, paragraphID: tapped.id)
+                    .presentationDetents([.medium, .large])
+            }
+        }
     }
 
     private struct TappedCitation: Identifiable {
@@ -651,6 +692,27 @@ struct PhoneReaderView: View {
 
     private struct TappedNote: Identifiable {
         let id: String
+    }
+
+    private struct TappedFigure: Identifiable {
+        let id: String
+    }
+
+    /// An in-document jump (a \ref made live at import): a figure
+    /// shows itself in place — the whole point is seeing the image
+    /// BEFORE reading further — and anything else scrolls the reading
+    /// to the target paragraph.
+    private func followJump(_ url: URL) -> Bool {
+        guard url.scheme == "origami-jump" else { return false }
+        let target = String(url.absoluteString.dropFirst("origami-jump:".count))
+        guard let doc = model.index.byID[docID]?.doc else { return true }
+        if let paragraph = (doc.body ?? []).first(where: { $0.id == target }),
+           LiquidDoc.imageReference(in: paragraph.text) != nil {
+            jumpFigureID = target
+        } else {
+            scrollJumpID = target
+        }
+        return true
     }
 
     @ViewBuilder private func reading(_ doc: LiquidDoc) -> some View {
@@ -878,6 +940,16 @@ struct PhoneReaderView: View {
                                             doc: LiquidDoc) -> some View {
         if paragraph.text == "---" {
             Divider()
+        } else if let code = OrigamiReading.fencedCode(in: paragraph.text) {
+            // A code block, as the page prints it: monospace in a quiet
+            // box, whitespace exactly as written.
+            Text(code)
+                .font(.system(size: max(11, bodySize - 3), design: .monospaced))
+                .foregroundStyle(inkStyle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                .id(paragraph.id)
         } else {
             PhoneSelectableParagraph(
                 attributed: rendered(paragraph.text, doc: doc, paragraphID: paragraph.id),
@@ -893,6 +965,7 @@ struct PhoneReaderView: View {
                         noteID = id
                         return true
                     }
+                    if followJump(url) { return true }
                     return false
                 },
                 onSelectionMenu: { selected, prefix, suffix, anchor in
@@ -1809,6 +1882,7 @@ private struct PhoneCitationCard: View {
     let doc: LiquidDoc
     let key: String
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         // An internal citation's key is the cited document's address —
@@ -1849,6 +1923,19 @@ private struct PhoneCitationCard: View {
                             Label("Web", systemImage: "safari")
                         }
                     }
+                    // A web search for the work — title, author, year —
+                    // as the Mac's card offers.
+                    Button {
+                        var terms = ["\"\(title)\""]
+                        if !author.isEmpty { terms.append(author) }
+                        if !year.isEmpty { terms.append(String(year.prefix(4))) }
+                        var components = URLComponents(string: "https://www.google.com/search")!
+                        components.queryItems = [URLQueryItem(name: "q",
+                                                              value: terms.joined(separator: " "))]
+                        if let url = components.url { openURL(url) }
+                    } label: {
+                        Label("Online", systemImage: "globe")
+                    }
                     if let bibtex = reference?.bibtex, !bibtex.isEmpty {
                         Button {
                             UIPasteboard.general.string = bibtex
@@ -1859,6 +1946,48 @@ private struct PhoneCitationCard: View {
                 }
             }
             .navigationTitle("Citation")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+/// The figure an in-document jump names, card-presented: the image
+/// with its printed caption — seen without leaving the words.
+private struct PhoneFigureCard: View {
+    let doc: LiquidDoc
+    let paragraphID: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 12) {
+                    if let paragraph = doc.body?.first(where: { $0.id == paragraphID }),
+                       let reference = LiquidDoc.imageReference(in: paragraph.text),
+                       let asset = doc.assets.first(where: { $0.id == reference.id }),
+                       let data = asset.data, let image = UIImage(data: data) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                        if let caption = asset.alt, !caption.isEmpty {
+                            Text(caption)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else {
+                        Text("The figure is not in this copy of the document.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle("Figure")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
