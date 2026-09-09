@@ -2446,7 +2446,10 @@ final class AppModel {
     /// cached per book. Nil when the package cannot be read back or is
     /// still loading (the background import posts back to the main actor,
     /// so observing views re-render automatically when it arrives).
-    private var readingDocCache: (bookID: String, doc: LiquidDoc)?
+    /// The last few books read, newest last — switching back and forth
+    /// between two open books must not re-import on every switch.
+    private var readingDocCache: [(bookID: String, doc: LiquidDoc)] = []
+    private static let readingDocCacheLimit = 3
     /// The book whose structured import is currently running in background,
     /// so a second call from a re-render doesn't spawn a second task.
     private var readingDocImporting: String?
@@ -2454,9 +2457,26 @@ final class AppModel {
     /// spin the app with rapid-fire failing tasks triggered by re-renders.
     private var readingDocFailed: Set<String> = []
 
+    private func cacheReadingDoc(_ doc: LiquidDoc, for bookID: String) {
+        readingDocCache.removeAll { $0.bookID == bookID }
+        readingDocCache.append((bookID, doc))
+        if readingDocCache.count > Self.readingDocCacheLimit {
+            readingDocCache.removeFirst(readingDocCache.count - Self.readingDocCacheLimit)
+        }
+    }
+
     func readingDoc(forBook book: OpenEPUB) -> LiquidDoc? {
-        if let cached = readingDocCache, cached.bookID == book.id {
+        if let cached = readingDocCache.last(where: { $0.bookID == book.id }) {
             return cached.doc
+        }
+        // The index build already imported this book — reuse its work
+        // when the content is still the same, and the page opens with
+        // no import at all.
+        let record = epubRecords.first { $0.folder == book.id }
+        if let entry = epubIndexMemo[book.id],
+           entry.stamp == Self.contentStamp(forUnpackedFolder: book.base, record: record) {
+            cacheReadingDoc(entry.doc, for: book.id)
+            return entry.doc
         }
         // A previously failed import is not retried; the faithful WebView
         // rendering stays up instead. The user can force a fresh attempt
@@ -2469,15 +2489,17 @@ final class AppModel {
         let base = book.base
         let bookID = book.id
         Task.detached(priority: .userInitiated) { [weak self] in
+            let stamp = Self.contentStamp(forUnpackedFolder: base, record: record)
             let result = try? OrigamiEPUBImporter.importDocument(inUnpackedFolder: base)
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.readingDocImporting = nil
                 if let result {
-                    let record = self.epubRecords.first { $0.folder == bookID }
                     let doc = Self.structuredDoc(from: result, record: record,
                                                  fallbackID: bookID, base: base)
-                    self.readingDocCache = (bookID, doc)
+                    self.cacheReadingDoc(doc, for: bookID)
+                    // The index build reuses this import too.
+                    self.epubIndexMemo[bookID] = EPUBIndexEntry(stamp: stamp, doc: doc)
                 } else {
                     self.readingDocFailed.insert(bookID)
                 }
@@ -2491,7 +2513,8 @@ final class AppModel {
     /// or re-imported so a previously bad package gets another chance.
     func clearReadingDocFailure(for bookID: String) {
         readingDocFailed.remove(bookID)
-        if readingDocCache?.bookID == bookID { readingDocCache = nil }
+        readingDocCache.removeAll { $0.bookID == bookID }
+        epubIndexMemo.removeValue(forKey: bookID)
     }
 
     /// The full structured document standing for an unpacked book — the
@@ -2525,30 +2548,90 @@ final class AppModel {
         return doc
     }
 
+    /// One built book, reusable across rebuilds: the structured doc and
+    /// the stamp of the content it was read from.
+    struct EPUBIndexEntry: Sendable {
+        let stamp: String
+        let doc: LiquidDoc
+    }
+
+    /// The last build's work, by shelf folder — a book whose content
+    /// has not changed is never re-imported. Shares the docs the index
+    /// holds (value types), so the memo costs no second copy.
+    @ObservationIgnored private var epubIndexMemo: [String: EPUBIndexEntry] = [:]
+
+    /// A cheap identity for a book's content: the content document's
+    /// modification date and size (the unpacked folder's own when a
+    /// foreign layout carries no content/paper.html), joined with the
+    /// shelf record's identity so a record change also re-imports.
+    nonisolated private static func contentStamp(forUnpackedFolder base: URL,
+                                                 record: EPUBRecord?) -> String {
+        let content = base.appendingPathComponent("content/paper.html")
+        let target = FileManager.default.fileExists(atPath: content.path) ? content : base
+        let values = try? target.resourceValues(
+            forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let date = values?.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0
+        let size = values?.fileSize ?? 0
+        return "\(date):\(size):\(record?.id ?? ""):\(record?.dateISO ?? "")"
+    }
+
     /// Rebuilds the view modules' index from the EPUB shelf: every
-    /// opened book re-imported from its unpacked package as a structured
-    /// document — the Visual-Meta metadata, headings, concepts,
-    /// citations, references, and the typed links between books. Runs in
-    /// the background; a newer rebuild supersedes an older one mid-flight.
+    /// opened book as a structured document — the Visual-Meta metadata,
+    /// headings, concepts, citations, references, and the typed links
+    /// between books. Runs in the background; only books whose content
+    /// changed since the last build re-import (a community-folder
+    /// refresh of N books once cost N full-library rebuilds); requests
+    /// coalesce over a short window and a newer rebuild stops an older
+    /// one mid-flight, not just at the finish line.
     private var epubIndexGeneration = 0
+    @ObservationIgnored private var epubIndexDebounce: Task<Void, Never>?
     func rebuildEPUBIndex() {
         epubIndexGeneration += 1
         let generation = epubIndexGeneration
+        epubIndexDebounce?.cancel()
+        epubIndexDebounce = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            self?.startEPUBIndexBuild(generation: generation)
+        }
+    }
+
+    private func startEPUBIndexBuild(generation: Int) {
+        guard generation == epubIndexGeneration else { return }
         let records = epubRecords
         let root = Self.epubsRoot
-        Task.detached(priority: .utility) {
+        let memo = epubIndexMemo
+        Task.detached(priority: .utility) { [weak self] in
             var docs: [LiquidDoc] = []
+            var built: [String: EPUBIndexEntry] = [:]
             for record in records {
+                guard let self else { return }
+                // A newer rebuild supersedes this one now, not after
+                // the remaining imports have burned their CPU.
+                let superseded = await MainActor.run {
+                    generation != self.epubIndexGeneration
+                }
+                if superseded { return }
                 let base = root.appendingPathComponent(record.folder, isDirectory: true)
+                let stamp = Self.contentStamp(forUnpackedFolder: base, record: record)
+                if let cached = memo[record.folder], cached.stamp == stamp {
+                    docs.append(cached.doc)
+                    built[record.folder] = cached
+                    continue
+                }
                 guard let result = try? OrigamiEPUBImporter.importDocument(
                     inUnpackedFolder: base) else { continue }
-                docs.append(Self.structuredDoc(from: result, record: record,
-                                               fallbackID: record.folder, base: base))
+                let doc = Self.structuredDoc(from: result, record: record,
+                                             fallbackID: record.folder, base: base)
+                docs.append(doc)
+                built[record.folder] = EPUBIndexEntry(stamp: stamp, doc: doc)
             }
-            let built = docs
-            await MainActor.run {
-                guard generation == self.epubIndexGeneration else { return }
-                self.index.setEPUBDocuments(built)
+            let finished = docs
+            let entries = built
+            await MainActor.run { [weak self] in
+                guard let self, generation == self.epubIndexGeneration else { return }
+                self.epubIndexMemo = entries
+                self.index.setEPUBDocuments(finished)
             }
         }
     }
