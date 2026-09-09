@@ -817,27 +817,42 @@ struct PhoneReaderView: View {
     // MARK: Horizontal — the sections side by side (iPad)
 
     private func horizontalBody(_ sections: [OrigamiSection], doc: LiquidDoc) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: 32) {
-                    ForEach(sections) { section in
-                        ScrollView(.vertical) {
-                            VStack(alignment: .leading, spacing: 14) {
-                                sectionView(section, doc: doc)
+        // The columns fit the page: two in portrait, three in
+        // landscape, sized to the width they share — and a swipe steps
+        // one column along, never a loose glide (view-aligned snapping,
+        // limited to a single step per gesture).
+        GeometryReader { geometry in
+            let landscape = geometry.size.width > geometry.size.height
+            let columns = CGFloat(landscape ? 3 : 2)
+            let spacing: CGFloat = 28
+            let sidePadding: CGFloat = 24
+            let columnWidth = max(
+                220,
+                (geometry.size.width - sidePadding * 2 - spacing * (columns - 1)) / columns)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: spacing) {
+                        ForEach(sections) { section in
+                            ScrollView(.vertical) {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    sectionView(section, doc: doc)
+                                }
+                                .padding(.vertical, 16)
                             }
-                            .padding(.vertical, 16)
+                            .frame(width: columnWidth, height: geometry.size.height)
+                            .id(section.id)
                         }
-                        .frame(width: 420)
-                        .id(section.id)
                     }
+                    .scrollTargetLayout()
+                    .padding(.horizontal, sidePadding)
                 }
-                .padding(.horizontal, 28)
-            }
-            // A heading tapped in the outline lands on its column.
-            .onChange(of: scrollJumpID) {
-                guard let id = scrollJumpID else { return }
-                scrollJumpID = nil
-                withAnimation { proxy.scrollTo(id, anchor: .leading) }
+                .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+                // A heading tapped in the outline lands on its column.
+                .onChange(of: scrollJumpID) {
+                    guard let id = scrollJumpID else { return }
+                    scrollJumpID = nil
+                    withAnimation { proxy.scrollTo(id, anchor: .leading) }
+                }
             }
         }
     }
