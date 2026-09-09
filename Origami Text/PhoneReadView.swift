@@ -1422,6 +1422,13 @@ struct PhoneReaderView: View {
     /// The modes on offer by word: Outline is absent — pinching in is
     /// its door now — but stays reachable, and while it is up the view
     /// it will return to reads as the chosen word.
+    /// The open document's title, for the horizontal bar.
+    private var documentTitle: String {
+        model.index.byID[docID]?.doc.title
+            ?? model.epubRecords.first { $0.id == docID }?.title
+            ?? ""
+    }
+
     private var footBar: some View {
         HStack(spacing: 6) {
             Button {
@@ -1431,6 +1438,17 @@ struct PhoneReaderView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            // Horizontal reads like a spread: the document's title
+            // rides the bar, cropped with … when the room runs out —
+            // sized to stay clear of the centred mode words.
+            if mode == .horizontal || (mode == .outline && outlineReturnMode == .horizontal) {
+                Text(documentTitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 150, alignment: .leading)
+            }
             Spacer(minLength: 8)
             Menu {
                 Picker("Appearance", selection: $themeRaw) {
