@@ -45,6 +45,25 @@ enum AnnotationKindStyle {
             as? [String: String]) ?? [:]
         colors[kind.rawValue] = hex
         UserDefaults.standard.set(colors, forKey: colorsKey)
+        bumpThemeTick()
+    }
+
+    /// The colour alone — the theme editor's Reset must not touch the
+    /// reader's own name for the kind.
+    static func resetColor(_ kind: ReaderAnnotationKind) {
+        var colors = (UserDefaults.standard.dictionary(forKey: colorsKey)
+            as? [String: String]) ?? [:]
+        colors.removeValue(forKey: kind.rawValue)
+        UserDefaults.standard.set(colors, forKey: colorsKey)
+        bumpThemeTick()
+    }
+
+    /// An ink edit repaints live wherever the themed views observe the
+    /// overrides tick, same as a theme colour edit.
+    private static func bumpThemeTick() {
+        UserDefaults.standard.set(
+            UserDefaults.standard.integer(forKey: ThemeColorOverrides.tickKey) + 1,
+            forKey: ThemeColorOverrides.tickKey)
     }
 
     static func color(of kind: ReaderAnnotationKind) -> Color {
@@ -60,6 +79,7 @@ enum AnnotationKindStyle {
             as? [String: String]) ?? [:]
         colors.removeValue(forKey: kind.rawValue)
         UserDefaults.standard.set(colors, forKey: colorsKey)
+        bumpThemeTick()
     }
 }
 

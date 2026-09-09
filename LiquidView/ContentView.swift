@@ -5,7 +5,13 @@ struct ContentView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
-    private var theme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
+    // Edited theme colours (Settings ▸ Reading ▸ Edit Theme Colors…)
+    // apply live: every override write bumps this key.
+    @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
+    private var theme: ReaderTheme {
+        _ = themeEditTick
+        return ReaderTheme(rawValue: themeRaw) ?? .highContrast
+    }
     private var themeBG: Color {
         theme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor)
     }

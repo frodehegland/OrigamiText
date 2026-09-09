@@ -477,7 +477,12 @@ struct ReadingAnalysisScreen: View {
     @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
     let kind: ReadingAnalysisKind
 
-    private var readerTheme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
+    // Edited theme colours apply live: every override write bumps this.
+    @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
+    private var readerTheme: ReaderTheme {
+        _ = themeEditTick
+        return ReaderTheme(rawValue: themeRaw) ?? .highContrast
+    }
 
     @State private var result: ReadingAnalysisResult?
     @State private var created: Date?

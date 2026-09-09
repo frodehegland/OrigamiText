@@ -202,8 +202,13 @@ struct OrigamiReadingView: View {
         TextColorRule.encodeList(TextColorRule.defaultRules)
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+    // Edited theme colours apply live: every override write bumps this.
+    @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
 
-    private var readerTheme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
+    private var readerTheme: ReaderTheme {
+        _ = themeEditTick
+        return ReaderTheme(rawValue: themeRaw) ?? .highContrast
+    }
 
     private var coloringMode: TextColoringMode {
         TextColoringMode(rawValue: coloringModeRaw) ?? .off
@@ -3271,8 +3276,13 @@ struct ReadingFootBar: View {
     @AppStorage("readingFoldTarget") private var foldTargetRaw =
         OrigamiReadingView.FoldTarget.headings.rawValue
     @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+    // Edited theme colours apply live: every override write bumps this.
+    @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
 
-    private var readerTheme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
+    private var readerTheme: ReaderTheme {
+        _ = themeEditTick
+        return ReaderTheme(rawValue: themeRaw) ?? .highContrast
+    }
 
     /// The modes the open book offers. Transcript joins only when the
     /// book explicitly is one (its paragraphs carry speakers); Outline

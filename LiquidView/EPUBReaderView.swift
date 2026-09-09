@@ -107,7 +107,13 @@ struct EPUBReaderScreen: View {
     let book: OpenEPUB
     var onClose: () -> Void
 
-    private var theme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
+    // Edited theme colours apply live: every override write bumps this,
+    // and the changed CSS reinstalls on the WebView without a reload.
+    @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
+    private var theme: ReaderTheme {
+        _ = themeEditTick
+        return ReaderTheme(rawValue: themeRaw) ?? .highContrast
+    }
 
     /// Whether this book explicitly is a transcript — only then does
     /// the foot offer the Transcript mode. (The structured document is

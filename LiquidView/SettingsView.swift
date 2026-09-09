@@ -437,6 +437,8 @@ private struct ReadingSettingsView: View {
 
     private let families = NSFontManager.shared.availableFontFamilies.sorted()
 
+    @State private var showsThemeColorEditor = false
+
     var body: some View {
         Form {
             Section {
@@ -446,8 +448,11 @@ private struct ReadingSettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                Button("Edit Theme Colors…") {
+                    showsThemeColorEditor = true
+                }
             } footer: {
-                Text("Background and text colour across the whole app — lists, columns, and reading surface. Cream and Soft Peach reduce visual stress for dyslexic readers (BDA). Yellow Tint, Green Tint, and Purple Tint simulate Irlen overlays. Black on Yellow is recommended for macular degeneration. Night and Solarized suit photophobia and low-light reading. Themes follow light and dark mode.")
+                Text("Background and text colour across the whole app — lists, columns, and reading surface. Cream and Soft Peach reduce visual stress for dyslexic readers (BDA). Yellow Tint, Green Tint, and Purple Tint simulate Irlen overlays. Black on Yellow is recommended for macular degeneration. Night and Solarized suit photophobia and low-light reading. Themes follow light and dark mode. Edit Theme Colors adjusts the selected theme's own colours — and the highlight inks — to taste.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -508,6 +513,121 @@ private struct ReadingSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showsThemeColorEditor) {
+            ThemeColorEditorView(
+                theme: ReaderTheme(rawValue: readerTheme) ?? .highContrast)
+        }
+    }
+}
+
+/// Settings ▸ Reading ▸ Edit Theme Colors… — as in Author: each of the
+/// selected theme's colour roles is a row with a Light and a Dark well
+/// and its own Reset; the highlight inks (the annotation kinds) follow;
+/// Reset All restores every built-in. Changes apply immediately — each
+/// write bumps the overrides tick the themed views observe.
+private struct ThemeColorEditorView: View {
+    let theme: ReaderTheme
+    @Environment(\.dismiss) private var dismiss
+    /// Bumps to re-read the well bindings after a Reset.
+    @State private var refresh = 0
+
+    private var palette: (lightBackground: String, lightText: String,
+                          darkBackground: String, darkText: String) {
+        theme.builtinPalette ?? ReaderTheme.highContrastEditorPalette
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("\(theme.displayName) Theme Colors")
+                .font(.headline)
+            Text("Changes apply immediately. Reset restores the built-in color.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                GridRow {
+                    Text("")
+                    Text("Light").font(.caption.bold())
+                    Text("Dark").font(.caption.bold())
+                    Text("")
+                }
+                colorRow("Page background", key: theme.backgroundOverrideKey,
+                         light: palette.lightBackground, dark: palette.darkBackground)
+                colorRow("Body text", key: theme.textOverrideKey,
+                         light: palette.lightText, dark: palette.darkText)
+            }
+            Divider()
+            Text("Highlights")
+                .font(.caption.bold())
+            ForEach(ReaderAnnotationKind.allCases) { kind in
+                HStack(spacing: 10) {
+                    ColorPicker("", selection: highlightBinding(kind),
+                                supportsOpacity: false)
+                        .labelsHidden()
+                    Text(AnnotationKindStyle.displayName(of: kind))
+                    Spacer()
+                    Button("Reset") {
+                        AnnotationKindStyle.resetColor(kind)
+                        refresh += 1
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                }
+            }
+            HStack {
+                Button("Reset All") {
+                    ThemeColorOverrides.reset(names: theme.overrideKeys)
+                    ReaderAnnotationKind.allCases.forEach {
+                        AnnotationKindStyle.resetColor($0)
+                    }
+                    refresh += 1
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.top, 4)
+        }
+        .padding(20)
+        .frame(width: 420)
+        .id(refresh)
+    }
+
+    @ViewBuilder
+    private func colorRow(_ title: String, key: String,
+                          light: String, dark: String) -> some View {
+        GridRow {
+            Text(title)
+            ColorPicker("", selection: overrideBinding(key: key, dark: false, fallback: light),
+                        supportsOpacity: false)
+                .labelsHidden()
+            ColorPicker("", selection: overrideBinding(key: key, dark: true, fallback: dark),
+                        supportsOpacity: false)
+                .labelsHidden()
+            Button("Reset") {
+                ThemeColorOverrides.reset(key)
+                refresh += 1
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+        }
+    }
+
+    private func overrideBinding(key: String, dark: Bool,
+                                 fallback: String) -> Binding<Color> {
+        Binding(
+            get: {
+                Color(hexCode: ThemeColorOverrides.hex(for: key, dark: dark) ?? fallback)
+                    ?? .gray
+            },
+            set: {
+                ThemeColorOverrides.setHex($0.annotationHex, for: key, dark: dark)
+            })
+    }
+
+    private func highlightBinding(_ kind: ReaderAnnotationKind) -> Binding<Color> {
+        Binding(
+            get: { AnnotationKindStyle.color(of: kind) },
+            set: { AnnotationKindStyle.setHex($0.annotationHex, for: kind) })
     }
 }
 
