@@ -1194,8 +1194,36 @@ final class AppModel {
             showNote("No books declare \(venue).")
             return
         }
-        let base = destination ?? FileManager.default.urls(
+        if let destination {
+            _ = performProceedingsExport(records, venue: venue,
+                                         into: destination, reveal: false)
+            return
+        }
+        let desktop = FileManager.default.urls(
             for: .desktopDirectory, in: .userDomainMask)[0]
+        if performProceedingsExport(records, venue: venue,
+                                    into: desktop, reveal: true) {
+            return
+        }
+        // macOS privacy guards the Desktop until a panel grants it —
+        // choosing the destination once carries the permission.
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = desktop
+        panel.message = "Choose where to export \(venue) \u{2014} macOS asks once; the Desktop works after this."
+        panel.prompt = "Export"
+        guard panel.runModal() == .OK, let chosen = panel.url else { return }
+        _ = performProceedingsExport(records, venue: venue,
+                                     into: chosen, reveal: true)
+    }
+
+    /// The export itself. Returns false on failure; the caller decides
+    /// whether that means a permissions retry or an alert.
+    @discardableResult
+    private func performProceedingsExport(_ records: [EPUBRecord], venue: String,
+                                          into base: URL, reveal: Bool) -> Bool {
         let safeName = venue
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: " -")
@@ -1228,13 +1256,14 @@ final class AppModel {
             try manifest.joined(separator: "\n")
                 .write(to: folder.appendingPathComponent("MANIFEST.txt"),
                        atomically: true, encoding: .utf8)
-            if destination == nil {
+            if reveal {
                 NSWorkspace.shared.activateFileViewerSelecting([folder])
             }
             showNote("Exported \(records.count) papers of \(venue).")
+            return true
         } catch {
-            NSSound.beep()
-            showNote("Export Proceedings failed: \(error.localizedDescription)")
+            try? FileManager.default.removeItem(at: folder)
+            return false
         }
     }
 
