@@ -723,21 +723,30 @@ nonisolated enum LaTeXImporter {
             cited = entries.filter { citedKeys.isEmpty || citedKeys.contains($0.key) }
         }
         if bibitemKeys.isEmpty {
-            func surname(_ entry: BibTeXEntry) -> String {
-                let first = (entry.fields["author"] ?? entry.fields["editor"] ?? "")
-                    .components(separatedBy: " and ").first ?? ""
-                let name: String
-                if first.contains(",") {
-                    name = first.split(separator: ",").first
-                        .map { $0.trimmingCharacters(in: .whitespaces) } ?? first
-                } else {
-                    name = first.split(separator: " ").last.map(String.init) ?? first
+            // ACM sorts on the author LABEL: the first author's surname,
+            // then their given name — Canyu Chen stands before Emily
+            // Chen regardless of year (ht26-47 taught this) — then the
+            // remaining authors, then year, then title.
+            func fold(_ text: String) -> String {
+                text.folding(options: [.diacriticInsensitive, .caseInsensitive],
+                             locale: nil)
+            }
+            func authorKey(_ entry: BibTeXEntry) -> String {
+                let authors = (entry.fields["author"] ?? entry.fields["editor"] ?? "")
+                    .components(separatedBy: " and ")
+                let parts = authors.map { name -> String in
+                    if name.contains(",") {
+                        // Already "Last, First".
+                        return name.trimmingCharacters(in: .whitespaces)
+                    }
+                    let words = name.split(separator: " ").map(String.init)
+                    guard let last = words.last else { return name }
+                    return last + ", " + words.dropLast().joined(separator: " ")
                 }
-                return name.folding(options: [.diacriticInsensitive, .caseInsensitive],
-                                    locale: nil)
+                return fold(parts.joined(separator: "; "))
             }
             let keyed = cited.map { entry in
-                (entry, surname(entry), entry.year ?? "", (entry.title ?? "").lowercased())
+                (entry, authorKey(entry), entry.year ?? "", fold(entry.title ?? ""))
             }
             cited = keyed.sorted {
                 if $0.1 != $1.1 { return $0.1 < $1.1 }

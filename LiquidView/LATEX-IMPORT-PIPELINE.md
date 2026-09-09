@@ -104,10 +104,15 @@ output of the last:
      a proceedings from a note inside another reference). Without one,
      the works the body cites (a source archive often carries a
      1,800-entry personal `.bib`; the paper cites 30).
-   - *Order:* the `\bibitem` sequence when present (exact print), else
-     ACM-Reference-Format emulated — first author's surname
-     (case/diacritic-folded), year, title. Validated 22/24 exact against
-     the archives that ship both.
+   - *Order:* the `\bibitem` sequence when present (exact print — and
+     genuinely necessary: the HT '26 archives' printed bibliographies
+     are not all alphabetical; several are citation-ordered or carry
+     organisation/no-year quirks, so no emulation could reproduce them),
+     else ACM-Reference-Format emulated — the author label
+     (surname, then given name: Canyu Chen stands before Emily Chen
+     regardless of year, ht26-47's lesson), then year, then title.
+     Validated by PDF spot-checks of emulator-path papers (ht26-41,
+     -47, -57: every checked position matches print).
    - *Key reconciliation:* case-insensitive first, then punctuation-blind
      — a body citing `ca-nurnberg-99` finds the bib's `ca-nurnberg+99`.
    - Each reference carries its printed number explicitly
