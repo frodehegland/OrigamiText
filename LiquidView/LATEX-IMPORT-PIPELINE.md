@@ -86,10 +86,18 @@ output of the last:
    the resolution needs.
 6. **Scan the body** into paragraphs: known environments handled
    (abstract → heading, acks → "Acknowledgments", figures, tables,
-   lists, quotes, verbatim/listings, display math kept as verbatim TeX);
+   lists, quotes, verbatim/listings, display math made readable when
+   simple — see below — else kept as verbatim TeX);
    unknown environments unwrap — markup drops, words stay.
 7. **Convert inline text**, in an order that is itself load-bearing:
-   `\(…\)` normalises to `$…$` → math shields behind placeholders →
+   TeX symbol commands become their characters (\lambda is λ in prose
+   and mathematics alike — the shared table in BibTeXParser.texSymbols)
+   → `\(…\)` normalises to `$…$` → math shields behind placeholders
+   (returning readable when nothing structural remains:
+   $\lambda_\delta$ → λ_δ, x^2 → x², \sum_{i=1}^{n} → ∑ᵢ₌₁ⁿ,
+   \mathcal{L} → ℒ; fractions and matrices stay verbatim TeX — 23
+   paragraphs corpus-wide; direct UTF-8 Greek/Cyrillic/CJK always
+   passed through untouched) →
    `\texorpdfstring` takes its plain arm → escapes → `\label` strip
    (a label inside a heading's own braces is invisible to the scanner)
    → **footnotes out** (one document-wide counter — per-paragraph
@@ -258,8 +266,8 @@ In rough order of value:
    three numbers; we count one per environment. Corpus exposure today:
    five `eq:` refs in 59 papers. Worth doing when a math-heavy corpus
    arrives, together with the MathML phase of the mathematics profile
-   (formulae currently ship as verbatim TeX — content-complete,
-   unrendered).
+   (simple formulae now ship as Unicode; only structural TeX —
+   fractions, matrices, alignments — remains verbatim).
 4. **`\bibliography{…}` scoping in archives.** We currently concatenate
    every `.bib` in the zip; the named-files rule (already used for bare
    `.tex` imports) would avoid ever parsing a stray second library with
