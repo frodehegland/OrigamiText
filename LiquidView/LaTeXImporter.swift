@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import ImageIO
+import PDFKit
 
 /// LaTeX in, an Origami document out — the reverse of Author's LaTeX
 /// export. Reads a zipped LaTeX project (Author's export: `main.tex`,
@@ -44,6 +45,10 @@ nonisolated enum LaTeXImporter {
         /// city, and country as one line, deduplicated in order — for
         /// the exported front matter, as the PDF prints them.
         var affiliations: [String] = []
+        /// The paper's own ACM Reference Format block, exactly as the
+        /// camera PDF prints it — the one place it exists whole (acmart
+        /// composes it at build; the page count lives nowhere else).
+        var acmReference: String? = nil
     }
 
     // MARK: - Entry points
@@ -130,10 +135,103 @@ nonisolated enum LaTeXImporter {
             return nestedEntries?[path]
                 ?? nestedEntries?.first { $0.key.hasSuffix("/" + name) || $0.key == name }?.value
         }
-        return importTeX(tex, bibliography: bibliography,
-                         printedBibliography: printedBibliography,
-                         resources: resources,
-                         fallbackTitle: url.deletingPathExtension().lastPathComponent)
+        var result = importTeX(tex, bibliography: bibliography,
+                               printedBibliography: printedBibliography,
+                               resources: resources,
+                               fallbackTitle: url.deletingPathExtension().lastPathComponent)
+        result.acmReference = acmReference(inArchive: zip, title: result.title,
+                                           knownDOI: result.doi)
+        return result
+    }
+
+    /// The paper's ACM Reference Format, read verbatim from the camera
+    /// PDF in the archive — the PDF that both prints the block and
+    /// speaks this paper's own title (a template PDF or style guide
+    /// does neither). Largest PDF first: the camera-ready outweighs
+    /// a stray one-page sample.
+    private static func acmReference(inArchive zip: ZipReader, title: String,
+                                     knownDOI: String?) -> String? {
+        func normalized(_ text: some StringProtocol) -> String {
+            // Compatibility-folded first: the title's ReSB² must match
+            // the page's ReSB2.
+            let folded = String(text).precomposedStringWithCompatibilityMapping
+            var view = String.UnicodeScalarView()
+            for scalar in folded.unicodeScalars
+            where CharacterSet.alphanumerics.contains(scalar) {
+                view.append(scalar)
+            }
+            return String(view).lowercased()
+        }
+        let titleKey = normalized(title.prefix(48))
+        let pdfNames = zip.entries.keys.filter {
+            $0.lowercased().hasSuffix(".pdf") && !$0.contains("__MACOSX")
+        }.sorted { (zip.entry($0)?.count ?? 0) > (zip.entry($1)?.count ?? 0) }
+        for name in pdfNames {
+            guard let data = zip.entry(name),
+                  let pdf = PDFDocument(data: data),
+                  let first = pdf.page(at: 0)?.string,
+                  titleKey.isEmpty || normalized(first).contains(titleKey)
+            else { continue }
+            // The block usually opens page 1; a roomy title page can
+            // push it to page 2 (ht26-59).
+            for pageIndex in 0..<min(3, pdf.pageCount) {
+                if let page = pdf.page(at: pageIndex)?.string,
+                   let block = acmReferenceBlock(in: page, knownDOI: knownDOI) {
+                    return block
+                }
+            }
+        }
+        return nil
+    }
+
+    /// The block between "ACM Reference Format:" and the end of its DOI
+    /// link, as one line: hyphenated wraps rejoin ("Se-⏎mantic" →
+    /// "Semantic"), other line breaks read as spaces, and the DOI —
+    /// which the narrow column may wrap mid-URL — reassembles whole.
+    static func acmReferenceBlock(in pageText: String,
+                                  knownDOI: String? = nil) -> String? {
+        guard let heading = pageText.range(of: "ACM Reference Format:") else { return nil }
+        let tail = pageText[heading.upperBound...]
+        guard let doiStart = tail.range(of: "https://doi.org/") else { return nil }
+        let words = tail[..<doiStart.lowerBound]
+            .replacingOccurrences(of: "-\n(?=[a-z])", with: "",
+                                  options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ",
+                                  options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        guard !words.isEmpty else { return nil }
+        // The preamble's own \\acmDOI is the exact tail — never guessed
+        // from wrapped page text (a page number once glued itself on).
+        if let knownDOI, !knownDOI.isEmpty {
+            return words + " https://doi.org/" + knownDOI
+        }
+        var doi = "https://doi.org/"
+        var index = doiStart.upperBound
+        let doiCharacters = CharacterSet.alphanumerics
+            .union(CharacterSet(charactersIn: "./_-()<>;:"))
+        while index < tail.endIndex {
+            let character = tail[index]
+            if character == "\n" || character == "\r" {
+                // A URL wraps mid-token — after a / or a . — and then
+                // continues with a DOI character; a DOI that already
+                // ended must not swallow the next line's page number.
+                let next = tail.index(after: index)
+                guard doi.hasSuffix("/") || doi.hasSuffix("."),
+                      next < tail.endIndex, tail[next] != " ",
+                      tail[next].unicodeScalars.allSatisfy({ doiCharacters.contains($0) })
+                else { break }
+                index = next
+                continue
+            }
+            guard character.unicodeScalars.allSatisfy({ doiCharacters.contains($0) })
+            else { break }
+            doi.append(character)
+            index = tail.index(after: index)
+        }
+        // A sentence's closing dot is punctuation, not DOI.
+        while doi.hasSuffix(".") { doi.removeLast() }
+        guard doi.count > "https://doi.org/".count else { return words }
+        return words + " " + doi
     }
 
     /// A bare .tex file, its figures and .bib resolved beside it on disk.

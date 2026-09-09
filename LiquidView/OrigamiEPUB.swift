@@ -64,6 +64,7 @@ nonisolated enum OrigamiEPUBExporter {
                 case origamiID = "origami-id"
                 case abstract, keywords, isbn, doi, publication
                 case affiliations
+                case acmReference = "acm-reference"
             }
 
             let title: String
@@ -73,6 +74,8 @@ nonisolated enum OrigamiEPUBExporter {
             /// The printed affiliations, for the front matter a
             /// receiving reader may rebuild.
             var affiliations: [String] = []
+            /// The paper's ACM Reference Format, verbatim.
+            var acmReference: String? = nil
             /// The journal or proceedings the document is part of, when
             /// it declares one — the reader's Journals view groups by it.
             var publication: String? = nil
@@ -390,6 +393,7 @@ nonisolated enum OrigamiEPUBExporter {
                 date: documentDate(of: doc),
                 identifier: identifier(of: doc),
                 affiliations: doc.affiliations,
+                acmReference: doc.acmReference,
                 publication: doc.publication,
                 origamiID: doc.id,
                 doi: doc.doi ?? ""),
@@ -807,6 +811,11 @@ nonisolated enum OrigamiEPUBExporter {
             ?? doc.created.formatted(date: .long, time: .omitted))
         if let location = doc.location { parts.append(location) }
         lines.append("<p class=\"byline\">\(escaped(parts.joined(separator: " · ")))</p>")
+        // The publisher's self-citation, exactly as page 1 prints it —
+        // the reference this paper asks to be cited by.
+        if let reference = doc.acmReference, !reference.isEmpty {
+            lines.append("<p class=\"acm-reference\"><strong>ACM Reference Format:</strong><br/>\(escaped(reference))</p>")
+        }
         lines.append("</header>")
         return lines.joined(separator: "\n")
     }
@@ -1276,6 +1285,7 @@ nonisolated enum OrigamiEPUBExporter {
     .author { font-size: 1.1em; margin: 0.1em 0; }
     .affiliation { color: #555555; margin: 0.1em 0; }
     .byline { color: #555555; font-style: italic; margin-top: 0.5em; margin-bottom: 0; }
+    .acm-reference { text-align: left; font-size: 0.85em; color: #555555; max-width: 34em; margin: 1.4em auto 0; }
     h2 { font-size: 1.4em; margin-top: 1.6em; }
     h3 { font-size: 1.2em; }
     h4 { font-size: 1.05em; }

@@ -2544,6 +2544,7 @@ final class AppModel {
         doc.documentType = LiquidDoc.DocumentType.book.rawValue
         doc.publication = result.publication ?? record?.publication
         doc.affiliations = result.affiliations
+        doc.acmReference = result.acmReference
         doc.concepts = result.concepts
         doc.layouts = result.layouts
         doc.mapConnections = result.mapConnections

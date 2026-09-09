@@ -61,6 +61,10 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// Country" lines for the exported front matter — carried through
     /// the EPUB export's Visual-Meta.
     var affiliations: [String] = []
+    /// The paper's own ACM Reference Format block, verbatim from the
+    /// camera PDF — the publisher's self-citation, carried through
+    /// Visual-Meta and printed in the exported front matter.
+    var acmReference: String? = nil
     /// Defined Concepts — the document's glossary: a shared pool of
     /// nodes (id, name, definition) that spatial layouts arrange and
     /// citations attach to. Books and papers carry them; the EPUB
