@@ -324,7 +324,7 @@ struct MarkdownReplyText: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             ForEach(blocks) { block in
                 if let dismissed {
                     dismissable(block, dismissed: dismissed)
@@ -333,6 +333,8 @@ struct MarkdownReplyText: View {
                 }
             }
         }
+        // AI readings are dense prose — air between the lines.
+        .lineSpacing(4)
     }
 
     @ViewBuilder
