@@ -368,6 +368,40 @@ nonisolated enum OrigamiCitationStyle: String, CaseIterable, Identifiable, Senda
     }
 }
 
+/// How endnote and footnote marks read in the body: the note's printed
+/// number raised superscript (as the paper prints it — the default),
+/// bracketed, or one quiet mark. Only the displayed text changes; the
+/// click reveals the note the same way in every style. Stored under
+/// "origamiNoteStyle", shared across platforms. A raised number must
+/// mean exactly one thing: the settings pane never lets citations and
+/// notes both read superscript.
+nonisolated enum ReaderNoteStyle: String, CaseIterable, Identifiable, Sendable {
+    /// ²⁴ — the note's printed number, raised and small.
+    case superscript
+    /// [24] — the same number, bracketed.
+    case bracketed
+    /// ‡ — one quiet mark for every note.
+    case dagger
+
+    static let defaultsKey = "origamiNoteStyle"
+
+    /// The reader's choice, read where rendering has no view state.
+    static var current: ReaderNoteStyle {
+        ReaderNoteStyle(rawValue:
+            UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .superscript
+    }
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .superscript: "Superscript"
+        case .bracketed: "[Number]"
+        case .dagger: "Mark (\u{2021})"
+        }
+    }
+}
+
 /// The document sliced by its headings: each section is a heading (or the
 /// untitled opening) and the paragraphs under it, in order. The outline
 /// and focus styles read this; building it is pure.
@@ -887,16 +921,32 @@ nonisolated enum OrigamiReading {
         return out as String
     }
 
-    /// The visible mark for a note id: its trailing digits in
-    /// superscript form (fn24 → ²⁴, en-3 → ³), else the ‡ fallback.
+    /// The visible mark for a note id, in the reader's chosen style
+    /// (Settings ▸ Reading): its trailing digits raised (fn24 → ²⁴,
+    /// en-3 → ³), bracketed, or the quiet ‡ — which is also the
+    /// fallback for an id that carries no number.
     static func noteMark(for id: String) -> String {
         let digits = String(id.reversed().prefix { $0.isNumber }.reversed())
         guard !digits.isEmpty else { return "\u{2021}" }
-        let superscripts: [Character: Character] = [
-            "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
-            "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
-        ]
-        return String(digits.map { superscripts[$0] ?? $0 })
+        switch ReaderNoteStyle.current {
+        case .superscript:
+            // A raised number means exactly one thing: when citations
+            // already read superscript, notes yield to brackets —
+            // whichever surface set the styles.
+            if UserDefaults.standard.string(forKey: "origamiCitationStyle")
+                == OrigamiCitationStyle.superscript.rawValue {
+                return "[\(digits)]"
+            }
+            let superscripts: [Character: Character] = [
+                "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+                "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+            ]
+            return String(digits.map { superscripts[$0] ?? $0 })
+        case .bracketed:
+            return "[\(digits)]"
+        case .dagger:
+            return "\u{2021}"
+        }
     }
 
     /// The URL scheme an inline note's fold carries: closed, the []

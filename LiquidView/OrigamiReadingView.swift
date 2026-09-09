@@ -174,6 +174,10 @@ struct OrigamiReadingView: View {
 
     @AppStorage("origamiCitationStyle") private var citationsRaw =
         OrigamiCitationStyle.authorDate.rawValue
+    /// The note marks' style — declared so a Settings change repaints
+    /// the open reading (rendering reads ReaderNoteStyle.current).
+    @AppStorage(ReaderNoteStyle.defaultsKey) private var noteStyleRaw =
+        ReaderNoteStyle.superscript.rawValue
     @AppStorage("origamiContextActions") private var actionsRaw =
         OrigamiContextAction.encodeList(OrigamiContextAction.defaultActions)
     @AppStorage("readingAIPrompts") private var aiPromptsRaw =
@@ -972,6 +976,11 @@ struct OrigamiReadingView: View {
         }
         Picker("Citations", selection: $citationsRaw) {
             ForEach(OrigamiCitationStyle.allCases) { style in
+                Text(style.displayName).tag(style.rawValue)
+            }
+        }
+        Picker("Notes", selection: $noteStyleRaw) {
+            ForEach(ReaderNoteStyle.allCases) { style in
                 Text(style.displayName).tag(style.rawValue)
             }
         }

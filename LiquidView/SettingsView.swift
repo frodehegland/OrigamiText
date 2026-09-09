@@ -429,6 +429,11 @@ private struct ReadingSettingsView: View {
     /// click is the same in every style. (As in Knowledge Space.)
     @AppStorage("origamiCitationStyle")
     private var citationStyleRaw = OrigamiCitationStyle.authorDate.rawValue
+    /// How endnote and footnote marks read — superscript numbers by
+    /// default, as the paper prints them. Never superscript together
+    /// with citations: a raised number must mean exactly one thing.
+    @AppStorage(ReaderNoteStyle.defaultsKey)
+    private var noteStyleRaw = ReaderNoteStyle.superscript.rawValue
     /// Whether citation cards may ask the scholarly services for what
     /// the package left out — see CitationLookup.swift.
     @AppStorage(CitationLookup.enabledKey) private var lookupCitedWorks = true
@@ -462,13 +467,31 @@ private struct ReadingSettingsView: View {
                         Text(style.displayName).tag(style.rawValue)
                     }
                 }
-                .pickerStyle(.inline)
+                .pickerStyle(.menu)
+                Picker("Endnotes & Footnotes", selection: $noteStyleRaw) {
+                    ForEach(ReaderNoteStyle.allCases) { style in
+                        Text(style.displayName).tag(style.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
             } header: {
-                Text("Citations")
+                Text("Citations & Notes")
             } footer: {
-                Text("How citations read in the native reading styles: (Hegland 2025) as the author wrote them, [3] as the source's reference list numbers them, or the number raised. The click is the same in every style — the source's card. The Faithful view shows the page exactly as published.")
+                Text("How citations and note marks read in the native reading styles: citations as (Hegland 2025), [3], or the number raised; notes as the raised number the paper prints (the default), bracketed, or a quiet ‡. A raised number must mean exactly one thing, so choosing Superscript for one moves the other off it. The click is the same in every style — the source's card, or the note. The Faithful view shows the page exactly as published.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            .onChange(of: citationStyleRaw) {
+                if citationStyleRaw == OrigamiCitationStyle.superscript.rawValue,
+                   noteStyleRaw == ReaderNoteStyle.superscript.rawValue {
+                    noteStyleRaw = ReaderNoteStyle.bracketed.rawValue
+                }
+            }
+            .onChange(of: noteStyleRaw) {
+                if noteStyleRaw == ReaderNoteStyle.superscript.rawValue,
+                   citationStyleRaw == OrigamiCitationStyle.superscript.rawValue {
+                    citationStyleRaw = OrigamiCitationStyle.numeric.rawValue
+                }
             }
             Section {
                 Toggle("Triple-click selects the sentence", isOn: $tripleClickSelectsSentence)
