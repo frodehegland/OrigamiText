@@ -65,6 +65,10 @@ struct EPUBPileMenu: View {
         } else {
             Button("Set Aside") { model.setAside(record) }
         }
+        #if DEBUG || EDITOR
+        // The file verbs are ours, not readers': a distributed build's
+        // menu is Pin, Set Aside, Move to Trash — nothing that shows,
+        // saves, or exports the file.
         Divider()
         // The document's own .epub, one click away — for inspection,
         // or to hand on.
@@ -81,7 +85,6 @@ struct EPUBPileMenu: View {
                : "Export with DOI Name…") {
             model.exportWithDOINames(exportTargets)
         }
-        #if DEBUG || EDITOR
         if model.isEditorModeOn {
             Divider()
             // The publisher's door (Editor Mode, a hidden defaults
