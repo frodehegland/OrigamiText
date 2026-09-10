@@ -924,6 +924,25 @@ struct EPUBMapView: View {
             .onChange(of: model.setAsideIDs) {
                 reload()
             }
+            // The flat maps' beat, here in the room: while the space is
+            // up, adopt the shared standing and layout every few
+            // seconds, so a pin or a moved card on the Mac or iPad
+            // arrives live. The onChanges above answer the standing;
+            // a newer layout asks for the reload itself (journalItems
+            // adopts the shared X/Y as it rebuilds).
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(4))
+                    model.adoptStanding()
+                    let folder = model.index.folderURL
+                    let shared = await Task.detached(priority: .utility) {
+                        EPUBMapSharedLayout.load(community: folder)
+                    }.value
+                    if shared.modified > sharedLayoutAdoptedAt {
+                        reload()
+                    }
+                }
+            }
             .onChange(of: visionThemeRaw) {
                 reload()
             }
@@ -1525,6 +1544,9 @@ struct EPUBMapView: View {
         }
         EPUBMapLayoutStore.save(placed, community: model.index.folderURL,
                                 sharedKeys: sharedKeyByID)
+        // Our own write is not news — the sync beat should not rebuild
+        // the room over it.
+        sharedLayoutAdoptedAt = Date()
     }
 
     /// Align to Room: the whole space slides (the fist-carry's own
@@ -1602,6 +1624,9 @@ struct EPUBMapView: View {
         }
         EPUBMapLayoutStore.save(placed, community: model.index.folderURL,
                                 sharedKeys: sharedKeyByID)
+        // Our own write is not news — the sync beat should not rebuild
+        // the room over it.
+        sharedLayoutAdoptedAt = Date()
     }
 
     private func handleTap(count: Int, on item: EPUBMapItem) {
