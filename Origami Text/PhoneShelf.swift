@@ -527,6 +527,18 @@ final class PhoneModel {
             guard url.pathExtension.lowercased() == "epub" else { continue }
             present.insert(EPUBSupersession.folderName(
                 forFileName: url.deletingPathExtension().lastPathComponent))
+            // A book the device already holds does not become a
+            // placeholder when the Mac republishes it — iCloud keeps
+            // serving the old cached bytes until asked. A non-current
+            // item starts downloading and the retry imports the fresh
+            // version (whose newer date re-unpacks it).
+            if let status = (try? url.resourceValues(
+                    forKeys: [.ubiquitousItemDownloadingStatusKey]))?
+                    .ubiquitousItemDownloadingStatus,
+               status != .current {
+                try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                placeholdersRemain = true
+            }
             if importEPUB(at: url) { changed = true }
         }
         retireSuperseded(presentFolders: present)
