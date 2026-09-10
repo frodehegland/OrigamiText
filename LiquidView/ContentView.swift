@@ -47,17 +47,27 @@ struct ContentView: View {
             // Focus layouts leave the split view entirely: macOS does not
             // honor detail-only column visibility, so hiding means swapping.
             if model.isFullScreen || model.isListHidden {
-                detailPane
-                    // The empty state sizes to its text; the peek must
-                    // anchor to the window, so the pane is stretched first.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(themeBG)
-                    .foregroundStyle(themeFG)
-                    .overlay(alignment: .leading) {
-                        if model.isFullScreen {
-                            peekSidebar
-                        }
+                Group {
+                    // A venue's wide face (the Map, a relation view) IS
+                    // what the reader is looking at — full screen keeps
+                    // it, rather than swapping to the reading pane.
+                    if venueIsSelected && model.venueRelationsWantWidth {
+                        listPane
+                            .scrollContentBackground(.hidden)
+                    } else {
+                        detailPane
                     }
+                }
+                // The empty state sizes to its text; the peek must
+                // anchor to the window, so the pane is stretched first.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(themeBG)
+                .foregroundStyle(themeFG)
+                .overlay(alignment: .leading) {
+                    if model.isFullScreen {
+                        peekSidebar
+                    }
+                }
             } else if LibraryViewRegistry.module(for: model.sidebarSelection)?.hidesDocumentList == true {
                 // Whole-library views keep the sidebar — the way to every
                 // other place — and give the canvas the list column's room.
