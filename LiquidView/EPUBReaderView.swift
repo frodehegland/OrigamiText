@@ -376,9 +376,10 @@ struct EPUBReaderScreen: View {
             }
         }
         .task(id: book.id) {
-            // A fresh book: start where the reader left off — unless it was
-            // opened by following a quote link, in which case land on the
-            // linked paragraph's chapter instead.
+            // A fresh book opens at its start — unless it was opened by
+            // following a quote link, in which case land on the linked
+            // paragraph's chapter instead. (The left-off position is
+            // still saved, should restoring ever return.)
             chapterIndex = 0
             requestedFragment = nil
             initialFraction = nil
@@ -387,14 +388,7 @@ struct EPUBReaderScreen: View {
                 if chapters.count > 1, let index = chapterIndex(containing: fragment) {
                     chapterIndex = index
                 }
-                return
             }
-            guard let position = model.readingPosition(forFolder: book.id) else { return }
-            if let stored = position.chapter,
-               let index = chapters.firstIndex(where: { subpath(of: $0) == stored }) {
-                chapterIndex = index
-            }
-            if position.fraction > 0.01 { initialFraction = position.fraction }
         }
     }
 

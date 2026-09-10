@@ -835,19 +835,12 @@ struct OrigamiReadingView: View {
 
     // MARK: - Arriving and remembering
 
-    /// Land where the reading asks: a fragment link's paragraph first;
-    /// otherwise, in the article flow, where the reader left off.
+    /// Land where the reading asks: a fragment link's paragraph, or the
+    /// top of the document — a book always opens at its start (the
+    /// position is still remembered, should restoring ever return).
     private func landOnArrival(_ proxy: ScrollViewProxy) {
-        if let fragment = model.pendingReaderFragment, land(fragment, with: proxy) {
-            return
-        }
-        if readerMode == .scroll, foldLevel == 0 {
-            let saved = UserDefaults.standard.double(forKey: progressKey)
-            guard saved > 0 else { return }
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(120))
-                scrollPosition.scrollTo(y: saved)
-            }
+        if let fragment = model.pendingReaderFragment {
+            land(fragment, with: proxy)
         }
     }
 
