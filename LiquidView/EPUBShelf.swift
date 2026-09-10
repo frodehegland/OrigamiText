@@ -395,6 +395,10 @@ struct ProceedingsMapView: View {
     /// The foot bar's Find: matching cards light up, the rest recede.
     @State private var findText = ""
 
+    /// The clicked card, lifted off the plane until clicked again or
+    /// another takes its place.
+    @State private var liftedID: String?
+
     /// One hallway meter drawn at this many points; the canvas center
     /// is the hallway's (0, 1.2) — mid-height of its article grid.
     private static let pointsPerMeter: CGFloat = 620
@@ -408,9 +412,13 @@ struct ProceedingsMapView: View {
                     ProceedingsMapNode(
                         item: item,
                         emphasis: emphasis(for: item),
+                        isLifted: liftedID == item.id,
                         position: binding(for: item),
                         bounds: Self.canvasSize,
                         open: { open(item.id) },
+                        select: {
+                            liftedID = liftedID == item.id ? nil : item.id
+                        },
                         togglePin: { togglePin(item.id) },
                         toggleSetAside: { toggleSetAside(item.id) },
                         moved: persist)
@@ -600,14 +608,20 @@ private struct ProceedingsMapNode: View {
 
     let item: ProceedingsMapView.Item
     let emphasis: Emphasis
+    let isLifted: Bool
     @Binding var position: CGPoint
     let bounds: CGSize
     let open: () -> Void
+    let select: () -> Void
     let togglePin: () -> Void
     let toggleSetAside: () -> Void
     let moved: () -> Void
 
     @State private var dragStart: CGPoint?
+
+    /// Lifted: clicked, or in hand — a breath of shadow and a nudge up
+    /// and left, as though raised off the plane.
+    private var lifted: Bool { isLifted || dragStart != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -640,6 +654,11 @@ private struct ProceedingsMapNode: View {
             }
         }
         .opacity(emphasis == .dimmed ? 0.25 : item.isSetAside ? 0.45 : 1)
+        .shadow(color: .black.opacity(lifted ? 0.3 : 0),
+                radius: lifted ? 5 : 0,
+                x: lifted ? 3 : 0, y: lifted ? 4 : 0)
+        .offset(x: lifted ? -2 : 0, y: lifted ? -2 : 0)
+        .animation(.easeOut(duration: 0.15), value: lifted)
         .position(position)
         .gesture(
             DragGesture(minimumDistance: 2)
@@ -657,6 +676,7 @@ private struct ProceedingsMapNode: View {
                     moved()
                 })
         .onTapGesture(count: 2, perform: open)
+        .onTapGesture(perform: select)
         .contextMenu {
             Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
             Button(item.isSetAside ? "Bring Back" : "Set Aside",
