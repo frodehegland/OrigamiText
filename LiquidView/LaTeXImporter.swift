@@ -952,6 +952,60 @@ nonisolated enum LaTeXImporter {
 
         scan(body)
 
+        // CCS Concepts and Keywords, as the page prints them under the
+        // abstract — full width, no heading, the label in bold: each
+        // \\ccsdesc a bullet "• Root → Leaf", "; "-joined with a
+        // closing period; the \\keywords comma list as written.
+        var frontMatterExtras: [LiquidDoc.Paragraph] = []
+        var ccsSeen = Set<String>()
+        let ccsEntries = balancedArguments(of: "ccsdesc", in: stripped,
+                                           skippingBracketOption: true)
+            .compactMap { raw -> String? in
+                let parts = raw.components(separatedBy: "~")
+                let root = inline(convert: parts.first ?? "").text
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !root.isEmpty else { return nil }
+                let leaf = parts.count > 1
+                    ? inline(convert: parts[1]).text
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
+                let entry = leaf.isEmpty
+                    ? "\u{2022} \(root)"
+                    : "\u{2022} \(root) \u{2192} \(leaf)"
+                return ccsSeen.insert(entry).inserted ? entry : nil
+            }
+        if !ccsEntries.isEmpty {
+            frontMatterExtras.append(LiquidDoc.Paragraph(
+                id: nextID(), heading: nil,
+                text: "**CCS Concepts:** " + ccsEntries.joined(separator: "; ") + "."))
+        }
+        if let keywordsArg = firstBalancedArgument(of: "keywords", in: stripped) {
+            let words = inline(convert: keywordsArg.value).text
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !words.isEmpty {
+                frontMatterExtras.append(LiquidDoc.Paragraph(
+                    id: nextID(), heading: nil,
+                    text: "**Keywords:** " + words))
+            }
+        }
+        if !frontMatterExtras.isEmpty {
+            // After the Abstract's own words; before the first heading
+            // when a paper carries no abstract.
+            let insertAt: Int
+            if let abstractIndex = paragraphs.firstIndex(where: {
+                $0.heading != nil && $0.text == "Abstract" }) {
+                var index = abstractIndex + 1
+                while index < paragraphs.count, paragraphs[index].heading == nil {
+                    index += 1
+                }
+                insertAt = index
+            } else {
+                insertAt = paragraphs.firstIndex { $0.heading != nil } ?? 0
+            }
+            paragraphs.insert(contentsOf: frontMatterExtras, at: insertAt)
+        }
+
         // Footnotes read as endnotes: daggers in the flow, the notes
         // under their own heading, each on its token's id.
         if !notes.isEmpty {
