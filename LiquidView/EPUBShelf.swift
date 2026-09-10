@@ -347,7 +347,7 @@ nonisolated enum EPUBMapSharedLayout {
 
 /// The proceedings as a flat map — Author's Map for one venue: every
 /// article a card on the plane, dragged where the reader wants it,
-/// tapped to open. Positions persist through EPUBMapSharedLayout in
+/// opened with a double click. Positions persist through EPUBMapSharedLayout in
 /// the hallway's meters; Pin and Set Aside ride the standing file as
 /// they do everywhere. Closure-driven so the Mac's and the phone's
 /// models plug in without this shared file knowing either.
@@ -477,8 +477,8 @@ struct ProceedingsMapView: View {
     }
 }
 
-/// One article on the map: a card that drags, taps open, and carries
-/// the pile choices in its context menu.
+/// One article on the map: a card that drags, opens on a double
+/// click or tap, and carries the pile choices in its context menu.
 private struct ProceedingsMapNode: View {
     let item: ProceedingsMapView.Item
     @Binding var position: CGPoint
@@ -533,7 +533,7 @@ private struct ProceedingsMapNode: View {
                     dragStart = nil
                     moved()
                 })
-        .onTapGesture(perform: open)
+        .onTapGesture(count: 2, perform: open)
         .contextMenu {
             Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
             Button(item.isSetAside ? "Bring Back" : "Set Aside",

@@ -543,7 +543,12 @@ struct JournalBooksListView: View {
                       isSetAside: true)
             },
             folder: model.index.folderURL,
-            open: { model.openEPUB(address: $0, fragment: nil) },
+            open: { id in
+                // The Map holds the whole window; opening returns to the
+                // Articles face so the reading pane is there to show it.
+                model.venueViewMode = .documents
+                model.openEPUB(address: id, fragment: nil)
+            },
             togglePin: { model.toggleTopOfPile(id: $0) },
             toggleSetAside: { id in
                 guard let record = (shown + aside).first(where: { $0.id == id })
