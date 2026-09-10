@@ -658,8 +658,10 @@ private struct TwoFingerScrollConfigurator: UIViewRepresentable {
 }
 #endif
 
-/// One article on the map: a card that drags, opens on a double
-/// click or tap, and carries the pile choices in its context menu.
+/// One article on the map: a card that drags and opens on a double
+/// click or tap. The pile choices ride the Mac's context menu; on
+/// touch they appear on the lifted card, since a long press there
+/// must stay free for hold-and-drag.
 private struct ProceedingsMapNode: View {
     enum Emphasis { case normal, matched, dimmed }
 
@@ -687,6 +689,22 @@ private struct ProceedingsMapNode: View {
     private var lifted: Bool { isLifted || dragStart != nil }
 
     var body: some View {
+        // The context menu is the Mac's alone: on the iPad its long
+        // press swallows press-and-hold-then-drag (shrinking the card
+        // into the menu preview), so there the pile choices ride the
+        // lifted card instead — tap to lift, the buttons appear.
+        #if os(macOS)
+        card.contextMenu {
+            Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
+            Button(item.isSetAside ? "Bring Back" : "Set Aside",
+                   action: toggleSetAside)
+        }
+        #else
+        card
+        #endif
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(item.title)
                 .font(.callout.weight(.semibold))
@@ -695,6 +713,17 @@ private struct ProceedingsMapNode: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+            #if !os(macOS)
+            if isLifted {
+                HStack(spacing: 6) {
+                    liftAction(item.isPinned ? "Unpin" : "Pin",
+                               action: togglePin)
+                    liftAction(item.isSetAside ? "Bring Back" : "Set Aside",
+                               action: toggleSetAside)
+                }
+                .padding(.top, 5)
+            }
+            #endif
         }
         .padding(10)
         .frame(width: 168, alignment: .leading)
@@ -757,10 +786,22 @@ private struct ProceedingsMapNode: View {
         .gesture(
             TapGesture(count: 2).onEnded { open() }
                 .exclusively(before: TapGesture().onEnded { select() }))
-        .contextMenu {
-            Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
-            Button(item.isSetAside ? "Bring Back" : "Set Aside",
-                   action: toggleSetAside)
-        }
     }
+
+    #if !os(macOS)
+    /// A pile choice on the lifted card — small, quiet, gone when the
+    /// card sets down.
+    private func liftAction(_ title: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption2)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.3)))
+        }
+        .buttonStyle(.plain)
+    }
+    #endif
 }
