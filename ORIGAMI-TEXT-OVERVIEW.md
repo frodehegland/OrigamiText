@@ -38,6 +38,7 @@
 ## The library
 
 - Point the app at a **community folder** and it indexes everything: lookup, backlinks, revision chains, retractions, a creation timeline — rescanning automatically as files arrive.
+- **Hypermedia spaces are shelves too.** Follow any space on the [Hypermedia protocol](https://hyper.media) by typing its domain in Settings ▸ Hypermedia; it appears in the sidebar with every document it holds, each opening in the reader with its `hm://` address kept as provenance — so a citation copied out of it points back at the space, at the paragraph. Any `hm://` link, pasted or clicked, opens the same way, and the space's comments on a document read beneath it, threaded — and you can add your own, under an account you create in Settings.
 - **Revisions resolve forward**: cite a document and readers are always taken to its latest version, while history stays intact and inspectable.
 - **Retraction is visible, never destructive**: retracted documents are dimmed and flagged, not deleted.
 - **Insight views over the whole library**: every author and who cites whom; the *hot paragraphs* the community keeps pointing at; a health dashboard of unresolved links, duplicates, and unreadable files.
