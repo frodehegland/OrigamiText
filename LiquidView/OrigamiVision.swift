@@ -412,6 +412,9 @@ final class VisionModel {
         guard let folder = index.folderURL else { return }
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        // The map's shared X/Y ride the same folder — pull a newer copy
+        // into the mirror the layout store reads at Map open.
+        EPUBMapSharedLayout.refreshMirror(community: folder)
         guard let state = EPUBStanding.read(from: folder),
               state.modified > standingWrittenAt else { return }
         standingWrittenAt = state.modified

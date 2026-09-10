@@ -239,6 +239,15 @@ final class PhoneModel {
         })
     }
 
+    /// The venue's Set Aside books — the Map shows them faded rather
+    /// than hiding them as the list does.
+    func setAsideRecords(inVenue venue: String) -> [EPUBRecord] {
+        epubRecords.filter {
+            $0.venue?.caseInsensitiveCompare(venue) == .orderedSame
+                && isSetAside($0)
+        }
+    }
+
     var alphabetical: [EPUBRecord] {
         pinnedFirst(epubRecords.filter { !isSetAside($0) }.sorted {
             $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending

@@ -343,17 +343,64 @@ struct PhoneJournalView: View {
     /// this list, not the shelf's top (the root destination would pop
     /// the journal on its way in).
     @State private var readerID: String?
+    /// The venue's two faces: its articles listed, or laid out on the
+    /// flat map (the Vision Pro's hallway plane, shared X and Y).
+    @State private var showsMap = false
 
     var body: some View {
-        List(model.records(inVenue: venue)) { record in
-            PhoneShelfRow(record: record, opensLocally: $readerID)
+        VStack(spacing: 0) {
+            Picker("View", selection: $showsMap) {
+                Text("Articles").tag(false)
+                Text("Map").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            if showsMap {
+                ProceedingsMapView(
+                    items: mapItems,
+                    folder: model.folderURL,
+                    open: { readerID = $0 },
+                    togglePin: { id in
+                        if let record = record(id) { model.toggleTopOfPile(record) }
+                    },
+                    toggleSetAside: { id in
+                        guard let record = record(id) else { return }
+                        if model.isSetAside(record) {
+                            model.bringBack(record)
+                        } else {
+                            model.setAside(record)
+                        }
+                    })
+            } else {
+                List(model.records(inVenue: venue)) { record in
+                    PhoneShelfRow(record: record, opensLocally: $readerID)
+                }
+                .listStyle(.plain)
+            }
         }
-        .listStyle(.plain)
         .navigationTitle(venue)
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(item: $readerID) { recordID in
             PhoneReaderView(docID: recordID)
         }
+    }
+
+    /// The map shows the Set Aside books too, faded, rather than hiding
+    /// them behind the list's pill.
+    private var mapItems: [ProceedingsMapView.Item] {
+        model.records(inVenue: venue).map {
+            .init(id: $0.id, title: $0.title, author: $0.author,
+                  isPinned: model.isTopOfPile($0))
+        } + model.setAsideRecords(inVenue: venue).map {
+            .init(id: $0.id, title: $0.title, author: $0.author,
+                  isSetAside: true)
+        }
+    }
+
+    private func record(_ id: String) -> EPUBRecord? {
+        (model.records(inVenue: venue) + model.setAsideRecords(inVenue: venue))
+            .first { $0.id == id }
     }
 }
 

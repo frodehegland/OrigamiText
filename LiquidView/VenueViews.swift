@@ -175,11 +175,15 @@ nonisolated enum VenueRelations {
 // MARK: - The venue view switcher
 
 enum VenueViewMode: String, CaseIterable, Identifiable {
-    case documents = "Documents"
+    case documents = "Articles"
+    case map = "Map"
     case sharedGround = "Shared Ground"
     case roots = "Roots"
     case threads = "Threads"
     var id: String { rawValue }
+    /// The picker's faces. The relation views (Shared Ground, Roots,
+    /// Threads) are parked for now — the code stands, the picker slims.
+    static var allCases: [VenueViewMode] { [.documents, .map] }
 }
 
 /// Loads the venue's analysis once and serves whichever relation view
@@ -194,7 +198,7 @@ struct VenueRelationsHost: View {
         Group {
             if let analysis {
                 switch mode {
-                case .documents:
+                case .documents, .map:
                     EmptyView()
                 case .sharedGround:
                     VenueSharedGroundView(venue: venue, analysis: analysis)

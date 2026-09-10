@@ -519,6 +519,8 @@ struct JournalBooksListView: View {
             .padding(.vertical, 6)
             if viewMode == .documents {
                 documentsList
+            } else if viewMode == .map {
+                venueMap
             } else {
                 VenueRelationsHost(venue: name, mode: viewMode)
             }
@@ -530,6 +532,34 @@ struct JournalBooksListView: View {
         }
         .onAppear { model.venueRelationsWantWidth = viewMode != .documents }
         .onDisappear { model.venueRelationsWantWidth = false }
+    }
+
+    /// The venue as a flat map — the hallway's plane, here on the desk.
+    /// Set Aside books stand on it too, faded, so they can be brought
+    /// back where they were left.
+    private var venueMap: some View {
+        let shown = model.pinnedFirst(model.epubRecords(inPublication: name))
+        let aside = model.epubSetAsideRecords(inPublication: name)
+        return ProceedingsMapView(
+            items: shown.map {
+                .init(id: $0.id, title: $0.title, author: $0.author,
+                      isPinned: model.isTopOfPile($0))
+            } + aside.map {
+                .init(id: $0.id, title: $0.title, author: $0.author,
+                      isSetAside: true)
+            },
+            folder: model.index.folderURL,
+            open: { model.openEPUB(address: $0, fragment: nil) },
+            togglePin: { model.toggleTopOfPile(id: $0) },
+            toggleSetAside: { id in
+                guard let record = (shown + aside).first(where: { $0.id == id })
+                else { return }
+                if model.isSetAside(record) {
+                    model.bringBack(record)
+                } else {
+                    model.setAside(record)
+                }
+            })
     }
 
     private var documentsList: some View {

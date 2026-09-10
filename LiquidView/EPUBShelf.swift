@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 
 /// A remembered EPUB in the reader's library: enough to list it (title,
 /// author, date) and to reopen its rendered page (the unpacked `folder`
@@ -251,5 +252,272 @@ nonisolated enum EPUBSupersession {
             retirements.append((record, successor))
         }
         return retirements
+    }
+}
+
+// MARK: - The proceedings map
+
+/// The map's node positions, shared across every device the community
+/// folder reaches: lay the venue out on the iPad and the same X and Y
+/// stand on the Mac and in the Vision Pro's hallway (which keeps its
+/// own Z). Units are the hallway's meters — x right of its center,
+/// y up from the floor; the flat map scales them to points. One file,
+/// last writer wins, exactly as the standing file resolves. A mirror
+/// in Application Support serves when no community folder is chosen,
+/// and lets the Vision Pro's map (which loads before any model is in
+/// reach) read state refreshed during the shelf scan.
+nonisolated enum EPUBMapSharedLayout {
+
+    struct Point: Codable {
+        var x: Double
+        var y: Double
+    }
+
+    struct State: Codable {
+        var positions: [String: Point]
+        var modified: Date
+    }
+
+    private static let fileName = "origami-map-layout.json"
+
+    private static var mirrorURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)
+            .first ?? FileManager.default.temporaryDirectory
+        try? FileManager.default.createDirectory(
+            at: base, withIntermediateDirectories: true)
+        return base.appendingPathComponent(fileName)
+    }
+
+    /// The freshest state visible from here: the community file or the
+    /// local mirror, whichever was written last.
+    static func load(community folder: URL?) -> State {
+        let mirror = read(at: mirrorURL)
+        let shared = folder.flatMap { url in
+            withScope(url) { read(at: $0.appendingPathComponent(fileName)) }
+        }
+        switch (mirror, shared) {
+        case let (m?, s?): return s.modified > m.modified ? s : m
+        case let (m?, nil): return m
+        case let (nil, s?): return s
+        default: return State(positions: [:], modified: .distantPast)
+        }
+    }
+
+    /// Merges the given positions into the freshest state and writes it
+    /// to both homes. Only the given ids move; every other entry — the
+    /// other venues', the hallway's extras — stands.
+    static func save(updating updates: [String: Point], community folder: URL?) {
+        var state = load(community: folder)
+        for (id, point) in updates { state.positions[id] = point }
+        state.modified = .now
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(state) else { return }
+        try? data.write(to: mirrorURL, options: .atomic)
+        if let folder {
+            withScope(folder) {
+                try? data.write(to: $0.appendingPathComponent(fileName),
+                                options: .atomic)
+            }
+        }
+    }
+
+    /// Pulls a newer community file into the local mirror — called
+    /// beside the standing adoption on each shelf scan.
+    static func refreshMirror(community folder: URL) {
+        guard let shared = withScope(folder, {
+                  read(at: $0.appendingPathComponent(fileName)) }),
+              shared.modified > (read(at: mirrorURL)?.modified ?? .distantPast),
+              let data = try? JSONEncoder().encode(shared) else { return }
+        try? data.write(to: mirrorURL, options: .atomic)
+    }
+
+    private static func read(at url: URL) -> State? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(State.self, from: data)
+    }
+
+    private static func withScope<T>(_ url: URL, _ body: (URL) -> T) -> T {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return body(url)
+    }
+}
+
+/// The proceedings as a flat map — Author's Map for one venue: every
+/// article a card on the plane, dragged where the reader wants it,
+/// tapped to open. Positions persist through EPUBMapSharedLayout in
+/// the hallway's meters; Pin and Set Aside ride the standing file as
+/// they do everywhere. Closure-driven so the Mac's and the phone's
+/// models plug in without this shared file knowing either.
+struct ProceedingsMapView: View {
+
+    struct Item: Identifiable {
+        let id: String
+        let title: String
+        let author: String
+        var isPinned = false
+        var isSetAside = false
+    }
+
+    let items: [Item]
+    /// The community folder carrying the shared layout; nil reads and
+    /// writes the local mirror alone.
+    let folder: URL?
+    let open: (String) -> Void
+    let togglePin: (String) -> Void
+    let toggleSetAside: (String) -> Void
+
+    /// Canvas positions in points, by book id — the shared meters
+    /// drawn onto the plane.
+    @State private var positions: [String: CGPoint] = [:]
+
+    /// One hallway meter drawn at this many points; the canvas center
+    /// is the hallway's (0, 1.2) — mid-height of its article grid.
+    private static let pointsPerMeter: CGFloat = 620
+    private static let canvasSize = CGSize(width: 2600, height: 1800)
+
+    var body: some View {
+        ScrollView([.horizontal, .vertical]) {
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .frame(width: Self.canvasSize.width,
+                           height: Self.canvasSize.height)
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    ProceedingsMapNode(
+                        item: item,
+                        position: binding(for: item, seedIndex: index),
+                        bounds: Self.canvasSize,
+                        open: { open(item.id) },
+                        togglePin: { togglePin(item.id) },
+                        toggleSetAside: { toggleSetAside(item.id) },
+                        moved: persist)
+                }
+            }
+        }
+        .defaultScrollAnchor(.center)
+        .background(Color.secondary.opacity(0.06))
+        .onAppear(perform: reload)
+    }
+
+    private func binding(for item: Item, seedIndex: Int) -> Binding<CGPoint> {
+        Binding(
+            get: { positions[item.id] ?? Self.seed(index: seedIndex) },
+            set: { positions[item.id] = $0 })
+    }
+
+    private static var canvasCenter: CGPoint {
+        CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
+    }
+
+    /// Meters to canvas points: x right stays right, y up flips down.
+    private static func canvasPoint(_ point: EPUBMapSharedLayout.Point) -> CGPoint {
+        CGPoint(x: canvasCenter.x + point.x * pointsPerMeter,
+                y: canvasCenter.y + (1.2 - point.y) * pointsPerMeter)
+    }
+
+    private static func sharedPoint(_ point: CGPoint) -> EPUBMapSharedLayout.Point {
+        EPUBMapSharedLayout.Point(
+            x: Double((point.x - canvasCenter.x) / pointsPerMeter),
+            y: Double(1.2 - (point.y - canvasCenter.y) / pointsPerMeter))
+    }
+
+    /// The hallway's own seeding — six columns down from the grid's
+    /// top — so an untouched venue looks the same here and there.
+    private static func seed(index: Int) -> CGPoint {
+        let columns = 6
+        let column = index % columns
+        let row = index / columns
+        return canvasPoint(EPUBMapSharedLayout.Point(
+            x: (Double(column) - Double(columns - 1) / 2) * 0.28,
+            y: 1.55 - Double(row) * 0.18))
+    }
+
+    private func reload() {
+        let shared = EPUBMapSharedLayout.load(community: folder).positions
+        var next: [String: CGPoint] = [:]
+        for (index, item) in items.enumerated() {
+            next[item.id] = shared[item.id].map { Self.canvasPoint($0) }
+                ?? Self.seed(index: index)
+        }
+        positions = next
+    }
+
+    /// Every card's place, written on drag end — the merge keeps other
+    /// venues' entries untouched.
+    private func persist() {
+        var updates: [String: EPUBMapSharedLayout.Point] = [:]
+        for item in items {
+            if let position = positions[item.id] {
+                updates[item.id] = Self.sharedPoint(position)
+            }
+        }
+        EPUBMapSharedLayout.save(updating: updates, community: folder)
+    }
+}
+
+/// One article on the map: a card that drags, taps open, and carries
+/// the pile choices in its context menu.
+private struct ProceedingsMapNode: View {
+    let item: ProceedingsMapView.Item
+    @Binding var position: CGPoint
+    let bounds: CGSize
+    let open: () -> Void
+    let togglePin: () -> Void
+    let toggleSetAside: () -> Void
+    let moved: () -> Void
+
+    @State private var dragStart: CGPoint?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(item.title)
+                .font(.callout.weight(.semibold))
+                .lineLimit(3)
+            Text(item.author)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .padding(10)
+        .frame(width: 168, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(.regularMaterial))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(item.isPinned
+                    ? Color.accentColor.opacity(0.7)
+                    : Color.secondary.opacity(0.3)))
+        .overlay(alignment: .topTrailing) {
+            if item.isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.caption2)
+                    .foregroundStyle(Color.accentColor)
+                    .padding(5)
+            }
+        }
+        .opacity(item.isSetAside ? 0.45 : 1)
+        .position(position)
+        .gesture(
+            DragGesture(minimumDistance: 2)
+                .onChanged { value in
+                    if dragStart == nil { dragStart = position }
+                    guard let start = dragStart else { return }
+                    position = CGPoint(
+                        x: min(max(start.x + value.translation.width, 90),
+                               bounds.width - 90),
+                        y: min(max(start.y + value.translation.height, 40),
+                               bounds.height - 40))
+                }
+                .onEnded { _ in
+                    dragStart = nil
+                    moved()
+                })
+        .onTapGesture(perform: open)
+        .contextMenu {
+            Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
+            Button(item.isSetAside ? "Bring Back" : "Set Aside",
+                   action: toggleSetAside)
+        }
     }
 }
