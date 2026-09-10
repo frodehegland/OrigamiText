@@ -2547,6 +2547,7 @@ final class AppModel {
         doc.acmReference = result.acmReference
         doc.authorORCIDs = result.authorORCIDs
         doc.authorEmails = result.authorEmails
+        doc.license = result.license
         doc.concepts = result.concepts
         doc.layouts = result.layouts
         doc.mapConnections = result.mapConnections

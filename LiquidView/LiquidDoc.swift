@@ -71,6 +71,11 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// Each author's email, keyed by name — live mailto links on the
     /// exported author lines, carried through Visual-Meta.
     var authorEmails: [String: String] = [:]
+    /// The paper's license and copyright block, as page 1 prints it
+    /// lower left — the CC BY boilerplate with the paper's own DOI on
+    /// its last line. Carried through Visual-Meta; the export renders
+    /// it under the front matter with the CC badge.
+    var license: String? = nil
     /// Defined Concepts — the document's glossary: a shared pool of
     /// nodes (id, name, definition) that spatial layouts arrange and
     /// citations attach to. Books and papers carry them; the EPUB
