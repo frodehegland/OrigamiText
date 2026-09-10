@@ -1,6 +1,9 @@
 import Foundation
 import Observation
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// A remembered EPUB in the reader's library: enough to list it (title,
 /// author, date) and to reopen its rendered page (the unpacked `folder`
@@ -384,9 +387,7 @@ struct ProceedingsMapView: View {
     var body: some View {
         ScrollView([.horizontal, .vertical]) {
             ZStack(alignment: .topLeading) {
-                Color.clear
-                    .frame(width: Self.canvasSize.width,
-                           height: Self.canvasSize.height)
+                canvasBase
                 ForEach(items) { item in
                     ProceedingsMapNode(
                         item: item,
@@ -416,6 +417,19 @@ struct ProceedingsMapView: View {
             }
         }
         .onAppear(perform: reload)
+    }
+
+    /// The plane itself. On the iPad it carries the two-finger probe:
+    /// panning the map takes two fingers, leaving one free for the cards.
+    private var canvasBase: some View {
+        let base = Color.clear
+            .frame(width: Self.canvasSize.width,
+                   height: Self.canvasSize.height)
+        #if os(iOS)
+        return base.background(TwoFingerScrollConfigurator())
+        #else
+        return base
+        #endif
     }
 
     private func binding(for item: Item) -> Binding<CGPoint> {
@@ -493,6 +507,36 @@ struct ProceedingsMapView: View {
         EPUBMapSharedLayout.save(updating: updates, community: folder)
     }
 }
+
+#if os(iOS)
+/// Raises the enclosing scroll view's pan gesture to two touches — the
+/// Map's convention on the iPad: two fingers move the plane, one finger
+/// moves a card. Sits invisibly in the scroll content and walks up to
+/// the UIScrollView once it joins the window.
+private struct TwoFingerScrollConfigurator: UIViewRepresentable {
+    private final class Probe: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            var parent = superview
+            while let current = parent {
+                if let scroll = current as? UIScrollView {
+                    scroll.panGestureRecognizer.minimumNumberOfTouches = 2
+                    break
+                }
+                parent = current.superview
+            }
+        }
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = Probe()
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
+}
+#endif
 
 /// One article on the map: a card that drags, opens on a double
 /// click or tap, and carries the pile choices in its context menu.

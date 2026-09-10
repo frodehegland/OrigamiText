@@ -366,8 +366,7 @@ struct PhoneJournalView: View {
                         } else {
                             model.setAside(record)
                         }
-                    },
-                    back: { showsMap = false })
+                    })
             } else {
                 Picker("View", selection: $showsMap) {
                     Text("Articles").tag(false)
