@@ -466,6 +466,16 @@ final class PhoneModel {
                                                to: folder)
     }
 
+    /// The Map's live tick: adopt a newer shared standing mid-view —
+    /// the scan-time adoption serves the shelf; an open map wants Pin
+    /// and Set Aside to travel now.
+    func adoptSharedStanding() {
+        guard let folder = folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        adoptStanding(from: folder)
+    }
+
     /// Adopts the shared standing when another device wrote it more
     /// recently than this phone did. Callers hold the folder's scope.
     private func adoptStanding(from folder: URL) {

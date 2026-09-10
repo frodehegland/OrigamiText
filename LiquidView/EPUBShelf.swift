@@ -138,6 +138,14 @@ nonisolated enum EPUBStanding {
 
     static func read(from folder: URL) -> State? {
         let url = folder.appendingPathComponent(fileName)
+        // A stale or undownloaded iCloud copy: nudge it down and read
+        // what is here — the open map re-reads every few seconds, so
+        // the fresh copy lands on a following beat.
+        if let status = (try? URL(fileURLWithPath: url.path).resourceValues(
+                forKeys: [.ubiquitousItemDownloadingStatusKey]))?
+                .ubiquitousItemDownloadingStatus, status != .current {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+        }
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(State.self, from: data)
     }
@@ -420,6 +428,10 @@ struct ProceedingsMapView: View {
     /// Back to the journal's list of books — the foot bar's leading
     /// chevron.
     var back: (() -> Void)? = nil
+    /// Called on each refresh beat while the map is visible — the
+    /// platforms adopt the shared standing here, so Pin and Set Aside
+    /// travel live between open maps, not only on the next shelf scan.
+    var tick: (() -> Void)? = nil
 
     /// Canvas positions in points, by book id — the shared meters
     /// drawn onto the plane.
@@ -470,6 +482,7 @@ struct ProceedingsMapView: View {
             let folder = folder
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))
+                tick?()
                 let state = await Task.detached(priority: .utility) {
                     EPUBMapSharedLayout.load(community: folder)
                 }.value
@@ -780,12 +793,12 @@ private struct ProceedingsMapNode: View {
                     dragStart = nil
                     moved()
                 })
-        // One composed gesture, not stacked onTapGestures: the stack
-        // delays touch delivery on the iPad until the context menu's
-        // long press wins, so a plain tap opened the menu.
-        .gesture(
-            TapGesture(count: 2).onEnded { open() }
-                .exclusively(before: TapGesture().onEnded { select() }))
+        // Stacked taps: double to open, single to lift. Safe now that
+        // the context menu is the Mac's alone — with a menu present,
+        // this stack starved the iPad's touch delivery; without one,
+        // the composed `exclusively` form starved the single tap.
+        .onTapGesture(count: 2, perform: open)
+        .onTapGesture(perform: select)
     }
 
     #if !os(macOS)

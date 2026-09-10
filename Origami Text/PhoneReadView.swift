@@ -367,7 +367,8 @@ struct PhoneJournalView: View {
                             model.setAside(record)
                         }
                     },
-                    back: { showsMap = false })
+                    back: { showsMap = false },
+                    tick: { model.adoptSharedStanding() })
             } else {
                 Picker("View", selection: $showsMap) {
                     Text("Articles").tag(false)
