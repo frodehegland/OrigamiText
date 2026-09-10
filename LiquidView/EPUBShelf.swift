@@ -451,14 +451,15 @@ struct ProceedingsMapView: View {
                     .buttonStyle(.plain)
                 }
             }
+            .font(.callout)
             .padding(.horizontal, 10)
-            .padding(.vertical, 5)
+            .padding(.vertical, 2)
             .frame(maxWidth: 280)
             .background(Capsule().fill(Color.secondary.opacity(0.12)))
             Spacer()
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 4)
         .background(.regularMaterial)
         .overlay(alignment: .top) { Divider() }
     }

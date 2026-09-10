@@ -384,6 +384,9 @@ struct PhoneJournalView: View {
         }
         .navigationTitle(venue)
         .navigationBarTitleDisplayMode(.inline)
+        // The Map fills the screen; its foot bar carries the way back,
+        // so the navigation bar withdraws with the tabs.
+        .toolbar(showsMap ? .hidden : .visible, for: .navigationBar)
         .navigationDestination(item: $readerID) { recordID in
             PhoneReaderView(docID: recordID)
         }
