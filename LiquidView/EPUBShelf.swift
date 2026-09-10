@@ -462,6 +462,33 @@ struct ProceedingsMapView: View {
         .background(Color.secondary.opacity(0.06))
         .safeAreaInset(edge: .bottom, spacing: 0) { footBar }
         .onAppear(perform: reload)
+        // Two maps open at once converse through the file: while this
+        // one is visible it re-reads every few beats, off the main
+        // actor, and the per-entry merge lets both sides move cards at
+        // the same time — per card, the newest touch wins.
+        .task {
+            let folder = folder
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))
+                let state = await Task.detached(priority: .utility) {
+                    EPUBMapSharedLayout.load(community: folder)
+                }.value
+                apply(state)
+            }
+        }
+    }
+
+    /// Lays the given shared state onto the canvas — reload's arithmetic
+    /// on already-fetched bytes.
+    private func apply(_ state: EPUBMapSharedLayout.State) {
+        let seeds = Self.seeds(for: items)
+        seedCache = seeds
+        var next: [String: CGPoint] = [:]
+        for item in items {
+            next[item.id] = state.positions[item.key].map { Self.canvasPoint($0) }
+                ?? seeds[item.id] ?? Self.canvasCenter
+        }
+        if next != positions { positions = next }
     }
 
     /// The Map's foot: the way back to the journal's list at the left,
@@ -585,15 +612,7 @@ struct ProceedingsMapView: View {
     }
 
     private func reload() {
-        let shared = EPUBMapSharedLayout.load(community: folder).positions
-        let seeds = Self.seeds(for: items)
-        seedCache = seeds
-        var next: [String: CGPoint] = [:]
-        for item in items {
-            next[item.id] = shared[item.key].map { Self.canvasPoint($0) }
-                ?? seeds[item.id] ?? Self.canvasCenter
-        }
-        positions = next
+        apply(EPUBMapSharedLayout.load(community: folder))
     }
 
     /// Every card's place, written on drag end — the merge keeps other
@@ -655,6 +674,8 @@ private struct ProceedingsMapNode: View {
     let toggleSetAside: () -> Void
     let moved: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+
     @State private var dragStart: CGPoint?
     /// The card's place while in hand. Local to the node so a drag
     /// re-renders this card alone; the map's dictionary — whose every
@@ -679,7 +700,12 @@ private struct ProceedingsMapNode: View {
         .frame(width: 168, alignment: .leading)
         // An opaque fill, not a material: sixty cards of live blur —
         // re-blurred each frame under a moving card — drag the drag.
-        .background(RoundedRectangle(cornerRadius: 10).fill(.background))
+        // In the dark the cards sit a shade above black, so they read
+        // as cards on the plane rather than holes in it.
+        .background(RoundedRectangle(cornerRadius: 10)
+            .fill(colorScheme == .dark
+                  ? AnyShapeStyle(Color(white: 0.17))
+                  : AnyShapeStyle(.background)))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(
