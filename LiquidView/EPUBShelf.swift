@@ -686,8 +686,12 @@ private struct ProceedingsMapNode: View {
                     dragStart = nil
                     moved()
                 })
-        .onTapGesture(count: 2, perform: open)
-        .onTapGesture(perform: select)
+        // One composed gesture, not stacked onTapGestures: the stack
+        // delays touch delivery on the iPad until the context menu's
+        // long press wins, so a plain tap opened the menu.
+        .gesture(
+            TapGesture(count: 2).onEnded { open() }
+                .exclusively(before: TapGesture().onEnded { select() }))
         .contextMenu {
             Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
             Button(item.isSetAside ? "Bring Back" : "Set Aside",
