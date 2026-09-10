@@ -103,7 +103,15 @@ struct ContentView: View {
                         .scrollContentBackground(.hidden)
                         .background(themeBG)
                         .foregroundStyle(themeFG)
-                        .safeAreaInset(edge: .bottom, spacing: 0) { findBar }
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            // The Map carries its own foot bar; the
+                            // lists' find bar would stack beneath it as
+                            // a second Find, filtering the lists
+                            // invisibly from here.
+                            if !(venueIsSelected && model.venueViewMode == .map) {
+                                findBar
+                            }
+                        }
                 }
                 .onChange(of: model.current) { _, new in
                     if new != nil { wideListMode = false }
