@@ -936,40 +936,73 @@ final class AppModel {
             showNote("No EPUB, LaTeX, or ACM XML files in “\(url.lastPathComponent)”.")
             return
         }
-        var imported = 0
-        var duplicates = 0
-        var failed: [String] = []
-        for file in convertible {
-            let outcome: LibraryImportOutcome
-            switch file.pathExtension.lowercased() {
-            case "epub":
-                // importEPUB reuses by identity itself: an unchanged
-                // count means the book was already on the shelf.
-                let before = epubRecords.count
-                outcome = importEPUB(at: file) == nil ? .failed
-                    : (epubRecords.count > before ? .imported : .duplicate)
-            case "zip", "tex":
-                outcome = importLaTeX(at: file, andOpen: false)
-            default:
-                outcome = importBITS(at: file, andOpen: false)
+        showNote("Importing \(convertible.count) documents\u{2026}")
+        // The batch runs as a task: each EPUB's unzip-and-read happens
+        // off the main actor (the app stays responsive through hundreds
+        // of books), the shelf update lands back here per book, and the
+        // manifest is persisted ONCE at the end rather than re-encoded
+        // per file.
+        Task { [weak self] in
+            guard let self else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            var imported = 0
+            var duplicates = 0
+            var failed: [String] = []
+            var epubsChanged = false
+            for file in convertible {
+                let outcome: LibraryImportOutcome
+                switch file.pathExtension.lowercased() {
+                case "epub":
+                    let existing = self.epubImportSnapshot
+                    let root = Self.epubsRoot
+                    let prepared = await Task.detached(priority: .userInitiated) {
+                        autoreleasepool {
+                            try? Self.prepareEPUBImport(at: file, epubsRoot: root,
+                                                        existing: existing)
+                        }
+                    }.value
+                    if let prepared {
+                        // An unchanged shelf count means the book was
+                        // already here.
+                        let before = self.epubRecords.count
+                        let record = self.applyPreparedImport(prepared,
+                                                              deferHousekeeping: true)
+                        outcome = record == nil ? .failed
+                            : (self.epubRecords.count > before ? .imported : .duplicate)
+                        if prepared.fresh != nil { epubsChanged = true }
+                    } else {
+                        outcome = .failed
+                    }
+                case "zip", "tex":
+                    outcome = self.importLaTeX(at: file, andOpen: false)
+                    await Task.yield()
+                default:
+                    outcome = self.importBITS(at: file, andOpen: false)
+                    await Task.yield()
+                }
+                switch outcome {
+                case .imported: imported += 1
+                case .duplicate: duplicates += 1
+                case .failed: failed.append(file.lastPathComponent)
+                }
             }
-            switch outcome {
-            case .imported: imported += 1
-            case .duplicate: duplicates += 1
-            case .failed: failed.append(file.lastPathComponent)
+            if epubsChanged {
+                self.persistEPUBRecords()
+                self.rebuildEPUBIndex()
             }
+            var parts = ["Imported \(imported) of \(convertible.count)"]
+            if duplicates > 0 { parts.append("\(duplicates) already in the library") }
+            if !failed.isEmpty {
+                parts.append("failed: \(failed.prefix(3).joined(separator: ", "))"
+                    + (failed.count > 3 ? " and \(failed.count - 3) more" : ""))
+            }
+            if !failed.isEmpty { NSSound.beep() }
+            self.showNote(parts.joined(separator: " · "))
+            // The arrivals join the community folder too — once, after the
+            // batch — so the headset's next scan shows the same shelf.
+            if imported > 0 { self.mirrorShelfToCommunityFolder() }
         }
-        var parts = ["Imported \(imported) of \(convertible.count)"]
-        if duplicates > 0 { parts.append("\(duplicates) already in the library") }
-        if !failed.isEmpty {
-            parts.append("failed: \(failed.prefix(3).joined(separator: ", "))"
-                + (failed.count > 3 ? " and \(failed.count - 3) more" : ""))
-        }
-        if !failed.isEmpty { NSSound.beep() }
-        showNote(parts.joined(separator: " · "))
-        // The arrivals join the community folder too — once, after the
-        // batch — so the headset's next scan shows the same shelf.
-        if imported > 0 { mirrorShelfToCommunityFolder() }
     }
 
     // MARK: - LaTeX import (the reverse of Author's LaTeX export)
@@ -1557,13 +1590,56 @@ final class AppModel {
                          fileURL: Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true))
     }
 
-    /// Unpacks an EPUB into the app container (once per identity) and remembers
-    /// it in the reader's library, so it appears in the Files list — without
-    /// opening it in the reader. Reused by the open path and by the community
-    /// folder scan. Already-imported, still-unpacked books are reused as-is,
-    /// so a rescan never re-unpacks. Returns the record, or nil on failure.
-    @discardableResult
-    func importEPUB(at url: URL) -> EPUBRecord? {
+    /// What the shelf already holds, snapshotted for the import worker:
+    /// enough to spot an unchanged book (keep, no re-unpack) and one
+    /// missing its venue or DOI (parse for the fields, off the main
+    /// thread).
+    nonisolated struct ExistingEPUBInfo: Sendable {
+        let contentSubpath: String
+        let needsEnrich: Bool
+    }
+
+    /// The heavy half of an import, done: unzipped, canonically stored,
+    /// metadata read. Pure value — built off the main actor, applied on
+    /// it.
+    nonisolated struct PreparedEPUBImport: Sendable {
+        struct Fresh: Sendable {
+            let title: String
+            let meta: OrigamiEPUBImporter.PackageMetadata
+            let contentSubpath: String
+            let originalFilename: String
+        }
+        struct Enrich: Sendable {
+            let publication: String?
+            let doi: String?
+            let authors: [String]
+        }
+        let folder: String
+        let identity: String
+        /// Fresh unpack. Nil: the shelf's copy stands (the source was
+        /// not newer).
+        let fresh: Fresh?
+        /// For a kept record missing venue/DOI: the fields, parsed here
+        /// so the main thread never pays for the full document.
+        let enrich: Enrich?
+    }
+
+    private var epubImportSnapshot: [String: ExistingEPUBInfo] {
+        var map: [String: ExistingEPUBInfo] = [:]
+        for record in epubRecords where map[record.folder] == nil {
+            map[record.folder] = ExistingEPUBInfo(
+                contentSubpath: record.contentSubpath,
+                needsEnrich: record.publication == nil || record.doi == nil)
+        }
+        return map
+    }
+
+    /// The filesystem half of an EPUB import — unzip, canonical copy,
+    /// metadata — callable off the main actor, so a batch never freezes
+    /// the app. The main-actor half is `applyPreparedImport`.
+    nonisolated static func prepareEPUBImport(
+        at url: URL, epubsRoot: URL,
+        existing: [String: ExistingEPUBInfo]) throws -> PreparedEPUBImport {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
@@ -1573,14 +1649,15 @@ final class AppModel {
         let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
         let safe = identity.replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ":", with: "_")
-        let directory = Self.epubsRoot.appendingPathComponent(safe, isDirectory: true)
+        let directory = epubsRoot.appendingPathComponent(safe, isDirectory: true)
+        let stored = epubsRoot.appendingPathComponent(safe + ".epub")
 
-        // Already known and still on disk? Keep the existing record — no
+        // Already known and still on disk? Keep the existing copy — no
         // re-unpack — unless the source file is newer than the unpacked
-        // copy: a re-export of the same document (an added figure, a
+        // one: a re-export of the same document (an added figure, a
         // corrected paragraph) must show, so a newer file refreshes.
-        if let existing = epubRecords.first(where: { $0.folder == safe }) {
-            let content = directory.appendingPathComponent(existing.contentSubpath)
+        if let info = existing[safe] {
+            let content = directory.appendingPathComponent(info.contentSubpath)
             let sourceStamp = (try? url.resourceValues(
                 forKeys: [.contentModificationDateKey]))?.contentModificationDate
             let unpackedStamp = (try? content.resourceValues(
@@ -1589,65 +1666,124 @@ final class AppModel {
                let sourceStamp, let unpackedStamp, sourceStamp <= unpackedStamp {
                 // A record from before the canonical store gets its
                 // .epub back-filled from the file being opened.
-                let stored = Self.storedEPUBURL(inFolder: safe)
                 if !FileManager.default.fileExists(atPath: stored.path),
                    stored.path != url.path {
                     try? FileManager.default.copyItem(at: url, to: stored)
                 }
-                return enrichRecordIfNeeded(existing, directory: directory)
+                var enrich: PreparedEPUBImport.Enrich?
+                if info.needsEnrich,
+                   let result = try? OrigamiEPUBImporter.importDocument(
+                       inUnpackedFolder: directory) {
+                    enrich = .init(publication: result.publication,
+                                   doi: result.doi, authors: result.authors)
+                }
+                return PreparedEPUBImport(folder: safe, identity: identity,
+                                          fresh: nil, enrich: enrich)
             }
         }
 
-        do {
-            let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: directory)
-            // The .epub itself is the canonical store, kept beside the
-            // unpacked cache — the document is one self-contained file.
-            let stored = Self.storedEPUBURL(inFolder: safe)
-            if stored.path != url.path {
-                try? FileManager.default.removeItem(at: stored)
-                try? FileManager.default.copyItem(at: url, to: stored)
+        let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: directory)
+        // The .epub itself is the canonical store, kept beside the
+        // unpacked cache — the document is one self-contained file.
+        if stored.path != url.path {
+            try? FileManager.default.removeItem(at: stored)
+            try? FileManager.default.copyItem(at: url, to: stored)
+        }
+        // Read OPF + Visual-Meta only — no body parsing.
+        let meta = OrigamiEPUBImporter.importMetadata(inUnpackedFolder: directory)
+        let contentSubpath = unpacked.content.path
+            .replacingOccurrences(of: directory.path + "/", with: "")
+        return PreparedEPUBImport(
+            folder: safe, identity: identity,
+            fresh: .init(title: unpacked.title, meta: meta,
+                         contentSubpath: contentSubpath,
+                         originalFilename: url.lastPathComponent),
+            enrich: nil)
+    }
+
+    /// The main-actor half: folds a prepared import into the shelf.
+    /// Batches pass `deferHousekeeping` and persist + rebuild once at
+    /// the end, instead of re-encoding the manifest per book.
+    @discardableResult
+    private func applyPreparedImport(_ prepared: PreparedEPUBImport,
+                                     deferHousekeeping: Bool = false) -> EPUBRecord? {
+        guard let fresh = prepared.fresh else {
+            guard let existing = epubRecords.first(where: { $0.folder == prepared.folder })
+            else { return nil }
+            guard let enrich = prepared.enrich else { return existing }
+            let authors = existing.authors
+                ?? (enrich.authors.isEmpty ? nil : enrich.authors)
+            let names = authors ?? [existing.author]
+            let refreshed = EPUBRecord(id: existing.id, title: existing.title,
+                                       author: names.count > 1
+                                           ? names.joined(separator: ", ")
+                                           : names[0],
+                                       authors: authors,
+                                       dateISO: existing.dateISO,
+                                       folder: existing.folder,
+                                       contentSubpath: existing.contentSubpath,
+                                       openedAt: existing.openedAt,
+                                       publication: enrich.publication ?? "",
+                                       doi: existing.doi ?? enrich.doi)
+            if let index = epubRecords.firstIndex(where: { $0.id == existing.id }) {
+                epubRecords[index] = refreshed
+                if !deferHousekeeping { persistEPUBRecords() }
             }
-            // Read OPF + Visual-Meta only — no body parsing, so large
-            // multi-chapter EPUBs don't block the main thread.
-            let meta = OrigamiEPUBImporter.importMetadata(inUnpackedFolder: directory)
-            let bookID = meta.origamiID ?? identity
-            let contentSubpath = unpacked.content.path
-                .replacingOccurrences(of: directory.path + "/", with: "")
-            // Rows display the authors joined; the Authors view lists
-            // the book under each of them.
-            let authors = meta.authors
-            // A refreshed book keeps its place in time; only a truly
-            // new one arrives at the top as just-opened.
-            let openedAt = epubRecords.first(where: { $0.folder == safe })?.openedAt ?? .now
-            let record = EPUBRecord(id: bookID, title: unpacked.title,
-                                    author: authors.count > 1
-                                        ? authors.joined(separator: ", ")
-                                        : (authors.first ?? meta.author ?? "Unknown"),
-                                    authors: authors.isEmpty ? nil : authors,
-                                    dateISO: meta.date, folder: safe,
-                                    contentSubpath: contentSubpath, openedAt: openedAt,
-                                    publication: meta.publication ?? "",
-                                    doi: meta.doi,
-                                    originalFilename: url.lastPathComponent,
-                                    packageIdentifier: meta.identifier)
-            epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
-            epubRecords.insert(record, at: 0)
-            // When this book carries a DOI that matches a pending
-            // acquisition, the wish is fulfilled — remove it.
-            if let doi = meta.doi {
-                for wanted in acquisitions where wanted.doi == doi {
-                    removeAcquisition(wanted.id)
-                }
+            return refreshed
+        }
+        let meta = fresh.meta
+        let bookID = meta.origamiID ?? prepared.identity
+        // Rows display the authors joined; the Authors view lists
+        // the book under each of them.
+        let authors = meta.authors
+        // A refreshed book keeps its place in time; only a truly
+        // new one arrives at the top as just-opened.
+        let openedAt = epubRecords.first(where: { $0.folder == prepared.folder })?.openedAt ?? .now
+        let record = EPUBRecord(id: bookID, title: fresh.title,
+                                author: authors.count > 1
+                                    ? authors.joined(separator: ", ")
+                                    : (authors.first ?? meta.author ?? "Unknown"),
+                                authors: authors.isEmpty ? nil : authors,
+                                dateISO: meta.date, folder: prepared.folder,
+                                contentSubpath: fresh.contentSubpath, openedAt: openedAt,
+                                publication: meta.publication ?? "",
+                                doi: meta.doi,
+                                originalFilename: fresh.originalFilename,
+                                packageIdentifier: meta.identifier)
+        epubRecords.removeAll { $0.id == bookID || $0.folder == prepared.folder }
+        epubRecords.insert(record, at: 0)
+        // When this book carries a DOI that matches a pending
+        // acquisition, the wish is fulfilled — remove it.
+        if let doi = meta.doi {
+            for wanted in acquisitions where wanted.doi == doi {
+                removeAcquisition(wanted.id)
             }
-            // A fresh unpack means a new spine — drop the cached one.
-            spineCache.removeValue(forKey: safe)
-            // The reading cache and any prior failure record must both go:
-            // a re-imported book deserves a fresh import attempt.
-            clearReadingDocFailure(for: safe)
-            clearReadingDocFailure(for: bookID)
+        }
+        // A fresh unpack means a new spine — drop the cached one.
+        spineCache.removeValue(forKey: prepared.folder)
+        // The reading cache and any prior failure record must both go:
+        // a re-imported book deserves a fresh import attempt.
+        clearReadingDocFailure(for: prepared.folder)
+        clearReadingDocFailure(for: bookID)
+        if !deferHousekeeping {
             persistEPUBRecords()
             rebuildEPUBIndex()
-            return record
+        }
+        return record
+    }
+
+    /// Unpacks an EPUB into the app container (once per identity) and remembers
+    /// it in the reader's library, so it appears in the Files list — without
+    /// opening it in the reader. Reused by the open path; batches call the
+    /// prepare/apply halves themselves so the heavy half runs off-main.
+    /// Already-imported, still-unpacked books are reused as-is. Returns the
+    /// record, or nil on failure.
+    @discardableResult
+    func importEPUB(at url: URL) -> EPUBRecord? {
+        do {
+            let prepared = try Self.prepareEPUBImport(
+                at: url, epubsRoot: Self.epubsRoot, existing: epubImportSnapshot)
+            return applyPreparedImport(prepared)
         } catch {
             NSSound.beep()
             showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
@@ -1807,29 +1943,6 @@ final class AppModel {
     /// unpacked package on disk: read the full record, remember it, and
     /// never parse again — a non-nil publication ("" when the book names
     /// no venue) marks the record checked.
-    private func enrichRecordIfNeeded(_ record: EPUBRecord, directory: URL) -> EPUBRecord {
-        guard record.publication == nil || record.doi == nil,
-              let meta = try? OrigamiEPUBImporter.importDocument(inUnpackedFolder: directory)
-        else { return record }
-        let authors = record.authors ?? (meta.authors.isEmpty ? nil : meta.authors)
-        let names = authors ?? [record.author]
-        let refreshed = EPUBRecord(id: record.id, title: record.title,
-                                   author: names.count > 1
-                                       ? names.joined(separator: ", ")
-                                       : names[0],
-                                   authors: authors,
-                                   dateISO: record.dateISO, folder: record.folder,
-                                   contentSubpath: record.contentSubpath,
-                                   openedAt: record.openedAt,
-                                   publication: meta.publication ?? "",
-                                   doi: record.doi ?? meta.doi)
-        if let index = epubRecords.firstIndex(where: { $0.id == record.id }) {
-            epubRecords[index] = refreshed
-            persistEPUBRecords()
-        }
-        return refreshed
-    }
-
     /// Moves an opened EPUB to the Trash: its unpacked package leaves
     /// the app container (recoverable from the Trash), the record leaves
     /// the library, and its filing is forgotten. A book open in the
@@ -3417,18 +3530,54 @@ final class AppModel {
     /// left untouched. iCloud placeholders are nudged to download, and the
     /// folder watch rescans once they land. Afterwards the mirror runs the
     /// other way: shelf books the folder lacks are published into it.
+    /// One scan at a time: the folder watcher fires in bursts, and a
+    /// fresh scan supersedes a running one rather than queueing behind it.
+    @ObservationIgnored private var epubScanTask: Task<Void, Never>?
+
     func scanCommunityFolderForEPUBs() {
         guard let folder = index.folderURL else { return }
         LibraryScanner.requestICloudDownloads(in: folder)
+        epubScanTask?.cancel()
+        epubScanTask = Task { [weak self] in
+            guard let self else { return }
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            guard let enumerator = FileManager.default.enumerator(
+                at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return }
+            let urls = enumerator.compactMap { $0 as? URL }
+                .filter { $0.pathExtension.lowercased() == "epub" }
+            var epubsChanged = false
+            for url in urls {
+                guard !Task.isCancelled else { return }
+                // Unzip and read off the main actor — a large community
+                // folder arrives without freezing the app — and fold
+                // each book into the shelf back here.
+                let existing = self.epubImportSnapshot
+                let root = Self.epubsRoot
+                let prepared = await Task.detached(priority: .utility) {
+                    autoreleasepool {
+                        try? Self.prepareEPUBImport(at: url, epubsRoot: root,
+                                                    existing: existing)
+                    }
+                }.value
+                guard let prepared else { continue }
+                self.applyPreparedImport(prepared, deferHousekeeping: true)
+                if prepared.fresh != nil || prepared.enrich != nil { epubsChanged = true }
+            }
+            guard !Task.isCancelled else { return }
+            if epubsChanged {
+                self.persistEPUBRecords()
+                self.rebuildEPUBIndex()
+            }
+            self.finishCommunityScan(folder: folder)
+        }
+    }
+
+    /// The scan's tail: everything else the community folder carries.
+    private func finishCommunityScan(folder: URL) {
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-        guard let enumerator = FileManager.default.enumerator(
-            at: folder, includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return }
-        for case let url as URL in enumerator
-        where url.pathExtension.lowercased() == "epub" {
-            importEPUB(at: url)
-        }
         mirrorShelfToCommunityFolder()
         adoptStanding()
         // The headset's wishes: cited works asked for as books, shown
