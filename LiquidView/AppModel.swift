@@ -3594,10 +3594,17 @@ final class AppModel {
     /// Bulk progress — (done, total) while a run is under way, nil at rest.
     private(set) var extractionProgress: (done: Int, total: Int)?
 
-    /// True while a venue relation view (Shared Ground, Roots, Threads)
-    /// is showing — ContentView answers by giving the list pane the
-    /// whole window, the same way the wide-list toggle does.
-    var venueRelationsWantWidth = false
+    /// Which face a venue shows: Articles, the Map, or a relation view.
+    /// Held here, not in the venue view — choosing a wide face moves
+    /// the venue between ContentView's split-view branches, and local
+    /// @State would reset to Articles in the crossing.
+    var venueViewMode: VenueViewMode = .documents
+
+    /// True while a venue face other than Articles is showing —
+    /// ContentView answers by giving the list pane the whole window,
+    /// the same way the wide-list toggle does (gated there on a venue
+    /// actually being selected).
+    var venueRelationsWantWidth: Bool { venueViewMode != .documents }
 
     private func saveExtractionsFile() {
         guard let folder = index.folderURL else { return }

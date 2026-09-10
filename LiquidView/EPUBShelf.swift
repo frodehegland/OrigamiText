@@ -384,10 +384,10 @@ struct ProceedingsMapView: View {
                 Color.clear
                     .frame(width: Self.canvasSize.width,
                            height: Self.canvasSize.height)
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                ForEach(items) { item in
                     ProceedingsMapNode(
                         item: item,
-                        position: binding(for: item, seedIndex: index),
+                        position: binding(for: item),
                         bounds: Self.canvasSize,
                         open: { open(item.id) },
                         togglePin: { togglePin(item.id) },
@@ -401,9 +401,10 @@ struct ProceedingsMapView: View {
         .onAppear(perform: reload)
     }
 
-    private func binding(for item: Item, seedIndex: Int) -> Binding<CGPoint> {
+    private func binding(for item: Item) -> Binding<CGPoint> {
         Binding(
-            get: { positions[item.id] ?? Self.seed(index: seedIndex) },
+            get: { positions[item.id] ?? Self.seeds(for: items)[item.id]
+                ?? Self.canvasCenter },
             set: { positions[item.id] = $0 })
     }
 
@@ -423,23 +424,42 @@ struct ProceedingsMapView: View {
             y: Double(1.2 - (point.y - canvasCenter.y) / pointsPerMeter))
     }
 
-    /// The hallway's own seeding — six columns down from the grid's
-    /// top — so an untouched venue looks the same here and there.
-    private static func seed(index: Int) -> CGPoint {
-        let columns = 6
-        let column = index % columns
-        let row = index / columns
-        return canvasPoint(EPUBMapSharedLayout.Point(
-            x: (Double(column) - Double(columns - 1) / 2) * 0.28,
-            y: 1.55 - Double(row) * 0.18))
+    /// The hallway's own seeding — the same wide grid the Vision Pro
+    /// lays out, the Set Aside books in their quiet row beneath — so an
+    /// untouched venue looks the same here and there. Keep the numbers
+    /// in step with EPUBMapView's article grid.
+    private static func seeds(for items: [Item]) -> [String: CGPoint] {
+        let standing = items.filter { !$0.isSetAside }
+        let asides = items.filter { $0.isSetAside }
+        let columns = max(1, Int((Double(standing.count) * 7).squareRoot() / 2))
+        var result: [String: CGPoint] = [:]
+        for (index, item) in standing.enumerated() {
+            let column = index % columns
+            let row = index / columns
+            result[item.id] = canvasPoint(EPUBMapSharedLayout.Point(
+                x: (Double(column) - Double(columns - 1) / 2) * 0.28,
+                y: 1.55 - Double(row) * 0.18))
+        }
+        let gridRows = standing.isEmpty ? 0 : (standing.count - 1) / columns + 1
+        let asideTop = 1.55 - Double(gridRows) * 0.18 - 0.10
+        let asideColumns = max(1, min(asides.count, 5))
+        for (index, item) in asides.enumerated() {
+            let column = index % asideColumns
+            let row = index / asideColumns
+            result[item.id] = canvasPoint(EPUBMapSharedLayout.Point(
+                x: (Double(column) - Double(asideColumns - 1) / 2) * 0.24,
+                y: asideTop - Double(row) * 0.08))
+        }
+        return result
     }
 
     private func reload() {
         let shared = EPUBMapSharedLayout.load(community: folder).positions
+        let seeds = Self.seeds(for: items)
         var next: [String: CGPoint] = [:]
-        for (index, item) in items.enumerated() {
+        for item in items {
             next[item.id] = shared[item.id].map { Self.canvasPoint($0) }
-                ?? Self.seed(index: index)
+                ?? seeds[item.id] ?? Self.canvasCenter
         }
         positions = next
     }
