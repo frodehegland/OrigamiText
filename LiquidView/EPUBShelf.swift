@@ -274,6 +274,11 @@ nonisolated enum EPUBMapSharedLayout {
     struct Point: Codable {
         var x: Double
         var y: Double
+        /// When this entry was placed. Merging is per entry, newest
+        /// wins — a device saving from a stale copy of the file can
+        /// no longer roll every other card back. Nil in files written
+        /// before the stamp: treated as oldest.
+        var t: Date? = nil
     }
 
     struct State: Codable {
@@ -292,28 +297,26 @@ nonisolated enum EPUBMapSharedLayout {
         return base.appendingPathComponent(fileName)
     }
 
-    /// The freshest state visible from here: the community file or the
-    /// local mirror, whichever was written last.
+    /// The community file and the local mirror, merged entry by entry —
+    /// per card, the newest placement wins, whichever home holds it.
     static func load(community folder: URL?) -> State {
         let mirror = read(at: mirrorURL)
         let shared = folder.flatMap { url in
             withScope(url) { read(at: $0.appendingPathComponent(fileName)) }
         }
-        switch (mirror, shared) {
-        case let (m?, s?): return s.modified > m.modified ? s : m
-        case let (m?, nil): return m
-        case let (nil, s?): return s
-        default: return State(positions: [:], modified: .distantPast)
-        }
+        return merged(mirror, shared)
     }
 
-    /// Merges the given positions into the freshest state and writes it
-    /// to both homes. Only the given ids move; every other entry — the
-    /// other venues', the hallway's extras — stands.
+    /// Merges the given positions (stamped now) into the merged state
+    /// and writes it to both homes. Only the given ids move; every
+    /// other entry — the other venues', the hallway's extras — stands.
     static func save(updating updates: [String: Point], community folder: URL?) {
         var state = load(community: folder)
-        for (id, point) in updates { state.positions[id] = point }
-        state.modified = .now
+        let now = Date()
+        for (id, point) in updates {
+            state.positions[id] = Point(x: point.x, y: point.y, t: now)
+        }
+        state.modified = now
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(state) else { return }
@@ -326,24 +329,54 @@ nonisolated enum EPUBMapSharedLayout {
         }
     }
 
-    /// Pulls a newer community file into the local mirror — called
-    /// beside the standing adoption on each shelf scan.
+    /// Merges the community file into the local mirror — called beside
+    /// the standing adoption on each shelf scan.
     static func refreshMirror(community folder: URL) {
-        guard let shared = withScope(folder, {
-                  read(at: $0.appendingPathComponent(fileName)) }),
-              shared.modified > (read(at: mirrorURL)?.modified ?? .distantPast),
-              let data = try? JSONEncoder().encode(shared) else { return }
+        let shared = withScope(folder) {
+            read(at: $0.appendingPathComponent(fileName))
+        }
+        guard shared != nil else { return }
+        let state = merged(read(at: mirrorURL), shared)
+        guard let data = try? JSONEncoder().encode(state) else { return }
         try? data.write(to: mirrorURL, options: .atomic)
+    }
+
+    private static func merged(_ a: State?, _ b: State?) -> State {
+        switch (a, b) {
+        case (nil, nil): return State(positions: [:], modified: .distantPast)
+        case let (one?, nil): return one
+        case let (nil, one?): return one
+        case let (l?, r?):
+            var positions = l.positions
+            for (key, point) in r.positions {
+                let held = positions[key]?.t ?? .distantPast
+                if (point.t ?? .distantPast) > held || positions[key] == nil {
+                    positions[key] = point
+                }
+            }
+            return State(positions: positions,
+                         modified: max(l.modified, r.modified))
+        }
     }
 
     private static func read(at url: URL) -> State? {
         // An iCloud copy that is a placeholder or has gone stale reads
-        // as absent or old — nudge the download so the next look is
-        // fresh, and read what is here meanwhile.
-        if let status = (try? url.resourceValues(
+        // as absent or old. Nudge the download and give this small file
+        // a short moment to land, so the first open after another
+        // device's write reads fresh; offline, the wait caps out and
+        // what is here (if anything) serves.
+        func status(_ url: URL) -> URLUbiquitousItemDownloadingStatus? {
+            let fresh = URL(fileURLWithPath: url.path)
+            return (try? fresh.resourceValues(
                 forKeys: [.ubiquitousItemDownloadingStatusKey]))?
-                .ubiquitousItemDownloadingStatus, status != .current {
+                .ubiquitousItemDownloadingStatus
+        }
+        if let state = status(url), state != .current {
             try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+            for _ in 0..<6 {
+                Thread.sleep(forTimeInterval: 0.15)
+                if status(url) == .current { break }
+            }
         }
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(State.self, from: data)

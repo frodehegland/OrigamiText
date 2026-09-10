@@ -511,6 +511,9 @@ final class PhoneModel {
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
         adoptStanding(from: folder)
+        // The Map's shared layout rides the same folder — merge a newer
+        // community copy into the local mirror on every scan.
+        EPUBMapSharedLayout.refreshMirror(community: folder)
         LibraryScanner.requestICloudDownloads(in: folder)
         guard let enumerator = FileManager.default.enumerator(
             at: folder, includingPropertiesForKeys: [.isRegularFileKey],
