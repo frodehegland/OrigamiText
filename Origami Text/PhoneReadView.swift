@@ -349,14 +349,9 @@ struct PhoneJournalView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("View", selection: $showsMap) {
-                Text("Articles").tag(false)
-                Text("Map").tag(true)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
             if showsMap {
+                // The Map fills the room alone — its way back rides on
+                // the map itself, not a tab row above it.
                 ProceedingsMapView(
                     items: mapItems,
                     folder: model.folderURL,
@@ -371,8 +366,16 @@ struct PhoneJournalView: View {
                         } else {
                             model.setAside(record)
                         }
-                    })
+                    },
+                    back: { showsMap = false })
             } else {
+                Picker("View", selection: $showsMap) {
+                    Text("Articles").tag(false)
+                    Text("Map").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
                 List(model.records(inVenue: venue)) { record in
                     PhoneShelfRow(record: record, opensLocally: $readerID)
                 }

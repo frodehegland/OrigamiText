@@ -509,15 +509,19 @@ struct JournalBooksListView: View {
         // branches, and local @State would reset in the crossing.
         @Bindable var model = model
         VStack(spacing: 0) {
-            Picker("View", selection: $model.venueViewMode) {
-                ForEach(VenueViewMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+            // The Map fills the room alone — its way back rides on the
+            // map itself, not a tab row above it.
+            if model.venueViewMode != .map {
+                Picker("View", selection: $model.venueViewMode) {
+                    ForEach(VenueViewMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
             if model.venueViewMode == .documents {
                 documentsList
             } else if model.venueViewMode == .map {
@@ -558,7 +562,8 @@ struct JournalBooksListView: View {
                 } else {
                     model.setAside(record)
                 }
-            })
+            },
+            back: { model.venueViewMode = .documents })
     }
 
     private var documentsList: some View {
