@@ -495,9 +495,13 @@ struct ProceedingsMapView: View {
         #endif
     }
 
+    /// The default grid, computed once per reload — the binding's
+    /// fallback must not rebuild it per card per body pass.
+    @State private var seedCache: [String: CGPoint] = [:]
+
     private func binding(for item: Item) -> Binding<CGPoint> {
         Binding(
-            get: { positions[item.id] ?? Self.seeds(for: items)[item.id]
+            get: { positions[item.id] ?? seedCache[item.id]
                 ?? Self.canvasCenter },
             set: { positions[item.id] = $0 })
     }
@@ -550,6 +554,7 @@ struct ProceedingsMapView: View {
     private func reload() {
         let shared = EPUBMapSharedLayout.load(community: folder).positions
         let seeds = Self.seeds(for: items)
+        seedCache = seeds
         var next: [String: CGPoint] = [:]
         for item in items {
             next[item.id] = shared[item.key].map { Self.canvasPoint($0) }
@@ -618,6 +623,10 @@ private struct ProceedingsMapNode: View {
     let moved: () -> Void
 
     @State private var dragStart: CGPoint?
+    /// The card's place while in hand. Local to the node so a drag
+    /// re-renders this card alone; the map's dictionary — whose every
+    /// write re-renders the whole plane — learns the place on release.
+    @State private var livePosition: CGPoint?
 
     /// Lifted: clicked, or in hand — a breath of shadow and a nudge up
     /// and left, as though raised off the plane.
@@ -659,19 +668,21 @@ private struct ProceedingsMapNode: View {
                 x: lifted ? 3 : 0, y: lifted ? 4 : 0)
         .offset(x: lifted ? -2 : 0, y: lifted ? -2 : 0)
         .animation(.easeOut(duration: 0.15), value: lifted)
-        .position(position)
+        .position(livePosition ?? position)
         .gesture(
             DragGesture(minimumDistance: 2)
                 .onChanged { value in
                     if dragStart == nil { dragStart = position }
                     guard let start = dragStart else { return }
-                    position = CGPoint(
+                    livePosition = CGPoint(
                         x: min(max(start.x + value.translation.width, 90),
                                bounds.width - 90),
                         y: min(max(start.y + value.translation.height, 40),
                                bounds.height - 40))
                 }
                 .onEnded { _ in
+                    if let end = livePosition { position = end }
+                    livePosition = nil
                     dragStart = nil
                     moved()
                 })
