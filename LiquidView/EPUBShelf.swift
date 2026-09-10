@@ -384,10 +384,16 @@ struct ProceedingsMapView: View {
     let open: (String) -> Void
     let togglePin: (String) -> Void
     let toggleSetAside: (String) -> Void
+    /// Back to the journal's list of books — the foot bar's leading
+    /// chevron.
+    var back: (() -> Void)? = nil
 
     /// Canvas positions in points, by book id — the shared meters
     /// drawn onto the plane.
     @State private var positions: [String: CGPoint] = [:]
+
+    /// The foot bar's Find: matching cards light up, the rest recede.
+    @State private var findText = ""
 
     /// One hallway meter drawn at this many points; the canvas center
     /// is the hallway's (0, 1.2) — mid-height of its article grid.
@@ -401,6 +407,7 @@ struct ProceedingsMapView: View {
                 ForEach(items) { item in
                     ProceedingsMapNode(
                         item: item,
+                        emphasis: emphasis(for: item),
                         position: binding(for: item),
                         bounds: Self.canvasSize,
                         open: { open(item.id) },
@@ -412,7 +419,58 @@ struct ProceedingsMapView: View {
         }
         .defaultScrollAnchor(.center)
         .background(Color.secondary.opacity(0.06))
+        .safeAreaInset(edge: .bottom, spacing: 0) { footBar }
         .onAppear(perform: reload)
+    }
+
+    /// The Map's foot: the way back to the journal's list at the left,
+    /// Find in the middle. More tools will join it here.
+    private var footBar: some View {
+        HStack(spacing: 12) {
+            if let back {
+                Button(action: back) {
+                    Image(systemName: "chevron.left")
+                        .font(.body.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Back to the journal's articles")
+            }
+            Spacer()
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Find", text: $findText)
+                    .textFieldStyle(.plain)
+                if !findText.isEmpty {
+                    Button {
+                        findText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(maxWidth: 280)
+            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    /// Find on the plane: a card whose title or author carries the words
+    /// stands forward; the rest recede until the field clears.
+    private func emphasis(for item: Item) -> ProceedingsMapNode.Emphasis {
+        let query = findText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return .normal }
+        return item.title.localizedCaseInsensitiveContains(query)
+            || item.author.localizedCaseInsensitiveContains(query)
+            ? .matched : .dimmed
     }
 
     /// The plane itself. On the iPad it carries the two-finger probe:
@@ -537,7 +595,10 @@ private struct TwoFingerScrollConfigurator: UIViewRepresentable {
 /// One article on the map: a card that drags, opens on a double
 /// click or tap, and carries the pile choices in its context menu.
 private struct ProceedingsMapNode: View {
+    enum Emphasis { case normal, matched, dimmed }
+
     let item: ProceedingsMapView.Item
+    let emphasis: Emphasis
     @Binding var position: CGPoint
     let bounds: CGSize
     let open: () -> Void
@@ -562,9 +623,13 @@ private struct ProceedingsMapNode: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(.regularMaterial))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(item.isPinned
-                    ? Color.accentColor.opacity(0.7)
-                    : Color.secondary.opacity(0.3)))
+                .strokeBorder(
+                    emphasis == .matched
+                        ? Color.accentColor
+                        : item.isPinned
+                            ? Color.accentColor.opacity(0.7)
+                            : Color.secondary.opacity(0.3),
+                    lineWidth: emphasis == .matched ? 2 : 1))
         .overlay(alignment: .topTrailing) {
             if item.isPinned {
                 Image(systemName: "pin.fill")
@@ -573,7 +638,7 @@ private struct ProceedingsMapNode: View {
                     .padding(5)
             }
         }
-        .opacity(item.isSetAside ? 0.45 : 1)
+        .opacity(emphasis == .dimmed ? 0.25 : item.isSetAside ? 0.45 : 1)
         .position(position)
         .gesture(
             DragGesture(minimumDistance: 2)

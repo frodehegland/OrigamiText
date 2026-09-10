@@ -567,7 +567,8 @@ struct JournalBooksListView: View {
                 } else {
                     model.setAside(record)
                 }
-            })
+            },
+            back: { model.venueViewMode = .documents })
             .overlay(alignment: .leading) { mapPeekList }
             // Opening a book from the peeked list hands the room to the
             // reader — the Articles face has the pane to show it.
