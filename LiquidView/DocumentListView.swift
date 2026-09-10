@@ -540,11 +540,11 @@ struct JournalBooksListView: View {
         let aside = model.epubSetAsideRecords(inPublication: name)
         return ProceedingsMapView(
             items: shown.map {
-                .init(id: $0.id, title: $0.title, author: $0.author,
-                      isPinned: model.isTopOfPile($0))
+                .init(id: $0.id, key: $0.folder, title: $0.title,
+                      author: $0.author, isPinned: model.isTopOfPile($0))
             } + aside.map {
-                .init(id: $0.id, title: $0.title, author: $0.author,
-                      isSetAside: true)
+                .init(id: $0.id, key: $0.folder, title: $0.title,
+                      author: $0.author, isSetAside: true)
             },
             folder: model.index.folderURL,
             open: { id in

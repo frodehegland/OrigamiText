@@ -392,11 +392,11 @@ struct PhoneJournalView: View {
     /// them behind the list's pill.
     private var mapItems: [ProceedingsMapView.Item] {
         model.records(inVenue: venue).map {
-            .init(id: $0.id, title: $0.title, author: $0.author,
-                  isPinned: model.isTopOfPile($0))
+            .init(id: $0.id, key: $0.folder, title: $0.title,
+                  author: $0.author, isPinned: model.isTopOfPile($0))
         } + model.setAsideRecords(inVenue: venue).map {
-            .init(id: $0.id, title: $0.title, author: $0.author,
-                  isSetAside: true)
+            .init(id: $0.id, key: $0.folder, title: $0.title,
+                  author: $0.author, isSetAside: true)
         }
     }
 

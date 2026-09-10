@@ -337,6 +337,14 @@ nonisolated enum EPUBMapSharedLayout {
     }
 
     private static func read(at url: URL) -> State? {
+        // An iCloud copy that is a placeholder or has gone stale reads
+        // as absent or old — nudge the download so the next look is
+        // fresh, and read what is here meanwhile.
+        if let status = (try? url.resourceValues(
+                forKeys: [.ubiquitousItemDownloadingStatusKey]))?
+                .ubiquitousItemDownloadingStatus, status != .current {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+        }
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(State.self, from: data)
     }
@@ -358,6 +366,11 @@ struct ProceedingsMapView: View {
 
     struct Item: Identifiable {
         let id: String
+        /// The book's community-file identity (EPUBRecord.folder) — the
+        /// shared layout's key. Internal record ids differ between
+        /// devices' import histories; the file name is the one name
+        /// every device agrees on.
+        let key: String
         let title: String
         let author: String
         var isPinned = false
@@ -489,7 +502,7 @@ struct ProceedingsMapView: View {
         let seeds = Self.seeds(for: items)
         var next: [String: CGPoint] = [:]
         for item in items {
-            next[item.id] = shared[item.id].map { Self.canvasPoint($0) }
+            next[item.id] = shared[item.key].map { Self.canvasPoint($0) }
                 ?? seeds[item.id] ?? Self.canvasCenter
         }
         positions = next
@@ -501,7 +514,7 @@ struct ProceedingsMapView: View {
         var updates: [String: EPUBMapSharedLayout.Point] = [:]
         for item in items {
             if let position = positions[item.id] {
-                updates[item.id] = Self.sharedPoint(position)
+                updates[item.key] = Self.sharedPoint(position)
             }
         }
         EPUBMapSharedLayout.save(updating: updates, community: folder)

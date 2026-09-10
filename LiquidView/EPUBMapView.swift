@@ -195,6 +195,11 @@ struct EPUBMapView: View {
     /// positions survive app restarts.
     @State private var placed: [String: SIMD3<Float>] = EPUBMapLayoutStore.load()
 
+    /// The last shared-layout write this room has adopted — the flat
+    /// maps on the Mac and iPad key their X/Y by the book's
+    /// community-file identity, overlaid here onto the room's own ids.
+    @State private var sharedLayoutAdoptedAt: Date = .distantPast
+
     /// How the cited papers occupy their space. Each axis is a mapping,
     /// built to become user-configurable (the controls are coming): XY
     /// is the virtual rectangle for now, and Z carries meaning — by
@@ -275,8 +280,31 @@ struct EPUBMapView: View {
     /// resolves to a fellow article in the journal connects to that
     /// card instead of raising a ghost. Articles open in a reader
     /// window stay off the Map until their window closes.
+    /// Overlays the X and Y laid out on a Mac or iPad flat map onto this
+    /// room's cards — matched by the book's community-file identity
+    /// (EPUBRecord.folder), since internal ids differ between devices.
+    /// Each card keeps its local Z; the year reclaims an article's depth
+    /// regardless. Runs once per newer shared write.
+    private func adoptSharedLayout(for records: [EPUBRecord]) {
+        let state = EPUBMapSharedLayout.load(community: model.index.folderURL)
+        guard state.modified > sharedLayoutAdoptedAt else { return }
+        sharedLayoutAdoptedAt = state.modified
+        for record in records {
+            guard let point = state.positions[record.folder] else { continue }
+            let z = placed[record.id]?.z ?? -1.2
+            placed[record.id] = SIMD3<Float>(Float(point.x), Float(point.y), z)
+        }
+    }
+
+    /// id → community-file identity, the shared layout's keys.
+    private var sharedKeyByID: [String: String] {
+        Dictionary(model.epubRecords.map { ($0.id, $0.folder) },
+                   uniquingKeysWith: { first, _ in first })
+    }
+
     private func journalItems(venue: String) -> [EPUBMapItem] {
         let records = model.records(inVenue: venue)
+        adoptSharedLayout(for: records)
         let inJournal = Set(records.map(\.id))
 
         // The cited works, deduplicated across the whole journal, each
@@ -1495,7 +1523,8 @@ struct EPUBMapView: View {
                 placed[item.id] = position
             }
         }
-        EPUBMapLayoutStore.save(placed, community: model.index.folderURL)
+        EPUBMapLayoutStore.save(placed, community: model.index.folderURL,
+                                sharedKeys: sharedKeyByID)
     }
 
     /// Align to Room: the whole space slides (the fist-carry's own
@@ -1571,7 +1600,8 @@ struct EPUBMapView: View {
                 placed[item.id] = position
             }
         }
-        EPUBMapLayoutStore.save(placed, community: model.index.folderURL)
+        EPUBMapLayoutStore.save(placed, community: model.index.folderURL,
+                                sharedKeys: sharedKeyByID)
     }
 
     private func handleTap(count: Int, on item: EPUBMapItem) {
@@ -2829,26 +2859,16 @@ nonisolated enum EPUBMapLayoutStore {
     }
 
     static func load() -> [String: SIMD3<Float>] {
-        var placed: [String: SIMD3<Float>] = [:]
-        if let data = try? Data(contentsOf: fileURL),
-           let file = try? JSONDecoder().decode(LayoutFile.self, from: data) {
-            placed = Dictionary(uniqueKeysWithValues:
-                file.nodes.map { ($0.id, SIMD3<Float>($0.x, $0.y, $0.z)) })
-        }
-        // The X and Y laid out on a Mac or iPad overlay the room's own;
-        // each card keeps its local Z (and the year reclaims an
-        // article's depth regardless). The shared mirror is refreshed
-        // from the community folder on every shelf scan, so reading it
-        // here — before any model is in reach — reads fresh state.
-        for (id, point) in EPUBMapSharedLayout.load(community: nil).positions {
-            let z = placed[id]?.z ?? -1.2
-            placed[id] = SIMD3<Float>(Float(point.x), Float(point.y), z)
-        }
-        return placed
+        guard let data = try? Data(contentsOf: fileURL),
+              let file = try? JSONDecoder().decode(LayoutFile.self, from: data)
+        else { return [:] }
+        return Dictionary(uniqueKeysWithValues:
+            file.nodes.map { ($0.id, SIMD3<Float>($0.x, $0.y, $0.z)) })
     }
 
     static func save(_ positions: [String: SIMD3<Float>],
-                     community folder: URL? = nil) {
+                     community folder: URL? = nil,
+                     sharedKeys: [String: String] = [:]) {
         let nodes = positions.sorted { $0.key < $1.key }.map {
             LayoutFile.Node(id: $0.key, x: $0.value.x, y: $0.value.y, z: $0.value.z)
         }
@@ -2857,12 +2877,19 @@ nonisolated enum EPUBMapLayoutStore {
         guard let data = try? encoder.encode(LayoutFile(nodes: nodes)) else { return }
         try? data.write(to: fileURL, options: .atomic)
         // The plane's X and Y travel to the flat maps on the Mac and
-        // the iPad; Z stays the room's own.
-        EPUBMapSharedLayout.save(
-            updating: positions.mapValues {
-                EPUBMapSharedLayout.Point(x: Double($0.x), y: Double($0.y))
-            },
-            community: folder)
+        // the iPad, keyed by the book's community-file identity —
+        // internal record ids differ between devices' import histories.
+        // Cards without a key (citations, concepts) stay the room's own;
+        // Z stays the room's own throughout.
+        var updates: [String: EPUBMapSharedLayout.Point] = [:]
+        for (id, position) in positions {
+            if let key = sharedKeys[id] {
+                updates[key] = EPUBMapSharedLayout.Point(
+                    x: Double(position.x), y: Double(position.y))
+            }
+        }
+        guard !updates.isEmpty else { return }
+        EPUBMapSharedLayout.save(updating: updates, community: folder)
     }
 }
 
