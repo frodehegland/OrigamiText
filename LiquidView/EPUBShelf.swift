@@ -644,7 +644,9 @@ private struct ProceedingsMapNode: View {
         }
         .padding(10)
         .frame(width: 168, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(.regularMaterial))
+        // An opaque fill, not a material: sixty cards of live blur —
+        // re-blurred each frame under a moving card — drag the drag.
+        .background(RoundedRectangle(cornerRadius: 10).fill(.background))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(
@@ -663,6 +665,10 @@ private struct ProceedingsMapNode: View {
             }
         }
         .opacity(emphasis == .dimmed ? 0.25 : item.isSetAside ? 0.45 : 1)
+        // One flattened layer, THEN the shadow — unflattened, every
+        // text glyph casts its own, which reads wrong and costs a
+        // shadow pass per element on every drag frame.
+        .compositingGroup()
         .shadow(color: .black.opacity(lifted ? 0.3 : 0),
                 radius: lifted ? 5 : 0,
                 x: lifted ? 3 : 0, y: lifted ? 4 : 0)
