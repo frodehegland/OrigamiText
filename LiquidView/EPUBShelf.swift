@@ -384,9 +384,6 @@ struct ProceedingsMapView: View {
     let open: (String) -> Void
     let togglePin: (String) -> Void
     let toggleSetAside: (String) -> Void
-    /// Back to the venue's list face. The Map hides the tabs and fills
-    /// the room, so it carries its own way home.
-    var back: (() -> Void)? = nil
 
     /// Canvas positions in points, by book id — the shared meters
     /// drawn onto the plane.
@@ -415,20 +412,6 @@ struct ProceedingsMapView: View {
         }
         .defaultScrollAnchor(.center)
         .background(Color.secondary.opacity(0.06))
-        .overlay(alignment: .topLeading) {
-            if let back {
-                Button(action: back) {
-                    Label("Articles", systemImage: "chevron.left")
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(.regularMaterial))
-                        .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.3)))
-                }
-                .buttonStyle(.plain)
-                .padding(10)
-            }
-        }
         .onAppear(perform: reload)
     }
 

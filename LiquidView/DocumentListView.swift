@@ -502,6 +502,11 @@ struct JournalBooksListView: View {
     let name: String
     /// The Set Aside books stay tucked behind the foot pill until asked.
     @State private var showsSetAside = false
+    /// The Map's own peek: hovering the map's left edge summons the
+    /// journal's list as a floating column, the way the full-screen
+    /// sidebar peeks. Fades once the pointer moves on.
+    @State private var showsMapList = false
+    @State private var mapListHideTask: Task<Void, Never>?
 
     var body: some View {
         // The face shown lives on the model (AppModel.venueViewMode):
@@ -562,9 +567,61 @@ struct JournalBooksListView: View {
                 } else {
                     model.setAside(record)
                 }
-            },
-            back: { model.venueViewMode = .documents })
+            })
+            .overlay(alignment: .leading) { mapPeekList }
+            // Opening a book from the peeked list hands the room to the
+            // reader — the Articles face has the pane to show it.
+            .onChange(of: model.current?.doc.id) {
+                if model.current != nil, model.venueViewMode == .map {
+                    model.venueViewMode = .documents
+                }
+            }
     }
+
+    /// The journal's list, summoned over the map by the left edge —
+    /// hover in to browse or open, move on and it fades.
+    private var mapPeekList: some View {
+        HStack(spacing: 0) {
+            if showsMapList {
+                documentsList
+                    .frame(width: 300)
+                    .background(.regularMaterial)
+                    .clipShape(UnevenRoundedRectangle(
+                        topLeadingRadius: 0, bottomLeadingRadius: 0,
+                        bottomTrailingRadius: 12, topTrailingRadius: 12))
+                    .shadow(radius: 8, x: 2, y: 0)
+                    .onHover { inside in
+                        inside ? cancelMapListHide() : scheduleMapListHide()
+                    }
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+            Color.clear
+                .frame(width: 16)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside {
+                        cancelMapListHide()
+                        withAnimation(.easeOut(duration: 0.2)) { showsMapList = true }
+                    } else {
+                        scheduleMapListHide()
+                    }
+                }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    /// The same grace the full-screen peek gives: the pointer can cross
+    /// from the edge strip onto the panel without it vanishing under it.
+    private func scheduleMapListHide() {
+        mapListHideTask?.cancel()
+        mapListHideTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.25)) { showsMapList = false }
+        }
+    }
+
+    private func cancelMapListHide() { mapListHideTask?.cancel() }
 
     private var documentsList: some View {
         let shown = model.searchFilteredEPUBs(
