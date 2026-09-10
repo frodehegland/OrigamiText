@@ -1065,7 +1065,50 @@ struct EPUBReaderView: NSViewRepresentable {
                 NSWorkspace.shared.open(url)
                 decisionHandler(.cancel); return
             }
+            // A link straight to one of the book's images would replace
+            // the page with the bare file, blown up to the window — far
+            // too much in full screen. Show it over the text instead,
+            // sized to fit, dismissed with a click or Escape.
+            if navigationAction.navigationType == .linkActivated,
+               scheme == "file",
+               ["png", "jpg", "jpeg", "gif", "webp", "svg",
+                "avif", "heic", "tif", "tiff", "bmp"]
+                   .contains(url.pathExtension.lowercased()) {
+                showImageLightbox(url, in: webView)
+                decisionHandler(.cancel); return
+            }
             decisionHandler(.allow)
+        }
+
+        /// The clicked image as a lightbox over the page: dimmed text
+        /// behind, the picture at reading size, one click to put away.
+        private func showImageLightbox(_ url: URL, in webView: WKWebView) {
+            let src = Self.jsStringLiteral(url.absoluteString)
+            webView.evaluateJavaScript("""
+            (function(){
+              var old = document.getElementById('origami-lightbox');
+              if (old) old.remove();
+              var wrap = document.createElement('div');
+              wrap.id = 'origami-lightbox';
+              wrap.style.cssText = 'position:fixed;inset:0;z-index:2147483647;' +
+                'display:flex;align-items:center;justify-content:center;' +
+                'background:rgba(0,0,0,0.55);cursor:zoom-out;';
+              var img = document.createElement('img');
+              img.src = \(src);
+              img.style.cssText = 'max-width:78%;max-height:82%;' +
+                'border-radius:8px;background:white;' +
+                'box-shadow:0 12px 48px rgba(0,0,0,0.5);';
+              wrap.appendChild(img);
+              wrap.addEventListener('click', function(){ wrap.remove(); });
+              document.addEventListener('keydown', function esc(e){
+                if (e.key === 'Escape') {
+                  wrap.remove();
+                  document.removeEventListener('keydown', esc);
+                }
+              });
+              document.body.appendChild(wrap);
+            })();
+            """)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1096,7 +1139,14 @@ struct EPUBReaderView: NSViewRepresentable {
               if (window.origamiRevealStretchtext) { window.origamiRevealStretchtext(key); }
               var el = document.getElementById(key) || document.querySelector('[data-id="' + key + '"]');
               if (!el) return;
-              el.scrollIntoView({block:'center'});
+              // A heading lands at the top — centering shows the tail of
+              // the section before it, which reads as the wrong jump. A
+              // paragraph or quote still centers.
+              var block = /^H[1-6]$/.test(el.tagName) ? 'start' : 'center';
+              el.scrollIntoView({block: block});
+              // Fonts and late images reflow the page after the first
+              // jump and the target drifts — land again once settled.
+              setTimeout(function(){ el.scrollIntoView({block: block}); }, 350);
               var prior = el.style.backgroundColor;
               el.style.transition = 'background-color 1.2s';
               el.style.backgroundColor = 'rgba(255,214,10,0.45)';

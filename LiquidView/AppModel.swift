@@ -1036,6 +1036,7 @@ final class AppModel {
                                 links: [], wraps: nil,
                                 fileURL: FileManager.default.temporaryDirectory)
             doc.documentType = LiquidDoc.DocumentType.book.rawValue
+            doc.subtitle = result.subtitle
             doc.publication = result.publication
             doc.doi = result.doi
             doc.references = result.references
@@ -1122,6 +1123,83 @@ final class AppModel {
             }
             return .failed
         }
+    }
+
+    // MARK: - Word paper import (the ACM template's .docx)
+
+    /// A paper in the ACM Word template, turned into an EPUB exactly as
+    /// LaTeX archives are: parsed into the document model, written
+    /// through the Origami EPUB exporter, and filed into the reader's
+    /// library. A TAPS HTML rendering beside the .docx (same name,
+    /// .html) fills the print-side gaps — the paper's own DOI, the ACM
+    /// reference block, the license, ORCIDs, and the equations' TeX.
+    @discardableResult
+    func importWordPaper(at url: URL, tapsHTML: URL? = nil,
+                         andOpen: Bool = true) -> LibraryImportOutcome {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let html = tapsHTML ?? Self.tapsHTMLBeside(url)
+            let result = try ACMWordPaper.importPaper(at: url, tapsHTML: html)
+            let created = Date.now
+            let author = result.authors.joined(separator: ", ")
+            if let existing = existingConversion(title: result.title, author: author) {
+                if andOpen {
+                    openStoredEPUB(existing)
+                    showNote("Already in the library: “\(existing.title)”")
+                }
+                return .duplicate
+            }
+            let id = LiquidAddress.makeID(author: result.authors.first ?? author,
+                                          created: created)
+            var doc = LiquidDoc(format: LiquidDoc.knownFormat, id: id,
+                                title: result.title, author: author,
+                                created: created, body: result.body,
+                                links: [], wraps: nil,
+                                fileURL: FileManager.default.temporaryDirectory)
+            doc.documentType = LiquidDoc.DocumentType.book.rawValue
+            doc.publication = result.publication
+            doc.doi = result.doi
+            doc.references = result.references
+            doc.tables = result.tables
+            doc.assets = result.assets
+            doc.affiliations = result.affiliations
+            doc.acmReference = result.acmReference
+            doc.authorORCIDs = result.authorORCIDs
+            doc.authorEmails = result.authorEmails
+            doc.authorAffiliations = result.authorAffiliations
+            doc.license = result.license
+            // Through the exporter and straight back in: the EPUB is the
+            // document; the .docx was only ever a carrier.
+            let epubURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(id + ".epub")
+            try OrigamiEPUBExporter.write(doc: doc, resolve: { _ in nil }, to: epubURL)
+            defer { try? FileManager.default.removeItem(at: epubURL) }
+            guard let record = importEPUB(at: epubURL) else { return .failed }
+            if andOpen {
+                openStoredEPUB(record)
+                let notice = result.notices.first.map { " · \($0)" } ?? ""
+                showNote("Imported \u{201C}\(result.title)\u{201D} from Word\(notice)")
+                mirrorShelfToCommunityFolder()
+            }
+            return .imported
+        } catch {
+            if andOpen {
+                NSSound.beep()
+                showNote("Could not import the Word paper: \(error.localizedDescription)")
+            }
+            return .failed
+        }
+    }
+
+    /// The TAPS HTML rendering beside the manuscript, when one is
+    /// there — the same name with .html or .htm.
+    nonisolated private static func tapsHTMLBeside(_ url: URL) -> URL? {
+        for ext in ["html", "htm"] {
+            let candidate = url.deletingPathExtension().appendingPathExtension(ext)
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return nil
     }
 
     // MARK: - EPUB library (opened EPUBs, remembered internally)
@@ -2660,11 +2738,13 @@ final class AppModel {
                             fileURL: base)
         doc.date = (record?.dateISO ?? result.date).flatMap(LiquidDate.init(isoString:))
         doc.documentType = LiquidDoc.DocumentType.book.rawValue
+        doc.subtitle = result.subtitle
         doc.publication = result.publication ?? record?.publication
         doc.affiliations = result.affiliations
         doc.acmReference = result.acmReference
         doc.authorORCIDs = result.authorORCIDs
         doc.authorEmails = result.authorEmails
+        doc.authorAffiliations = result.authorAffiliations
         doc.license = result.license
         doc.concepts = result.concepts
         doc.layouts = result.layouts
@@ -3165,23 +3245,38 @@ final class AppModel {
         guard let folder = index.folderURL else { return }
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-        standingWrittenAt = EPUBStanding.write(pinned: epubTopOfPile,
-                                               setAside: epubSetAsideIDs,
-                                               concepts: viewConcepts,
-                                               to: folder)
+        // The file speaks in community file names (EPUBRecord.folder) —
+        // the one identity every device's import history agrees on.
+        standingWrittenAt = EPUBStanding.write(
+            pinned: EPUBStanding.fileNames(for: epubTopOfPile,
+                                           records: epubRecords),
+            setAside: EPUBStanding.fileNames(for: epubSetAsideIDs,
+                                             records: epubRecords),
+            concepts: viewConcepts,
+            to: folder)
     }
 
     /// Adopts the shared standing when another device wrote it more
-    /// recently than this one did.
+    /// recently than this one did. The coordinated read may wait on
+    /// iCloud while a newer version lands, so it runs off the main
+    /// actor and applies back here.
     func adoptStanding() {
         guard let folder = index.folderURL else { return }
-        let scoped = folder.startAccessingSecurityScopedResource()
-        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-        guard let state = EPUBStanding.read(from: folder),
-              state.modified > standingWrittenAt else { return }
+        Task.detached(priority: .utility) {
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            guard let state = EPUBStanding.read(from: folder) else { return }
+            await MainActor.run { self.applyStanding(state) }
+        }
+    }
+
+    private func applyStanding(_ state: EPUBStanding.State) {
+        guard state.modified > standingWrittenAt else { return }
         standingWrittenAt = state.modified
-        epubTopOfPile = Set(state.pinned)
-        epubSetAsideIDs = Set(state.setAside)
+        epubTopOfPile = EPUBStanding.localIDs(from: state.pinned,
+                                              records: epubRecords)
+        epubSetAsideIDs = EPUBStanding.localIDs(from: state.setAside,
+                                                records: epubRecords)
         UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
         UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
         // Concepts ride the same file; a file from before they
@@ -3580,6 +3675,13 @@ final class AppModel {
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
         mirrorShelfToCommunityFolder()
         adoptStanding()
+        // A pin that arrived before its book: the adopted standing may
+        // name a community file this scan only now imported — translate
+        // again so the new record joins the pile it was given elsewhere.
+        epubTopOfPile = EPUBStanding.localIDs(from: epubTopOfPile,
+                                              records: epubRecords)
+        epubSetAsideIDs = EPUBStanding.localIDs(from: epubSetAsideIDs,
+                                                records: epubRecords)
         // The headset's wishes: cited works asked for as books, shown
         // in the Time view until acquired or dismissed.
         acquisitions = EPUBAcquisitions.read(from: folder)
@@ -4855,6 +4957,12 @@ final class AppModel {
                     body = LiquidDoc.parseBody(from: text)
                 }
             case "doc", "docx":
+                // The ACM template's papers go the proceedings path — a
+                // full EPUB through the exporter — never into a draft.
+                if ACMWordPaper.isPaper(at: url) {
+                    importWordPaper(at: url)
+                    return
+                }
                 let result = try WordImporter.importFile(at: url)
                 title = result.title
                 author = result.author ?? authorName

@@ -138,16 +138,44 @@ nonisolated enum EPUBStanding {
 
     static func read(from folder: URL) -> State? {
         let url = folder.appendingPathComponent(fileName)
-        // A stale or undownloaded iCloud copy: nudge it down and read
-        // what is here — the open map re-reads every few seconds, so
-        // the fresh copy lands on a following beat.
-        if let status = (try? URL(fileURLWithPath: url.path).resourceValues(
-                forKeys: [.ubiquitousItemDownloadingStatusKey]))?
-                .ubiquitousItemDownloadingStatus, status != .current {
-            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+        // An uncoordinated read of an iCloud item serves whatever bytes
+        // are already local — stale for as long as nothing asks the
+        // provider for the version another device wrote. The coordinated
+        // read requests the current version and waits for this small
+        // file to land; the adopt paths hold it off the main actor.
+        var data: Data?
+        var coordinationError: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [],
+                                       error: &coordinationError) { readURL in
+            data = try? Data(contentsOf: readURL)
         }
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data else { return nil }
         return try? JSONDecoder().decode(State.self, from: data)
+    }
+
+    /// The shared file names books by their community-file identity
+    /// (EPUBRecord.folder) — internal record ids differ between
+    /// devices' import histories; the file name is the one name every
+    /// device agrees on, exactly as the Map's layout keys. A name with
+    /// no record here — a hypermedia address, a book this device does
+    /// not hold — passes through unchanged, so its standing survives
+    /// this device's writes.
+    static func fileNames(for ids: Set<String>,
+                          records: [EPUBRecord]) -> Set<String> {
+        var folderByID: [String: String] = [:]
+        for record in records { folderByID[record.id] = record.folder }
+        return Set(ids.map { folderByID[$0] ?? $0 })
+    }
+
+    /// The file's names brought home: a community file name becomes
+    /// the local record's id; an id from a file written before names
+    /// travelled stands as it is; anything unknown passes through, so
+    /// a book absent here keeps its standing everywhere else.
+    static func localIDs(from names: some Sequence<String>,
+                         records: [EPUBRecord]) -> Set<String> {
+        var idByFolder: [String: String] = [:]
+        for record in records { idByFolder[record.folder] = record.id }
+        return Set(names.map { idByFolder[$0] ?? $0 })
     }
 
     @discardableResult
@@ -466,7 +494,7 @@ struct ProceedingsMapView: View {
                         },
                         togglePin: { togglePin(item.id) },
                         toggleSetAside: { toggleSetAside(item.id) },
-                        moved: persist)
+                        moved: { persist(item) })
                 }
             }
         }
@@ -628,16 +656,16 @@ struct ProceedingsMapView: View {
         apply(EPUBMapSharedLayout.load(community: folder))
     }
 
-    /// Every card's place, written on drag end — the merge keeps other
-    /// venues' entries untouched.
-    private func persist() {
-        var updates: [String: EPUBMapSharedLayout.Point] = [:]
-        for item in items {
-            if let position = positions[item.id] {
-                updates[item.key] = Self.sharedPoint(position)
-            }
-        }
-        EPUBMapSharedLayout.save(updating: updates, community: folder)
+    /// The moved card's place, written on drag end — that one entry
+    /// alone, stamped now. Writing every card here would re-stamp this
+    /// device's possibly-stale copies as newest and roll back placements
+    /// made on an open map elsewhere — cards seen twitching between two
+    /// homes are that fight.
+    private func persist(_ item: Item) {
+        guard let position = positions[item.id] else { return }
+        EPUBMapSharedLayout.save(
+            updating: [item.key: Self.sharedPoint(position)],
+            community: folder)
     }
 }
 
@@ -717,15 +745,37 @@ private struct ProceedingsMapNode: View {
         #endif
     }
 
+    /// The card's type, two points under the callout/caption pair it
+    /// grew up with — sixty cards on the plane read better smaller.
+    private var titleFont: Font {
+        #if os(macOS)
+        .system(size: 10, weight: .semibold)
+        #else
+        .system(size: 14, weight: .semibold)
+        #endif
+    }
+
+    private var authorFont: Font {
+        #if os(macOS)
+        .system(size: 8)
+        #else
+        .system(size: 10)
+        #endif
+    }
+
     private var card: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(item.title)
-                .font(.callout.weight(.semibold))
+                .font(titleFont)
                 .lineLimit(3)
-            Text(item.author)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            // A set-aside card has stepped back — its title is enough;
+            // the byline returns with the book.
+            if !item.isSetAside {
+                Text(item.author)
+                    .font(authorFont)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
             #if !os(macOS)
             if isLifted {
                 HStack(spacing: 6) {

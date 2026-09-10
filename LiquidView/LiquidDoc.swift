@@ -47,6 +47,10 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// page). Copy to Cite emits it as a rendition source (`vm-source-*`)
     /// so a citation can point back at the origin, at the paragraph.
     var sourceURL: String? = nil
+    /// The paper's subtitle, when the source declares one apart from
+    /// the title (LaTeX's \subtitle) — shown under the title in the
+    /// exported front matter, carried through Visual-Meta.
+    var subtitle: String? = nil
     /// The journal or proceedings the document is part of, when it
     /// declares one — "37th ACM Conference on Hypertext". Captured at
     /// import (LaTeX's \acmJournal/\acmConference, an EPUB's own
@@ -71,6 +75,10 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// Each author's email, keyed by name — live mailto links on the
     /// exported author lines, carried through Visual-Meta.
     var authorEmails: [String: String] = [:]
+    /// Each author's printed affiliation line, keyed by name — lets the
+    /// exported front matter group name, affiliation and contact as the
+    /// paper prints them.
+    var authorAffiliations: [String: String] = [:]
     /// The paper's license and copyright block, as page 1 prints it
     /// lower left — the CC BY boilerplate with the paper's own DOI on
     /// its last line. Carried through Visual-Meta; the export renders
@@ -192,6 +200,10 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         /// paragraphs sharing an id fold together behind one `»` toggle.
         /// Recovered from the EPUB's `aside.ot-stretchtext-content`.
         var stretchID: String? = nil
+        /// Groups consecutive paragraphs into one framed box — the
+        /// print's tcolorbox/promptbox asides. The export wraps the
+        /// group in <aside class="ot-box">.
+        var boxID: String? = nil
         /// Where this paragraph came from (a transcription's page, a
         /// speaker's turn), when the document says.
         var provenance: String? = nil
@@ -638,13 +650,24 @@ extension LiquidDoc {
                          fileURL: fileURL)
     }
 
-    /// Some producers emit fractional seconds; try both.
-    nonisolated static func parseISO8601(_ string: String) -> Date? {
+    /// Some producers emit fractional seconds; try both. The formatters
+    /// are made once — construction goes through ICU and this parser
+    /// runs inside launch-time loops; ISO8601DateFormatter is
+    /// thread-safe once configured.
+    nonisolated(unsafe) private static let isoPlain: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        if let date = formatter.date(from: string) { return date }
+        return formatter
+    }()
+
+    nonisolated(unsafe) private static let isoFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: string)
+        return formatter
+    }()
+
+    nonisolated static func parseISO8601(_ string: String) -> Date? {
+        Self.isoPlain.date(from: string) ?? Self.isoFractional.date(from: string)
     }
 
     // Raw shapes with every field optional so unknown keys and missing

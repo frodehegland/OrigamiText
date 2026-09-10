@@ -61,16 +61,23 @@ nonisolated struct LiquidDate: Hashable, Sendable {
 
     /// A concrete instant for sorting and filtering alongside `created`
     /// timestamps. Missing precision resolves to the start of the period.
+    /// Pure arithmetic on the proleptic Gregorian calendar: this is a
+    /// sort key evaluated inside comparators — the letter lists order
+    /// by it on every render pass — and the Calendar this used to build
+    /// per call cost an ICU setup each time; opening the app spun for
+    /// seconds inside those sorts.
     var sortDate: Date {
-        var components = DateComponents()
-        components.era = isBCE ? 0 : 1
-        components.year = displayYear
-        components.month = month ?? 1
-        components.day = day ?? 1
-        components.hour = 12
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
-        return calendar.date(from: components) ?? .distantPast
+        // Days from civil date (Howard Hinnant's algorithm), valid for
+        // the astronomical years BCE dates store (329 BCE = -328).
+        let m = month ?? 1
+        let d = day ?? 1
+        let y = m <= 2 ? year - 1 : year
+        let era = (y >= 0 ? y : y - 399) / 400
+        let yearOfEra = y - era * 400
+        let dayOfYear = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+        let daysSinceEpoch = era * 146097 + dayOfEra - 719468
+        return Date(timeIntervalSince1970: Double(daysSinceEpoch) * 86400 + 12 * 3600)
     }
 
     // MARK: - Display

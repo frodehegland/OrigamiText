@@ -169,6 +169,16 @@ struct ContentView: View {
             // LocationRecord in LocationView.swift.
             model.recordLocations()
         }
+        // The maps' beat, here at the root: adopt the shared standing
+        // every few seconds, so a Pin or Set Aside made on the iPad or
+        // the headset arrives live — not only when the folder watcher's
+        // full scan completes. The read itself runs off the main actor.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))
+                model.adoptStanding()
+            }
+        }
         .inspector(isPresented: $model.showLinksInspector) {
             LinksInspectorView()
         }

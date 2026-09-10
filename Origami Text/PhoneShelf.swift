@@ -205,6 +205,7 @@ final class PhoneModel {
                             fileURL: base)
         doc.date = (record.dateISO ?? result.date).flatMap(LiquidDate.init(isoString:))
         doc.documentType = LiquidDoc.DocumentType.book.rawValue
+        doc.subtitle = result.subtitle
         doc.publication = result.publication ?? record.publication
         doc.concepts = result.concepts
         doc.references = result.references
@@ -460,31 +461,41 @@ final class PhoneModel {
         // this phone has not read it yet.
         let concepts = standingConcepts ?? EPUBStanding.read(from: folder)?.concepts ?? []
         standingConcepts = concepts
-        standingWrittenAt = EPUBStanding.write(pinned: epubTopOfPile,
-                                               setAside: epubSetAsideIDs,
-                                               concepts: concepts,
-                                               to: folder)
+        // The file speaks in community file names (EPUBRecord.folder) —
+        // the one identity every device's import history agrees on.
+        standingWrittenAt = EPUBStanding.write(
+            pinned: EPUBStanding.fileNames(for: epubTopOfPile,
+                                           records: epubRecords),
+            setAside: EPUBStanding.fileNames(for: epubSetAsideIDs,
+                                             records: epubRecords),
+            concepts: concepts,
+            to: folder)
     }
 
-    /// The Map's live tick: adopt a newer shared standing mid-view —
-    /// the scan-time adoption serves the shelf; an open map wants Pin
-    /// and Set Aside to travel now.
+    /// The shelf's and the Map's live beat: adopt a newer shared
+    /// standing mid-view, so Pin and Set Aside travel now. The
+    /// coordinated read may wait on iCloud while a newer version
+    /// lands, so it runs off the main actor and applies back here.
     func adoptSharedStanding() {
         guard let folder = folderURL else { return }
-        let scoped = folder.startAccessingSecurityScopedResource()
-        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-        adoptStanding(from: folder)
+        Task.detached(priority: .utility) {
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            guard let state = EPUBStanding.read(from: folder) else { return }
+            await MainActor.run { self.applyStanding(state) }
+        }
     }
 
     /// Adopts the shared standing when another device wrote it more
-    /// recently than this phone did. Callers hold the folder's scope.
-    private func adoptStanding(from folder: URL) {
-        guard let state = EPUBStanding.read(from: folder),
-              state.modified > standingWrittenAt else { return }
+    /// recently than this phone did.
+    private func applyStanding(_ state: EPUBStanding.State) {
+        guard state.modified > standingWrittenAt else { return }
         standingWrittenAt = state.modified
         if let concepts = state.concepts { standingConcepts = concepts }
-        epubTopOfPile = Set(state.pinned)
-        epubSetAsideIDs = Set(state.setAside)
+        epubTopOfPile = EPUBStanding.localIDs(from: state.pinned,
+                                              records: epubRecords)
+        epubSetAsideIDs = EPUBStanding.localIDs(from: state.setAside,
+                                                records: epubRecords)
         UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
         UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
     }
@@ -520,7 +531,7 @@ final class PhoneModel {
         guard let folder = folderURL else { return }
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-        adoptStanding(from: folder)
+        adoptSharedStanding()
         // The Map's shared layout rides the same folder — merge a newer
         // community copy into the local mirror on every scan.
         EPUBMapSharedLayout.refreshMirror(community: folder)
@@ -565,6 +576,13 @@ final class PhoneModel {
         }
         retireSuperseded(presentFolders: present)
         if changed { rebuildEPUBIndex() }
+        // A pin that arrived before its book: the adopted standing may
+        // name a community file this scan only now imported — translate
+        // again so the new record joins the pile it was given elsewhere.
+        epubTopOfPile = EPUBStanding.localIDs(from: epubTopOfPile,
+                                              records: epubRecords)
+        epubSetAsideIDs = EPUBStanding.localIDs(from: epubSetAsideIDs,
+                                                records: epubRecords)
         if placeholdersRemain {
             Task {
                 try? await Task.sleep(for: .seconds(8))

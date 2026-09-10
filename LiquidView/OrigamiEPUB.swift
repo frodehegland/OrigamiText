@@ -60,17 +60,20 @@ nonisolated enum OrigamiEPUBExporter {
 
         struct DocumentInfo: Encodable {
             enum CodingKeys: String, CodingKey {
-                case title, authors, date, identifier
+                case title, subtitle, authors, date, identifier
                 case origamiID = "origami-id"
                 case abstract, keywords, isbn, doi, publication
                 case affiliations
                 case acmReference = "acm-reference"
                 case authorORCIDs = "author-orcids"
                 case authorEmails = "author-emails"
+                case authorAffiliations = "author-affiliations"
                 case license
             }
 
             let title: String
+            /// The paper's subtitle, apart from the title.
+            var subtitle: String? = nil
             let authors: [String]
             let date: String
             let identifier: String
@@ -83,6 +86,8 @@ nonisolated enum OrigamiEPUBExporter {
             var authorORCIDs: [String: String] = [:]
             /// Each author's email, keyed by name.
             var authorEmails: [String: String] = [:]
+            /// Each author's affiliation line, keyed by name.
+            var authorAffiliations: [String: String] = [:]
             /// The license/copyright block, verbatim.
             var license: String? = nil
             /// The journal or proceedings the document is part of, when
@@ -398,6 +403,7 @@ nonisolated enum OrigamiEPUBExporter {
                 introduction: "This is Visual-Meta: the document's intellectual structure — its concepts, its citations, and any spatial layouts — carried with the document itself, readable by people and machines alike. See https://visual-meta.info."),
             document: VisualMetaDocument.DocumentInfo(
                 title: doc.title,
+                subtitle: doc.subtitle,
                 authors: [doc.displayAuthor],
                 date: documentDate(of: doc),
                 identifier: identifier(of: doc),
@@ -405,6 +411,7 @@ nonisolated enum OrigamiEPUBExporter {
                 acmReference: doc.acmReference,
                 authorORCIDs: doc.authorORCIDs,
                 authorEmails: doc.authorEmails,
+                authorAffiliations: doc.authorAffiliations,
                 license: doc.license,
                 publication: doc.publication,
                 origamiID: doc.id,
@@ -554,8 +561,17 @@ nonisolated enum OrigamiEPUBExporter {
                 appearance.append(match.id)
             }
         }
+        // A linked work that already stands in the reference list is one
+        // work — the reference keeps its printed number. Minting a second
+        // citation for the link doubled a round-tripped reference list
+        // (32 entries came back as 63): the import rebuilds links from
+        // resolvable citation anchors, and each carried the same BibTeX
+        // its reference already holds.
+        let referenceBibs = Set(doc.references.map { normalizedBibTeX($0.bibtex) })
         var targets: [String] = []
         for link in doc.links where !targets.contains(link.to) {
+            if let bibtex = link.bibtex,
+               referenceBibs.contains(normalizedBibTeX(bibtex)) { continue }
             targets.append(link.to)
         }
         targets.sort { lhs, rhs in
@@ -605,10 +621,33 @@ nonisolated enum OrigamiEPUBExporter {
         // Display fields are TeX-cleaned here, at the source: the visible
         // reference line, the Visual-Meta pool, and the CSL-JSON all read
         // "Luís Borges" while data-bibtex keeps the raw record verbatim.
-        let authors = (entry.fields["author"] ?? "")
-            .components(separatedBy: " and ")
-            .map { familyFirst(BibTeXParser.displayText($0)) }
-            .filter { !$0.isEmpty }
+        // A braced literal name ({Resemble AI}) prints whole, as the
+        // paper does — inverting it misnames the organisation.
+        func displayNames(field: String) -> [String] {
+            let literalAware = BibTeXParser.authorNames(inRaw: bibtex, field: field)
+            let names = literalAware.isEmpty
+                ? (entry.fields[field] ?? "")
+                    .components(separatedBy: " and ")
+                    .map { familyFirst(BibTeXParser.displayText($0)) }
+                    .filter { !$0.isEmpty }
+                : literalAware
+                    .map { name in
+                        let display = BibTeXParser.displayText(name.name)
+                        return name.isLiteral ? display : familyFirst(display)
+                    }
+                    .filter { !$0.isEmpty }
+            return names
+        }
+        var authors = displayNames(field: "author")
+        // An edited volume has no authors — the editors stand in, marked
+        // as print marks them ("Jessica Rubart and Claus Atzenbeck
+        // (Eds.)"); without this the line opened bare at the year.
+        if authors.isEmpty {
+            authors = displayNames(field: "editor")
+            if !authors.isEmpty {
+                authors[authors.count - 1] += " (Eds.)"
+            }
+        }
         return Citation(
             number: number,
             nodeID: nodeID,
@@ -624,12 +663,23 @@ nonisolated enum OrigamiEPUBExporter {
             bibtex: bibtex)
     }
 
+    /// One work, one identity: BibTeX compared with its whitespace
+    /// flowed, so a re-wrapped copy of the same record still matches.
+    private static func normalizedBibTeX(_ bibtex: String) -> String {
+        bibtex.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     /// "Frode Hegland" → "Hegland, Frode"; "Hegland, Frode" stays.
+    /// "Deutsche Forschungsgemeinschaft (DFG)" stays too — a
+    /// parenthesized last word is an acronym, not a family name, and
+    /// inverting once printed "(DFG), Deutsche Forschungsgemeinschaft".
     private static func familyFirst(_ name: String) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.contains(","), trimmed.contains(" ") else { return trimmed }
         let words = trimmed.split(separator: " ").map(String.init)
-        guard let family = words.last else { return trimmed }
+        guard let family = words.last, !family.hasPrefix("(") else { return trimmed }
         return "\(family), \(words.dropLast().joined(separator: " "))"
     }
 
@@ -705,10 +755,19 @@ nonisolated enum OrigamiEPUBExporter {
                 openStretchID = nil
             }
         }
+        var openBoxID: String?
+        func closeBox() {
+            if openBoxID != nil {
+                lines.append("</aside>")
+                openBoxID = nil
+            }
+        }
         for element in body {
             let stretchID = element.paragraph.stretchID
             if stretchID != openStretchID { closeStretch() }
+            if element.paragraph.boxID != openBoxID { closeBox() }
             if element.opensSection {
+                closeBox()
                 closeStretch()
                 if sectionOpen { lines.append("</section>") }
                 lines.append("<section>")
@@ -743,8 +802,13 @@ nonisolated enum OrigamiEPUBExporter {
                 lines.append("<aside class=\"ot-stretchtext-content\" id=\"\(escapedID)\" hidden=\"hidden\">")
                 openStretchID = stretchID
             }
+            if let boxID = element.paragraph.boxID, boxID != openBoxID {
+                lines.append("<aside class=\"ot-box\" data-box-id=\"\(attributeEscaped(boxID))\">")
+                openBoxID = boxID
+            }
             lines.append(html)
         }
+        closeBox()
         closeStretch()
         if sectionOpen { lines.append("</section>") }
         lines.append("</main>")
@@ -803,6 +867,11 @@ nonisolated enum OrigamiEPUBExporter {
     /// as a full name — "Doe, John" stays one line.
     private static func headerHTML(for doc: LiquidDoc) -> String {
         var lines = ["<header>", "<h1>\(escaped(doc.title))</h1>"]
+        // The subtitle stands under the title, as the paper prints it —
+        // never in the body's flow.
+        if let subtitle = doc.subtitle, !subtitle.isEmpty {
+            lines.append("<p class=\"subtitle\">\(escaped(subtitle))</p>")
+        }
         let display = doc.displayAuthor
         var authors = [display]
         if !display.contains(" on behalf of ") {
@@ -813,8 +882,17 @@ nonisolated enum OrigamiEPUBExporter {
                 authors = chunks
             }
         }
+        // The affiliations the per-author lines place; whatever no
+        // author claims still prints in the shared block below.
+        var unplaced = doc.affiliations
         for author in authors {
             lines.append("<p class=\"author\">\(escaped(author))</p>")
+            // The affiliation directly under the name, as the paper
+            // groups its byline columns — then the contact line.
+            if let affiliation = doc.authorAffiliations[author], !affiliation.isEmpty {
+                lines.append("<p class=\"affiliation\">\(escaped(affiliation))</p>")
+                unplaced.removeAll { $0 == affiliation }
+            }
             // The email and the ORCID, written out and live, on a quiet
             // line under the name — as the page prints them.
             var details: [String] = []
@@ -828,17 +906,24 @@ nonisolated enum OrigamiEPUBExporter {
                 lines.append("<p class=\"author-detail\">\(details.joined(separator: " \u{00B7} "))</p>")
             }
         }
-        for affiliation in doc.affiliations {
+        for affiliation in unplaced {
             lines.append("<p class=\"affiliation\">\(escaped(affiliation))</p>")
         }
         var parts: [String] = []
         if let publication = doc.publication, !publication.isEmpty {
             parts.append(publication)
         }
-        parts.append(doc.date?.displayText
-            ?? doc.created.formatted(date: .long, time: .omitted))
+        // A paper with an ACM Reference Format block already states its
+        // dates there (and in the license block) — a byline date here
+        // read as the publication day when it was only the conversion's.
+        if doc.acmReference == nil {
+            parts.append(doc.date?.displayText
+                ?? doc.created.formatted(date: .long, time: .omitted))
+        }
         if let location = doc.location { parts.append(location) }
-        lines.append("<p class=\"byline\">\(escaped(parts.joined(separator: " · ")))</p>")
+        if !parts.isEmpty {
+            lines.append("<p class=\"byline\">\(escaped(parts.joined(separator: " · ")))</p>")
+        }
         // The license and copyright, as page 1 prints them lower left:
         // the CC badge, the boilerplate lines, the paper's DOI live.
         if let license = doc.license, !license.isEmpty {
@@ -913,7 +998,9 @@ nonisolated enum OrigamiEPUBExporter {
         if let tableID = paragraph.tableID, let table = tablesByID[tableID] {
             let rows = table.cells.enumerated().map { rowIndex, row -> String in
                 let tag = rowIndex == 0 && table.cells.count > 1 ? "th" : "td"
-                let cells = row.map { "<\(tag)>\(escaped($0.value))</\(tag)>" }.joined()
+                let cells = row.map {
+                    "<\(tag)>\(citedCellHTML($0.value, citations: citations))</\(tag)>"
+                }.joined()
                 return "<tr>\(cells)</tr>"
             }
             return "<table \(anchors) data-table-id=\"\(attributeEscaped(table.identifier))\">"
@@ -1080,6 +1167,28 @@ nonisolated enum OrigamiEPUBExporter {
         return html
     }
 
+    /// A table cell's text with its citation tokens resolved to the
+    /// visible [n] links — the grid path never went through the
+    /// paragraph's inline conversion, so "[cite:sora2024]" printed
+    /// literally in six papers' tables where the PDF shows "[58]".
+    /// The Visual-Meta tables entry keeps the raw value, so a round
+    /// trip still recovers the token.
+    private static func citedCellHTML(_ value: String, citations: [Citation]) -> String {
+        var html = escaped(value)
+        guard html.contains("[cite:") else { return html }
+        for citation in citations where citation.address == nil {
+            let pattern = "\\[cite:\(NSRegularExpression.escapedPattern(for: citation.nodeID))\\]"
+            html = html.replacingOccurrences(
+                of: pattern,
+                with: "<a class=\"citation\" href=\"#ref-\(citation.number)\""
+                    + " data-citation-id=\"\(attributeEscaped(citation.nodeID))\">[\(citation.number)]</a>",
+                options: .regularExpression)
+        }
+        // A key the pool does not know degrades to the bracketed key.
+        return html.replacingOccurrences(of: "\\[cite:([^\\]]+)\\]", with: "[$1]",
+                                         options: .regularExpression)
+    }
+
     /// Wraps the first occurrence of `name` outside any tag in a
     /// `<dfn data-concept>` — nil when the text never mentions it.
     private static func wrappingFirstOccurrence(of name: String, in html: String) -> String? {
@@ -1200,11 +1309,20 @@ nonisolated enum OrigamiEPUBExporter {
     /// The EPUB 3 navigation document (spec §5), from the headings.
     private static func navHTML(doc: LiquidDoc,
                                 headings: [VisualMetaDocument.Structure.Heading]) -> String {
-        let items = headings.isEmpty
-            ? "<li><a href=\"paper.html\">\(escaped(doc.title))</a></li>"
+        var entries = headings.isEmpty
+            ? ["<li><a href=\"paper.html\">\(escaped(doc.title))</a></li>"]
             : headings.map {
-                "<li><a href=\"paper.html#\($0.address)\">\(escaped($0.text))</a></li>"
-            }.joined(separator: "\n")
+                // Emphasis markers are body notation — a contents label
+                // printed "**Networks with no central gravity**" raw.
+                let label = $0.text.replacingOccurrences(of: "*", with: "")
+                return "<li><a href=\"paper.html#\($0.address)\">\(escaped(label))</a></li>"
+            }
+        // The reference list is the exporter's own section — the body's
+        // headings never carry it, so the contents must add it.
+        if !doc.references.isEmpty {
+            entries.append("<li><a href=\"paper.html#references\">References</a></li>")
+        }
+        let items = entries.joined(separator: "\n")
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE html>
@@ -1341,6 +1459,7 @@ nonisolated enum OrigamiEPUBExporter {
     body { font-family: Georgia, serif; line-height: 1.5; margin: 6% 12%; }
     header { text-align: center; margin-bottom: 2.5em; }
     header h1 { font-size: 1.7em; margin-bottom: 0.6em; }
+    .subtitle { font-size: 1.2em; color: #555555; margin: -0.3em 0 0.8em; }
     .author { font-size: 1.1em; margin: 0.1em 0; }
     .affiliation { color: #555555; margin: 0.1em 0; }
     .byline { color: #555555; font-style: italic; margin-top: 0.5em; margin-bottom: 0; }
@@ -1348,6 +1467,7 @@ nonisolated enum OrigamiEPUBExporter {
     .cc-badge { width: 88px; height: auto; }
     .acm-reference { text-align: left; font-size: 0.85em; color: #555555; max-width: 34em; margin: 1.4em auto 0; }
     .author-detail { font-size: 0.8em; color: #555555; margin: 0 0 0.3em; }
+    .ot-box { border: 1.5px solid #444444; border-radius: 4px; padding: 0.2em 1em 0.7em; margin: 1.2em 0; }
     .author-detail a { color: inherit; }
     h2 { font-size: 1.4em; margin-top: 1.6em; }
     h3 { font-size: 1.2em; }

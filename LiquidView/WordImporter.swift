@@ -366,6 +366,977 @@ nonisolated enum WordImporter {
     }
 }
 
+// MARK: - ACM-template papers: the proceedings path
+
+/// A paper written in the ACM Word template (Titledocument, Authors,
+/// Affiliation, Abstract, Head1/Head2, FigureCaption, TableCaption,
+/// Bibentry… styles), imported to the same paper shape the LaTeX
+/// pipeline produces — so the odd proceedings paper that ships only as
+/// .docx (ht26-3) exports through the same EPUB path as its TAPS-built
+/// siblings. The template's named styles carry the structure the draft
+/// importer must guess at, so this path reads the OOXML directly and
+/// never goes through AppKit's lossy rich-text reader.
+///
+/// A TAPS-produced HTML rendering of the same paper, when given,
+/// contributes what the .docx cannot carry faithfully: the paper's own
+/// DOI, the verbatim ACM Reference Format block, the license block,
+/// author ORCIDs, print-corrected author names, TeX for the OLE
+/// equation objects (whose WMF previews no Apple platform renders),
+/// and reference venues/links. Everything structural still comes from
+/// the .docx; the HTML only fills print-side gaps.
+nonisolated enum ACMWordPaper {
+
+    struct Result: Sendable {
+        var title: String = ""
+        /// Print order, print-corrected names when the HTML knows better.
+        var authors: [String] = []
+        var publication: String?
+        var body: [LiquidDoc.Paragraph] = []
+        var references: [LiquidDoc.Reference] = []
+        var tables: [LiquidDoc.Table] = []
+        var assets: [LiquidDoc.Asset] = []
+        var doi: String?
+        var affiliations: [String] = []
+        var acmReference: String?
+        var authorORCIDs: [String: String] = [:]
+        var authorEmails: [String: String] = [:]
+        /// Each author's affiliation line, keyed by name — grouped
+        /// under the name in the exported front matter.
+        var authorAffiliations: [String: String] = [:]
+        var license: String?
+        var notices: [String] = []
+    }
+
+    enum ImportError: LocalizedError {
+        case unreadable
+        var errorDescription: String? { "The .docx could not be read." }
+    }
+
+    /// True when the .docx declares the ACM template's title style —
+    /// the routing test between the paper path and the draft path.
+    static func isPaper(at url: URL) -> Bool {
+        guard url.pathExtension.lowercased() == "docx",
+              let data = try? Data(contentsOf: url),
+              let zip = DocxZip(data: data),
+              let document = zip.read("word/document.xml"),
+              let xml = String(data: document, encoding: .utf8) else { return false }
+        return xml.contains("w:val=\"Titledocument\"")
+    }
+
+    // MARK: The import
+
+    static func importPaper(at url: URL, tapsHTML htmlURL: URL? = nil) throws -> Result {
+        guard let data = try? Data(contentsOf: url),
+              let archive = DocxZip(data: data),
+              let documentXML = archive.read("word/document.xml") else {
+            throw ImportError.unreadable
+        }
+        let items = DocxScanner.scan(documentXML)
+        let footnotes = footnoteTexts(archive: archive)
+        let mediaByRID = mediaRelationships(archive: archive)
+        let taps = htmlURL.flatMap { TAPSHTML(url: $0) }
+
+        var result = Result()
+        var body: [LiquidDoc.Paragraph] = []
+        var assets: [LiquidDoc.Asset] = []
+        var tables: [LiquidDoc.Table] = []
+        var paragraphCounter = 0
+        func nextID() -> String { paragraphCounter += 1; return "p\(paragraphCounter)" }
+
+        // Document-wide counters, exactly the printed paper's.
+        var sectionNumber = 0
+        var subsectionNumber = 0
+        var noteCounter = 0
+        var notes: [(id: String, text: String)] = []
+        var usedEquations = 0
+        var jumpTargets: [String: String] = [:]   // "fig1" → paragraph id
+        var pendingImages: [(assetID: String, paragraphID: String)] = []
+        var pendingTableCaption = false
+        var tableCounter = 0
+        var figureCounter = 0
+        var docxAuthors: [String] = []
+        var docxReferences: [String] = []
+
+        /// Body text from the paragraph's runs: emphasis hugging its
+        /// words, citation anchors as tokens, cross-reference anchors
+        /// as jump tokens, footnote marks lifted to endnotes, OLE
+        /// equation spots substituted with the HTML's TeX.
+        func flowedText(_ paragraph: DocxScanner.Paragraph) -> String {
+            // Word splits one emphasised phrase across many runs (often
+            // mid-word); coalesce equal-trait neighbours first, or each
+            // fragment gets its own marker pair and "*C**an…*" reads as
+            // broken emphasis all the way into the exported XHTML.
+            var runs: [DocxScanner.Run] = []
+            for run in paragraph.runs {
+                if case .text = run.kind, let last = runs.last, case .text = last.kind,
+                   last.bold == run.bold, last.italic == run.italic,
+                   last.anchor == run.anchor {
+                    runs[runs.count - 1].text += run.text
+                } else {
+                    runs.append(run)
+                }
+            }
+            var out = ""
+            for run in runs {
+                switch run.kind {
+                case .text:
+                    var text = run.text
+                    guard !text.isEmpty else { continue }
+                    if let anchor = run.anchor {
+                        if anchor.hasPrefix("bib"), text.rangeOfCharacter(
+                            from: CharacterSet.decimalDigits) != nil {
+                            out += "[cite:\(anchor)]"
+                            continue
+                        }
+                        if anchor.hasPrefix("fig") || anchor.hasPrefix("tb") {
+                            out += "[\(text)](origami-jump:@\(anchor))"
+                            continue
+                        }
+                    }
+                    let core = text.trimmingCharacters(in: .whitespaces)
+                    if !core.isEmpty, run.bold || run.italic {
+                        let marker = run.bold && run.italic ? "***"
+                            : run.bold ? "**" : "*"
+                        let leading = text.prefix { $0 == " " || $0 == "\t" }
+                        let trailing = text.reversed().prefix { $0 == " " || $0 == "\t" }
+                        text = "\(leading)\(marker)\(core)\(marker)\(String(trailing.reversed()))"
+                    }
+                    out += text
+                case .footnote(let id):
+                    guard let noteText = footnotes[id] else { continue }
+                    noteCounter += 1
+                    notes.append(("fn\(noteCounter)", noteText))
+                    out += "[note:fn\(noteCounter)]"
+                case .equation:
+                    usedEquations += 1
+                    if let tex = taps?.equation(at: usedEquations - 1) {
+                        out += tex
+                    } else {
+                        out += "⟨equation\(usedEquations)⟩"
+                    }
+                }
+            }
+            // The template brackets its citations outside the anchors —
+            // "[", the linked number, "]" — while the exporter's [cite:]
+            // rendering brings its own brackets: absorb the outer pair
+            // (and the commas between adjacent citations in one group).
+            return Self.absorbingCitationBrackets(out)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        /// One image paragraph per pending picture; the figure's printed
+        /// caption rides the last as its alt text, so the export shows
+        /// one figcaption under the group, as the template prints it.
+        func flushFigure(caption: String) {
+            guard !pendingImages.isEmpty else {
+                if !caption.isEmpty { body.append(LiquidDoc.Paragraph(
+                    id: nextID(), heading: nil, text: caption)) }
+                return
+            }
+            figureCounter += 1
+            jumpTargets["fig\(figureCounter)"] = pendingImages[0].paragraphID
+            for (index, image) in pendingImages.enumerated() {
+                let alt = index == pendingImages.count - 1 ? caption : ""
+                body.append(LiquidDoc.Paragraph(
+                    id: image.paragraphID, heading: nil,
+                    text: "![\(alt)](asset:\(image.assetID))"))
+            }
+            pendingImages = []
+        }
+
+        for item in items {
+            switch item {
+            case .paragraph(let paragraph):
+                let plain = paragraph.plainText.trimmingCharacters(in: .whitespacesAndNewlines)
+                switch paragraph.style {
+                case "Titledocument":
+                    if !plain.isEmpty { result.title = plain }
+                case "Authors":
+                    if !plain.isEmpty { docxAuthors.append(plain) }
+                case "Affiliation":
+                    guard !plain.isEmpty else { break }
+                    // The template ends each affiliation with the
+                    // author's email; the front matter shows emails
+                    // under the names instead, as the siblings do.
+                    var line = plain
+                    if let match = line.range(
+                        of: #",\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$"#,
+                        options: .regularExpression) {
+                        let email = line[match].dropFirst()
+                            .trimmingCharacters(in: .whitespaces)
+                        if let author = docxAuthors.last {
+                            result.authorEmails[author] = email
+                        }
+                        line.removeSubrange(match)
+                    }
+                    if !result.affiliations.contains(line) {
+                        result.affiliations.append(line)
+                    }
+                    if let author = docxAuthors.last {
+                        result.authorAffiliations[author] = line
+                    }
+                case "Abstract":
+                    body.append(LiquidDoc.Paragraph(id: nextID(), heading: 1,
+                                                    text: "Abstract"))
+                    body.append(LiquidDoc.Paragraph(id: nextID(), heading: nil,
+                                                    text: flowedText(paragraph)))
+                case "CCSDescription":
+                    let ccs = taps?.ccsConcepts ?? plain
+                    body.append(LiquidDoc.Paragraph(
+                        id: nextID(), heading: nil,
+                        text: "**CCS Concepts:** \(ccs)"))
+                case "KeyWords":
+                    body.append(LiquidDoc.Paragraph(
+                        id: nextID(), heading: nil,
+                        text: "**Keywords:** \(plain)"))
+                case "Head1":
+                    guard !plain.isEmpty else { break }
+                    sectionNumber += 1
+                    subsectionNumber = 0
+                    body.append(LiquidDoc.Paragraph(
+                        id: nextID(), heading: 1,
+                        text: "\(sectionNumber) \(plain)"))
+                case "Head2":
+                    guard !plain.isEmpty else { break }
+                    subsectionNumber += 1
+                    body.append(LiquidDoc.Paragraph(
+                        id: nextID(), heading: 2,
+                        text: "\(sectionNumber).\(subsectionNumber) \(plain)"))
+                case "Image":
+                    for rid in paragraph.imageRIDs {
+                        guard let asset = imageAsset(rid: rid, archive: archive,
+                                                     media: mediaByRID,
+                                                     count: assets.count) else { continue }
+                        assets.append(asset)
+                        pendingImages.append((asset.id, nextID()))
+                    }
+                case "FigureCaption":
+                    flushFigure(caption: plain)
+                case "TableCaption":
+                    guard !plain.isEmpty else { break }
+                    let id = nextID()
+                    tableCounter += 1
+                    jumpTargets["tb\(tableCounter)"] = id
+                    body.append(LiquidDoc.Paragraph(id: id, heading: nil, text: plain))
+                    pendingTableCaption = true
+                case "Bibentry":
+                    if !plain.isEmpty { docxReferences.append(plain) }
+                case "CCSHead", "KeyWordHead", "ReferenceHead":
+                    break   // structural labels; the shape is ours to write
+                default:
+                    guard !plain.isEmpty else { break }
+                    // Stray pictures ride ordinary paragraphs too.
+                    for rid in paragraph.imageRIDs {
+                        guard let asset = imageAsset(rid: rid, archive: archive,
+                                                     media: mediaByRID,
+                                                     count: assets.count) else { continue }
+                        assets.append(asset)
+                        pendingImages.append((asset.id, nextID()))
+                    }
+                    let text = flowedText(paragraph)
+                    if !text.isEmpty {
+                        body.append(LiquidDoc.Paragraph(id: nextID(), heading: nil,
+                                                        text: text))
+                    }
+                }
+            case .table(let table):
+                if !table.imageRIDs.isEmpty {
+                    // A layout table holding a figure's pictures — the
+                    // template's multi-part figures. Its cells carry no
+                    // prose; the images join the pending figure.
+                    for rid in table.imageRIDs {
+                        guard let asset = imageAsset(rid: rid, archive: archive,
+                                                     media: mediaByRID,
+                                                     count: assets.count) else { continue }
+                        assets.append(asset)
+                        pendingImages.append((asset.id, nextID()))
+                    }
+                } else if pendingTableCaption, !table.rows.isEmpty {
+                    pendingTableCaption = false
+                    let identifier = "word-table-\(tables.count + 1)"
+                    let columns = table.rows.map(\.count).max() ?? 0
+                    let cells = table.rows.map { row -> [LiquidDoc.Table.Cell] in
+                        var padded = row.map { LiquidDoc.Table.Cell(value: $0) }
+                        while padded.count < columns {
+                            padded.append(LiquidDoc.Table.Cell(value: ""))
+                        }
+                        return padded
+                    }
+                    tables.append(LiquidDoc.Table(identifier: identifier,
+                                                  rowCount: cells.count,
+                                                  columnCount: columns,
+                                                  cells: cells))
+                    let pipeText = table.rows
+                        .map { $0.joined(separator: " | ") }
+                        .joined(separator: "\n")
+                    var paragraph = LiquidDoc.Paragraph(id: nextID(), heading: nil,
+                                                        text: pipeText)
+                    paragraph.tableID = identifier
+                    body.append(paragraph)
+                }
+            }
+        }
+        flushFigure(caption: "")
+
+        // Cross-reference tokens onto their real targets; a name nothing
+        // answered keeps its printed words alone.
+        for index in body.indices {
+            var text = body[index].text
+            guard text.contains("origami-jump:@") else { continue }
+            for (name, target) in jumpTargets {
+                text = text.replacingOccurrences(of: "(origami-jump:@\(name))",
+                                                 with: "(origami-jump:\(target))")
+            }
+            while let range = text.range(
+                of: #"\[([^\]]*)\]\(origami-jump:@[a-z0-9]+\)"#,
+                options: .regularExpression) {
+                let words = text[range].dropFirst()
+                    .prefix { $0 != "]" }
+                text.replaceSubrange(range, with: String(words))
+            }
+            var updated = LiquidDoc.Paragraph(id: body[index].id,
+                                              heading: body[index].heading,
+                                              text: text)
+            updated.tableID = body[index].tableID
+            body[index] = updated
+        }
+
+        if !notes.isEmpty {
+            body.append(LiquidDoc.Paragraph(id: nextID(), heading: 1, text: "Notes"))
+            for note in notes {
+                body.append(LiquidDoc.Paragraph(id: note.id, heading: nil,
+                                                text: note.text))
+            }
+        }
+
+        // The byline: the print's names when the HTML's ACM reference
+        // block agrees on the count, the manuscript's otherwise.
+        var authors = docxAuthors
+        if let printed = taps?.printedAuthors, printed.count == authors.count {
+            for (manuscript, print) in zip(authors, printed) where manuscript != print {
+                result.authorEmails[print] = result.authorEmails.removeValue(
+                    forKey: manuscript) ?? result.authorEmails[print]
+                result.authorAffiliations[print] = result.authorAffiliations.removeValue(
+                    forKey: manuscript) ?? result.authorAffiliations[print]
+            }
+            authors = printed
+        }
+        result.authors = authors
+        if let orcids = taps?.orcids, orcids.count == authors.count {
+            for (author, orcid) in zip(authors, orcids) {
+                result.authorORCIDs[author] = orcid
+            }
+        }
+
+        result.body = body
+        result.assets = assets
+        result.tables = tables
+        result.doi = taps?.doi
+        result.acmReference = taps?.acmReference
+        result.license = taps?.license
+        result.publication = taps?.publication
+        result.references = references(docxLines: docxReferences, taps: taps,
+                                       notices: &result.notices)
+        if taps == nil {
+            result.notices.append("""
+                No TAPS HTML was given: the paper imports without its DOI, \
+                ACM reference block, license, ORCIDs, and equation TeX.
+                """)
+        }
+        if footnotes.count > notes.count {
+            result.notices.append("""
+                \(footnotes.count - notes.count) footnote(s) outside the body \
+                (author-block notes such as “Corresponding author”) were not carried.
+                """)
+        }
+        if usedEquations > 0, taps?.equationCount ?? 0 < usedEquations {
+            result.notices.append(
+                "\(usedEquations) equation(s) had no TeX to substitute.")
+        }
+        return result
+    }
+
+    /// The exporter's [cite:] rendering brings its own brackets — absorb
+    /// the manuscript's outer pair and the separators inside it:
+    /// "[[cite:bib7], [cite:bib9]]" → "[cite:bib7][cite:bib9]".
+    static func absorbingCitationBrackets(_ text: String) -> String {
+        var out = text
+        while let range = out.range(
+            of: #"\[((?:\s*\[cite:[A-Za-z0-9_.:-]+\]\s*[,;–-]?)+\s*)\]"#,
+            options: .regularExpression) {
+            let inner = String(out[range].dropFirst().dropLast())
+            var tokens: [String] = []
+            var cursor = inner.startIndex
+            while let hit = inner.range(of: #"\[cite:[A-Za-z0-9_.:-]+\]"#,
+                                        options: .regularExpression,
+                                        range: cursor..<inner.endIndex) {
+                tokens.append(String(inner[hit]))
+                cursor = hit.upperBound
+            }
+            out.replaceSubrange(range, with: tokens.joined())
+        }
+        return out
+    }
+
+    // MARK: Pieces
+
+    private static func footnoteTexts(archive: DocxZip) -> [Int: String] {
+        guard let data = archive.read("word/footnotes.xml"),
+              let xml = String(data: data, encoding: .utf8) else { return [:] }
+        var texts: [Int: String] = [:]
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<w:footnote(?:\s[^>]*)?\sw:id="(-?\d+)"[^>]*>(.*?)</w:footnote>"#,
+            options: .dotMatchesLineSeparators) else { return [:] }
+        let range = NSRange(xml.startIndex..., in: xml)
+        for match in regex.matches(in: xml, range: range) {
+            guard let idRange = Range(match.range(at: 1), in: xml),
+                  let bodyRange = Range(match.range(at: 2), in: xml),
+                  let id = Int(xml[idRange]), id > 0 else { continue }
+            let text = Self.concatenatedText(inRunXML: String(xml[bodyRange]))
+            if !text.isEmpty { texts[id] = text }
+        }
+        return texts
+    }
+
+    private static func mediaRelationships(archive: DocxZip) -> [String: String] {
+        guard let data = archive.read("word/_rels/document.xml.rels"),
+              let xml = String(data: data, encoding: .utf8) else { return [:] }
+        var map: [String: String] = [:]
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<Relationship\b[^>]*\bId="([^"]+)"[^>]*\bTarget="([^"]+)"[^>]*/?>"#)
+        else { return [:] }
+        let range = NSRange(xml.startIndex..., in: xml)
+        for match in regex.matches(in: xml, range: range) {
+            guard let idRange = Range(match.range(at: 1), in: xml),
+                  let targetRange = Range(match.range(at: 2), in: xml) else { continue }
+            var target = String(xml[targetRange])
+            guard target.contains("media/") else { continue }
+            target = target.replacingOccurrences(of: "../", with: "")
+            if !target.hasPrefix("word/") { target = "word/" + target }
+            map[String(xml[idRange])] = target
+        }
+        return map
+    }
+
+    private static func imageAsset(rid: String, archive: DocxZip,
+                                   media: [String: String],
+                                   count: Int) -> LiquidDoc.Asset? {
+        guard let target = media[rid], let bytes = archive.read(target) else { return nil }
+        let ext = (target as NSString).pathExtension.lowercased()
+        // WMF is Windows-only drawing — the OLE equations' previews;
+        // the equations travel as TeX instead.
+        guard ext != "wmf", ext != "emf", !bytes.isEmpty else { return nil }
+        let id = "img\(count + 1)"
+        return LiquidDoc.Asset(id: id, filename: "\(id).\(ext)",
+                               mediaType: LiquidDoc.mediaType(forExtension: ext),
+                               dataBase64: bytes.base64EncodedString(), alt: nil)
+    }
+
+    static func concatenatedText(inRunXML xml: String) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: "<w:t[^>]*>(.*?)</w:t>",
+            options: .dotMatchesLineSeparators) else { return "" }
+        var text = ""
+        let range = NSRange(xml.startIndex..., in: xml)
+        for match in regex.matches(in: xml, range: range) {
+            if let piece = Range(match.range(at: 1), in: xml) {
+                text += TAPSHTML.decodeEntities(String(xml[piece]))
+            }
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: The references
+
+    /// The reference list, printed numbers and all. The TAPS HTML is the
+    /// richer source — venue in <em>, DOI and URL as live links — with
+    /// the manuscript's Bibentry lines as the fallback.
+    private static func references(docxLines: [String], taps: TAPSHTML?,
+                                   notices: inout [String]) -> [LiquidDoc.Reference] {
+        if let taps, !taps.references.isEmpty {
+            if !docxLines.isEmpty, docxLines.count != taps.references.count {
+                notices.append("""
+                    The manuscript lists \(docxLines.count) references but the \
+                    TAPS HTML lists \(taps.references.count); the HTML's list \
+                    (the print's) was used.
+                    """)
+            }
+            return taps.references.enumerated().map { index, entry in
+                LiquidDoc.Reference(
+                    id: "bib\(index + 1)",
+                    bibtex: bibtex(number: index + 1, display: entry.display,
+                                   venue: entry.venue, doi: entry.doi, url: entry.url),
+                    citedAs: nil, number: index + 1)
+            }
+        }
+        return docxLines.enumerated().map { index, line in
+            // TAPS-prepared manuscripts carry literal <bib>/<number>
+            // markers inside the text; strip them to the printed words.
+            let display = line
+                .replacingOccurrences(of: #"<[^>]+>"#, with: "",
+                                      options: .regularExpression)
+                .replacingOccurrences(of: #"^\s*\[\d+\]\s*"#, with: "",
+                                      options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            return LiquidDoc.Reference(
+                id: "bib\(index + 1)",
+                bibtex: bibtex(number: index + 1, display: display,
+                               venue: nil, doi: nil, url: nil),
+                citedAs: nil, number: index + 1)
+        }
+    }
+
+    /// A BibTeX entry from the printed line — authors up to the year,
+    /// the title sentence after it, the venue when the HTML italicised
+    /// one. Parsed fields only; what cannot be told apart stays out
+    /// rather than guessed wrong.
+    private static func bibtex(number: Int, display: String, venue: String?,
+                               doi: String?, url: String?) -> String {
+        var authors: String?
+        var year: String?
+        var title: String?
+        var rest = display
+        if let regex = try? NSRegularExpression(
+            pattern: #"^(.+?)[.,]?\s+((?:17|18|19|20)\d\d)[a-z]?\.\s+"#,
+            options: .dotMatchesLineSeparators),
+           let match = regex.firstMatch(in: rest,
+                                        range: NSRange(rest.startIndex..., in: rest)),
+           let authorsRange = Range(match.range(at: 1), in: rest),
+           let yearRange = Range(match.range(at: 2), in: rest),
+           let matchedRange = Range(match.range, in: rest) {
+            authors = String(rest[authorsRange])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " .,"))
+            year = String(rest[yearRange])
+            rest = String(rest[matchedRange.upperBound...])
+        }
+        if let venue, let venueRange = rest.range(of: venue) {
+            title = String(rest[rest.startIndex..<venueRange.lowerBound])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " .,"))
+        } else if let sentence = rest.range(of: #"^(.+?[.?!])\s"#,
+                                            options: .regularExpression) {
+            title = String(rest[sentence])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+        } else if !rest.isEmpty {
+            title = rest.trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+        }
+        let cleanVenue = venue?.trimmingCharacters(in: CharacterSet(charactersIn: " .,"))
+        let isProceedings = cleanVenue.map {
+            $0.range(of: #"Proceedings|Conference|Workshop|Symposium|Adjunct|Companion"#,
+                     options: .regularExpression) != nil
+        } ?? false
+        let type = cleanVenue == nil ? "misc" : (isProceedings ? "inproceedings" : "article")
+        var fields: [(String, String)] = []
+        if let authors, !authors.isEmpty {
+            let names = authors
+                .replacingOccurrences(of: ", and ", with: " and ")
+                .replacingOccurrences(of: #",\s+"#, with: " and ",
+                                      options: .regularExpression)
+            fields.append(("author", names))
+        }
+        if let title, !title.isEmpty { fields.append(("title", title)) }
+        if let year { fields.append(("year", year)) }
+        if let cleanVenue {
+            fields.append((isProceedings ? "booktitle" : "journaltitle", cleanVenue))
+        }
+        if let doi { fields.append(("doi", doi)) }
+        if let url, doi == nil { fields.append(("url", url)) }
+        let bodyText = fields.map { "  \($0.0) = {\($0.1)}" }.joined(separator: ",\n")
+        return "@\(type){bib\(number),\n\(bodyText)\n}"
+    }
+}
+
+// MARK: The OOXML walk
+
+extension ACMWordPaper {
+
+    /// Walks word/document.xml once, in order, into a flat stream of
+    /// styled paragraphs and tables — a real XML parse, so entities,
+    /// split runs and nested table paragraphs never fall to a regex.
+    nonisolated final class DocxScanner: NSObject, XMLParserDelegate {
+
+        struct Run {
+            enum Kind { case text, footnote(Int), equation }
+            var kind: Kind = .text
+            var text = ""
+            var bold = false
+            var italic = false
+            /// The enclosing w:hyperlink's in-document target, when any.
+            var anchor: String?
+        }
+
+        struct Paragraph {
+            var style = ""
+            var runs: [Run] = []
+            var imageRIDs: [String] = []
+            var plainText: String {
+                runs.map { run in
+                    if case .text = run.kind { return run.text }
+                    return ""
+                }.joined()
+            }
+        }
+
+        struct Table {
+            var rows: [[String]] = []
+            var imageRIDs: [String] = []
+        }
+
+        enum Item {
+            case paragraph(Paragraph)
+            case table(Table)
+        }
+
+        static func scan(_ xml: Data) -> [Item] {
+            let scanner = DocxScanner()
+            let parser = XMLParser(data: xml)
+            parser.delegate = scanner
+            parser.parse()
+            return scanner.items
+        }
+
+        private var items: [Item] = []
+        private var paragraph: Paragraph?
+        private var run: Run?
+        private var anchor: String?
+        private var inRunProperties = false
+        private var collectingText = false
+        /// Table nesting: cell texts gather per row; images surface on
+        /// the table itself. Only depth 1 is kept — the template nests
+        /// no further.
+        private var table: Table?
+        private var tableDepth = 0
+        private var currentRow: [String] = []
+        private var currentCell = ""
+
+        func parser(_ parser: XMLParser, didStartElement elementName: String,
+                    namespaceURI: String?, qualifiedName: String?,
+                    attributes: [String: String]) {
+            switch elementName {
+            case "w:tbl":
+                tableDepth += 1
+                if tableDepth == 1 { table = Table() }
+            case "w:tr" where tableDepth == 1:
+                currentRow = []
+            case "w:tc" where tableDepth == 1:
+                currentCell = ""
+            case "w:p":
+                paragraph = Paragraph()
+            case "w:pStyle":
+                paragraph?.style = attributes["w:val"] ?? ""
+            case "w:hyperlink":
+                anchor = attributes["w:anchor"]
+            case "w:r":
+                run = Run(anchor: anchor)
+            case "w:rPr":
+                inRunProperties = true
+            case "w:b", "w:bCs":
+                if inRunProperties, isOn(attributes["w:val"]) { run?.bold = true }
+            case "w:i", "w:iCs":
+                if inRunProperties, isOn(attributes["w:val"]) { run?.italic = true }
+            case "w:t":
+                collectingText = true
+            case "w:footnoteReference":
+                if let id = attributes["w:id"].flatMap(Int.init) {
+                    closeRun()
+                    var mark = Run(anchor: nil)
+                    mark.kind = .footnote(id)
+                    paragraph?.runs.append(mark)
+                }
+            case "o:OLEObject":
+                closeRun()
+                var mark = Run(anchor: nil)
+                mark.kind = .equation
+                paragraph?.runs.append(mark)
+            case "a:blip":
+                if let rid = attributes["r:embed"] { paragraph?.imageRIDs.append(rid) }
+            case "w:br", "w:tab":
+                run?.text += " "
+            default:
+                break
+            }
+        }
+
+        func parser(_ parser: XMLParser, didEndElement elementName: String,
+                    namespaceURI: String?, qualifiedName: String?) {
+            switch elementName {
+            case "w:tbl":
+                if tableDepth == 1, let done = table {
+                    items.append(.table(done))
+                    table = nil
+                }
+                tableDepth = max(0, tableDepth - 1)
+            case "w:tr" where tableDepth == 1:
+                if !currentRow.isEmpty { table?.rows.append(currentRow) }
+            case "w:tc" where tableDepth == 1:
+                currentRow.append(currentCell.trimmingCharacters(in: .whitespacesAndNewlines))
+            case "w:p":
+                closeRun()
+                guard let done = paragraph else { break }
+                paragraph = nil
+                if tableDepth > 0 {
+                    // A cell's words gather into the grid; its pictures
+                    // (the template's multi-part figures ride in layout
+                    // tables) surface on the table.
+                    let words = done.plainText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !words.isEmpty {
+                        currentCell += currentCell.isEmpty ? words : " " + words
+                    }
+                    table?.imageRIDs.append(contentsOf: done.imageRIDs)
+                } else {
+                    items.append(.paragraph(done))
+                }
+            case "w:hyperlink":
+                anchor = nil
+            case "w:r":
+                closeRun()
+            case "w:rPr":
+                inRunProperties = false
+            case "w:t":
+                collectingText = false
+            default:
+                break
+            }
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            guard collectingText else { return }
+            if run == nil { run = Run(anchor: anchor) }
+            // Word text smuggles field and object control characters
+            // that are not legal XML — the export would refuse them.
+            run?.text += String(string.unicodeScalars.filter {
+                $0.value >= 0x20 || $0 == "\n" || $0 == "\t"
+            }.map(Character.init))
+        }
+
+        private func closeRun() {
+            guard let done = run else { return }
+            run = nil
+            guard !done.text.isEmpty else { return }
+            paragraph?.runs.append(done)
+        }
+
+        private func isOn(_ value: String?) -> Bool {
+            guard let value else { return true }
+            return !["0", "false", "none"].contains(value.lowercased())
+        }
+    }
+}
+
+// MARK: The TAPS HTML
+
+extension ACMWordPaper {
+
+    /// What the TAPS-produced HTML rendering contributes: metadata the
+    /// manuscript cannot carry and the print-side forms of what it can.
+    /// All reads are lenient — a block the file lacks is simply nil.
+    nonisolated struct TAPSHTML {
+        var doi: String?
+        var acmReference: String?
+        var license: String?
+        var publication: String?
+        var printedAuthors: [String]?
+        var orcids: [String]?
+        var ccsConcepts: String?
+        var references: [(display: String, venue: String?, doi: String?, url: String?)] = []
+        private var equations: [String] = []
+
+        var equationCount: Int { equations.count }
+        func equation(at index: Int) -> String? {
+            index < equations.count ? equations[index] : nil
+        }
+
+        init?(url: URL) {
+            guard let rawFile = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+            // The TAPS HTML spells its typography in numeric entities —
+            // decode the whole file first so every pattern below sees
+            // the characters the reader sees (© and ’, not &#x…;).
+            let raw = Self.decodeEntities(rawFile)
+
+            // The ACM Reference Format block — the paper's citation of
+            // itself, verbatim, and the home of its own DOI.
+            if let block = Self.first(#"ACM Reference [Ff]ormat:?\s*</[^>]+>(.{40,1200}?https://doi\.org/[^\s<"]+)"#,
+                                      in: raw, group: 1) {
+                let text = Self.plainText(block)
+                acmReference = text
+                if let doiRange = text.range(of: #"10\.\d{4,}/[^\s"<]+"#,
+                                             options: .regularExpression) {
+                    doi = String(text[doiRange])
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                }
+                // "In 37th ACM Conference on Hypertext (HT '26), …" — the
+                // venue between "In" and its short name (whose opening
+                // paren the odd production file drops).
+                if let venue = Self.first(#"\bIn\s+(.{8,120}?)\s*\(?[A-Z]{2,}\s*['’]\d\d\)"#,
+                                          in: text, group: 1) {
+                    publication = venue.trimmingCharacters(
+                        in: CharacterSet(charactersIn: " ,("))
+                }
+                // The authors ahead of the year — the names as printed.
+                if let head = Self.first(#"^(.+?)\.\s+(?:19|20)\d\d\."#, in: text, group: 1) {
+                    let names = head
+                        .replacingOccurrences(of: ", and ", with: ", ")
+                        .replacingOccurrences(of: " and ", with: ", ")
+                        .components(separatedBy: ", ")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                    if names.count > 1 { printedAuthors = names }
+                }
+            }
+
+            // The license block, as the sibling EPUBs carry it: the CC
+            // sentence, the venue line, the copyright line, the ISBN,
+            // and the DOI link — one line each.
+            if raw.contains("This work is licensed under")
+                || raw.range(of: #"©\s*20\d\d Copyright held by"#,
+                             options: .regularExpression) != nil {
+                var lines: [String] = []
+                if let cc = Self.first(
+                    #"This work is licensed under a\s*(?:</?[^>]+>\s*)*([^<]{10,80}License)"#,
+                    in: raw, group: 1) {
+                    lines.append("This work is licensed under a "
+                        + Self.plainText(cc).trimmingCharacters(in: .whitespaces) + ".")
+                }
+                if let venueLine = Self.first(
+                    #"License\s*(?:</?[^>]+>\s*)*\.?\s*(?:</?[^>]+>\s*)*([A-Z]{2,}\s*['’]\d\d,[^<]{4,80})"#,
+                    in: raw, group: 1) {
+                    lines.append(Self.plainText(venueLine))
+                }
+                if let copyright = Self.first(#"(©\s*20\d\d Copyright held by[^<]{5,120})"#,
+                                              in: raw, group: 1) {
+                    lines.append(Self.plainText(copyright))
+                }
+                if let isbn = Self.first(#"(ACM ISBN [^<\s]{8,40})"#, in: raw, group: 1) {
+                    lines.append(Self.plainText(isbn))
+                }
+                if let doi { lines.append("https://doi.org/\(doi)") }
+                if !lines.isEmpty { license = lines.joined(separator: "\n") }
+            }
+
+            // ORCIDs, in the author blocks' order.
+            var orcidList: [String] = []
+            Self.forEach(#"orcid\.org/(\d{4}-\d{4}-\d{4}-\d{3}[\dX])"#, in: raw) {
+                if !orcidList.contains($0[0]) { orcidList.append($0[0]) }
+            }
+            if !orcidList.isEmpty { self.orcids = orcidList }
+
+            // The CCS line, arrow and all — the manuscript's own flattens
+            // the hierarchy to bullets.
+            if let ccs = Self.first(#"CCS Concepts:?\s*(?:</?[^>]+>\s*)*(.{10,300}?)(?:Additional Key|Keywords|</p)"#,
+                                    in: raw, group: 1) {
+                let text = Self.plainText(ccs)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " ;•"))
+                if !text.isEmpty { ccsConcepts = "• " + text }
+            }
+
+            // The equations, in document order, as TeX. A single-letter
+            // equation reads better as its letter.
+            var texList: [String] = []
+            Self.forEach(#"<span class="tex">\$(.+?)\$</span>"#, in: raw) { groups in
+                let tex = Self.plainText(groups[0])
+                    .trimmingCharacters(in: .whitespaces)
+                let bare = tex.replacingOccurrences(of: #"\ "#, with: "")
+                    .trimmingCharacters(in: .whitespaces)
+                texList.append(
+                    bare.count <= 2 && bare.allSatisfy(\.isLetter) ? bare : "$\(tex)$")
+            }
+            self.equations = texList
+
+            // The reference list: one <li id="bibN"> per entry, venue in
+            // <em>, ways out as links.
+            var entries: [(display: String, venue: String?, doi: String?, url: String?)] = []
+            Self.forEach(#"<li id="bib\d+"[^>]*>(.*?)</li>"#, in: raw) { groups in
+                let item = groups[0]
+                let venue = Self.first(#"<em>(.*?)</em>"#, in: item, group: 1)
+                    .map(Self.plainText)
+                var doi: String?
+                var url: String?
+                Self.forEach(#"href="([^"]+)""#, in: item) { links in
+                    let link = links[0]
+                    if let range = link.range(of: #"10\.\d{4,}/[^\s"<]+"#,
+                                              options: .regularExpression),
+                       link.contains("doi.org") {
+                        if doi == nil { doi = String(link[range]) }
+                    } else if url == nil, link.hasPrefix("http") {
+                        url = link
+                    }
+                }
+                var display = Self.plainText(item)
+                display = display.replacingOccurrences(of: #"^\s*\[\d+\]\s*"#, with: "",
+                                                       options: .regularExpression)
+                entries.append((display, venue, doi, url))
+            }
+            self.references = entries
+        }
+
+        // MARK: Lenient readers
+
+        private static func first(_ pattern: String, in text: String,
+                                  group: Int) -> String? {
+            guard let regex = try? NSRegularExpression(
+                pattern: pattern, options: [.dotMatchesLineSeparators]) else { return nil }
+            let range = NSRange(text.startIndex..., in: text)
+            guard let match = regex.firstMatch(in: text, range: range),
+                  let hit = Range(match.range(at: group), in: text) else { return nil }
+            return String(text[hit])
+        }
+
+        private static func forEach(_ pattern: String, in text: String,
+                                    _ body: ([String]) -> Void) {
+            guard let regex = try? NSRegularExpression(
+                pattern: pattern, options: [.dotMatchesLineSeparators]) else { return }
+            let range = NSRange(text.startIndex..., in: text)
+            for match in regex.matches(in: text, range: range) {
+                var groups: [String] = []
+                for index in 1..<match.numberOfRanges {
+                    guard let hit = Range(match.range(at: index), in: text) else { continue }
+                    groups.append(String(text[hit]))
+                }
+                if !groups.isEmpty { body(groups) }
+            }
+        }
+
+        /// Tags out, entities decoded, whitespace flowed.
+        static func plainText(_ html: String) -> String {
+            let untagged = html.replacingOccurrences(of: #"<[^>]+>"#, with: " ",
+                                                     options: .regularExpression)
+            return decodeEntities(untagged)
+                .replacingOccurrences(of: #"\s+"#, with: " ",
+                                      options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        /// Numeric character references and the common named few — the
+        /// TAPS HTML spells its typography almost entirely in &#x…;.
+        static func decodeEntities(_ text: String) -> String {
+            var out = text
+            let named: [String: String] = [
+                "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"",
+                "&apos;": "'", "&#39;": "'", "&nbsp;": "\u{00A0}",
+                "&mdash;": "—", "&ndash;": "–", "&hellip;": "…",
+                "&ldquo;": "\u{201C}", "&rdquo;": "\u{201D}",
+                "&lsquo;": "\u{2018}", "&rsquo;": "\u{2019}",
+            ]
+            for (entity, character) in named {
+                out = out.replacingOccurrences(of: entity, with: character)
+            }
+            while let range = out.range(of: #"&#x?[0-9A-Fa-f]+;"#,
+                                        options: .regularExpression) {
+                let body = out[range].dropFirst(2).dropLast()
+                let scalar = body.hasPrefix("x") || body.hasPrefix("X")
+                    ? UInt32(body.dropFirst(), radix: 16)
+                    : UInt32(body)
+                let replacement = scalar.flatMap(Unicode.Scalar.init).map(String.init) ?? ""
+                out.replaceSubrange(range, with: replacement)
+            }
+            // Control characters are not legal XML content — the export
+            // refuses them; production HTML smuggles the odd one.
+            return String(out.unicodeScalars.filter {
+                $0.value >= 0x20 || $0 == "\n" || $0 == "\t"
+            }.map(Character.init))
+        }
+    }
+}
+
 // MARK: - Recovering inline images from the .docx
 
 /// Apple's NSAttributedString OOXML reader imports Word text and formatting
@@ -982,7 +1953,7 @@ nonisolated enum WordCitationFields {
 /// A tiny read-only ZIP reader sufficient for .docx: parses the central
 /// directory and inflates entries (stored or DEFLATE) via the Compression
 /// framework. (Ported from Author's `MiniZip`.)
-private struct DocxZip {
+nonisolated private struct DocxZip {
     private struct Entry {
         let method: UInt16
         let compressedSize: Int

@@ -186,6 +186,85 @@ nonisolated enum BibTeXParser {
     /// Parses the first entry, or nil.
     static func first(_ text: String) -> BibTeXEntry? { parse(text).first }
 
+    /// The author (or editor) field's names with BibTeX's literal marks
+    /// honoured: a name the record braces whole — {Resemble AI},
+    /// {Jian (jianfch)}, {Qwen Team} — is one corporate label, never
+    /// split into given and family; it sorts and prints as written.
+    /// Read from the raw record, because the cleaned field values shed
+    /// the very braces that mark a literal.
+    static func authorNames(inRaw raw: String,
+                            field: String = "author") -> [(name: String, isLiteral: Bool)] {
+        guard let opening = raw.range(
+            of: #"\b"# + field + #"\s*=\s*[{"]"#,
+            options: [.regularExpression, .caseInsensitive]) else { return [] }
+        // The field's value, inner braces intact — the delimiter may be
+        // braces or quotes (ACL-anthology exports quote their fields; a
+        // quoted entry once sorted first on an empty key and shifted a
+        // whole reference list off its printed numbers).
+        let quoted = raw[raw.index(before: opening.upperBound)] == "\""
+        var depth = quoted ? 0 : 1
+        var value = ""
+        var index = opening.upperBound
+        while index < raw.endIndex {
+            let character = raw[index]
+            if quoted {
+                if character == "\"", depth == 0 { break }
+                if character == "{" { depth += 1 }
+                if character == "}" { depth -= 1 }
+            } else {
+                if character == "{" { depth += 1 }
+                if character == "}" {
+                    depth -= 1
+                    if depth == 0 { break }
+                }
+            }
+            value.append(character)
+            index = raw.index(after: index)
+        }
+        let flat = value.replacingOccurrences(of: #"\s+"#, with: " ",
+                                              options: .regularExpression)
+        // Split on top-level " and " — a braced name shields the word.
+        // Case-blind: BibTeX treats "AND" the same, and files write it
+        // that way ("Jessica Rubart AND Claus Atzenbeck").
+        var names: [String] = []
+        var current = ""
+        var level = 0
+        var cursor = flat.startIndex
+        while cursor < flat.endIndex {
+            if level == 0, flat[cursor...].lowercased().hasPrefix(" and ") {
+                names.append(current)
+                current = ""
+                cursor = flat.index(cursor, offsetBy: 5)
+                continue
+            }
+            let character = flat[cursor]
+            if character == "{" { level += 1 }
+            if character == "}" { level = max(0, level - 1) }
+            current.append(character)
+            cursor = flat.index(after: cursor)
+        }
+        names.append(current)
+        return names.compactMap { name in
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return nil }
+            if trimmed.hasPrefix("{"), trimmed.hasSuffix("}") {
+                // Literal only when the outer pair wraps the whole name.
+                let inner = String(trimmed.dropFirst().dropLast())
+                var innerDepth = 0
+                var wraps = true
+                for character in inner {
+                    if character == "{" { innerDepth += 1 }
+                    if character == "}" {
+                        innerDepth -= 1
+                        if innerDepth < 0 { wraps = false; break }
+                    }
+                }
+                if wraps, innerDepth == 0 { return (inner, true) }
+            }
+            return (trimmed, false)
+        }
+    }
+
     /// Strips residual braces and LaTeX-isms, and heals line wraps.
     private static func cleaned(_ value: String) -> String {
         value

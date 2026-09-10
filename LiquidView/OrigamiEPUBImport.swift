@@ -34,6 +34,8 @@ nonisolated enum OrigamiEPUBImporter {
 
     struct ImportResult: Sendable {
         let title: String
+        /// The paper's subtitle from Visual-Meta, apart from the title.
+        var subtitle: String? = nil
         let author: String?
         /// Every author of record, in order: the Visual-Meta authors
         /// array when present, else all the package's dc:creator
@@ -52,6 +54,8 @@ nonisolated enum OrigamiEPUBImporter {
         var authorORCIDs: [String: String] = [:]
         /// Each author's email, keyed by name, from Visual-Meta.
         var authorEmails: [String: String] = [:]
+        /// Each author's affiliation line, keyed by name, from Visual-Meta.
+        var authorAffiliations: [String: String] = [:]
         /// The license/copyright block, from Visual-Meta.
         var license: String? = nil
         /// YYYY-MM-DD from the package metadata.
@@ -385,18 +389,30 @@ nonisolated enum OrigamiEPUBImporter {
         // restored body text — rels, fragments, and quoted spans
         // included — then given their BibTeX from the citation pool.
         // Pool citations the body never mentions still count.
-        var links = LiquidDoc.detectedLinks(in: body).map { link -> LiquidDoc.Link in
-            guard link.bibtex == nil, let bibtex = bibtexByAddress[link.to] else { return link }
-            var enriched = link
-            enriched.bibtex = bibtex
-            return enriched
-        }
+        // One boundary: the document's own reference keys and note ids
+        // are internal — a [cite:key] token names the reference list,
+        // not an outgoing link. Manufacturing links for them doubled
+        // the reference list on the next export (32 came back as 63).
+        // Our own exports' notes come back as body paragraphs (fn1…),
+        // so the body's stable ids count as internal too.
+        let internalIDs = Set(references.map(\.id))
+            .union(notes.map(\.id))
+            .union(body.map(\.id))
+        var links = LiquidDoc.detectedLinks(in: body)
+            .filter { !internalIDs.contains($0.to) }
+            .map { link -> LiquidDoc.Link in
+                guard link.bibtex == nil, let bibtex = bibtexByAddress[link.to] else { return link }
+                var enriched = link
+                enriched.bibtex = bibtex
+                return enriched
+            }
         for (address, bibtex) in bibtexByAddress.sorted(by: { $0.key < $1.key })
-        where !links.contains(where: { $0.to == address }) {
+        where !internalIDs.contains(address) && !links.contains(where: { $0.to == address }) {
             links.append(LiquidDoc.Link(to: address, fragment: nil, rel: "cites", bibtex: bibtex))
         }
         for address in addressByCitationID.values.sorted()
-        where bibtexByAddress[address] == nil && !links.contains(where: { $0.to == address }) {
+        where bibtexByAddress[address] == nil && !internalIDs.contains(address)
+            && !links.contains(where: { $0.to == address }) {
             links.append(LiquidDoc.Link(to: address, fragment: nil, rel: "cites", bibtex: nil))
         }
 
@@ -439,6 +455,7 @@ nonisolated enum OrigamiEPUBImporter {
             ?? (origamiDoc?["doi"] as? String).flatMap(normalizedDOI)
         return ImportResult(
             title: document?["title"] as? String ?? origamiDoc?["title"] as? String ?? title ?? "Untitled",
+            subtitle: (document?["subtitle"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             author: metaAuthors.first ?? creator,
             authors: metaAuthors.isEmpty ? creators : metaAuthors,
             publication: metaVenue ?? origamiVenue ?? opfVenue,
@@ -449,6 +466,7 @@ nonisolated enum OrigamiEPUBImporter {
                 .flatMap { $0.isEmpty ? nil : $0 },
             authorORCIDs: (document?["author-orcids"] as? [String: String]) ?? [:],
             authorEmails: (document?["author-emails"] as? [String: String]) ?? [:],
+            authorAffiliations: (document?["author-affiliations"] as? [String: String]) ?? [:],
             license: (document?["license"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             date: document?["date"] as? String ?? date,
             identifier: document?["identifier"] as? String ?? identifier,
@@ -915,6 +933,8 @@ nonisolated enum OrigamiEPUBImporter {
         var assetOrdinal = 0
         var fallbackOrdinal = 0
 
+        var currentBoxID: String?
+        var boxOrdinal = 0
         func visit(_ element: XMLTree.Element, stretchID: String? = nil) {
             // <h2> is the profile's top rank; a plain book's <h1>
             // chapter titles read at the same rank, its deeper ranks
@@ -933,7 +953,16 @@ nonisolated enum OrigamiEPUBImporter {
                 // The export's stretchtext detail: the toggled anchor in
                 // the host paragraph is chrome, but the aside's content
                 // stays foldable — its paragraphs carry the block's id.
-                if (element.attributes["class"] ?? "").contains("ot-stretchtext-content") {
+                if (element.attributes["class"] ?? "").contains("ot-box") {
+                    // A framed box (the print's tcolorbox/promptbox):
+                    // its paragraphs keep the group id for re-export.
+                    boxOrdinal += 1
+                    let boxID = element.attributes["data-box-id"] ?? "box\(boxOrdinal)"
+                    let saved = currentBoxID
+                    currentBoxID = boxID
+                    for child in element.elements { visit(child, stretchID: stretchID) }
+                    currentBoxID = saved
+                } else if (element.attributes["class"] ?? "").contains("ot-stretchtext-content") {
                     let blockID = element.attributes["id"].map { idPrefix + $0 } ?? stableID()
                     for child in element.elements { visit(child, stretchID: blockID) }
                 } else if (element.attributes["epub:type"] ?? "").contains("footnote")
@@ -1087,6 +1116,7 @@ nonisolated enum OrigamiEPUBImporter {
                     }
                     var paragraph = LiquidDoc.Paragraph(id: id, heading: nil, text: text)
                     paragraph.stretchID = stretchID
+                    paragraph.boxID = currentBoxID
                     if offset == 0 { paragraph.speaker = speaker }
                     paragraphs.append(paragraph)
                 }

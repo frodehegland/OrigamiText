@@ -116,6 +116,27 @@ output of the last:
    lists, quotes, verbatim/listings, display math made readable when
    simple — see below — else kept as verbatim TeX);
    unknown environments unwrap — markup drops, words stay.
+   FRAMED BOXES (tcolorbox, mdframed, promptbox, shaded, TAPS's
+   green2/aptdispbox arm) become a grouped box: the title (a brace
+   argument, a title= option, or aptdispbox's argument) leads as a bold
+   line, the content paragraphs share a `boxID`, and the export wraps
+   the group in `<aside class="ot-box">` with a border — ht26-2's
+   Prompt box printed as plain text before this. `\color{…}` switches
+   drop; `\textcolor{name}{words}` keeps its words.
+   `\subsubsection`, `\paragraph` and `\subparagraph` are RUN-IN
+   headings in acmart: the italic label — numbered for subsubsections,
+   the resolver has already put "3.2.1" inside the braces — opens the
+   sentence with acmart's trailing period, and the text continues on
+   the same line ("3.2.1 Objective. Treat the development phase…",
+   ht26-49; "H1. Participants will form plans…", ht26-45). Mapping
+   them to block headings broke lines print never breaks; they now
+   join the following text as emphasis. Only sections and subsections
+   are block headings, exactly as acmart prints them. The label WAITS
+   for its prose: LaTeX ignores a blank line after the command, and a
+   stripped \label or an intervening float must not strand the label
+   as its own paragraph (a pending buffer holds it for the next text
+   run — ht26-2's "3.1.1 URL-derived dataset construction." once sat
+   alone above the sentence it opens in print).
    Floats carry their printed labels: every caption opens
    "Figure 3: " / "Table 2: " with the same number a `\ref` resolves
    to, and the counter belongs to the **caption**, exactly as in
@@ -194,6 +215,14 @@ output of the last:
      -47, -57: every checked position matches print).
    - *Key reconciliation:* case-insensitive first, then punctuation-blind
      — a body citing `ca-nurnberg-99` finds the bib's `ca-nurnberg+99`.
+   - *Literal names:* a name the record braces whole —
+     `author = {{Resemble AI}}`, `{{Jian (jianfch)}}` — is BibTeX's
+     escape for one corporate label. It is never inverted and it sorts
+     as printed (R, J), exactly as the camera PDF orders it; treating
+     it as "Given Family" once filed "AI, Resemble" first and shifted
+     ht26-7's whole numbering (found 10 Sep). The literal-aware read
+     is `BibTeXParser.authorNames(inRaw:)`, honoured by both the
+     emulator's sort and the rendered reference line.
    - Each reference carries its printed number explicitly
      (`Reference.number`), so every platform shows the `[n]` the PDF shows.
 9. **Resolve figures:** exact path → extension probing (both cases) →
@@ -358,4 +387,17 @@ In rough order of value:
    the instances.
 7. **Word (.docx) ingestion** for the odd paper that ships without TAPS
    source (ht26-3), through `WordImporter` with this same verification
-   harness around it.
+   harness around it. *Done, 10 September 2026:* `ACMWordPaper`
+   (WordImporter.swift) reads the ACM template's named styles straight
+   from the OOXML — title, byline, abstract, CCS/keywords, numbered
+   headings, figure groups (including layout-table figures), data
+   tables, footnotes as endnotes, Bibentry references with printed
+   numbers — and a TAPS HTML rendering beside the manuscript fills the
+   print-side gaps (DOI, ACM reference block, license, ORCIDs,
+   print-corrected names, equation TeX, reference venues and links).
+   ht26-3 shipped as 3800935.3830835.epub: zero dangling anchors,
+   57/57 references, full round trip. The app routes an ACM-styled
+   .docx to `importWordPaper` (an EPUB, like LaTeX), never to a draft.
+   Lesson repeated from the LaTeX round: Word splits one emphasised
+   phrase across runs mid-word — coalesce by trait before wrapping
+   markers, or the emphasis breaks the exported XHTML.

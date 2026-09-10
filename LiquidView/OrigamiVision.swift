@@ -400,26 +400,41 @@ final class VisionModel {
         guard let folder = index.folderURL else { return }
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-        standingWrittenAt = EPUBStanding.write(pinned: pinnedIDs,
-                                               setAside: setAsideIDs,
-                                               concepts: concepts,
-                                               to: folder)
+        // The file speaks in community file names (EPUBRecord.folder) —
+        // the one identity every device's import history agrees on.
+        standingWrittenAt = EPUBStanding.write(
+            pinned: EPUBStanding.fileNames(for: pinnedIDs,
+                                           records: epubRecords),
+            setAside: EPUBStanding.fileNames(for: setAsideIDs,
+                                             records: epubRecords),
+            concepts: concepts,
+            to: folder)
     }
 
     /// Adopts the shared standing when another device wrote it more
-    /// recently than this one did.
+    /// recently than this one did. The coordinated read may wait on
+    /// iCloud while a newer version lands, so it runs off the main
+    /// actor and applies back here.
     func adoptStanding() {
         guard let folder = index.folderURL else { return }
-        let scoped = folder.startAccessingSecurityScopedResource()
-        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-        // The map's shared X/Y ride the same folder — pull a newer copy
-        // into the mirror the layout store reads at Map open.
-        EPUBMapSharedLayout.refreshMirror(community: folder)
-        guard let state = EPUBStanding.read(from: folder),
-              state.modified > standingWrittenAt else { return }
+        Task.detached(priority: .utility) {
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            // The map's shared X/Y ride the same folder — pull a newer copy
+            // into the mirror the layout store reads at Map open.
+            EPUBMapSharedLayout.refreshMirror(community: folder)
+            guard let state = EPUBStanding.read(from: folder) else { return }
+            await MainActor.run { self.applyStanding(state) }
+        }
+    }
+
+    private func applyStanding(_ state: EPUBStanding.State) {
+        guard state.modified > standingWrittenAt else { return }
         standingWrittenAt = state.modified
-        pinnedIDs = Set(state.pinned)
-        setAsideIDs = Set(state.setAside)
+        pinnedIDs = EPUBStanding.localIDs(from: state.pinned,
+                                          records: epubRecords)
+        setAsideIDs = EPUBStanding.localIDs(from: state.setAside,
+                                            records: epubRecords)
         UserDefaults.standard.set(pinnedIDs.sorted(), forKey: "epubTopOfPile")
         UserDefaults.standard.set(setAsideIDs.sorted(), forKey: "epubSetAside")
         if let shared = state.concepts {
@@ -545,6 +560,13 @@ final class VisionModel {
         retireSuperseded(presentFolders: present)
         if changed { rebuildEPUBIndex() }
         adoptStanding()
+        // A pin that arrived before its book: the adopted standing may
+        // name a community file this scan only now imported — translate
+        // again so the new record joins the pile it was given elsewhere.
+        pinnedIDs = EPUBStanding.localIDs(from: pinnedIDs,
+                                          records: epubRecords)
+        setAsideIDs = EPUBStanding.localIDs(from: setAsideIDs,
+                                            records: epubRecords)
         // The citation graph the Mac researched — what the cited works
         // themselves cite — reads in from the same folder; this device
         // never crawls.
@@ -1038,6 +1060,7 @@ final class VisionModel {
                             fileURL: base)
         doc.date = (record.dateISO ?? result.date).flatMap(LiquidDate.init(isoString:))
         doc.documentType = LiquidDoc.DocumentType.book.rawValue
+        doc.subtitle = result.subtitle
         doc.publication = result.publication ?? record.publication
         doc.concepts = result.concepts
         doc.layouts = result.layouts

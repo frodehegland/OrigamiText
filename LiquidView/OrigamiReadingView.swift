@@ -729,8 +729,9 @@ struct OrigamiReadingView: View {
                 if !swipeTurned, abs(swipeAccumulatorX) > 60 {
                     swipeTurned = true
                     // Natural scrolling: fingers left brings the pages
-                    // to the right — the next spread.
-                    turnPages(by: swipeAccumulatorX < 0 ? shown : -shown)
+                    // to the right. One column per swipe — the buttons
+                    // turn whole spreads; the swipe nudges.
+                    turnPages(by: swipeAccumulatorX < 0 ? 1 : -1)
                 }
                 if event.phase == .ended || event.phase == .cancelled {
                     swipeAccumulatorX = 0

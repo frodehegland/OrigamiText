@@ -199,6 +199,18 @@ struct ReadHomeView: View {
         .onChange(of: scenePhase) {
             if scenePhase == .active { model.scanFolderForEPUBs() }
         }
+        // The maps' beat, here on the shelf: while the app is up, adopt
+        // the shared standing every few seconds, so a Pin or Set Aside
+        // made on the Mac or the headset arrives live — not only on the
+        // next foreground scan. The read nudges a stale iCloud copy;
+        // the fresh file lands on a following beat.
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))
+                model.adoptSharedStanding()
+            }
+        }
         .sheet(isPresented: $showsSettings) {
             PhoneSettingsView()
                 .presentationDetents([.medium, .large])

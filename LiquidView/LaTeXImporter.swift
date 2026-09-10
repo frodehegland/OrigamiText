@@ -28,6 +28,9 @@ nonisolated enum LaTeXImporter {
 
     struct Result: Sendable {
         var title: String
+        /// The paper's own subtitle (\subtitle), apart from the title —
+        /// the exported front matter sets it under the title line.
+        var subtitle: String? = nil
         var author: String?
         /// The journal or proceedings the paper is part of, from the
         /// preamble: \acmJournal, the conference name in \acmConference,
@@ -56,6 +59,10 @@ nonisolated enum LaTeXImporter {
         /// Each author's email, keyed by name — the first \\email after
         /// the \\author (a shared address never overwrites it).
         var authorEmails: [String: String] = [:]
+        /// Each author's printed affiliation line, keyed by name — the
+        /// first \\affiliation after the \\author, so the front matter
+        /// can group name, affiliation and contact as the PDF does.
+        var authorAffiliations: [String: String] = [:]
     }
 
     // MARK: - Entry points
@@ -297,22 +304,45 @@ nonisolated enum LaTeXImporter {
             .map { $0.replacingOccurrences(of: "\n", with: " ") }
             .flatMap { $0.isEmpty ? nil : $0 }
             ?? fallbackTitle
+        // \subtitle, kept apart: the front matter sets it under the
+        // title; folding it into the title would misname the shelf row.
+        let subtitle = firstBalancedArgument(of: "subtitle", in: stripped,
+                                             skippingBracketOption: true)
+            .map { inline(convert: $0.value).text }
+            .map { $0.replacingOccurrences(of: "\n", with: " ") }
+            .flatMap { $0.isEmpty ? nil : $0 }
         let authors = balancedArguments(of: "author", in: stripped,
                                         skippingBracketOption: true)
             .map { inline(convert: $0).text }
             .filter { !$0.isEmpty }
         let author = authors.isEmpty ? nil : authors.joined(separator: ", ")
 
-        // Each \\orcid pairs with the \\author it follows.
+        // The printed affiliation line an \\affiliation block holds —
+        // institution, city, state, country as one line, as the PDF
+        // prints them.
+        func affiliationLine(_ block: String) -> String {
+            ["institution", "city", "state", "country"].compactMap { part in
+                balancedArguments(of: part, in: block).first
+                    .map { inline(convert: $0).text
+                        .replacingOccurrences(of: "\n", with: " ")
+                        .trimmingCharacters(in: .whitespaces) }
+                    .flatMap { $0.isEmpty ? nil : $0 }
+            }.joined(separator: ", ")
+        }
+
+        // Each \\orcid, \\email and \\affiliation pairs with the
+        // \\author it follows.
         var authorORCIDs: [String: String] = [:]
         var authorEmails: [String: String] = [:]
+        var authorAffiliations: [String: String] = [:]
         do {
             var currentAuthor: String?
             var rest = stripped[...]
-            while let range = rest.range(of: "\\\\(author|orcid|email)\\s*\\{",
+            while let range = rest.range(of: "\\\\(affiliation|author|orcid|email)\\s*\\{",
                                          options: .regularExpression) {
                 let token = rest[range]
-                let command = token.contains("author") ? "author"
+                let command = token.contains("affiliation") ? "affiliation"
+                    : token.contains("author") ? "author"
                     : token.contains("orcid") ? "orcid" : "email"
                 let after = String(rest[range.lowerBound...])
                 guard let argument = firstBalancedArgument(of: command, in: after) else {
@@ -320,6 +350,11 @@ nonisolated enum LaTeXImporter {
                     continue
                 }
                 switch command {
+                case "affiliation":
+                    if let name = currentAuthor, authorAffiliations[name] == nil {
+                        let line = affiliationLine(argument.value)
+                        if !line.isEmpty { authorAffiliations[name] = line }
+                    }
                 case "author":
                     let name = inline(convert: argument.value).text
                         .trimmingCharacters(in: .whitespaces)
@@ -348,14 +383,7 @@ nonisolated enum LaTeXImporter {
         var affiliations: [String] = []
         for block in balancedArguments(of: "affiliation", in: stripped,
                                        skippingBracketOption: true) {
-            let parts = ["institution", "city", "state", "country"].compactMap { part in
-                balancedArguments(of: part, in: block).first
-                    .map { inline(convert: $0).text
-                        .replacingOccurrences(of: "\n", with: " ")
-                        .trimmingCharacters(in: .whitespaces) }
-                    .flatMap { $0.isEmpty ? nil : $0 }
-            }
-            let line = parts.joined(separator: ", ")
+            let line = affiliationLine(block)
             if !line.isEmpty, !affiliations.contains(line) {
                 affiliations.append(line)
             }
@@ -409,6 +437,11 @@ nonisolated enum LaTeXImporter {
         body = resolvingCrossReferences(in: body)
 
         var paragraphs: [LiquidDoc.Paragraph] = []
+        // A run-in heading's label (\subsubsection, \paragraph) waiting
+        // for the prose it opens — a stripped \label or a float between
+        // the command and its sentence must not strand the label alone.
+        var pendingRunIn = ""
+        var boxCounter = 0
         var assets: [LiquidDoc.Asset] = []
         var notes: [(id: String, text: String)] = []
         var ordinal = 0
@@ -686,7 +719,6 @@ nonisolated enum LaTeXImporter {
         // its content reads on.
         let sectioning: [(command: String, level: Int)] = [
             ("chapter", 1), ("section", 1), ("subsection", 2),
-            ("subsubsection", 3), ("paragraph", 3),
         ]
 
         func scan(_ text: String) {
@@ -695,7 +727,9 @@ nonisolated enum LaTeXImporter {
             func flushPlain() {
                 for run in plain.components(separatedBy: "\n\n") {
                     let trimmed = run.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty { appendText(trimmed) }
+                    guard !trimmed.isEmpty else { continue }
+                    appendText(pendingRunIn + trimmed)
+                    pendingRunIn = ""
                 }
                 plain = ""
             }
@@ -748,6 +782,80 @@ nonisolated enum LaTeXImporter {
                     case "quote", "quotation", "center":
                         flushPlain()
                         scan(String(rest[range.bodySub(rest)]))
+                        handled = true
+                    case "tcolorbox", "mdframed", "promptbox", "green2", "shaded", "snugshade":
+                        // The print's framed boxes — an LLM prompt, an
+                        // aside — become one grouped box: a bold title
+                        // line when the box names one, the content
+                        // paragraphs framed together in the export.
+                        flushPlain()
+                        boxCounter += 1
+                        let boxID = "box\(boxCounter)"
+                        var content = String(rest[range.bodySub(rest)])
+                        var title: String?
+                        if name == "promptbox" {
+                            if let argument = firstBalancedGroup(in: content) {
+                                title = argument.value
+                                content = String(content.dropFirst(argument.consumed))
+                            }
+                        } else if name == "green2" {
+                            // TAPS's XML arm: \begin{aptdispbox5}{Title}
+                            // \end{aptdispbox5}{content}.
+                            if let match = content.range(
+                                of: #"^\s*\\begin\{aptdispbox\d*\}\{([^}]*)\}\\end\{aptdispbox\d*\}"#,
+                                options: .regularExpression) {
+                                let header = String(content[match])
+                                if let open = header.firstIndex(of: "{"),
+                                   let brace = header[header.index(after: open)...].firstIndex(of: "{"),
+                                   let close = header[brace...].firstIndex(of: "}") {
+                                    title = String(header[header.index(after: brace)..<close])
+                                }
+                                content = String(content[match.upperBound...])
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                if let group = firstBalancedGroup(in: content),
+                                   group.consumed >= content.count - 1 {
+                                    content = group.value
+                                }
+                            }
+                        } else {
+                            // tcolorbox/mdframed: bracket options first;
+                            // a title=… option names the box.
+                            let trimmedContent = content.drop { $0 == " " || $0 == "\n" }
+                            if trimmedContent.hasPrefix("[") {
+                                var depth = 0
+                                var cursor = trimmedContent.startIndex
+                                while cursor < trimmedContent.endIndex {
+                                    let character = trimmedContent[cursor]
+                                    if character == "[" { depth += 1 }
+                                    if character == "]" {
+                                        depth -= 1
+                                        if depth == 0 { break }
+                                    }
+                                    cursor = trimmedContent.index(after: cursor)
+                                }
+                                if cursor < trimmedContent.endIndex {
+                                    let options = String(trimmedContent[trimmedContent.index(after: trimmedContent.startIndex)..<cursor])
+                                    if let titleRange = options.range(
+                                        of: #"title=\{?([^,\]}]+)"#, options: .regularExpression) {
+                                        title = String(options[titleRange])
+                                            .replacingOccurrences(of: "title=", with: "")
+                                            .replacingOccurrences(of: "{", with: "")
+                                            .trimmingCharacters(in: .whitespaces)
+                                    }
+                                    content = String(trimmedContent[trimmedContent.index(after: cursor)...])
+                                }
+                            }
+                        }
+                        let boxStart = paragraphs.count
+                        if let title, !title.isEmpty {
+                            paragraphs.append(LiquidDoc.Paragraph(
+                                id: nextID(), heading: nil, text: "**\(title)**"))
+                        }
+                        scan(content)
+                        flushPlain()
+                        for index in boxStart..<paragraphs.count {
+                            paragraphs[index].boxID = boxID
+                        }
                         handled = true
                     case "verbatim", "lstlisting", "minted":
                         flushPlain()
@@ -853,6 +961,41 @@ nonisolated enum LaTeXImporter {
                 }
                 if sectioned { continue }
 
+                // \subsubsection and \paragraph are RUN-IN headings in
+                // acmart: the italic label (numbered for subsubsections —
+                // the resolver already put "3.2.1" in the braces) opens
+                // the sentence and the text continues on the same line,
+                // with acmart's trailing period. Block headings here
+                // broke lines print never breaks.
+                var ranIn = false
+                for command in ["subsubsection", "paragraph", "subparagraph"] {
+                    for form in ["\\\(command)*{", "\\\(command){"] {
+                        if rest.hasPrefix(form),
+                           let argument = balancedArgument(
+                                in: String(rest), afterPrefixLength: form.count - 1) {
+                            flushPlain()
+                            captureLabels(in: argument.value)
+                            var label = argument.value
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                            if let last = label.last, !".!?:".contains(last) {
+                                label += "."
+                            }
+                            if !label.isEmpty { pendingRunIn += "*\(label)* " }
+                            rest = rest[rest.index(rest.startIndex,
+                                                   offsetBy: argument.consumed)...]
+                            // LaTeX ignores a blank line after a run-in
+                            // command — the label still opens the next
+                            // sentence. Without this swallow, the label
+                            // flushed alone as its own paragraph.
+                            rest = rest.drop { $0 == " " || $0 == "\n" || $0 == "\t" }
+                            ranIn = true
+                            break
+                        }
+                    }
+                    if ranIn { break }
+                }
+                if ranIn { continue }
+
                 // Display math \[ ... \]
                 if rest.hasPrefix("\\["), let close = rest.range(of: "\\]") {
                     flushPlain()
@@ -894,7 +1037,7 @@ nonisolated enum LaTeXImporter {
                                 "acmDOI", "acmISBN", "copyrightyear", "setcopyright",
                                 "orcid", "affiliation", "email", "institution",
                                 "city", "country", "printbibliography", "pagebreak",
-                                "date", "thanks", "title", "author",
+                                "date", "thanks", "subtitle", "title", "author", "color",
                                 "renewcommand", "newcommand", "providecommand",
                                 "authornote", "authornotemark", "graphicspath",
                                 "Description", "teaserfigure"] {
@@ -951,6 +1094,13 @@ nonisolated enum LaTeXImporter {
         }
 
         scan(body)
+        // A run-in label at the very end of the flow still prints.
+        if !pendingRunIn.isEmpty {
+            paragraphs.append(LiquidDoc.Paragraph(
+                id: nextID(), heading: nil,
+                text: pendingRunIn.trimmingCharacters(in: .whitespaces)))
+            pendingRunIn = ""
+        }
 
         // CCS Concepts and Keywords, as the page prints them under the
         // abstract — full width, no heading, the label in bold: each
@@ -1137,15 +1287,35 @@ nonisolated enum LaTeXImporter {
                              locale: nil)
             }
             func authorKey(_ entry: BibTeXEntry) -> String {
-                let authors = (entry.fields["author"] ?? entry.fields["editor"] ?? "")
-                    .components(separatedBy: " and ")
-                let parts = authors.map { name -> String in
-                    if name.contains(",") {
+                var names = BibTeXParser.authorNames(inRaw: entry.raw)
+                if names.isEmpty {
+                    names = BibTeXParser.authorNames(inRaw: entry.raw, field: "editor")
+                }
+                if names.isEmpty {
+                    // The raw read found no field it understands — never
+                    // sort on an empty key; the parsed fields still know.
+                    names = (entry.fields["author"] ?? entry.fields["editor"] ?? "")
+                        .components(separatedBy: " and ")
+                        .map { ($0.trimmingCharacters(in: .whitespaces), false) }
+                        .filter { !$0.0.isEmpty }
+                }
+                let parts = names.map { name -> String in
+                    let display = BibTeXParser.displayText(name.name)
+                    // A braced literal ({Resemble AI}, {Jian (jianfch)})
+                    // is its own label, sorted as printed — R and J, not
+                    // inverted to "AI, Resemble" at the top of the list.
+                    if name.isLiteral { return display }
+                    if display.contains(",") {
                         // Already "Last, First".
-                        return name.trimmingCharacters(in: .whitespaces)
+                        return display.trimmingCharacters(in: .whitespaces)
                     }
-                    let words = name.split(separator: " ").map(String.init)
-                    guard let last = words.last else { return name }
+                    let words = display.split(separator: " ").map(String.init)
+                    guard let last = words.last, !last.hasPrefix("(") else {
+                        // A parenthesized last word is an acronym —
+                        // "Deutsche Forschungsgemeinschaft (DFG)" files
+                        // under D, exactly as print sorts it.
+                        return display
+                    }
                     return last + ", " + words.dropLast().joined(separator: " ")
                 }
                 return fold(parts.joined(separator: "; "))
@@ -1182,11 +1352,13 @@ nonisolated enum LaTeXImporter {
             return reference
         }
 
-        return Result(title: title, author: author, publication: publication,
+        return Result(title: title, subtitle: subtitle, author: author,
+                      publication: publication,
                       body: paragraphs, references: references,
                       tables: namedTables, assets: assets, doi: doi,
                       affiliations: affiliations, authorORCIDs: authorORCIDs,
-                      authorEmails: authorEmails)
+                      authorEmails: authorEmails,
+                      authorAffiliations: authorAffiliations)
     }
 
     // MARK: - Cross-references
@@ -1534,6 +1706,19 @@ nonisolated enum LaTeXImporter {
                 end = text.index(tex.range.upperBound, offsetBy: plain.consumed)
             }
             text.replaceSubrange(tex.range.lowerBound..<end, with: replacement)
+        }
+
+        // \textcolor{name}{words}: the colour is print chrome, the
+        // words stay (ht26-17's prompt box colours its labels).
+        while let colour = firstBalancedArgument(of: "textcolor", in: text) {
+            var replacement = ""
+            var end = colour.range.upperBound
+            let after = String(text[colour.range.upperBound...])
+            if let words = balancedArgument(in: after, afterPrefixLength: 0) {
+                replacement = words.value
+                end = text.index(colour.range.upperBound, offsetBy: words.consumed)
+            }
+            text.replaceSubrange(colour.range.lowerBound..<end, with: replacement)
         }
 
         // Escaped specials become placeholders so the generic cleanup
@@ -2278,6 +2463,35 @@ nonisolated enum LaTeXImporter {
 
     /// The first `\command{…}` (optionally `\command[opt]{…}`), with the
     /// range covering the whole command in `text` and the inner value.
+    /// The first bare braced group in `text` (leading whitespace
+    /// allowed): its inner value and the characters consumed from the
+    /// start — the box environments carry title and content this way.
+    private static func firstBalancedGroup(in text: String)
+        -> (value: String, consumed: Int)? {
+        var index = text.startIndex
+        while index < text.endIndex,
+              text[index] == " " || text[index] == "\n" || text[index] == "\t" {
+            index = text.index(after: index)
+        }
+        guard index < text.endIndex, text[index] == "{" else { return nil }
+        var depth = 0
+        var cursor = index
+        while cursor < text.endIndex {
+            let character = text[cursor]
+            if character == "{" { depth += 1 }
+            if character == "}" {
+                depth -= 1
+                if depth == 0 {
+                    let value = String(text[text.index(after: index)..<cursor])
+                    return (value, text.distance(from: text.startIndex,
+                                                 to: text.index(after: cursor)))
+                }
+            }
+            cursor = text.index(after: cursor)
+        }
+        return nil
+    }
+
     private static func firstBalancedArgument(of command: String, in text: String,
                                               skippingBracketOption: Bool = false)
         -> (value: String, range: Range<String.Index>, consumedFromStart: Int)? {
