@@ -282,6 +282,11 @@ struct ContentView: View {
         .onChange(of: model.current?.doc.id) { dismissPeek() }
         .onChange(of: model.draftEditor?.docID) { dismissPeek() }
         .onChange(of: model.selectedArchivedID) { dismissPeek() }
+        // Choosing the Map (or a relation view) from the peek fills the
+        // window with it — the panel steps aside so only the map shows.
+        .onChange(of: model.venueViewMode) {
+            if model.venueRelationsWantWidth { dismissPeek() }
+        }
         // Reveal the list pane when the user picks a new place, or when the
         // peek first opens (so any existing selection shows its list immediately).
         .onChange(of: model.sidebarSelection) { revealPeekListIfAvailable() }
