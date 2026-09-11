@@ -12,9 +12,10 @@ import SwiftUI
 final class PhoneModel {
 
     private(set) var epubRecords: [EPUBRecord] = PhoneModel.loadEPUBRecords()
-    /// True when an annotation sidecar failed to write — the reader is
-    /// told (an alert on the shelf view) rather than losing notes quietly.
-    var annotationSaveFailed = false
+    /// A storage write that failed, worded for the reader — annotations
+    /// or the shelf manifest. The shelf view raises it as an alert
+    /// rather than losing anything quietly.
+    var storageFailure: String?
     let index = LibraryIndex()
     /// The book the reader shows, pushed by the shelf or a file open.
     var readerRecordID: String?
@@ -40,8 +41,20 @@ final class PhoneModel {
 
     private static let epubRecordsKey = "epubRecords"
 
+    /// The shelf manifest as a file beside the books, as on the Mac —
+    /// UserDefaults rewrote the whole plist per save and tops out; a
+    /// library of records belongs on disk.
+    private static var epubManifestURL: URL {
+        epubsRoot.appendingPathComponent("library.json")
+    }
+
     private static func loadEPUBRecords() -> [EPUBRecord] {
-        guard let data = UserDefaults.standard.data(forKey: epubRecordsKey),
+        // The file is the home; the old defaults key answers once more
+        // for shelves written before the move, then retires on the next
+        // successful save.
+        let data = (try? Data(contentsOf: epubManifestURL))
+            ?? UserDefaults.standard.data(forKey: epubRecordsKey)
+        guard let data,
               let records = try? JSONDecoder().decode([EPUBRecord].self, from: data)
         else { return [] }
         // Self-healing: a record whose unpacked payload has vanished
@@ -54,14 +67,23 @@ final class PhoneModel {
                     .appendingPathComponent(record.contentSubpath).path)
         }
         if alive.count != records.count, let pruned = try? JSONEncoder().encode(alive) {
-            UserDefaults.standard.set(pruned, forKey: epubRecordsKey)
+            try? pruned.write(to: epubManifestURL, options: .atomic)
         }
         return alive
     }
 
     private func persistEPUBRecords() {
-        guard let data = try? JSONEncoder().encode(epubRecords) else { return }
-        UserDefaults.standard.set(data, forKey: Self.epubRecordsKey)
+        // The manifest IS the shelf — a failed write means books vanish
+        // on relaunch, so the failure speaks (as on the Mac).
+        do {
+            try FileManager.default.createDirectory(at: Self.epubsRoot,
+                                                    withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(epubRecords)
+            try data.write(to: Self.epubManifestURL, options: .atomic)
+            UserDefaults.standard.removeObject(forKey: Self.epubRecordsKey)
+        } catch {
+            storageFailure = "The shelf could not be saved: \(error.localizedDescription)"
+        }
     }
 
     // MARK: Import
@@ -321,6 +343,22 @@ final class PhoneModel {
     /// Bumped whenever a book's annotations change, so the reader
     /// repaints its highlights.
     private(set) var annotationsStamp = 0
+    @ObservationIgnored
+    private var renderedPlainMemo: (docID: String, byParagraph: [String: String])?
+
+    /// The paragraph's rendered plain words, memoized per book — Find
+    /// filters the whole outline per keystroke and must not rebuild an
+    /// AttributedString per paragraph to do it.
+    func renderedPlain(_ paragraphID: String, in docID: String,
+                       compute: () -> String) -> String {
+        if renderedPlainMemo?.docID != docID {
+            renderedPlainMemo = (docID, [:])
+        }
+        if let hit = renderedPlainMemo?.byParagraph[paragraphID] { return hit }
+        let value = compute()
+        renderedPlainMemo?.byParagraph[paragraphID] = value
+        return value
+    }
 
     /// One live selection in the reader: the book, the paragraph, and
     /// the exact words with their disambiguating neighbours.
@@ -333,8 +371,19 @@ final class PhoneModel {
     }
 
     /// Every annotation on the given book, oldest first.
+    @ObservationIgnored
+    private var annotationsCache: (address: String, stamp: Int, items: [WebAnnotation])?
+
     func annotations(forAddress address: String) -> [WebAnnotation] {
-        AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        // The reader paints every paragraph against this list — a render
+        // pass must not decode the sidecar once per paragraph.
+        if let cached = annotationsCache, cached.address == address,
+           cached.stamp == annotationsStamp {
+            return cached.items
+        }
+        let items = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        annotationsCache = (address, annotationsStamp, items)
+        return items
     }
 
     /// Stamps one of the reader's judgments (Important, Disagree, …) on
@@ -385,7 +434,7 @@ final class PhoneModel {
         }
         guard all.count != before else { return }
         if !AnnotationStore.save(all, for: address, in: Self.annotationsRoot) {
-            annotationSaveFailed = true
+            storageFailure = "The annotation could not be written to its sidecar."
         }
         annotationsStamp += 1
     }
@@ -427,7 +476,7 @@ final class PhoneModel {
                                              selectors: [])))
         }
         if !AnnotationStore.save(all, for: address, in: Self.annotationsRoot) {
-            annotationSaveFailed = true
+            storageFailure = "The annotation could not be written to its sidecar."
         }
         annotationsStamp += 1
     }
@@ -455,7 +504,7 @@ final class PhoneModel {
         var all = AnnotationStore.load(for: selection.address, in: Self.annotationsRoot)
         all.append(annotation)
         if !AnnotationStore.save(all, for: selection.address, in: Self.annotationsRoot) {
-            annotationSaveFailed = true
+            storageFailure = "The annotation could not be written to its sidecar."
         }
         annotationsStamp += 1
     }

@@ -204,12 +204,12 @@ struct ReadHomeView: View {
         } message: {
             Text("\(openFailedName ?? "The file") would not open as an EPUB. If it lives in iCloud Drive, make sure it has finished downloading, then try again.")
         }
-        .alert("Annotation Not Saved", isPresented: Binding(
-            get: { model.annotationSaveFailed },
-            set: { model.annotationSaveFailed = $0 })) {
-            Button("OK", role: .cancel) {}
+        .alert("Could Not Save", isPresented: Binding(
+            get: { model.storageFailure != nil },
+            set: { if !$0 { model.storageFailure = nil } })) {
+            Button("OK", role: .cancel) { model.storageFailure = nil }
         } message: {
-            Text("The note could not be written to its sidecar. Check free space and iCloud, then try again.")
+            Text(model.storageFailure ?? "Check free space and iCloud, then try again.")
         }
         .fileImporter(isPresented: $choosingFolder,
                       allowedContentTypes: [.folder]) { result in
@@ -1353,8 +1353,10 @@ struct PhoneReaderView: View {
     private func matchesFind(_ paragraph: LiquidDoc.Paragraph, doc: LiquidDoc) -> Bool {
         guard let query = findQuery?.trimmingCharacters(in: .whitespaces),
               !query.isEmpty else { return true }
-        return String(rendered(paragraph.text, doc: doc).characters)
-            .localizedCaseInsensitiveContains(query)
+        return model.renderedPlain(paragraph.id, in: doc.id) {
+            String(rendered(paragraph.text, doc: doc).characters)
+        }
+        .localizedCaseInsensitiveContains(query)
     }
 
     private func outlineBody(_ sections: [OrigamiSection], doc: LiquidDoc) -> some View {
