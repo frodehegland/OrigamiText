@@ -742,10 +742,13 @@ nonisolated enum OrigamiEPUBExporter {
         let tablesByID = Dictionary(doc.tables.map { ($0.identifier, $0) },
                                     uniquingKeysWith: { first, _ in first })
         var sectionOpen = false
-        // The ACM Reference Format block rides the front matter's tail:
-        // right after the Keywords paragraph, as the printed column reads
-        // — or, keywordless, at the first section's end before the body.
-        var pendingACMReference = acmReferenceHTML(for: doc)
+        // The ACM Reference Format block and the copyright box ride the
+        // front matter's tail: right after the Keywords paragraph, as the
+        // printed column reads — or, keywordless, at the first section's
+        // end before the body.
+        let frontMatterTail = [acmReferenceHTML(for: doc), licenseHTML(for: doc)]
+            .compactMap { $0 }.joined(separator: "\n")
+        var pendingACMReference: String? = frontMatterTail.isEmpty ? nil : frontMatterTail
         // Stretchtext ships as Author writes it: the contracted detail —
         // consecutive paragraphs sharing a stretchID — wrapped in a
         // hidden <aside class="ot-stretchtext-content">, with the »»
@@ -949,28 +952,31 @@ nonisolated enum OrigamiEPUBExporter {
         if !parts.isEmpty {
             lines.append("<p class=\"byline\">\(escaped(parts.joined(separator: " · ")))</p>")
         }
-        // The license and copyright, as page 1 prints them lower left:
-        // the CC badge, the boilerplate lines, the paper's DOI live.
-        if let license = doc.license, !license.isEmpty {
-            var lines2: [String] = []
-            if license.contains("Creative Commons") {
-                lines2.append("<img class=\"cc-badge\" src=\"images/cc-by.png\" alt=\"Creative Commons Attribution 4.0\" />")
-            }
-            let body = license
-                .components(separatedBy: "\n")
-                .map { line -> String in
-                    let trimmed = line.trimmingCharacters(in: .whitespaces)
-                    if trimmed.hasPrefix("https://doi.org/") {
-                        return "<a href=\"\(attributeEscaped(trimmed))\">\(escaped(trimmed))</a>"
-                    }
-                    return escaped(trimmed)
-                }
-                .joined(separator: "<br/>")
-            lines2.append(body)
-            lines.append("<p class=\"license\">\(lines2.joined(separator: "<br/>"))</p>")
-        }
         lines.append("</header>")
         return lines.joined(separator: "\n")
+    }
+
+    /// The license and copyright box — the CC badge, the boilerplate
+    /// lines, the paper's DOI live. It follows the ACM Reference Format
+    /// at the front matter's tail.
+    private static func licenseHTML(for doc: LiquidDoc) -> String? {
+        guard let license = doc.license, !license.isEmpty else { return nil }
+        var lines2: [String] = []
+        if license.contains("Creative Commons") {
+            lines2.append("<img class=\"cc-badge\" src=\"images/cc-by.png\" alt=\"Creative Commons Attribution 4.0\" />")
+        }
+        let body = license
+            .components(separatedBy: "\n")
+            .map { line -> String in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("https://doi.org/") {
+                    return "<a href=\"\(attributeEscaped(trimmed))\">\(escaped(trimmed))</a>"
+                }
+                return escaped(trimmed)
+            }
+            .joined(separator: "<br/>")
+        lines2.append(body)
+        return "<p class=\"license\">\(lines2.joined(separator: "<br/>"))</p>"
     }
 
     /// The publisher's self-citation, exactly as page 1 prints it — the
