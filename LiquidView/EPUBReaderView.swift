@@ -408,6 +408,10 @@ struct EPUBReaderScreen: View {
             onAnnotate: { kind, selection in model.addTag(kind, on: selection) },
             onAddComment: { selection in commentSelection = selection },
             onRemoveAnnotation: { id in model.removeAnnotation(id: id) },
+            // A trackpad pinch answers with the table of contents, as
+            // the phone's pinch folds the reading into its outline.
+            onPinchIn: { showsContents = true },
+            onPinchOut: { showsContents = false },
             // Step 0 substrate: for now, clicking a semantic element
             // names it and selecting text records the selection. Real
             // behaviours (furl/unfurl, select-and-act) plug in here next.
@@ -647,6 +651,10 @@ struct EPUBReaderView: NSViewRepresentable {
     var onAddComment: (ReaderSelection) -> Void = { _ in }
     /// The reader asked to remove an annotation (from its click-popover).
     var onRemoveAnnotation: (String) -> Void = { _ in }
+    /// A trackpad pinch in — the contents open, as a phone pinch folds
+    /// the reading into its outline. A pinch out closes them again.
+    var onPinchIn: () -> Void = {}
+    var onPinchOut: () -> Void = {}
     /// A semantic element was clicked (Step 0 bridge).
     var onActivate: (EPUBElementRef) -> Void = { _ in }
     /// The reader's text selection changed (empty string when cleared).
@@ -783,6 +791,10 @@ struct EPUBReaderView: NSViewRepresentable {
         webView.onRemoveAnnotation = { [weak coordinator = context.coordinator] id in
             coordinator?.onRemoveAnnotation(id)
         }
+        webView.onPinchEnded = { [weak coordinator = context.coordinator] total in
+            if total < -0.15 { coordinator?.onPinchIn() }
+            else if total > 0.15 { coordinator?.onPinchOut() }
+        }
         context.coordinator.webView = webView
         context.coordinator.pendingFragment = initialFragment
         context.coordinator.pendingScrollFraction = initialScrollFraction
@@ -806,6 +818,8 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onAnnotate = onAnnotate
         coordinator.onAddComment = onAddComment
         coordinator.onRemoveAnnotation = onRemoveAnnotation
+        coordinator.onPinchIn = onPinchIn
+        coordinator.onPinchOut = onPinchOut
         coordinator.onChapterStep = onChapterStep
         coordinator.onProgress = onProgress
         coordinator.onCitationAnchors = onCitationAnchors
@@ -921,6 +935,8 @@ struct EPUBReaderView: NSViewRepresentable {
         var onAnnotate: (ReaderAnnotationKind, ReaderSelection) -> Void = { _, _ in }
         var onAddComment: (ReaderSelection) -> Void = { _ in }
         var onRemoveAnnotation: (String) -> Void = { _ in }
+        var onPinchIn: () -> Void = {}
+        var onPinchOut: () -> Void = {}
         var onChapterStep: (Int) -> Void = { _ in }
         var onProgress: (Double) -> Void = { _ in }
         var onCitationAnchors: ([InlineCitationAnchor]) -> Void = { _ in }
@@ -1949,6 +1965,30 @@ final class ReaderWebView: WKWebView {
     var onAddComment: (ReaderSelection) -> Void = { _ in }
     /// Invoked when Remove is chosen in an annotation's popover.
     var onRemoveAnnotation: (String) -> Void = { _ in }
+    /// Invoked when a trackpad pinch ends, with the gesture's total
+    /// magnification — negative pinched in, positive pinched out. The
+    /// web view swallows magnify events before SwiftUI gestures can
+    /// see them, so the reader listens here — and answers with the
+    /// table of contents, as the phone answers a pinch.
+    var onPinchEnded: (CGFloat) -> Void = { _ in }
+    private var pinchTotal: CGFloat = 0
+
+    override func magnify(with event: NSEvent) {
+        switch event.phase {
+        case .began:
+            pinchTotal = event.magnification
+        case .changed:
+            pinchTotal += event.magnification
+        case .ended:
+            onPinchEnded(pinchTotal)
+            pinchTotal = 0
+        case .cancelled:
+            pinchTotal = 0
+        default:
+            break
+        }
+        super.magnify(with: event)
+    }
     /// The comments standing on paragraphs, by the paragraph's stable
     /// id — filled from the sidecar so the bare ctrl-click can offer
     /// their removal.
