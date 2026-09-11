@@ -742,6 +742,10 @@ nonisolated enum OrigamiEPUBExporter {
         let tablesByID = Dictionary(doc.tables.map { ($0.identifier, $0) },
                                     uniquingKeysWith: { first, _ in first })
         var sectionOpen = false
+        // The ACM Reference Format block rides the front matter's tail:
+        // right after the Keywords paragraph, as the printed column reads
+        // — or, keywordless, at the first section's end before the body.
+        var pendingACMReference = acmReferenceHTML(for: doc)
         // Stretchtext ships as Author writes it: the contracted detail —
         // consecutive paragraphs sharing a stretchID — wrapped in a
         // hidden <aside class="ot-stretchtext-content">, with the »»
@@ -769,7 +773,13 @@ nonisolated enum OrigamiEPUBExporter {
             if element.opensSection {
                 closeBox()
                 closeStretch()
-                if sectionOpen { lines.append("</section>") }
+                if sectionOpen {
+                    if let pending = pendingACMReference {
+                        lines.append(pending)
+                        pendingACMReference = nil
+                    }
+                    lines.append("</section>")
+                }
                 lines.append("<section>")
                 sectionOpen = true
             }
@@ -807,9 +817,16 @@ nonisolated enum OrigamiEPUBExporter {
                 openBoxID = boxID
             }
             lines.append(html)
+            if let pending = pendingACMReference,
+               element.text.drop(while: { !$0.isLetter })
+                   .lowercased().hasPrefix("keywords") {
+                lines.append(pending)
+                pendingACMReference = nil
+            }
         }
         closeBox()
         closeStretch()
+        if let pending = pendingACMReference { lines.append(pending) }
         if sectionOpen { lines.append("</section>") }
         lines.append("</main>")
 
@@ -952,20 +969,23 @@ nonisolated enum OrigamiEPUBExporter {
             lines2.append(body)
             lines.append("<p class=\"license\">\(lines2.joined(separator: "<br/>"))</p>")
         }
-        // The publisher's self-citation, exactly as page 1 prints it —
-        // the reference this paper asks to be cited by.
-        if let reference = doc.acmReference, !reference.isEmpty {
-            // The DOI at the block's end is a live link.
-            var block = escaped(reference)
-            if let range = reference.range(of: "https://doi.org/") {
-                let url = String(reference[range.lowerBound...])
-                block = escaped(String(reference[..<range.lowerBound]))
-                    + "<a href=\"\(attributeEscaped(url))\">\(escaped(url))</a>"
-            }
-            lines.append("<p class=\"acm-reference\"><strong>ACM Reference Format:</strong><br/>\(block)</p>")
-        }
         lines.append("</header>")
         return lines.joined(separator: "\n")
+    }
+
+    /// The publisher's self-citation, exactly as page 1 prints it — the
+    /// reference this paper asks to be cited by. It stands where the
+    /// column reads it: after the Keywords, before the Introduction.
+    private static func acmReferenceHTML(for doc: LiquidDoc) -> String? {
+        guard let reference = doc.acmReference, !reference.isEmpty else { return nil }
+        // The DOI at the block's end is a live link.
+        var block = escaped(reference)
+        if let range = reference.range(of: "https://doi.org/") {
+            let url = String(reference[range.lowerBound...])
+            block = escaped(String(reference[..<range.lowerBound]))
+                + "<a href=\"\(attributeEscaped(url))\">\(escaped(url))</a>"
+        }
+        return "<p class=\"acm-reference\"><strong>ACM Reference Format:</strong><br/>\(block)</p>"
     }
 
     /// The note ids whose citing mark already carries the `fnref-` id —
