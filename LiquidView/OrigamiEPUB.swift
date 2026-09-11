@@ -605,7 +605,7 @@ nonisolated enum OrigamiEPUBExporter {
                 nodeID: target,
                 address: target,
                 title: resolved?.title ?? target,
-                authors: resolved.map { [familyFirst($0.author)] } ?? [],
+                authors: resolved.map { [PersonName.familyFirst($0.author)] } ?? [],
                 year: resolved.map { String(Calendar.current.component(.year, from: $0.created)) } ?? "",
                 publication: "",
                 doi: "",
@@ -639,12 +639,12 @@ nonisolated enum OrigamiEPUBExporter {
             let names = literalAware.isEmpty
                 ? (entry.fields[field] ?? "")
                     .components(separatedBy: " and ")
-                    .map { familyFirst(BibTeXParser.displayText($0)) }
+                    .map { PersonName.familyFirst(BibTeXParser.displayText($0)) }
                     .filter { !$0.isEmpty }
                 : literalAware
                     .map { name in
                         let display = BibTeXParser.displayText(name.name)
-                        return name.isLiteral ? display : familyFirst(display)
+                        return name.isLiteral ? display : PersonName.familyFirst(display)
                     }
                     .filter { !$0.isEmpty }
             return names
@@ -686,13 +686,6 @@ nonisolated enum OrigamiEPUBExporter {
     /// "Deutsche Forschungsgemeinschaft (DFG)" stays too — a
     /// parenthesized last word is an acronym, not a family name, and
     /// inverting once printed "(DFG), Deutsche Forschungsgemeinschaft".
-    private static func familyFirst(_ name: String) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.contains(","), trimmed.contains(" ") else { return trimmed }
-        let words = trimmed.split(separator: " ").map(String.init)
-        guard let family = words.last, !family.hasPrefix("(") else { return trimmed }
-        return "\(family), \(words.dropLast().joined(separator: " "))"
-    }
 
     // MARK: The content document (spec §3)
 
@@ -1287,27 +1280,9 @@ nonisolated enum OrigamiEPUBExporter {
     /// The visible reference line, ACM-shaped: authors, year, title
     /// roman, the venue in italic, and the way out — DOI, else URL —
     /// live as a link, never inert text.
-    /// A reference author as ACM prints one: given name first. The
-    /// canonical "Family, Given" stays in the data layers (Visual-Meta,
-    /// the emulator's sort key); only the printed list flips. A literal
-    /// name without a comma prints as it stands; an "(Eds.)" suffix
-    /// keeps its place at the end.
-    private static func givenFirst(_ name: String) -> String {
-        var body = name
-        var suffix = ""
-        if body.hasSuffix(" (Eds.)") {
-            suffix = " (Eds.)"
-            body = String(body.dropLast(suffix.count))
-        }
-        let parts = body.components(separatedBy: ", ")
-        guard parts.count > 1, let given = parts.last, !given.isEmpty else { return name }
-        let family = parts.dropLast().joined(separator: ", ")
-        return given + " " + family + suffix
-    }
-
     /// Names joined as ACM joins them: "A and B"; "A, B, and C".
     private static func acmNameList(_ names: [String]) -> String {
-        let flipped = names.map(givenFirst)
+        let flipped = names.map(PersonName.givenFirst)
         switch flipped.count {
         case 0: return ""
         case 1: return flipped[0]

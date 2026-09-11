@@ -101,7 +101,7 @@ nonisolated enum LaTeXImporter {
         guard var tex = text(main) else { throw LaTeXImportError.unreadable }
 
         func joined(_ directory: String, _ name: String) -> String {
-            directory.isEmpty ? name : "\(directory)/\(name)"
+            OrigamiEPUBImporter.joinedPath(directory, name)
         }
         // \input/\include pull sibling files into the flow, one level of
         // nesting at a time (a modest cap guards against cycles).

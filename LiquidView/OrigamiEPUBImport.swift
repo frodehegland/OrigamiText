@@ -651,7 +651,9 @@ nonisolated enum OrigamiEPUBImporter {
         return item.flatMap { firstCapture(in: $0, pattern: "href=\"([^\"]+)\"") }
     }
 
-    private static func joinedPath(_ directory: String, _ name: String) -> String {
+    /// Joins an OPF-relative directory and href — the one copy every
+    /// importer shares (LaTeXImporter delegates here).
+    static func joinedPath(_ directory: String, _ name: String) -> String {
         directory.isEmpty ? name : "\(directory)/\(name)"
     }
 

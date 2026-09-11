@@ -5,6 +5,39 @@ import CryptoKit
 /// (`body`) or a sidecar wrapping an external file (`wraps`).
 ///
 /// Document ids are short human-readable strings (see LiquidAddress) that
+
+/// One voice for turning a person's name around — the exporter, the
+/// importers, and any future reader of "Family, Given" agree here
+/// rather than each keeping a private copy that drifts.
+enum PersonName {
+    /// "Given Family" → "Family, Given" — the canonical stored form.
+    /// A comma'd name stays as written; a trailing parenthesized word
+    /// (an acronym, "(DFG)") never masquerades as a family name.
+    static func familyFirst(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.contains(","), trimmed.contains(" ") else { return trimmed }
+        let words = trimmed.split(separator: " ").map(String.init)
+        guard let family = words.last, !family.hasPrefix("(") else { return trimmed }
+        return "\(family), \(words.dropLast().joined(separator: " "))"
+    }
+
+    /// "Family, Given" → "Given Family" — as ACM prints a reference
+    /// author. A literal name without a comma prints as it stands; an
+    /// "(Eds.)" suffix keeps its place at the end.
+    static func givenFirst(_ name: String) -> String {
+        var body = name
+        var suffix = ""
+        if body.hasSuffix(" (Eds.)") {
+            suffix = " (Eds.)"
+            body = String(body.dropLast(suffix.count))
+        }
+        let parts = body.components(separatedBy: ", ")
+        guard parts.count > 1, let given = parts.last, !given.isEmpty else { return name }
+        let family = parts.dropLast().joined(separator: ", ")
+        return given + " " + family + suffix
+    }
+}
+
 /// double as the file name; legacy UUID ids are accepted as opaque strings.
 nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     let format: String
