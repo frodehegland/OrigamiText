@@ -2153,15 +2153,31 @@ final class AppModel {
         quickViewWindows.append((window, delegate))
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
-        // A double-click that launched the app must show the book alone:
-        // the window group opens the library regardless, so the window the
-        // launch itself just created folds away. A library the reader
-        // already had open (any later moment) stays where it is; while the
-        // app is running, nothing reopens a closed one. ⌘L brings it back.
-        if Date().timeIntervalSince(launchedAt) < 3,
-           let main = mainNSWindow, main.isVisible {
-            main.orderOut(nil)
+        // A double-click that launched the app must show the book alone.
+        // The window group opens the library regardless — and it finishes
+        // AFTER the open event lands, so one orderOut here loses the race.
+        // The fold re-asserts through the launch moment instead; a library
+        // the reader raises later (⌘L, dock) stays, because the checks end.
+        if Date().timeIntervalSince(launchedAt) < 3 {
+            foldLibraryBehindQuickView()
+            Task { [weak self] in
+                for wait in [150, 400, 900, 1800] {
+                    try? await Task.sleep(for: .milliseconds(wait))
+                    self?.foldLibraryBehindQuickView()
+                }
+            }
         }
+    }
+
+    /// Folds the library window away while a quick view stands and the
+    /// launch is young — never after, so a deliberate ⌘L wins.
+    private func foldLibraryBehindQuickView() {
+        guard !quickViewWindows.isEmpty,
+              Date().timeIntervalSince(launchedAt) < 4,
+              let main = mainNSWindow, main.isVisible
+        else { return }
+        main.orderOut(nil)
+        quickViewWindows.last?.window.makeKeyAndOrderFront(nil)
     }
 
     /// The sidebar's Intro button: opens the built-in guide (IntroGuide.swift),
