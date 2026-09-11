@@ -830,6 +830,16 @@ nonisolated enum OrigamiEPUBExporter {
                 lines.append("<aside class=\"ot-box\" data-box-id=\"\(attributeEscaped(boxID))\">")
                 openBoxID = boxID
             }
+            // A table's caption — the "Table N:" paragraph standing
+            // directly over it — prints bold, as the paper prints it.
+            if html.hasPrefix("<table"), let lastIndex = lines.indices.last {
+                let previous = lines[lastIndex]
+                if previous.range(of: "^<p [^>]*>Table \\d",
+                                  options: .regularExpression) != nil {
+                    lines[lastIndex] = previous.replacingOccurrences(
+                        of: "<p ", with: "<p class=\"table-caption\" ")
+                }
+            }
             lines.append(html)
             if let pending = pendingACMReference,
                element.text.drop(while: { !$0.isLetter })
@@ -1585,6 +1595,7 @@ nonisolated enum OrigamiEPUBExporter {
     .acm-reference { text-align: left; font-size: 0.85em; color: #555555; max-width: 34em; margin: 1.4em auto 0; }
     .author-detail { font-size: 0.8em; color: #555555; margin: 0 0 0.3em; }
     .ot-box { border: 1.5px solid #444444; border-radius: 4px; padding: 0.2em 1em 0.7em; margin: 1.2em 0; }
+    .table-caption { font-weight: bold; }
     .author-detail a { color: inherit; }
     h2 { font-size: 1.4em; margin-top: 1.6em; }
     h3 { font-size: 1.2em; }
