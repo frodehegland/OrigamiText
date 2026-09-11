@@ -917,9 +917,10 @@ nonisolated enum OrigamiEPUBExporter {
         // author claims still prints in the shared block below.
         var unplaced = doc.affiliations
         // The byline columns as the paper prints them: one author full
-        // width, two side by side, three or more in three columns that
-        // wrap. A reader without grid stacks the blocks — today's look.
-        let columns = min(max(authors.count, 1), 3)
+        // width, two side by side, four in a two-by-two, three or five
+        // and more across three columns that wrap. A reader without
+        // flex stacks the blocks — the plain look.
+        let columns = authors.count == 4 ? 2 : min(max(authors.count, 1), 3)
         lines.append("<div class=\"authors authors-\(columns)\">")
         for author in authors {
             lines.append("<div class=\"author-block\">")
