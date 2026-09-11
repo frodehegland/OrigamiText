@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		5F1962D53053FF1A00922704 /* Quartz.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F1962D43053FF1A00922704 /* Quartz.framework */; };
+		5F1962E13053FF1A00922704 /* EPUBQuickLook.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5F1962D33053FF1A00922704 /* EPUBQuickLook.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5F72863D304376EC000585CD /* AudioCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 5F72863C304376EC000585CD /* AudioCommon */; };
 		5FAFC90C301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
 		5FAFC90D301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
@@ -16,6 +18,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		5F1962DF3053FF1A00922704 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5F1962D23053FF1A00922704;
+			remoteInfo = EPUBQuickLook;
+		};
 		5FA61260300CE184002F8851 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 000000000000000000000000 /* Project object */;
@@ -32,8 +41,22 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		5F1962E63053FF1A00922704 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				5F1962E13053FF1A00922704 /* EPUBQuickLook.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* Origami Text.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Origami Text.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5F1962D33053FF1A00922704 /* EPUBQuickLook.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EPUBQuickLook.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		5F1962D43053FF1A00922704 /* Quartz.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Quartz.framework; path = System/Library/Frameworks/Quartz.framework; sourceTree = SDKROOT; };
 		5FA61253300CE184002F8851 /* Origami Text.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Origami Text.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		5FA6125F300CE184002F8851 /* Origami TextTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Origami TextTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		5FA61269300CE184002F8851 /* Origami TextUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Origami TextUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -42,6 +65,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		5F1962E53053FF1A00922704 /* Exceptions for "EPUBQuickLook" folder in "EPUBQuickLook" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 5F1962D23053FF1A00922704 /* EPUBQuickLook */;
+		};
 		5F2D74FE2FFFE3A1000E9DEC /* Exceptions for "LiquidView" folder in "LiquidView" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -147,6 +177,14 @@
 			path = LiquidView;
 			sourceTree = "<group>";
 		};
+		5F1962D63053FF1A00922704 /* EPUBQuickLook */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5F1962E53053FF1A00922704 /* Exceptions for "EPUBQuickLook" folder in "EPUBQuickLook" target */,
+			);
+			path = EPUBQuickLook;
+			sourceTree = "<group>";
+		};
 		5FA61254300CE184002F8851 /* Origami Text */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -186,6 +224,12 @@
 				5FC2206B304391F6001E8E0C /* Qwen3TTS in Frameworks */,
 			);
 		};
+		5F1962D03053FF1A00922704 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				5F1962D53053FF1A00922704 /* Quartz.framework in Frameworks */,
+			);
+		};
 		5FA61250300CE184002F8851 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
@@ -219,6 +263,7 @@
 				5FA61262300CE184002F8851 /* Origami TextTests */,
 				5FA6126C300CE184002F8851 /* Origami TextUITests */,
 				5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */,
+				5F1962D63053FF1A00922704 /* EPUBQuickLook */,
 				5FC2206730438F25001E8E0C /* Frameworks */,
 				000000000000000000000020 /* Products */,
 			);
@@ -232,6 +277,7 @@
 				5FA61253300CE184002F8851 /* Origami Text.app */,
 				5FA6125F300CE184002F8851 /* Origami TextTests.xctest */,
 				5FA61269300CE184002F8851 /* Origami TextUITests.xctest */,
+				5F1962D33053FF1A00922704 /* EPUBQuickLook.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -239,6 +285,7 @@
 		5FC2206730438F25001E8E0C /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				5F1962D43053FF1A00922704 /* Quartz.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -253,8 +300,12 @@
 				000000000000000120000000 /* Sources */,
 				000000000000000130000000 /* Frameworks */,
 				000000000000000140000000 /* Resources */,
+				5F1962E63053FF1A00922704 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
+			);
+			dependencies = (
+				5F1962E03053FF1A00922704 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				000000000000000000000010 /* LiquidView */,
@@ -267,6 +318,24 @@
 			productName = MyApp;
 			productReference = 000000000000000000000120 /* Origami Text.app */;
 			productType = "com.apple.product-type.application";
+		};
+		5F1962D23053FF1A00922704 /* EPUBQuickLook */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5F1962E23053FF1A00922704 /* Build configuration list for PBXNativeTarget "EPUBQuickLook" */;
+			buildPhases = (
+				5F1962CF3053FF1A00922704 /* Sources */,
+				5F1962D03053FF1A00922704 /* Frameworks */,
+				5F1962D13053FF1A00922704 /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				5F1962D63053FF1A00922704 /* EPUBQuickLook */,
+			);
+			name = EPUBQuickLook;
+			productName = EPUBQuickLook;
+			productReference = 5F1962D33053FF1A00922704 /* EPUBQuickLook.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		5FA61252300CE184002F8851 /* Origami Text */ = {
 			isa = PBXNativeTarget;
@@ -362,6 +431,9 @@
 					000000000000000100000000 = {
 						CreatedOnToolsVersion = 26.3;
 					};
+					5F1962D23053FF1A00922704 = {
+						CreatedOnToolsVersion = 27.0;
+					};
 					5FA61252300CE184002F8851 = {
 						CreatedOnToolsVersion = 27.0;
 					};
@@ -400,6 +472,7 @@
 				5FA61252300CE184002F8851 /* Origami Text */,
 				5FA6125E300CE184002F8851 /* Origami TextTests */,
 				5FA61268300CE184002F8851 /* Origami TextUITests */,
+				5F1962D23053FF1A00922704 /* EPUBQuickLook */,
 			);
 		};
 /* End PBXProject section */
@@ -409,6 +482,11 @@
 			isa = PBXResourcesBuildPhase;
 			files = (
 				5FAFC90D301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */,
+			);
+		};
+		5F1962D13053FF1A00922704 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
 			);
 		};
 		5FA61251300CE184002F8851 /* Resources */ = {
@@ -441,6 +519,11 @@
 			files = (
 			);
 		};
+		5F1962CF3053FF1A00922704 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 		5FA6124F300CE184002F8851 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
@@ -464,6 +547,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		5F1962E03053FF1A00922704 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5F1962D23053FF1A00922704 /* EPUBQuickLook */;
+			targetProxy = 5F1962DF3053FF1A00922704 /* PBXContainerItemProxy */;
+		};
 		5FA61261300CE184002F8851 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 5FA61252300CE184002F8851 /* Origami Text */;
@@ -755,6 +843,68 @@
 			};
 			name = Release;
 		};
+		5F1962E33053FF1A00922704 /* Debug configuration for PBXNativeTarget "EPUBQuickLook" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9Q5N4A727S;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = EPUBQuickLook/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = EPUBQuickLook;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = info.futuretextlab.origamitext.EPUBQuickLook;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		5F1962E43053FF1A00922704 /* Release configuration for PBXNativeTarget "EPUBQuickLook" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9Q5N4A727S;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = EPUBQuickLook/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = EPUBQuickLook;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = info.futuretextlab.origamitext.EPUBQuickLook;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		5FA61270300CE184002F8851 /* Debug configuration for PBXNativeTarget "Origami Text" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1009,6 +1159,14 @@
 			buildConfigurations = (
 				000000000000000111000000 /* Debug configuration for PBXNativeTarget "LiquidView" */,
 				000000000000000112000000 /* Release configuration for PBXNativeTarget "LiquidView" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		5F1962E23053FF1A00922704 /* Build configuration list for PBXNativeTarget "EPUBQuickLook" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5F1962E33053FF1A00922704 /* Debug configuration for PBXNativeTarget "EPUBQuickLook" */,
+				5F1962E43053FF1A00922704 /* Release configuration for PBXNativeTarget "EPUBQuickLook" */,
 			);
 			defaultConfigurationName = Release;
 		};

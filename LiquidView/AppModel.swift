@@ -189,6 +189,9 @@ final class AppModel {
     /// Stored by MainWindowConnector so the AppDelegate can open the main
     /// window from its NSEvent monitor (which can't access SwiftUI environment).
     var openMainWindow: (() -> Void)?
+    /// When the model came up — a quick view reads this to tell a library
+    /// window the reader had open from one the launch itself created.
+    private let launchedAt = Date()
     /// Weak reference to the main window's NSWindow, set by MainNSWindowCapture
     /// in LiquidViewApp. Becomes nil automatically when the window is closed.
     weak var mainNSWindow: NSWindow?
@@ -780,7 +783,15 @@ final class AppModel {
         }
         switch url.pathExtension.lowercased() {
         case "epub":
-            openEPUBFile(at: url)
+            // Only a book of the community's (or the app's own store)
+            // joins the shelf on a double-click; anything else — a Desktop
+            // copy being checked, a downloaded book — opens to look at,
+            // and joins only through Import.
+            if epubJoinsLibraryOnOpen(url) {
+                openEPUBFile(at: url)
+            } else {
+                quickViewEPUB(at: url)
+            }
         case "zip", "tex":
             importLaTeX(at: url)
         case "xml":
@@ -2083,6 +2094,74 @@ final class AppModel {
         // The new arrival joins the community folder too, so every
         // device reading it shows the same shelf.
         mirrorShelfToCommunityFolder()
+    }
+
+    /// Whether a double-clicked EPUB joins the shelf: only when it is
+    /// the community's own file or already in the app's store. Symlinks
+    /// resolve first — /var and /private/var must read as one place.
+    private func epubJoinsLibraryOnOpen(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        if let community = index.folderURL?.standardizedFileURL
+            .resolvingSymlinksInPath().path,
+           path.hasPrefix(community + "/") { return true }
+        return path.hasPrefix(
+            Self.epubsRoot.standardizedFileURL.resolvingSymlinksInPath().path + "/")
+    }
+
+    /// The quick-view windows now open, each with the delegate that
+    /// deletes its temporary unpack when it closes.
+    private var quickViewWindows: [(window: NSWindow, delegate: EPUBQuickViewWindowDelegate)] = []
+
+    /// Opens an EPUB to look at, and nothing more: unpacked to a
+    /// temporary folder, rendered in its own plain window — no shelf
+    /// record, no community mirror, no trace once the window closes.
+    func quickViewEPUB(at url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("EPUBQuickView-" + UUID().uuidString, isDirectory: true)
+        let unpacked: OrigamiEPUBImporter.Unpacked
+        do {
+            unpacked = try OrigamiEPUBImporter.unpack(at: url, into: root)
+        } catch {
+            NSSound.beep()
+            showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
+            return
+        }
+        let spine = OrigamiEPUBImporter.spine(inUnpackedFolder: root)
+        let chapters = (spine?.chapters ?? []).map { root.appendingPathComponent($0) }
+        let book = OpenEPUB(id: "quickview:" + root.lastPathComponent,
+                            title: unpacked.title,
+                            content: unpacked.content,
+                            base: root,
+                            chapters: chapters.isEmpty ? [unpacked.content] : chapters,
+                            nav: spine?.nav.map { root.appendingPathComponent($0) })
+        let hosting = NSHostingController(rootView: EPUBQuickViewScreen(book: book))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = unpacked.title
+        window.setContentSize(NSSize(width: 1020, height: 940))
+        window.center()
+        // The reader's own quick-view size wins thereafter: resize one
+        // window and the next opens the same way.
+        window.setFrameAutosaveName("EPUBQuickView")
+        window.isReleasedWhenClosed = false
+        let delegate = EPUBQuickViewWindowDelegate(root: root)
+        delegate.onClose = { [weak self, weak window] in
+            self?.quickViewWindows.removeAll { $0.window === window }
+        }
+        window.delegate = delegate
+        quickViewWindows.append((window, delegate))
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+        // A double-click that launched the app must show the book alone:
+        // the window group opens the library regardless, so the window the
+        // launch itself just created folds away. A library the reader
+        // already had open (any later moment) stays where it is; while the
+        // app is running, nothing reopens a closed one. ⌘L brings it back.
+        if Date().timeIntervalSince(launchedAt) < 3,
+           let main = mainNSWindow, main.isVisible {
+            main.orderOut(nil)
+        }
     }
 
     /// The sidebar's Intro button: opens the built-in guide (IntroGuide.swift),
@@ -4851,7 +4930,7 @@ final class AppModel {
         panel.treatsFilePackagesAsDirectories = false
         // Keep this short: NSOpenPanel lays the message out on one line and
         // grows the window to fit it, then won't shrink below that width.
-        panel.message = "Import a Word, Markdown, PDF, transcript, LaTeX (zip/.tex), or ACM XML file — or a folder of them."
+        panel.message = "Import an EPUB, Word, Markdown, PDF, transcript, LaTeX (zip/.tex), or ACM XML file — or a folder of them."
         panel.prompt = "Import"
         // Room to browse. The panel is user-resizable on its own — touching
         // its style mask breaks the sandboxed panel's dragging — and macOS
@@ -4873,11 +4952,11 @@ final class AppModel {
         "zip", "tex", "xml"
     ]
 
-    /// Imports one file into a new draft — an Origami Text EPUB, a PDF with
-    /// a text layer, a Word or Markdown file, a plain-text or RTF meeting
-    /// transcript, or an Author document. Shared by the Import… panel, files
-    /// opened from Finder or dropped on the app icon, and files dropped into
-    /// the window.
+    /// Imports one file into a new draft — a PDF with a text layer, a Word
+    /// or Markdown file, a plain-text or RTF meeting transcript, or an
+    /// Author document. An EPUB joins the shelf as-is instead (never
+    /// converted). Shared by the Import… panel, files opened from Finder
+    /// or dropped on the app icon, and files dropped into the window.
     func importFile(at url: URL) {
         // Files arriving by Finder-open or drag carry their sandbox access
         // as a security-scoped resource; the Import… panel grants access a
@@ -4905,10 +4984,10 @@ final class AppModel {
             var layouts: [LiquidDoc.Layout] = []
             var mapConnections: [LiquidDoc.MapConnection] = []
             var references: [LiquidDoc.Reference] = []
-            var tables: [LiquidDoc.Table] = []
+            let tables: [LiquidDoc.Table] = []
             var assets: [LiquidDoc.Asset] = []
-            var importedLinks: [LiquidDoc.Link] = []
-            var preservedID: String?
+            let importedLinks: [LiquidDoc.Link] = []
+            let preservedID: String? = nil
             switch url.pathExtension.lowercased() {
             case "zip", "tex":
                 // A LaTeX project becomes an EPUB in the library, not a
@@ -4974,30 +5053,11 @@ final class AppModel {
                     showNote(more > 0 ? "\(first) (+\(more) more)" : first)
                 }
             case "epub":
-                // An Origami Text EPUB comes back whole: the body with
-                // its stable paragraph ids, and the Visual-Meta layer —
-                // concepts, citations (links and references), views,
-                // connections. It returns as a book, like its source.
-                let result = try OrigamiEPUBImporter.importDocument(at: url)
-                title = result.title
-                author = result.author ?? authorName
-                body = result.body
-                importedLinks = result.links
-                concepts = result.concepts
-                layouts = result.layouts
-                mapConnections = result.mapConnections
-                references = result.references
-                tables = result.tables
-                assets = result.assets
-                date = result.date.flatMap(LiquidDate.init(isoString:))
-                documentType = LiquidDoc.DocumentType.book.rawValue
-                // The EPUB names its origami address: the book keeps
-                // its identity here, so citations to it resolve. A
-                // stripped EPUB still yields it from the file name's
-                // identity key, PDF-style.
-                preservedID = result.origamiID
-                    ?? LiquidDoc.identityKeyID(
-                        inFileName: url.deletingPathExtension().lastPathComponent)
+                // An EPUB imports whole and stays an EPUB: onto the
+                // shelf as-is, never converted to a draft — a round
+                // trip through the draft grows the reference list.
+                openEPUBFile(at: url)
+                return
             case "pdf":
                 // Born-digital PDFs come across as paragraphs; a PDF
                 // carrying Visual-Meta supplies its own title, author,

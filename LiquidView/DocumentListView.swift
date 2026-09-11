@@ -1204,7 +1204,16 @@ struct InboxListView: View {
                 ["epub", "zip", "tex", "json"].contains($0.pathExtension.lowercased())
             }
             guard !importable.isEmpty else { return false }
-            for url in importable { model.openFile(at: url) }
+            for url in importable {
+                // A drop on the inbox is an import, as the caption says —
+                // an EPUB joins the shelf even where a double-click would
+                // only have opened a look.
+                if url.pathExtension.lowercased() == "epub" {
+                    model.openEPUBFile(at: url)
+                } else {
+                    model.openFile(at: url)
+                }
+            }
             return true
         } isTargeted: { isDropTargeted = $0 }
         .overlay {

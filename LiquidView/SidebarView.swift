@@ -355,6 +355,15 @@ struct SidebarView: View {
             Label(myLastName, systemImage: "person.fill")
                 .badge(myCount > 0 ? myCount : 0)
                 .tag(SidebarItem.myEPUBs)
+            // A row that acts rather than selects: the Import panel —
+            // the one door into the library (a double-clicked EPUB only
+            // opens a look). Always visible, never conditional.
+            Button {
+                model.importDocumentFile()
+            } label: {
+                Label("Import", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.plain)
             if !model.acquisitions.isEmpty {
                 Label("To Acquire", systemImage: "arrow.down.circle")
                     .badge(model.acquisitions.count)

@@ -885,7 +885,13 @@ nonisolated enum OrigamiEPUBExporter {
         // The affiliations the per-author lines place; whatever no
         // author claims still prints in the shared block below.
         var unplaced = doc.affiliations
+        // The byline columns as the paper prints them: one author full
+        // width, two side by side, three or more in three columns that
+        // wrap. A reader without grid stacks the blocks — today's look.
+        let columns = min(max(authors.count, 1), 3)
+        lines.append("<div class=\"authors authors-\(columns)\">")
         for author in authors {
+            lines.append("<div class=\"author-block\">")
             lines.append("<p class=\"author\">\(escaped(author))</p>")
             // The affiliation directly under the name, as the paper
             // groups its byline columns — then the contact line.
@@ -905,7 +911,9 @@ nonisolated enum OrigamiEPUBExporter {
             if !details.isEmpty {
                 lines.append("<p class=\"author-detail\">\(details.joined(separator: " \u{00B7} "))</p>")
             }
+            lines.append("</div>")
         }
+        lines.append("</div>")
         for affiliation in unplaced {
             lines.append("<p class=\"affiliation\">\(escaped(affiliation))</p>")
         }
@@ -1460,6 +1468,12 @@ nonisolated enum OrigamiEPUBExporter {
     header { text-align: center; margin-bottom: 2.5em; }
     header h1 { font-size: 1.7em; margin-bottom: 0.6em; }
     .subtitle { font-size: 1.2em; color: #555555; margin: -0.3em 0 0.8em; }
+    .authors { display: flex; flex-wrap: wrap; justify-content: center; margin: 0.4em 0; }
+    .author-block { margin: 0.3em 0; }
+    .authors-1 .author-block { width: 100%; }
+    .authors-2 .author-block { width: 46%; }
+    .authors-3 .author-block { width: 31%; }
+    @media (max-width: 30em) { .authors-2 .author-block, .authors-3 .author-block { width: 100%; } }
     .author { font-size: 1.1em; margin: 0.1em 0; }
     .affiliation { color: #555555; margin: 0.1em 0; }
     .byline { color: #555555; font-style: italic; margin-top: 0.5em; margin-bottom: 0; }
