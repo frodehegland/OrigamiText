@@ -1240,11 +1240,18 @@ final class AppModel {
     }
 
     private func persistEPUBRecords() {
-        try? FileManager.default.createDirectory(at: Self.epubsRoot, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(epubRecords) {
-            try? data.write(to: Self.epubManifestURL, options: .atomic)
+        // The manifest IS the shelf: a failed write here means books
+        // vanish on relaunch — the one failure that must never be quiet.
+        do {
+            try FileManager.default.createDirectory(at: Self.epubsRoot,
+                                                    withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(epubRecords)
+            try data.write(to: Self.epubManifestURL, options: .atomic)
+        } catch {
+            NSSound.beep()
+            showNote("The shelf could not be saved: \(error.localizedDescription)")
         }
     }
 
@@ -2651,6 +2658,16 @@ final class AppModel {
         AnnotationStore.load(for: annotationAddress(forBook: book), in: Self.annotationsRoot)
     }
 
+    /// Every annotation save lands here: the store answers false when
+    /// the sidecar did not reach the disk — and the reader hears it,
+    /// rather than losing notes in silence.
+    private func persistAnnotations(_ all: [WebAnnotation], for address: String) {
+        if !AnnotationStore.save(all, for: address, in: Self.annotationsRoot) {
+            NSSound.beep()
+            showNote("The annotation could not be saved to its sidecar.")
+        }
+    }
+
     /// Highlights the selection in the open book.
     func addHighlight(on selection: ReaderSelection) {
         addAnnotation(motivation: WebAnnotation.Motivation.highlighting, note: nil, on: selection)
@@ -2702,7 +2719,7 @@ final class AppModel {
                                          selectors: selectors))
         var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
         all.append(annotation)
-        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        persistAnnotations(all, for: address)
         annotationsStamp += 1
     }
 
@@ -2717,7 +2734,7 @@ final class AppModel {
     func removeAnnotation(id: String, address: String) {
         var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
         all.removeAll { $0.id == id }
-        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        persistAnnotations(all, for: address)
         annotationsStamp += 1
     }
 
@@ -3080,7 +3097,7 @@ final class AppModel {
         guard let index = all.firstIndex(where: { $0.id == annotation.id }) else { return }
         all[index].placement = placement
         all[index].modified = .now
-        AnnotationStore.save(all, for: doc.id, in: Self.annotationsRoot)
+        persistAnnotations(all, for: doc.id)
         annotationsStamp += 1
     }
 
@@ -3133,7 +3150,7 @@ final class AppModel {
                 target: WebAnnotation.Target(source: "origamitext://open/" + address,
                                              selectors: [])))
         }
-        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        persistAnnotations(all, for: address)
         annotationsStamp += 1
     }
 
@@ -3197,7 +3214,7 @@ final class AppModel {
     func removeAnnotation(_ annotation: WebAnnotation, for doc: LiquidDoc) {
         var all = AnnotationStore.load(for: doc.id, in: Self.annotationsRoot)
         all.removeAll { $0.id == annotation.id }
-        AnnotationStore.save(all, for: doc.id, in: Self.annotationsRoot)
+        persistAnnotations(all, for: doc.id)
         annotationsStamp += 1
     }
 
@@ -3210,7 +3227,7 @@ final class AppModel {
         all[index].body = WebAnnotation.TextualBody(value: trimmed,
                                                     purpose: annotation.body?.purpose)
         all[index].modified = .now
-        AnnotationStore.save(all, for: doc.id, in: Self.annotationsRoot)
+        persistAnnotations(all, for: doc.id)
         annotationsStamp += 1
     }
 
@@ -3224,7 +3241,7 @@ final class AppModel {
     private func appendAnnotation(_ annotation: WebAnnotation, for doc: LiquidDoc) {
         var all = AnnotationStore.load(for: doc.id, in: Self.annotationsRoot)
         all.append(annotation)
-        AnnotationStore.save(all, for: doc.id, in: Self.annotationsRoot)
+        persistAnnotations(all, for: doc.id)
         annotationsStamp += 1
     }
 
@@ -3461,6 +3478,34 @@ final class AppModel {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty })
         return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// Lowercased author → shown-record count, in one pass over the
+    /// shelf — the Authors list's badges, spared a full filter per row.
+    /// Counting matches epubRecords(byAuthor:): a record counts once per
+    /// author, however many times a name repeats within it.
+    var epubAuthorCounts: [String: Int] {
+        var counts: [String: Int] = [:]
+        for record in shownEPUBRecords {
+            var seen = Set<String>()
+            for name in record.authorList {
+                let key = name.trimmingCharacters(in: .whitespaces).lowercased()
+                guard !key.isEmpty, seen.insert(key).inserted else { continue }
+                counts[key, default: 0] += 1
+            }
+        }
+        return counts
+    }
+
+    /// Lowercased canonical venue → shown-record count, in one pass —
+    /// the Journals list's badges, matching epubRecords(inPublication:).
+    var epubPublicationCounts: [String: Int] {
+        var counts: [String: Int] = [:]
+        for record in shownEPUBRecords {
+            guard let venue = record.venue.map(canonicalVenue) else { continue }
+            counts[venue.lowercased(), default: 0] += 1
+        }
+        return counts
     }
 
     /// The opened EPUBs carrying a given author of record — co-authored
@@ -3842,6 +3887,7 @@ final class AppModel {
             }
         }
         publicationAnalyses = analysesFile.analyses
+        analysesRevision += 1
         globalPinnedAuthors = analysesFile.pinnedAuthors
         globalPinnedTopics = analysesFile.pinnedTopics
         // Document extractions share the folder the same way.
@@ -3928,6 +3974,58 @@ final class AppModel {
     }
 
     private(set) var publicationAnalyses: [String: PublicationAnalysis] = [:]
+    /// Bumped beside every publicationAnalyses change — one half of the
+    /// merged-concepts cache key (the index's revision is the other).
+    @ObservationIgnored private var analysesRevision = 0
+    @ObservationIgnored private var mergedConceptsCache:
+        (indexRevision: Int, analysesRevision: Int, items: [MergedConcept])?
+
+    /// The Concept Space's merged list — Visual-Meta concepts from the
+    /// whole library plus AI-extracted paper topics — aggregated once
+    /// and cached until the index or an analysis actually changes. The
+    /// views read this instead of re-walking the index per render.
+    var mergedLibraryConcepts: [MergedConcept] {
+        if let cached = mergedConceptsCache,
+           cached.indexRevision == index.revision,
+           cached.analysesRevision == analysesRevision {
+            return cached.items
+        }
+        var merged = ConceptAggregator.aggregate(from: Array(index.byID.values))
+        var byKey: [String: Int] = Dictionary(
+            uniqueKeysWithValues: merged.enumerated().map { ($1.id, $0) })
+        for (_, analysis) in publicationAnalyses {
+            for (recordID, topics) in analysis.paperTopics {
+                guard let entry = index.byID[recordID] else { continue }
+                for topic in topics where !topic.isEmpty {
+                    let key = MergedConcept.key(for: topic)
+                    if let idx = byKey[key] {
+                        if !merged[idx].sourceDocIDs.contains(entry.doc.id) {
+                            merged[idx].sourceDocIDs.append(entry.doc.id)
+                        }
+                    } else {
+                        let concept = MergedConcept(
+                            id: key,
+                            name: MergedConcept.displayName(forKey: key),
+                            aiDescription: "",
+                            userDefinition: nil,
+                            category: "AI Topics",
+                            citationIdentifiers: [],
+                            urls: [],
+                            sourceDocIDs: [entry.doc.id],
+                            relatedConceptIDs: [])
+                        byKey[key] = merged.count
+                        merged.append(concept)
+                    }
+                }
+            }
+        }
+        let items = merged.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        mergedConceptsCache = (index.revision, analysesRevision, items)
+        return items
+    }
+
     private(set) var globalPinnedAuthors: [String] = []
     private(set) var globalPinnedTopics: [String] = []
 
@@ -3979,6 +4077,7 @@ final class AppModel {
         var updated = publicationAnalyses[name] ?? PublicationAnalysis()
         updated.paperTopics = paperTopics
         publicationAnalyses[name] = updated
+        analysesRevision += 1
         saveAnalysesFile()
     }
 
@@ -4066,6 +4165,7 @@ final class AppModel {
         var entry = publicationAnalyses[pub] ?? PublicationAnalysis()
         entry.setAsideAuthors.insert(author)
         publicationAnalyses[pub] = entry
+        analysesRevision += 1
         saveAnalysesFile()
     }
 
@@ -4073,6 +4173,7 @@ final class AppModel {
         var entry = publicationAnalyses[pub] ?? PublicationAnalysis()
         entry.setAsideTopics.insert(topic)
         publicationAnalyses[pub] = entry
+        analysesRevision += 1
         saveAnalysesFile()
     }
 
@@ -4193,13 +4294,15 @@ final class AppModel {
                     .replacingOccurrences(of: ":", with: "_"))
             }
         }
+        var failed: [String] = []
         for record in epubRecords where !present.contains(record.folder) {
             let destination = folder.appendingPathComponent(record.folder + ".epub")
             // The canonical .epub publishes bit-identically; a record
             // still missing one packs from its cache as before.
             let stored = storedEPUBURL(for: record)
             if FileManager.default.fileExists(atPath: stored.path) {
-                try? FileManager.default.copyItem(at: stored, to: destination)
+                do { try FileManager.default.copyItem(at: stored, to: destination) }
+                catch { failed.append(record.title) }
                 continue
             }
             let unpacked = Self.epubsRoot.appendingPathComponent(record.folder,
@@ -4208,7 +4311,17 @@ final class AppModel {
                     unpacked.appendingPathComponent(record.contentSubpath).path),
                   let data = try? OrigamiEPUBExporter.pack(unpackedFolder: unpacked)
             else { continue }
-            try? data.write(to: destination, options: .atomic)
+            do { try data.write(to: destination, options: .atomic) }
+            catch { failed.append(record.title) }
+        }
+        // A book that did not publish diverges the shelves in silence —
+        // the one word the sync owes the reader is that it happened.
+        if let first = failed.first {
+            NSSound.beep()
+            let more = failed.count - 1
+            showNote(more > 0
+                ? "“\(first)” (+\(more) more) could not be published to the community folder."
+                : "“\(first)” could not be published to the community folder.")
         }
     }
 

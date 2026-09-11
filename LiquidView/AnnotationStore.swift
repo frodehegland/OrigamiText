@@ -54,18 +54,27 @@ public nonisolated enum AnnotationStore {
         try? Data(contentsOf: fileURL(for: address, in: folder))
     }
 
-    /// Writes the sidecar, or removes it when the last annotation is gone.
-    public static func save(_ annotations: [WebAnnotation], for address: String, in folder: URL) {
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let url = fileURL(for: address, in: folder)
-        guard !annotations.isEmpty else {
-            try? FileManager.default.removeItem(at: url)
-            return
-        }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        if let data = try? encoder.encode(CollectionFile(items: annotations)) {
-            try? data.write(to: url, options: .atomic)
+    /// Writes the sidecar, or removes it when the last annotation is
+    /// gone. False when the notes did not reach the disk — the caller
+    /// owes the reader that truth.
+    @discardableResult
+    public static func save(_ annotations: [WebAnnotation], for address: String, in folder: URL) -> Bool {
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let url = fileURL(for: address, in: folder)
+            guard !annotations.isEmpty else {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+                return true
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            let data = try encoder.encode(CollectionFile(items: annotations))
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
         }
     }
 

@@ -359,6 +359,8 @@ struct AuthorsListView: View {
 
     var body: some View {
         let authors = model.epubAuthors
+        // One pass over the shelf for every badge, not one per row.
+        let counts = model.epubAuthorCounts
         List {
             ForEach(authors, id: \.self) { author in
                 Button {
@@ -367,7 +369,7 @@ struct AuthorsListView: View {
                     HStack {
                         Label(author, systemImage: "person")
                         Spacer()
-                        Text("\(model.epubRecords(byAuthor: author).count)")
+                        Text("\(counts[author.lowercased()] ?? 0)")
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
@@ -436,6 +438,8 @@ struct JournalsListView: View {
 
     var body: some View {
         let venues = model.epubPublications
+        // One pass over the shelf for every badge, not one per row.
+        let counts = model.epubPublicationCounts
         List {
             ForEach(venues, id: \.self) { venue in
                 Button {
@@ -444,7 +448,7 @@ struct JournalsListView: View {
                     HStack {
                         Label(venue, systemImage: "newspaper")
                         Spacer()
-                        Text("\(model.epubRecords(inPublication: venue).count)")
+                        Text("\(counts[venue.lowercased()] ?? 0)")
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
@@ -895,46 +899,12 @@ struct ConceptsListView: View {
     }
 }
 
-/// Builds the merged concept list for the macOS Concept Space: Visual-Meta
-/// concepts from the library plus AI-extracted paper topics from analysis.
-private func mergedConcepts(model: AppModel) -> [MergedConcept] {
-    var merged = ConceptAggregator.aggregate(from: Array(model.index.byID.values))
-    var byKey: [String: Int] = Dictionary(uniqueKeysWithValues: merged.enumerated().map { ($1.id, $0) })
-    for (_, analysis) in model.publicationAnalyses {
-        for (recordID, topics) in analysis.paperTopics {
-            guard let entry = model.index.byID[recordID] else { continue }
-            for topic in topics where !topic.isEmpty {
-                let key = MergedConcept.key(for: topic)
-                if let idx = byKey[key] {
-                    if !merged[idx].sourceDocIDs.contains(entry.doc.id) {
-                        merged[idx].sourceDocIDs.append(entry.doc.id)
-                    }
-                } else {
-                    let concept = MergedConcept(
-                        id: key,
-                        name: MergedConcept.displayName(forKey: key),
-                        aiDescription: "",
-                        userDefinition: nil,
-                        category: "AI Topics",
-                        citationIdentifiers: [],
-                        urls: [],
-                        sourceDocIDs: [entry.doc.id],
-                        relatedConceptIDs: [])
-                    byKey[key] = merged.count
-                    merged.append(concept)
-                }
-            }
-        }
-    }
-    return merged.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-}
-
 /// Views ▸ Tracked Concepts ▸ one concept: documents that discuss it.
 struct ConceptListView: View {
     @Environment(AppModel.self) private var model
     let name: String
 
-    private var concepts: [MergedConcept] { mergedConcepts(model: model) }
+    private var concepts: [MergedConcept] { model.mergedLibraryConcepts }
 
     private var sourceDocs: [IndexEntry] {
         let key = MergedConcept.key(for: name)
@@ -975,7 +945,7 @@ struct ConceptSpaceView: View {
     @State private var editingDefinition = false
     @State private var definitionText = ""
 
-    private var concepts: [MergedConcept] { mergedConcepts(model: model) }
+    private var concepts: [MergedConcept] { model.mergedLibraryConcepts }
 
     private var filtered: [MergedConcept] {
         guard !searchText.isEmpty else { return concepts }

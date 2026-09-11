@@ -39,6 +39,8 @@ final class LibraryIndex {
     /// Documents targeted by a `retracts` link: withdrawn by their author.
     private(set) var retractedIDs: Set<String> = []
     private(set) var isScanning = false
+    /// Bumped on every republish — callers key their derived caches on it.
+    private(set) var revision = 0
 
     // FSEvents watching is macOS-only; visionOS rescans on demand and on
     // scene activation instead.
@@ -83,6 +85,7 @@ final class LibraryIndex {
         timeline = result.timeline
         supersededIDs = Set(result.revisionOf.keys)
         retractedIDs = result.retractedIDs
+        revision += 1
     }
 
     func setFolder(_ url: URL) {
