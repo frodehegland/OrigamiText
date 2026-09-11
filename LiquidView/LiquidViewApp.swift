@@ -241,6 +241,7 @@ private struct MainNSWindowCapture: NSViewRepresentable {
         let view = NSView()
         DispatchQueue.main.async {
             model.mainNSWindow = view.window
+            model.mainWindowCaptured()
         }
         return view
     }
@@ -248,6 +249,7 @@ private struct MainNSWindowCapture: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         if model.mainNSWindow == nil, let w = nsView.window {
             model.mainNSWindow = w
+            model.mainWindowCaptured()
         }
     }
 }

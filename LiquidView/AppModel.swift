@@ -2176,6 +2176,10 @@ final class AppModel {
 
     private func beginLaunchFoldWatch() {
         guard launchFoldObserver == nil else { return }
+        // The library must not get a first frame while the watch stands:
+        // transparent, it can appear and become key unseen — the fold
+        // orders it out, and only then does its opacity come back.
+        mainNSWindow?.alphaValue = 0
         launchFoldObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
         ) { [weak self] note in
@@ -2188,6 +2192,11 @@ final class AppModel {
         }
     }
 
+    /// MainNSWindowCapture found the window — mid-watch it starts unseen.
+    func mainWindowCaptured() {
+        if launchFoldObserver != nil { mainNSWindow?.alphaValue = 0 }
+    }
+
     private func launchRaisedWindow(_ window: NSWindow?) {
         guard let window, !quickViewWindows.isEmpty,
               !quickViewWindows.contains(where: { $0.window === window })
@@ -2196,6 +2205,7 @@ final class AppModel {
         // window the launch raised) folds; the book takes the key back.
         guard window === mainNSWindow || mainNSWindow == nil else { return }
         window.orderOut(nil)
+        window.alphaValue = 1
         quickViewWindows.last?.window.makeKeyAndOrderFront(nil)
         endLaunchFoldWatch()
     }
@@ -2205,6 +2215,12 @@ final class AppModel {
             NotificationCenter.default.removeObserver(launchFoldObserver)
         }
         launchFoldObserver = nil
+        // Opacity always comes back — a window this watch left unseen
+        // folds away first, so nothing ever stands invisible.
+        if let main = mainNSWindow, main.alphaValue == 0 {
+            if main.isVisible { main.orderOut(nil) }
+            main.alphaValue = 1
+        }
     }
 
     /// The sidebar's Intro button: opens the built-in guide (IntroGuide.swift),
