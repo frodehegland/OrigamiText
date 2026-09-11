@@ -1438,9 +1438,32 @@ struct PhoneReaderView: View {
     }
 
     /// The paragraph's attributed text: tokens resolved, the theme's
-    /// appearance, and — when asked — the bionic bolding.
+    /// appearance, and — when asked — the bionic bolding. Memoized on
+    /// the model so an unrelated state change (a sheet presenting, a
+    /// selection) reads the cache instead of re-running the pipeline
+    /// for every visible paragraph.
     private func rendered(_ text: String, doc: LiquidDoc,
                           paragraphID: String? = nil) -> AttributedString {
+        guard let paragraphID else {
+            return renderedNow(text, doc: doc, paragraphID: nil)
+        }
+        // Every input that shapes the outcome keys the cache; reading
+        // the stamp here also keeps the repaint-on-annotate observation
+        // alive when every paragraph is a hit.
+        let signature = [docID,
+                         citationStyle.rawValue,
+                         String(describing: readingScheme),
+                         String(bionicReading),
+                         String(model.annotationsStamp),
+                         openInlineNotes.sorted().joined(separator: ","),
+                         findQuery ?? ""].joined(separator: "|")
+        return model.renderedText(paragraphID, text: text, signature: signature) {
+            renderedNow(text, doc: doc, paragraphID: paragraphID)
+        }
+    }
+
+    private func renderedNow(_ text: String, doc: LiquidDoc,
+                             paragraphID: String?) -> AttributedString {
         var out = OrigamiReading.inlineAttributed(text, in: doc,
                                                   citations: citationStyle,
                                                   appearance: readingScheme)

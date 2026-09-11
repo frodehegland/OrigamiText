@@ -360,6 +360,27 @@ final class PhoneModel {
         return value
     }
 
+    @ObservationIgnored
+    private var renderedTextMemo:
+        (signature: String, byParagraph: [String: (text: String, value: AttributedString)])?
+
+    /// The paragraph's fully rendered text, memoized against everything
+    /// that shapes it. Any state change re-renders the reader's body;
+    /// without this, presenting a mere sheet re-runs markdown, citations,
+    /// and painting for every visible paragraph first.
+    func renderedText(_ paragraphID: String, text: String, signature: String,
+                      compute: () -> AttributedString) -> AttributedString {
+        if renderedTextMemo?.signature != signature {
+            renderedTextMemo = (signature, [:])
+        }
+        if let hit = renderedTextMemo?.byParagraph[paragraphID], hit.text == text {
+            return hit.value
+        }
+        let value = compute()
+        renderedTextMemo?.byParagraph[paragraphID] = (text, value)
+        return value
+    }
+
     /// One live selection in the reader: the book, the paragraph, and
     /// the exact words with their disambiguating neighbours.
     struct ReaderSelection {
