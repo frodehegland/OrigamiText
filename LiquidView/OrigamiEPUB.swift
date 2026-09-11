@@ -948,20 +948,21 @@ nonisolated enum OrigamiEPUBExporter {
         for affiliation in unplaced {
             lines.append("<p class=\"affiliation\">\(escaped(affiliation))</p>")
         }
-        var parts: [String] = []
-        if let publication = doc.publication, !publication.isEmpty {
-            parts.append(publication)
-        }
-        // A paper with an ACM Reference Format block already states its
-        // dates there (and in the license block) — a byline date here
-        // read as the publication day when it was only the conversion's.
+        // A paper with an ACM Reference Format block states its venue,
+        // dates, and location there — the print has no byline under the
+        // authors, and neither does the page. Everything else keeps its
+        // venue-and-date line.
         if doc.acmReference == nil {
+            var parts: [String] = []
+            if let publication = doc.publication, !publication.isEmpty {
+                parts.append(publication)
+            }
             parts.append(doc.date?.displayText
                 ?? doc.created.formatted(date: .long, time: .omitted))
-        }
-        if let location = doc.location { parts.append(location) }
-        if !parts.isEmpty {
-            lines.append("<p class=\"byline\">\(escaped(parts.joined(separator: " · ")))</p>")
+            if let location = doc.location { parts.append(location) }
+            if !parts.isEmpty {
+                lines.append("<p class=\"byline\">\(escaped(parts.joined(separator: " · ")))</p>")
+            }
         }
         lines.append("</header>")
         return lines.joined(separator: "\n")
@@ -1308,9 +1309,13 @@ nonisolated enum OrigamiEPUBExporter {
     private static func referenceHTML(for citation: Citation) -> String {
         var parts: [String] = []
         if !citation.authors.isEmpty {
-            parts.append(escaped(acmNameList(citation.authors)))
+            // ACM's cadence: "Authors. Year. Title." — never a double
+            // period after a name that already ends in one.
+            var names = escaped(acmNameList(citation.authors))
+            if !names.hasSuffix(".") { names += "." }
+            parts.append(names)
         }
-        if !citation.year.isEmpty { parts.append("(\(escaped(citation.year))).") }
+        if !citation.year.isEmpty { parts.append("\(escaped(citation.year)).") }
         if !citation.title.isEmpty { parts.append("\(escaped(citation.title)).") }
         if !citation.publication.isEmpty {
             parts.append("<em>\(escaped(citation.publication))</em>.")
