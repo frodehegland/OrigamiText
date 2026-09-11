@@ -3202,11 +3202,52 @@ struct OrigamiReadingView: View {
     /// The paragraph with its inline conventions rendered — citations in
     /// the reader's style, markdown, the ==marked== style — exact-word
     /// highlights painted in, and the `»` stretch toggle at its end
-    /// when a stretch block follows.
+    /// when a stretch block follows. Memoized on the model so an
+    /// unrelated state change (a sheet presenting, a selection) reads
+    /// the cache instead of re-running the pipeline for every visible
+    /// paragraph.
     private func inlineText(_ paragraph: LiquidDoc.Paragraph,
                             highlights: [ResolvedAnnotation],
                             trailingStretch: (id: String, run: [LiquidDoc.Paragraph])? = nil,
                             closeStretch: (id: String, isLast: Bool)? = nil)
+        -> AttributedString {
+        // Every doc-wide input that shapes the outcome keys the cache;
+        // reading the stamp here also keeps the repaint-on-annotate
+        // observation alive when every paragraph is a hit. The
+        // keySentences count works because entries only ever arrive.
+        let signature = [doc.id,
+                         String(model.annotationsStamp),
+                         citationsRaw, markedStyleRaw,
+                         String(describing: colorScheme),
+                         themeRaw, String(themeEditTick),
+                         String(model.flowReading), String(flowBreakOnComma),
+                         String(boldKeySentences), String(keySentences.count),
+                         findText, findCurrentID ?? "",
+                         String(glossaryOverviewOn), glossaryDisplayRaw,
+                         openGlossary.sorted().joined(separator: ","),
+                         openInlineNotes.sorted().joined(separator: ","),
+                         openStretch.sorted().joined(separator: ","),
+                         stretchDisplayRaw,
+                         coloringModeRaw, colorRulesRaw].joined(separator: "|")
+        // The paragraph's own inputs: its words as the view functions
+        // show them (splits and flow included) and its stretch frame.
+        var fingerprint = readingText(for: paragraph)
+        if let trailingStretch { fingerprint += "|›" + trailingStretch.id }
+        if let closeStretch {
+            fingerprint += "|‹" + closeStretch.id + (closeStretch.isLast ? "!" : "")
+        }
+        return model.renderedText(paragraph.id, fingerprint: fingerprint,
+                                  signature: signature) {
+            inlineTextNow(paragraph, highlights: highlights,
+                          trailingStretch: trailingStretch,
+                          closeStretch: closeStretch)
+        }
+    }
+
+    private func inlineTextNow(_ paragraph: LiquidDoc.Paragraph,
+                               highlights: [ResolvedAnnotation],
+                               trailingStretch: (id: String, run: [LiquidDoc.Paragraph])? = nil,
+                               closeStretch: (id: String, isLast: Bool)? = nil)
         -> AttributedString {
         var attributed = rendered(readingText(for: paragraph))
         // The b view function: the paragraph's key sentence — the

@@ -3183,6 +3183,30 @@ final class AppModel {
     @ObservationIgnored private var resolutionCache:
         (docID: String, stamp: Int, resolved: [ResolvedDocAnnotation])?
 
+    @ObservationIgnored private var renderedTextMemo:
+        (signature: String, byParagraph: [String: (fingerprint: String, value: AttributedString)])?
+
+    /// The reading's fully decorated paragraph, memoized. The signature
+    /// carries every doc-wide input that shapes the outcome; the
+    /// fingerprint carries the paragraph's own — its words as shown and
+    /// its stretch frame. Any unrelated state change re-renders the
+    /// reading's body; without this, presenting a mere sheet re-runs
+    /// markdown, citations, highlights, and the glossary for every
+    /// visible paragraph first.
+    func renderedText(_ paragraphID: String, fingerprint: String, signature: String,
+                      compute: () -> AttributedString) -> AttributedString {
+        if renderedTextMemo?.signature != signature {
+            renderedTextMemo = (signature, [:])
+        }
+        if let hit = renderedTextMemo?.byParagraph[paragraphID],
+           hit.fingerprint == fingerprint {
+            return hit.value
+        }
+        let value = compute()
+        renderedTextMemo?.byParagraph[paragraphID] = (fingerprint, value)
+        return value
+    }
+
     /// Every annotation on the document with where it landed.
     func resolvedAnnotations(for doc: LiquidDoc) -> [ResolvedDocAnnotation] {
         if let cached = resolutionCache, cached.docID == doc.id,
