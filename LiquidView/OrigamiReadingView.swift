@@ -1,4 +1,16 @@
 import SwiftUI
+
+/// Decoded figure images by asset id — the base64 becomes an NSImage
+/// once per asset, not once per render pass (a figure's body and its
+/// sizing both ask). NSCache empties itself under memory pressure.
+private let figureImageCache = NSCache<NSString, NSImage>()
+
+func decodedImage(for asset: LiquidDoc.Asset) -> NSImage? {
+    if let hit = figureImageCache.object(forKey: asset.id as NSString) { return hit }
+    guard let data = asset.data, let image = NSImage(data: data) else { return nil }
+    figureImageCache.setObject(image, forKey: asset.id as NSString)
+    return image
+}
 import AppKit
 import UniformTypeIdentifiers
 import WebKit
@@ -4251,7 +4263,7 @@ struct FigureWindowView: View {
         Group {
             if let resolved {
                 VStack(spacing: 10) {
-                    if let data = resolved.asset.data, let image = NSImage(data: data) {
+                    if let image = decodedImage(for: resolved.asset) {
                         Image(nsImage: image)
                             .resizable()
                             .scaledToFit()
@@ -4285,8 +4297,8 @@ struct FigureWindowView: View {
     /// The image's proportions as a window size: fit under 900 points a
     /// side (never enlarged past 1.5×), the caption's lines allowed for.
     private var fittedSize: CGSize {
-        guard let asset = resolved?.asset, let data = asset.data,
-              let image = NSImage(data: data),
+        guard let asset = resolved?.asset,
+              let image = decodedImage(for: asset),
               image.size.width > 0, image.size.height > 0
         else { return CGSize(width: 640, height: 560) }
         let maxSide: CGFloat = 900

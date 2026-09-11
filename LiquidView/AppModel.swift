@@ -1556,10 +1556,10 @@ final class AppModel {
             return
         }
         do {
-            let reader = try ZipReader(data: Data(contentsOf: archive))
+            let reader = try ZipReader(url: archive)
             // The camera-ready copy lives under pdf/; a source-side
             // main.pdf only answers when nothing better exists.
-            let candidates = reader.entries.keys
+            let candidates = reader.entryNames
                 .filter { $0.lowercased().hasSuffix(".pdf") && !$0.contains("__MACOSX") }
                 .sorted { lhs, rhs in
                     let left = lhs.lowercased().contains("pdf/") ? 0 : 1
@@ -1627,9 +1627,10 @@ final class AppModel {
         if sourceArchiveIndexedFolder != cacheKey {
             sourceArchiveIndex = [:]
             for archive in archives {
-                guard let reader = try? ZipReader(data: Data(contentsOf: archive)) else { continue }
-                for (name, data) in reader.entries
+                guard let reader = try? ZipReader(url: archive) else { continue }
+                for name in reader.entryNames
                 where name.lowercased().hasSuffix(".tex") && !name.contains("__MACOSX") {
+                    guard let data = reader.entry(name) else { continue }
                     let text = String(decoding: data, as: UTF8.self)
                     guard let range = text.range(of: #"\\acmDOI\{([^}]+)\}"#,
                                                  options: .regularExpression) else { continue }
@@ -2858,7 +2859,7 @@ final class AppModel {
                                                  fallbackID: bookID, base: base)
                     self.cacheReadingDoc(doc, for: bookID)
                     // The index build reuses this import too.
-                    self.epubIndexMemo[bookID] = EPUBIndexEntry(stamp: stamp, doc: doc)
+                    self.memoizeIndexEntry(EPUBIndexEntry(stamp: stamp, doc: doc), for: bookID)
                 } else {
                     self.readingDocFailed.insert(bookID)
                 }
@@ -2874,6 +2875,7 @@ final class AppModel {
         readingDocFailed.remove(bookID)
         readingDocCache.removeAll { $0.bookID == bookID }
         epubIndexMemo.removeValue(forKey: bookID)
+        epubIndexMemoOrder.removeAll { $0 == bookID }
     }
 
     /// The full structured document standing for an unpacked book — the
@@ -2925,6 +2927,18 @@ final class AppModel {
     /// has not changed is never re-imported. Shares the docs the index
     /// holds (value types), so the memo costs no second copy.
     @ObservationIgnored private var epubIndexMemo: [String: EPUBIndexEntry] = [:]
+    /// Insertion order for the memo — the oldest book falls out when the
+    /// memo passes its cap, so a long session never hoards every doc.
+    @ObservationIgnored private var epubIndexMemoOrder: [String] = []
+    private static let epubIndexMemoCap = 24
+
+    private func memoizeIndexEntry(_ entry: EPUBIndexEntry, for bookID: String) {
+        if epubIndexMemo[bookID] == nil { epubIndexMemoOrder.append(bookID) }
+        epubIndexMemo[bookID] = entry
+        while epubIndexMemoOrder.count > Self.epubIndexMemoCap {
+            epubIndexMemo.removeValue(forKey: epubIndexMemoOrder.removeFirst())
+        }
+    }
 
     /// A cheap identity for a book's content: the content document's
     /// modification date and size (the unpacked folder's own when a

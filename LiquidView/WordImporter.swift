@@ -1734,8 +1734,12 @@ nonisolated enum WordCitationFields {
             var key = base
             var suffix = ""
             while referencesByKey[key] != nil {
-                suffix = suffix.isEmpty ? "a" : String(UnicodeScalar(
-                    suffix.unicodeScalars.first!.value + 1)!)
+                // a, b, c… — and past any unencodable step, another letter
+                // appended rather than a crash on a malformed suffix.
+                let next = suffix.unicodeScalars.first
+                    .flatMap { UnicodeScalar($0.value + 1) }
+                    .map(String.init)
+                suffix = suffix.isEmpty ? "a" : (next ?? suffix + "a")
                 key = base + suffix
             }
             keysByIdentity[identity] = key

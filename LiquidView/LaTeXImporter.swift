@@ -71,10 +71,10 @@ nonisolated enum LaTeXImporter {
     /// .tex inside. `main.tex` is preferred; else the file that declares
     /// `\documentclass` and `\begin{document}`; else the largest .tex.
     static func importArchive(at url: URL) throws -> Result {
-        let zip = try ZipReader(data: try Data(contentsOf: url))
-        // Sorted: zip.entries is a Dictionary, and every selection rule
-        // below must pick the same file on every run.
-        let texNames = zip.entries.keys.filter {
+        let zip = try ZipReader(url: url)
+        // Sorted: every selection rule below must pick the same file
+        // on every run, whatever order the archive lists them.
+        let texNames = zip.entryNames.filter {
             $0.lowercased().hasSuffix(".tex") && !$0.contains("__MACOSX")
         }.sorted()
         guard !texNames.isEmpty else { throw LaTeXImportError.noTeX }
@@ -111,18 +111,18 @@ nonisolated enum LaTeXImporter {
             return candidates.lazy.compactMap(text).first
         }
 
-        let bibliography = zip.entries
-            .filter { $0.key.lowercased().hasSuffix(".bib") && !$0.key.contains("__MACOSX") }
-            .sorted { $0.key < $1.key }
-            .map { String(decoding: $0.value, as: UTF8.self) }
+        let bibliography = zip.entryNames
+            .filter { $0.lowercased().hasSuffix(".bib") && !$0.contains("__MACOSX") }
+            .sorted()
+            .compactMap { zip.entry($0).map { String(decoding: $0, as: UTF8.self) } }
             .joined(separator: "\n")
 
         // The typeset bibliography, when the archive ships one — its
         // \bibitem order is the numbering the printed PDF shows.
-        let printedBibliography = zip.entries
-            .filter { $0.key.lowercased().hasSuffix(".bbl") && !$0.key.contains("__MACOSX") }
-            .sorted { $0.key < $1.key }
-            .map { String(decoding: $0.value, as: UTF8.self) }
+        let printedBibliography = zip.entryNames
+            .filter { $0.lowercased().hasSuffix(".bbl") && !$0.contains("__MACOSX") }
+            .sorted()
+            .compactMap { zip.entry($0).map { String(decoding: $0, as: UTF8.self) } }
             .joined(separator: "\n")
 
         // Some sources nest another zip beside the manuscript (ht26-2
@@ -133,16 +133,18 @@ nonisolated enum LaTeXImporter {
             let name = (path as NSString).lastPathComponent
             if let direct = zip.entry(joined(mainDir, path))
                 ?? zip.entry(path)
-                ?? zip.entries.first(where: { $0.key.hasSuffix("/" + name) || $0.key == name })?.value {
+                ?? zip.entryNames.first(where: { $0.hasSuffix("/" + name) || $0 == name })
+                    .flatMap({ zip.entry($0) }) {
                 return direct
             }
             if nestedEntries == nil {
                 nestedEntries = [:]
-                for (entryName, data) in zip.entries
+                for entryName in zip.entryNames
                 where entryName.lowercased().hasSuffix(".zip") && !entryName.contains("__MACOSX") {
-                    guard let inner = try? ZipReader(data: data) else { continue }
-                    for (innerName, innerData) in inner.entries {
-                        nestedEntries?[innerName] = innerData
+                    guard let data = zip.entry(entryName),
+                          let inner = try? ZipReader(data: data) else { continue }
+                    for innerName in inner.entryNames {
+                        nestedEntries?[innerName] = inner.entry(innerName)
                     }
                 }
             }
@@ -177,7 +179,7 @@ nonisolated enum LaTeXImporter {
             return String(view).lowercased()
         }
         let titleKey = normalized(title.prefix(48))
-        let pdfNames = zip.entries.keys.filter {
+        let pdfNames = zip.entryNames.filter {
             $0.lowercased().hasSuffix(".pdf") && !$0.contains("__MACOSX")
         }.sorted { (zip.entry($0)?.count ?? 0) > (zip.entry($1)?.count ?? 0) }
         for name in pdfNames {

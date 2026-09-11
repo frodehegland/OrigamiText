@@ -96,11 +96,11 @@ nonisolated enum OrigamiEPUBImporter {
     }
 
     static func importDocument(at url: URL) throws -> ImportResult {
-        let zip = try ZipReader(data: try Data(contentsOf: url))
+        let zip = try ZipReader(url: url)
         return try importDocument(from: PackageSource(
             entry: { zip.entry($0) },
             entryWithSuffix: { suffix in
-                zip.entries.first { $0.key.hasSuffix(suffix) }?.value
+                zip.entryNames.first { $0.hasSuffix(suffix) }.flatMap { zip.entry($0) }
             }))
     }
 
@@ -495,12 +495,13 @@ nonisolated enum OrigamiEPUBImporter {
     }
 
     static func unpack(at url: URL, into directory: URL) throws -> Unpacked {
-        let zip = try ZipReader(data: try Data(contentsOf: url))
+        let zip = try ZipReader(url: url)
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: directory)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        for (name, data) in zip.entries {
+        for name in zip.entryNames {
+            guard let data = zip.entry(name) else { continue }
             // Directory placeholders carry no bytes; refuse any name that
             // would escape the unpack directory.
             guard !name.isEmpty, !name.hasSuffix("/"),
@@ -1555,15 +1556,50 @@ private final class XMLTree: NSObject, XMLParserDelegate {
 /// but EPUBs from other writers usually deflate.
 // Internal, not private: the LaTeX importer reads its zipped project
 // through the same minimal reader.
-struct ZipReader {
+final class ZipReader {
 
-    private(set) var entriesByName: [String: Data] = [:]
+    /// One central-directory record: where the bytes sit and how they
+    /// unpack — nothing is inflated until someone asks for the entry.
+    private struct Record {
+        let method: Int
+        let start: Int
+        let compressedSize: Int
+        let uncompressedSize: Int
+    }
 
-    var entries: [String: Data] { entriesByName }
+    private let data: Data
+    private var records: [String: Record] = [:]
+    private var inflatedCache: [String: Data] = [:]
+    /// Every entry name in central-directory order. Callers that only
+    /// browse (an archive scan for its PDF, the .tex census) read this
+    /// and never pay for a single inflation.
+    private(set) var entryNames: [String] = []
 
-    func entry(_ name: String) -> Data? { entriesByName[name] }
+    /// Maps the file rather than loading it: an archive scanned for one
+    /// entry never occupies memory for the rest.
+    convenience init(url: URL) throws {
+        try self.init(data: Data(contentsOf: url, options: .mappedIfSafe))
+    }
+
+    func entry(_ name: String) -> Data? {
+        if let inflated = inflatedCache[name] { return inflated }
+        guard let record = records[name] else { return nil }
+        let raw = slice(data, record.start, record.compressedSize)
+        let bytes: Data
+        switch record.method {
+        case 0: bytes = raw
+        case 8:
+            guard let inflated = try? Self.inflated(raw, size: record.uncompressedSize)
+            else { return nil }
+            bytes = inflated
+        default: return nil
+        }
+        inflatedCache[name] = bytes
+        return bytes
+    }
 
     init(data: Data) throws {
+        self.data = data
         // Find the end-of-central-directory record from the back.
         let minimumEOCD = 22
         guard data.count >= minimumEOCD else { throw OrigamiEPUBImportError.notAnEPUB }
@@ -1604,16 +1640,13 @@ struct ZipReader {
             guard start + compressedSize <= data.count else {
                 throw OrigamiEPUBImportError.corruptContainer
             }
-            let raw = slice(data, start, compressedSize)
-
-            switch method {
-            case 0:
-                entriesByName[name] = raw
-            case 8:
-                entriesByName[name] = try Self.inflated(raw, size: uncompressedSize)
-            default:
+            guard method == 0 || method == 8 else {
                 throw OrigamiEPUBImportError.unsupportedCompression(method)
             }
+            if records[name] == nil { entryNames.append(name) }
+            records[name] = Record(method: method, start: start,
+                                   compressedSize: compressedSize,
+                                   uncompressedSize: uncompressedSize)
             offset += 46 + nameLength + extraLength + commentLength
         }
     }

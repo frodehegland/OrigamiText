@@ -75,9 +75,8 @@ extension AppModel {
             fileURL: FileManager.default.temporaryDirectory
                 .appending(path: "Hypermedia", directoryHint: .isDirectory)
                 .appending(path: "\(id).origamitext"))
-        hypermedia.documentCache[result.canonicalID] = doc
-        hypermedia.documentOrigins[result.canonicalID] = result.origin
-        hypermedia.documentVersions[result.canonicalID] = result.version
+        hypermedia.cacheDocument(doc, id: result.canonicalID,
+                                 origin: result.origin, version: result.version)
         open(doc, fragment: fragment)
     }
 }

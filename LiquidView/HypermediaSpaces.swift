@@ -25,6 +25,22 @@ final class HypermediaSpaces {
     /// refers to.
     var documentOrigins: [String: URL] = [:]
     var documentVersions: [String: String] = [:]
+    private var documentCacheOrder: [String] = []
+
+    /// The one door into the cache: the oldest visit falls out past the
+    /// cap, so a long session of following links never hoards them all.
+    func cacheDocument(_ doc: LiquidDoc, id: String, origin: URL, version: String?) {
+        if documentCache[id] == nil { documentCacheOrder.append(id) }
+        documentCache[id] = doc
+        documentOrigins[id] = origin
+        documentVersions[id] = version
+        while documentCacheOrder.count > 24 {
+            let evicted = documentCacheOrder.removeFirst()
+            documentCache.removeValue(forKey: evicted)
+            documentOrigins.removeValue(forKey: evicted)
+            documentVersions.removeValue(forKey: evicted)
+        }
+    }
 
     // MARK: Account
 
