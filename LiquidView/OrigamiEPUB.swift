@@ -509,7 +509,12 @@ nonisolated enum OrigamiEPUBExporter {
                                                facts: accessibility).utf8))
         zip.add("content/paper.html", Data(html.utf8))
         zip.add("content/nav.html", Data(nav.utf8))
-        zip.add("content/style.css", Data(styleCSS.utf8))
+        var css = styleCSS
+        if let font = titleFontData {
+            zip.add("content/fonts/LibertinusSans-Bold.woff2", font)
+            css += titleFontCSS
+        }
+        zip.add("content/style.css", Data(css.utf8))
         for asset in referencedAssets {
             if let data = asset.data { zip.add("content/images/\(asset.filename)", data) }
         }
@@ -1461,6 +1466,10 @@ nonisolated enum OrigamiEPUBExporter {
             imageItems += (imageItems.isEmpty ? "" : "\n")
                 + "        <item id=\"ccby\" href=\"content/images/cc-by.png\" media-type=\"image/png\"/>"
         }
+        if titleFontData != nil {
+            imageItems += (imageItems.isEmpty ? "" : "\n")
+                + "        <item id=\"titlefont\" href=\"content/fonts/LibertinusSans-Bold.woff2\" media-type=\"font/woff2\"/>"
+        }
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" xml:lang="en">
@@ -1486,6 +1495,21 @@ nonisolated enum OrigamiEPUBExporter {
         </package>
         """
     }
+
+    /// The title face — Libertinus Sans Bold (SIL OFL), the living
+    /// continuation of Linux Biolinum, the face acmart sets titles in.
+    /// Bundled with the app and embedded per book; a build without the
+    /// resource simply exports without it (the CSS never names it).
+    private static let titleFontData: Data? = Bundle.main
+        .url(forResource: "LibertinusSans-Bold", withExtension: "woff2")
+        .flatMap { try? Data(contentsOf: $0) }
+
+    /// Joined onto styleCSS only when the font rides in the package.
+    private static let titleFontCSS = """
+
+    @font-face { font-family: "Libertinus Sans"; src: url("fonts/LibertinusSans-Bold.woff2") format("woff2"); font-weight: bold; font-style: normal; }
+    header h1 { font-family: "Libertinus Sans", "Linux Biolinum O", sans-serif; }
+    """
 
     /// The optional presentation layer: relative units only, nothing
     /// the profile forbids.

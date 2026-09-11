@@ -73,8 +73,21 @@ struct EPUBPreviewBuilder {
             html = html.replacingOccurrences(of: link, with: "<style>\n\(css)\n</style>")
         }
 
-        // Every image rides along as a cid: attachment.
+        // Embedded fonts named by the inlined stylesheets ride as cid:
+        // attachments too — the title face survives into the preview.
         var attachments: [String: QLPreviewReplyAttachment] = [:]
+        for (index, ref) in allMatches(in: html,
+                                       pattern: "url\\(\"?([^\")]+\\.woff2?)\"?\\)",
+                                       group: 1).enumerated() {
+            guard let fontData = entry(joined(contentDirectory, ref)) else { continue }
+            let key = "font\(index)"
+            attachments[key] = QLPreviewReplyAttachment(
+                data: fontData,
+                contentType: UTType(filenameExtension: (ref as NSString).pathExtension) ?? .data)
+            html = html.replacingOccurrences(of: ref, with: "cid:\(key)")
+        }
+
+        // Every image rides along as a cid: attachment.
         for (index, tag) in allMatches(in: html, pattern: "<img\\s[^>]*/?>", group: 0).enumerated() {
             guard let src = firstMatch(in: tag, pattern: "\\bsrc=\"([^\"]+)\""),
                   !src.hasPrefix("http"), !src.hasPrefix("data:"),
