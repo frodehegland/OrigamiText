@@ -1595,15 +1595,15 @@ nonisolated enum OrigamiEPUBExporter {
     .acm-reference { text-align: left; font-size: 0.85em; color: #555555; max-width: 34em; margin: 1.4em auto 0; }
     .author-detail { font-size: 0.8em; color: #555555; margin: 0 0 0.3em; }
     .ot-box { border: 1.5px solid #444444; border-radius: 4px; padding: 0.2em 1em 0.7em; margin: 1.2em 0; }
-    .table-caption { font-weight: bold; }
+    .table-caption { font-weight: bold; text-align: center; }
     .author-detail a { color: inherit; }
     h2 { font-size: 1.4em; margin-top: 1.6em; }
     h3 { font-size: 1.2em; }
     h4 { font-size: 1.05em; }
     .speaker { font-weight: bold; }
     figure { margin-left: 0; margin-right: 0; }
-    figure img { max-width: 100%; height: auto; }
-    figcaption { font-size: 0.9em; color: #555555; margin-top: 0.4em; }
+    figure img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+    figcaption { font-size: 0.9em; color: #555555; margin-top: 0.4em; font-weight: bold; text-align: center; }
     table { border-collapse: collapse; margin: 1.2em auto; border-top: 1px solid; border-bottom: 1px solid; }
     th { text-align: left; border-bottom: 0.5px solid; padding: 0.3em 1.2em 0.3em 0; }
     td { text-align: left; vertical-align: top; padding: 0.25em 1.2em 0.25em 0; }
