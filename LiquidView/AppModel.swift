@@ -2154,17 +2154,21 @@ final class AppModel {
         quickViewWindows.append((window, delegate))
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
-        // A double-click that launched the app must show the book alone.
-        // The window group opens the library regardless — and on its own
-        // schedule, so no fixed number of orderOut retries can win the
-        // race on a slow cold start. Fold whatever is visible now, then
-        // WATCH: the moment the launch makes the library key, it folds.
-        // The watch dies on its own, so ⌘L and the dock still win later.
-        if Date().timeIntervalSince(launchedAt) < 3 {
-            if let main = mainNSWindow, main.isVisible {
-                main.orderOut(nil)
-                window.makeKeyAndOrderFront(nil)
-            }
+        // A double-click must show the book alone. When the library is
+        // not on screen — the app just launched, or it sits in the dock
+        // with its window closed — the system may still raise the main
+        // window to deliver the open event, on its own schedule; no
+        // fixed orderOut can win that race. So WATCH: the moment
+        // something makes the library key, it folds. The watch dies on
+        // its own, so ⌘L and the dock still win later. A library the
+        // reader has open stays — except in the launch moment itself,
+        // where the window group's automatic window folds too.
+        let libraryVisible = mainNSWindow?.isVisible == true
+        if !libraryVisible {
+            beginLaunchFoldWatch()
+        } else if Date().timeIntervalSince(launchedAt) < 3 {
+            mainNSWindow?.orderOut(nil)
+            window.makeKeyAndOrderFront(nil)
             beginLaunchFoldWatch()
         }
     }

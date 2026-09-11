@@ -16,6 +16,12 @@ struct EPUBQuickViewScreen: View {
     @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
 
     @State private var chapterIndex = 0
+    // The pinch answers with the contents here too — the same list the
+    // reader's foot offers, in a look-only window without the foot.
+    @State private var showsContents = false
+    @State private var tocEntries: [OrigamiEPUBImporter.TOCEntry] = []
+    @State private var requestedFragment: String?
+    @State private var fragmentStamp = 0
 
     private var css: String {
         _ = themeEditTick
@@ -23,18 +29,48 @@ struct EPUBQuickViewScreen: View {
                                theme: ReaderTheme(rawValue: themeRaw) ?? .highContrast)
     }
 
+    private var currentContent: URL {
+        book.chapters.indices.contains(chapterIndex)
+            ? book.chapters[chapterIndex] : book.content
+    }
+
+    private func subpath(of url: URL) -> String {
+        url.path.replacingOccurrences(of: book.base.path + "/", with: "")
+    }
+
     var body: some View {
         EPUBReaderView(
             book: book,
             css: css,
-            content: book.chapters.indices.contains(chapterIndex)
-                ? book.chapters[chapterIndex] : book.content,
+            content: currentContent,
             chapterIndex: chapterIndex,
             chapterCount: book.chapters.count,
             onChapterStep: { delta in
                 let next = chapterIndex + delta
                 if book.chapters.indices.contains(next) { chapterIndex = next }
-            })
+            },
+            onPinchIn: { showsContents = true },
+            onPinchOut: { showsContents = false },
+            requestedFragment: requestedFragment,
+            fragmentStamp: fragmentStamp)
+        .popover(isPresented: $showsContents, arrowEdge: .bottom) {
+            ReaderContentsList(entries: tocEntries,
+                               currentSubpath: subpath(of: currentContent)) { entry in
+                showsContents = false
+                if let index = book.chapters.firstIndex(where: { subpath(of: $0) == entry.subpath }) {
+                    chapterIndex = index
+                }
+                requestedFragment = entry.fragment
+                fragmentStamp += 1
+            }
+            .onAppear {
+                guard tocEntries.isEmpty,
+                      let spine = OrigamiEPUBImporter.spine(inUnpackedFolder: book.base)
+                else { return }
+                tocEntries = OrigamiEPUBImporter.tocEntries(inUnpackedFolder: book.base,
+                                                            spine: spine)
+            }
+        }
         .frame(minWidth: 480, minHeight: 480)
     }
 }

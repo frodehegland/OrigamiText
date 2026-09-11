@@ -2178,7 +2178,7 @@ final class ReaderWebView: WKWebView {
 /// The table of contents, in the reader's Contents popover: the book's own
 /// navigation when it carries one, its headings or chapters otherwise. The
 /// entry being read is marked.
-private struct ReaderContentsList: View {
+struct ReaderContentsList: View {
     let entries: [OrigamiEPUBImporter.TOCEntry]
     let currentSubpath: String
     var onOpen: (OrigamiEPUBImporter.TOCEntry) -> Void
