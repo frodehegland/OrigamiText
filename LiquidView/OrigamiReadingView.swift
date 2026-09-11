@@ -576,6 +576,8 @@ struct OrigamiReadingView: View {
                 title: doc.title,
                 foldLevelLabel: model.readerFindFoldTerm.map { "Finding \u{201C}\($0)\u{201D}" }
                     ?? (foldLevel > 0 ? "Folded \u{2014} level \(foldLevel)" : nil),
+                showContents: $showContents,
+                contents: { AnyView(contentsList) },
                 typeMenu: { AnyView(typeMenu) },
                 accessoryContent: { AnyView(accessoryBarContent) },
                 focusContent: { AnyView(focusGroup) })
@@ -691,19 +693,21 @@ struct OrigamiReadingView: View {
                 }
                 return nil
             }
-            // Pinch on the trackpad folds and unfolds — in is ⌘−,
-            // out is ⌘+ — one step per gesture's worth of travel.
+            // Pinch on the trackpad opens the table of contents, as it
+            // does over the faithful page (and as the phone's pinch
+            // folds into the outline); pinch out closes it again.
+            // Folding lives on ⌘−/⌘+ and the foot's own controls.
             pinchMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { event in
                 guard event.window?.windowNumber == windowState.windowNumber else {
                     return event
                 }
                 if event.phase == .began { pinchAccumulator = 0 }
                 pinchAccumulator += event.magnification
-                if pinchAccumulator <= -0.3 {
-                    fold(by: 1)
+                if pinchAccumulator <= -0.15 {
+                    showContents = true
                     pinchAccumulator = 0
-                } else if pinchAccumulator >= 0.3 {
-                    fold(by: -1)
+                } else if pinchAccumulator >= 0.15 {
+                    showContents = false
                     pinchAccumulator = 0
                 }
                 return nil
