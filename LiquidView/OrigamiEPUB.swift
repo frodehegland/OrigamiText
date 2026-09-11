@@ -510,9 +510,15 @@ nonisolated enum OrigamiEPUBExporter {
         zip.add("content/paper.html", Data(html.utf8))
         zip.add("content/nav.html", Data(nav.utf8))
         var css = styleCSS
-        if let font = titleFontData {
-            zip.add("content/fonts/LibertinusSans-Bold.woff2", font)
-            css += titleFontCSS
+        if !embeddedFonts.isEmpty {
+            css += "\n"
+            for font in embeddedFonts {
+                zip.add("content/fonts/\(font.file)", font.data)
+                css += "@font-face { font-family: \"\(font.family)\"; "
+                    + "src: url(\"fonts/\(font.file)\") format(\"woff2\"); "
+                    + "font-weight: \(font.weight); font-style: \(font.style); }\n"
+            }
+            css += fontFamilyCSS
         }
         zip.add("content/style.css", Data(css.utf8))
         for asset in referencedAssets {
@@ -1269,10 +1275,40 @@ nonisolated enum OrigamiEPUBExporter {
     /// The visible reference line, ACM-shaped: authors, year, title
     /// roman, the venue in italic, and the way out — DOI, else URL —
     /// live as a link, never inert text.
+    /// A reference author as ACM prints one: given name first. The
+    /// canonical "Family, Given" stays in the data layers (Visual-Meta,
+    /// the emulator's sort key); only the printed list flips. A literal
+    /// name without a comma prints as it stands; an "(Eds.)" suffix
+    /// keeps its place at the end.
+    private static func givenFirst(_ name: String) -> String {
+        var body = name
+        var suffix = ""
+        if body.hasSuffix(" (Eds.)") {
+            suffix = " (Eds.)"
+            body = String(body.dropLast(suffix.count))
+        }
+        let parts = body.components(separatedBy: ", ")
+        guard parts.count > 1, let given = parts.last, !given.isEmpty else { return name }
+        let family = parts.dropLast().joined(separator: ", ")
+        return given + " " + family + suffix
+    }
+
+    /// Names joined as ACM joins them: "A and B"; "A, B, and C".
+    private static func acmNameList(_ names: [String]) -> String {
+        let flipped = names.map(givenFirst)
+        switch flipped.count {
+        case 0: return ""
+        case 1: return flipped[0]
+        case 2: return flipped[0] + " and " + flipped[1]
+        default: return flipped.dropLast().joined(separator: ", ")
+            + ", and " + flipped.last!
+        }
+    }
+
     private static func referenceHTML(for citation: Citation) -> String {
         var parts: [String] = []
         if !citation.authors.isEmpty {
-            parts.append(escaped(citation.authors.joined(separator: "; ")))
+            parts.append(escaped(acmNameList(citation.authors)))
         }
         if !citation.year.isEmpty { parts.append("(\(escaped(citation.year))).") }
         if !citation.title.isEmpty { parts.append("\(escaped(citation.title)).") }
@@ -1466,9 +1502,9 @@ nonisolated enum OrigamiEPUBExporter {
             imageItems += (imageItems.isEmpty ? "" : "\n")
                 + "        <item id=\"ccby\" href=\"content/images/cc-by.png\" media-type=\"image/png\"/>"
         }
-        if titleFontData != nil {
+        for (index, font) in embeddedFonts.enumerated() {
             imageItems += (imageItems.isEmpty ? "" : "\n")
-                + "        <item id=\"titlefont\" href=\"content/fonts/LibertinusSans-Bold.woff2\" media-type=\"font/woff2\"/>"
+                + "        <item id=\"font\(index + 1)\" href=\"content/fonts/\(font.file)\" media-type=\"font/woff2\"/>"
         }
         return """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -1496,19 +1532,30 @@ nonisolated enum OrigamiEPUBExporter {
         """
     }
 
-    /// The title face — Libertinus Sans Bold (SIL OFL), the living
-    /// continuation of Linux Biolinum, the face acmart sets titles in.
-    /// Bundled with the app and embedded per book; a build without the
-    /// resource simply exports without it (the CSS never names it).
-    private static let titleFontData: Data? = Bundle.main
-        .url(forResource: "LibertinusSans-Bold", withExtension: "woff2")
-        .flatMap { try? Data(contentsOf: $0) }
+    /// The page's faces — Libertinus (SIL OFL), the living continuation
+    /// of Linux Libertine/Biolinum, the family acmart sets its pages in:
+    /// Sans bold for the title and headings, Serif for the body. Bundled
+    /// with the app and embedded per book; a build without a resource
+    /// simply exports without that face (the CSS falls back).
+    private static let embeddedFonts: [(file: String, family: String,
+                                        weight: String, style: String, data: Data)] = {
+        let faces = [
+            ("LibertinusSans-Bold", "Libertinus Sans", "bold", "normal"),
+            ("LibertinusSerif-Regular", "Libertinus Serif", "normal", "normal"),
+            ("LibertinusSerif-Italic", "Libertinus Serif", "normal", "italic"),
+            ("LibertinusSerif-Bold", "Libertinus Serif", "bold", "normal"),
+        ]
+        return faces.compactMap { name, family, weight, style in
+            Bundle.main.url(forResource: name, withExtension: "woff2")
+                .flatMap { try? Data(contentsOf: $0) }
+                .map { (name + ".woff2", family, weight, style, $0) }
+        }
+    }()
 
-    /// Joined onto styleCSS only when the font rides in the package.
-    private static let titleFontCSS = """
-
-    @font-face { font-family: "Libertinus Sans"; src: url("fonts/LibertinusSans-Bold.woff2") format("woff2"); font-weight: bold; font-style: normal; }
-    header h1 { font-family: "Libertinus Sans", "Linux Biolinum O", sans-serif; }
+    /// Joined onto styleCSS only when the faces ride in the package.
+    private static let fontFamilyCSS = """
+    body { font-family: "Libertinus Serif", "Linux Libertine O", Georgia, serif; }
+    header h1, h2, h3, h4 { font-family: "Libertinus Sans", "Linux Biolinum O", sans-serif; }
     """
 
     /// The optional presentation layer: relative units only, nothing
