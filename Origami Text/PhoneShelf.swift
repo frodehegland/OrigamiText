@@ -12,6 +12,9 @@ import SwiftUI
 final class PhoneModel {
 
     private(set) var epubRecords: [EPUBRecord] = PhoneModel.loadEPUBRecords()
+    /// True when an annotation sidecar failed to write — the reader is
+    /// told (an alert on the shelf view) rather than losing notes quietly.
+    var annotationSaveFailed = false
     let index = LibraryIndex()
     /// The book the reader shows, pushed by the shelf or a file open.
     var readerRecordID: String?
@@ -381,7 +384,9 @@ final class PhoneModel {
             return matches(quote)
         }
         guard all.count != before else { return }
-        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        if !AnnotationStore.save(all, for: address, in: Self.annotationsRoot) {
+            annotationSaveFailed = true
+        }
         annotationsStamp += 1
     }
 
@@ -421,7 +426,9 @@ final class PhoneModel {
                 target: WebAnnotation.Target(source: "origamitext://open/" + address,
                                              selectors: [])))
         }
-        AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
+        if !AnnotationStore.save(all, for: address, in: Self.annotationsRoot) {
+            annotationSaveFailed = true
+        }
         annotationsStamp += 1
     }
 
@@ -447,7 +454,9 @@ final class PhoneModel {
                                          selectors: selectors))
         var all = AnnotationStore.load(for: selection.address, in: Self.annotationsRoot)
         all.append(annotation)
-        AnnotationStore.save(all, for: selection.address, in: Self.annotationsRoot)
+        if !AnnotationStore.save(all, for: selection.address, in: Self.annotationsRoot) {
+            annotationSaveFailed = true
+        }
         annotationsStamp += 1
     }
 

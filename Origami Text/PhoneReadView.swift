@@ -1,6 +1,18 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Decoded figure images by asset id — the base64 becomes a UIImage
+/// once per asset, not once per render pass. NSCache empties itself
+/// under memory pressure, which a phone actually meets.
+private let figureImageCache = NSCache<NSString, UIImage>()
+
+func decodedImage(for asset: LiquidDoc.Asset) -> UIImage? {
+    if let hit = figureImageCache.object(forKey: asset.id as NSString) { return hit }
+    guard let data = asset.data, let image = UIImage(data: data) else { return nil }
+    figureImageCache.setObject(image, forKey: asset.id as NSString)
+    return image
+}
+
 // The phone's reading end, based on the visionOS reader: the shelf as
 // Articles and Journals, books arriving from Files or the community
 // folder, and a reader with Scroll and Focus views, the Outline a
@@ -191,6 +203,13 @@ struct ReadHomeView: View {
             Button("OK", role: .cancel) { openFailedName = nil }
         } message: {
             Text("\(openFailedName ?? "The file") would not open as an EPUB. If it lives in iCloud Drive, make sure it has finished downloading, then try again.")
+        }
+        .alert("Annotation Not Saved", isPresented: Binding(
+            get: { model.annotationSaveFailed },
+            set: { model.annotationSaveFailed = $0 })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The note could not be written to its sidecar. Check free space and iCloud, then try again.")
         }
         .fileImporter(isPresented: $choosingFolder,
                       allowedContentTypes: [.folder]) { result in
@@ -993,7 +1012,7 @@ struct PhoneReaderView: View {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: spacing) {
-                        ForEach(groups, id: \.first!.id) { group in
+                        ForEach(groups, id: \.first?.id) { group in
                             ScrollView(.vertical) {
                                 VStack(alignment: .leading, spacing: 14) {
                                     ForEach(group) { section in
@@ -1003,7 +1022,7 @@ struct PhoneReaderView: View {
                                 .padding(.vertical, 16)
                             }
                             .frame(width: columnWidth, height: geometry.size.height)
-                            .id(group.first!.id)
+                            .id(group.first?.id)
                         }
                     }
                     .scrollTargetLayout()
@@ -1072,7 +1091,7 @@ struct PhoneReaderView: View {
             // double-click lifts it into a window.
             VStack(alignment: .leading, spacing: 6) {
                 if let asset = doc.assets.first(where: { $0.id == reference.id }),
-                   let data = asset.data, let image = UIImage(data: data) {
+                   let image = decodedImage(for: asset) {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFit()
@@ -2173,7 +2192,7 @@ private struct PhoneFigureCard: View {
                     if let paragraph = doc.body?.first(where: { $0.id == paragraphID }),
                        let reference = LiquidDoc.imageReference(in: paragraph.text),
                        let asset = doc.assets.first(where: { $0.id == reference.id }),
-                       let data = asset.data, let image = UIImage(data: data) {
+                       let image = decodedImage(for: asset) {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFit()
