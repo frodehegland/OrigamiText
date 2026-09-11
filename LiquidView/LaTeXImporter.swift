@@ -857,11 +857,12 @@ nonisolated enum LaTeXImporter {
                             paragraphs[index].boxID = boxID
                         }
                         handled = true
-                    case "verbatim", "lstlisting", "minted":
+                    case "verbatim", "Verbatim", "lstlisting", "minted":
                         flushPlain()
                         var code = String(rest[range.bodySub(rest)])
                         var caption: String?
-                        // lstlisting/minted options sit inside the
+                        // lstlisting/minted options — and fancyvrb's
+                        // Verbatim frame options — sit inside the
                         // environment body ([style=…, caption={…}]) —
                         // chrome, not code. The caption's words stay,
                         // following the listing like a figure's. Only a
