@@ -53,25 +53,65 @@ struct EPUBQuickViewScreen: View {
             onPinchOut: { showsContents = false },
             requestedFragment: requestedFragment,
             fragmentStamp: fragmentStamp)
-        .popover(isPresented: $showsContents, arrowEdge: .bottom) {
-            ReaderContentsList(entries: tocEntries,
-                               currentSubpath: subpath(of: currentContent)) { entry in
-                showsContents = false
-                if let index = book.chapters.firstIndex(where: { subpath(of: $0) == entry.subpath }) {
-                    chapterIndex = index
-                }
-                requestedFragment = entry.fragment
-                fragmentStamp += 1
-            }
-            .onAppear {
-                guard tocEntries.isEmpty,
-                      let spine = OrigamiEPUBImporter.spine(inUnpackedFolder: book.base)
-                else { return }
-                tocEntries = OrigamiEPUBImporter.tocEntries(inUnpackedFolder: book.base,
-                                                            spine: spine)
-            }
+        // The contents cover the whole page, as the phone's pinch folds
+        // the reading into its outline — not a popover, the document's
+        // own map standing in for the document. Pinch out (or Escape,
+        // or choosing an entry) returns to the reading.
+        .overlay {
+            if showsContents { contentsOverlay }
         }
         .frame(minWidth: 480, minHeight: 480)
+    }
+
+    private var contentsOverlay: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(book.title)
+                    .font(.title2.bold())
+                    .padding(.bottom, 16)
+                if tocEntries.isEmpty {
+                    Text("This book carries no table of contents.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(tocEntries) { entry in
+                        Button {
+                            showsContents = false
+                            if let index = book.chapters.firstIndex(where: {
+                                subpath(of: $0) == entry.subpath
+                            }) {
+                                chapterIndex = index
+                            }
+                            requestedFragment = entry.fragment
+                            fragmentStamp += 1
+                        } label: {
+                            Text(entry.label)
+                                .font(.title3)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(maxWidth: 560, alignment: .leading)
+            .padding(48)
+            .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .simultaneousGesture(MagnifyGesture().onEnded { value in
+            if value.magnification > 1.15 { showsContents = false }
+        })
+        .onExitCommand { showsContents = false }
+        .onAppear {
+            guard tocEntries.isEmpty,
+                  let spine = OrigamiEPUBImporter.spine(inUnpackedFolder: book.base)
+            else { return }
+            tocEntries = OrigamiEPUBImporter.tocEntries(inUnpackedFolder: book.base,
+                                                        spine: spine)
+        }
     }
 }
 
