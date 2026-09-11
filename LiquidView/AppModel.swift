@@ -209,6 +209,7 @@ final class AppModel {
     /// Cmd-L / Cmd-0 / dock-icon click: restore the library layout and bring
     /// the main window to front — or open a fresh one if it was closed.
     func showLibraryOrOpenWindow() {
+        endLaunchFoldWatch()   // a deliberate ask outranks the launch fold
         isListHidden = false
         sidebarSelection = .allDocuments
         // Prefer the directly-tracked window (stays valid through title changes
@@ -2154,30 +2155,56 @@ final class AppModel {
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         // A double-click that launched the app must show the book alone.
-        // The window group opens the library regardless — and it finishes
-        // AFTER the open event lands, so one orderOut here loses the race.
-        // The fold re-asserts through the launch moment instead; a library
-        // the reader raises later (⌘L, dock) stays, because the checks end.
+        // The window group opens the library regardless — and on its own
+        // schedule, so no fixed number of orderOut retries can win the
+        // race on a slow cold start. Fold whatever is visible now, then
+        // WATCH: the moment the launch makes the library key, it folds.
+        // The watch dies on its own, so ⌘L and the dock still win later.
         if Date().timeIntervalSince(launchedAt) < 3 {
-            foldLibraryBehindQuickView()
-            Task { [weak self] in
-                for wait in [150, 400, 900, 1800] {
-                    try? await Task.sleep(for: .milliseconds(wait))
-                    self?.foldLibraryBehindQuickView()
-                }
+            if let main = mainNSWindow, main.isVisible {
+                main.orderOut(nil)
+                window.makeKeyAndOrderFront(nil)
             }
+            beginLaunchFoldWatch()
         }
     }
 
-    /// Folds the library window away while a quick view stands and the
-    /// launch is young — never after, so a deliberate ⌘L wins.
-    private func foldLibraryBehindQuickView() {
-        guard !quickViewWindows.isEmpty,
-              Date().timeIntervalSince(launchedAt) < 4,
-              let main = mainNSWindow, main.isVisible
+    /// The one-shot watcher for the launch race: SwiftUI raising the
+    /// library over a double-clicked book. Removed after it fires, when
+    /// the launch moment passes, or when the reader asks for the library.
+    private var launchFoldObserver: NSObjectProtocol?
+
+    private func beginLaunchFoldWatch() {
+        guard launchFoldObserver == nil else { return }
+        launchFoldObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let window = note.object as? NSWindow
+            Task { @MainActor in self?.launchRaisedWindow(window) }
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            self?.endLaunchFoldWatch()
+        }
+    }
+
+    private func launchRaisedWindow(_ window: NSWindow?) {
+        guard let window, !quickViewWindows.isEmpty,
+              !quickViewWindows.contains(where: { $0.window === window })
         else { return }
-        main.orderOut(nil)
+        // The library (or, before its capture lands, whatever non-book
+        // window the launch raised) folds; the book takes the key back.
+        guard window === mainNSWindow || mainNSWindow == nil else { return }
+        window.orderOut(nil)
         quickViewWindows.last?.window.makeKeyAndOrderFront(nil)
+        endLaunchFoldWatch()
+    }
+
+    private func endLaunchFoldWatch() {
+        if let launchFoldObserver {
+            NotificationCenter.default.removeObserver(launchFoldObserver)
+        }
+        launchFoldObserver = nil
     }
 
     /// The sidebar's Intro button: opens the built-in guide (IntroGuide.swift),
