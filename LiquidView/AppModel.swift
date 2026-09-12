@@ -2145,7 +2145,8 @@ final class AppModel {
                             base: root,
                             chapters: chapters.isEmpty ? [unpacked.content] : chapters,
                             nav: spine?.nav.map { root.appendingPathComponent($0) })
-        let hosting = NSHostingController(rootView: EPUBQuickViewScreen(book: book))
+        let hosting = NSHostingController(
+            rootView: EPUBQuickViewScreen(book: book).environment(self))
         let window = NSWindow(contentViewController: hosting)
         window.title = unpacked.title
         window.setContentSize(NSSize(width: 1020, height: 940))

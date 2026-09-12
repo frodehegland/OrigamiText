@@ -8,6 +8,7 @@ import AppKit
 /// the window by it.
 struct EPUBQuickViewScreen: View {
     let book: OpenEPUB
+    @Environment(AppModel.self) private var model
 
     // The reader's own theme and type, so a look matches the reading.
     @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
@@ -22,6 +23,14 @@ struct EPUBQuickViewScreen: View {
     @State private var tocEntries: [OrigamiEPUBImporter.TOCEntry] = []
     @State private var requestedFragment: String?
     @State private var fragmentStamp = 0
+    // A citation click answers with its card here too — a look-only
+    // window still tells the reader what [1] names.
+    @State private var citationCard: QuickViewCitation?
+
+    private struct QuickViewCitation: Identifiable {
+        let key: String
+        var id: String { key }
+    }
 
     private var css: String {
         _ = themeEditTick
@@ -51,8 +60,23 @@ struct EPUBQuickViewScreen: View {
             },
             onPinchIn: { showsContents = true },
             onPinchOut: { showsContents = false },
+            onCitation: { key, ref in
+                let key = key.isEmpty ? ref : key
+                if !key.isEmpty { citationCard = QuickViewCitation(key: key) }
+            },
             requestedFragment: requestedFragment,
             fragmentStamp: fragmentStamp)
+        .sheet(item: $citationCard) { citation in
+            // The same card the reader shows, from the book's own
+            // reference pool (or its Visual-Meta alone).
+            if let doc = model.citationCardDoc(forBook: book) {
+                CitationCardSheet(doc: doc, key: citation.key)
+            } else {
+                Text("The reference could not be read from this book.")
+                    .foregroundStyle(.secondary)
+                    .padding(30)
+            }
+        }
         // The contents cover the whole page, as the phone's pinch folds
         // the reading into its outline — not a popover, the document's
         // own map standing in for the document. Pinch out (or Escape,
