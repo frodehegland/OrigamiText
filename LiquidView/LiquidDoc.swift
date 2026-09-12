@@ -33,6 +33,12 @@ enum PersonName {
         }
         let parts = body.components(separatedBy: ", ")
         guard parts.count > 1, let given = parts.last, !given.isEmpty else { return name }
+        // A corporate author stands as written: in "Cunningham &
+        // Cunningham, Inc." what follows the comma is a legal suffix,
+        // not a given name.
+        let corporate: Set<String> = ["Inc.", "Inc", "Ltd.", "Ltd", "LLC",
+                                      "Co.", "Corp.", "GmbH", "AG"]
+        if corporate.contains(given) || body.contains("&") { return name }
         let family = parts.dropLast().joined(separator: ", ")
         return given + " " + family + suffix
     }
