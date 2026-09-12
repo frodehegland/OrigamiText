@@ -1218,7 +1218,7 @@ final class AppModel {
 
     /// The root under the app container where opened EPUBs are unpacked and
     /// the library manifest lives.
-    private static var epubsRoot: URL {
+    nonisolated private static var epubsRoot: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("EPUBs", isDirectory: true)
@@ -1276,7 +1276,7 @@ final class AppModel {
     /// document IS this file — self-contained, portable, bit-identical
     /// wherever it goes. The unpacked folder next to it is a derived
     /// cache the reader serves from, rebuildable from this file.
-    static func storedEPUBURL(inFolder folder: String) -> URL {
+    nonisolated static func storedEPUBURL(inFolder folder: String) -> URL {
         epubsRoot.appendingPathComponent(folder + ".epub")
     }
 
@@ -2097,12 +2097,29 @@ final class AppModel {
     /// Opens an EPUB in the faithful WebView reader: imports it (unpacking as
     /// needed), then shows paper.html as authored. Opening marks it read.
     func openEPUBFile(at url: URL) {
-        guard let record = importEPUB(at: url) else { return }
-        openStoredEPUB(record)
-        showNote("Opened “\(record.title)”")
-        // The new arrival joins the community folder too, so every
-        // device reading it shows the same shelf.
-        mirrorShelfToCommunityFolder()
+        // The prepare half unzips when the source is newer than the
+        // unpack — a freshly re-published book, every time the corpus
+        // is patched. Off the main actor, so the double-click answers
+        // without a beachball.
+        let snapshot = epubImportSnapshot
+        let root = Self.epubsRoot
+        Task {
+            do {
+                let prepared = try await Task.detached(priority: .userInitiated) {
+                    try Self.prepareEPUBImport(at: url, epubsRoot: root,
+                                               existing: snapshot)
+                }.value
+                guard let record = applyPreparedImport(prepared) else { return }
+                openStoredEPUB(record)
+                showNote("Opened “\(record.title)”")
+                // The new arrival joins the community folder too, so every
+                // device reading it shows the same shelf.
+                mirrorShelfToCommunityFolder()
+            } catch {
+                NSSound.beep()
+                showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Whether a double-clicked EPUB joins the shelf: only when it is
@@ -2125,19 +2142,31 @@ final class AppModel {
     /// temporary folder, rendered in its own plain window — no shelf
     /// record, no community mirror, no trace once the window closes.
     func quickViewEPUB(at url: URL) {
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("EPUBQuickView-" + UUID().uuidString, isDirectory: true)
-        let unpacked: OrigamiEPUBImporter.Unpacked
-        do {
-            unpacked = try OrigamiEPUBImporter.unpack(at: url, into: root)
-        } catch {
-            NSSound.beep()
-            showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
-            return
+        Task {
+            // The unzip reads the whole book — off the main actor, so
+            // the look-only window rises without a beachball.
+            let unpacked: OrigamiEPUBImporter.Unpacked
+            let spine: OrigamiEPUBImporter.BookSpine?
+            do {
+                (unpacked, spine) = try await Task.detached(priority: .userInitiated) {
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: root)
+                    return (unpacked, OrigamiEPUBImporter.spine(inUnpackedFolder: root))
+                }.value
+            } catch {
+                NSSound.beep()
+                showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
+                return
+            }
+            showQuickView(unpacked: unpacked, spine: spine, root: root)
         }
-        let spine = OrigamiEPUBImporter.spine(inUnpackedFolder: root)
+    }
+
+    private func showQuickView(unpacked: OrigamiEPUBImporter.Unpacked,
+                               spine: OrigamiEPUBImporter.BookSpine?, root: URL) {
         let chapters = (spine?.chapters ?? []).map { root.appendingPathComponent($0) }
         let book = OpenEPUB(id: "quickview:" + root.lastPathComponent,
                             title: unpacked.title,
@@ -4311,56 +4340,65 @@ final class AppModel {
     /// import derives, so no device ever re-imports its own copy.
     func mirrorShelfToCommunityFolder() {
         guard let folder = index.folderURL else { return }
-        let scoped = folder.startAccessingSecurityScopedResource()
-        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-        // The identities already present, however their files are named
-        // — including still-undownloaded iCloud placeholders, so a book
-        // another device published is never doubled.
-        var present: Set<String> = []
-        if let enumerator = FileManager.default.enumerator(
-            at: folder, includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsPackageDescendants]) {
-            for case let url as URL in enumerator {
-                var name = url.lastPathComponent
-                if name.hasSuffix(".icloud") {
-                    if name.hasPrefix(".") { name.removeFirst() }
-                    name = String(name.dropLast(".icloud".count))
+        // The walk enumerates the whole iCloud folder and may pack
+        // whole books — off the main actor; only the failure note
+        // comes back here.
+        let records = epubRecords
+        let root = Self.epubsRoot
+        Task.detached(priority: .utility) {
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            // The identities already present, however their files are named
+            // — including still-undownloaded iCloud placeholders, so a book
+            // another device published is never doubled.
+            var present: Set<String> = []
+            if let enumerator = FileManager.default.enumerator(
+                at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsPackageDescendants]) {
+                for case let url as URL in enumerator {
+                    var name = url.lastPathComponent
+                    if name.hasSuffix(".icloud") {
+                        if name.hasPrefix(".") { name.removeFirst() }
+                        name = String(name.dropLast(".icloud".count))
+                    }
+                    guard name.lowercased().hasSuffix(".epub") else { continue }
+                    name = String(name.dropLast(".epub".count))
+                    let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
+                    present.insert(identity.replacingOccurrences(of: "/", with: "_")
+                        .replacingOccurrences(of: ":", with: "_"))
                 }
-                guard name.lowercased().hasSuffix(".epub") else { continue }
-                name = String(name.dropLast(".epub".count))
-                let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
-                present.insert(identity.replacingOccurrences(of: "/", with: "_")
-                    .replacingOccurrences(of: ":", with: "_"))
             }
-        }
-        var failed: [String] = []
-        for record in epubRecords where !present.contains(record.folder) {
-            let destination = folder.appendingPathComponent(record.folder + ".epub")
-            // The canonical .epub publishes bit-identically; a record
-            // still missing one packs from its cache as before.
-            let stored = storedEPUBURL(for: record)
-            if FileManager.default.fileExists(atPath: stored.path) {
-                do { try FileManager.default.copyItem(at: stored, to: destination) }
+            var failed: [String] = []
+            for record in records where !present.contains(record.folder) {
+                let destination = folder.appendingPathComponent(record.folder + ".epub")
+                // The canonical .epub publishes bit-identically; a record
+                // still missing one packs from its cache as before.
+                let stored = Self.storedEPUBURL(inFolder: record.folder)
+                if FileManager.default.fileExists(atPath: stored.path) {
+                    do { try FileManager.default.copyItem(at: stored, to: destination) }
+                    catch { failed.append(record.title) }
+                    continue
+                }
+                let unpacked = root.appendingPathComponent(record.folder,
+                                                           isDirectory: true)
+                guard FileManager.default.fileExists(atPath:
+                        unpacked.appendingPathComponent(record.contentSubpath).path),
+                      let data = try? OrigamiEPUBExporter.pack(unpackedFolder: unpacked)
+                else { continue }
+                do { try data.write(to: destination, options: .atomic) }
                 catch { failed.append(record.title) }
-                continue
             }
-            let unpacked = Self.epubsRoot.appendingPathComponent(record.folder,
-                                                                 isDirectory: true)
-            guard FileManager.default.fileExists(atPath:
-                    unpacked.appendingPathComponent(record.contentSubpath).path),
-                  let data = try? OrigamiEPUBExporter.pack(unpackedFolder: unpacked)
-            else { continue }
-            do { try data.write(to: destination, options: .atomic) }
-            catch { failed.append(record.title) }
-        }
-        // A book that did not publish diverges the shelves in silence —
-        // the one word the sync owes the reader is that it happened.
-        if let first = failed.first {
-            NSSound.beep()
-            let more = failed.count - 1
-            showNote(more > 0
-                ? "“\(first)” (+\(more) more) could not be published to the community folder."
-                : "“\(first)” could not be published to the community folder.")
+            // A book that did not publish diverges the shelves in silence —
+            // the one word the sync owes the reader is that it happened.
+            if let first = failed.first {
+                let more = failed.count - 1
+                await MainActor.run {
+                    NSSound.beep()
+                    self.showNote(more > 0
+                        ? "“\(first)” (+\(more) more) could not be published to the community folder."
+                        : "“\(first)” could not be published to the community folder.")
+                }
+            }
         }
     }
 
