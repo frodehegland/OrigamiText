@@ -67,7 +67,7 @@ enum CitationGraph {
             .appendingPathComponent("CitationGraph.json")
     }
 
-    private static let mirrorName = "origami-citation-graph.json"
+    nonisolated private static let mirrorName = "origami-citation-graph.json"
 
     /// The community folder, when one is chosen — the cache mirrors
     /// there after fetches, and unknown entries are adopted from there
@@ -94,14 +94,28 @@ enum CitationGraph {
         }
     }
 
+    /// The mirror file read and decoded — the file half of adoptMirror,
+    /// nonisolated so a startup scan can read it off the main actor
+    /// (the folder lives in iCloud; the read may wait on a download).
+    nonisolated static func mirrorEntries(from folder: URL) -> [String: Entry]? {
+        let url = folder.appendingPathComponent(mirrorName)
+        guard let data = try? Data(contentsOf: url),
+              let stored = try? JSONDecoder().decode([String: Entry].self, from: data)
+        else { return nil }
+        return stored
+    }
+
     /// Folds the community folder's graph into this device's — entries
     /// it lacks, and fresher answers for ones it holds. How a device
     /// that never fetches (the Vision Pro) still knows the graph.
     static func adoptMirror(from folder: URL) {
-        let url = folder.appendingPathComponent(mirrorName)
-        guard let data = try? Data(contentsOf: url),
-              let stored = try? JSONDecoder().decode([String: Entry].self, from: data)
-        else { return }
+        guard let stored = mirrorEntries(from: folder) else { return }
+        adopt(stored)
+    }
+
+    /// The fold half, on the main actor — for callers that already
+    /// read the mirror elsewhere.
+    static func adopt(_ stored: [String: Entry]) {
         var changed = false
         for (key, entry) in stored {
             if let known = cache[key] {

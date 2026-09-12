@@ -3215,20 +3215,21 @@ struct OrigamiReadingView: View {
         // reading the stamp here also keeps the repaint-on-annotate
         // observation alive when every paragraph is a hit. The
         // keySentences count works because entries only ever arrive.
-        let signature = [doc.id,
-                         String(model.annotationsStamp),
-                         citationsRaw, markedStyleRaw,
-                         String(describing: colorScheme),
-                         themeRaw, String(themeEditTick),
-                         String(model.flowReading), String(flowBreakOnComma),
-                         String(boldKeySentences), String(keySentences.count),
-                         findText, findCurrentID ?? "",
-                         String(glossaryOverviewOn), glossaryDisplayRaw,
-                         openGlossary.sorted().joined(separator: ","),
-                         openInlineNotes.sorted().joined(separator: ","),
-                         openStretch.sorted().joined(separator: ","),
-                         stretchDisplayRaw,
-                         coloringModeRaw, colorRulesRaw].joined(separator: "|")
+        var parts: [String] = [doc.id, String(model.annotationsStamp)]
+        parts.append(contentsOf: [citationsRaw, String(markedStyleRaw),
+                                  String(describing: colorScheme),
+                                  themeRaw, String(themeEditTick)])
+        parts.append(contentsOf: [String(model.flowReading),
+                                  String(flowBreakOnComma),
+                                  String(boldKeySentences),
+                                  String(keySentences.count)])
+        parts.append(contentsOf: [findText, findCurrentID ?? "",
+                                  String(glossaryOverviewOn), glossaryDisplayRaw])
+        parts.append(openGlossary.sorted().joined(separator: ","))
+        parts.append(openInlineNotes.sorted().joined(separator: ","))
+        parts.append(openStretch.sorted().joined(separator: ","))
+        parts.append(contentsOf: [stretchDisplayRaw, coloringModeRaw, colorRulesRaw])
+        let signature = parts.joined(separator: "|")
         // The paragraph's own inputs: its words as the view functions
         // show them (splits and flow included) and its stretch frame.
         var fingerprint = readingText(for: paragraph)

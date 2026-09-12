@@ -177,9 +177,17 @@ final class VisionModel {
     }
 
     private func loadAnalyses(from folder: URL) {
-        let file = VisionAnalysesFile.read(from: folder)
-        allPaperTopics = file.analyses.values.reduce(into: [:]) { result, pub in
-            result.merge(pub.paperTopics) { existing, _ in existing }
+        // The folder lives in iCloud: the read may wait on a download,
+        // so it runs off the main actor and applies back here.
+        Task.detached(priority: .userInitiated) {
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            let file = VisionAnalysesFile.read(from: folder)
+            let topics = file.analyses.values
+                .reduce(into: [String: [String]]()) { result, pub in
+                    result.merge(pub.paperTopics) { existing, _ in existing }
+                }
+            await MainActor.run { self.allPaperTopics = topics }
         }
     }
 
@@ -191,7 +199,7 @@ final class VisionModel {
             var paperTopics: [String: [String]] = [:]
         }
 
-        static func read(from folder: URL) -> VisionAnalysesFile {
+        nonisolated static func read(from folder: URL) -> VisionAnalysesFile {
             let url = folder.appendingPathComponent(filename)
             guard let data = try? Data(contentsOf: url),
                   let file = try? JSONDecoder().decode(VisionAnalysesFile.self, from: data)
@@ -473,7 +481,7 @@ final class VisionModel {
 
 
     /// Where books unpack: one folder per identity, reused forever.
-    static var epubsRoot: URL {
+    nonisolated static var epubsRoot: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -528,35 +536,99 @@ final class VisionModel {
     /// again shortly — there is no folder watcher on this platform.
     func scanFolderForEPUBs() {
         guard let folder = index.folderURL else { return }
-        let scoped = folder.startAccessingSecurityScopedResource()
-        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-        LibraryScanner.requestICloudDownloads(in: folder)
-        guard let enumerator = FileManager.default.enumerator(
-            at: folder, includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsPackageDescendants]) else { return }
-        var changed = false
-        var placeholdersRemain = false
-        var present: Set<String> = []
-        for case let url as URL in enumerator {
-            let name = url.lastPathComponent
-            if name.hasSuffix(".icloud"), name.contains(".epub") {
-                placeholdersRemain = true
-                // Undownloaded is not removed: a placeholder's book
-                // counts as present, so nothing retires mid-sync.
-                var trimmed = name
-                if trimmed.hasPrefix(".") { trimmed.removeFirst() }
-                trimmed = String(trimmed.dropLast(".icloud".count))
-                if trimmed.lowercased().hasSuffix(".epub") {
+        // The walk, the unpacks, and every mirror read run off the main
+        // actor — the folder lives in iCloud, and this used to hold the
+        // first frame for the whole scan. A fresh scan supersedes a
+        // running one.
+        epubScanGeneration += 1
+        let generation = epubScanGeneration
+        let existing = epubRecords
+        Task.detached(priority: .userInitiated) {
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            LibraryScanner.requestICloudDownloads(in: folder)
+            var imported: [EPUBRecord] = []
+            var placeholdersRemain = false
+            var present: Set<String> = []
+            if let enumerator = FileManager.default.enumerator(
+                at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsPackageDescendants]) {
+                for case let url as URL in enumerator {
+                    let name = url.lastPathComponent
+                    if name.hasSuffix(".icloud"), name.contains(".epub") {
+                        placeholdersRemain = true
+                        // Undownloaded is not removed: a placeholder's book
+                        // counts as present, so nothing retires mid-sync.
+                        var trimmed = name
+                        if trimmed.hasPrefix(".") { trimmed.removeFirst() }
+                        trimmed = String(trimmed.dropLast(".icloud".count))
+                        if trimmed.lowercased().hasSuffix(".epub") {
+                            present.insert(EPUBSupersession.folderName(
+                                forFileName: String(trimmed.dropLast(".epub".count))))
+                        }
+                        continue
+                    }
+                    guard url.pathExtension.lowercased() == "epub" else { continue }
                     present.insert(EPUBSupersession.folderName(
-                        forFileName: String(trimmed.dropLast(".epub".count))))
+                        forFileName: url.deletingPathExtension().lastPathComponent))
+                    autoreleasepool {
+                        if let record = Self.preparedImport(at: url,
+                                                            existing: existing + imported) {
+                            imported.append(record)
+                        }
+                    }
                 }
-                continue
             }
-            guard url.pathExtension.lowercased() == "epub" else { continue }
-            present.insert(EPUBSupersession.folderName(
-                forFileName: url.deletingPathExtension().lastPathComponent))
-            if importEPUB(at: url) { changed = true }
+            // The mirrors ride the same folder — the citation graph the
+            // Mac researched, the corridor's data lines, the floor's
+            // histories, the acquisitions. All plain file reads,
+            // gathered here so the main actor only installs values.
+            let citationEntries = CitationGraph.mirrorEntries(from: folder)
+            let sankey = SankeySpace.read(from: folder)
+            var floors: [SankeySpace.FloorTheme: SankeySpace.FloorHistory] = [:]
+            for theme in SankeySpace.FloorTheme.allCases {
+                if let history = SankeySpace.readFloorHistory(theme: theme, from: folder),
+                   !history.events.isEmpty {
+                    floors[theme] = history
+                }
+            }
+            var userFloors: [String: SankeySpace.FloorHistory] = [:]
+            for entry in SankeySpace.listUserFloorTimelines(in: folder) {
+                if let history = SankeySpace.readUserFloorHistory(slug: entry.slug,
+                                                                  from: folder),
+                   !history.events.isEmpty {
+                    userFloors[entry.slug] = history
+                }
+            }
+            let acquisitions = Set(EPUBAcquisitions.read(from: folder).map(\.id))
+            await MainActor.run {
+                guard generation == self.epubScanGeneration else { return }
+                self.applyFolderScan(imported: imported, present: present,
+                                     placeholdersRemain: placeholdersRemain,
+                                     citationEntries: citationEntries,
+                                     sankey: sankey, floors: floors,
+                                     userFloors: userFloors,
+                                     acquisitions: acquisitions)
+            }
         }
+    }
+
+    /// The scan's results folded into the shelf — the main actor's
+    /// half, all installs and no file I/O.
+    private func applyFolderScan(
+        imported: [EPUBRecord], present: Set<String>,
+        placeholdersRemain: Bool,
+        citationEntries: [String: CitationGraph.Entry]?,
+        sankey: SankeySpace.Dataset?,
+        floors: [SankeySpace.FloorTheme: SankeySpace.FloorHistory],
+        userFloors: [String: SankeySpace.FloorHistory],
+        acquisitions: Set<String>) {
+        let changed = !imported.isEmpty
+        for record in imported {
+            epubRecords.removeAll { $0.id == record.id || $0.folder == record.folder }
+            epubRecords.insert(record, at: 0)
+        }
+        if changed { persistEPUBRecords() }
         retireSuperseded(presentFolders: present)
         if changed { rebuildEPUBIndex() }
         adoptStanding()
@@ -567,13 +639,15 @@ final class VisionModel {
                                           records: epubRecords)
         setAsideIDs = EPUBStanding.localIDs(from: setAsideIDs,
                                             records: epubRecords)
-        // The citation graph the Mac researched — what the cited works
-        // themselves cite — reads in from the same folder; this device
-        // never crawls.
-        CitationGraph.adoptMirror(from: folder)
-        adoptSankeyData(from: folder)
-        adoptFloorHistory(from: folder)
-        acquisitionIDs = Set(EPUBAcquisitions.read(from: folder).map(\.id))
+        if let citationEntries { CitationGraph.adopt(citationEntries) }
+        if let sankey, !sankey.series.isEmpty { self.sankey = sankey }
+        seedDefaultTimeflows()
+        floorHistories.merge(floors) { _, new in new }
+        // The user's own timelines read whole from the mirror — a
+        // removed one leaves the floor here too.
+        userFloorHistories = userFloors
+        floorRevision += 1
+        acquisitionIDs = acquisitions
         if placeholdersRemain, scanRetries < 5 {
             scanRetries += 1
             Task { @MainActor in
@@ -587,6 +661,9 @@ final class VisionModel {
 
     /// Downloads in flight are retried a few times, never forever.
     @ObservationIgnored private var scanRetries = 0
+    /// A fresh scan supersedes a running one — the newer walk's results
+    /// land, the older's are dropped.
+    @ObservationIgnored private var epubScanGeneration = 0
 
     /// A re-published edition supersedes the old copy (see
     /// EPUBSupersession): standing and annotations move to the
@@ -770,13 +847,6 @@ final class VisionModel {
     /// asks for here, and never re-fetches what the mirror holds.
     private(set) var sankey: SankeySpace.Dataset?
 
-    private func adoptSankeyData(from folder: URL) {
-        if let dataset = SankeySpace.read(from: folder), !dataset.series.isEmpty {
-            sankey = dataset
-        }
-        seedDefaultTimeflows()
-    }
-
     /// The corridor's default Timeflows, seeded once per device:
     /// computing on the left wall, the world on the right. They join
     /// whatever the mirror already carries, and a removal afterwards
@@ -807,28 +877,6 @@ final class VisionModel {
 
     func floorHistory(for theme: SankeySpace.FloorTheme) -> SankeySpace.FloorHistory? {
         floorHistories[theme]
-    }
-
-    private func adoptFloorHistory(from folder: URL) {
-        for theme in SankeySpace.FloorTheme.allCases {
-            if let history = SankeySpace.readFloorHistory(theme: theme, from: folder),
-               !history.events.isEmpty {
-                floorHistories[theme] = history
-            }
-        }
-        // The user's own timelines — curated on the Mac (a Wikidata
-        // query or an imported file), read whole from the mirror; a
-        // removed one leaves the floor here too.
-        var adopted: [String: SankeySpace.FloorHistory] = [:]
-        for entry in SankeySpace.listUserFloorTimelines(in: folder) {
-            if let history = SankeySpace.readUserFloorHistory(slug: entry.slug,
-                                                              from: folder),
-               !history.events.isEmpty {
-                adopted[entry.slug] = history
-            }
-        }
-        userFloorHistories = adopted
-        floorRevision += 1
     }
 
     /// The user timelines by slug, and the floor picker's entries.
@@ -955,16 +1003,30 @@ final class VisionModel {
     /// without the reader-side niceties.
     @discardableResult
     func importEPUB(at url: URL) -> Bool {
+        guard let record = Self.preparedImport(at: url, existing: epubRecords)
+        else { return false }
+        epubRecords.removeAll { $0.id == record.id || $0.folder == record.folder }
+        epubRecords.insert(record, at: 0)
+        persistEPUBRecords()
+        return true
+    }
+
+    /// The filesystem half of an import, safe off the main actor: the
+    /// unzip (or the standing unpack kept), the canonical copy, and the
+    /// metadata read. Returns the shelf record to install, or nil when
+    /// the standing unpack already serves.
+    nonisolated private static func preparedImport(at url: URL,
+                                                   existing: [EPUBRecord]) -> EPUBRecord? {
         let name = url.deletingPathExtension().lastPathComponent
         let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
         let safe = identity.replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ":", with: "_")
-        let directory = Self.epubsRoot.appendingPathComponent(safe, isDirectory: true)
+        let directory = epubsRoot.appendingPathComponent(safe, isDirectory: true)
 
         // Keep the existing unpack — unless the source file is newer:
         // a re-export of the same document (an added figure) must show.
-        if let existing = epubRecords.first(where: { $0.folder == safe }) {
-            let content = directory.appendingPathComponent(existing.contentSubpath)
+        if let existingRecord = existing.first(where: { $0.folder == safe }) {
+            let content = directory.appendingPathComponent(existingRecord.contentSubpath)
             let sourceStamp = (try? url.resourceValues(
                 forKeys: [.contentModificationDateKey]))?.contentModificationDate
             let unpackedStamp = (try? content.resourceValues(
@@ -973,12 +1035,12 @@ final class VisionModel {
                let sourceStamp, let unpackedStamp, sourceStamp <= unpackedStamp {
                 // A shelf book from before the canonical store gets its
                 // .epub back-filled from the file being scanned.
-                let stored = Self.epubsRoot.appendingPathComponent(safe + ".epub")
+                let stored = epubsRoot.appendingPathComponent(safe + ".epub")
                 if !FileManager.default.fileExists(atPath: stored.path),
                    stored.path != url.path {
                     try? FileManager.default.copyItem(at: url, to: stored)
                 }
-                return false
+                return nil
             }
         }
 
@@ -986,7 +1048,7 @@ final class VisionModel {
             let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: directory)
             // The .epub itself is the canonical store, kept beside the
             // unpacked cache — same layout as the Mac's shelf.
-            let stored = Self.epubsRoot.appendingPathComponent(safe + ".epub")
+            let stored = epubsRoot.appendingPathComponent(safe + ".epub")
             if stored.path != url.path {
                 try? FileManager.default.removeItem(at: stored)
                 try? FileManager.default.copyItem(at: url, to: stored)
@@ -999,20 +1061,16 @@ final class VisionModel {
             let contentSubpath = unpacked.content.path
                 .replacingOccurrences(of: directory.path + "/", with: "")
             let authors = meta.authors
-            let record = EPUBRecord(id: bookID, title: unpacked.title,
-                                    author: authors.count > 1
-                                        ? authors.joined(separator: ", ")
-                                        : (authors.first ?? meta.author ?? "Unknown"),
-                                    authors: authors.isEmpty ? nil : authors,
-                                    dateISO: meta.date, folder: safe,
-                                    contentSubpath: contentSubpath, openedAt: .now,
-                                    publication: meta.publication ?? "")
-            epubRecords.removeAll { $0.id == bookID || $0.folder == safe }
-            epubRecords.insert(record, at: 0)
-            persistEPUBRecords()
-            return true
+            return EPUBRecord(id: bookID, title: unpacked.title,
+                              author: authors.count > 1
+                                  ? authors.joined(separator: ", ")
+                                  : (authors.first ?? meta.author ?? "Unknown"),
+                              authors: authors.isEmpty ? nil : authors,
+                              dateISO: meta.date, folder: safe,
+                              contentSubpath: contentSubpath, openedAt: .now,
+                              publication: meta.publication ?? "")
         } catch {
-            return false
+            return nil
         }
     }
 
@@ -1025,7 +1083,10 @@ final class VisionModel {
         let generation = epubIndexGeneration
         let records = epubRecords
         let root = Self.epubsRoot
-        Task.detached(priority: .utility) {
+        // .userInitiated: the Map and the library windows stand empty
+        // until this lands — at .utility the first content could trail
+        // the first frame by many seconds.
+        Task.detached(priority: .userInitiated) {
             var docs: [LiquidDoc] = []
             for record in records {
                 let base = root.appendingPathComponent(record.folder, isDirectory: true)
