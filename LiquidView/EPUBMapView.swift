@@ -1422,6 +1422,28 @@ struct EPUBMapView: View {
         }
     }
 
+    /// The title up to its colon — the working name, not the subtitle.
+    private func shortTitle(_ title: String) -> String {
+        title.components(separatedBy: ":")[0]
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The first author alone, an ellipsis standing for the rest; the
+    /// byline's year suffix (" · 2023") rides along untouched.
+    private func shortByline(_ byline: String) -> String {
+        let parts = byline.components(separatedBy: " \u{00B7} ")
+        let year = parts.count > 1 ? " \u{00B7} " + parts[1] : ""
+        let names = parts[0]
+            .replacingOccurrences(of: " and ", with: ",")
+            .replacingOccurrences(of: " & ", with: ",")
+            .replacingOccurrences(of: ";", with: ",")
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard let first = names.first else { return parts[0] + year }
+        return (names.count > 1 ? first + "…" : first) + year
+    }
+
     /// withAbstract: the fine print belongs to the default FRONT face
     /// alone — the turned back face carries only title and byline.
     @ViewBuilder private func cardFace(for item: EPUBMapItem,
@@ -1429,7 +1451,7 @@ struct EPUBMapView: View {
         let s = Self.crisp
         if item.isAside {
             // The whole slip fades — the words too, not just the paper.
-            Text(item.title)
+            Text(shortTitle(item.title))
                 .font(AppFonts.body(5.5 * s, weight: .semibold))
                 .foregroundStyle(Color.white)
                 .lineLimit(1)
@@ -1498,18 +1520,20 @@ struct EPUBMapView: View {
                             .font(.system(size: 5 * s))
                             .foregroundStyle(Color(red: 0.95, green: 0.68, blue: 0.25))
                     }
-                    // Unclamped: the whole title and every author name
-                    // stand on the card — no mid-thought ellipsis.
-                    Text(item.title)
+                    // The working name and the first author carry the
+                    // card; the subtitle and co-authors live in the
+                    // reading, not on the face.
+                    Text(shortTitle(item.title))
                         .font(AppFonts.body(titleSize * s, weight: .semibold))
                         .foregroundStyle(Color.white)
                 }
-                Text(item.author)
+                Text(shortByline(item.author))
                     .font(.system(size: 5.5 * s))
                     .foregroundStyle(Color.white.opacity(0.65))
-                if withAbstract && !item.abstract.isEmpty {
-                    // The full abstract in fine print — sized to be
-                    // read by walking up to the card, not from afar.
+                if withAbstract && selected && !item.abstract.isEmpty {
+                    // The full abstract in fine print, on the SELECTED
+                    // card alone — sized to be read by walking up to
+                    // the card, not from afar.
                     Text(item.abstract)
                         .font(.system(size: 2.6 * s))
                         .foregroundStyle(Color.white.opacity(0.8))
