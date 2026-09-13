@@ -3036,9 +3036,16 @@ final class CardFaceTurner {
         tick = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             MainActor.assumeIsolated { self?.turn(scene: event.scene) }
         }
-        guard WorldTrackingProvider.isSupported else { return }
+        guard WorldTrackingProvider.isSupported else {
+            print("Map/faces: world tracking unsupported — back faces stay dark")
+            return
+        }
         Task { [session, worldTracking] in
-            try? await session.run([worldTracking])
+            do {
+                try await session.run([worldTracking])
+            } catch {
+                print("Map/faces: world tracking failed to run: \(error)")
+            }
         }
     }
 
@@ -3056,7 +3063,13 @@ final class CardFaceTurner {
             else { continue }
             let forward = card.orientation(relativeTo: nil)
                 .act(SIMD3<Float>(0, 0, 1))
-            let facing = simd_dot(forward, head - card.position(relativeTo: nil)) >= 0
+            let d = simd_dot(forward, head - card.position(relativeTo: nil))
+            // A dead band about the card's plane: standing edge-on, the
+            // lit side holds rather than flickering with every sway.
+            let facing: Bool
+            if d > 0.05 { facing = true }
+            else if d < -0.05 { facing = false }
+            else { continue }
             if front.isEnabled != facing { front.isEnabled = facing }
             if back.isEnabled == facing { back.isEnabled = !facing }
         }
