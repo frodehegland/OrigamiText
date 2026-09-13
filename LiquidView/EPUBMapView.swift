@@ -43,6 +43,9 @@ struct EPUBMapItem: ItemProtocol {
     var isAside = false
     /// How many raised articles cite this work — drives card depth.
     var citationCount: Int = 1
+    /// The paper's abstract, printed very small on the card's FRONT
+    /// face only — fine print the reader walks toward to read.
+    var abstract: String = ""
     /// Stamped with the current visionTheme at build time so a theme
     /// switch makes all items visually unequal — forcing a full card rebuild.
     var visionTheme: String = ""
@@ -57,7 +60,7 @@ struct EPUBMapItem: ItemProtocol {
             && kind == other.kind && isPinned == other.isPinned
             && isAside == other.isAside && isSelected == other.isSelected
             && isShared == other.isShared && citationCount == other.citationCount
-            && visionTheme == other.visionTheme
+            && abstract == other.abstract && visionTheme == other.visionTheme
     }
 }
 
@@ -322,8 +325,28 @@ struct EPUBMapView: View {
         var citedIDByKey: [String: String] = [:]
         var citedIDsByArticle: [String: [String]] = [:]
         var facts: [String: CitedFacts] = [:]
+        // Each paper's own abstract, read from under its Abstract
+        // heading — the fine print on the card's front face.
+        var abstractByArticle: [String: String] = [:]
         for record in records {
             guard let doc = model.index.byID[record.id]?.doc else { continue }
+            var collecting = false
+            var abstractParts: [String] = []
+            for paragraph in doc.body ?? [] {
+                if paragraph.heading != nil {
+                    if collecting { break }
+                    collecting = paragraph.text
+                        .trimmingCharacters(in: .whitespaces)
+                        .lowercased() == "abstract"
+                } else if collecting {
+                    let text = paragraph.text
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty { abstractParts.append(text) }
+                }
+            }
+            if !abstractParts.isEmpty {
+                abstractByArticle[record.id] = abstractParts.joined(separator: "\n\n")
+            }
             var cited: [String] = []
             for reference in doc.references {
                 let fields = BibTeXParser.first(reference.bibtex)?.fields ?? [:]
@@ -410,7 +433,8 @@ struct EPUBMapView: View {
                 kind: .article,
                 position: position,
                 citedIDs: citedIDsByArticle[record.id] ?? [],
-                isPinned: model.pinnedIDs.contains(record.id))
+                isPinned: model.pinnedIDs.contains(record.id),
+                abstract: abstractByArticle[record.id] ?? "")
         }
         articleYearZ = yearZ
 
@@ -496,7 +520,8 @@ struct EPUBMapView: View {
                 kind: .cited,
                 position: placed[work.id] ?? seed,
                 isShared: sharedIDs.contains(work.id),
-                citationCount: citationCounts[work.id] ?? 1)
+                citationCount: citationCounts[work.id] ?? 1,
+                abstract: facts[work.id]?.abstract ?? "")
         })
         citedTimelineZ = timelineZ
         citedFacts = facts
@@ -1379,7 +1404,10 @@ struct EPUBMapView: View {
         }
     }
 
-    @ViewBuilder private func cardFace(for item: EPUBMapItem) -> some View {
+    /// withAbstract: the fine print belongs to the default FRONT face
+    /// alone — the turned back face carries only title and byline.
+    @ViewBuilder private func cardFace(for item: EPUBMapItem,
+                                       withAbstract: Bool = true) -> some View {
         let s = Self.crisp
         if item.isAside {
             // The whole slip fades — the words too, not just the paper.
@@ -1422,7 +1450,9 @@ struct EPUBMapView: View {
             .frame(minWidth: 90 * s, maxWidth: 200 * s)
             .background(
                 RoundedRectangle(cornerRadius: 14 * s)
-                    .fill(.regularMaterial)
+                    // Selection sets the pane solid — glass no more.
+                    .fill(item.isSelected ? AnyShapeStyle(Color(white: 0.12))
+                                          : AnyShapeStyle(.regularMaterial))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14 * s)
@@ -1461,13 +1491,24 @@ struct EPUBMapView: View {
                     .font(.system(size: 5.5 * s))
                     .foregroundStyle(Color.white.opacity(0.65))
                     .lineLimit(item.kind == .citedDeep ? 1 : 2)
+                if withAbstract && !item.abstract.isEmpty {
+                    // The full abstract in fine print — sized to be
+                    // read by walking up to the card, not from afar.
+                    Text(item.abstract)
+                        .font(.system(size: 2.6 * s))
+                        .foregroundStyle(Color.white.opacity(0.8))
+                        .multilineTextAlignment(.leading)
+                        .padding(.top, 1.5 * s)
+                }
             }
             .multilineTextAlignment(.center)
             .padding(.horizontal, (item.kind == .article ? 8 : 7) * s)
             .padding(.vertical, (item.kind == .article ? 6 : 5) * s)
             .background(
                 RoundedRectangle(cornerRadius: 8 * s)
-                    .fill(.regularMaterial)
+                    // Selection sets the pane solid — glass no more.
+                    .fill(selected ? AnyShapeStyle(Color(white: 0.12))
+                                   : AnyShapeStyle(.regularMaterial))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8 * s)
@@ -1513,7 +1554,9 @@ struct EPUBMapView: View {
             // may stand — both lit would read as text through text.
             entity.name = back ? CardFaceTurner.backName : CardFaceTurner.frontName
             entity.components.set(ViewAttachmentComponent(
-                rootView: cardFace(for: item)
+                // The fine-print abstract stands on the front alone;
+                // the back carries just the title and byline.
+                rootView: cardFace(for: item, withAbstract: !back)
                     .frame(maxWidth: nodeMaxWidth(for: item))
                     .fixedSize(horizontal: false, vertical: true)))
             entity.scale = SIMD3<Float>(repeating: scale)
