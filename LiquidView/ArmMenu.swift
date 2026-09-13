@@ -84,12 +84,22 @@ final class ArmMenu {
     private var session: SpatialTrackingSession?
     private var updateSubscription: EventSubscription?
 
-    // Per-side hand anchors: the wrist carries the menu, the middle-finger
-    // knuckle tells which way the fingers point so the chips climb the arm.
+    // Per-side hand anchors — the wrist tracker. The wrist carries the
+    // menu; the forearm joint names the true up-the-arm direction; the
+    // index and little knuckles span the hand so the back of the arm
+    // (where a watch face sits) can be derived per frame. Origami
+    // addition (carry back to Author): forearm + dorsal anchoring per
+    // the wrist-anchored-overlays notes; was a wrist X-axis heuristic
+    // lifted toward world up.
     private var wrist: [Side: AnchorEntity] = [:]
-    private var knuckle: [Side: AnchorEntity] = [:]
+    private var forearm: [Side: AnchorEntity] = [:]
+    private var indexKnuckle: [Side: AnchorEntity] = [:]
+    private var littleKnuckle: [Side: AnchorEntity] = [:]
     private var menus: [Side: Entity] = [:]
     private var items: [String: Entity] = [:]
+    /// The menus' fade per side — tracking loss dims the chips out over
+    /// a breath instead of snapping them away mid-air.
+    private var menuOpacity: [Side: Float] = [:]
 
     // MARK: - Install
 
@@ -130,18 +140,34 @@ final class ArmMenu {
             items[chip.id] = item
         }
 
+        // Predicted tracking keeps the chips glued to a moving wrist —
+        // the render-time pose, not the last delivered one.
         for (side, menu) in menus {
-            let wristAnchor = AnchorEntity(.hand(side.chirality, location: .joint(for: .wrist)))
-            let knuckleAnchor = AnchorEntity(.hand(side.chirality, location: .joint(for: .middleFingerKnuckle)))
+            let wristAnchor = AnchorEntity(
+                .hand(side.chirality, location: .joint(for: .wrist)),
+                trackingMode: .predicted)
+            let forearmAnchor = AnchorEntity(
+                .hand(side.chirality, location: .joint(for: .forearmArm)),
+                trackingMode: .predicted)
+            let indexAnchor = AnchorEntity(
+                .hand(side.chirality, location: .joint(for: .indexFingerKnuckle)),
+                trackingMode: .predicted)
+            let littleAnchor = AnchorEntity(
+                .hand(side.chirality, location: .joint(for: .littleFingerKnuckle)),
+                trackingMode: .predicted)
             content.add(wristAnchor)
-            content.add(knuckleAnchor)
+            content.add(forearmAnchor)
+            content.add(indexAnchor)
+            content.add(littleAnchor)
             wristAnchor.addChild(menu)
             wrist[side] = wristAnchor
-            knuckle[side] = knuckleAnchor
+            forearm[side] = forearmAnchor
+            indexKnuckle[side] = indexAnchor
+            littleKnuckle[side] = littleAnchor
         }
 
-        updateSubscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
+        updateSubscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+            MainActor.assumeIsolated { self?.tick(deltaTime: Float(event.deltaTime)) }
         }
 
         Task { await startTracking() }
@@ -172,33 +198,85 @@ final class ArmMenu {
 
     // MARK: - Per-frame layout
 
-    private func tick() {
+    private func tick(deltaTime: Float) {
         for side in menus.keys {
-            layout(side: side)
+            layout(side: side, deltaTime: deltaTime)
         }
     }
 
-    /// Lays the side's chips along the forearm — the wrist joint's local axis
-    /// runs along the arm, the knuckle tells which sign points at the fingers
-    /// (so the opposite climbs toward the elbow), and each chip is lifted
-    /// perpendicular toward world up so it hovers just above the skin.
-    private func layout(side: Side) {
-        guard let wrist = wrist[side], let knuckle = knuckle[side], let menu = menus[side] else {
+    /// Fades a side's menu toward shown or hidden — reacquisition eases
+    /// the chips back in where a snap would pop them mid-air.
+    private func fade(_ menu: Entity, side: Side, toward target: Float,
+                      deltaTime: Float) {
+        let current = menuOpacity[side] ?? 0
+        // ~0.2 s edge to edge, per the anchoring notes.
+        let step = deltaTime * 5
+        let next = target > current
+            ? min(target, current + step) : max(target, current - step)
+        menuOpacity[side] = next
+        menu.components.set(OpacityComponent(opacity: next))
+        menu.isEnabled = next > 0.01
+    }
+
+    /// Lays the side's chips along the forearm. The forearm joint names
+    /// the true up-the-arm direction, and the knuckles span the hand so
+    /// the lift is the back of the arm — where a watch face sits — not
+    /// world up; the row rides the arm through a roll. The old wrist
+    /// X-axis and world-up answers remain as fallbacks for frames the
+    /// forearm or knuckles go unseen.
+    private func layout(side: Side, deltaTime: Float) {
+        guard let wrist = wrist[side], let menu = menus[side] else {
             return
         }
 
-        guard wrist.isAnchored, knuckle.isAnchored else {
-            menu.isEnabled = false
+        guard wrist.isAnchored else {
+            fade(menu, side: side, toward: 0, deltaTime: deltaTime)
             return
         }
 
-        menu.isEnabled = true
+        fade(menu, side: side, toward: 1, deltaTime: deltaTime)
 
-        let fingerWorld = knuckle.position(relativeTo: nil) - wrist.position(relativeTo: nil)
-        let fingerLocal = wrist.convert(direction: fingerWorld, from: nil)
-        let alongArm: SIMD3<Float> = fingerLocal.x >= 0 ? SIMD3(-1, 0, 0) : SIMD3(1, 0, 0)
+        let wristWorld = wrist.position(relativeTo: nil)
 
-        var lift = wrist.convert(direction: SIMD3<Float>(0, 1, 0), from: nil)
+        // Up the arm, away from the fingers — from the forearm joint
+        // itself when tracked, else the wrist's local X by the old
+        // finger-side sign trick.
+        var alongArm: SIMD3<Float>?
+        if let forearm = forearm[side], forearm.isAnchored {
+            let toElbow = forearm.position(relativeTo: nil) - wristWorld
+            if simd_length(toElbow) > 1e-4 {
+                alongArm = simd_normalize(
+                    wrist.convert(direction: simd_normalize(toElbow), from: nil))
+            }
+        }
+        if alongArm == nil, let index = indexKnuckle[side], index.isAnchored {
+            let fingerWorld = index.position(relativeTo: nil) - wristWorld
+            let fingerLocal = wrist.convert(direction: fingerWorld, from: nil)
+            alongArm = fingerLocal.x >= 0 ? SIMD3(-1, 0, 0) : SIMD3(1, 0, 0)
+        }
+        guard let alongArm else { return }
+
+        // The lift: dorsal — out of the back of the wrist, derived from
+        // the hand's own span — so the chips sit off the skin the way a
+        // watch does. World up when the knuckles go unseen.
+        var lift: SIMD3<Float>?
+        if let index = indexKnuckle[side], index.isAnchored,
+           let little = littleKnuckle[side], little.isAnchored {
+            let acrossToIndex = index.position(relativeTo: nil) - wristWorld
+            let acrossToLittle = little.position(relativeTo: nil) - wristWorld
+            var dorsal = simd_cross(acrossToIndex, acrossToLittle)
+            if simd_length(dorsal) > 1e-6 {
+                dorsal = simd_normalize(dorsal)
+                // The cross flips with the hand's mirror — one sign per
+                // chirality, verified on device.
+                if side == .left { dorsal = -dorsal }
+                lift = wrist.convert(direction: dorsal, from: nil)
+            }
+        }
+        if lift == nil {
+            lift = wrist.convert(direction: SIMD3<Float>(0, 1, 0), from: nil)
+        }
+        guard var lift else { return }
         lift -= alongArm * simd_dot(lift, alongArm)
         let liftLength = simd_length(lift)
         guard liftLength > 1e-5 else { return }
