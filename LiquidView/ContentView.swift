@@ -145,10 +145,19 @@ struct ContentView: View {
                 }
             }
         }
-        // The sidebar is protected: whatever collapsed it, it comes back.
+        // The sidebar is protected: whatever collapsed it, it comes back
+        // — but WITHOUT animation. Animated, NavigationSplitView slides
+        // the column back with its internal move transition over the
+        // sidebar's List — a platform view — and when the collapse came
+        // from the full-screen transition this runs mid display-flush:
+        // the macOS 27 layout crash's exact shape.
         .onChange(of: columnVisibility) {
             if columnVisibility != .all {
-                columnVisibility = .all
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    columnVisibility = .all
+                }
             }
         }
         // The catch-all: a ctrl-click on no text at all still answers.

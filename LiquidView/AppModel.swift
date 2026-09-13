@@ -243,15 +243,26 @@ final class AppModel {
     }
 
     /// Full screen is a focus mode: only the writing/reading area shows.
+    /// The swap runs without animation: it replaces whole split views —
+    /// sidebars full of platform-hosted Lists — and any transition over
+    /// those during the full-screen flush is the macOS 27 layout crash.
     func enterFullScreenLayout() {
-        isFullScreen = true
-        inspectorWasShown = showLinksInspector
-        showLinksInspector = false
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isFullScreen = true
+            inspectorWasShown = showLinksInspector
+            showLinksInspector = false
+        }
     }
 
     func exitFullScreenLayout() {
-        isFullScreen = false
-        showLinksInspector = inspectorWasShown
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isFullScreen = false
+            showLinksInspector = inspectorWasShown
+        }
     }
 
     // MARK: - Opening and following
