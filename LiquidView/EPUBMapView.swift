@@ -833,11 +833,14 @@ struct EPUBMapView: View {
     /// the right forearm, exactly as in Author's Map; Pin and Set Aside
     /// ride the left, acting on the selected card.
     @State private var armMenu = ArmMenu(chips: [
-        // Settings and Documents hang beneath the forearm — touched
-        // rarely, out of the working row.
-        ArmMenu.Chip(id: EPUBMapView.settingsChipID, title: "Settings", side: .right,
-                     underside: true),
+        // The right arm, per the arm-layout guide: Pin and Set Aside
+        // stand over the forearm, acting on the selected cards;
+        // Documents and Settings hang beneath it.
+        ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .right),
+        ArmMenu.Chip(id: EPUBMapView.setAsideChipID, title: "Set Aside", side: .right),
         ArmMenu.Chip(id: EPUBMapView.documentsChipID, title: "Documents", side: .right,
+                     underside: true),
+        ArmMenu.Chip(id: EPUBMapView.settingsChipID, title: "Settings", side: .right,
                      underside: true),
         ArmMenu.Chip(id: EPUBMapView.alignChipID, title: "Align to Room", side: .right,
                      underside: true),
@@ -855,18 +858,20 @@ struct EPUBMapView: View {
                      underside: true),
         ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Left", side: .left,
                      underside: true),
-        ArmMenu.Chip(id: EPUBMapView.floorMiddleChipID, title: "Middle", side: .left,
+        ArmMenu.Chip(id: EPUBMapView.floorMiddleChipID, title: "Center", side: .left,
                      underside: true),
         ArmMenu.Chip(id: EPUBMapView.floorRightChipID, title: "Right", side: .left,
                      underside: true),
         // Standing only while common ground does: the wall reduced to
         // the works every raised article cites — the green alone.
         ArmMenu.Chip(id: EPUBMapView.onlyOverlapChipID, title: "Only Overlap", side: .right),
-        ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
+        // The left arm's working row, per the guide: Concepts then
+        // Focus (Reveal All Concepts unfolds beside Concepts).
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
         // Hidden until a long-pinch on Concepts asks for it.
         ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
                      side: .left),
+        ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
     ], tracksPlanes: true,   // the flat pose finds the actual desk
@@ -900,7 +905,7 @@ struct EPUBMapView: View {
     private static let documentsChipID = "map.arm.documents"
     private static let alignChipID = "map.arm.align"
     private static let pinChipID = "map.arm.pin"
-    private static let asideChipID = "map.arm.aside"
+    private static let setAsideChipID = "map.arm.setaside"
     private static let conceptsChipID = "map.arm.concepts"
     private static let revealConceptsChipID = "map.arm.concepts.reveal"
     private static let graphsChipID = "map.arm.graphs"
@@ -1674,6 +1679,7 @@ struct EPUBMapView: View {
             if let index = items.firstIndex(where: { $0.id == item.id }) {
                 items[index].isSelected = willSelect
             }
+            updateStandingChips()
             // Deselecting a focused concept lifts its Focus — the
             // room fills back in.
             if !willSelect, focusedConceptID == item.id {
@@ -1825,6 +1831,20 @@ struct EPUBMapView: View {
             }
             armMenu.setChipActive(Self.conceptsChipID, conceptSpaceMode)
             return true
+        case Self.pinChipID:
+            let selected = items.filter { $0.kind == .article && $0.isSelected }
+            guard !selected.isEmpty else { return true }
+            for item in selected { model.togglePinned(item.id) }
+            reload()
+            updateStandingChips()
+            return true
+        case Self.setAsideChipID:
+            let selected = items.filter { $0.kind == .article && $0.isSelected }
+            guard !selected.isEmpty else { return true }
+            for item in selected { model.toggleSetAside(item.id) }
+            reload()
+            updateStandingChips()
+            return true
         case Self.graphsChipID:
             graphsOpen.toggle()
             if graphsOpen { timelinesOpen = false }
@@ -1908,6 +1928,17 @@ struct EPUBMapView: View {
         default:
             return false
         }
+    }
+
+    /// Pin and Set Aside wear the selection's standing: bright while
+    /// any selected article is pinned (or set aside). Refreshed on
+    /// every selection change and after the chips themselves act.
+    private func updateStandingChips() {
+        let selected = items.filter { $0.kind == .article && $0.isSelected }
+        armMenu.setChipActive(Self.pinChipID,
+                              selected.contains { $0.isPinned })
+        armMenu.setChipActive(Self.setAsideChipID,
+                              selected.contains { model.setAsideIDs.contains($0.id) })
     }
 
     /// Folds and unfolds the left underside's two groups. The hidden
