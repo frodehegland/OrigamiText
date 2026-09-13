@@ -570,7 +570,7 @@ struct ProceedingsMapView: View {
     /// layout; the computed views arrange the same cards around their
     /// labels; a saved view replays a kept arrangement.
     enum MapViewChoice: Equatable {
-        case standard, topics, authors, people, rank
+        case standard, topics, authors, people, rank, poles
         case saved(String)
 
         var title: String {
@@ -580,6 +580,7 @@ struct ProceedingsMapView: View {
             case .authors: "Authors"
             case .people: "People"
             case .rank: "Author Rank"
+            case .poles: "Magnets"
             case .saved(let name): name
             }
         }
@@ -598,6 +599,11 @@ struct ProceedingsMapView: View {
     @State private var savedSharedNames: [String] = []
     @State private var showsSavePrompt = false
     @State private var saveName = ""
+    /// The Magnets view's two poles, one at each side of the plane —
+    /// auto-named from the papers' topics, editable in place; papers
+    /// stand nearer the magnet whose topic they carry.
+    @State private var leftMagnet = ""
+    @State private var rightMagnet = ""
 
     /// One hallway meter drawn at this many points; the canvas center
     /// is the hallway's (0, 1.2) — mid-height of its article grid.
@@ -617,6 +623,16 @@ struct ProceedingsMapView: View {
                         .foregroundStyle(.secondary.opacity(0.55))
                         .position(caption.at)
                         .allowsHitTesting(false)
+                }
+                // The Magnets view's poles: a topic at each side, written
+                // by the papers, rewritable by the reader. Return applies;
+                // an emptied field names itself again.
+                if viewChoice == .poles {
+                    magnetField($leftMagnet,
+                                at: CGPoint(x: 190, y: Self.canvasCenter.y))
+                    magnetField($rightMagnet,
+                                at: CGPoint(x: Self.canvasSize.width - 190,
+                                            y: Self.canvasCenter.y))
                 }
                 ForEach(items) { item in
                     ProceedingsMapNode(
@@ -671,7 +687,7 @@ struct ProceedingsMapView: View {
         // computed view is up, the magnets re-gather.
         .onChange(of: tagsFingerprint) {
             switch viewChoice {
-            case .topics, .authors, .people, .rank: switchView(to: viewChoice)
+            case .topics, .authors, .people, .rank, .poles: switchView(to: viewChoice)
             default: break
             }
         }
@@ -763,6 +779,7 @@ struct ProceedingsMapView: View {
             Button("Authors") { switchView(to: .authors) }
             Button("People") { switchView(to: .people) }
             Button("Author Rank") { switchView(to: .rank) }
+            Button("Magnets") { switchView(to: .poles) }
             let names = savedViewNames
             if !names.isEmpty {
                 Divider()
@@ -967,9 +984,151 @@ struct ProceedingsMapView: View {
             applyComputed { $0.people + $0.entities }
         case .rank:
             applyRankLadder()
+        case .poles:
+            applyPoles()
         case .saved(let name):
             applySaved(name)
         }
+    }
+
+    // MARK: The Magnets view — a pole at each side, the papers between
+
+    /// One pole's name, written on the plane: a bare field styled like a
+    /// magnet caption. Return lays the papers out anew; an emptied field
+    /// is named again from the topics.
+    private func magnetField(_ text: Binding<String>, at point: CGPoint) -> some View {
+        TextField("Topic", text: text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(width: 260)
+            .onSubmit { magnetsEdited() }
+            .position(point)
+            .help("A magnet's topic — edit and press Return to pull the papers anew")
+    }
+
+    /// Where an edited pair of poles is kept for this venue.
+    private var magnetsKey: String { "mapMagnets:\(venue)" }
+
+    /// The reader renamed a pole: keep the pair for this venue — or, if
+    /// both stand empty, forget it so the topics name them again — and
+    /// lay the papers out between them.
+    private func magnetsEdited() {
+        let left = leftMagnet.trimmingCharacters(in: .whitespaces)
+        let right = rightMagnet.trimmingCharacters(in: .whitespaces)
+        if left.isEmpty && right.isEmpty {
+            UserDefaults.standard.removeObject(forKey: magnetsKey)
+        } else {
+            UserDefaults.standard.set([left, right], forKey: magnetsKey)
+        }
+        applyPoles()
+    }
+
+    /// The two topics that name the poles when the reader hasn't: the
+    /// most shared topic on one side and, opposite it, the next most
+    /// shared that isn't merely a longer or shorter form of the first.
+    private func autoMagnets(_ standing: [Item]) -> (left: String, right: String) {
+        var members: [String: Int] = [:]
+        var display: [String: String] = [:]
+        for item in standing {
+            var seen = Set<String>()
+            for raw in item.topics {
+                let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard label.count > 1 else { continue }
+                let key = label.lowercased()
+                guard seen.insert(key).inserted else { continue }
+                if display[key] == nil { display[key] = label }
+                members[key, default: 0] += 1
+            }
+        }
+        let top = members.sorted {
+            $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key
+        }
+        guard let first = top.first else { return ("", "") }
+        let second = top.dropFirst().first {
+            !$0.key.contains(first.key) && !first.key.contains($0.key)
+        } ?? top.dropFirst().first
+        return (display[first.key] ?? "",
+                second.flatMap { display[$0.key] } ?? "")
+    }
+
+    /// The tug-of-war arrangement: each paper stands along the line
+    /// between the poles by how much of each topic it carries — all left,
+    /// all right, or apportioned between. Papers neither pole speaks for
+    /// wait in the row at the foot; Set Aside cards keep their quiet row.
+    private func applyPoles() {
+        let standing = items.filter { !$0.isSetAside }
+        // Name the poles: the reader's kept pair first, the topics' own
+        // choice for whichever side stands empty.
+        let kept = UserDefaults.standard.stringArray(forKey: magnetsKey) ?? []
+        if leftMagnet.isEmpty, kept.count == 2, !kept[0].isEmpty { leftMagnet = kept[0] }
+        if rightMagnet.isEmpty, kept.count == 2, !kept[1].isEmpty { rightMagnet = kept[1] }
+        let auto = autoMagnets(standing)
+        if leftMagnet.trimmingCharacters(in: .whitespaces).isEmpty { leftMagnet = auto.left }
+        if rightMagnet.trimmingCharacters(in: .whitespaces).isEmpty {
+            rightMagnet = auto.right == leftMagnet ? auto.left : auto.right
+        }
+        let left = leftMagnet.trimmingCharacters(in: .whitespaces).lowercased()
+        let right = rightMagnet.trimmingCharacters(in: .whitespaces).lowercased()
+
+        // A topic matches a pole when either contains the other, so
+        // "hypertext" pulls "hypertext narrative" too.
+        func pull(_ item: Item, _ pole: String) -> Int {
+            guard !pole.isEmpty else { return 0 }
+            return item.topics.reduce(0) { count, raw in
+                let topic = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard topic.count > 1 else { return count }
+                return topic.contains(pole) || pole.contains(topic) ? count + 1 : count
+            }
+        }
+
+        // Thirteen bands across the plane: 0 hard left, 12 hard right.
+        var bands: [Int: [Item]] = [:]
+        var unsorted: [Item] = []
+        for item in standing {
+            let la = pull(item, left), ra = pull(item, right)
+            if la == 0 && ra == 0 {
+                unsorted.append(item)
+                continue
+            }
+            let t = Double(ra) / Double(la + ra)
+            bands[Int((t * 12).rounded()), default: []].append(item)
+        }
+
+        let leftX: CGFloat = 420
+        let rightX = Self.canvasSize.width - 420
+        let center = Self.canvasCenter
+        var next: [String: CGPoint] = [:]
+        for (band, group) in bands {
+            let x = leftX + (rightX - leftX) * CGFloat(band) / 12
+            // A band's cards stand in a column, mid-height at its middle;
+            // a crowded band folds into side-by-side columns.
+            let perColumn = 12
+            let columns = (group.count - 1) / perColumn + 1
+            let sorted = group.sorted { $0.title < $1.title }
+            for (index, item) in sorted.enumerated() {
+                let column = index / perColumn
+                let rows = min(perColumn, group.count - column * perColumn)
+                let row = index % perColumn
+                next[item.id] = CGPoint(
+                    x: x + CGFloat(column) * 56 - CGFloat(columns - 1) * 28,
+                    y: center.y + (CGFloat(row) - CGFloat(rows - 1) / 2) * 92)
+            }
+        }
+        let columns = max(1, min(unsorted.count, 8))
+        for (index, item) in unsorted.enumerated() {
+            next[item.id] = CGPoint(
+                x: center.x + CGFloat(index % columns) * 190
+                    - CGFloat(columns - 1) * 95,
+                y: Self.canvasSize.height - 240 + CGFloat(index / columns) * 92)
+        }
+        let seeds = Self.seeds(for: items)
+        for item in items where item.isSetAside {
+            next[item.id] = seeds[item.id] ?? center
+        }
+        overlayPositions = next
+        clusterCaptions = []
     }
 
     /// The magnetic arrangement: every label two or more papers share
