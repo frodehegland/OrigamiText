@@ -240,8 +240,13 @@ struct SidebarView: View {
         .navigationTitle("Origami Text")
         // Wide enough for the longest place names ("Alphabetical",
         // journal names) with their counts beside them, at the large
-        // sidebar text size too.
-        .navigationSplitViewColumnWidth(min: 300, ideal: 330)
+        // sidebar text size too; draggable out to 560 for a venue's
+        // author and topic lists. The ONE width spec for this column,
+        // and CONSTANT: ContentView used to layer a second, venue-
+        // dependent spec on top, and a column whose min/max CHANGES
+        // makes SplitViewChildController push new sizes mid
+        // constraints-flush — a macOS 27 hard crash.
+        .navigationSplitViewColumnWidth(min: 300, ideal: 330, max: 560)
     }
 
     /// Ways into the opened EPUBs by who and what they hold: Authors (the

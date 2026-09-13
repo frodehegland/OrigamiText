@@ -77,10 +77,6 @@ struct ContentView: View {
                         .scrollContentBackground(.hidden)
                         .background(themeBG)
                         .foregroundStyle(themeFG)
-                        .navigationSplitViewColumnWidth(
-                            min: venueIsSelected ? 360 : 200,
-                            ideal: venueIsSelected ? 440 : 220,
-                            max: venueIsSelected ? 540 : 300)
                 } detail: {
                     detailPane
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -94,10 +90,6 @@ struct ContentView: View {
                         .scrollContentBackground(.hidden)
                         .background(themeBG)
                         .foregroundStyle(themeFG)
-                        .navigationSplitViewColumnWidth(
-                            min: venueIsSelected ? 360 : 200,
-                            ideal: venueIsSelected ? 440 : 220,
-                            max: venueIsSelected ? 540 : 300)
                 } detail: {
                     listPane
                         .scrollContentBackground(.hidden)
@@ -126,10 +118,6 @@ struct ContentView: View {
                         .scrollContentBackground(.hidden)
                         .background(themeBG)
                         .foregroundStyle(themeFG)
-                        .navigationSplitViewColumnWidth(
-                            min: venueIsSelected ? 360 : 200,
-                            ideal: venueIsSelected ? 440 : 220,
-                            max: venueIsSelected ? 540 : 300)
                 } content: {
                     listPane
                         .scrollContentBackground(.hidden)
@@ -234,16 +222,26 @@ struct ContentView: View {
         // geometry mid-transition re-enters window layout (AppKit's
         // separator tracking registers right there) and AppKit
         // escalates that to a crash.
+        // Synchronously: willEnter fires BEFORE AppKit animates, so the
+        // split view is unmounted before any animated flush can catch it
+        // mid-negotiation. (The one-turn deferral could land the swap
+        // inside the animation instead.)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in
-            Task { @MainActor in
-                model.enterFullScreenLayout()
-            }
+            model.enterFullScreenLayout()
         }
+        // The peek folds at once, but the split view REMOUNTS only when
+        // the exit animation has finished (did, not will): a split view
+        // negotiating its column sizes inside the animated resize pushes
+        // min/max updates mid constraints-flush -- the macOS 27 crash.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
             Task { @MainActor in
-                model.exitFullScreenLayout()
                 showsPeekSidebar = false
                 showsPeekList = false
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
+            Task { @MainActor in
+                model.exitFullScreenLayout()
             }
         }
         // The titlebar separator's scroll tracking is the code that
