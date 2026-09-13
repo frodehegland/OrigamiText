@@ -282,9 +282,11 @@ final class ArmMenu {
         guard liftLength > 1e-5 else { return }
         lift /= liftLength
 
-        // ~7 cm of air between skin and the working row; the underside
-        // chips hang lower, 12 cm beneath, so the two rows read apart
-        // at a glance. (Origami tuning — Interatlas used 9 cm both ways.)
+        // ~3.5 cm of air between skin and the working row — just above
+        // a watch face's height, close enough to read as worn; the
+        // underside chips hang 12 cm beneath, so the two rows read
+        // apart at a glance. (Origami tuning — Interatlas used 9 cm
+        // both ways.)
         let sideChips = chips.filter { effectiveSide(of: $0) == side }
         var topIndex = 0
         var underIndex = 0
@@ -294,7 +296,7 @@ final class ArmMenu {
                 item.position = alongArm * (0.04 + 0.05 * Float(underIndex)) - lift * 0.12
                 underIndex += 1
             } else {
-                item.position = alongArm * (0.04 + 0.05 * Float(topIndex)) + lift * 0.07
+                item.position = alongArm * (0.04 + 0.05 * Float(topIndex)) + lift * 0.035
                 topIndex += 1
             }
         }
