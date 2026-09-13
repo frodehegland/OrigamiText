@@ -359,6 +359,9 @@ struct OrigamiReadingView: View {
     @State private var expandParagraphs = false
     @State private var showsFocusColorPicker = false
     @State private var showsFocusFlow = false
+    /// The page bar's own palette — a separate flag, or the foot bar's
+    /// palette button would present this popover too.
+    @State private var showsPageColorPicker = false
     @AppStorage("bionicReading") private var bionicReading = false
     @AppStorage("showsReadingRuler") private var showsReadingRuler = false
     @State private var mouseWindowY: CGFloat? = nil
@@ -1069,6 +1072,28 @@ struct OrigamiReadingView: View {
             }
         }
         .padding(12)
+    }
+
+    /// The themes and type controls standing on the page bar itself —
+    /// right at hand in Horizontal and Focus, not only up in the foot
+    /// bar's Aa menu. The palette carries its own presented flag: the
+    /// foot bar's palette shares the picker view but not the popover.
+    @ViewBuilder private var pageBarTypeControls: some View {
+        Button { showsPageColorPicker.toggle() } label: {
+            Image(systemName: "paintpalette")
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Colour — reading theme")
+        .popover(isPresented: $showsPageColorPicker) { focusColorView }
+
+        Button { showsFocusFlow.toggle() } label: {
+            Image(systemName: "textformat.size")
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Type — size, spacing, width, Bionic Reading, reading ruler")
+        .popover(isPresented: $showsFocusFlow) { focusFlowView }
     }
 
     /// Text size, line spacing, column width, bionic reading, and ruler
@@ -2173,6 +2198,9 @@ struct OrigamiReadingView: View {
                     }
                     .keyboardShortcut(.rightArrow, modifiers: [])
                     .disabled(index + shown >= pages.count)
+
+                    Divider().frame(height: 14)
+                    pageBarTypeControls
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
@@ -2234,6 +2262,9 @@ struct OrigamiReadingView: View {
                     }
                     .keyboardShortcut(.rightArrow, modifiers: [])
                     .disabled(index >= pages.count - 1 || sentenceMode || paragraphMode || showsRSVP)
+
+                    Divider().frame(height: 14)
+                    pageBarTypeControls
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
