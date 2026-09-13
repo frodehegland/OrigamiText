@@ -345,9 +345,15 @@ struct EPUBReaderScreen: View {
         // ContentView gives EPUBReaderScreen a .id(epub.id) so SwiftUI
         // recreates the view on every new book or paper — onChange would
         // never fire because each instance only ever sees its own book.
-        // onAppear fires on every (re)creation, which is the right moment.
+        // onAppear fires on every (re)creation — but recreation also
+        // happens when full screen swaps the split view for the bare
+        // pane, same book, and the reader's chosen mode (Horizontal)
+        // must survive that crossing: reset only for a NEW book.
         .onAppear {
-            readerModeRaw = EPUBReaderMode.faithful.rawValue
+            if model.readerModeResetBookID != book.id {
+                model.readerModeResetBookID = book.id
+                readerModeRaw = EPUBReaderMode.faithful.rawValue
+            }
         }
         // A find-fold landing has shown its matches; the highlight
         // fades and the find bar folds away.

@@ -242,6 +242,12 @@ final class AppModel {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// The book whose opening last reset the reader mode to the faithful
+    /// pages — EPUBReaderScreen consults it so the reset happens once per
+    /// book, not on every recreation (the full-screen swap recreates the
+    /// screen for the SAME book, and Horizontal must survive it).
+    var readerModeResetBookID: String?
+
     /// Full screen is a focus mode: only the writing/reading area shows.
     /// The swap runs without animation: it replaces whole split views —
     /// sidebars full of platform-hosted Lists — and any transition over
