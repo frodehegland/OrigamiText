@@ -1418,18 +1418,23 @@ struct EPUBMapView: View {
 
     private func cardEntity(for item: EPUBMapItem, texturedPlane: ModelEntity)
         -> (modelEntity: ModelEntity?, collisionShape: ShapeResource) {
-        // Set Aside slips stand at half presence — paper and words
-        // both; each rank behind the articles reads a step quieter.
-        // Concepts handle their own background transparency via the
-        // material rather than OpacityComponent, so text stays crisp.
+        // Document cards stand semi-transparent until chosen: the room
+        // reads through the unread wall, and a SELECTED card turns
+        // opaque — presence follows attention. Each rank behind the
+        // articles still reads a step quieter; Set Aside slips fade
+        // further. Concepts handle their own background transparency
+        // via the material rather than OpacityComponent, so text stays
+        // crisp.
         let opacity: Float
         if item.isAside {
             opacity = 0.4
+        } else if item.isSelected {
+            opacity = 1.0
         } else {
             opacity = switch item.kind {
-            case .article: 1.0
-            case .cited: 0.92
-            case .citedDeep: 0.85
+            case .article: 0.7
+            case .cited: 0.62
+            case .citedDeep: 0.55
             case .concept: 1.0
             }
         }
@@ -1471,12 +1476,11 @@ struct EPUBMapView: View {
             margins: item.isAside ? 0.004 : 0.006,
             opacity: opacity,
             cornerRadius: 0.01,
-            // The selected card wears the lab's ember — the highlight
-            // that anchors the citation lines. Concept cards skip this
-            // because their SwiftUI overlay draws the selection border.
+            // The selected card wears a black border — quiet ink, not
+            // the ember — anchoring the citation lines. Concept cards
+            // skip this: their SwiftUI overlay draws the selection.
             useBorder: item.isSelected && !conceptBorder,
-            borderColor: item.isSelected && !conceptBorder
-                ? UIColor(red: 0.72, green: 0.42, blue: 0.06, alpha: 1) : .clear,
+            borderColor: item.isSelected && !conceptBorder ? .black : .clear,
             materialMode: .none
         )
         // Concept cards: the glass background lives in the SwiftUI cardFace.
