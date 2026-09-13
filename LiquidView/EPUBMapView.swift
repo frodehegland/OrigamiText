@@ -566,6 +566,7 @@ struct EPUBMapView: View {
         // them visually unequal to their cached counterparts, triggering a
         // full card face rebuild rather than reusing stale light/dark textures.
         for i in items.indices { items[i].visionTheme = visionThemeRaw }
+        updateSelectChips()
         rebuildDeepRank()
         updateSankey()
         // Suppress ALL connecting lines while any reading panel is open.
@@ -1657,6 +1658,20 @@ struct EPUBMapView: View {
         reload()
     }
 
+    /// Select's unfolded kinds: Citations stands only while cited
+    /// cards do — there is nothing to select on a quiet wall. Called
+    /// on the parent pinch and again on every reload, so a rising or
+    /// falling wall corrects the open column live.
+    private func updateSelectChips() {
+        let citationsStand = items.contains {
+            $0.kind == .cited || $0.kind == .citedDeep
+        }
+        armMenu.setChipVisible(Self.selectCitationsChipID,
+                               selectOpen && citationsStand)
+        armMenu.setChipVisible(Self.selectDocumentsChipID, selectOpen)
+        armMenu.setChipVisible(Self.selectConceptsChipID, selectOpen)
+    }
+
     /// The Select chip's kinds — one family selected whole, everything
     /// else deselected.
     private enum SelectKind { case citations, documents, concepts }
@@ -2063,10 +2078,7 @@ struct EPUBMapView: View {
         case Self.selectChipID:
             // The three kinds unfold above the chip, and fold away.
             selectOpen.toggle()
-            for id in [Self.selectCitationsChipID, Self.selectDocumentsChipID,
-                       Self.selectConceptsChipID] {
-                armMenu.setChipVisible(id, selectOpen)
-            }
+            updateSelectChips()
             armMenu.setChipActive(Self.selectChipID, selectOpen)
             return true
         case Self.selectCitationsChipID:
