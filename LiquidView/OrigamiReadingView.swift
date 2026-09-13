@@ -114,9 +114,18 @@ struct ReadingCommands: Commands {
                 .keyboardShortcut("g", modifiers: [.command, .shift])
                 .disabled(model.openEPUB == nil)
             Divider()
-            Button("Fold") { outlineFold?.fold() }
+            // From a native mode the front reading folds itself; from
+            // the faithful pages the model moves the reading to Scroll
+            // folded — ⌘− means the outline wherever the book stands.
+            Button("Fold") {
+                if let outlineFold {
+                    outlineFold.fold()
+                } else {
+                    model.foldOpenReadingIntoOutline()
+                }
+            }
                 .keyboardShortcut("-", modifiers: .command)
-                .disabled(outlineFold == nil)
+                .disabled(outlineFold == nil && model.openEPUB == nil)
             Button("Unfold") { outlineFold?.unfold() }
                 .keyboardShortcut("=", modifiers: .command)
                 .disabled(outlineFold == nil || outlineFold?.folded != true)

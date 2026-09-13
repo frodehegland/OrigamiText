@@ -2904,6 +2904,24 @@ final class AppModel {
         }
     }
 
+    /// ⌘− and the reader's pinch-in: the open book folded into its
+    /// outline — the same move as the foot bar's Outline word, from any
+    /// mode. False when no book is open or its structure will not read
+    /// (the faithful pages cannot fold).
+    @discardableResult
+    func foldOpenReadingIntoOutline() -> Bool {
+        guard let book = openEPUB, readingDoc(forBook: book) != nil else { return false }
+        readerFindFoldTerm = nil
+        readingAnalysisKind = nil
+        UserDefaults.standard.set(
+            OrigamiReadingView.FoldTarget.headings.rawValue,
+            forKey: "readingFoldTarget")
+        UserDefaults.standard.set(
+            EPUBReaderMode.scroll.rawValue, forKey: "readerMode")
+        readerFoldLevel = 2
+        return true
+    }
+
     func readingDoc(forBook book: OpenEPUB) -> LiquidDoc? {
         if let cached = readingDocCache.last(where: { $0.bookID == book.id }) {
             return cached.doc

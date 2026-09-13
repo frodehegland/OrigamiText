@@ -408,9 +408,14 @@ struct EPUBReaderScreen: View {
             onAnnotate: { kind, selection in model.addTag(kind, on: selection) },
             onAddComment: { selection in commentSelection = selection },
             onRemoveAnnotation: { id in model.removeAnnotation(id: id) },
-            // A trackpad pinch answers with the table of contents, as
-            // the phone's pinch folds the reading into its outline.
-            onPinchIn: { showsContents = true },
+            // A trackpad pinch folds the reading into its outline, as
+            // the phone's pinch does; only a book whose structure will
+            // not read answers with the contents popover instead.
+            onPinchIn: {
+                withAnimation(.snappy) {
+                    if !model.foldOpenReadingIntoOutline() { showsContents = true }
+                }
+            },
             onPinchOut: { showsContents = false },
             // Step 0 substrate: for now, clicking a semantic element
             // names it and selecting text records the selection. Real
