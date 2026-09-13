@@ -1369,16 +1369,18 @@ struct EPUBMapView: View {
             // The whole slip fades — the words too, not just the paper.
             Text(item.title)
                 .font(AppFonts.body(5.5, weight: .semibold))
-                .foregroundStyle(dark ? Color.white : Color.primary)
+                .foregroundStyle(Color.white)
                 .lineLimit(1)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2.5)
-                // The slip's own faint sheet — the box body is invisible
-                // now, so the paper lives here like every other card's.
+                .padding(.horizontal, 5)
+                .padding(.vertical, 3)
+                // The same smoked glass as the standing cards, faint.
                 .background(
                     RoundedRectangle(cornerRadius: 5)
-                        .fill((dark ? Color(white: 0.10) : Color(white: 0.85))
-                            .opacity(0.3))
+                        .fill(Color.black.opacity(0.30))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.6)
                 )
                 .opacity(0.5)
         } else if item.kind == .concept {
@@ -1426,51 +1428,51 @@ struct EPUBMapView: View {
             case .citedDeep: 6
             case .concept: 6.5
             }
-            // The sheet's own paper — the card is a single plane now,
-            // so paper, transparency, and the selection border are all
-            // drawn in this rasterized face. Each rank a step quieter.
-            let paper: Color = if dark {
-                switch item.kind {
-                case .article: Color(white: 0.10)
-                case .cited: Color(white: 0.18)
-                case .citedDeep: Color(white: 0.26)
-                case .concept: Color(white: 0.15)
-                }
-            } else {
-                switch item.kind {
-                case .article: Color(white: 0.85)
-                case .cited: Color(white: 0.75)
-                case .citedDeep: Color(white: 0.65)
-                case .concept: Color(white: 0.90)
-                }
+            // The arm chips' own language, carried to the cards: white
+            // ink on a smoked-glass pane with a hairline edge, whatever
+            // the theme — glass over the room needs no light or dark.
+            // A SELECTED card inverts to lit paper: black ink on white,
+            // unmistakable at any distance. Each rank's glass a shade
+            // lighter, so the deep rows read as further away.
+            let selected = item.isSelected
+            let ink: Color = selected ? Color(white: 0.08) : .white
+            let smoke: Double = switch item.kind {
+            case .article: 0.38
+            case .cited: 0.30
+            case .citedDeep: 0.24
+            case .concept: 0.32
             }
             VStack(spacing: item.kind == .citedDeep ? 1.5 : 2.5) {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                     if item.isPinned {
                         Image(systemName: "pin.fill")
                             .font(.system(size: 5))
-                            .foregroundStyle(Color(red: 0.72, green: 0.42, blue: 0.06))
+                            .foregroundStyle(selected
+                                ? Color(red: 0.72, green: 0.42, blue: 0.06)
+                                : Color(red: 0.95, green: 0.68, blue: 0.25))
                     }
                     Text(item.title)
                         .font(AppFonts.body(titleSize, weight: .semibold))
-                        .foregroundStyle(dark ? Color.white : Color.primary)
+                        .foregroundStyle(ink)
                         .lineLimit(item.kind == .citedDeep ? 2 : 3)
                 }
                 Text(item.author)
                     .font(.system(size: 5.5))
-                    .foregroundStyle(dark ? Color.white.opacity(0.55) : Color.secondary)
+                    .foregroundStyle(ink.opacity(0.65))
                     .lineLimit(item.kind == .citedDeep ? 1 : 2)
             }
             .multilineTextAlignment(.center)
-            .padding(item.kind == .article ? 7 : (item.kind == .cited ? 6 : 5))
+            .padding(.horizontal, item.kind == .article ? 8 : 7)
+            .padding(.vertical, item.kind == .article ? 6 : 5)
             .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(paper.opacity(item.isSelected ? 1.0 : 0.3))
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(selected ? Color.white.opacity(0.92)
+                                   : Color.black.opacity(smoke))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(item.isSelected ? Color.black : Color.clear,
-                                  lineWidth: 1.5)
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(selected ? Color.black : Color.white.opacity(0.35),
+                                  lineWidth: selected ? 1.6 : 0.7)
             )
         }
     }
