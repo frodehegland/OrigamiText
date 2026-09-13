@@ -48,12 +48,19 @@ final class ArmMenu {
         /// An underside chip hangs beneath the forearm — the rarely
         /// touched commands (Settings) out of the working row.
         let underside: Bool
+        /// The chip this one unfolds from. Grouped chips take no row
+        /// slot: they stack off their parent AWAY from the arm — deeper
+        /// beneath an underside parent, higher above a top-row one.
+        /// Origami addition (carry back to Author).
+        let group: String?
 
-        init(id: String, title: String, side: Side, underside: Bool = false) {
+        init(id: String, title: String, side: Side, underside: Bool = false,
+             group: String? = nil) {
             self.id = id
             self.title = title
             self.side = side
             self.underside = underside
+            self.group = group
         }
     }
 
@@ -295,9 +302,10 @@ final class ArmMenu {
         // beside its neighbour, not a slot away. Origami addition
         // (carry back to Author).
         let sideChips = chips.filter { effectiveSide(of: $0) == side }
+        var rowPositions: [String: SIMD3<Float>] = [:]
         var topIndex = 0
         var underIndex = 0
-        for chip in sideChips {
+        for chip in sideChips where chip.group == nil {
             guard let item = items[chip.id], item.isEnabled else { continue }
             if chip.underside {
                 item.position = alongArm * (0.04 + 0.05 * Float(underIndex)) - lift * 0.12
@@ -306,6 +314,18 @@ final class ArmMenu {
                 item.position = alongArm * (0.04 + 0.05 * Float(topIndex)) + lift * 0.05
                 topIndex += 1
             }
+            rowPositions[chip.id] = item.position
+        }
+        // The unfolded groups: each sub-chip stacks off its parent away
+        // from the arm — never into the row beside it.
+        var groupSteps: [String: Int] = [:]
+        for chip in sideChips {
+            guard let group = chip.group, let item = items[chip.id],
+                  item.isEnabled, let anchor = rowPositions[group] else { continue }
+            let step = groupSteps[group, default: 0] + 1
+            groupSteps[group] = step
+            let away: Float = chip.underside ? -1 : 1
+            item.position = anchor + lift * (away * 0.055 * Float(step))
         }
     }
 

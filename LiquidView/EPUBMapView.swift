@@ -851,27 +851,27 @@ struct EPUBMapView: View {
         ArmMenu.Chip(id: EPUBMapView.graphsChipID, title: "Graphs", side: .left,
                      underside: true),
         ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Left", side: .left,
-                     underside: true),
+                     underside: true, group: EPUBMapView.graphsChipID),
         ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Right", side: .left,
-                     underside: true),
+                     underside: true, group: EPUBMapView.graphsChipID),
         ArmMenu.Chip(id: EPUBMapView.timelinesChipID, title: "Timelines", side: .left,
                      underside: true),
         ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Left", side: .left,
-                     underside: true),
+                     underside: true, group: EPUBMapView.timelinesChipID),
         ArmMenu.Chip(id: EPUBMapView.floorMiddleChipID, title: "Center", side: .left,
-                     underside: true),
+                     underside: true, group: EPUBMapView.timelinesChipID),
         ArmMenu.Chip(id: EPUBMapView.floorRightChipID, title: "Right", side: .left,
-                     underside: true),
+                     underside: true, group: EPUBMapView.timelinesChipID),
         // Standing only while common ground does: the wall reduced to
         // the works every raised article cites — the green alone.
         ArmMenu.Chip(id: EPUBMapView.onlyOverlapChipID, title: "Only Overlap", side: .right),
-        // The left arm's working row, per the guide: Concepts then
-        // Focus (Reveal All Concepts unfolds beside Concepts).
-        ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
-        // Hidden until a long-pinch on Concepts asks for it.
-        ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
-                     side: .left),
+        // The left arm's working row: Focus then Concepts. Reveal All
+        // Concepts unfolds ABOVE Concepts (away from the arm), hidden
+        // until a long-pinch asks for it.
         ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
+                     side: .left, group: EPUBMapView.conceptsChipID),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
     ], tracksPlanes: true,   // the flat pose finds the actual desk
