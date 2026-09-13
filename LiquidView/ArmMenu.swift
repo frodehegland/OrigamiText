@@ -289,11 +289,15 @@ final class ArmMenu {
         // truly followed the arm); the underside chips hang 12 cm
         // beneath, so the two rows read apart at a glance. (Origami
         // tuning — Interatlas used 9 cm both ways.)
+        // Hidden chips give up their place: the row packs, so a chip
+        // beyond a hidden one (Graph past Reveal All Concepts) stands
+        // beside its neighbour, not a slot away. Origami addition
+        // (carry back to Author).
         let sideChips = chips.filter { effectiveSide(of: $0) == side }
         var topIndex = 0
         var underIndex = 0
         for chip in sideChips {
-            guard let item = items[chip.id] else { continue }
+            guard let item = items[chip.id], item.isEnabled else { continue }
             if chip.underside {
                 item.position = alongArm * (0.04 + 0.05 * Float(underIndex)) - lift * 0.12
                 underIndex += 1
