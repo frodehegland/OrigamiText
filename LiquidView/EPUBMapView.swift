@@ -557,9 +557,32 @@ struct EPUBMapView: View {
     /// Positioned at z = -0.85 (closer to viewer than articles at z = -1.2)
     /// using the same spaceShift so they move with the fist carry.
     private func buildConceptItems() -> [EPUBMapItem] {
+        // The same concepts macOS shows: the reader's tracked list
+        // (adopted through the standing file) leads, then the merged
+        // set — every document's glossary entries plus the AI paper
+        // topics — most shared first, capped so the hallway's rows stay
+        // readable. (The AI set alone left the room empty whenever no
+        // analysis had ever been run.)
+        var pool: [MergedConcept] = []
+        var seen = Set<String>()
+        for name in model.concepts where !name.isEmpty {
+            let key = MergedConcept.key(for: name)
+            guard seen.insert(key).inserted else { continue }
+            pool.append(MergedConcept(
+                id: key, name: name, aiDescription: "",
+                userDefinition: nil, category: "Tracked",
+                citationIdentifiers: [], urls: [],
+                sourceDocIDs: [], relatedConceptIDs: []))
+        }
+        let merged = model.allMergedConcepts
+            .sorted { $0.sourceDocIDs.count > $1.sourceDocIDs.count }
+            .prefix(40)
+        for concept in merged where seen.insert(concept.id).inserted {
+            pool.append(concept)
+        }
         // A hidden concept stays away until Reveal All Concepts
         // (long-pinch the Concepts chip) brings the set back.
-        let concepts = model.aiPaperConcepts.filter {
+        let concepts = pool.filter {
             !hiddenConceptIDs.contains("concept:" + $0.id)
         }
         guard !concepts.isEmpty else { return [] }
