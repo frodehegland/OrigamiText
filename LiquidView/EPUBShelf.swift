@@ -425,6 +425,77 @@ nonisolated enum EPUBMapSharedLayout {
     }
 }
 
+/// The Map's saved views: named arrangements kept on this device, and
+/// the shared copies a reader chose to publish to the community folder.
+/// Positions speak the layout file's meters, keyed by the book's
+/// community identity, so every device replays the same picture.
+nonisolated enum EPUBMapViews {
+
+    struct File: Codable {
+        /// venue → view name → book key → position in meters.
+        var venues: [String: [String: [String: EPUBMapSharedLayout.Point]]] = [:]
+
+        func names(venue: String) -> [String] {
+            (venues[venue] ?? [:]).keys.sorted()
+        }
+    }
+
+    private static let sharedName = "_map-views.json"
+
+    private static var localURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)
+            .first ?? FileManager.default.temporaryDirectory
+        try? FileManager.default.createDirectory(
+            at: base, withIntermediateDirectories: true)
+        return base.appendingPathComponent("origami-map-views.json")
+    }
+
+    static func local() -> File {
+        read(at: localURL) ?? File()
+    }
+
+    static func shared(community folder: URL?) -> File {
+        guard let folder else { return File() }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        return read(at: folder.appendingPathComponent(sharedName)) ?? File()
+    }
+
+    static func saveLocal(venue: String, name: String,
+                          positions: [String: EPUBMapSharedLayout.Point]) {
+        var file = local()
+        file.venues[venue, default: [:]][name] = positions
+        write(file, to: localURL)
+    }
+
+    /// Publishes one kept view into the community folder — merged into
+    /// whatever views others shared, never replacing the whole file.
+    static func share(venue: String, name: String,
+                      positions: [String: EPUBMapSharedLayout.Point],
+                      community folder: URL?) {
+        guard let folder else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        let url = folder.appendingPathComponent(sharedName)
+        var file = read(at: url) ?? File()
+        file.venues[venue, default: [:]][name] = positions
+        write(file, to: url)
+    }
+
+    private static func read(at url: URL) -> File? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(File.self, from: data)
+    }
+
+    private static func write(_ file: File, to url: URL) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(file) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 /// The proceedings as a flat map — Author's Map for one venue: every
 /// article a card on the plane, dragged where the reader wants it,
 /// opened with a double click. Positions persist through EPUBMapSharedLayout in
@@ -444,12 +515,20 @@ struct ProceedingsMapView: View {
         let author: String
         var isPinned = false
         var isSetAside = false
+        /// The AI's short labels for this paper — the computed views'
+        /// magnets. Topics fold concepts, keywords, and title topics;
+        /// entities fold technologies and places.
+        var topics: [String] = []
+        var people: [String] = []
+        var entities: [String] = []
     }
 
     let items: [Item]
     /// The community folder carrying the shared layout; nil reads and
     /// writes the local mirror alone.
     let folder: URL?
+    /// The journal's name — the saved views' shelf key.
+    var venue: String = ""
     let open: (String) -> Void
     let togglePin: (String) -> Void
     let toggleSetAside: (String) -> Void
@@ -469,8 +548,41 @@ struct ProceedingsMapView: View {
     @State private var findText = ""
 
     /// The clicked card, lifted off the plane until clicked again or
-    /// another takes its place.
+    /// another takes its place. Views are only layouts: switching one
+    /// never touches this, so the selection survives the crossing.
     @State private var liftedID: String?
+
+    /// Which layout the plane shows. Default is the hand-placed shared
+    /// layout; the computed views arrange the same cards around their
+    /// labels; a saved view replays a kept arrangement.
+    enum MapViewChoice: Equatable {
+        case standard, topics, authors, people
+        case saved(String)
+
+        var title: String {
+            switch self {
+            case .standard: "Default"
+            case .topics: "Topics"
+            case .authors: "Authors"
+            case .people: "People"
+            case .saved(let name): name
+            }
+        }
+    }
+
+    @State private var viewChoice: MapViewChoice = .standard
+    /// The non-default views' positions — an overlay over the same
+    /// cards. Drags here stay here; only the Default layout persists
+    /// to the shared file.
+    @State private var overlayPositions: [String: CGPoint] = [:]
+    /// The computed view's magnet captions, drawn under the cards.
+    @State private var clusterCaptions: [(label: String, at: CGPoint)] = []
+    /// The saved arrangements on this Mac, and the ones shared through
+    /// the community folder.
+    @State private var savedLocalNames: [String] = []
+    @State private var savedSharedNames: [String] = []
+    @State private var showsSavePrompt = false
+    @State private var saveName = ""
 
     /// One hallway meter drawn at this many points; the canvas center
     /// is the hallway's (0, 1.2) — mid-height of its article grid.
@@ -481,6 +593,16 @@ struct ProceedingsMapView: View {
         ScrollView([.horizontal, .vertical]) {
             ZStack(alignment: .topLeading) {
                 canvasBase
+                // The computed view's magnets, named — quiet captions
+                // beneath the cards that gather around them.
+                ForEach(clusterCaptions.indices, id: \.self) { index in
+                    let caption = clusterCaptions[index]
+                    Text(caption.label)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.secondary.opacity(0.55))
+                        .position(caption.at)
+                        .allowsHitTesting(false)
+                }
                 ForEach(items) { item in
                     ProceedingsMapNode(
                         item: item,
@@ -494,7 +616,9 @@ struct ProceedingsMapView: View {
                         },
                         togglePin: { togglePin(item.id) },
                         toggleSetAside: { toggleSetAside(item.id) },
-                        moved: { persist(item) })
+                        // Only the Default layout is the shared one; a
+                        // drag in a computed or saved view stays local.
+                        moved: { if viewChoice == .standard { persist(item) } })
                 }
             }
         }
@@ -502,6 +626,21 @@ struct ProceedingsMapView: View {
         .background(Color.secondary.opacity(0.06))
         .safeAreaInset(edge: .bottom, spacing: 0) { footBar }
         .onAppear(perform: reload)
+        // The AI's labels land asynchronously: when they change while a
+        // computed view is up, the magnets re-gather.
+        .onChange(of: tagsFingerprint) {
+            switch viewChoice {
+            case .topics, .authors, .people: switchView(to: viewChoice)
+            default: break
+            }
+        }
+        .alert("Save View", isPresented: $showsSavePrompt) {
+            TextField("Name", text: $saveName)
+            Button("Save") { saveCurrentView() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Keeps this arrangement on this Mac. Share it to the community folder from the view menu.")
+        }
         // Two maps open at once converse through the file: while this
         // one is visible it re-reads every few beats, off the main
         // actor, and the per-entry merge lets both sides move cards at
@@ -533,7 +672,7 @@ struct ProceedingsMapView: View {
     }
 
     /// The Map's foot: the way back to the journal's list at the left,
-    /// Find in the middle. More tools will join it here.
+    /// the view menu beside it, Find in the middle.
     private var footBar: some View {
         HStack(spacing: 12) {
             if let back {
@@ -544,6 +683,7 @@ struct ProceedingsMapView: View {
                 .buttonStyle(.plain)
                 .help("Back to the journal's articles")
             }
+            viewMenu
             Spacer()
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
@@ -571,6 +711,55 @@ struct ProceedingsMapView: View {
         .padding(.vertical, 4)
         .background(.regularMaterial)
         .overlay(alignment: .top) { Divider() }
+    }
+
+    /// The view menu: the Default hand layout, the computed views, the
+    /// saved arrangements — and the keeping and sharing of them.
+    private var viewMenu: some View {
+        Menu {
+            Button("Default") { switchView(to: .standard) }
+            Button("Topics") { switchView(to: .topics) }
+            Button("Authors") { switchView(to: .authors) }
+            Button("People") { switchView(to: .people) }
+            let names = savedViewNames
+            if !names.isEmpty {
+                Divider()
+                ForEach(names, id: \.self) { name in
+                    Button(name) { switchView(to: .saved(name)) }
+                }
+            }
+            Divider()
+            Button("Save Current View…") {
+                saveName = viewChoice.title == "Default" ? "" : viewChoice.title
+                showsSavePrompt = true
+            }
+            if !savedLocalNames.isEmpty {
+                Menu("Share View") {
+                    ForEach(savedLocalNames, id: \.self) { name in
+                        Button(name) { shareView(name) }
+                    }
+                }
+            }
+        } label: {
+            Label(viewChoice.title, systemImage: "square.grid.3x3.topleft.filled")
+                .font(.callout)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("The Map's views: layouts over the same cards — the selection travels with you")
+    }
+
+    /// Local and shared saved views, locals first, shared ones that
+    /// aren't also local after.
+    private var savedViewNames: [String] {
+        savedLocalNames + savedSharedNames.filter { !savedLocalNames.contains($0) }
+    }
+
+    /// One string that changes when any card's AI labels do — the
+    /// recompute trigger for a standing computed view.
+    private var tagsFingerprint: String {
+        items.map { "\($0.id):\($0.topics.count).\($0.people.count).\($0.entities.count)" }
+            .joined(separator: "|")
     }
 
     /// Find on the plane: a card whose title or author carries the words
@@ -601,10 +790,18 @@ struct ProceedingsMapView: View {
     @State private var seedCache: [String: CGPoint] = [:]
 
     private func binding(for item: Item) -> Binding<CGPoint> {
-        Binding(
-            get: { positions[item.id] ?? seedCache[item.id]
-                ?? Self.canvasCenter },
-            set: { positions[item.id] = $0 })
+        if viewChoice == .standard {
+            return Binding(
+                get: { positions[item.id] ?? seedCache[item.id]
+                    ?? Self.canvasCenter },
+                set: { positions[item.id] = $0 })
+        }
+        // A computed or saved view: same cards, another arrangement —
+        // dragged cards move in this view alone.
+        return Binding(
+            get: { overlayPositions[item.id] ?? positions[item.id]
+                ?? seedCache[item.id] ?? Self.canvasCenter },
+            set: { overlayPositions[item.id] = $0 })
     }
 
     private static var canvasCenter: CGPoint {
@@ -654,6 +851,161 @@ struct ProceedingsMapView: View {
 
     private func reload() {
         apply(EPUBMapSharedLayout.load(community: folder))
+        refreshSavedNames()
+    }
+
+    // MARK: Views — layouts over the same cards
+
+    private func switchView(to choice: MapViewChoice) {
+        viewChoice = choice
+        clusterCaptions = []
+        switch choice {
+        case .standard:
+            overlayPositions = [:]
+        case .topics:
+            applyComputed { $0.topics }
+        case .authors:
+            applyComputed {
+                $0.author.components(separatedBy: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+            }
+        case .people:
+            applyComputed { $0.people + $0.entities }
+        case .saved(let name):
+            applySaved(name)
+        }
+    }
+
+    /// The magnetic arrangement: every label two or more papers share
+    /// becomes a magnet on a ring; a paper with one magnet gathers
+    /// around it on a small spiral, one with several stands at their
+    /// centre of pull. Papers the facet says nothing about wait in a
+    /// row at the foot; Set Aside cards keep their quiet row.
+    private func applyComputed(_ facet: (Item) -> [String]) {
+        let standing = items.filter { !$0.isSetAside }
+        var members: [String: Int] = [:]
+        var display: [String: String] = [:]
+        func labels(_ item: Item) -> [String] {
+            var seen = Set<String>()
+            return facet(item).compactMap { raw in
+                let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard label.count > 1 else { return nil }
+                let key = label.lowercased()
+                guard seen.insert(key).inserted else { return nil }
+                if display[key] == nil { display[key] = label }
+                return key
+            }
+        }
+        let byItem = Dictionary(uniqueKeysWithValues: standing.map { ($0.id, labels($0)) })
+        for keys in byItem.values {
+            for key in keys { members[key, default: 0] += 1 }
+        }
+        let magnets = members.filter { $0.value >= 2 }
+            .sorted {
+                $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key
+            }
+            .prefix(14)
+
+        let center = Self.canvasCenter
+        var magnetAt: [String: CGPoint] = [:]
+        for (index, magnet) in magnets.enumerated() {
+            let angle = Double(index) / Double(max(magnets.count, 1)) * 2 * .pi - .pi / 2
+            let radius: Double = magnets.count <= 8 ? 430 : 580
+            magnetAt[magnet.key] = CGPoint(
+                x: center.x + CGFloat(cos(angle) * radius),
+                y: center.y + CGFloat(sin(angle) * radius * 0.62))
+        }
+
+        var next: [String: CGPoint] = [:]
+        var clusterCount: [String: Int] = [:]
+        var unsorted: [Item] = []
+        for item in standing {
+            let mine = (byItem[item.id] ?? []).filter { magnetAt[$0] != nil }
+            if mine.isEmpty {
+                unsorted.append(item)
+            } else if mine.count == 1, let key = mine.first, let anchor = magnetAt[key] {
+                let position = clusterCount[key, default: 0]
+                clusterCount[key] = position + 1
+                // The golden-angle spiral: each next member a step
+                // further out, never two on the same spot.
+                let angle = Double(position) * 2.399963
+                let radius = 62.0 + Double(position) * 30.0
+                next[item.id] = CGPoint(
+                    x: anchor.x + CGFloat(cos(angle) * radius),
+                    y: anchor.y + CGFloat(sin(angle) * radius * 0.8) + 34)
+            } else {
+                let anchors = mine.compactMap { magnetAt[$0] }
+                let jitter = Self.stableJitter(item.id)
+                next[item.id] = CGPoint(
+                    x: anchors.map(\.x).reduce(0, +) / CGFloat(anchors.count) + jitter.x,
+                    y: anchors.map(\.y).reduce(0, +) / CGFloat(anchors.count) + jitter.y + 34)
+            }
+        }
+        let columns = max(1, min(unsorted.count, 8))
+        for (index, item) in unsorted.enumerated() {
+            next[item.id] = CGPoint(
+                x: center.x + CGFloat(index % columns) * 190
+                    - CGFloat(columns - 1) * 95,
+                y: Self.canvasSize.height - 240 + CGFloat(index / columns) * 92)
+        }
+        let seeds = Self.seeds(for: items)
+        for item in items where item.isSetAside {
+            next[item.id] = seeds[item.id] ?? center
+        }
+        overlayPositions = next
+        clusterCaptions = magnets.compactMap { magnet in
+            magnetAt[magnet.key].map { (display[magnet.key] ?? magnet.key, $0) }
+        }
+    }
+
+    /// A small deterministic offset from the id alone — the same on
+    /// every device, every run.
+    private static func stableJitter(_ id: String) -> CGPoint {
+        var hash: UInt64 = 5381
+        for byte in id.utf8 { hash = hash &* 33 &+ UInt64(byte) }
+        let x = Double(hash % 97) - 48
+        let y = Double((hash / 97) % 61) - 30
+        return CGPoint(x: x, y: y)
+    }
+
+    // MARK: Saved views — kept on this Mac, shareable to the folder
+
+    private func refreshSavedNames() {
+        savedLocalNames = EPUBMapViews.local().names(venue: venue)
+        savedSharedNames = EPUBMapViews.shared(community: folder).names(venue: venue)
+    }
+
+    private func saveCurrentView() {
+        let name = saveName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        var meters: [String: EPUBMapSharedLayout.Point] = [:]
+        for item in items {
+            let point = binding(for: item).wrappedValue
+            meters[item.key] = Self.sharedPoint(point)
+        }
+        EPUBMapViews.saveLocal(venue: venue, name: name, positions: meters)
+        refreshSavedNames()
+        viewChoice = .saved(name)
+    }
+
+    private func shareView(_ name: String) {
+        guard let positions = EPUBMapViews.local().venues[venue]?[name] else { return }
+        EPUBMapViews.share(venue: venue, name: name, positions: positions,
+                           community: folder)
+        refreshSavedNames()
+    }
+
+    private func applySaved(_ name: String) {
+        let stored = EPUBMapViews.local().venues[venue]?[name]
+            ?? EPUBMapViews.shared(community: folder).venues[venue]?[name]
+        guard let stored else { return }
+        var next: [String: CGPoint] = [:]
+        let seeds = Self.seeds(for: items)
+        for item in items {
+            next[item.id] = stored[item.key].map { Self.canvasPoint($0) }
+                ?? seeds[item.id] ?? Self.canvasCenter
+        }
+        overlayPositions = next
     }
 
     /// The moved card's place, written on drag end — that one entry

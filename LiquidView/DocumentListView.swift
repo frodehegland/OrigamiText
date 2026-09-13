@@ -457,6 +457,17 @@ struct JournalsListView: View {
                 .buttonStyle(.plain)
                 .listRowBackground(Color.clear)
                 .contextMenu {
+                    // The AI reads every paper afresh — topics, people,
+                    // technologies, places — overwriting what the corpus
+                    // record holds. The Map's computed views draw on it.
+                    Button("Re-Generate AI Analysis") {
+                        Task {
+                            await model.extractEntities(inPublication: venue,
+                                                        force: true)
+                            await model.analysePublication(venue)
+                        }
+                    }
+                    Divider()
                     #if DEBUG || EDITOR
                     // The publisher's handoff: the venue's whole set,
                     // clean, to the Desktop — DOI-named files and a
@@ -547,15 +558,28 @@ struct JournalBooksListView: View {
     private var venueMap: some View {
         let shown = model.pinnedFirst(model.epubRecords(inPublication: name))
         let aside = model.epubSetAsideRecords(inPublication: name)
+        // The AI's short labels ride each card in — the computed views'
+        // magnets: extracted concepts and keywords plus the title
+        // topics, the people the text names, the technologies and
+        // places it stands on.
+        let titleTopics = model.publicationAnalyses[name]?.paperTopics ?? [:]
+        func mapItem(_ record: EPUBRecord, isSetAside: Bool) -> ProceedingsMapView.Item {
+            let extraction = model.documentExtractions[record.id]
+            return .init(
+                id: record.id, key: record.folder, title: record.title,
+                author: record.author,
+                isPinned: !isSetAside && model.isTopOfPile(record),
+                isSetAside: isSetAside,
+                topics: (extraction?.concepts ?? []) + (extraction?.keywords ?? [])
+                    + (titleTopics[record.id] ?? []),
+                people: extraction?.people ?? [],
+                entities: (extraction?.technologies ?? []) + (extraction?.places ?? []))
+        }
         return ProceedingsMapView(
-            items: shown.map {
-                .init(id: $0.id, key: $0.folder, title: $0.title,
-                      author: $0.author, isPinned: model.isTopOfPile($0))
-            } + aside.map {
-                .init(id: $0.id, key: $0.folder, title: $0.title,
-                      author: $0.author, isSetAside: true)
-            },
+            items: shown.map { mapItem($0, isSetAside: false) }
+                + aside.map { mapItem($0, isSetAside: true) },
             folder: model.index.folderURL,
+            venue: name,
             open: { id in
                 // The Map holds the whole window; opening returns to the
                 // Articles face so the reading pane is there to show it.
@@ -581,6 +605,15 @@ struct JournalBooksListView: View {
                 if model.current != nil, model.venueViewMode == .map {
                     model.venueViewMode = .documents
                 }
+            }
+            // The Map's computed views live on the AI's labels: papers
+            // the corpus record has not read yet get read now, quietly —
+            // already-extracted ones are left in peace.
+            .task(id: name) {
+                let missing = shown.contains {
+                    model.documentExtractions[$0.id]?.isEmpty != false
+                }
+                if missing { await model.extractEntities(inPublication: name) }
             }
     }
 
