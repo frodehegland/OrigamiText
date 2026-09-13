@@ -44,7 +44,14 @@ public extension NodeImmersiveView {
     
     typealias ShouldCheckMoveAnotherNodesBlock = (_ movingItem: Items.Element) -> Bool
     
-    typealias ShouldMoveAnotherNodeBlock = (_ anotherItem: Items.Element) -> Bool
+    // Origami addition (carry back to Author): the mover rides along so
+    // a caller can keep travel companies apart — selected concepts move
+    // with a dragged concept, selected citations with a dragged
+    // citation, never across the families.
+    typealias ShouldMoveAnotherNodeBlock = (
+        _ movingItem: Items.Element,
+        _ anotherItem: Items.Element
+    ) -> Bool
     
     typealias ShouldDrawConnectionForNodeBlock = (_ item: Items.Element) -> Bool
     

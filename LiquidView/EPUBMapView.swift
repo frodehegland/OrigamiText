@@ -1212,14 +1212,23 @@ struct EPUBMapView: View {
             selectedCitationLines.rebuild(items: Array(allItems))
             citedToDeepLines.rebuild(items: Array(allItems))
         }
-        // Selected concepts travel as one: dragging any selected
-        // concept carries every other selected concept by the same
-        // delta. An unselected concept still moves alone.
+        // Selected concepts travel as one, and selected citations too:
+        // dragging any selected card carries the rest of its selected
+        // FAMILY by the same delta — Select ▸ Citations then a drag
+        // moves the whole wall in X and Y while every card keeps its
+        // year's Z, the documents standing still. An unselected card
+        // still moves alone, and the families never cross.
         view = view.shouldCheckMoveAnotherNodes { item in
-            item.kind == .concept && item.isSelected
+            item.isSelected && (item.kind == .concept
+                || item.kind == .cited || item.kind == .citedDeep)
         }
-        view = view.shouldMoveAnotherNode { item in
-            item.kind == .concept && item.isSelected
+        view = view.shouldMoveAnotherNode { moving, item in
+            guard item.isSelected else { return false }
+            let citations: Set<EPUBMapItem.Kind> = [.cited, .citedDeep]
+            if citations.contains(moving.kind) {
+                return citations.contains(item.kind)
+            }
+            return moving.kind == .concept && item.kind == .concept
         }
         view = view.constrainMovedNode { item, proposed, startPosition in
             // EXPERIMENT — a journal card stays on its publication

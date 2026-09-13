@@ -120,15 +120,22 @@ extension NodeImmersiveView {
                 
                 if shouldCheckMoveAnotherNodesBlock?(movingItem) ?? false {
                     for anotherItem in items {
-                        if shouldMoveAnotherNodeBlock?(anotherItem) ?? false {
+                        if shouldMoveAnotherNodeBlock?(movingItem, anotherItem) ?? false {
                             guard let startPosition = storeNodes[anotherItem]?.components[StartPositionComponent.self]?.position else {
                                 continue
                             }
-                            
-                            let position = startPosition + getDelta()
-                            
+
+                            var position = startPosition + getDelta()
+                            // Origami addition (carry back to Author):
+                            // the riders obey the same constraint as
+                            // the dragged node — a citation carried
+                            // with its family keeps its year's Z.
+                            if let constrain = constrainMovedNodeBlock {
+                                position = constrain(anotherItem, position, startPosition)
+                            }
+
                             storeNodes[anotherItem]?.position = position
-                            
+
                             movingItems.append(anotherItem)
                         }
                     }
