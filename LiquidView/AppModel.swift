@@ -2234,8 +2234,18 @@ final class AppModel {
         }
     }
 
-    /// MainNSWindowCapture found the window — mid-watch it starts unseen.
-    func mainWindowCaptured() {
+    /// MainNSWindowCapture found a library window. One library is the
+    /// rule: a second one — a restored duplicate from an old session,
+    /// or a window the system spawned just to deliver a file open —
+    /// closes for good. Hidden-but-alive duplicates were the deep cost
+    /// of every open: each carried a full reader that reloaded the
+    /// whole book on every navigation.
+    func captureMainWindow(_ window: NSWindow) {
+        if let main = mainNSWindow, main !== window {
+            window.close()
+            return
+        }
+        mainNSWindow = window
         if launchFoldObserver != nil { mainNSWindow?.alphaValue = 0 }
     }
 
@@ -2244,10 +2254,13 @@ final class AppModel {
               !quickViewWindows.contains(where: { $0.window === window })
         else { return }
         // The library (or, before its capture lands, whatever non-book
-        // window the launch raised) folds; the book takes the key back.
+        // window the launch raised) CLOSES; the book takes the key back.
+        // Closing, not hiding: a hidden window lives on with a full
+        // reader inside — they accumulated across sessions, and every
+        // open reloaded a book into each of them. ⌘L still works: the
+        // weak reference nils on close and a fresh library opens.
         guard window === mainNSWindow || mainNSWindow == nil else { return }
-        window.orderOut(nil)
-        window.alphaValue = 1
+        window.close()
         quickViewWindows.last?.window.makeKeyAndOrderFront(nil)
         endLaunchFoldWatch()
     }
@@ -2257,11 +2270,15 @@ final class AppModel {
             NotificationCenter.default.removeObserver(launchFoldObserver)
         }
         launchFoldObserver = nil
-        // Opacity always comes back — a window this watch left unseen
-        // folds away first, so nothing ever stands invisible.
+        // A window the watch left unseen was spawned only to deliver
+        // the open event — it closes rather than linger hidden with a
+        // live reader inside.
         if let main = mainNSWindow, main.alphaValue == 0 {
-            if main.isVisible { main.orderOut(nil) }
-            main.alphaValue = 1
+            if main.isVisible {
+                main.close()
+            } else {
+                main.alphaValue = 1
+            }
         }
     }
 

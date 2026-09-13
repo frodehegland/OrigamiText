@@ -12,6 +12,13 @@ struct LiquidViewApp: App {
                 ContentView()
                 MainWindowConnector()
             }
+            .background(MainNSWindowCapture())
+            // A file open (or any external event) lands in THIS window —
+            // without the preference, SwiftUI opened a fresh library
+            // window per double-clicked EPUB; hidden or stacked, they
+            // accumulated across sessions, each holding a live reader
+            // that reloaded the book on every navigation.
+            .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
             .environment(model)
             .onOpenURL { model.handleURL($0) }
             .task {
@@ -237,19 +244,28 @@ private struct MainWindowConnector: View {
 private struct MainNSWindowCapture: NSViewRepresentable {
     @Environment(AppModel.self) private var model
 
+    /// Reports the hosting window the moment the view actually joins
+    /// it — a dispatch-async peek can run before attachment and miss,
+    /// which is how restored duplicate windows dodged the dedupe.
+    final class CaptureView: NSView {
+        var onWindow: ((NSWindow) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { onWindow?(window) }
+        }
+    }
+
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            model.mainNSWindow = view.window
-            model.mainWindowCaptured()
+        let view = CaptureView()
+        view.onWindow = { [weak model] window in
+            Task { @MainActor in model?.captureMainWindow(window) }
         }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         if model.mainNSWindow == nil, let w = nsView.window {
-            model.mainNSWindow = w
-            model.mainWindowCaptured()
+            model.captureMainWindow(w)
         }
     }
 }
