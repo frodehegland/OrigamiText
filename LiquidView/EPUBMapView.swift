@@ -1418,26 +1418,11 @@ struct EPUBMapView: View {
 
     private func cardEntity(for item: EPUBMapItem, texturedPlane: ModelEntity)
         -> (modelEntity: ModelEntity?, collisionShape: ShapeResource) {
-        // Document cards stand semi-transparent until chosen: the room
-        // reads through the unread wall, and a SELECTED card turns
-        // opaque — presence follows attention. Each rank behind the
-        // articles still reads a step quieter; Set Aside slips fade
-        // further. Concepts handle their own background transparency
-        // via the material rather than OpacityComponent, so text stays
-        // crisp.
-        let opacity: Float
-        if item.isAside {
-            opacity = 0.4
-        } else if item.isSelected {
-            opacity = 1.0
-        } else {
-            opacity = switch item.kind {
-            case .article: 0.7
-            case .cited: 0.62
-            case .citedDeep: 0.55
-            case .concept: 1.0
-            }
-        }
+        // Set Aside slips fade whole — paper and words. Everything else
+        // stands at full entity presence: an unselected document's
+        // lightness lives in its PAPER alone (half-transparent, below),
+        // so the words stay solid ink over a sheer card.
+        let opacity: Float = item.isAside ? 0.4 : 1.0
         let dark = visionThemeRaw == VisionTheme.dark.rawValue
         let paper: UIColor
         if dark {
@@ -1483,6 +1468,18 @@ struct EPUBMapView: View {
             borderColor: item.isSelected && !conceptBorder ? .black : .clear,
             materialMode: .none
         )
+        // An unselected document's paper stands at half presence while
+        // its words stay solid: the box body alone turns translucent
+        // (the text planes are children with their own material).
+        // Selection returns the full opaque paper.
+        if !item.isSelected, !conceptBorder, !item.isAside,
+           var model = box.modelEntity.model {
+            var mat = UnlitMaterial()
+            mat.color = .init(tint: paper)
+            mat.blending = .transparent(opacity: 0.5)
+            model.materials = [mat]
+            box.modelEntity.model = model
+        }
         // Concept cards: the glass background lives in the SwiftUI cardFace.
         // Strip the box body to fully transparent so it doesn't double up.
         if conceptBorder, var model = box.modelEntity.model {
