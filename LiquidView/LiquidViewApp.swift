@@ -6,6 +6,20 @@ struct LiquidViewApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 
+    init() {
+        // macOS 27 escalates a display-cycle layout exception to abort()
+        // via +[NSApplication _crashOnException:] — and its own
+        // NavigationSplitView throws one on the first constraints pass
+        // after a remount (SizeConstraints.update → invalidateLayout →
+        // setNeedsUpdate, mid-flush), which the full-screen exit cannot
+        // avoid. Opting out restores AppKit's log-and-continue: the
+        // exception is a redundant needs-layout request, recoverable.
+        // Every structural cause we control (move transitions over
+        // platform views, dynamic column widths, animated swaps) is
+        // already removed; this is the net under the OS regression.
+        UserDefaults.standard.set(false, forKey: "NSApplicationCrashOnExceptions")
+    }
+
     var body: some Scene {
         WindowGroup("Origami Text", id: "main") {
             ZStack {
