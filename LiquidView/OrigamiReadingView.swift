@@ -3450,30 +3450,22 @@ struct ReadingFootBar: View {
         EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
     }
 
-    /// The bar's width and the centered mode words' own, measured —
-    /// the Horizontal title may take only the space genuinely free to
-    /// the words' left, or a long title runs beneath Default…Focus.
-    @State private var barWidth: CGFloat = 0
-    @State private var modeWordsWidth: CGFloat = 0
-
-    private var titleMaxWidth: CGFloat {
-        min(420, max(0, (barWidth - modeWordsWidth) / 2 - 24))
-    }
-
     var body: some View {
-        ZStack {
-            // The trailing edge lies beneath the mode words: nothing —
-            // the folded-state caption least of all — may shadow a tap
-            // on the words or the Outline group.
+        // Three regions, the flexible sides equal, so the mode words
+        // stand centered and NOTHING may overlap them — by layout, not
+        // by measurement. (The earlier onGeometryChange measuring wrote
+        // state on every frame of the full-screen resize, forcing
+        // re-renders inside AppKit's animated flush — the macOS 27
+        // layout crash, Horizontal-only because the title is.)
+        HStack(spacing: 14) {
             HStack(spacing: 14) {
-                if readerMode == .horizontal, let title, !title.isEmpty,
-                   titleMaxWidth > 50 {
+                if readerMode == .horizontal, let title, !title.isEmpty {
                     Text(title)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .frame(maxWidth: titleMaxWidth, alignment: .leading)
+                        .frame(maxWidth: 420, alignment: .leading)
                         .allowsHitTesting(false)
                 }
                 if let foldLevelLabel {
@@ -3482,42 +3474,11 @@ struct ReadingFootBar: View {
                         .foregroundStyle(.secondary)
                         .allowsHitTesting(false)
                 }
-                Spacer()
-                if let contents, let showContents {
-                    Button {
-                        showContents.wrappedValue = true
-                    } label: {
-                        Image(systemName: "list.bullet")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(contentsDisabled)
-                    .help("Contents — every section, one click away")
-                    .popover(isPresented: showContents) { contents() }
-                }
-                if let typeMenu {
-                    Menu {
-                        typeMenu()
-                    } label: {
-                        Text("Aa")
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .menuIndicator(.hidden)
-                    .buttonStyle(.plain)
-                    .fixedSize()
-                    .help("The reading's type: size, spacing, measure, marks, glossary, colour")
-                }
-                if let accessoryContent {
-                    Rectangle()
-                        .fill(.quaternary)
-                        .frame(width: 1, height: 14)
-                    accessoryContent()
-                }
+                Spacer(minLength: 0)
             }
-            // The mode words render last — topmost — so every tap on
-            // Default, its Full Width group, the Outline group's shapes,
-            // Horizontal, or Focus lands on its word, never on the layer beneath.
+            .frame(maxWidth: .infinity)
+            // The mode words, at their natural width in the true
+            // centre — the equal flexible sides either side see to it.
             HStack(spacing: 14) {
                 // The AI group stands left of Default: the on-device
                 // model's readings of the open book, unfolding in place
@@ -3567,12 +3528,42 @@ struct ReadingFootBar: View {
                     }
                 }
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-                modeWordsWidth = $0
+            .fixedSize()
+            HStack(spacing: 14) {
+                Spacer(minLength: 0)
+                if let contents, let showContents {
+                    Button {
+                        showContents.wrappedValue = true
+                    } label: {
+                        Image(systemName: "list.bullet")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(contentsDisabled)
+                    .help("Contents — every section, one click away")
+                    .popover(isPresented: showContents) { contents() }
+                }
+                if let typeMenu {
+                    Menu {
+                        typeMenu()
+                    } label: {
+                        Text("Aa")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .menuIndicator(.hidden)
+                    .buttonStyle(.plain)
+                    .fixedSize()
+                    .help("The reading's type: size, spacing, measure, marks, glossary, colour")
+                }
+                if let accessoryContent {
+                    Rectangle()
+                        .fill(.quaternary)
+                        .frame(width: 1, height: 14)
+                    accessoryContent()
+                }
             }
-        }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-            barWidth = $0
+            .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
