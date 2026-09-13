@@ -638,7 +638,10 @@ struct JournalBooksListView: View {
                     .onHover { inside in
                         inside ? cancelMapListHide() : scheduleMapListHide()
                     }
-                    .transition(.move(edge: .leading).combined(with: .opacity))
+                    // A fade, not a slide: the list and its material are
+                    // platform-hosted, and a move transition sizing one
+                    // mid-flush is the macOS 27 layout crash.
+                    .transition(.opacity)
             }
             Color.clear
                 .frame(width: 16)

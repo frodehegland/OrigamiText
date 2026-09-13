@@ -293,7 +293,11 @@ struct ContentView: View {
                 .background(HoverSensor { inside in
                     inside ? cancelPeekHide() : schedulePeekHide()
                 })
-                .transition(.move(edge: .leading).combined(with: .opacity))
+                // A fade, not a slide: the peek holds Lists and material —
+                // platform-hosted views — and a move transition sizing one
+                // mid-flush is the macOS 27 layout crash (seen 13 Sep in
+                // full screen, the peek's own home).
+                .transition(.opacity)
             }
             HoverSensor { inside in
                 if inside {
