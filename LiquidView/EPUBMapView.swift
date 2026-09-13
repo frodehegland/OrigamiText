@@ -916,10 +916,18 @@ struct EPUBMapView: View {
         // Standing only while common ground does: the wall reduced to
         // the works every raised article cites — the green alone.
         ArmMenu.Chip(id: EPUBMapView.onlyOverlapChipID, title: "Only Overlap", side: .right),
-        // The left arm's working row: Focus then Concepts. Reveal All
-        // Concepts unfolds ABOVE Concepts (away from the arm), hidden
-        // until a long-pinch asks for it.
+        // The left arm's working row: Focus, Select, then Concepts.
+        // Select unfolds its three kinds in a column away from the arm;
+        // Reveal All Concepts unfolds ABOVE Concepts the same way,
+        // hidden until a long-pinch asks for it.
         ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.selectChipID, title: "Select", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.selectCitationsChipID, title: "Citations",
+                     side: .left, group: EPUBMapView.selectChipID),
+        ArmMenu.Chip(id: EPUBMapView.selectDocumentsChipID, title: "Documents",
+                     side: .left, group: EPUBMapView.selectChipID),
+        ArmMenu.Chip(id: EPUBMapView.selectConceptsChipID, title: "Concepts",
+                     side: .left, group: EPUBMapView.selectChipID),
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
         ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
                      side: .left, group: EPUBMapView.conceptsChipID),
@@ -943,6 +951,8 @@ struct EPUBMapView: View {
     /// would stand shoulder to shoulder.
     @State private var graphsOpen = false
     @State private var timelinesOpen = false
+    /// The Select chip's kinds, unfolded above it.
+    @State private var selectOpen = false
     /// Concepts put away with their card's Hide button — back via the
     /// Concepts chip's long-pinch and Reveal All Concepts.
     @State private var hiddenConceptIDs: Set<String> = []
@@ -968,6 +978,10 @@ struct EPUBMapView: View {
     private static let floorRightChipID = "map.arm.floor.right"
     private static let onlyOverlapChipID = "map.arm.onlyoverlap"
     private static let focusChipID = "map.arm.focus"
+    private static let selectChipID = "map.arm.select"
+    private static let selectCitationsChipID = "map.arm.select.citations"
+    private static let selectDocumentsChipID = "map.arm.select.documents"
+    private static let selectConceptsChipID = "map.arm.select.concepts"
 
     var body: some View {
         engine
@@ -1327,6 +1341,10 @@ struct EPUBMapView: View {
             // Only Overlap steps in only when common ground stands.
             armMenu.setChipVisible(Self.onlyOverlapChipID, false)
             armMenu.setChipVisible(Self.revealConceptsChipID, false)
+            // Select's three kinds wait folded until the parent pinch.
+            armMenu.setChipVisible(Self.selectCitationsChipID, false)
+            armMenu.setChipVisible(Self.selectDocumentsChipID, false)
+            armMenu.setChipVisible(Self.selectConceptsChipID, false)
             // The Graphs and Timelines groups wake folded; the sides
             // appear when their parent is pinched. The chips wear their
             // standing state — a floor lane or graph left on last
@@ -1436,13 +1454,11 @@ struct EPUBMapView: View {
                     .font(.system(size: 12 * s, weight: .semibold, design: .serif))
                     .foregroundStyle(Color.white)
                     .multilineTextAlignment(.center)
-                    .lineLimit(3)
                 if !item.author.isEmpty {
                     Text(item.author)
                         .font(.system(size: 9 * s, design: .serif))
                         .foregroundStyle(Color.white.opacity(0.65))
                         .multilineTextAlignment(.center)
-                        .lineLimit(2)
                 }
             }
             .padding(.horizontal, 14 * s)
@@ -1482,15 +1498,15 @@ struct EPUBMapView: View {
                             .font(.system(size: 5 * s))
                             .foregroundStyle(Color(red: 0.95, green: 0.68, blue: 0.25))
                     }
+                    // Unclamped: the whole title and every author name
+                    // stand on the card — no mid-thought ellipsis.
                     Text(item.title)
                         .font(AppFonts.body(titleSize * s, weight: .semibold))
                         .foregroundStyle(Color.white)
-                        .lineLimit(item.kind == .citedDeep ? 2 : 3)
                 }
                 Text(item.author)
                     .font(.system(size: 5.5 * s))
                     .foregroundStyle(Color.white.opacity(0.65))
-                    .lineLimit(item.kind == .citedDeep ? 1 : 2)
                 if withAbstract && !item.abstract.isEmpty {
                     // The full abstract in fine print — sized to be
                     // read by walking up to the card, not from afar.
@@ -1528,8 +1544,13 @@ struct EPUBMapView: View {
         // plane the engine hands us serves only as the tape measure —
         // it measured the supersampled face, so divide the crisp factor
         // back out for the card's true size.
-        let extents = texturedPlane.visualBounds(relativeTo: nil).extents
-            / Float(Self.crisp)
+        let rawExtents = texturedPlane.visualBounds(relativeTo: nil).extents
+        let extents = rawExtents / Float(Self.crisp)
+        // The measured face in points (the raster's 1000 to the metre)
+        // — the attachment surface is pinned to exactly this, so the
+        // live layout can never outgrow it and clip the words.
+        let facePoints = CGSize(width: CGFloat(rawExtents.x) * 1000,
+                                height: CGFloat(rawExtents.y) * 1000)
 
         // An invisible body keeps visualBounds honest for the engine's
         // attachment anchoring — a live face can report zero until the
@@ -1555,10 +1576,12 @@ struct EPUBMapView: View {
             entity.name = back ? CardFaceTurner.backName : CardFaceTurner.frontName
             entity.components.set(ViewAttachmentComponent(
                 // The fine-print abstract stands on the front alone;
-                // the back carries just the title and byline.
+                // the back carries just the title and byline (shorter,
+                // so it floats centred in the same pinned frame).
                 rootView: cardFace(for: item, withAbstract: !back)
                     .frame(maxWidth: nodeMaxWidth(for: item))
-                    .fixedSize(horizontal: false, vertical: true)))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: facePoints.width, height: facePoints.height)))
             entity.scale = SIMD3<Float>(repeating: scale)
             entity.position = SIMD3<Float>(0, 0, back ? -0.003 : 0.003)
             if back {
@@ -1597,6 +1620,39 @@ struct EPUBMapView: View {
             items[index].isSelected = true
             raisedArticleIDs.insert(items[index].id)
         }
+        reload()
+    }
+
+    /// The Select chip's kinds — one family selected whole, everything
+    /// else deselected.
+    private enum SelectKind { case citations, documents, concepts }
+
+    /// The arm's Select pick: selection reduced to one kind alone.
+    /// Documents raise every wall; Citations keep the standing walls
+    /// (their cards only exist while raised) and select what stands;
+    /// Concepts wake the concept row first if it was away.
+    private func selectOnly(_ kind: SelectKind) {
+        if kind == .concepts && !conceptSpaceMode {
+            conceptSpaceMode = true
+            armMenu.setChipActive(Self.conceptsChipID, true)
+            updateSankey()
+            reload()
+        }
+        if kind == .documents {
+            raisedArticleIDs = Set(items.filter {
+                $0.kind == .article && !$0.isAside
+            }.map(\.id))
+        }
+        for index in items.indices {
+            let item = items[index]
+            let match: Bool = switch kind {
+            case .documents: item.kind == .article && !item.isAside
+            case .citations: item.kind == .cited || item.kind == .citedDeep
+            case .concepts: item.kind == .concept
+            }
+            items[index].isSelected = match
+        }
+        updateStandingChips()
         reload()
     }
 
@@ -1969,6 +2025,24 @@ struct EPUBMapView: View {
             armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
             armMenu.setChipActive(Self.focusChipID, focusMode)
             reload()
+            return true
+        case Self.selectChipID:
+            // The three kinds unfold above the chip, and fold away.
+            selectOpen.toggle()
+            for id in [Self.selectCitationsChipID, Self.selectDocumentsChipID,
+                       Self.selectConceptsChipID] {
+                armMenu.setChipVisible(id, selectOpen)
+            }
+            armMenu.setChipActive(Self.selectChipID, selectOpen)
+            return true
+        case Self.selectCitationsChipID:
+            selectOnly(.citations)
+            return true
+        case Self.selectDocumentsChipID:
+            selectOnly(.documents)
+            return true
+        case Self.selectConceptsChipID:
+            selectOnly(.concepts)
             return true
         case Self.floorChipID:
             if floorShowRaw == FloorShow.nothing.rawValue {
@@ -3834,11 +3908,26 @@ struct FloorHistoryView: View {
                 // Only draw year numbers for the left and right bands.
                 // (The decade rule lines come from FloorDecadeLines, not here.)
                 if sideOffset != 0 {
-                    context.draw(
-                        Text(String(year)).font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.55)),
-                        at: CGPoint(x: yearX, y: rule - 14),
-                        anchor: yearAnchor)
+                    // A black bed under every year, so the number reads
+                    // on any carpet.
+                    let yearText = Text(String(year))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                    let resolvedYear = context.resolve(yearText)
+                    let yearSize = resolvedYear.measure(
+                        in: CGSize(width: 100, height: 30))
+                    let bedX = yearAnchor == .leading
+                        ? yearX - 6
+                        : yearX - yearSize.width - 6
+                    context.fill(
+                        Path(roundedRect: CGRect(
+                            x: bedX, y: rule - 14 - yearSize.height / 2 - 3,
+                            width: yearSize.width + 12,
+                            height: yearSize.height + 6), cornerRadius: 6),
+                        with: .color(.black))
+                    context.draw(resolvedYear,
+                                 at: CGPoint(x: yearX, y: rule - 14),
+                                 anchor: yearAnchor)
                 }
             }
 
@@ -3876,8 +3965,10 @@ struct FloorHistoryView: View {
                 let bed = CGRect(x: bedX, y: row - measured.height / 2 - 5,
                                  width: measured.width + 24,
                                  height: measured.height + 10)
+                // Solid black: the words must read on any floor — pale
+                // carpet, wood, the void of a dark rug alike.
                 context.fill(Path(roundedRect: bed, cornerRadius: 8),
-                             with: .color(.black.opacity(0.08)))
+                             with: .color(.black))
                 context.draw(resolved, at: CGPoint(x: textX, y: row), anchor: textAnchor)
             }
         }
