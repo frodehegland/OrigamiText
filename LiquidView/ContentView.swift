@@ -204,7 +204,12 @@ struct ContentView: View {
                     .background(.regularMaterial, in: Capsule())
                     .shadow(radius: 3)
                     .padding(.bottom, 24)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    // A fade, not a move: the material capsule is a
+                    // platform-hosted view, and a move transition sizing
+                    // one mid-flush is the macOS 27 layout crash (seen
+                    // 13 Sep: _postWindowNeedsUpdateConstraints threw
+                    // under MoveTransition + AppKitPlatformViewHost).
+                    .transition(.opacity)
             }
         }
         .animation(.default, value: model.transientNote)

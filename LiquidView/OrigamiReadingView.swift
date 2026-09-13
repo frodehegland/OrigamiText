@@ -645,7 +645,10 @@ struct OrigamiReadingView: View {
                     .padding(.vertical, 8)
                     .background(.regularMaterial, in: Capsule())
                     .padding(.bottom, 44)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    // A fade, not a move: the material capsule is a
+                    // platform-hosted view, and a move transition sizing
+                    // one mid-flush is the macOS 27 layout crash.
+                    .transition(.opacity)
             }
         }
         // Tab toggles the glossary overview — grey text, Marked terms,
@@ -3583,9 +3586,12 @@ struct ReadingFootBar: View {
             .frame(width: 1, height: 14)
     }
 
-    /// The mode words' switch animation: quick and flat — a reading
-    /// swap should feel like a cut, not a settle.
-    static let modeSwitch: Animation = .easeOut(duration: 0.1)
+    /// The mode words' switch: a true cut, no animation. Animating the
+    /// swap runs the departing WebView (and the material capsules)
+    /// through transitions, and macOS 27 escalates a platform view's
+    /// constraint change during that flush to a crash — the same class
+    /// as ContentView's full-screen notes.
+    static let modeSwitch: Animation? = nil
 
     /// One mode word at the foot, Author's way: the chosen one in the
     /// heading ink, the others resting quiet.
@@ -3647,7 +3653,7 @@ struct ReadingFootBar: View {
     @ViewBuilder private var aiGroup: some View {
         if !aiShowsExpanded {
             Button {
-                withAnimation(.snappy) {
+                withAnimation(Self.modeSwitch) {
                     aiExpanded = true
                     // AI opens onto the Summary; the other readings
                     // stand unfolded beside it.
@@ -3664,7 +3670,7 @@ struct ReadingFootBar: View {
         } else {
             HStack(spacing: 8) {
                 Button {
-                    withAnimation(.snappy) {
+                    withAnimation(Self.modeSwitch) {
                         aiExpanded = false
                         model.readingAnalysisKind = nil
                     }
@@ -3692,7 +3698,7 @@ struct ReadingFootBar: View {
     /// while standing, the page returns (the Outline group's toggles).
     private func aiWord(_ kind: ReadingAnalysisKind) -> some View {
         Button {
-            withAnimation(.snappy) {
+            withAnimation(Self.modeSwitch) {
                 model.readingAnalysisKind =
                     model.readingAnalysisKind == kind ? nil : kind
             }
@@ -3871,7 +3877,7 @@ struct ReadingFootBar: View {
     /// unfold (Author's toggles). The fold lives on the native flow, so
     /// choosing from the book's own pages moves the reading to Scroll.
     private func choose(_ shape: OutlineShape) {
-        withAnimation(.snappy) {
+        withAnimation(Self.modeSwitch) {
             // An Outline shape replaces any standing find-fold — and a
             // standing AI reading: the foot's words always answer with
             // their own view.
