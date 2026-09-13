@@ -599,10 +599,10 @@ struct ProceedingsMapView: View {
     @State private var savedSharedNames: [String] = []
     @State private var showsSavePrompt = false
     @State private var saveName = ""
-    /// The Magnets view's poles around the plane's edge — auto-named
-    /// from the papers' topics and titles, each editable in place;
-    /// papers gather by the magnets that speak for them.
-    @State private var magnetNames: [String] = Array(repeating: "", count: 8)
+    /// The Magnets view's poles in a row along the plane's top —
+    /// auto-named from the papers' topics and titles, each editable in
+    /// place; every paper stands in the column of its strongest magnet.
+    @State private var magnetNames: [String] = Array(repeating: "", count: 12)
 
     /// One hallway meter drawn at this many points; the canvas center
     /// is the hallway's (0, 1.2) — mid-height of its article grid.
@@ -996,29 +996,21 @@ struct ProceedingsMapView: View {
     private func magnetField(_ text: Binding<String>, at point: CGPoint) -> some View {
         TextField("Topic", text: text)
             .textFieldStyle(.plain)
-            .font(.system(size: 17, weight: .semibold))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
-            .frame(width: 260)
+            .frame(width: 200)
             .onSubmit { magnetsEdited() }
             .position(point)
             .help("A magnet's topic — edit and press Return to pull the papers anew")
     }
 
-    /// Where the eight magnets stand: the two sides, three across the
-    /// top, three along the foot.
+    /// Where the twelve magnets stand: one row across the top of the
+    /// plane, a column of papers hanging beneath each.
     private static var magnetSlots: [CGPoint] {
-        let width = canvasSize.width, height = canvasSize.height
-        return [
-            CGPoint(x: 260, y: height / 2),
-            CGPoint(x: width - 260, y: height / 2),
-            CGPoint(x: width * 0.22, y: 170),
-            CGPoint(x: width * 0.5, y: 170),
-            CGPoint(x: width * 0.78, y: 170),
-            CGPoint(x: width * 0.22, y: height - 170),
-            CGPoint(x: width * 0.5, y: height - 170),
-            CGPoint(x: width * 0.78, y: height - 170),
-        ]
+        (0..<12).map { slot in
+            CGPoint(x: canvasSize.width * (CGFloat(slot) + 0.5) / 12, y: 140)
+        }
     }
 
     /// Where an edited set of magnets is kept for this venue.
@@ -1057,72 +1049,45 @@ struct ProceedingsMapView: View {
         "ai", "xr", "vr", "ar", "llm", "llms", "web", "html",
     ]
 
-    /// The names that fill the magnet slots when the reader hasn't:
-    /// the most shared topic labels and title words together, ranked by
-    /// how many papers carry each — so the titles hold the board up
-    /// until the AI's topics arrive, then the topics outweigh them.
-    private func autoMagnetNames(_ standing: [Item]) -> [String] {
-        var members: [String: Int] = [:]
+    /// The candidate names for the magnet slots: every topic label and
+    /// title word, each with the papers it speaks for — so the titles
+    /// hold the board up until the AI's topics arrive.
+    private func autoMagnetCandidates(_ standing: [Item])
+        -> [(name: String, covers: Set<String>)] {
+        var covers: [String: Set<String>] = [:]
         var display: [String: String] = [:]
         for item in standing {
-            var seen = Set<String>()
             for raw in item.topics {
                 let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard label.count > 1 else { continue }
                 let key = label.lowercased()
-                guard seen.insert(key).inserted else { continue }
                 if display[key] == nil { display[key] = label }
-                members[key, default: 0] += 1
+                covers[key, default: []].insert(item.id)
             }
             for word in Self.poleWords(item.title)
             where (word.count > 3 || Self.poleShortWords.contains(word))
-                && !Self.poleStopWords.contains(word) && seen.insert(word).inserted {
+                && !Self.poleStopWords.contains(word) {
                 if display[word] == nil {
                     display[word] = Self.poleShortWords.contains(word) && word != "web"
                         ? word.uppercased() : word.capitalized
                 }
-                members[word, default: 0] += 1
+                covers[word, default: []].insert(item.id)
             }
         }
-        return members.sorted {
-            $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key
-        }.map { display[$0.key] ?? $0.key }
+        return covers.sorted {
+            $0.value.count != $1.value.count
+                ? $0.value.count > $1.value.count : $0.key < $1.key
+        }.map { (display[$0.key] ?? $0.key, $0.value) }
     }
 
-    /// The magnet board: eight topics around the plane's edge, each
-    /// paper gathered by the magnets that speak for it — through its
-    /// topic labels and its title — on a spiral by its one magnet, or
-    /// at the weighted centre of pull of several. Papers no magnet
-    /// speaks for wait in the middle; Set Aside cards keep their row.
+    /// The magnet board: twelve topics in a row along the top, each
+    /// paper in the column of the magnet that speaks for it most
+    /// strongly — through its topic labels and its title. Every paper
+    /// has a magnet: one no magnet fully claims goes to the one whose
+    /// words touch it, and the last stragglers join the emptiest
+    /// column. Set Aside cards keep their quiet row.
     private func applyPoles() {
         let standing = items.filter { !$0.isSetAside }
-        // Name the magnets: the reader's kept names first, the papers'
-        // own choices — no two mere longer or shorter forms of each
-        // other — for the slots left empty.
-        let kept = UserDefaults.standard.stringArray(forKey: magnetsKey) ?? []
-        for (slot, name) in kept.enumerated() where slot < magnetNames.count {
-            let trimmed = name.trimmingCharacters(in: .whitespaces)
-            if magnetNames[slot].trimmingCharacters(in: .whitespaces).isEmpty {
-                magnetNames[slot] = trimmed
-            }
-        }
-        var taken = Set(magnetNames
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            .filter { !$0.isEmpty })
-        var candidates = autoMagnetNames(standing)
-        for slot in magnetNames.indices
-        where magnetNames[slot].trimmingCharacters(in: .whitespaces).isEmpty {
-            while !candidates.isEmpty {
-                let name = candidates.removeFirst()
-                let key = name.lowercased()
-                guard !taken.contains(where: { $0.contains(key) || key.contains($0) })
-                else { continue }
-                magnetNames[slot] = name
-                taken.insert(key)
-                break
-            }
-        }
-        let poles = magnetNames.map { Self.poleWords($0) }
 
         // A magnet speaks for a text when each of its words stands in
         // it — whole, or as the stem of a longer word, so "hyper" pulls
@@ -1145,53 +1110,109 @@ struct ProceedingsMapView: View {
             if speaks(pole, for: Self.poleWords(item.title)) { count += 1 }
             return count
         }
-        func clamped(_ point: CGPoint) -> CGPoint {
-            CGPoint(x: min(max(point.x, 100), Self.canvasSize.width - 100),
-                    y: min(max(point.y, 60), Self.canvasSize.height - 60))
+        // The loose touch: how many of the magnet's words stand
+        // anywhere in the paper — the net under the full match.
+        func touch(_ item: Item, _ pole: Set<String>) -> Int {
+            guard !pole.isEmpty else { return 0 }
+            let text = item.topics.reduce(Self.poleWords(item.title)) {
+                $0.union(Self.poleWords($1))
+            }
+            return pole.reduce(0) { count, word in
+                text.contains { $0 == word || ($0.hasPrefix(word) && word.count >= 4) }
+                    ? count + 1 : count
+            }
+        }
+
+        // Name the magnets: the reader's kept names take their slots,
+        // then the empty slots fill greedily — each next name the one
+        // that speaks for the most papers still unspoken for, so the
+        // board covers the venue rather than repeating its loudest
+        // topic. No two names mere longer or shorter forms of each
+        // other; once nothing new is covered, the most shared names
+        // fill what remains.
+        let kept = UserDefaults.standard.stringArray(forKey: magnetsKey) ?? []
+        for (slot, name) in kept.enumerated() where slot < magnetNames.count {
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            if magnetNames[slot].trimmingCharacters(in: .whitespaces).isEmpty {
+                magnetNames[slot] = trimmed
+            }
+        }
+        var taken = Set(magnetNames
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty })
+        var covered = Set<String>()
+        for name in taken {
+            let pole = Self.poleWords(name)
+            for item in standing where pull(item, pole) > 0 {
+                covered.insert(item.id)
+            }
+        }
+        var candidates = autoMagnetCandidates(standing).filter { candidate in
+            let key = candidate.name.lowercased()
+            return !taken.contains(where: { $0.contains(key) || key.contains($0) })
+        }
+        for slot in magnetNames.indices
+        where magnetNames[slot].trimmingCharacters(in: .whitespaces).isEmpty {
+            guard let best = candidates.indices.max(by: {
+                let a = candidates[$0], b = candidates[$1]
+                let newA = a.covers.subtracting(covered).count
+                let newB = b.covers.subtracting(covered).count
+                if newA != newB { return newA < newB }
+                if a.covers.count != b.covers.count { return a.covers.count < b.covers.count }
+                return a.name > b.name
+            }) else { break }
+            let chosen = candidates.remove(at: best)
+            let key = chosen.name.lowercased()
+            magnetNames[slot] = chosen.name
+            taken.insert(key)
+            covered.formUnion(chosen.covers)
+            candidates.removeAll {
+                let other = $0.name.lowercased()
+                return other.contains(key) || key.contains(other)
+            }
+        }
+        let poles = magnetNames.map { Self.poleWords($0) }
+
+        // Every paper to one column: the strongest full claim, else the
+        // strongest touch, else the emptiest column — none left out.
+        var columns: [[Item]] = Array(repeating: [], count: poles.count)
+        for item in standing {
+            var best: (slot: Int, strength: Int)?
+            for slot in poles.indices {
+                let strength = pull(item, poles[slot])
+                if strength > 0, strength > (best?.strength ?? 0) {
+                    best = (slot, strength)
+                }
+            }
+            if best == nil {
+                for slot in poles.indices {
+                    let strength = touch(item, poles[slot])
+                    if strength > 0, strength > (best?.strength ?? 0) {
+                        best = (slot, strength)
+                    }
+                }
+            }
+            let slot = best?.slot
+                ?? columns.indices.min { columns[$0].count < columns[$1].count }
+                ?? 0
+            columns[slot].append(item)
         }
 
         var next: [String: CGPoint] = [:]
-        var clusterCount: [Int: Int] = [:]
-        var unclaimed: [Item] = []
-        for item in standing {
-            let pulls = poles.indices
-                .map { (slot: $0, strength: pull(item, poles[$0])) }
-                .filter { $0.strength > 0 }
-            if pulls.isEmpty {
-                unclaimed.append(item)
-            } else if pulls.count == 1, let only = pulls.first {
-                // The golden-angle spiral: each next member a step
-                // further out, never two on the same spot.
-                let position = clusterCount[only.slot, default: 0]
-                clusterCount[only.slot] = position + 1
-                let angle = Double(position) * 2.399963
-                let radius = 62.0 + Double(position) * 26.0
-                let anchor = Self.magnetSlots[only.slot]
-                next[item.id] = clamped(CGPoint(
-                    x: anchor.x + CGFloat(cos(angle) * radius),
-                    y: anchor.y + CGFloat(sin(angle) * radius * 0.8) + 34))
-            } else {
-                let total = CGFloat(pulls.reduce(0) { $0 + $1.strength })
-                var centre = CGPoint.zero
-                for pullAt in pulls {
-                    let anchor = Self.magnetSlots[pullAt.slot]
-                    centre.x += anchor.x * CGFloat(pullAt.strength) / total
-                    centre.y += anchor.y * CGFloat(pullAt.strength) / total
-                }
-                let jitter = Self.stableJitter(item.id)
-                next[item.id] = clamped(CGPoint(
-                    x: centre.x + jitter.x, y: centre.y + jitter.y + 34))
+        for slot in columns.indices {
+            let x = Self.magnetSlots[slot].x
+            // A tall column folds: a second file of cards half a step
+            // to the right, carrying on downward.
+            let perFile = 15
+            for (index, item) in columns[slot]
+                .sorted(by: { $0.title < $1.title }).enumerated() {
+                let file = index / perFile
+                let row = index % perFile
+                next[item.id] = CGPoint(
+                    x: min(x + CGFloat(file) * 64,
+                           Self.canvasSize.width - 100),
+                    y: 240 + CGFloat(row) * 92 + CGFloat(file) * 30)
             }
-        }
-        // The unclaimed wait in the middle, out of every magnet's reach.
-        let columns = max(1, min(unclaimed.count, 6))
-        let rows = unclaimed.isEmpty ? 0 : (unclaimed.count - 1) / columns + 1
-        for (index, item) in unclaimed.enumerated() {
-            next[item.id] = CGPoint(
-                x: Self.canvasCenter.x + CGFloat(index % columns) * 190
-                    - CGFloat(columns - 1) * 95,
-                y: Self.canvasCenter.y
-                    + (CGFloat(index / columns) - CGFloat(rows - 1) / 2) * 92)
         }
         let seeds = Self.seeds(for: items)
         for item in items where item.isSetAside {
