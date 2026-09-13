@@ -114,14 +114,12 @@ struct ReadingCommands: Commands {
                 .keyboardShortcut("g", modifiers: [.command, .shift])
                 .disabled(model.openEPUB == nil)
             Divider()
-            // From a native mode the front reading folds itself; from
-            // the faithful pages the model moves the reading to Scroll
-            // folded — ⌘− means the outline wherever the book stands.
+            // ⌘− means the Overview wherever the book stands — the open
+            // book folds to it from any mode; only a reading with no
+            // book behind it (drafts) keeps the progressive fold.
             Button("Fold") {
-                if let outlineFold {
-                    outlineFold.fold()
-                } else {
-                    model.foldOpenReadingIntoOutline()
+                if !model.foldOpenReadingIntoOverview() {
+                    outlineFold?.fold()
                 }
             }
                 .keyboardShortcut("-", modifiers: .command)
@@ -714,10 +712,8 @@ struct OrigamiReadingView: View {
                 }
                 return nil
             }
-            // Pinch on the trackpad opens the table of contents, as it
-            // does over the faithful page (and as the phone's pinch
-            // folds into the outline); pinch out closes it again.
-            // Folding lives on ⌘−/⌘+ and the foot's own controls.
+            // Pinch in folds the reading into its Overview — never a
+            // popup — and pinch out opens the whole reading again.
             pinchMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { event in
                 guard event.window?.windowNumber == windowState.windowNumber else {
                     return event
@@ -725,10 +721,15 @@ struct OrigamiReadingView: View {
                 if event.phase == .began { pinchAccumulator = 0 }
                 pinchAccumulator += event.magnification
                 if pinchAccumulator <= -0.15 {
-                    showContents = true
+                    _ = withAnimation(ReadingFootBar.modeSwitch) {
+                        model.foldOpenReadingIntoOverview()
+                    }
                     pinchAccumulator = 0
                 } else if pinchAccumulator >= 0.15 {
-                    showContents = false
+                    withAnimation(ReadingFootBar.modeSwitch) {
+                        showContents = false
+                        model.readerFoldLevel = 0
+                    }
                     pinchAccumulator = 0
                 }
                 return nil

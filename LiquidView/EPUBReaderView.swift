@@ -408,12 +408,12 @@ struct EPUBReaderScreen: View {
             onAnnotate: { kind, selection in model.addTag(kind, on: selection) },
             onAddComment: { selection in commentSelection = selection },
             onRemoveAnnotation: { id in model.removeAnnotation(id: id) },
-            // A trackpad pinch folds the reading into its outline, as
-            // the phone's pinch does; only a book whose structure will
-            // not read answers with the contents popover instead.
+            // A trackpad pinch folds the reading into its Overview —
+            // never a popup; a book whose structure will not read
+            // simply stays on its pages.
             onPinchIn: {
-                withAnimation(.snappy) {
-                    if !model.foldOpenReadingIntoOutline() { showsContents = true }
+                withAnimation(ReadingFootBar.modeSwitch) {
+                    model.foldOpenReadingIntoOverview()
                 }
             },
             onPinchOut: { showsContents = false },

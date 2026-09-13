@@ -2905,20 +2905,21 @@ final class AppModel {
     }
 
     /// ⌘− and the reader's pinch-in: the open book folded into its
-    /// outline — the same move as the foot bar's Outline word, from any
-    /// mode. False when no book is open or its structure will not read
-    /// (the faithful pages cannot fold).
+    /// Overview — headings with each section's first sentence, Marked
+    /// lines, and concepts — the same move as the foot bar's Overview
+    /// word, from any mode. Never a popup: false when no book is open
+    /// or its structure will not read, and then nothing happens at all.
     @discardableResult
-    func foldOpenReadingIntoOutline() -> Bool {
+    func foldOpenReadingIntoOverview() -> Bool {
         guard let book = openEPUB, readingDoc(forBook: book) != nil else { return false }
         readerFindFoldTerm = nil
         readingAnalysisKind = nil
         UserDefaults.standard.set(
-            OrigamiReadingView.FoldTarget.headings.rawValue,
+            OrigamiReadingView.FoldTarget.concepts.rawValue,
             forKey: "readingFoldTarget")
         UserDefaults.standard.set(
             EPUBReaderMode.scroll.rawValue, forKey: "readerMode")
-        readerFoldLevel = 2
+        readerFoldLevel = 1
         return true
     }
 
