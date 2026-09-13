@@ -552,6 +552,16 @@ struct ProceedingsMapView: View {
     /// never touches this, so the selection survives the crossing.
     @State private var liftedID: String?
 
+    /// ⌘A's whole-plane selection: dragging any member moves them all
+    /// together. A click on empty plane lets go. Survives view switches
+    /// like the lift does.
+    @State private var selectedIDs: Set<String> = []
+    /// Where every selected card stood when the group drag began.
+    @State private var groupDragBase: [String: CGPoint]?
+    #if os(macOS)
+    @State private var selectAllMonitor: Any?
+    #endif
+
     /// Which layout the plane shows. Default is the hand-placed shared
     /// layout; the computed views arrange the same cards around their
     /// labels; a saved view replays a kept arrangement.
@@ -608,6 +618,7 @@ struct ProceedingsMapView: View {
                         item: item,
                         emphasis: emphasis(for: item),
                         isLifted: liftedID == item.id,
+                        isGrouped: selectedIDs.contains(item.id),
                         position: binding(for: item),
                         bounds: Self.canvasSize,
                         open: { open(item.id) },
@@ -616,9 +627,11 @@ struct ProceedingsMapView: View {
                         },
                         togglePin: { togglePin(item.id) },
                         toggleSetAside: { toggleSetAside(item.id) },
-                        // Only the Default layout is the shared one; a
-                        // drag in a computed or saved view stays local.
-                        moved: { if viewChoice == .standard { persist(item) } })
+                        // A member of the ⌘A selection carries the rest.
+                        groupDragged: { translation in
+                            groupDragged(item, translation: translation)
+                        },
+                        moved: { nodeMoved(item) })
                 }
             }
         }
@@ -626,6 +639,29 @@ struct ProceedingsMapView: View {
         .background(Color.secondary.opacity(0.06))
         .safeAreaInset(edge: .bottom, spacing: 0) { footBar }
         .onAppear(perform: reload)
+        #if os(macOS)
+        // ⌘A takes the whole plane — unless the Find field is writing.
+        .onAppear {
+            guard selectAllMonitor == nil else { return }
+            selectAllMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: .keyDown
+            ) { event in
+                guard event.modifierFlags
+                    .intersection(.deviceIndependentFlagsMask) == .command,
+                      event.charactersIgnoringModifiers?.lowercased() == "a",
+                      !(NSApp.keyWindow?.firstResponder is NSTextView)
+                else { return event }
+                selectedIDs = Set(items.map(\.id))
+                return nil
+            }
+        }
+        .onDisappear {
+            if let selectAllMonitor {
+                NSEvent.removeMonitor(selectAllMonitor)
+            }
+            selectAllMonitor = nil
+        }
+        #endif
         // The AI's labels land asynchronously: when they change while a
         // computed view is up, the magnets re-gather.
         .onChange(of: tagsFingerprint) {
@@ -772,17 +808,68 @@ struct ProceedingsMapView: View {
             ? .matched : .dimmed
     }
 
-    /// The plane itself. On the iPad it carries the two-finger probe:
-    /// panning the map takes two fingers, leaving one free for the cards.
+    /// The plane itself. A click on empty plane lets the ⌘A selection
+    /// go. On the iPad it carries the two-finger probe: panning the map
+    /// takes two fingers, leaving one free for the cards.
     private var canvasBase: some View {
         let base = Color.clear
             .frame(width: Self.canvasSize.width,
                    height: Self.canvasSize.height)
+            .contentShape(Rectangle())
+            .onTapGesture { selectedIDs = [] }
         #if os(iOS)
         return base.background(TwoFingerScrollConfigurator())
         #else
         return base
         #endif
+    }
+
+    // MARK: The ⌘A group — every selected card moves with the one in hand
+
+    /// The dragged member's translation, applied to the rest of the
+    /// selection from where each stood when the drag began.
+    private func groupDragged(_ item: Item, translation: CGSize) {
+        guard selectedIDs.contains(item.id), selectedIDs.count > 1 else { return }
+        let base = groupDragBase ?? {
+            var snapshot: [String: CGPoint] = [:]
+            for other in items where selectedIDs.contains(other.id) {
+                snapshot[other.id] = binding(for: other).wrappedValue
+            }
+            groupDragBase = snapshot
+            return snapshot
+        }()
+        for other in items where selectedIDs.contains(other.id) && other.id != item.id {
+            guard let start = base[other.id] else { continue }
+            let point = CGPoint(
+                x: min(max(start.x + translation.width, 90),
+                       Self.canvasSize.width - 90),
+                y: min(max(start.y + translation.height, 40),
+                       Self.canvasSize.height - 40))
+            if viewChoice == .standard {
+                positions[other.id] = point
+            } else {
+                overlayPositions[other.id] = point
+            }
+        }
+    }
+
+    /// A drag ended: in the Default view the moved cards persist to the
+    /// shared layout — the whole group in one write when the card was a
+    /// member, the one card alone otherwise.
+    private func nodeMoved(_ item: Item) {
+        let wasGroupDrag = groupDragBase != nil && selectedIDs.contains(item.id)
+        groupDragBase = nil
+        guard viewChoice == .standard else { return }
+        if wasGroupDrag {
+            var updates: [String: EPUBMapSharedLayout.Point] = [:]
+            for other in items where selectedIDs.contains(other.id) {
+                guard let point = positions[other.id] else { continue }
+                updates[other.key] = Self.sharedPoint(point)
+            }
+            EPUBMapSharedLayout.save(updating: updates, community: folder)
+        } else {
+            persist(item)
+        }
     }
 
     /// The default grid, computed once per reload — the binding's
@@ -1061,12 +1148,16 @@ private struct ProceedingsMapNode: View {
     let item: ProceedingsMapView.Item
     let emphasis: Emphasis
     let isLifted: Bool
+    /// Part of the ⌘A selection: wears the ring, and its drag carries
+    /// the whole group through `groupDragged`.
+    var isGrouped = false
     @Binding var position: CGPoint
     let bounds: CGSize
     let open: () -> Void
     let select: () -> Void
     let togglePin: () -> Void
     let toggleSetAside: () -> Void
+    var groupDragged: ((CGSize) -> Void)? = nil
     let moved: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -1156,10 +1247,12 @@ private struct ProceedingsMapNode: View {
                 .strokeBorder(
                     emphasis == .matched
                         ? Color.accentColor
-                        : item.isPinned
-                            ? Color.accentColor.opacity(0.7)
-                            : Color.secondary.opacity(0.3),
-                    lineWidth: emphasis == .matched ? 2 : 1))
+                        : isGrouped
+                            ? Color.accentColor.opacity(0.85)
+                            : item.isPinned
+                                ? Color.accentColor.opacity(0.7)
+                                : Color.secondary.opacity(0.3),
+                    lineWidth: emphasis == .matched || isGrouped ? 2 : 1))
         .overlay(alignment: .topTrailing) {
             if item.isPinned {
                 Image(systemName: "pin.fill")
@@ -1189,6 +1282,8 @@ private struct ProceedingsMapNode: View {
                                bounds.width - 90),
                         y: min(max(start.y + value.translation.height, 40),
                                bounds.height - 40))
+                    // A grouped card carries the rest of the selection.
+                    if isGrouped { groupDragged?(value.translation) }
                 }
                 .onEnded { _ in
                     if let end = livePosition { position = end }
