@@ -1990,7 +1990,7 @@ struct VisionReaderView: View {
 
         var word: String {
             switch self {
-            case .faithful: "Default"
+            case .faithful: "Scrolling"
             case .scroll: "Scroll"
             case .horizontal: "Horizontal"
             case .focus: "Focus"

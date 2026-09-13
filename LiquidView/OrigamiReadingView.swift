@@ -41,7 +41,7 @@ enum EPUBReaderMode: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .faithful: "Default"
+        case .faithful: "Scrolling"
         case .scroll: "Full Width"
         case .horizontal: "Horizontal"
         case .focus: "Focus"
@@ -3582,11 +3582,15 @@ struct ReadingFootBar: View {
             .frame(width: 1, height: 14)
     }
 
+    /// The mode words' switch animation: quick and flat — a reading
+    /// swap should feel like a cut, not a settle.
+    static let modeSwitch: Animation = .easeOut(duration: 0.1)
+
     /// One mode word at the foot, Author's way: the chosen one in the
     /// heading ink, the others resting quiet.
     private func modeWord(_ mode: EPUBReaderMode) -> some View {
         Button {
-            withAnimation(.snappy) {
+            withAnimation(Self.modeSwitch) {
                 readerModeRaw = mode.rawValue
                 // A mode word always shows its own view: any standing
                 // fold (the Outline group's shapes), find-fold, or AI
@@ -3708,10 +3712,10 @@ struct ReadingFootBar: View {
 
     @ViewBuilder private var defaultGroup: some View {
         if !defaultShowsExpanded {
-            // Collapsed: "Default" word — clicking opens the group to
+            // Collapsed: "Scrolling" word — clicking opens the group to
             // reveal Full Width beside it, same as AI's collapsed word.
             Button {
-                withAnimation(.snappy) {
+                withAnimation(Self.modeSwitch) {
                     defaultExpanded = true
                     readerModeRaw = EPUBReaderMode.faithful.rawValue
                     model.readerFoldLevel = 0
@@ -3723,7 +3727,7 @@ struct ReadingFootBar: View {
                     && model.readingAnalysisKind == nil
                     && model.readerFoldLevel == 0
                     && model.readerFindFoldTerm == nil
-                Text("Default")
+                Text("Scrolling")
                     .font(.callout.weight(isActive ? .semibold : .regular))
                     .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                     .contentShape(Rectangle())
@@ -3731,10 +3735,10 @@ struct ReadingFootBar: View {
             .buttonStyle(.plain)
             .help("The column-width reading — click to see Full Width")
         } else {
-            // Expanded: [ Default | Full Width ] — active word bold.
+            // Expanded: [ Scrolling | Full Width ] — active word bold.
             HStack(spacing: 8) {
                 Button {
-                    withAnimation(.snappy) {
+                    withAnimation(Self.modeSwitch) {
                         readerModeRaw = EPUBReaderMode.faithful.rawValue
                         defaultExpanded = false
                         model.readerFoldLevel = 0
@@ -3750,7 +3754,7 @@ struct ReadingFootBar: View {
                 .buttonStyle(.plain)
                 .help("Return to the column reading")
                 Button {
-                    withAnimation(.snappy) {
+                    withAnimation(Self.modeSwitch) {
                         readerModeRaw = EPUBReaderMode.faithful.rawValue
                         defaultExpanded = false
                         model.readerFoldLevel = 0
@@ -3761,7 +3765,7 @@ struct ReadingFootBar: View {
                     let quiet = model.readerFoldLevel > 0
                         || model.readingAnalysisKind != nil
                         || model.readerFindFoldTerm != nil
-                    Text("Default")
+                    Text("Scrolling")
                         .font(.callout.weight(readerMode == .faithful && !quiet
                                               ? .semibold : .regular))
                         .foregroundStyle(readerMode == .faithful && !quiet
@@ -3772,7 +3776,7 @@ struct ReadingFootBar: View {
                 .help("The column-width reading — centred, measured")
                 separator
                 Button {
-                    withAnimation(.snappy) {
+                    withAnimation(Self.modeSwitch) {
                         readerModeRaw = EPUBReaderMode.scroll.rawValue
                         defaultExpanded = false
                         model.readerFoldLevel = 0
