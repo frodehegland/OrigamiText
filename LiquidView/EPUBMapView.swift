@@ -1124,15 +1124,7 @@ struct EPUBMapView: View {
             }
         )
         view = view.nodeMaxWidth { item in
-            // Half-size cards: the room holds more, the words still
-            // read at arm's length.
-            if item.isAside { return 85.0 }
-            switch item.kind {
-            case .article: return 100.0
-            case .cited: return 75.0
-            case .citedDeep: return 60.0
-            case .concept: return 240.0
-            }
+            nodeMaxWidth(for: item)
         }
         view = view.attachmentAnchorRule { _, _ in
             // Centre horizontally, sit at the card's bottom edge,
@@ -1363,8 +1355,20 @@ struct EPUBMapView: View {
     /// the box beneath provides the paper. Cited works read a step
     /// quieter than the journal's own; a Set Aside card collapses to
     /// its title alone; a pinned card wears the pin.
+    /// Half-size cards: the room holds more, the words still read at
+    /// arm's length. One rule for the engine's raster ruler and the
+    /// live attachment face alike, so they wrap identically.
+    private func nodeMaxWidth(for item: EPUBMapItem) -> CGFloat {
+        if item.isAside { return 85.0 }
+        switch item.kind {
+        case .article: return 100.0
+        case .cited: return 75.0
+        case .citedDeep: return 60.0
+        case .concept: return 240.0
+        }
+    }
+
     @ViewBuilder private func cardFace(for item: EPUBMapItem) -> some View {
-        let dark = visionThemeRaw == VisionTheme.dark.rawValue
         if item.isAside {
             // The whole slip fades — the words too, not just the paper.
             Text(item.title)
@@ -1373,10 +1377,10 @@ struct EPUBMapView: View {
                 .lineLimit(1)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 3)
-                // The same smoked glass as the standing cards, faint.
+                // The same chip glass as the standing cards, faint.
                 .background(
                     RoundedRectangle(cornerRadius: 5)
-                        .fill(Color.black.opacity(0.30))
+                        .fill(.regularMaterial)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 5)
@@ -1384,22 +1388,19 @@ struct EPUBMapView: View {
                 )
                 .opacity(0.5)
         } else if item.kind == .concept {
-            // Knowledge Space node style: serif title and optional
-            // description, thin border that brightens on selection.
-            // The fill is the theme's concept paper, NOT a material —
-            // this face is rasterized by ImageRenderer, and a SwiftUI
-            // material has no backdrop there and bakes out black.
+            // The arm chips' glass, in the concepts' own serif voice.
+            // Real material — this face rides a live attachment now,
+            // so the pane blurs the room behind it like the chips do.
             VStack(spacing: 4) {
                 Text(item.title)
                     .font(.system(size: 12, weight: .semibold, design: .serif))
-                    .foregroundStyle(dark ? Color.white : Color(white: 0.10))
+                    .foregroundStyle(Color.white)
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
                 if !item.author.isEmpty {
                     Text(item.author)
                         .font(.system(size: 9, design: .serif))
-                        .foregroundStyle(dark ? Color.white.opacity(0.65)
-                                              : Color(white: 0.35))
+                        .foregroundStyle(Color.white.opacity(0.65))
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                 }
@@ -1407,16 +1408,14 @@ struct EPUBMapView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(minWidth: 90, maxWidth: 200)
-            // Pure white at 80% transparency, both themes — a frosted
-            // slip over the room rather than a painted card.
             .background(
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(Color.white.opacity(0.2))
+                    .fill(.regularMaterial)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
                     .strokeBorder(
-                        item.isSelected ? Color.accentColor : Color.blue.opacity(0.35),
+                        Color.white.opacity(item.isSelected ? 0.85 : 0.35),
                         lineWidth: item.isSelected ? 2.5 : 1
                     )
             )
@@ -1428,37 +1427,27 @@ struct EPUBMapView: View {
             case .citedDeep: 6
             case .concept: 6.5
             }
-            // The arm chips' own language, carried to the cards: white
-            // ink on a smoked-glass pane with a hairline edge, whatever
-            // the theme — glass over the room needs no light or dark.
-            // A SELECTED card inverts to lit paper: black ink on white,
-            // unmistakable at any distance. Each rank's glass a shade
-            // lighter, so the deep rows read as further away.
+            // The arm chips themselves, verbatim: white ink on the
+            // system's regular material with a hairline white edge.
+            // Selection speaks exactly as an active chip does — the
+            // border brightens and thickens, the card grows a touch
+            // (the entity's scale, set in cardEntity).
             let selected = item.isSelected
-            let ink: Color = selected ? Color(white: 0.08) : .white
-            let smoke: Double = switch item.kind {
-            case .article: 0.38
-            case .cited: 0.30
-            case .citedDeep: 0.24
-            case .concept: 0.32
-            }
             VStack(spacing: item.kind == .citedDeep ? 1.5 : 2.5) {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                     if item.isPinned {
                         Image(systemName: "pin.fill")
                             .font(.system(size: 5))
-                            .foregroundStyle(selected
-                                ? Color(red: 0.72, green: 0.42, blue: 0.06)
-                                : Color(red: 0.95, green: 0.68, blue: 0.25))
+                            .foregroundStyle(Color(red: 0.95, green: 0.68, blue: 0.25))
                     }
                     Text(item.title)
                         .font(AppFonts.body(titleSize, weight: .semibold))
-                        .foregroundStyle(ink)
+                        .foregroundStyle(Color.white)
                         .lineLimit(item.kind == .citedDeep ? 2 : 3)
                 }
                 Text(item.author)
                     .font(.system(size: 5.5))
-                    .foregroundStyle(ink.opacity(0.65))
+                    .foregroundStyle(Color.white.opacity(0.65))
                     .lineLimit(item.kind == .citedDeep ? 1 : 2)
             }
             .multilineTextAlignment(.center)
@@ -1466,55 +1455,69 @@ struct EPUBMapView: View {
             .padding(.vertical, item.kind == .article ? 6 : 5)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(selected ? Color.white.opacity(0.92)
-                                   : Color.black.opacity(smoke))
+                    .fill(.regularMaterial)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(selected ? Color.black : Color.white.opacity(0.35),
-                                  lineWidth: selected ? 1.6 : 0.7)
+                    .strokeBorder(Color.white.opacity(selected ? 0.85 : 0.35),
+                                  lineWidth: selected ? 2.0 : 0.7)
             )
         }
     }
 
     private func cardEntity(for item: EPUBMapItem, texturedPlane: ModelEntity)
         -> (modelEntity: ModelEntity?, collisionShape: ShapeResource) {
-        // Set Aside slips fade whole — paper and words. Everything else
-        // stands at full entity presence: an unselected document's
-        // lightness lives in its PAPER alone (half-transparent, below),
-        // so the words stay solid ink over a sheer card.
-        let opacity: Float = item.isAside ? 0.4 : 1.0
-        // A single sheet, no volume: the paper, transparency, and the
-        // selection border all live in the rasterized face (cardFace) —
-        // every kind's box body is fully invisible and exists only to
-        // give the pinch its collision depth and the corridor its
-        // readable back face.
-        let box = ModelEntity.box(
-            with: texturedPlane,
-            // The same face on the card's back, turned to read — a
-            // reader deep in the corridor looks back at standing text.
-            backPlane: texturedPlane.clone(recursive: true),
-            color: .clear,
-            depth: 0.004,
-            margins: 0.004,
-            opacity: opacity,
-            cornerRadius: 0.005,
-            useBorder: false,
-            borderColor: .clear,
-            materialMode: .none
-        )
-        if var model = box.modelEntity.model {
-            var mat = UnlitMaterial()
-            mat.color = .init(tint: .clear)
-            mat.blending = .transparent(opacity: 0.0)
-            model.materials = [mat]
-            box.modelEntity.model = model
+        // The cards ARE the chits now: the visible face is a live
+        // SwiftUI attachment — the same ViewAttachmentComponent the
+        // arm chips ride — so its .regularMaterial is the system's
+        // real blurred glass, not a raster imitation (an ImageRenderer
+        // has no backdrop and bakes materials out black). The raster
+        // plane the engine hands us serves only as the tape measure.
+        let extents = texturedPlane.visualBounds(relativeTo: nil).extents
+
+        // An invisible body keeps visualBounds honest for the engine's
+        // attachment anchoring — a live face can report zero until the
+        // system lays it out.
+        var ghost = UnlitMaterial()
+        ghost.color = .init(tint: .clear)
+        ghost.blending = .transparent(opacity: 0.0)
+        let holder = ModelEntity(
+            mesh: .generateBox(width: extents.x, height: extents.y, depth: 0.004),
+            materials: [ghost])
+
+        // Attachments lay out at 1360 points to the metre; the raster
+        // ruler used 1000 — 1.36 keeps every card its familiar size.
+        // Selection grows the face a touch, as an active chip grows.
+        let scale: Float = 1.36 * (item.isSelected ? 1.06 : 1.0)
+        func face(back: Bool) -> Entity {
+            let entity = Entity()
+            entity.components.set(ViewAttachmentComponent(
+                rootView: cardFace(for: item)
+                    .frame(maxWidth: nodeMaxWidth(for: item))
+                    .fixedSize(horizontal: false, vertical: true)))
+            entity.scale = SIMD3<Float>(repeating: scale)
+            entity.position = SIMD3<Float>(0, 0, back ? -0.003 : 0.003)
+            if back {
+                // The same face on the card's back, turned to read — a
+                // reader deep in the corridor looks back at standing text.
+                entity.orientation = simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+            }
+            return entity
+        }
+        holder.addChild(face(back: false))
+        holder.addChild(face(back: true))
+
+        // Set Aside slips fade whole — glass and words together.
+        if item.isAside {
+            holder.components.set(OpacityComponent(opacity: 0.4))
         }
         // The fist carries every card; the connection lines re-lay
         // themselves from the cards each frame.
-        box.modelEntity.components.set(MapSpaceNodeComponent())
-        box.modelEntity.components.set(EPUBNodeIDComponent(id: item.id))
-        return box
+        holder.components.set(MapSpaceNodeComponent())
+        holder.components.set(EPUBNodeIDComponent(id: item.id))
+        let shape = ShapeResource.generateBox(size: SIMD3<Float>(
+            extents.x + 0.008, extents.y + 0.008, 0.012))
+        return (holder, shape)
     }
 
     /// The arm's concept pick: select every article whose text carries
