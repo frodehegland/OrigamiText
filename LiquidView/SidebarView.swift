@@ -111,6 +111,10 @@ struct SidebarView: View {
     /// their context menus; the lists read the same keys.
     @AppStorage("libraryTimelineUnreadOnly") private var timelineUnreadOnly = false
     @AppStorage("libraryAlphabeticalUnreadOnly") private var alphabeticalUnreadOnly = false
+    /// How a proceedings' author list is ordered: "first" or "last"
+    /// (alphabetical, by first or last name) or "rank" (most papers
+    /// across the whole series, per the imported reference dataset).
+    @AppStorage("pubAuthorsSortMode") private var pubAuthorsSort = "first"
 
     /// The sidebar's own selection: the model's, but only when it names
     /// a row this list actually shows. The app has states with no
@@ -375,6 +379,13 @@ struct SidebarView: View {
     }
 
 
+    /// The surname as a sort key: the last word of the name, diacritics
+    /// folded so Å sorts as A. "Jessica Rubart" orders under R.
+    private func lastNameKey(_ name: String) -> String {
+        let last = name.components(separatedBy: .whitespaces).last ?? name
+        return last.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+    }
+
     /// Which venue is currently in focus — either selected directly or via
     /// a topic/author filter within it. Drives `publicationSubmenus`.
     private var currentVenueName: String? {
@@ -406,9 +417,30 @@ struct SidebarView: View {
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
             )).filter { !setAsideAuthors.contains($0) }
+            // Series standing — papers across every year of the series,
+            // not just this proceedings — from the imported dataset.
+            // Reading seriesAuthorsRanked here re-sorts once it loads.
+            let seriesCounts: [String: Int] = pubAuthorsSort == "rank" && !model.seriesAuthorsRanked.isEmpty
+                ? Dictionary(uniqueKeysWithValues: rawAuthors.map {
+                    ($0, model.seriesStanding(forAuthors: $0)?.count ?? 0)
+                })
+                : [:]
             let pubAuthors = rawAuthors.sorted { a, b in
                 let ap = pinnedAuthorSet.contains(a), bp = pinnedAuthorSet.contains(b)
-                return ap != bp ? ap : a < b
+                if ap != bp { return ap }
+                switch pubAuthorsSort {
+                case "rank":
+                    let ca = seriesCounts[a] ?? 0, cb = seriesCounts[b] ?? 0
+                    if ca != cb { return ca > cb }
+                    return lastNameKey(a) < lastNameKey(b)
+                case "last":
+                    let la = lastNameKey(a), lb = lastNameKey(b)
+                    return la == lb
+                        ? a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+                        : la < lb
+                default:
+                    return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+                }
             }
 
             // Topics: allTopics already filters set-aside; sort pinned-first
@@ -425,10 +457,46 @@ struct SidebarView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            // Authors — clickable; control-click to pin or set aside
+            // Authors — clickable; control-click to pin or set aside.
+            // Two orderings under the header: alphabetical (click again
+            // to swap first/last name) and by series standing.
             DisclosureGroup(isExpanded: isExpanded("PubAuthors")) {
+                HStack(spacing: 12) {
+                    Button {
+                        pubAuthorsSort = pubAuthorsSort == "first" ? "last" : "first"
+                    } label: {
+                        Image(systemName: "textformat.abc")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(pubAuthorsSort == "rank" ? Color.secondary : Color.accentColor)
+                    .help(pubAuthorsSort == "last"
+                          ? "Alphabetical by last name — click for first name"
+                          : "Alphabetical by first name — click for last name")
+                    Button {
+                        pubAuthorsSort = "rank"
+                        model.loadSeriesAuthorsIfNeeded()
+                    } label: {
+                        Image(systemName: "chart.bar")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(pubAuthorsSort == "rank" ? Color.accentColor : Color.secondary)
+                    .help("Most papers across the whole series first")
+                    Spacer()
+                }
+                .font(.caption)
+                .onAppear {
+                    if pubAuthorsSort == "rank" { model.loadSeriesAuthorsIfNeeded() }
+                }
                 ForEach(pubAuthors, id: \.self) { author in
-                    Text(author)
+                    HStack {
+                        Text(author)
+                        if pubAuthorsSort == "rank", let count = seriesCounts[author], count > 0 {
+                            Spacer()
+                            Text("\(count)")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
                         .font(.caption2)
                         .lineLimit(1)
                         .tag(SidebarItem.epubPublicationAuthor(name, author))
