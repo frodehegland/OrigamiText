@@ -25,6 +25,12 @@ struct OrigamiVisionApp: App {
                 .environment(model)
         }
         .defaultSize(width: 560, height: 720)
+        .defaultWindowPlacement { _, _ in
+            // Panels open IN FRONT of the reader, within reach — never
+            // where the closed window last stood, possibly behind them
+            // in the hallway.
+            WindowPlacement(.utilityPanel)
+        }
 
         // The original documents panel — the letters timeline with the
         // volumes toolbar — opened from the right arm's Documents chip.
@@ -33,6 +39,12 @@ struct OrigamiVisionApp: App {
                 .environment(model)
         }
         .defaultSize(width: 560, height: 720)
+        .defaultWindowPlacement { _, _ in
+            // Panels open IN FRONT of the reader, within reach — never
+            // where the closed window last stood, possibly behind them
+            // in the hallway.
+            WindowPlacement(.utilityPanel)
+        }
 
         // Lineage — the shelf's citation web: every book and every
         // work their references name, years as columns, citations as
@@ -42,6 +54,12 @@ struct OrigamiVisionApp: App {
                 .environment(model)
         }
         .defaultSize(width: 1280, height: 820)
+        .defaultWindowPlacement { _, _ in
+            // Panels open IN FRONT of the reader, within reach — never
+            // where the closed window last stood, possibly behind them
+            // in the hallway.
+            WindowPlacement(.utilityPanel)
+        }
 
         // Settings, opened from the right arm's Settings chip. Its
         // Graph Data tab carries the graphs' Ask-for-Data dialog,
@@ -51,6 +69,12 @@ struct OrigamiVisionApp: App {
                 .environment(model)
         }
         .defaultSize(width: 480, height: 560)
+        .defaultWindowPlacement { _, _ in
+            // Panels open IN FRONT of the reader, within reach — never
+            // where the closed window last stood, possibly behind them
+            // in the hallway.
+            WindowPlacement(.utilityPanel)
+        }
 
         // The graph's data dialog alone, opened from the Edit chip on
         // the graph's own key — preset to that graph's side. Settings'
@@ -61,6 +85,12 @@ struct OrigamiVisionApp: App {
                 .environment(model)
         }
         .defaultSize(width: 480, height: 560)
+        .defaultWindowPlacement { _, _ in
+            // Panels open IN FRONT of the reader, within reach — never
+            // where the closed window last stood, possibly behind them
+            // in the hallway.
+            WindowPlacement(.utilityPanel)
+        }
 
         // The one immersive space (mixed, so windows and volumes share
         // the room): the Map — Author's engine with EPUBs as nodes —
@@ -123,6 +153,12 @@ struct OrigamiVisionApp: App {
                 .environment(model)
         }
         .defaultSize(width: 660, height: 840)
+        .defaultWindowPlacement { _, _ in
+            // Panels open IN FRONT of the reader, within reach — never
+            // where the closed window last stood, possibly behind them
+            // in the hallway.
+            WindowPlacement(.utilityPanel)
+        }
 
         // The journal's articles live in the immersive space itself (see
         // JournalFieldSpace below) — the full room, not a volume.
