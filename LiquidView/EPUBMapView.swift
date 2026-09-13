@@ -841,15 +841,23 @@ struct EPUBMapView: View {
                      underside: true),
         ArmMenu.Chip(id: EPUBMapView.alignChipID, title: "Align to Room", side: .right,
                      underside: true),
-        ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Graph", side: .right),
-        // The floor's three timeline lanes hang beneath the left
-        // forearm, in floor order — named for the floor so they are
-        // never mistaken for the wall graphs' controls.
-        ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Floor Left", side: .left,
+        // Graphs and Timelines hang beneath the left forearm as two
+        // groups: the parent chip unfolds its sides (the sub-chips are
+        // hidden until then, and the row packs over them). Graphs are
+        // the two sankey walls; Timelines the floor's lanes.
+        ArmMenu.Chip(id: EPUBMapView.graphsChipID, title: "Graphs", side: .left,
                      underside: true),
-        ArmMenu.Chip(id: EPUBMapView.floorMiddleChipID, title: "Floor Middle", side: .left,
+        ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Left", side: .left,
                      underside: true),
-        ArmMenu.Chip(id: EPUBMapView.floorRightChipID, title: "Floor Right", side: .left,
+        ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Right", side: .left,
+                     underside: true),
+        ArmMenu.Chip(id: EPUBMapView.timelinesChipID, title: "Timelines", side: .left,
+                     underside: true),
+        ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Left", side: .left,
+                     underside: true),
+        ArmMenu.Chip(id: EPUBMapView.floorMiddleChipID, title: "Middle", side: .left,
+                     underside: true),
+        ArmMenu.Chip(id: EPUBMapView.floorRightChipID, title: "Right", side: .left,
                      underside: true),
         // Standing only while common ground does: the wall reduced to
         // the works every raised article cites — the green alone.
@@ -859,7 +867,6 @@ struct EPUBMapView: View {
         // Hidden until a long-pinch on Concepts asks for it.
         ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
                      side: .left),
-        ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Graph", side: .left),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
     ], tracksPlanes: true,   // the flat pose finds the actual desk
@@ -875,6 +882,11 @@ struct EPUBMapView: View {
     @State private var sharedCitedStanding = false
     /// Focus: show only selected items and their direct connections.
     @State private var focusMode = false
+    /// Which left-underside group stands unfolded — Graphs' or
+    /// Timelines' sides. One at a time, or two rows of "Left" chips
+    /// would stand shoulder to shoulder.
+    @State private var graphsOpen = false
+    @State private var timelinesOpen = false
     /// Concepts put away with their card's Hide button — back via the
     /// Concepts chip's long-pinch and Reveal All Concepts.
     @State private var hiddenConceptIDs: Set<String> = []
@@ -891,6 +903,8 @@ struct EPUBMapView: View {
     private static let asideChipID = "map.arm.aside"
     private static let conceptsChipID = "map.arm.concepts"
     private static let revealConceptsChipID = "map.arm.concepts.reveal"
+    private static let graphsChipID = "map.arm.graphs"
+    private static let timelinesChipID = "map.arm.timelines"
     private static let timeflowLeftChipID = "map.arm.timeflow.left"
     private static let timeflowRightChipID = "map.arm.timeflow.right"
     private static let floorChipID = "map.arm.floor"
@@ -1263,9 +1277,12 @@ struct EPUBMapView: View {
             // Only Overlap steps in only when common ground stands.
             armMenu.setChipVisible(Self.onlyOverlapChipID, false)
             armMenu.setChipVisible(Self.revealConceptsChipID, false)
-            // The chips wake wearing their standing state — a floor
-            // lane or graph left on last session reads active from the
-            // first frame.
+            // The Graphs and Timelines groups wake folded; the sides
+            // appear when their parent is pinched. The chips wear their
+            // standing state — a floor lane or graph left on last
+            // session reads active from the first frame, the parents
+            // bright while anything of theirs stands.
+            updateArmGroups()
             armMenu.setChipActive(Self.floorChipID,
                                   floorShowRaw != FloorShow.nothing.rawValue)
             armMenu.setChipActive(Self.floorMiddleChipID,
@@ -1808,14 +1825,26 @@ struct EPUBMapView: View {
             }
             armMenu.setChipActive(Self.conceptsChipID, conceptSpaceMode)
             return true
+        case Self.graphsChipID:
+            graphsOpen.toggle()
+            if graphsOpen { timelinesOpen = false }
+            updateArmGroups()
+            return true
+        case Self.timelinesChipID:
+            timelinesOpen.toggle()
+            if timelinesOpen { graphsOpen = false }
+            updateArmGroups()
+            return true
         case Self.timeflowLeftChipID:
             timeflowLeftShown.toggle()
             armMenu.setChipActive(Self.timeflowLeftChipID, timeflowLeftShown)
+            updateArmGroups()
             updateSankey()
             return true
         case Self.timeflowRightChipID:
             timeflowRightShown.toggle()
             armMenu.setChipActive(Self.timeflowRightChipID, timeflowRightShown)
+            updateArmGroups()
             updateSankey()
             return true
         case Self.onlyOverlapChipID:
@@ -1840,6 +1869,7 @@ struct EPUBMapView: View {
             }
             armMenu.setChipActive(Self.floorChipID,
                                   floorShowRaw != FloorShow.nothing.rawValue)
+            updateArmGroups()
             return true
         case Self.floorMiddleChipID:
             if floorShowMiddleRaw == FloorShow.nothing.rawValue {
@@ -1849,6 +1879,7 @@ struct EPUBMapView: View {
             }
             armMenu.setChipActive(Self.floorMiddleChipID,
                                   floorShowMiddleRaw != FloorShow.nothing.rawValue)
+            updateArmGroups()
             return true
         case Self.floorRightChipID:
             if floorShowRightRaw == FloorShow.nothing.rawValue {
@@ -1858,6 +1889,7 @@ struct EPUBMapView: View {
             }
             armMenu.setChipActive(Self.floorRightChipID,
                                   floorShowRightRaw != FloorShow.nothing.rawValue)
+            updateArmGroups()
             return true
         case Self.settingsChipID:
             openWindow(id: "settings")
@@ -1876,6 +1908,24 @@ struct EPUBMapView: View {
         default:
             return false
         }
+    }
+
+    /// Folds and unfolds the left underside's two groups. The hidden
+    /// sides take no place (the row packs over them); each parent
+    /// stands active while any of its group is on, so a folded group
+    /// still shows something is standing.
+    private func updateArmGroups() {
+        armMenu.setChipVisible(Self.timeflowLeftChipID, graphsOpen)
+        armMenu.setChipVisible(Self.timeflowRightChipID, graphsOpen)
+        armMenu.setChipVisible(Self.floorChipID, timelinesOpen)
+        armMenu.setChipVisible(Self.floorMiddleChipID, timelinesOpen)
+        armMenu.setChipVisible(Self.floorRightChipID, timelinesOpen)
+        armMenu.setChipActive(Self.graphsChipID,
+                              timeflowLeftShown || timeflowRightShown)
+        armMenu.setChipActive(Self.timelinesChipID,
+                              floorShowRaw != FloorShow.nothing.rawValue
+                                || floorShowMiddleRaw != FloorShow.nothing.rawValue
+                                || floorShowRightRaw != FloorShow.nothing.rawValue)
     }
 }
 
