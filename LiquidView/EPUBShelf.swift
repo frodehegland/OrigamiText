@@ -1025,9 +1025,31 @@ struct ProceedingsMapView: View {
         applyPoles()
     }
 
+    /// The words of a pole, topic, or title — lowercased, split on
+    /// anything that isn't a letter or digit.
+    private static func poleWords(_ text: String) -> Set<String> {
+        Set(text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty })
+    }
+
+    /// Everyday words that must not name a pole when the titles do.
+    private static let poleStopWords: Set<String> = [
+        "the", "and", "for", "with", "from", "into", "through", "towards",
+        "toward", "using", "under", "over", "between", "across", "about",
+        "study", "case", "paper", "papers", "approach", "based", "beyond",
+        "when", "what", "where", "how", "why", "does", "their", "your",
+    ]
+    /// Short words that may: the field's own initialisms.
+    private static let poleShortWords: Set<String> = [
+        "ai", "xr", "vr", "ar", "llm", "llms", "web", "html",
+    ]
+
     /// The two topics that name the poles when the reader hasn't: the
     /// most shared topic on one side and, opposite it, the next most
     /// shared that isn't merely a longer or shorter form of the first.
+    /// Before the AI has read the papers there are no topics — then the
+    /// titles' own most shared words name the poles instead.
     private func autoMagnets(_ standing: [Item]) -> (left: String, right: String) {
         var members: [String: Int] = [:]
         var display: [String: String] = [:]
@@ -1042,6 +1064,17 @@ struct ProceedingsMapView: View {
                 members[key, default: 0] += 1
             }
         }
+        if members.isEmpty {
+            for item in standing {
+                for word in Self.poleWords(item.title)
+                where (word.count > 3 || Self.poleShortWords.contains(word))
+                    && !Self.poleStopWords.contains(word) {
+                    display[word] = Self.poleShortWords.contains(word) && word != "web"
+                        ? word.uppercased() : word.capitalized
+                    members[word, default: 0] += 1
+                }
+            }
+        }
         let top = members.sorted {
             $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key
         }
@@ -1054,9 +1087,10 @@ struct ProceedingsMapView: View {
     }
 
     /// The tug-of-war arrangement: each paper stands along the line
-    /// between the poles by how much of each topic it carries — all left,
-    /// all right, or apportioned between. Papers neither pole speaks for
-    /// wait in the row at the foot; Set Aside cards keep their quiet row.
+    /// between the poles by how strongly each speaks for it — through
+    /// its topic labels and its title — all left, all right, or
+    /// apportioned between. Papers neither pole speaks for wait in the
+    /// row at the foot; Set Aside cards keep their quiet row.
     private func applyPoles() {
         let standing = items.filter { !$0.isSetAside }
         // Name the poles: the reader's kept pair first, the topics' own
@@ -1069,30 +1103,41 @@ struct ProceedingsMapView: View {
         if rightMagnet.trimmingCharacters(in: .whitespaces).isEmpty {
             rightMagnet = auto.right == leftMagnet ? auto.left : auto.right
         }
-        let left = leftMagnet.trimmingCharacters(in: .whitespaces).lowercased()
-        let right = rightMagnet.trimmingCharacters(in: .whitespaces).lowercased()
+        let left = Self.poleWords(leftMagnet)
+        let right = Self.poleWords(rightMagnet)
 
-        // A topic matches a pole when either contains the other, so
-        // "hypertext" pulls "hypertext narrative" too.
-        func pull(_ item: Item, _ pole: String) -> Int {
-            guard !pole.isEmpty else { return 0 }
-            return item.topics.reduce(0) { count, raw in
-                let topic = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                guard topic.count > 1 else { return count }
-                return topic.contains(pole) || pole.contains(topic) ? count + 1 : count
+        // A pole speaks for a text when each of its words stands in it —
+        // whole, or as the stem of a longer word, so "hyper" pulls
+        // "hypertextual" but "AI" never pulls "maintain".
+        func speaks(_ pole: Set<String>, for textWords: Set<String>) -> Bool {
+            guard !pole.isEmpty else { return false }
+            return pole.allSatisfy { word in
+                textWords.contains {
+                    $0 == word || ($0.hasPrefix(word) && word.count >= 4)
+                }
             }
+        }
+        // The pull: one per topic label the pole speaks for, and one for
+        // the title — so papers the AI hasn't read yet answer the
+        // magnets too, and sharpen as the extractions land.
+        func pull(_ item: Item, _ pole: Set<String>) -> Int {
+            var count = item.topics.reduce(0) { count, topic in
+                speaks(pole, for: Self.poleWords(topic)) ? count + 1 : count
+            }
+            if speaks(pole, for: Self.poleWords(item.title)) { count += 1 }
+            return count
         }
 
         // Thirteen bands across the plane: 0 hard left, 12 hard right.
         var bands: [Int: [Item]] = [:]
         var unsorted: [Item] = []
         for item in standing {
-            let la = pull(item, left), ra = pull(item, right)
-            if la == 0 && ra == 0 {
+            let leftPull = pull(item, left), rightPull = pull(item, right)
+            if leftPull == 0 && rightPull == 0 {
                 unsorted.append(item)
                 continue
             }
-            let t = Double(ra) / Double(la + ra)
+            let t = Double(rightPull) / Double(leftPull + rightPull)
             bands[Int((t * 12).rounded()), default: []].append(item)
         }
 
