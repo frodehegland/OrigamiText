@@ -1359,68 +1359,76 @@ struct EPUBMapView: View {
     /// the box beneath provides the paper. Cited works read a step
     /// quieter than the journal's own; a Set Aside card collapses to
     /// its title alone; a pinned card wears the pin.
+    /// The supersample: faces lay out at four times their design size
+    /// and the entity scales them back down by four, the way the chips
+    /// render 22pt type at 0.32 scale — text rasterized large and
+    /// shrunk stays sharp; text rasterized small and grown goes soft.
+    /// Every point constant in cardFace and nodeMaxWidth wears it.
+    private static let crisp: CGFloat = 4
+
     /// Half-size cards: the room holds more, the words still read at
     /// arm's length. One rule for the engine's raster ruler and the
     /// live attachment face alike, so they wrap identically.
     private func nodeMaxWidth(for item: EPUBMapItem) -> CGFloat {
-        if item.isAside { return 85.0 }
+        if item.isAside { return 85.0 * Self.crisp }
         switch item.kind {
-        case .article: return 100.0
-        case .cited: return 75.0
-        case .citedDeep: return 60.0
-        case .concept: return 240.0
+        case .article: return 100.0 * Self.crisp
+        case .cited: return 75.0 * Self.crisp
+        case .citedDeep: return 60.0 * Self.crisp
+        case .concept: return 240.0 * Self.crisp
         }
     }
 
     @ViewBuilder private func cardFace(for item: EPUBMapItem) -> some View {
+        let s = Self.crisp
         if item.isAside {
             // The whole slip fades — the words too, not just the paper.
             Text(item.title)
-                .font(AppFonts.body(5.5, weight: .semibold))
+                .font(AppFonts.body(5.5 * s, weight: .semibold))
                 .foregroundStyle(Color.white)
                 .lineLimit(1)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 3)
+                .padding(.horizontal, 5 * s)
+                .padding(.vertical, 3 * s)
                 // The same chip glass as the standing cards, faint.
                 .background(
-                    RoundedRectangle(cornerRadius: 5)
+                    RoundedRectangle(cornerRadius: 5 * s)
                         .fill(.regularMaterial)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.6)
+                    RoundedRectangle(cornerRadius: 5 * s)
+                        .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.6 * s)
                 )
                 .opacity(0.5)
         } else if item.kind == .concept {
             // The arm chips' glass, in the concepts' own serif voice.
             // Real material — this face rides a live attachment now,
             // so the pane blurs the room behind it like the chips do.
-            VStack(spacing: 4) {
+            VStack(spacing: 4 * s) {
                 Text(item.title)
-                    .font(.system(size: 12, weight: .semibold, design: .serif))
+                    .font(.system(size: 12 * s, weight: .semibold, design: .serif))
                     .foregroundStyle(Color.white)
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
                 if !item.author.isEmpty {
                     Text(item.author)
-                        .font(.system(size: 9, design: .serif))
+                        .font(.system(size: 9 * s, design: .serif))
                         .foregroundStyle(Color.white.opacity(0.65))
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .frame(minWidth: 90, maxWidth: 200)
+            .padding(.horizontal, 14 * s)
+            .padding(.vertical, 10 * s)
+            .frame(minWidth: 90 * s, maxWidth: 200 * s)
             .background(
-                RoundedRectangle(cornerRadius: 14)
+                RoundedRectangle(cornerRadius: 14 * s)
                     .fill(.regularMaterial)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 14)
+                RoundedRectangle(cornerRadius: 14 * s)
                     .strokeBorder(
                         Color.white.opacity(item.isSelected ? 0.85 : 0.35),
-                        lineWidth: item.isSelected ? 2.5 : 1
+                        lineWidth: (item.isSelected ? 2.5 : 1) * s
                     )
             )
         } else {
@@ -1437,34 +1445,34 @@ struct EPUBMapView: View {
             // border brightens and thickens, the card grows a touch
             // (the entity's scale, set in cardEntity).
             let selected = item.isSelected
-            VStack(spacing: item.kind == .citedDeep ? 1.5 : 2.5) {
-                HStack(alignment: .firstTextBaseline, spacing: 2) {
+            VStack(spacing: (item.kind == .citedDeep ? 1.5 : 2.5) * s) {
+                HStack(alignment: .firstTextBaseline, spacing: 2 * s) {
                     if item.isPinned {
                         Image(systemName: "pin.fill")
-                            .font(.system(size: 5))
+                            .font(.system(size: 5 * s))
                             .foregroundStyle(Color(red: 0.95, green: 0.68, blue: 0.25))
                     }
                     Text(item.title)
-                        .font(AppFonts.body(titleSize, weight: .semibold))
+                        .font(AppFonts.body(titleSize * s, weight: .semibold))
                         .foregroundStyle(Color.white)
                         .lineLimit(item.kind == .citedDeep ? 2 : 3)
                 }
                 Text(item.author)
-                    .font(.system(size: 5.5))
+                    .font(.system(size: 5.5 * s))
                     .foregroundStyle(Color.white.opacity(0.65))
                     .lineLimit(item.kind == .citedDeep ? 1 : 2)
             }
             .multilineTextAlignment(.center)
-            .padding(.horizontal, item.kind == .article ? 8 : 7)
-            .padding(.vertical, item.kind == .article ? 6 : 5)
+            .padding(.horizontal, (item.kind == .article ? 8 : 7) * s)
+            .padding(.vertical, (item.kind == .article ? 6 : 5) * s)
             .background(
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: 8 * s)
                     .fill(.regularMaterial)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: 8 * s)
                     .strokeBorder(Color.white.opacity(selected ? 0.85 : 0.35),
-                                  lineWidth: selected ? 2.0 : 0.7)
+                                  lineWidth: (selected ? 2.0 : 0.7) * s)
             )
         }
     }
@@ -1476,8 +1484,11 @@ struct EPUBMapView: View {
         // arm chips ride — so its .regularMaterial is the system's
         // real blurred glass, not a raster imitation (an ImageRenderer
         // has no backdrop and bakes materials out black). The raster
-        // plane the engine hands us serves only as the tape measure.
+        // plane the engine hands us serves only as the tape measure —
+        // it measured the supersampled face, so divide the crisp factor
+        // back out for the card's true size.
         let extents = texturedPlane.visualBounds(relativeTo: nil).extents
+            / Float(Self.crisp)
 
         // An invisible body keeps visualBounds honest for the engine's
         // attachment anchoring — a live face can report zero until the
@@ -1490,9 +1501,11 @@ struct EPUBMapView: View {
             materials: [ghost])
 
         // Attachments lay out at 1360 points to the metre; the raster
-        // ruler used 1000 — 1.36 keeps every card its familiar size.
+        // ruler used 1000 — 1.36 keeps every card its familiar size,
+        // divided by the crisp factor the supersampled face carries.
         // Selection grows the face a touch, as an active chip grows.
-        let scale: Float = 1.36 * (item.isSelected ? 1.06 : 1.0)
+        let scale: Float = 1.36 / Float(Self.crisp)
+            * (item.isSelected ? 1.06 : 1.0)
         func face(back: Bool) -> Entity {
             let entity = Entity()
             // Named so the face turner can find the pair each frame:
