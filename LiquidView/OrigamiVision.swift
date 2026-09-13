@@ -2075,9 +2075,11 @@ struct VisionReaderView: View {
                 if isDesk { deskTheme.page.ignoresSafeArea() }
             }
             .environment(\.colorScheme, readingScheme)
-            // Opening a reading selects it: the newest reading is the
-            // desk, and earlier ones return to glass.
-            .onAppear { model.readingDeskDocID = docID }
+            // Opening a reading no longer makes it the desk: the desk —
+            // this document alone, every node stepped away — is entered
+            // only by the panel's own top-left toggle. Auto-desking on
+            // appear emptied the whole hallway the moment a document
+            // opened.
             .sheet(item: $browsingSpeaker) { selection in
                 VisionSpeakerStatementsView(name: selection.name)
             }
