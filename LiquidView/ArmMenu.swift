@@ -268,8 +268,10 @@ final class ArmMenu {
             if simd_length(dorsal) > 1e-6 {
                 dorsal = simd_normalize(dorsal)
                 // The cross flips with the hand's mirror — one sign per
-                // chirality, verified on device.
-                if side == .left { dorsal = -dorsal }
+                // chirality. Verified on device 13 Sep: palm-down, the
+                // index→little cross exits the RIGHT palm and the LEFT
+                // back-of-hand, so the right negates.
+                if side == .right { dorsal = -dorsal }
                 lift = wrist.convert(direction: dorsal, from: nil)
             }
         }
