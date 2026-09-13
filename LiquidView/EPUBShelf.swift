@@ -603,6 +603,10 @@ struct ProceedingsMapView: View {
     /// auto-named from the papers' topics and titles, each editable in
     /// place; every paper stands in the column of its strongest magnet.
     @State private var magnetNames: [String] = Array(repeating: "", count: 12)
+    /// The clicked magnet: threads run from it to every paper it
+    /// speaks for, thicker where the pull is stronger. Clicking the
+    /// empty plane lets go.
+    @FocusState private var focusedMagnet: Int?
 
     /// One hallway meter drawn at this many points; the canvas center
     /// is the hallway's (0, 1.2) — mid-height of its article grid.
@@ -627,8 +631,10 @@ struct ProceedingsMapView: View {
                 // edge, written by the papers, rewritable by the reader.
                 // Return applies; an emptied field names itself again.
                 if viewChoice == .poles {
+                    magnetThreads
                     ForEach(magnetNames.indices, id: \.self) { slot in
-                        magnetField($magnetNames[slot], at: Self.magnetSlots[slot])
+                        magnetField($magnetNames[slot],
+                                    at: Self.magnetSlots[slot], slot: slot)
                     }
                 }
                 ForEach(items) { item in
@@ -837,7 +843,10 @@ struct ProceedingsMapView: View {
             .frame(width: Self.canvasSize.width,
                    height: Self.canvasSize.height)
             .contentShape(Rectangle())
-            .onTapGesture { selectedIDs = [] }
+            .onTapGesture {
+                selectedIDs = []
+                focusedMagnet = nil
+            }
         #if os(iOS)
         return base.background(TwoFingerScrollConfigurator())
         #else
@@ -991,18 +1000,55 @@ struct ProceedingsMapView: View {
     // MARK: The Magnets view — a pole at each side, the papers between
 
     /// One pole's name, written on the plane: a bare field styled like a
-    /// magnet caption. Return lays the papers out anew; an emptied field
-    /// is named again from the topics.
-    private func magnetField(_ text: Binding<String>, at point: CGPoint) -> some View {
+    /// magnet caption. Clicking it draws its threads; Return lays the
+    /// papers out anew; an emptied field is named again from the topics.
+    private func magnetField(_ text: Binding<String>, at point: CGPoint,
+                             slot: Int) -> some View {
         TextField("Topic", text: text)
             .textFieldStyle(.plain)
             .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(focusedMagnet == slot ? Color.accentColor : .secondary)
             .multilineTextAlignment(.center)
             .frame(width: 200)
+            .focused($focusedMagnet, equals: slot)
             .onSubmit { magnetsEdited() }
             .position(point)
-            .help("A magnet's topic — edit and press Return to pull the papers anew")
+            .help("A magnet's topic — click for its threads, edit and press Return to pull the papers anew")
+    }
+
+    /// The clicked magnet's threads: a line to every paper it speaks
+    /// for, its width the strength of the pull — so a paper filed under
+    /// another magnet still shows how much this one claims it.
+    @ViewBuilder
+    private var magnetThreads: some View {
+        if let slot = focusedMagnet, slot < magnetNames.count {
+            let pole = Self.poleWords(magnetNames[slot])
+            let anchor = Self.magnetSlots[slot]
+            let pulls: [(at: CGPoint, strength: Int)] = items
+                .filter { !$0.isSetAside }
+                .compactMap { item in
+                    let strength = magnetPull(item, pole)
+                    guard strength > 0 else { return nil }
+                    let at = overlayPositions[item.id] ?? positions[item.id]
+                        ?? seedCache[item.id] ?? Self.canvasCenter
+                    return (at, strength)
+                }
+            let strongest = pulls.map(\.strength).max() ?? 1
+            Canvas { context, _ in
+                for pullLine in pulls {
+                    var path = Path()
+                    path.move(to: anchor)
+                    path.addLine(to: pullLine.at)
+                    let share = CGFloat(pullLine.strength) / CGFloat(strongest)
+                    context.stroke(
+                        path,
+                        with: .color(Color.accentColor.opacity(0.25 + 0.3 * share)),
+                        lineWidth: 1 + 5 * share)
+                }
+            }
+            .frame(width: Self.canvasSize.width, height: Self.canvasSize.height)
+            .allowsHitTesting(false)
+        }
     }
 
     /// Where the twelve magnets stand: one row across the top of the
@@ -1086,29 +1132,34 @@ struct ProceedingsMapView: View {
     /// has a magnet: one no magnet fully claims goes to the one whose
     /// words touch it, and the last stragglers join the emptiest
     /// column. Set Aside cards keep their quiet row.
+    /// A magnet speaks for a text when each of its words stands in
+    /// it — whole, or as the stem of a longer word, so "hyper" pulls
+    /// "hypertextual" but "AI" never pulls "maintain".
+    private static func poleSpeaks(_ pole: Set<String>, for textWords: Set<String>) -> Bool {
+        guard !pole.isEmpty else { return false }
+        return pole.allSatisfy { word in
+            textWords.contains {
+                $0 == word || ($0.hasPrefix(word) && word.count >= 4)
+            }
+        }
+    }
+
+    /// The pull: one per topic label the magnet speaks for, and one
+    /// for the title — so papers the AI hasn't read yet answer the
+    /// magnets too, and sharpen as the extractions land.
+    private func magnetPull(_ item: Item, _ pole: Set<String>) -> Int {
+        var count = item.topics.reduce(0) { count, topic in
+            Self.poleSpeaks(pole, for: Self.poleWords(topic)) ? count + 1 : count
+        }
+        if Self.poleSpeaks(pole, for: Self.poleWords(item.title)) { count += 1 }
+        return count
+    }
+
     private func applyPoles() {
         let standing = items.filter { !$0.isSetAside }
 
-        // A magnet speaks for a text when each of its words stands in
-        // it — whole, or as the stem of a longer word, so "hyper" pulls
-        // "hypertextual" but "AI" never pulls "maintain".
-        func speaks(_ pole: Set<String>, for textWords: Set<String>) -> Bool {
-            guard !pole.isEmpty else { return false }
-            return pole.allSatisfy { word in
-                textWords.contains {
-                    $0 == word || ($0.hasPrefix(word) && word.count >= 4)
-                }
-            }
-        }
-        // The pull: one per topic label the magnet speaks for, and one
-        // for the title — so papers the AI hasn't read yet answer the
-        // magnets too, and sharpen as the extractions land.
         func pull(_ item: Item, _ pole: Set<String>) -> Int {
-            var count = item.topics.reduce(0) { count, topic in
-                speaks(pole, for: Self.poleWords(topic)) ? count + 1 : count
-            }
-            if speaks(pole, for: Self.poleWords(item.title)) { count += 1 }
-            return count
+            magnetPull(item, pole)
         }
         // The loose touch: how many of the magnet's words stand
         // anywhere in the paper — the net under the full match.
