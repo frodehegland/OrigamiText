@@ -815,9 +815,13 @@ struct PublicationFilteredListView: View {
         case .author(let name):
             model.searchFilteredEPUBs(model.pinnedFirst(
                 model.epubRecords(inPublication: venue).filter { record in
-                    record.authorList.contains {
-                        $0.trimmingCharacters(in: .whitespaces)
-                            .caseInsensitiveCompare(name) == .orderedSame
+                    // Some records hold the joined byline as one string;
+                    // the sidebar lists people, so match within commas.
+                    record.authorList.contains { entry in
+                        entry.components(separatedBy: ",").contains {
+                            $0.trimmingCharacters(in: .whitespaces)
+                                .caseInsensitiveCompare(name) == .orderedSame
+                        }
                     }
                 }
             ))

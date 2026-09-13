@@ -412,8 +412,11 @@ struct SidebarView: View {
             // Authors: filter set-aside, sort pinned-first then alphabetical
             let pinnedAuthorSet = Set(model.globalPinnedAuthors)
             let setAsideAuthors = analysis?.setAsideAuthors ?? []
+            // Records without a parsed author array fall back to the
+            // joined byline — split on commas so every row is one person.
             let rawAuthors = Array(Set(
                 pubRecords.flatMap(\.authorList)
+                    .flatMap { $0.components(separatedBy: ",") }
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
             )).filter { !setAsideAuthors.contains($0) }
@@ -426,8 +429,12 @@ struct SidebarView: View {
                 })
                 : [:]
             let pubAuthors = rawAuthors.sorted { a, b in
-                let ap = pinnedAuthorSet.contains(a), bp = pinnedAuthorSet.contains(b)
-                if ap != bp { return ap }
+                // Pinned float in the alphabetical orders; the rank
+                // order is strictly by count or it reads as broken.
+                if pubAuthorsSort != "rank" {
+                    let ap = pinnedAuthorSet.contains(a), bp = pinnedAuthorSet.contains(b)
+                    if ap != bp { return ap }
+                }
                 switch pubAuthorsSort {
                 case "rank":
                     let ca = seriesCounts[a] ?? 0, cb = seriesCounts[b] ?? 0
