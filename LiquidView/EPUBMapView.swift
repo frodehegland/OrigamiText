@@ -1178,10 +1178,6 @@ struct EPUBMapView: View {
         }
         view = view.shouldEnableNode { item in
             guard model.readingDeskDocID == nil else { return false }
-            let n = items.count(where: { $0.kind == .article && $0.isSelected })
-            // With exactly 2 articles raised: only articles and shared
-            // citations are shown — the wall narrows to the overlap.
-            if n == 2 { return item.kind == .article || item.kind == .concept || item.isShared }
             // A concept's own Focus: only that concept and the articles
             // it touches stand; everything unconnected steps away.
             if let focusedConceptID {
@@ -1189,7 +1185,10 @@ struct EPUBMapView: View {
                     || focusedConceptArticleIDs.contains(item.id)
             }
             // Focus: hide everything except selected items and anything
-            // directly connected to them via the citation graph.
+            // directly connected to them via the citation graph. The
+            // explicit Focus outranks the two-selected overlap rule
+            // below — it used to lose to it, so Focus with exactly two
+            // articles selected appeared to do nothing.
             if focusMode {
                 let selected = items.filter { $0.isSelected }
                 guard !selected.isEmpty else { return true }
@@ -1202,6 +1201,10 @@ struct EPUBMapView: View {
                 }
                 return false
             }
+            // With exactly 2 articles raised: only articles and shared
+            // citations are shown — the wall narrows to the overlap.
+            let n = items.count(where: { $0.kind == .article && $0.isSelected })
+            if n == 2 { return item.kind == .article || item.kind == .concept || item.isShared }
             return true
         }
         view = view.shouldDrawConnectionForNode { item in
@@ -1260,6 +1263,17 @@ struct EPUBMapView: View {
             // Only Overlap steps in only when common ground stands.
             armMenu.setChipVisible(Self.onlyOverlapChipID, false)
             armMenu.setChipVisible(Self.revealConceptsChipID, false)
+            // The chips wake wearing their standing state — a floor
+            // lane or graph left on last session reads active from the
+            // first frame.
+            armMenu.setChipActive(Self.floorChipID,
+                                  floorShowRaw != FloorShow.nothing.rawValue)
+            armMenu.setChipActive(Self.floorMiddleChipID,
+                                  floorShowMiddleRaw != FloorShow.nothing.rawValue)
+            armMenu.setChipActive(Self.floorRightChipID,
+                                  floorShowRightRaw != FloorShow.nothing.rawValue)
+            armMenu.setChipActive(Self.timeflowLeftChipID, timeflowLeftShown)
+            armMenu.setChipActive(Self.timeflowRightChipID, timeflowRightShown)
             conceptLadder.install(in: content)
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
@@ -1792,24 +1806,29 @@ struct EPUBMapView: View {
                 updateSankey()
                 reload()
             }
+            armMenu.setChipActive(Self.conceptsChipID, conceptSpaceMode)
             return true
         case Self.timeflowLeftChipID:
             timeflowLeftShown.toggle()
+            armMenu.setChipActive(Self.timeflowLeftChipID, timeflowLeftShown)
             updateSankey()
             return true
         case Self.timeflowRightChipID:
             timeflowRightShown.toggle()
+            armMenu.setChipActive(Self.timeflowRightChipID, timeflowRightShown)
             updateSankey()
             return true
         case Self.onlyOverlapChipID:
             // The wall narrowed to the common ground, and back.
             onlyOverlap.toggle()
+            armMenu.setChipActive(Self.onlyOverlapChipID, onlyOverlap)
             reload()
             return true
         case Self.focusChipID:
             // Show only selected items and their direct connections.
             focusMode.toggle()
             armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
+            armMenu.setChipActive(Self.focusChipID, focusMode)
             reload()
             return true
         case Self.floorChipID:
@@ -1819,6 +1838,8 @@ struct EPUBMapView: View {
                 floorShowLastRaw = floorShowRaw
                 floorShowRaw = FloorShow.nothing.rawValue
             }
+            armMenu.setChipActive(Self.floorChipID,
+                                  floorShowRaw != FloorShow.nothing.rawValue)
             return true
         case Self.floorMiddleChipID:
             if floorShowMiddleRaw == FloorShow.nothing.rawValue {
@@ -1826,6 +1847,8 @@ struct EPUBMapView: View {
             } else {
                 floorShowMiddleRaw = FloorShow.nothing.rawValue
             }
+            armMenu.setChipActive(Self.floorMiddleChipID,
+                                  floorShowMiddleRaw != FloorShow.nothing.rawValue)
             return true
         case Self.floorRightChipID:
             if floorShowRightRaw == FloorShow.nothing.rawValue {
@@ -1833,6 +1856,8 @@ struct EPUBMapView: View {
             } else {
                 floorShowRightRaw = FloorShow.nothing.rawValue
             }
+            armMenu.setChipActive(Self.floorRightChipID,
+                                  floorShowRightRaw != FloorShow.nothing.rawValue)
             return true
         case Self.settingsChipID:
             openWindow(id: "settings")

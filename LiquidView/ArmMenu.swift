@@ -138,6 +138,7 @@ final class ArmMenu {
 
             menus[effectiveSide(of: chip)]?.addChild(item)
             items[chip.id] = item
+            titles[chip.id] = chip.title
         }
 
         // Predicted tracking keeps the chips glued to a moving wrist —
@@ -336,11 +337,35 @@ final class ArmMenu {
         items[id]?.isEnabled = visible
     }
 
+    /// Every chip's current title, for redrawing the label when its
+    /// active state changes. Origami addition (carry back to Author),
+    /// as are activeIDs, setChipActive, and refreshChipLabel below.
+    private var titles: [String: String] = [:]
+    /// The chips whose function stands ON — drawn slightly larger,
+    /// with a thicker border.
+    private var activeIDs: Set<String> = []
+
     /// Relabels a chip in place — the label child carries the
     /// ViewAttachmentComponent, so we replace it there.
     func setChipTitle(_ id: String, _ title: String) {
+        titles[id] = title
+        refreshChipLabel(id)
+    }
+
+    /// Marks a chip's function as standing on: the chip grows a little
+    /// and its border thickens, so the arm shows what is engaged.
+    func setChipActive(_ id: String, _ active: Bool) {
+        guard activeIDs.contains(id) != active else { return }
+        if active { activeIDs.insert(id) } else { activeIDs.remove(id) }
+        refreshChipLabel(id)
+    }
+
+    private func refreshChipLabel(_ id: String) {
         guard let label = items[id]?.children.first else { return }
-        label.components.set(ViewAttachmentComponent(rootView: ArmChipView(text: title)))
+        let active = activeIDs.contains(id)
+        label.components.set(ViewAttachmentComponent(
+            rootView: ArmChipView(text: titles[id] ?? id, active: active)))
+        label.scale = SIMD3<Float>(repeating: active ? 0.37 : 0.32)
     }
 }
 
@@ -351,6 +376,9 @@ final class ArmMenu {
 /// tap is handled by the collision on the entity it rides.
 struct ArmChipView: View {
     let text: String
+    /// The chip's function stands on: a thicker, brighter border (the
+    /// slight growth is the label entity's scale, set by the menu).
+    var active: Bool = false
 
     var body: some View {
         Text(text)
@@ -362,7 +390,8 @@ struct ArmChipView: View {
             .background(RoundedRectangle(cornerRadius: 16).fill(.regularMaterial))
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .strokeBorder(.white.opacity(0.35), lineWidth: 1)
+                    .strokeBorder(.white.opacity(active ? 0.85 : 0.35),
+                                  lineWidth: active ? 2.5 : 1)
             )
             .allowsHitTesting(false)
     }
