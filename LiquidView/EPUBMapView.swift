@@ -1140,8 +1140,10 @@ struct EPUBMapView: View {
                     placed[moved.id] = nil
                     reload()
                     return
-                } else if moved.isAside && pos.y >= 0.15 && pos.y <= 2.0 {
-                    // Lifted from the aside row back into normal space → restore.
+                } else if moved.isAside && pos.y > 0.9 && pos.y <= 2.0 {
+                    // Only a deliberate lift — chest height — brings a
+                    // set-aside slip back; a nudge along the floor row
+                    // (anything under 0.9 m) keeps the tag standing.
                     placed[moved.id] = pos
                     model.toggleSetAside(moved.id)
                     reload()
@@ -1476,7 +1478,7 @@ struct EPUBMapView: View {
            var model = box.modelEntity.model {
             var mat = UnlitMaterial()
             mat.color = .init(tint: paper)
-            mat.blending = .transparent(opacity: 0.5)
+            mat.blending = .transparent(opacity: 0.3)
             model.materials = [mat]
             box.modelEntity.model = model
         }
