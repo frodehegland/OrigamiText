@@ -1350,6 +1350,13 @@ struct EPUBMapView: View {
                 .lineLimit(1)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2.5)
+                // The slip's own faint sheet — the box body is invisible
+                // now, so the paper lives here like every other card's.
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill((dark ? Color(white: 0.10) : Color(white: 0.85))
+                            .opacity(0.3))
+                )
                 .opacity(0.5)
         } else if item.kind == .concept {
             // Knowledge Space node style: serif title and optional
@@ -1396,6 +1403,24 @@ struct EPUBMapView: View {
             case .citedDeep: 6
             case .concept: 6.5
             }
+            // The sheet's own paper — the card is a single plane now,
+            // so paper, transparency, and the selection border are all
+            // drawn in this rasterized face. Each rank a step quieter.
+            let paper: Color = if dark {
+                switch item.kind {
+                case .article: Color(white: 0.10)
+                case .cited: Color(white: 0.18)
+                case .citedDeep: Color(white: 0.26)
+                case .concept: Color(white: 0.15)
+                }
+            } else {
+                switch item.kind {
+                case .article: Color(white: 0.85)
+                case .cited: Color(white: 0.75)
+                case .citedDeep: Color(white: 0.65)
+                case .concept: Color(white: 0.90)
+                }
+            }
             VStack(spacing: item.kind == .citedDeep ? 1.5 : 2.5) {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                     if item.isPinned {
@@ -1414,7 +1439,16 @@ struct EPUBMapView: View {
                     .lineLimit(item.kind == .citedDeep ? 1 : 2)
             }
             .multilineTextAlignment(.center)
-            .padding(item.kind == .article ? 5 : (item.kind == .cited ? 4 : 3))
+            .padding(item.kind == .article ? 7 : (item.kind == .cited ? 6 : 5))
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(paper.opacity(item.isSelected ? 1.0 : 0.3))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(item.isSelected ? Color.black : Color.clear,
+                                  lineWidth: 1.5)
+            )
         }
     }
 
@@ -1425,66 +1459,26 @@ struct EPUBMapView: View {
         // lightness lives in its PAPER alone (half-transparent, below),
         // so the words stay solid ink over a sheer card.
         let opacity: Float = item.isAside ? 0.4 : 1.0
-        let dark = visionThemeRaw == VisionTheme.dark.rawValue
-        let paper: UIColor
-        if dark {
-            paper = switch item.kind {
-            case .article: UIColor(white: 0.10, alpha: 1)
-            case .cited: UIColor(white: 0.18, alpha: 1)
-            case .citedDeep: UIColor(white: 0.26, alpha: 1)
-            case .concept: UIColor(red: 0.10, green: 0.12, blue: 0.22, alpha: 1)
-            }
-        } else {
-            paper = switch item.kind {
-            case .article: UIColor(white: 0.85, alpha: 1)
-            case .cited: UIColor(white: 0.75, alpha: 1)
-            case .citedDeep: UIColor(white: 0.65, alpha: 1)
-            case .concept: UIColor(red: 0.88, green: 0.92, blue: 1.0, alpha: 1)
-            }
-        }
-        // Cited cards grow deeper with each additional citing article:
-        // 0.5cm for one citation, up to 7cm for heavily-shared works.
-        let cardDepth: Float = switch item.kind {
-        case .concept: 0.005
-        case .cited, .citedDeep:
-            min(0.005 + Float(max(1, item.citationCount) - 1) * 0.010, 0.07)
-        case .article: 0.01
-        }
-        // Concept cards wear a glass face (SwiftUI .regularMaterial) —
-        // the box body must be invisible so only the SwiftUI overlay shows.
-        let conceptBorder = item.kind == .concept
+        // A single sheet, no volume: the paper, transparency, and the
+        // selection border all live in the rasterized face (cardFace) —
+        // every kind's box body is fully invisible and exists only to
+        // give the pinch its collision depth and the corridor its
+        // readable back face.
         let box = ModelEntity.box(
             with: texturedPlane,
             // The same face on the card's back, turned to read — a
             // reader deep in the corridor looks back at standing text.
             backPlane: texturedPlane.clone(recursive: true),
-            color: paper,
-            depth: cardDepth,
-            margins: item.isAside ? 0.004 : 0.006,
+            color: .clear,
+            depth: 0.004,
+            margins: 0.004,
             opacity: opacity,
-            cornerRadius: 0.01,
-            // The selected card wears a black border — quiet ink, not
-            // the ember — anchoring the citation lines. Concept cards
-            // skip this: their SwiftUI overlay draws the selection.
-            useBorder: item.isSelected && !conceptBorder,
-            borderColor: item.isSelected && !conceptBorder ? .black : .clear,
+            cornerRadius: 0.005,
+            useBorder: false,
+            borderColor: .clear,
             materialMode: .none
         )
-        // An unselected document's paper stands at half presence while
-        // its words stay solid: the box body alone turns translucent
-        // (the text planes are children with their own material).
-        // Selection returns the full opaque paper.
-        if !item.isSelected, !conceptBorder, !item.isAside,
-           var model = box.modelEntity.model {
-            var mat = UnlitMaterial()
-            mat.color = .init(tint: paper)
-            mat.blending = .transparent(opacity: 0.3)
-            model.materials = [mat]
-            box.modelEntity.model = model
-        }
-        // Concept cards: the glass background lives in the SwiftUI cardFace.
-        // Strip the box body to fully transparent so it doesn't double up.
-        if conceptBorder, var model = box.modelEntity.model {
+        if var model = box.modelEntity.model {
             var mat = UnlitMaterial()
             mat.color = .init(tint: .clear)
             mat.blending = .transparent(opacity: 0.0)
