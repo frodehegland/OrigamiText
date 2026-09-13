@@ -8,6 +8,8 @@
 #if os(visionOS)
 import SwiftUI
 import RealityKit
+import ARKit
+import QuartzCore
 
 /// One node on the Map: a journal's article, a work it cites (standing
 /// a level behind). Position mutates as the engine
@@ -90,6 +92,7 @@ struct EPUBMapView: View {
     /// The Concepts ladder off the left forearm — Interatlas's levels,
     /// carrying the reader's macOS concepts.
     @State private var conceptLadder = ConceptLadder()
+    @State private var faceTurner = CardFaceTurner()
 
     /// True while concept cards are shown in the hallway — concepts
     /// join the items array in front of the article wall.
@@ -1314,6 +1317,7 @@ struct EPUBMapView: View {
             armMenu.setChipActive(Self.timeflowLeftChipID, timeflowLeftShown)
             armMenu.setChipActive(Self.timeflowRightChipID, timeflowRightShown)
             conceptLadder.install(in: content)
+            faceTurner.install(in: content)
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
             floorBandLeft.install(in: content)
@@ -1491,6 +1495,10 @@ struct EPUBMapView: View {
         let scale: Float = 1.36 * (item.isSelected ? 1.06 : 1.0)
         func face(back: Bool) -> Entity {
             let entity = Entity()
+            // Named so the face turner can find the pair each frame:
+            // glass is see-through, so only the side toward the reader
+            // may stand — both lit would read as text through text.
+            entity.name = back ? CardFaceTurner.backName : CardFaceTurner.frontName
             entity.components.set(ViewAttachmentComponent(
                 rootView: cardFace(for: item)
                     .frame(maxWidth: nodeMaxWidth(for: item))
@@ -1501,6 +1509,7 @@ struct EPUBMapView: View {
                 // The same face on the card's back, turned to read — a
                 // reader deep in the corridor looks back at standing text.
                 entity.orientation = simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+                entity.isEnabled = false
             }
             return entity
         }
@@ -2989,6 +2998,55 @@ private final class SelectedCitationLines {
             materials: [mat])
         positionLine(line, from: from, to: to)
         return line
+    }
+}
+
+// MARK: - Card faces
+
+/// Turns each card's readable side to the reader. Every card carries a
+/// front and a back face, and both are live glass — see-through, so
+/// with the pair lit the far text ghosts through the near, mirrored.
+/// Head pose from world tracking picks the side facing the viewer each
+/// frame; the other goes dark. Without a head pose (simulator, tracking
+/// not yet running) the fronts stand alone — cardEntity wakes every
+/// back face disabled.
+@MainActor
+final class CardFaceTurner {
+    static let frontName = "card.face.front"
+    static let backName = "card.face.back"
+
+    private let session = ARKitSession()
+    private let worldTracking = WorldTrackingProvider()
+    private var tick: EventSubscription?
+
+    func install(in content: RealityViewContent) {
+        tick = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+            MainActor.assumeIsolated { self?.turn(scene: event.scene) }
+        }
+        guard WorldTrackingProvider.isSupported else { return }
+        Task { [session, worldTracking] in
+            try? await session.run([worldTracking])
+        }
+    }
+
+    private func turn(scene: RealityKit.Scene) {
+        guard worldTracking.state == .running,
+              let device = worldTracking.queryDeviceAnchor(
+                atTimestamp: CACurrentMediaTime())
+        else { return }
+        let column = device.originFromAnchorTransform.columns.3
+        let head = SIMD3<Float>(column.x, column.y, column.z)
+        for card in scene.performQuery(
+            EntityQuery(where: .has(EPUBNodeIDComponent.self))) {
+            guard let front = card.findEntity(named: Self.frontName),
+                  let back = card.findEntity(named: Self.backName)
+            else { continue }
+            let forward = card.orientation(relativeTo: nil)
+                .act(SIMD3<Float>(0, 0, 1))
+            let facing = simd_dot(forward, head - card.position(relativeTo: nil)) >= 0
+            if front.isEnabled != facing { front.isEnabled = facing }
+            if back.isEnabled == facing { back.isEnabled = !facing }
+        }
     }
 }
 
