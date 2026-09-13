@@ -605,8 +605,15 @@ struct EPUBMapView: View {
         }
         let merged = model.allMergedConcepts
             .sorted { $0.sourceDocIDs.count > $1.sourceDocIDs.count }
-            .prefix(40)
-        for concept in merged where seen.insert(concept.id).inserted {
+            .prefix(60)
+        for concept in merged {
+            // Author's node pool carries heading and citation nodes so
+            // layouts can reference them — a paper's own title arrives
+            // tagged "heading". Those are documents, not concepts; the
+            // Map's concept row keeps them out.
+            let tag = concept.category?.lowercased() ?? ""
+            guard tag != "heading", tag != "citation" else { continue }
+            guard seen.insert(concept.id).inserted else { continue }
             pool.append(concept)
         }
         // A hidden concept stays away until Reveal All Concepts
@@ -1153,7 +1160,6 @@ struct EPUBMapView: View {
                 }
                 return AnyView(
                     HStack(spacing: 8) {
-                        Button("All") { selectAllConcepts() }
                         Button(focusedConceptID == item.id ? "Un-Focus" : "Focus") {
                             focusConcept(item)
                         }
@@ -1472,10 +1478,17 @@ struct EPUBMapView: View {
                 // attachment a material paints the whole backing
                 // surface square — this API clips it to the corners.
                 .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 5 * s))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5 * s)
-                        .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.6 * s)
-                )
+                // No frame — just the two side rails, like every card.
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(Color.white.opacity(0.25))
+                        .frame(width: 0.6 * s)
+                        .padding(.vertical, 5 * s)
+                }
+                .overlay(alignment: .trailing) {
+                    Rectangle().fill(Color.white.opacity(0.25))
+                        .frame(width: 0.6 * s)
+                        .padding(.vertical, 5 * s)
+                }
                 .opacity(0.5)
         } else if item.kind == .concept {
             // The arm chips' glass, in the concepts' own serif voice.
@@ -1507,13 +1520,18 @@ struct EPUBMapView: View {
             }
             .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 14 * s),
                                    displayMode: item.isSelected ? .never : .always)
-            .overlay(
-                RoundedRectangle(cornerRadius: 14 * s)
-                    .strokeBorder(
-                        Color.white.opacity(item.isSelected ? 0.85 : 0.35),
-                        lineWidth: (item.isSelected ? 2.5 : 1) * s
-                    )
-            )
+            // No frame around the pane — a vertical rail at each side,
+            // inset past the rounded corners, brighter when selected.
+            .overlay(alignment: .leading) {
+                Rectangle().fill(Color.white.opacity(item.isSelected ? 0.85 : 0.35))
+                    .frame(width: (item.isSelected ? 2.5 : 1) * s)
+                    .padding(.vertical, 14 * s)
+            }
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(Color.white.opacity(item.isSelected ? 0.85 : 0.35))
+                    .frame(width: (item.isSelected ? 2.5 : 1) * s)
+                    .padding(.vertical, 14 * s)
+            }
         } else {
             // Half-size type for the half-size cards.
             let titleSize: CGFloat = switch item.kind {
@@ -1570,11 +1588,18 @@ struct EPUBMapView: View {
             }
             .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 8 * s),
                                    displayMode: selected ? .never : .always)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8 * s)
-                    .strokeBorder(Color.white.opacity(selected ? 0.85 : 0.35),
-                                  lineWidth: (selected ? 2.0 : 0.7) * s)
-            )
+            // No frame around the pane — a vertical rail at each side,
+            // inset past the rounded corners, brighter when selected.
+            .overlay(alignment: .leading) {
+                Rectangle().fill(Color.white.opacity(selected ? 0.85 : 0.35))
+                    .frame(width: (selected ? 2.0 : 0.7) * s)
+                    .padding(.vertical, 8 * s)
+            }
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(Color.white.opacity(selected ? 0.85 : 0.35))
+                    .frame(width: (selected ? 2.0 : 0.7) * s)
+                    .padding(.vertical, 8 * s)
+            }
         }
     }
 
@@ -1625,7 +1650,11 @@ struct EPUBMapView: View {
                 rootView: cardFace(for: item, withAbstract: !back)
                     .frame(maxWidth: nodeMaxWidth(for: item))
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(width: facePoints.width, height: facePoints.height)))
+                    .frame(width: facePoints.width, height: facePoints.height)
+                    // As the chips do: the face never takes the pinch —
+                    // the holder's collision does, and the concept
+                    // buttons beneath keep their own taps.
+                    .allowsHitTesting(false)))
             entity.scale = SIMD3<Float>(repeating: scale)
             entity.position = SIMD3<Float>(0, 0, back ? -0.003 : 0.003)
             if back {
@@ -1723,24 +1752,6 @@ struct EPUBMapView: View {
             items[index].isSelected = match
         }
         updateStandingChips()
-        reload()
-    }
-
-    /// Selects every concept card, and with each one all the articles
-    /// it touches — the union of all concept-article links in one
-    /// gesture.
-    private func selectAllConcepts() {
-        for concept in items where concept.kind == .concept {
-            let matches = model.articleIDs(mentioning: concept.title)
-            for index in items.indices
-            where items[index].kind == .article && matches.contains(items[index].id) {
-                items[index].isSelected = true
-                raisedArticleIDs.insert(items[index].id)
-            }
-        }
-        for index in items.indices where items[index].kind == .concept {
-            items[index].isSelected = true
-        }
         reload()
     }
 
