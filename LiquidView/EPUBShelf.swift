@@ -765,11 +765,12 @@ private struct ProceedingsMapNode: View {
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 3) {
+            // A set-aside card has stepped back — one line of title is
+            // enough; the full title returns with the book.
             Text(item.title)
                 .font(titleFont)
-                .lineLimit(3)
-            // A set-aside card has stepped back — its title is enough;
-            // the byline returns with the book.
+                .lineLimit(item.isSetAside ? 1 : 3)
+            // The byline steps back with it.
             if !item.isSetAside {
                 Text(item.author)
                     .font(authorFont)
