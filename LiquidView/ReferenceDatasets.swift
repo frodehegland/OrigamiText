@@ -1083,3 +1083,194 @@ struct ReferenceDatasetCardSection: View {
         .controlSize(.small)
     }
 }
+
+// MARK: - Series authors — who has published in the proceedings, how often
+
+/// One person across the whole series: their best display name, how many
+/// papers carried their name, and every raw spelling that folded into them.
+struct SeriesAuthor: Sendable, Identifiable {
+    var name: String
+    var paperCount: Int
+    var variants: [String]
+    var id: String { name }
+}
+
+/// Resolves a free-form author name against the ranked series — the Map
+/// asks it which person a paper's byline means.
+struct SeriesAuthorMatcher: Sendable {
+    /// surname key → the clusters sharing it: every variant's given
+    /// tokens, the chosen display name, and the paper count.
+    fileprivate var bySurname: [String: [(givens: [[String]], name: String, count: Int)]] = [:]
+
+    func match(_ raw: String) -> (name: String, count: Int)? {
+        guard let parsed = SeriesAuthorRank.parse(raw) else { return nil }
+        for cluster in bySurname[parsed.surname] ?? [] {
+            if cluster.givens.contains(where: {
+                SeriesAuthorRank.compatibleGiven(parsed.given, $0)
+            }) {
+                return (cluster.name, cluster.count)
+            }
+        }
+        return nil
+    }
+}
+
+/// Folds the dataset's author spellings into people and ranks them by
+/// papers in the proceedings. Conservative on purpose: full names merge
+/// with their initialed and diminutive forms, but a contradicting middle
+/// initial keeps Kenneth M. and Kenneth T. Anderson two people, and a
+/// bare shared first letter never merges Janet with Jill.
+nonisolated enum SeriesAuthorRank {
+
+    private static let suffixes: Set<String> = ["jr", "sr", "ii", "iii", "iv"]
+    private static let particles: Set<String> = [
+        "de", "da", "das", "dos", "del", "der", "den", "van", "von",
+        "la", "le", "di", "du", "ter"]
+    /// The few diminutives the shared-stem rule cannot see.
+    private static let nicknames: [String: String] = [
+        "sigi": "siegfried", "bob": "robert", "bill": "william",
+        "ted": "edward", "peggy": "margaret", "jamie": "james"]
+
+    struct ParsedName {
+        /// Folded, space-free, particles joined in: "de bra" and
+        /// "DeRoure" both read as one word.
+        var surname: String
+        /// Folded given tokens, suffixes and particles dropped.
+        var given: [String]
+    }
+
+    static func parse(_ raw: String) -> ParsedName? {
+        let folded = raw
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .lowercased()
+        var tokens = folded.split(whereSeparator: { !$0.isLetter }).map(String.init)
+        while let last = tokens.last, suffixes.contains(last) { tokens.removeLast() }
+        guard tokens.count >= 2 else { return nil }
+        var surnameParts = [tokens.removeLast()]
+        while let last = tokens.last, particles.contains(last) {
+            surnameParts.insert(tokens.removeLast(), at: 0)
+        }
+        let given = tokens.filter { !particles.contains($0) }
+        guard !given.isEmpty else { return nil }
+        return ParsedName(surname: surnameParts.joined(), given: given)
+    }
+
+    /// Whether two given-name readings can be the same person.
+    static func compatibleGiven(_ a: [String], _ b: [String]) -> Bool {
+        guard let firstA = a.first, let firstB = b.first,
+              firstCompatible(firstA, firstB) else { return false }
+        // Middle initials must not contradict: one reading's set of
+        // initials must contain the other's (an absent middle says
+        // nothing; M against T says two people).
+        let middleA = Set(a.dropFirst().map { String($0.prefix(1)) })
+        let middleB = Set(b.dropFirst().map { String($0.prefix(1)) })
+        return middleA.isSubset(of: middleB) || middleB.isSubset(of: middleA)
+    }
+
+    private static func firstCompatible(_ rawA: String, _ rawB: String) -> Bool {
+        let a = nicknames[rawA] ?? rawA
+        let b = nicknames[rawB] ?? rawB
+        if a == b { return true }
+        // An initial matches any name it begins.
+        if a.count == 1 || b.count == 1 { return a.prefix(1) == b.prefix(1) }
+        // Dave/David, Tim/Timothy, Hao-wei/Haowei: a shared three-letter
+        // stem — Janet/Jill and Suin/Sunghun share less and stay apart.
+        return a.prefix(3) == b.prefix(3)
+    }
+
+    /// The ranking and its matcher, from every enabled dataset's papers.
+    static func ranked(from datasets: [ReferenceDataset])
+        -> (ranked: [SeriesAuthor], matcher: SeriesAuthorMatcher) {
+        // Every raw spelling, with how often it appears — and the papers
+        // it appears on, for the recount once spellings fold together.
+        var parsedByRaw: [String: ParsedName] = [:]
+        var rawNames: [String: Int] = [:]
+        var papers: [[String]] = []   // each paper's raw author names
+        for dataset in datasets where dataset.isEnabled {
+            for record in dataset.records where record.isPaper {
+                var names: [String] = []
+                for author in record.authors {
+                    let raw = author.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !raw.isEmpty, let parsed = parse(raw) else { continue }
+                    parsedByRaw[raw] = parsed
+                    rawNames[raw, default: 0] += 1
+                    names.append(raw)
+                }
+                if !names.isEmpty { papers.append(names) }
+            }
+        }
+        // Union-find inside each surname bucket: compatible spellings
+        // fold into one person.
+        var clusterOf: [String: Int] = [:]   // raw name → cluster index
+        var clusters: [[String]] = []        // cluster index → raw names
+        var buckets: [String: [String]] = [:]
+        for (raw, parsed) in parsedByRaw {
+            buckets[parsed.surname, default: []].append(raw)
+        }
+        for (_, raws) in buckets {
+            var local: [Int] = []           // cluster ids seen in this bucket
+            for raw in raws.sorted() {
+                let parsed = parsedByRaw[raw]!
+                var home: Int?
+                for id in local {
+                    if clusters[id].contains(where: {
+                        compatibleGiven(parsed.given, parsedByRaw[$0]!.given)
+                    }) { home = id; break }
+                }
+                if let home {
+                    clusters[home].append(raw)
+                    clusterOf[raw] = home
+                } else {
+                    clusters.append([raw])
+                    clusterOf[raw] = clusters.count - 1
+                    local.append(clusters.count - 1)
+                }
+            }
+        }
+        // Papers per person — each paper counts a person once, however
+        // many spellings of them it carries.
+        var paperCount: [Int: Int] = [:]
+        for names in papers {
+            for id in Set(names.compactMap { clusterOf[$0] }) {
+                paperCount[id, default: 0] += 1
+            }
+        }
+        // The display name: the spelling seen most, fullest form on ties.
+        func displayName(_ raws: [String]) -> String {
+            raws.max {
+                let a = (rawNames[$0] ?? 0, $0.split(separator: " ").count, $0.count)
+                let b = (rawNames[$1] ?? 0, $1.split(separator: " ").count, $1.count)
+                return a < b
+            } ?? raws[0]
+        }
+        var ranked: [SeriesAuthor] = []
+        var matcher = SeriesAuthorMatcher()
+        for (id, raws) in clusters.enumerated() {
+            guard let count = paperCount[id], count > 0 else { continue }
+            let author = SeriesAuthor(name: displayName(raws),
+                                      paperCount: count,
+                                      variants: raws.sorted())
+            ranked.append(author)
+            if let surname = parsedByRaw[raws[0]]?.surname {
+                matcher.bySurname[surname, default: []].append(
+                    (givens: raws.compactMap { parsedByRaw[$0]?.given },
+                     name: author.name, count: count))
+            }
+        }
+        ranked.sort {
+            $0.paperCount != $1.paperCount
+                ? $0.paperCount > $1.paperCount
+                : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        return (ranked, matcher)
+    }
+}
+
+extension ReferenceDatasetStore {
+    /// The whole series' authors, ranked — built from the enabled
+    /// datasets on demand.
+    func seriesAuthors() -> (ranked: [SeriesAuthor], matcher: SeriesAuthorMatcher) {
+        loadIfNeeded()
+        return SeriesAuthorRank.ranked(from: datasets)
+    }
+}

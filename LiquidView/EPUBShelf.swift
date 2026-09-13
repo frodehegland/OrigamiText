@@ -521,6 +521,10 @@ struct ProceedingsMapView: View {
         var topics: [String] = []
         var people: [String] = []
         var entities: [String] = []
+        /// The paper's best-ranked series author (the imported dataset's
+        /// person) and their paper count — the Author Rank view's rungs.
+        var seriesName: String? = nil
+        var seriesCount: Int = 0
     }
 
     let items: [Item]
@@ -566,7 +570,7 @@ struct ProceedingsMapView: View {
     /// layout; the computed views arrange the same cards around their
     /// labels; a saved view replays a kept arrangement.
     enum MapViewChoice: Equatable {
-        case standard, topics, authors, people
+        case standard, topics, authors, people, rank
         case saved(String)
 
         var title: String {
@@ -575,6 +579,7 @@ struct ProceedingsMapView: View {
             case .topics: "Topics"
             case .authors: "Authors"
             case .people: "People"
+            case .rank: "Author Rank"
             case .saved(let name): name
             }
         }
@@ -666,7 +671,7 @@ struct ProceedingsMapView: View {
         // computed view is up, the magnets re-gather.
         .onChange(of: tagsFingerprint) {
             switch viewChoice {
-            case .topics, .authors, .people: switchView(to: viewChoice)
+            case .topics, .authors, .people, .rank: switchView(to: viewChoice)
             default: break
             }
         }
@@ -757,6 +762,7 @@ struct ProceedingsMapView: View {
             Button("Topics") { switchView(to: .topics) }
             Button("Authors") { switchView(to: .authors) }
             Button("People") { switchView(to: .people) }
+            Button("Author Rank") { switchView(to: .rank) }
             let names = savedViewNames
             if !names.isEmpty {
                 Divider()
@@ -794,8 +800,9 @@ struct ProceedingsMapView: View {
     /// One string that changes when any card's AI labels do — the
     /// recompute trigger for a standing computed view.
     private var tagsFingerprint: String {
-        items.map { "\($0.id):\($0.topics.count).\($0.people.count).\($0.entities.count)" }
-            .joined(separator: "|")
+        items.map {
+            "\($0.id):\($0.topics.count).\($0.people.count).\($0.entities.count).\($0.seriesCount)"
+        }.joined(separator: "|")
     }
 
     /// Find on the plane: a card whose title or author carries the words
@@ -958,6 +965,8 @@ struct ProceedingsMapView: View {
             }
         case .people:
             applyComputed { $0.people + $0.entities }
+        case .rank:
+            applyRankLadder()
         case .saved(let name):
             applySaved(name)
         }
@@ -1043,6 +1052,69 @@ struct ProceedingsMapView: View {
         clusterCaptions = magnets.compactMap { magnet in
             magnetAt[magnet.key].map { (display[magnet.key] ?? magnet.key, $0) }
         }
+    }
+
+    /// The Author Rank ladder: the series' most published authors as
+    /// rungs, highest first, each paper standing beside the best-ranked
+    /// person on its byline. Papers whose authors the dataset has never
+    /// seen gather under "New to the series".
+    private func applyRankLadder() {
+        let standing = items.filter { !$0.isSetAside }
+        var groups: [String: (count: Int, items: [Item])] = [:]
+        var newcomers: [Item] = []
+        for item in standing {
+            if let name = item.seriesName, item.seriesCount > 0 {
+                var group = groups[name] ?? (item.seriesCount, [])
+                group.items.append(item)
+                groups[name] = group
+            } else {
+                newcomers.append(item)
+            }
+        }
+        let ordered = groups.sorted {
+            $0.value.count != $1.value.count
+                ? $0.value.count > $1.value.count
+                : $0.key < $1.key
+        }
+        // The top rungs stand alone; the long tail shares one row so
+        // sixty papers still fit the plane.
+        let rungs = ordered.prefix(12)
+        let tail = ordered.dropFirst(12).flatMap { $0.value.items }
+
+        var next: [String: CGPoint] = [:]
+        var captions: [(label: String, at: CGPoint)] = []
+        let labelX: CGFloat = 340
+        let firstCard: CGFloat = 680
+        let perRow = 9
+        var y: CGFloat = 180
+
+        func layRow(_ label: String, _ rowItems: [Item]) {
+            captions.append((label, CGPoint(x: labelX, y: y)))
+            for (index, item) in rowItems.enumerated() {
+                next[item.id] = CGPoint(
+                    x: firstCard + CGFloat(index % perRow) * 185,
+                    y: y + CGFloat(index / perRow) * 96)
+            }
+            let subRows = rowItems.isEmpty ? 1 : (rowItems.count - 1) / perRow + 1
+            y += CGFloat(subRows) * 96 + 28
+        }
+
+        for (name, group) in rungs {
+            layRow("\(group.count) × \(name)",
+                   group.items.sorted { $0.title < $1.title })
+        }
+        if !tail.isEmpty {
+            layRow("More of the series", tail.sorted { $0.title < $1.title })
+        }
+        if !newcomers.isEmpty {
+            layRow("New to the series", newcomers.sorted { $0.title < $1.title })
+        }
+        let seeds = Self.seeds(for: items)
+        for item in items where item.isSetAside {
+            next[item.id] = seeds[item.id] ?? Self.canvasCenter
+        }
+        overlayPositions = next
+        clusterCaptions = captions
     }
 
     /// A small deterministic offset from the id alone — the same on

@@ -821,6 +821,38 @@ final class AppModel {
         Task { referenceDatasetSummaries = await referenceStore.summaries() }
     }
 
+    /// The proceedings series' authors, ranked by how many papers across
+    /// the imported dataset carried their name — spellings folded to one
+    /// person each (see SeriesAuthorRank). The Map's Author Rank view
+    /// and, later, other faces read this.
+    private(set) var seriesAuthorsRanked: [SeriesAuthor] = []
+    @ObservationIgnored private var seriesAuthorMatcher: SeriesAuthorMatcher?
+    @ObservationIgnored private var seriesAuthorsLoading = false
+
+    func loadSeriesAuthorsIfNeeded() {
+        guard seriesAuthorsRanked.isEmpty, !seriesAuthorsLoading else { return }
+        seriesAuthorsLoading = true
+        Task {
+            let result = await referenceStore.seriesAuthors()
+            seriesAuthorMatcher = result.matcher
+            seriesAuthorsRanked = result.ranked
+            seriesAuthorsLoading = false
+        }
+    }
+
+    /// The best-ranked series author on a record's joined byline — the
+    /// person this paper stands under in the Author Rank view.
+    func seriesStanding(forAuthors joined: String) -> (name: String, count: Int)? {
+        guard let matcher = seriesAuthorMatcher else { return nil }
+        var best: (name: String, count: Int)?
+        for name in joined.components(separatedBy: ",") {
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            guard let hit = matcher.match(trimmed) else { continue }
+            if hit.count > (best?.count ?? 0) { best = hit }
+        }
+        return best
+    }
+
     /// File ▸ Import Reference Dataset… — nodes alone, or nodes and
     /// edges together, in any order.
     func importReferenceDatasetPanel() {

@@ -565,6 +565,7 @@ struct JournalBooksListView: View {
         let titleTopics = model.publicationAnalyses[name]?.paperTopics ?? [:]
         func mapItem(_ record: EPUBRecord, isSetAside: Bool) -> ProceedingsMapView.Item {
             let extraction = model.documentExtractions[record.id]
+            let standing = model.seriesStanding(forAuthors: record.author)
             return .init(
                 id: record.id, key: record.folder, title: record.title,
                 author: record.author,
@@ -573,7 +574,9 @@ struct JournalBooksListView: View {
                 topics: (extraction?.concepts ?? []) + (extraction?.keywords ?? [])
                     + (titleTopics[record.id] ?? []),
                 people: extraction?.people ?? [],
-                entities: (extraction?.technologies ?? []) + (extraction?.places ?? []))
+                entities: (extraction?.technologies ?? []) + (extraction?.places ?? []),
+                seriesName: standing?.name,
+                seriesCount: standing?.count ?? 0)
         }
         return ProceedingsMapView(
             items: shown.map { mapItem($0, isSetAside: false) }
@@ -610,6 +613,9 @@ struct JournalBooksListView: View {
             // the corpus record has not read yet get read now, quietly —
             // already-extracted ones are left in peace.
             .task(id: name) {
+                // The Author Rank view reads the imported dataset's
+                // standing — loaded once, off the list's way.
+                model.loadSeriesAuthorsIfNeeded()
                 let missing = shown.contains {
                     model.documentExtractions[$0.id]?.isEmpty != false
                 }
