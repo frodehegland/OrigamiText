@@ -744,49 +744,36 @@ struct JournalBooksListView: View {
 }
 
 /// The sidebar's "To Acquire" list: books the Vision Pro headset asked for
-/// from its Author Map citation cards. Each entry carries a DOI link when
-/// the citation provided one, and a dismiss button.
+/// from its Author Map citation cards. Each wish tells what it knows —
+/// author, year, when it was asked for, and whatever the scholarly
+/// services add (venue, abstract, an open-access copy) — and carries
+/// the ways to go get it: DOI, an open copy, and searches of Google
+/// Scholar, Google Books, and the Open Library.
 struct AcquisitionsListView: View {
     @Environment(AppModel.self) private var model
+    /// What the lookup services know about each wish, gathered as the
+    /// rows appear — the same cache the citation cards read.
+    @State private var enrichments: [String: CitationLookup.Enrichment] = [:]
 
     var body: some View {
         let items = model.acquisitions
         List {
             ForEach(items) { wanted in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Circle()
-                        .fill(EmberIconLabelStyle.ember)
-                        .frame(width: 8, height: 8)
-                        .padding(.top, 4)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(wanted.title).lineLimit(2)
-                        HStack(spacing: 6) {
-                            Text([wanted.author,
-                                  wanted.year.map(String.init) ?? ""]
-                                .filter { !$0.isEmpty }
-                                .joined(separator: " \u{00B7} "))
-                            if let doi = wanted.doi, !doi.isEmpty,
-                               let url = URL(string: doi.hasPrefix("http")
-                                    ? doi : "https://doi.org/\(doi)") {
-                                Link("doi", destination: url)
-                            }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                AcquisitionRow(
+                    wanted: wanted,
+                    enrichment: enrichments[wanted.id],
+                    dismiss: { model.removeAcquisition(wanted.id) })
+                .task(id: wanted.id) {
+                    guard enrichments[wanted.id] == nil else { return }
+                    let record = Self.record(for: wanted)
+                    if let found = await CitationLookup.enrich(record),
+                       found.found {
+                        enrichments[wanted.id] = found
                     }
-                    Spacer()
-                    Button(role: .destructive) {
-                        model.removeAcquisition(wanted.id)
-                    } label: {
-                        Image(systemName: "minus.circle")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Dismiss this wish")
                 }
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
-                .padding(.vertical, 2)
+                .padding(.vertical, 4)
             }
         }
         .contentMargins(.top, 0, for: .scrollContent)
@@ -798,6 +785,118 @@ struct AcquisitionsListView: View {
                     Text("Books requested from the Vision Pro\u{2019}s Author Map appear here.")
                 }
             }
+        }
+    }
+
+    /// A wish as the lookup services read one — the same bridge the
+    /// citation cards use, so the cache is shared.
+    private static func record(for wanted: EPUBAcquisitions.Wanted) -> BibTeXRecord {
+        var fields = ["title": wanted.title, "author": wanted.author]
+        if let year = wanted.year { fields["year"] = String(year) }
+        if let doi = wanted.doi, !doi.isEmpty { fields["doi"] = doi }
+        return BibTeXRecord(raw: "", entryType: "misc",
+                            key: wanted.id, fields: fields)
+    }
+}
+
+/// One wish: everything known about it, and the doors to acquiring it.
+private struct AcquisitionRow: View {
+    let wanted: EPUBAcquisitions.Wanted
+    let enrichment: CitationLookup.Enrichment?
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(EmberIconLabelStyle.ember)
+                .frame(width: 8, height: 8)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(wanted.title)
+                    .font(.body.weight(.medium))
+                    .lineLimit(3)
+                Text(byline)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if let summary = enrichment?.abstract ?? enrichment?.tldr {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(4)
+                }
+                HStack(spacing: 8) {
+                    if let doi = doiURL {
+                        searchButton("DOI", url: doi,
+                                     help: "The work's page at its publisher")
+                    }
+                    if let open = enrichment?.openAccessURL,
+                       let url = URL(string: open) {
+                        searchButton("Open Copy", url: url,
+                                     help: "A free copy the lookup services found")
+                    }
+                    searchButton("Scholar",
+                                 url: searchURL("https://scholar.google.com/scholar?q="),
+                                 help: "Search Google Scholar for this work")
+                    searchButton("Books",
+                                 url: searchURL("https://www.google.com/search?tbm=bks&q="),
+                                 help: "Search Google Books for this work")
+                    searchButton("Open Library",
+                                 url: searchURL("https://openlibrary.org/search?q="),
+                                 help: "Search the Internet Archive's Open Library")
+                }
+                .padding(.top, 2)
+                if let source = enrichment?.source {
+                    Text("Details from \(source)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer()
+            Button(role: .destructive) {
+                dismiss()
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss this wish")
+        }
+    }
+
+    /// Author · year · venue · asked date — whatever the wish and the
+    /// lookup can tell between them.
+    private var byline: String {
+        let year = wanted.year.map(String.init) ?? enrichment?.year ?? ""
+        let asked = "asked " + wanted.added.formatted(
+            .dateTime.day().month(.abbreviated).year())
+        return [wanted.author, year, enrichment?.venue ?? "", asked]
+            .filter { !$0.isEmpty }
+            .joined(separator: " \u{00B7} ")
+    }
+
+    private var doiURL: URL? {
+        guard let doi = wanted.doi ?? enrichment?.doi, !doi.isEmpty else { return nil }
+        return URL(string: doi.hasPrefix("http") ? doi : "https://doi.org/\(doi)")
+    }
+
+    /// The work's title and author as one query, on the given engine.
+    private func searchURL(_ base: String) -> URL? {
+        let query = [wanted.title, wanted.author]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        return URL(string: base + query)
+    }
+
+    @ViewBuilder
+    private func searchButton(_ title: String, url: URL?, help: String) -> some View {
+        if let url {
+            Button(title) {
+                NSWorkspace.shared.open(url)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(help)
         }
     }
 }
