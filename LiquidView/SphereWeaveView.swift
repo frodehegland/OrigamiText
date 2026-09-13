@@ -118,6 +118,10 @@ struct SphereWeaveView: View {
         var centerID: String = ""
         var centerLabel: String = ""
         var connected: Set<String> = []
+        /// The magnetic shell: topic words standing on the document
+        /// sphere, each document gathered in its magnet's neighbourhood.
+        var magnets: [Item] = []
+        var docMagnet: [String: Int] = [:]
     }
 
     private var sphereData: SphereData {
@@ -156,6 +160,77 @@ extension SphereWeaveView.SphereData {
             guard let place = doc.location,
                   seenPlaces.insert(place.lowercased()).inserted else { continue }
             data.places.append(.init(id: "place:\(place)", label: place))
+        }
+
+        // The inner sphere is magnetic, the way the Map's board is:
+        // the titles' words compete to name up to twelve magnets, each
+        // next name the one speaking for the most documents still
+        // unspoken for, and every document joins its magnet's cluster —
+        // the unclaimed go to the emptiest.
+        let stop: Set<String> = [
+            "the", "and", "for", "with", "from", "into", "through",
+            "towards", "toward", "using", "under", "over", "between",
+            "across", "about", "study", "case", "paper", "papers",
+            "approach", "based", "beyond", "when", "what", "where",
+            "how", "why", "does", "their", "your", "notes", "note",
+        ]
+        let shortWords: Set<String> = ["ai", "xr", "vr", "ar", "llm", "llms", "web", "html"]
+        func words(_ text: String) -> Set<String> {
+            Set(text.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty })
+        }
+        var covers: [String: Set<String>] = [:]
+        var display: [String: String] = [:]
+        for doc in docs {
+            for word in words(doc.title)
+            where (word.count > 3 || shortWords.contains(word)) && !stop.contains(word) {
+                if display[word] == nil {
+                    display[word] = shortWords.contains(word) && word != "web"
+                        ? word.uppercased() : word.capitalized
+                }
+                covers[word, default: []].insert(doc.id)
+            }
+        }
+        var candidates = covers.sorted {
+            $0.value.count != $1.value.count
+                ? $0.value.count > $1.value.count : $0.key < $1.key
+        }.map { (key: $0.key, covers: $0.value) }
+        var chosen: [String] = []
+        var covered = Set<String>()
+        while chosen.count < 12, !candidates.isEmpty {
+            guard let best = candidates.indices.max(by: {
+                let a = candidates[$0], b = candidates[$1]
+                let newA = a.covers.subtracting(covered).count
+                let newB = b.covers.subtracting(covered).count
+                if newA != newB { return newA < newB }
+                if a.covers.count != b.covers.count {
+                    return a.covers.count < b.covers.count
+                }
+                return a.key > b.key
+            }) else { break }
+            let pick = candidates.remove(at: best)
+            chosen.append(pick.key)
+            covered.formUnion(pick.covers)
+            candidates.removeAll {
+                $0.key.contains(pick.key) || pick.key.contains($0.key)
+            }
+        }
+        data.magnets = chosen.map {
+            .init(id: "magnet:\($0)", label: display[$0] ?? $0)
+        }
+        if !chosen.isEmpty {
+            var loads = Array(repeating: 0, count: chosen.count)
+            for doc in docs {
+                let titleWords = words(doc.title)
+                let slot = chosen.firstIndex { name in
+                    titleWords.contains {
+                        $0 == name || ($0.hasPrefix(name) && name.count >= 4)
+                    }
+                } ?? loads.indices.min { loads[$0] < loads[$1] } ?? 0
+                loads[slot] += 1
+                data.docMagnet["doc:\(doc.id)"] = slot
+            }
         }
 
         switch center {
@@ -293,6 +368,7 @@ private struct SphereWeaveSceneView: NSViewRepresentable {
             guard let root = view?.scene?.rootNode else { return }
             let newShellsKey = "\(data.documents.count)/\(data.people.count)/\(data.places.count)"
                 + data.documents.map(\.id).joined()
+                + data.magnets.map(\.label).joined(separator: ",")
             if shellsKey != newShellsKey {
                 shellsKey = newShellsKey
                 rebuildShells(data, under: root)
@@ -305,19 +381,79 @@ private struct SphereWeaveSceneView: NSViewRepresentable {
             }
         }
 
-        /// The three shells, each node evenly spaced on its sphere by
-        /// the Fibonacci lattice.
+        /// The three shells: the documents magnetic on the inner sphere,
+        /// people and places evenly spaced on theirs by the Fibonacci
+        /// lattice.
         private func rebuildShells(_ data: SphereWeaveView.SphereData, under root: SCNNode) {
             shellsNode.removeFromParentNode()
             shellsNode.childNodes.forEach { $0.removeFromParentNode() }
             nodesByID.removeAll()
-            addShell(data.documents, radius: 7, dot: 0.14,
-                     color: Self.documentColor, labelAll: false)
+            addMagneticDocumentShell(data)
             addShell(data.people, radius: 11, dot: 0.22,
                      color: Self.personColor, labelAll: true)
             addShell(data.places, radius: 15, dot: 0.22,
                      color: Self.placeColor, labelAll: true)
             root.addChildNode(shellsNode)
+        }
+
+        /// The magnetic inner sphere: the magnets stand evenly around
+        /// it wearing their names, and each document sits in the cap of
+        /// its magnet's neighbourhood — a spiral within the cap keeps
+        /// clustermates apart, and a bigger cluster claims a wider cap.
+        private func addMagneticDocumentShell(_ data: SphereWeaveView.SphereData) {
+            guard !data.magnets.isEmpty else {
+                addShell(data.documents, radius: 7, dot: 0.14,
+                         color: Self.documentColor, labelAll: false)
+                return
+            }
+            let radius: Float = 7
+            let anchors = WeaveLattice.points(count: data.magnets.count, radius: 1)
+            for (slot, magnet) in data.magnets.enumerated() {
+                let anchor = anchors[slot]
+                let node = SCNNode()
+                node.position = SCNVector3(anchor.x * (radius + 1.3),
+                                           anchor.y * (radius + 1.3),
+                                           anchor.z * (radius + 1.3))
+                let label = Self.labelNode(magnet.label, color: .black, size: 1.3)
+                label.isHidden = false
+                node.addChildNode(label)
+                shellsNode.addChildNode(node)
+            }
+            var clusters: [[SphereWeaveView.SphereData.Item]] =
+                Array(repeating: [], count: data.magnets.count)
+            for item in data.documents {
+                let slot = min(data.docMagnet[item.id] ?? 0, clusters.count - 1)
+                clusters[slot].append(item)
+            }
+            for (slot, members) in clusters.enumerated() {
+                let anchor = anchors[slot]
+                // An orthonormal frame across the anchor's direction —
+                // the plane the cap's spiral turns in.
+                let lean: SIMD3<Float> = abs(anchor.y) > 0.9
+                    ? SIMD3(1, 0, 0) : SIMD3(0, 1, 0)
+                let u = simd_normalize(simd_cross(anchor, lean))
+                let v = simd_cross(anchor, u)
+                let cap = min(0.55, 0.12 + 0.08 * sqrt(Float(members.count)))
+                for (index, item) in members.enumerated() {
+                    let rho = members.count > 1
+                        ? cap * sqrt((Float(index) + 0.5) / Float(members.count)) : 0
+                    let theta = Float(index) * 2.399963
+                    let direction = anchor * cos(rho)
+                        + (u * cos(theta) + v * sin(theta)) * sin(rho)
+                    let sphere = SCNSphere(radius: 0.14)
+                    sphere.firstMaterial?.diffuse.contents = Self.documentColor
+                    let node = SCNNode(geometry: sphere)
+                    node.name = item.id
+                    node.position = SCNVector3(direction.x * radius,
+                                               direction.y * radius,
+                                               direction.z * radius)
+                    let label = Self.labelNode(item.label, color: Self.documentColor)
+                    label.isHidden = true
+                    node.addChildNode(label)
+                    shellsNode.addChildNode(node)
+                    nodesByID[item.id] = node
+                }
+            }
         }
 
         private func addShell(_ items: [SphereWeaveView.SphereData.Item],

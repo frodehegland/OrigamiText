@@ -1200,18 +1200,19 @@ struct ProceedingsMapView: View {
 
         var next: [String: CGPoint] = [:]
         for slot in columns.indices {
-            let x = Self.magnetSlots[slot].x
-            // A tall column folds: a second file of cards half a step
-            // to the right, carrying on downward.
-            let perFile = 15
-            for (index, item) in columns[slot]
-                .sorted(by: { $0.title < $1.title }).enumerated() {
-                let file = index / perFile
-                let row = index % perFile
+            let anchor = Self.magnetSlots[slot]
+            let members = columns[slot].sorted { $0.title < $1.title }
+            // A strand, not a column: each card sways off the line by
+            // the golden angle as it descends, and a long strand packs
+            // tighter so its tail stays on the plane.
+            let step: CGFloat = members.count > 1
+                ? min(90, 1230 / CGFloat(members.count - 1)) : 90
+            for (index, item) in members.enumerated() {
+                let angle = Double(index) * 2.399963
                 next[item.id] = CGPoint(
-                    x: min(x + CGFloat(file) * 64,
-                           Self.canvasSize.width - 100),
-                    y: 240 + CGFloat(row) * 92 + CGFloat(file) * 30)
+                    x: anchor.x + CGFloat(cos(angle)) * 66,
+                    y: 264 + step * CGFloat(index)
+                        + CGFloat(sin(angle)) * 18)
             }
         }
         let seeds = Self.seeds(for: items)
