@@ -32,10 +32,16 @@ struct EPUBQuickViewScreen: View {
         var id: String { key }
     }
 
+    // The reader's type values travel here too — a look matches the
+    // reading's size and spacing, not only its theme.
+    @AppStorage("readingFontDelta") private var fontDelta = 3.0
+    @AppStorage("readingLineSpacing") private var lineSpacing = 3.0
+
     private var css: String {
         _ = themeEditTick
         return ReaderStyle.css(bodyFont: bodyFont, headingFont: headingFont,
-                               theme: ReaderTheme(rawValue: themeRaw) ?? .highContrast)
+                               theme: ReaderTheme(rawValue: themeRaw) ?? .highContrast,
+                               fontDelta: fontDelta, lineSpacing: lineSpacing)
     }
 
     private var currentContent: URL {

@@ -1046,32 +1046,10 @@ struct OrigamiReadingView: View {
     // MARK: - Focus mode accessory popovers
 
     /// A grid of coloured circles — one per theme — for quick theme
-    /// switching from the Focus and Horizontal nav bars.
+    /// switching from the Focus and Horizontal nav bars. The shared
+    /// palette: the faithful foot bar shows the very same view.
     @ViewBuilder private var focusColorView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Colour Theme")
-                .font(.callout.weight(.medium))
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(30), spacing: 4), count: 6),
-                      spacing: 4) {
-                ForEach(ReaderTheme.allCases) { theme in
-                    let isSelected = themeRaw == theme.rawValue
-                    let bg = theme.background(for: colorScheme) ?? Color.white
-                    Button { themeRaw = theme.rawValue } label: {
-                        Circle()
-                            .fill(bg)
-                            .frame(width: 26, height: 26)
-                            .overlay(
-                                Circle().strokeBorder(
-                                    isSelected ? Color.accentColor : Color.clear,
-                                    lineWidth: 2)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .help(theme.displayName)
-                }
-            }
-        }
-        .padding(12)
+        ReaderThemePalette()
     }
 
     /// The themes and type controls standing on the page bar itself —

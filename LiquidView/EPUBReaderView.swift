@@ -71,10 +71,17 @@ enum ReaderStyle {
     static let defaultBodyFont = AppFonts.defaultBodyFamily
     static let defaultHeadingFont = AppFonts.defaultHeadingFamily
 
-    static func css(bodyFont: String, headingFont: String, theme: ReaderTheme) -> String {
-        """
+    /// fontDelta and lineSpacing are the native styles' own stored
+    /// values ("readingFontDelta"/"readingLineSpacing", points on an
+    /// 18-point body): one setting, every mode — the faithful pages
+    /// scale with the same steppers as Horizontal.
+    static func css(bodyFont: String, headingFont: String, theme: ReaderTheme,
+                    fontDelta: Double = 3, lineSpacing: Double = 3) -> String {
+        let size = max(50, Int(((18 + fontDelta) / 18 * 100).rounded()))
+        let lineHeight = max(1.2, 1.2 + lineSpacing / (18 + max(fontDelta, -8)))
+        return """
         a, a:link, a:visited { color: inherit; }
-        body { font-family: \(family(bodyFont, fallback: "'Times New Roman', Times, serif")); }
+        body { font-family: \(family(bodyFont, fallback: "'Times New Roman', Times, serif")); font-size: \(size)%; line-height: \(String(format: "%.2f", lineHeight)); }
         h1, h2, h3, h4, h5, h6 { font-family: \(family(headingFont, fallback: "Georgia, serif")); }
         dfn { font-style: inherit; border-bottom: none; }
         a[role="doc-glossref"], a[data-glossary-id] { text-decoration: none; cursor: text; }
@@ -93,6 +100,41 @@ enum ReaderStyle {
     private static func family(_ name: String, fallback: String) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : "\"\(trimmed)\", \(fallback)"
+    }
+}
+
+/// The grid of coloured circles — one per theme — shared by the native
+/// page bars (Horizontal, Focus) and the faithful foot bar, so every
+/// mode offers the full palette from the same view.
+struct ReaderThemePalette: View {
+    @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Colour Theme")
+                .font(.callout.weight(.medium))
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(30), spacing: 4), count: 6),
+                      spacing: 4) {
+                ForEach(ReaderTheme.allCases) { theme in
+                    let isSelected = themeRaw == theme.rawValue
+                    let bg = theme.background(for: colorScheme) ?? Color.white
+                    Button { themeRaw = theme.rawValue } label: {
+                        Circle()
+                            .fill(bg)
+                            .frame(width: 26, height: 26)
+                            .overlay(
+                                Circle().strokeBorder(
+                                    isSelected ? Color.accentColor : Color.clear,
+                                    lineWidth: 2)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(theme.displayName)
+                }
+            }
+        }
+        .padding(12)
     }
 }
 
@@ -152,8 +194,81 @@ struct EPUBReaderScreen: View {
         return mode
     }
 
+    // The native styles' own type values — one setting, every mode: the
+    // faithful pages' CSS scales with the same steppers as Horizontal.
+    @AppStorage("readingFontDelta") private var fontDelta = 3.0
+    @AppStorage("readingLineSpacing") private var lineSpacing = 3.0
+    @State private var showsFaithfulPalette = false
+    @State private var showsFaithfulType = false
+
     private var readerCSS: String {
-        ReaderStyle.css(bodyFont: bodyFont, headingFont: headingFont, theme: theme)
+        ReaderStyle.css(bodyFont: bodyFont, headingFont: headingFont, theme: theme,
+                        fontDelta: fontDelta, lineSpacing: lineSpacing)
+    }
+
+    /// The palette and type marks on the faithful (Scrolling) foot bar —
+    /// the same pair the Horizontal page bar carries.
+    @ViewBuilder private var faithfulTypeControls: some View {
+        HStack(spacing: 8) {
+            Button { showsFaithfulPalette.toggle() } label: {
+                Image(systemName: "paintpalette")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Colour — reading theme")
+            .popover(isPresented: $showsFaithfulPalette) { ReaderThemePalette() }
+
+            Button { showsFaithfulType.toggle() } label: {
+                Image(systemName: "textformat.size")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Type — text size and line spacing")
+            .popover(isPresented: $showsFaithfulType) { faithfulTypePanel }
+        }
+    }
+
+    /// Size and spacing for the book's own pages — the stored values the
+    /// native styles read too, driving the injected CSS live.
+    private var faithfulTypePanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 0) {
+                Text("Size")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 60, alignment: .leading)
+                Spacer()
+                Button { fontDelta = max(fontDelta - 1, -6) } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.plain)
+                Text("\(fontDelta >= 0 ? "+" : "")\(Int(fontDelta))")
+                    .font(.callout.monospacedDigit())
+                    .frame(width: 36, alignment: .center)
+                Button { fontDelta = min(fontDelta + 1, 18) } label: {
+                    Image(systemName: "plus.circle")
+                }
+                .buttonStyle(.plain)
+            }
+            HStack(spacing: 0) {
+                Text("Spacing")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 60, alignment: .leading)
+                Spacer()
+                Button { lineSpacing = max(lineSpacing - 1, 0) } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.plain)
+                Text("\(Int(lineSpacing))")
+                    .font(.callout.monospacedDigit())
+                    .frame(width: 36, alignment: .center)
+                Button { lineSpacing = min(lineSpacing + 1, 18) } label: {
+                    Image(systemName: "plus.circle")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .frame(minWidth: 200)
     }
 
     // MARK: Chapters (the whole spine, for plain chaptered books)
@@ -492,7 +607,8 @@ struct EPUBReaderScreen: View {
                            title: book.title,
                            outlineAvailable: model.readingDoc(forBook: book) != nil,
                            showContents: $showsContents,
-                           contents: { AnyView(faithfulContents) })
+                           contents: { AnyView(faithfulContents) },
+                           accessoryContent: { AnyView(faithfulTypeControls) })
         }
     }
 
