@@ -578,7 +578,7 @@ struct EPUBMapView: View {
             readingDeskDocID: model.readingDeskDocID)
         selectedCitationLines.rebuild(items: linesActive ? items : [])
         conceptConnectionLines.rebuild(items: linesActive ? items : [],
-                                       concepts: linesActive ? model.aiPaperConcepts : [])
+                                       edges: linesActive ? conceptEdges() : [])
         citedToDeepLines.rebuild(items: linesActive ? items : [])
     }
 
@@ -1652,6 +1652,18 @@ struct EPUBMapView: View {
         return (holder, shape)
     }
 
+    /// One edge per selected concept per article carrying it, resolved
+    /// by text mention — the same source the concept picks select by.
+    private func conceptEdges() -> [(from: String, to: String)] {
+        var edges: [(from: String, to: String)] = []
+        for item in items where item.kind == .concept && item.isSelected {
+            for docID in model.articleIDs(mentioning: item.title) {
+                edges.append((from: item.id, to: docID))
+            }
+        }
+        return edges
+    }
+
     /// The arm's concept pick: select every article whose text carries
     /// the concept — additive, exactly as if each had been tapped, so
     /// their citation walls rise together and each card deselects
@@ -1920,8 +1932,7 @@ struct EPUBMapView: View {
                 }
             case .concept:
                 // Selection triggers the concept's source-document lines.
-                conceptConnectionLines.rebuild(
-                    items: items, concepts: model.aiPaperConcepts)
+                conceptConnectionLines.rebuild(items: items, edges: conceptEdges())
             }
         case 2:
             // The card steps off the Map and its reading opens in-situ
@@ -3317,7 +3328,7 @@ private final class ConceptConnectionLines {
     private struct LineData { let line: ModelEntity; let fromID: String; let toID: String }
     private var lineData: [LineData] = []
 
-    private static let lineColor = UIColor(red: 0.55, green: 0.60, blue: 1.0, alpha: 0.09)
+    private static let lineColor = UIColor(red: 0.55, green: 0.60, blue: 1.0, alpha: 0.35)
 
     func install(in content: RealityViewContent) {
         let r = Entity(); content.add(r); root = r
@@ -3326,31 +3337,24 @@ private final class ConceptConnectionLines {
         }
     }
 
-    func rebuild(items: [EPUBMapItem], concepts: [MergedConcept]) {
+    /// Draws one line per edge — the caller resolves which nodes a
+    /// selected concept touches (by text mention, since the AI
+    /// analyses' sourceDocIDs stand empty on this corpus).
+    func rebuild(items: [EPUBMapItem], edges: [(from: String, to: String)]) {
         guard let root else { return }
         for data in lineData { data.line.removeFromParent() }
         lineData = []
 
-        // Article positions keyed by document ID.
-        var articlePos: [String: SIMD3<Float>] = [:]
-        for item in items where item.kind == .article {
-            if let pos = item.position { articlePos[item.id] = pos }
+        var positions: [String: SIMD3<Float>] = [:]
+        for item in items {
+            if let pos = item.position { positions[item.id] = pos }
         }
-        guard !articlePos.isEmpty else { return }
-
-        // For each concept card visible in the scene, draw a line to
-        // every source document that also has a card.
-        for concept in concepts {
-            let conceptID = "concept:" + concept.id
-            guard let conceptItem = items.first(where: { $0.id == conceptID }),
-                  conceptItem.isSelected,
-                  let fromPos = conceptItem.position else { continue }
-            for docID in concept.sourceDocIDs {
-                guard let toPos = articlePos[docID] else { continue }
-                let line = makeLine(from: fromPos, to: toPos)
-                root.addChild(line)
-                lineData.append(LineData(line: line, fromID: conceptID, toID: docID))
-            }
+        for edge in edges {
+            guard let fromPos = positions[edge.from],
+                  let toPos = positions[edge.to] else { continue }
+            let line = makeLine(from: fromPos, to: toPos)
+            root.addChild(line)
+            lineData.append(LineData(line: line, fromID: edge.from, toID: edge.to))
         }
     }
 
