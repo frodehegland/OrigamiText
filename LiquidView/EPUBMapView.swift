@@ -1458,10 +1458,10 @@ struct EPUBMapView: View {
                 .padding(.horizontal, 5 * s)
                 .padding(.vertical, 3 * s)
                 // The same chip glass as the standing cards, faint.
-                .background(
-                    RoundedRectangle(cornerRadius: 5 * s)
-                        .fill(.regularMaterial)
-                )
+                // Shaped glass, not a material fill: in a live
+                // attachment a material paints the whole backing
+                // surface square — this API clips it to the corners.
+                .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 5 * s))
                 .overlay(
                     RoundedRectangle(cornerRadius: 5 * s)
                         .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.6 * s)
@@ -1486,12 +1486,17 @@ struct EPUBMapView: View {
             .padding(.horizontal, 14 * s)
             .padding(.vertical, 10 * s)
             .frame(minWidth: 90 * s, maxWidth: 200 * s)
-            .background(
-                RoundedRectangle(cornerRadius: 14 * s)
-                    // Selection sets the pane solid — glass no more.
-                    .fill(item.isSelected ? AnyShapeStyle(Color(white: 0.12))
-                                          : AnyShapeStyle(.regularMaterial))
-            )
+            // Selection sets the pane solid — glass no more. The glass
+            // itself is shaped (not a material fill, which paints the
+            // attachment's backing square past the corners).
+            .background {
+                if item.isSelected {
+                    RoundedRectangle(cornerRadius: 14 * s)
+                        .fill(Color(white: 0.12))
+                }
+            }
+            .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 14 * s),
+                                   displayMode: item.isSelected ? .never : .always)
             .overlay(
                 RoundedRectangle(cornerRadius: 14 * s)
                     .strokeBorder(
@@ -1544,12 +1549,17 @@ struct EPUBMapView: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, (item.kind == .article ? 8 : 7) * s)
             .padding(.vertical, (item.kind == .article ? 6 : 5) * s)
-            .background(
-                RoundedRectangle(cornerRadius: 8 * s)
-                    // Selection sets the pane solid — glass no more.
-                    .fill(selected ? AnyShapeStyle(Color(white: 0.12))
-                                   : AnyShapeStyle(.regularMaterial))
-            )
+            // Selection sets the pane solid — glass no more. The glass
+            // itself is shaped (not a material fill, which paints the
+            // attachment's backing square past the corners).
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: 8 * s)
+                        .fill(Color(white: 0.12))
+                }
+            }
+            .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 8 * s),
+                                   displayMode: selected ? .never : .always)
             .overlay(
                 RoundedRectangle(cornerRadius: 8 * s)
                     .strokeBorder(Color.white.opacity(selected ? 0.85 : 0.35),
