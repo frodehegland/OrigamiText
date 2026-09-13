@@ -362,6 +362,8 @@ struct OrigamiReadingView: View {
     /// The page bar's own palette — a separate flag, or the foot bar's
     /// palette button would present this popover too.
     @State private var showsPageColorPicker = false
+    /// The ¶ popover: paragraph and flow options in one place.
+    @State private var showsParagraphOptions = false
     @AppStorage("bionicReading") private var bionicReading = false
     @AppStorage("showsReadingRuler") private var showsReadingRuler = false
     @State private var mouseWindowY: CGFloat? = nil
@@ -1144,6 +1146,45 @@ struct OrigamiReadingView: View {
         }
     }
 
+    /// The ¶ popover: the ways the text breaks, together — the AI's
+    /// paragraph splits, the one-clause-per-line flow, and the key
+    /// sentence of each paragraph in bold. The bare p, f, and b keys
+    /// toggle the same three.
+    private var paragraphOptionsView: some View {
+        @Bindable var model = model
+        return VStack(alignment: .leading, spacing: 12) {
+            Toggle(isOn: $expandParagraphs) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Paragraphs")
+                    Text("AI finds logical breaks in long paragraphs")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            Toggle(isOn: $model.flowReading) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Flow")
+                    Text("One clause per line, broken at the marks")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            Toggle(isOn: $boldKeySentences) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Bold Key Sentences")
+                    Text("Each paragraph's load-bearing sentence, bold")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+        }
+        .padding(12)
+        .frame(minWidth: 260)
+    }
+
     /// Accessibility controls shown in the foot bar across all reading modes.
     @ViewBuilder private var accessoryBarContent: some View {
         HStack(spacing: 8) {
@@ -1179,24 +1220,19 @@ struct OrigamiReadingView: View {
                   ? "Colour words — by Grammar, Meaning, or Argument"
                   : "Colour words: \(coloringMode.displayName) — click to change")
 
-            Button { expandParagraphs.toggle() } label: {
+            // One ¶ for how the text breaks: the popover gathers the
+            // paragraph and flow options (and Bold Key Sentences, which
+            // had no icon of its own) — bold and accented while any of
+            // them stands on.
+            Button { showsParagraphOptions.toggle() } label: {
+                let anyOn = expandParagraphs || model.flowReading || boldKeySentences
                 Text("¶")
-                    .font(.callout.weight(expandParagraphs ? .semibold : .regular))
-                    .foregroundStyle(expandParagraphs ? Color.accentColor : .secondary)
+                    .font(.callout.weight(anyOn ? .semibold : .regular))
+                    .foregroundStyle(anyOn ? Color.accentColor : .secondary)
             }
             .buttonStyle(.plain)
-            .help(expandParagraphs
-                  ? "AI paragraph breaks on — click to turn off"
-                  : "Paragraphs — AI finds logical breaks in long paragraphs")
-
-            Button { model.flowReading.toggle() } label: {
-                Image(systemName: "text.line.first.and.arrowtriangle.forward")
-                    .foregroundStyle(model.flowReading ? Color.accentColor : .secondary)
-            }
-            .buttonStyle(.plain)
-            .help(model.flowReading
-                  ? "Flow reading on — click to turn off"
-                  : "Flow — one clause per line")
+            .help("Paragraphs and flow — how the text breaks")
+            .popover(isPresented: $showsParagraphOptions) { paragraphOptionsView }
 
             Button {
                 if readAloud.isPlaying || readAloud.isPaused {
