@@ -3437,19 +3437,30 @@ struct ReadingFootBar: View {
         EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
     }
 
+    /// The bar's width and the centered mode words' own, measured —
+    /// the Horizontal title may take only the space genuinely free to
+    /// the words' left, or a long title runs beneath Default…Focus.
+    @State private var barWidth: CGFloat = 0
+    @State private var modeWordsWidth: CGFloat = 0
+
+    private var titleMaxWidth: CGFloat {
+        min(420, max(0, (barWidth - modeWordsWidth) / 2 - 24))
+    }
+
     var body: some View {
         ZStack {
             // The trailing edge lies beneath the mode words: nothing —
             // the folded-state caption least of all — may shadow a tap
             // on the words or the Outline group.
             HStack(spacing: 14) {
-                if readerMode == .horizontal, let title, !title.isEmpty {
+                if readerMode == .horizontal, let title, !title.isEmpty,
+                   titleMaxWidth > 50 {
                     Text(title)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .frame(maxWidth: 420, alignment: .leading)
+                        .frame(maxWidth: titleMaxWidth, alignment: .leading)
                         .allowsHitTesting(false)
                 }
                 if let foldLevelLabel {
@@ -3543,6 +3554,12 @@ struct ReadingFootBar: View {
                     }
                 }
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                modeWordsWidth = $0
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+            barWidth = $0
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
