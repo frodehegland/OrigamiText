@@ -517,6 +517,9 @@ struct JournalBooksListView: View {
     let name: String
     /// The Set Aside books stay tucked behind the foot pill until asked.
     @State private var showsSetAside = false
+    /// Find at the foot of the papers: matching titles and authors
+    /// alone stand in the list while the field carries words.
+    @State private var findText = ""
     /// The Map's own peek: hovering the map's left edge summons the
     /// journal's list as a floating column, the way the full-screen
     /// sidebar peeks. Fades once the pointer moves on.
@@ -671,10 +674,21 @@ struct JournalBooksListView: View {
 
     private func cancelMapListHide() { mapListHideTask?.cancel() }
 
+    /// The foot Find's cut: title or author carrying the words.
+    private func findFiltered(_ records: [EPUBRecord]) -> [EPUBRecord] {
+        let query = findText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return records }
+        return records.filter {
+            $0.title.localizedCaseInsensitiveContains(query)
+                || $0.author.localizedCaseInsensitiveContains(query)
+        }
+    }
+
     private var documentsList: some View {
-        let shown = model.searchFilteredEPUBs(
-            model.pinnedFirst(model.epubRecords(inPublication: name)))
-        let aside = model.searchFilteredEPUBs(model.epubSetAsideRecords(inPublication: name))
+        let shown = findFiltered(model.searchFilteredEPUBs(
+            model.pinnedFirst(model.epubRecords(inPublication: name))))
+        let aside = findFiltered(model.searchFilteredEPUBs(
+            model.epubSetAsideRecords(inPublication: name)))
         return List(selection: epubListSelection(model)) {
             Section {
                 ForEach(shown) { record in
@@ -705,9 +719,38 @@ struct JournalBooksListView: View {
                 ContentUnavailableView {
                     Label(name, systemImage: "newspaper")
                 } description: {
-                    Text("Nothing from this venue is in the library now.")
+                    Text(findText.isEmpty
+                         ? "Nothing from this venue is in the library now."
+                         : "No paper here carries “\(findText)”.")
                 }
             }
+        }
+        // Find at the foot: the Map's own capsule, here under the papers.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Find", text: $findText)
+                    .textFieldStyle(.plain)
+                if !findText.isEmpty {
+                    Button {
+                        findText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(.regularMaterial)
+            .overlay(alignment: .top) { Divider() }
         }
     }
 
