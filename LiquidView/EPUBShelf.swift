@@ -1747,19 +1747,27 @@ private struct ProceedingsMapNode: View {
         #endif
     }
 
+    /// Standing cards stay small; a lifted card grows to carry its
+    /// full title and byline.
+    private var cardWidth: CGFloat {
+        #if os(macOS)
+        lifted ? 168 : 122
+        #else
+        lifted ? 168 : 150
+        #endif
+    }
+
     private var card: some View {
         VStack(alignment: .leading, spacing: 3) {
-            // A set-aside card has stepped back — one line of title is
-            // enough; the full title returns with the book.
+            // A quiet plane: one line of title per standing card — the
+            // full title and the authors unfold on the lifted one.
             Text(item.title)
                 .font(titleFont)
-                .lineLimit(item.isSetAside ? 1 : 3)
-            // The byline steps back with it.
-            if !item.isSetAside {
+                .lineLimit(lifted && !item.isSetAside ? nil : 1)
+            if lifted, !item.isSetAside {
                 Text(item.author)
                     .font(authorFont)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
             }
             #if !os(macOS)
             if isLifted {
@@ -1773,8 +1781,8 @@ private struct ProceedingsMapNode: View {
             }
             #endif
         }
-        .padding(10)
-        .frame(width: 168, alignment: .leading)
+        .padding(lifted ? 10 : 7)
+        .frame(width: cardWidth, alignment: .leading)
         // An opaque fill, not a material: sixty cards of live blur —
         // re-blurred each frame under a moving card — drag the drag.
         // In the dark the cards sit a shade above black, so they read
