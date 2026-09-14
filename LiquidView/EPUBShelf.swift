@@ -616,7 +616,6 @@ struct ProceedingsMapView: View {
     /// the plane's (0,0) as it scrolls, and the overlay's own frame.
     @State private var magnetCenters: [Int: CGPoint] = [:]
     @State private var canvasOrigin: CGPoint = .zero
-    @State private var overlayFrame: CGRect = .zero
 
     /// One hallway meter drawn at this many points; the canvas center
     /// is the hallway's (0, 1.2) — mid-height of its article grid.
@@ -634,6 +633,14 @@ struct ProceedingsMapView: View {
                     .onGeometryChange(for: CGPoint.self, of: {
                         $0.frame(in: .named("mapPlane")).origin
                     }) { canvasOrigin = $0 }
+                // The threads, on the plane BENEATH every card — their
+                // upper ends chase the screen-pinned chips as the plane
+                // scrolls under them.
+                if showsMagnetBar {
+                    threadOverlay
+                        .frame(width: Self.canvasSize.width,
+                               height: Self.canvasSize.height)
+                }
                 // The computed view's magnets, named — quiet captions
                 // beneath the cards that gather around them.
                 ForEach(clusterCaptions.indices, id: \.self) { index in
@@ -644,6 +651,7 @@ struct ProceedingsMapView: View {
                         .position(caption.at)
                         .allowsHitTesting(false)
                 }
+                let connected = threadConnectedIDs
                 ForEach(items) { item in
                     ProceedingsMapNode(
                         item: item,
@@ -663,22 +671,14 @@ struct ProceedingsMapView: View {
                             groupDragged(item, translation: translation)
                         },
                         moved: { nodeMoved(item) })
+                    // While threads stand, the cards they touch are the
+                    // subject — everything unthreaded steps back.
+                    .opacity(connected == nil || connected!.contains(item.id)
+                             ? 1 : 0.25)
                 }
             }
         }
         .defaultScrollAnchor(.center)
-        // The threads live on the screen, not the plane: the plane's
-        // cards scroll beneath while the magnets hold the top bar, so
-        // the lines bridge the two spaces here, over the viewport —
-        // every endpoint measured in the shared "mapPlane" space.
-        .overlay {
-            if showsMagnetBar {
-                threadOverlay
-                    .onGeometryChange(for: CGRect.self, of: {
-                        $0.frame(in: .named("mapPlane"))
-                    }) { overlayFrame = $0 }
-            }
-        }
         .background(Color.secondary.opacity(0.06))
         .safeAreaInset(edge: .bottom, spacing: 0) { footBar }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -1067,20 +1067,35 @@ struct ProceedingsMapView: View {
     /// The bar's height.
     private static let magnetBarHeight: CGFloat = 30
 
-    /// A magnet chip's measured centre, carried into the overlay's own
-    /// coordinates. Nil until the bar has laid out.
+    /// A magnet chip's measured centre, carried onto the plane — the
+    /// canvas point currently standing beneath the chip, refreshed as
+    /// the plane scrolls. Nil until the bar has laid out.
     private func magnetAnchor(_ slot: Int) -> CGPoint? {
         guard let center = magnetCenters[slot] else { return nil }
-        return CGPoint(x: center.x - overlayFrame.minX,
-                       y: center.y - overlayFrame.minY)
+        return CGPoint(x: center.x - canvasOrigin.x,
+                       y: center.y - canvasOrigin.y)
     }
 
-    /// A plane point carried into the overlay's coordinates — the
-    /// measured canvas origin is the bridge, so the mapping holds
-    /// wherever toolbars and safe areas put the viewport.
-    private func viewportPoint(_ point: CGPoint) -> CGPoint {
-        CGPoint(x: canvasOrigin.x + point.x - overlayFrame.minX,
-                y: canvasOrigin.y + point.y - overlayFrame.minY)
+    /// The cards holding a thread right now — nil when no threads
+    /// stand. While threads do, every card outside this set fades, so
+    /// the connected read as the room's subject.
+    private var threadConnectedIDs: Set<String>? {
+        guard showsMagnetBar else { return nil }
+        var connected: Set<String> = []
+        var standing = false
+        if let slot = focusedMagnet, slot < magnetNames.count {
+            standing = true
+            let pole = Self.poleWords(magnetNames[slot])
+            for item in items where !item.isSetAside && magnetPull(item, pole) > 0 {
+                connected.insert(item.id)
+            }
+        }
+        if let lifted = liftedID,
+           items.contains(where: { $0.id == lifted && !$0.isSetAside }) {
+            standing = true
+            connected.insert(lifted)
+        }
+        return standing ? connected : nil
     }
 
     /// The threads, drawn over the viewport: a clicked magnet's lines
@@ -1110,7 +1125,7 @@ struct ProceedingsMapView: View {
                         guard strength > 0 else { return nil }
                         let at = overlayPositions[item.id] ?? positions[item.id]
                             ?? seedCache[item.id] ?? Self.canvasCenter
-                        return (viewportPoint(at), strength)
+                        return (at, strength)
                     }
                 let strongest = pulls.map(\.strength).max() ?? 1
                 for pull in pulls {
@@ -1120,9 +1135,8 @@ struct ProceedingsMapView: View {
             }
             if let lifted = liftedID,
                let item = items.first(where: { $0.id == lifted && !$0.isSetAside }) {
-                let at = viewportPoint(
-                    overlayPositions[item.id] ?? positions[item.id]
-                        ?? seedCache[item.id] ?? Self.canvasCenter)
+                let at = overlayPositions[item.id] ?? positions[item.id]
+                    ?? seedCache[item.id] ?? Self.canvasCenter
                 let pulls: [(slot: Int, strength: Int)] = magnetNames.indices
                     .compactMap { slot in
                         let strength = magnetPull(
