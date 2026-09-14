@@ -66,6 +66,10 @@ struct EPUBQuickViewScreen: View {
             },
             onPinchIn: { showsContents = true },
             onPinchOut: { showsContents = false },
+            // A look-only window still unfolds notes: without this the
+            // view's default resolver answers nil and every dagger reads
+            // "The note could not be found."
+            resolveEndnote: { id in model.endnoteText(inBook: book, id: id) },
             onCitation: { key, ref in
                 let key = key.isEmpty ? ref : key
                 if !key.isEmpty { citationCard = QuickViewCitation(key: key) }
