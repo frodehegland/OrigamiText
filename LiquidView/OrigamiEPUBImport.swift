@@ -1557,8 +1557,9 @@ private final class XMLTree: NSObject, XMLParserDelegate {
 /// stored and deflated entries both open — our own EPUBs are stored,
 /// but EPUBs from other writers usually deflate.
 // Internal, not private: the LaTeX importer reads its zipped project
-// through the same minimal reader.
-final class ZipReader {
+// through the same minimal reader. Nonisolated: pure byte work, read
+// from detached tasks (the conference-zip unpack, the importers).
+nonisolated final class ZipReader {
 
     /// One central-directory record: where the bytes sit and how they
     /// unpack — nothing is inflated until someone asks for the entry.

@@ -277,8 +277,22 @@ func epubListSelection(_ model: AppModel) -> Binding<Set<String>> {
             // ⌘-click gathers more without opening, so a set of papers
             // can be acted on together (Export with DOI Names…).
             model.epubListSelectionIDs = ids
-            if ids.count == 1, let id = ids.first, id != model.openEPUBRecordID {
-                model.openEPUBRecord(withID: id)
+            if ids.count == 1, let id = ids.first {
+                if id != model.openEPUBRecordID {
+                    model.openEPUBRecord(withID: id)
+                }
+                // A click means READ: while this venue's wide face (the
+                // Map, a relation view) holds the window, hand it to the
+                // reader — even for a book already open behind it, which
+                // the re-open guard above would otherwise leave hidden.
+                switch model.sidebarSelection {
+                case .epubPublication, .epubPublicationAuthor, .epubPublicationTopic:
+                    if model.venueViewMode != .documents {
+                        model.venueViewMode = .documents
+                    }
+                default:
+                    break
+                }
             }
         }
     )
@@ -532,7 +546,22 @@ struct JournalBooksListView: View {
 
     var body: some View {
         if listOnly {
-            documentsList
+            // The full-screen peek's column: the papers with the same
+            // Articles/Map faces above them — without the tabs, full
+            // screen strands the reader with no way onto the Map.
+            @Bindable var model = model
+            VStack(spacing: 0) {
+                Picker("View", selection: $model.venueViewMode) {
+                    ForEach(VenueViewMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                documentsList
+            }
         } else {
             facePicker
         }
@@ -570,6 +599,27 @@ struct JournalBooksListView: View {
     /// The venue as a flat map — the hallway's plane, here on the desk.
     /// Set Aside books stand on it too, faded, so they can be brought
     /// back where they were left.
+    /// The paper's abstract, read from under its Abstract heading —
+    /// the same walk the hallway Map's card fronts use.
+    private func abstractText(of record: EPUBRecord) -> String {
+        guard let doc = model.index.byID[record.id]?.doc else { return "" }
+        var collecting = false
+        var parts: [String] = []
+        for paragraph in doc.body ?? [] {
+            if paragraph.heading != nil {
+                if collecting { break }
+                collecting = paragraph.text
+                    .trimmingCharacters(in: .whitespaces)
+                    .lowercased() == "abstract"
+            } else if collecting {
+                let text = paragraph.text
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { parts.append(text) }
+            }
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
     private var venueMap: some View {
         let shown = model.pinnedFirst(model.epubRecords(inPublication: name))
         let aside = model.epubSetAsideRecords(inPublication: name)
@@ -594,8 +644,9 @@ struct JournalBooksListView: View {
                 seriesCount: standing?.count ?? 0)
         }
         return ProceedingsMapView(
-            items: shown.map { mapItem($0, isSetAside: false) }
-                + aside.map { mapItem($0, isSetAside: true) },
+            // Set Aside books leave the plane entirely; the list's own
+            // Set Aside pill at its foot is where they wait.
+            items: shown.map { mapItem($0, isSetAside: false) },
             folder: model.index.folderURL,
             venue: name,
             open: { id in
@@ -603,6 +654,13 @@ struct JournalBooksListView: View {
                 // Articles face so the reading pane is there to show it.
                 model.venueViewMode = .documents
                 model.openEPUB(address: id, fragment: nil)
+            },
+            // Read at lift time, live: the background index build may
+            // still be importing books when the plane first stands.
+            abstractFor: { id in
+                guard let record = (shown + aside).first(where: { $0.id == id })
+                else { return "" }
+                return abstractText(of: record)
             },
             togglePin: { model.toggleTopOfPile(id: $0) },
             toggleSetAside: { id in
@@ -697,10 +755,12 @@ struct JournalBooksListView: View {
     }
 
     private var documentsList: some View {
-        let shown = findFiltered(model.searchFilteredEPUBs(
-            model.pinnedFirst(model.epubRecords(inPublication: name))))
-        let aside = findFiltered(model.searchFilteredEPUBs(
-            model.epubSetAsideRecords(inPublication: name)))
+        // The foot Find alone cuts this list: the model-wide find bar
+        // never stands over the papers now, and applying its text here
+        // would empty the list with no visible cause.
+        let shown = findFiltered(
+            model.pinnedFirst(model.epubRecords(inPublication: name)))
+        let aside = findFiltered(model.epubSetAsideRecords(inPublication: name))
         return List(selection: epubListSelection(model)) {
             Section {
                 ForEach(shown) { record in

@@ -190,11 +190,17 @@ struct SidebarView: View {
             List(selection: selection) {
                 // The Library shelf of opened EPUBs (the ways through
                 // them, the user's folders, and a "+"), then the Views.
-                librarySection
-                hypermediaSection
-                foldersSection
-                xrSection
-                viewsSection
+                Group {
+                    librarySection
+                    hypermediaSection
+                    foldersSection
+                    xrSection
+                    viewsSection
+                }
+                // The icon rows stand flush with their section
+                // headers — the sidebar style's default steps every
+                // child in a level, spending the column on air.
+                .listRowInsets([.leading], 0)
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)

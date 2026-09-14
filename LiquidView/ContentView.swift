@@ -96,11 +96,14 @@ struct ContentView: View {
                         .background(themeBG)
                         .foregroundStyle(themeFG)
                         .safeAreaInset(edge: .bottom, spacing: 0) {
-                            // The Map carries its own foot bar; the
-                            // lists' find bar would stack beneath it as
-                            // a second Find, filtering the lists
-                            // invisibly from here.
-                            if !(venueIsSelected && model.venueViewMode == .map) {
+                            // The Map carries its own foot bar, and the
+                            // venue's papers their own foot Find — the
+                            // one that rides the full-screen peek. The
+                            // model-wide bar would stack beneath either
+                            // as a second Find.
+                            if !(venueIsSelected
+                                 && (model.venueViewMode == .map
+                                     || model.venueViewMode == .documents)) {
                                 findBar
                             }
                         }
@@ -124,7 +127,15 @@ struct ContentView: View {
                         .background(themeBG)
                         .foregroundStyle(themeFG)
                         .navigationSplitViewColumnWidth(min: 260, ideal: 380, max: 900)
-                        .safeAreaInset(edge: .bottom, spacing: 0) { findBar }
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            // The venue's papers carry their own foot
+                            // Find — the one that also rides the
+                            // full-screen peek; the model-wide bar
+                            // would stack beneath it as a second Find.
+                            if !(venueIsSelected && model.venueViewMode == .documents) {
+                                findBar
+                            }
+                        }
                 } detail: {
                     detailPane
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -289,7 +300,11 @@ struct ContentView: View {
                         Divider()
                         listPane(papersOnly: true)
                             .scrollContentBackground(.hidden)
-                            .frame(width: 240)
+                            // To Acquire carries whole rows of scholarly
+                            // detail — title, byline, the doors to the
+                            // copy — a list's strip cuts them off.
+                            .frame(width: model.sidebarSelection == .acquisitions
+                                   ? 420 : 240)
                     }
                 }
                 .frame(maxHeight: .infinity)

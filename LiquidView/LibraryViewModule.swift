@@ -152,6 +152,20 @@ enum LibraryViewRegistry {
         LineageModuleView.module,
     ]
 
+    /// The views a fresh install shows: solid, useful, and not covered
+    /// by the sidebar's own places. Everything else waits behind Edit
+    /// Views until asked for.
+    static let defaultShownIDs: Set<String> = [
+        AskLibraryView.module.id,
+        WeaveView.module.id,
+        TrailsView.module.id,
+        HotParagraphsView.module.id,
+        GlossaryView.module.id,
+        LineageModuleView.module.id,
+        HealthDashboardView.module.id,
+        TheDealView.module.id,
+    ]
+
     static func module(id: String) -> LibraryViewModule? {
         #if DEBUG
         _ = uniqueIDCheck

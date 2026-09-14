@@ -407,8 +407,13 @@ final class AppModel {
 
     /// Sidebar views switched off in Edit Views, by module id. The
     /// module stays installed — it just leaves the sidebar.
+    /// A fresh install ships quiet: with no choice recorded, only the
+    /// registry's defaultShownIDs stand — the solid views the sidebar
+    /// does not already cover. Edit Views brings on the rest.
     private(set) var hiddenViewIDs: Set<String> =
-        Set(UserDefaults.standard.stringArray(forKey: "hiddenViewIDs") ?? [])
+        Set(UserDefaults.standard.stringArray(forKey: "hiddenViewIDs")
+            ?? LibraryViewRegistry.modules.map(\.id)
+                .filter { !LibraryViewRegistry.defaultShownIDs.contains($0) })
 
     func isViewHidden(_ id: String) -> Bool {
         hiddenViewIDs.contains(id)
@@ -977,6 +982,67 @@ final class AppModel {
         }
         let wanted = key(title, author)
         return epubRecords.first { key($0.title, $0.author) == wanted }
+    }
+
+    /// A conference in one zip: when the archive carries EPUBs (a
+    /// proceedings bundle), every book lands on the shelf through the
+    /// same batch path a folder of them takes. Returns false for a zip
+    /// with no books — a LaTeX project, which keeps its own importer.
+    private func importEPUBBundle(at url: URL) -> Bool {
+        // A cheap probe: the central directory alone, nothing inflated.
+        guard let probe = try? ZipReader(url: url),
+              probe.entryNames.contains(where: Self.isBundledBookEntry)
+        else { return false }
+        showNote("Unpacking “\(url.lastPathComponent)”\u{2026}")
+        Task { [weak self] in
+            let staging: URL? = await Task.detached(priority: .userInitiated) {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                guard let zip = try? ZipReader(url: url) else { return nil }
+                let folder = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("ConferenceImport-" + UUID().uuidString,
+                                            isDirectory: true)
+                do {
+                    try FileManager.default.createDirectory(
+                        at: folder, withIntermediateDirectories: true)
+                    var used = Set<String>()
+                    for entryName in zip.entryNames
+                    where Self.isBundledBookEntry(entryName) {
+                        guard let bytes = zip.entry(entryName) else { continue }
+                        // Flattened to the base name: a wrapping folder
+                        // in the zip must not hide the books from the
+                        // top-level folder scan.
+                        var name = String(entryName.split(separator: "/").last
+                                          ?? "book.epub")
+                        let stem = (name as NSString).deletingPathExtension
+                        var counter = 2
+                        while used.contains(name) {
+                            name = "\(stem) \(counter).epub"
+                            counter += 1
+                        }
+                        used.insert(name)
+                        try bytes.write(to: folder.appendingPathComponent(name))
+                    }
+                } catch { return nil }
+                return folder
+            }.value
+            guard let self else { return }
+            if let staging {
+                self.importFolder(at: staging)
+            } else {
+                NSSound.beep()
+                self.showNote("Could not unpack “\(url.lastPathComponent)”.")
+            }
+        }
+        return true
+    }
+
+    /// A book inside a bundle zip — not Finder's resource-fork stubs
+    /// (__MACOSX/._book.epub), which end in .epub without being books.
+    nonisolated private static func isBundledBookEntry(_ name: String) -> Bool {
+        name.lowercased().hasSuffix(".epub")
+            && !name.hasPrefix("__MACOSX")
+            && !(name.split(separator: "/").last?.hasPrefix("._") ?? true)
     }
 
     /// Imports every convertible document in a folder — the HT '26
@@ -5268,7 +5334,7 @@ final class AppModel {
         panel.treatsFilePackagesAsDirectories = false
         // Keep this short: NSOpenPanel lays the message out on one line and
         // grows the window to fit it, then won't shrink below that width.
-        panel.message = "Import an EPUB, Word, Markdown, PDF, transcript, LaTeX (zip/.tex), or ACM XML file — or a folder of them."
+        panel.message = "Import an EPUB (or a zip of a whole conference), Word, Markdown, PDF, transcript, LaTeX (zip/.tex), or ACM XML file — or a folder of them."
         panel.prompt = "Import"
         // Room to browse. The panel is user-resizable on its own — touching
         // its style mask breaks the sandboxed panel's dragging — and macOS
@@ -5328,8 +5394,12 @@ final class AppModel {
             let preservedID: String? = nil
             switch url.pathExtension.lowercased() {
             case "zip", "tex":
-                // A LaTeX project becomes an EPUB in the library, not a
-                // draft — the reverse of Author's LaTeX export.
+                // A zip carrying EPUBs is a whole conference in one
+                // file — every book joins the shelf. Any other zip is
+                // a LaTeX project becoming an EPUB in the library, not
+                // a draft — the reverse of Author's LaTeX export.
+                if url.pathExtension.lowercased() == "zip",
+                   importEPUBBundle(at: url) { return }
                 importLaTeX(at: url)
                 return
             case "xml":

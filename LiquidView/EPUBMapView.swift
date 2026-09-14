@@ -129,6 +129,10 @@ struct EPUBMapView: View {
     /// The physical floor put to work: what lies written along it —
     /// world history by default, or nothing. Chosen in Time Data.
     @AppStorage("visionTheme") private var visionThemeRaw = VisionTheme.light.rawValue
+    /// Whether the Set Aside slips stand in the room at all — off by
+    /// default, a set-aside card simply leaves; the left arm's Set
+    /// Aside chip brings the quiet floor row back.
+    @AppStorage("mapShowsSetAside") private var showsSetAsideSlips = false
     @AppStorage("floorShow") private var floorShowRaw = FloorShow.world.rawValue
     /// The middle lane's timeline — centre of the corridor.
     @AppStorage("floorShowMiddle") private var floorShowMiddleRaw = FloorShow.nothing.rawValue
@@ -396,7 +400,8 @@ struct EPUBMapView: View {
         // the rest; the Set Aside collapse into a quiet row beneath.
         let shown = records.filter { !model.openDocIDs.contains($0.id) }
         let standing = model.pinnedFirstRecords(shown.filter { !model.setAsideIDs.contains($0.id) })
-        let asides = shown.filter { model.setAsideIDs.contains($0.id) }
+        let asides = showsSetAsideSlips
+            ? shown.filter { model.setAsideIDs.contains($0.id) } : []
 
         let columns = max(1, Int(Double(standing.count * 7).squareRoot() / 2))
         // EXPERIMENT — the articles' own year scale: newest at the grid's
@@ -948,6 +953,7 @@ struct EPUBMapView: View {
         // Reveal All Concepts unfolds ABOVE Concepts the same way,
         // hidden until a long-pinch asks for it.
         ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.showAsideChipID, title: "Set Aside", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectChipID, title: "Select", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectCitationsChipID, title: "Citations",
                      side: .left, group: EPUBMapView.selectChipID),
@@ -994,6 +1000,9 @@ struct EPUBMapView: View {
     private static let alignChipID = "map.arm.align"
     private static let pinChipID = "map.arm.pin"
     private static let setAsideChipID = "map.arm.setaside"
+    /// The left arm's view toggle: shows and hides the aside slips —
+    /// the right arm's Set Aside chip acts on the selection instead.
+    private static let showAsideChipID = "map.arm.setaside.show"
     private static let conceptsChipID = "map.arm.concepts"
     private static let revealConceptsChipID = "map.arm.concepts.reveal"
     private static let graphsChipID = "map.arm.graphs"
@@ -1394,6 +1403,7 @@ struct EPUBMapView: View {
                                   floorShowRightRaw != FloorShow.nothing.rawValue)
             armMenu.setChipActive(Self.timeflowLeftChipID, timeflowLeftShown)
             armMenu.setChipActive(Self.timeflowRightChipID, timeflowRightShown)
+            armMenu.setChipActive(Self.showAsideChipID, showsSetAsideSlips)
             conceptLadder.install(in: content)
             faceTurner.install()
             sankeyWallLeft.install(in: content)
@@ -2105,6 +2115,11 @@ struct EPUBMapView: View {
             for item in selected { model.toggleSetAside(item.id) }
             reload()
             updateStandingChips()
+            return true
+        case Self.showAsideChipID:
+            showsSetAsideSlips.toggle()
+            armMenu.setChipActive(Self.showAsideChipID, showsSetAsideSlips)
+            reload()
             return true
         case Self.graphsChipID:
             graphsOpen.toggle()

@@ -534,6 +534,10 @@ struct ProceedingsMapView: View {
     /// The journal's name — the saved views' shelf key.
     var venue: String = ""
     let open: (String) -> Void
+    /// The paper's abstract by id, read live at lift time — the index
+    /// builds the books in the background, so a value baked into the
+    /// items when the plane first stood could be empty for good.
+    var abstractFor: (String) -> String = { _ in "" }
     let togglePin: (String) -> Void
     let toggleSetAside: (String) -> Void
     /// Back to the journal's list of books — the foot bar's leading
@@ -660,6 +664,7 @@ struct ProceedingsMapView: View {
                         position: binding(for: item),
                         bounds: Self.canvasSize,
                         open: { open(item.id) },
+                        abstractFor: abstractFor,
                         select: {
                             liftedID = liftedID == item.id ? nil : item.id
                         },
@@ -1684,6 +1689,7 @@ private struct ProceedingsMapNode: View {
     @Binding var position: CGPoint
     let bounds: CGSize
     let open: () -> Void
+    var abstractFor: (String) -> String = { _ in "" }
     let select: () -> Void
     let togglePin: () -> Void
     let toggleSetAside: () -> Void
@@ -1736,18 +1742,32 @@ private struct ProceedingsMapNode: View {
         #endif
     }
 
-    /// Standing cards stay small; a lifted card grows to carry its
-    /// full title and byline.
-    private var cardWidth: CGFloat {
+    /// The abstract reads as text, not chrome: the app's serif body
+    /// face, full black on the light card.
+    private var abstractFont: Font {
         #if os(macOS)
-        lifted ? 168 : 122
+        AppFonts.body(10)
         #else
-        lifted ? 168 : 150
+        AppFonts.body(12)
+        #endif
+    }
+
+    /// Standing cards stay small; a lifted card grows to carry its
+    /// full title and byline — wider still when it carries the
+    /// abstract, so the fine print reads as a paragraph, not a ribbon.
+    private func cardWidth(abstract: String) -> CGFloat {
+        #if os(macOS)
+        lifted ? (abstract.isEmpty ? 168 : 260) : 122
+        #else
+        lifted ? (abstract.isEmpty ? 168 : 260) : 150
         #endif
     }
 
     private var card: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        // Read only on the lifted card, live from the index — the
+        // standing plane never pays for sixty abstract walks a render.
+        let abstract = lifted && !item.isSetAside ? abstractFor(item.id) : ""
+        return VStack(alignment: .leading, spacing: 3) {
             // A quiet plane: one line of title per standing card — the
             // full title and the authors unfold on the lifted one.
             Text(item.title)
@@ -1757,6 +1777,18 @@ private struct ProceedingsMapNode: View {
                 Text(item.author)
                     .font(authorFont)
                     .foregroundStyle(.secondary)
+                // The abstract unfolds beneath the byline — capped, so
+                // a long one lifts a card, not a wall.
+                if !abstract.isEmpty {
+                    Text(abstract)
+                        .font(abstractFont)
+                        // Black on the light card; the dark scheme's
+                        // card is near-black, so there it stays white.
+                        .foregroundStyle(colorScheme == .dark
+                                         ? Color.white : .black)
+                        .lineLimit(12)
+                        .padding(.top, 3)
+                }
             }
             #if !os(macOS)
             if isLifted {
@@ -1774,7 +1806,7 @@ private struct ProceedingsMapNode: View {
         // A touch taller when lifted: the unfolded card gets air above
         // and below its words, so it reads as raised, not just wider.
         .padding(.vertical, lifted ? 14 : 7)
-        .frame(width: cardWidth, alignment: .leading)
+        .frame(width: cardWidth(abstract: abstract), alignment: .leading)
         // An opaque fill, not a material: sixty cards of live blur —
         // re-blurred each frame under a moving card — drag the drag.
         // In the dark the cards sit a shade above black, so they read
