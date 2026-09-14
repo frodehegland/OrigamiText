@@ -654,8 +654,10 @@ struct EPUBReaderScreen: View {
             arrowMonitor = NSEvent.addLocalMonitorForEvents(
                 matching: .keyDown
             ) { event in
+                // Arrow keys always wear .function and .numericPad —
+                // only the true modifiers may stand the monitor down.
                 guard event.modifierFlags
-                    .intersection(.deviceIndependentFlagsMask).isEmpty,
+                    .intersection([.command, .option, .control, .shift]).isEmpty,
                       !(NSApp.keyWindow?.firstResponder is NSTextView),
                       EPUBReaderMode(rawValue: readerModeRaw) == .faithful
                 else { return event }
