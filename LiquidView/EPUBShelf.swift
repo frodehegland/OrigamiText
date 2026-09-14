@@ -1040,10 +1040,12 @@ struct ProceedingsMapView: View {
                     path.move(to: anchor)
                     path.addLine(to: pullLine.at)
                     let share = CGFloat(pullLine.strength) / CGFloat(strongest)
+                    // Quiet grey threads — relevance still reads in the
+                    // weight and shade, without the accent's shout.
                     context.stroke(
                         path,
-                        with: .color(Color.accentColor.opacity(0.25 + 0.3 * share)),
-                        lineWidth: 1 + 5 * share)
+                        with: .color(Color.gray.opacity(0.3 + 0.3 * share)),
+                        lineWidth: 0.5 + 1.5 * share)
                 }
             }
             .frame(width: Self.canvasSize.width, height: Self.canvasSize.height)
