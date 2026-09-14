@@ -1386,6 +1386,7 @@ struct ProceedingsMapView: View {
         for item in items where item.isSetAside {
             next[item.id] = seeds[item.id] ?? Self.canvasCenter
         }
+        if let fit = planeFit(for: next) { next = next.mapValues(fit) }
         overlayPositions = next
         clusterCaptions = []
     }
@@ -1466,9 +1467,13 @@ struct ProceedingsMapView: View {
         for item in items where item.isSetAside {
             next[item.id] = seeds[item.id] ?? center
         }
+        let fit = planeFit(for: next)
+        if let fit { next = next.mapValues(fit) }
         overlayPositions = next
         clusterCaptions = magnets.compactMap { magnet in
-            magnetAt[magnet.key].map { (display[magnet.key] ?? magnet.key, $0) }
+            magnetAt[magnet.key].map {
+                (display[magnet.key] ?? magnet.key, fit?($0) ?? $0)
+            }
         }
     }
 
@@ -1531,6 +1536,10 @@ struct ProceedingsMapView: View {
         for item in items where item.isSetAside {
             next[item.id] = seeds[item.id] ?? Self.canvasCenter
         }
+        if let fit = planeFit(for: next) {
+            next = next.mapValues(fit)
+            captions = captions.map { ($0.label, fit($0.at)) }
+        }
         overlayPositions = next
         clusterCaptions = captions
     }
@@ -1582,7 +1591,49 @@ struct ProceedingsMapView: View {
             next[item.id] = stored[item.key].map { Self.canvasPoint($0) }
                 ?? seeds[item.id] ?? Self.canvasCenter
         }
+        if let fit = planeFit(for: next) { next = next.mapValues(fit) }
         overlayPositions = next
+    }
+
+    /// Every card reachable: an arrangement that leaks past the plane's
+    /// edges cannot be scrolled to. Returns the correction — a shrink
+    /// only if the arrangement is genuinely larger than the plane, else
+    /// the smallest slide that brings every card inside the margin — or
+    /// nil when the layout already fits, so captions and cards alike
+    /// can ride the same transform.
+    private func planeFit(for layout: [String: CGPoint]) -> ((CGPoint) -> CGPoint)? {
+        guard !layout.isEmpty else { return nil }
+        let margin: CGFloat = 120
+        let plane = CGRect(x: margin, y: margin,
+                           width: Self.canvasSize.width - 2 * margin,
+                           height: Self.canvasSize.height - 2 * margin)
+        let xs = layout.values.map(\.x)
+        let ys = layout.values.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(),
+              let minY = ys.min(), let maxY = ys.max() else { return nil }
+        let scale = min(1,
+                        plane.width / max(maxX - minX, 1),
+                        plane.height / max(maxY - minY, 1))
+        // Bounds after the (possibly identity) shrink about the plane's
+        // centre, then the minimal slide back inside.
+        func scaled(_ value: CGFloat, about center: CGFloat) -> CGFloat {
+            center + (value - center) * scale
+        }
+        let sMinX = scaled(minX, about: plane.midX)
+        let sMaxX = scaled(maxX, about: plane.midX)
+        let sMinY = scaled(minY, about: plane.midY)
+        let sMaxY = scaled(maxY, about: plane.midY)
+        var dx: CGFloat = 0
+        var dy: CGFloat = 0
+        if sMinX < plane.minX { dx = plane.minX - sMinX }
+        else if sMaxX > plane.maxX { dx = plane.maxX - sMaxX }
+        if sMinY < plane.minY { dy = plane.minY - sMinY }
+        else if sMaxY > plane.maxY { dy = plane.maxY - sMaxY }
+        guard scale < 1 || dx != 0 || dy != 0 else { return nil }
+        return { point in
+            CGPoint(x: scaled(point.x, about: plane.midX) + dx,
+                    y: scaled(point.y, about: plane.midY) + dy)
+        }
     }
 
     /// The moved card's place, written on drag end — that one entry
