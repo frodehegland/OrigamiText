@@ -210,6 +210,30 @@ struct EPUBReaderScreen: View {
     /// the same pair the Horizontal page bar carries.
     @ViewBuilder private var faithfulTypeControls: some View {
         HStack(spacing: 8) {
+            // The pile, right on the foot bar — the same pair the
+            // Horizontal page bar carries.
+            if let record = model.epubRecords.first(where: { $0.folder == book.id }) {
+                Button { model.toggleTopOfPile(record) } label: {
+                    Image(systemName: model.isTopOfPile(record) ? "pin.fill" : "pin")
+                        .foregroundStyle(model.isTopOfPile(record)
+                                         ? Color.accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(model.isTopOfPile(record) ? "Unpin" : "Pin — first in the pile")
+
+                Button {
+                    if model.isSetAside(record) { model.bringBack(record) }
+                    else { model.setAside(record) }
+                } label: {
+                    Image(systemName: "tray.and.arrow.down")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(model.isSetAside(record) ? "Bring Back" : "Set Aside")
+
+                Divider().frame(height: 14)
+            }
+
             Button { showsFaithfulPalette.toggle() } label: {
                 Image(systemName: "paintpalette")
                     .foregroundStyle(.secondary)
@@ -533,7 +557,7 @@ struct EPUBReaderScreen: View {
             // never a popup; a book whose structure will not read
             // simply stays on its pages.
             onPinchIn: {
-                withAnimation(ReadingFootBar.modeSwitch) {
+                _ = withAnimation(ReadingFootBar.modeSwitch) {
                     model.foldOpenReadingIntoOverview()
                 }
             },

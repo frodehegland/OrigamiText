@@ -1059,6 +1059,30 @@ struct OrigamiReadingView: View {
     /// bar's Aa menu. The palette carries its own presented flag: the
     /// foot bar's palette shares the picker view but not the popover.
     @ViewBuilder private var pageBarTypeControls: some View {
+        // The pile, right on the page bar: pin the book first in its
+        // journal, or set it aside without walking back to the list.
+        if let record = model.epubRecord(forAddress: doc.id) {
+            Button { model.toggleTopOfPile(record) } label: {
+                Image(systemName: model.isTopOfPile(record) ? "pin.fill" : "pin")
+                    .foregroundStyle(model.isTopOfPile(record)
+                                     ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(model.isTopOfPile(record) ? "Unpin" : "Pin — first in the pile")
+
+            Button {
+                if model.isSetAside(record) { model.bringBack(record) }
+                else { model.setAside(record) }
+            } label: {
+                Image(systemName: "tray.and.arrow.down")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(model.isSetAside(record) ? "Bring Back" : "Set Aside")
+
+            Divider().frame(height: 14)
+        }
+
         Button { showsPageColorPicker.toggle() } label: {
             Image(systemName: "paintpalette")
                 .foregroundStyle(.secondary)
@@ -2348,10 +2372,11 @@ struct OrigamiReadingView: View {
 
     /// "Introduction — 3–5 of 12": the spread's place in the whole.
     private func pageLabel(pages: [[OrigamiSection]], index: Int, shown: Int) -> String {
+        // The document's own name on the bar — the section headings
+        // already stand at the top of every page.
         let count = pages.count
         let last = min(index + shown, count)
-        let title = pages[index].first(where: hasBody)?.title
-            ?? pages[index].first?.title ?? ""
+        let title = doc.title
         if last - index <= 1 {
             return "\(title) — \(index + 1) of \(count)"
         }
