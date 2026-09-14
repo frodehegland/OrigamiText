@@ -79,4 +79,42 @@ extension AppModel {
                                  origin: result.origin, version: result.version)
         open(doc, fragment: fragment)
     }
+
+    /// The first slice of annotation sharing: the document's own
+    /// annotation, posted as this account's comment on the document's
+    /// space — one annotation per document, standing in the thread any
+    /// Seed reader sees. Only documents that CAME from a space carry
+    /// the address (`sourceURL`); mapping library EPUBs to their Seed
+    /// renditions is the next slice.
+    @MainActor
+    func shareDocumentAnnotationToSeed(for doc: LiquidDoc) async {
+        guard let source = doc.sourceURL,
+              let address = HypermediaAddress.parse(source) else {
+            showNote("This document names no Seed source.")
+            return
+        }
+        let canonical = address.canonicalID
+        let text = documentAnnotation(forAddress: doc.id)?.body?.value ?? ""
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            showNote("Write the document's annotation first.")
+            return
+        }
+        showNote("Sharing annotation…")
+        do {
+            // The space wants the document's version alongside the
+            // comment; a fresh session may not hold it — fetch quietly
+            // to learn it before speaking.
+            if hypermedia.documentVersions[canonical]?.isEmpty != false {
+                let result = try await HypermediaFetcher.fetch(
+                    urlString: canonical, spaces: hypermedia.spaces)
+                hypermedia.cacheDocument(doc, id: result.canonicalID,
+                                         origin: result.origin,
+                                         version: result.version)
+            }
+            try await hypermedia.postComment(text: text, on: canonical, replyTo: nil)
+            showNote("Annotation shared to the document's space")
+        } catch {
+            showNote(error.localizedDescription)
+        }
+    }
 }

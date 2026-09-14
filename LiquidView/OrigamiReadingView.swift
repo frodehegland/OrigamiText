@@ -2496,6 +2496,7 @@ struct OrigamiReadingView: View {
                 .foregroundStyle(themeDimmed.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
             HStack(spacing: 12) {
                 documentAnnotationPill
+                seedSharePill
                 if sections.count > 1 {
                     Label("\(sections.count) sections", systemImage: "list.bullet.indent")
                 }
@@ -2551,6 +2552,23 @@ struct OrigamiReadingView: View {
                                                    title: doc.title,
                                                    draft: draft))
             }
+        }
+    }
+
+    /// Share the written annotation to the document's Seed space —
+    /// offered only on documents that came from one (their sourceURL is
+    /// the hm:// address), once an annotation stands to share.
+    @ViewBuilder private var seedSharePill: some View {
+        if doc.sourceURL.flatMap(HypermediaAddress.parse) != nil,
+           let note = model.documentAnnotation(forAddress: doc.id)?.body?.value,
+           !note.isEmpty {
+            Button {
+                Task { await model.shareDocumentAnnotationToSeed(for: doc) }
+            } label: {
+                Label("Share to Seed", systemImage: "paperplane")
+            }
+            .buttonStyle(.plain)
+            .help("Post this annotation as your comment on the document's space")
         }
     }
 
