@@ -821,7 +821,8 @@ struct ProceedingsMapView: View {
             Button("Authors") { switchView(to: .authors) }
             Button("People") { switchView(to: .people) }
             Button("Author Rank") { switchView(to: .rank) }
-            Button("Magnets") { switchView(to: .poles) }
+            // Magnets left this menu: the bar arranges nothing on its
+            // own — ctrl-click a topic and choose Arrange instead.
             let names = savedViewNames
             if !names.isEmpty {
                 Divider()
@@ -1062,7 +1063,10 @@ struct ProceedingsMapView: View {
                         let frame = $0.frame(in: .named("mapPlane"))
                         return CGPoint(x: frame.midX, y: frame.midY)
                     }) { magnetCenters[slot] = $0 }
-                    .help("A magnet's topic — click for its threads, edit and press Return to pull the papers anew")
+                    .contextMenu {
+                        Button("Arrange") { arrangeColumn(under: slot) }
+                    }
+                    .help("A magnet's topic — click for its threads; ctrl-click and Arrange to column its papers beneath it")
             }
         }
         .frame(height: Self.magnetBarHeight)
@@ -1175,15 +1179,55 @@ struct ProceedingsMapView: View {
 
     /// The reader renamed a magnet: keep the set for this venue — or,
     /// if every slot stands empty, forget it so the papers name them
-    /// again — and gather the cards anew.
+    /// again. Renaming never rearranges the plane; emptied slots just
+    /// name themselves anew from the papers.
     private func magnetsEdited() {
         let names = magnetNames.map { $0.trimmingCharacters(in: .whitespaces) }
         if names.allSatisfy(\.isEmpty) {
             UserDefaults.standard.removeObject(forKey: magnetsKey)
+            magnetNames = Array(repeating: "", count: 12)
         } else {
             UserDefaults.standard.set(names, forKey: magnetsKey)
         }
-        applyPoles()
+        nameMagnets(standing: items.filter { !$0.isSetAside })
+    }
+
+    /// The chip's Arrange (ctrl-click): every card the topic speaks for
+    /// steps into a column beneath the chip, strongest pull first —
+    /// the rest of the plane stands untouched. In the Default view the
+    /// column persists to the shared layout like any hand move.
+    private func arrangeColumn(under slot: Int) {
+        let pole = Self.poleWords(magnetNames[slot])
+        guard !pole.isEmpty, let anchor = magnetAnchor(slot) else { return }
+        let members = items
+            .filter { !$0.isSetAside && magnetPull($0, pole) > 0 }
+            .sorted {
+                let a = magnetPull($0, pole), b = magnetPull($1, pole)
+                return a != b ? a > b : $0.title < $1.title
+            }
+        guard !members.isEmpty else { return }
+        let x = min(max(anchor.x, 90), Self.canvasSize.width - 90)
+        let top = min(max(anchor.y + 90, 40), Self.canvasSize.height - 40)
+        let step: CGFloat = members.count > 1
+            ? min(96, (Self.canvasSize.height - 80 - top) / CGFloat(members.count - 1))
+            : 96
+        for (index, item) in members.enumerated() {
+            let point = CGPoint(x: x, y: top + step * CGFloat(index))
+            if viewChoice == .standard {
+                positions[item.id] = point
+            } else {
+                overlayPositions[item.id] = point
+            }
+        }
+        if viewChoice == .standard {
+            var updates: [String: EPUBMapSharedLayout.Point] = [:]
+            for item in members {
+                if let point = positions[item.id] {
+                    updates[item.key] = Self.sharedPoint(point)
+                }
+            }
+            EPUBMapSharedLayout.save(updating: updates, community: folder)
+        }
     }
 
     /// The words of a pole, topic, or title — lowercased, split on
