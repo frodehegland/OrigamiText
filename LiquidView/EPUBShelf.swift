@@ -607,6 +607,13 @@ struct ProceedingsMapView: View {
     /// speaks for, thicker where the pull is stronger. Clicking the
     /// empty plane lets go.
     @FocusState private var focusedMagnet: Int?
+    /// The magnet bar across the top of the screen — toggled from the
+    /// foot bar, standing over every view, kept per user.
+    @AppStorage("mapMagnetBar") private var showsMagnetBar = false
+    /// The scroll viewport in content coordinates — the bridge between
+    /// the plane's cards and the screen-pinned magnet bar the threads
+    /// connect them to.
+    @State private var visibleRect: CGRect = .zero
 
     /// One hallway meter drawn at this many points; the canvas center
     /// is the hallway's (0, 1.2) — mid-height of its article grid.
@@ -626,17 +633,6 @@ struct ProceedingsMapView: View {
                         .foregroundStyle(.secondary.opacity(0.55))
                         .position(caption.at)
                         .allowsHitTesting(false)
-                }
-                // The Magnets view's poles: topics around the plane's
-                // edge, written by the papers, rewritable by the reader.
-                // Return applies; an emptied field names itself again.
-                if viewChoice == .poles {
-                    magnetThreads
-                    nodeThreads
-                    ForEach(magnetNames.indices, id: \.self) { slot in
-                        magnetField($magnetNames[slot],
-                                    at: Self.magnetSlots[slot], slot: slot)
-                    }
                 }
                 ForEach(items) { item in
                     ProceedingsMapNode(
@@ -661,8 +657,18 @@ struct ProceedingsMapView: View {
             }
         }
         .defaultScrollAnchor(.center)
+        // The threads live on the screen, not the plane: the plane's
+        // cards scroll beneath while the magnets hold the top bar, so
+        // the lines bridge the two spaces here, over the viewport.
+        .overlay { if showsMagnetBar { threadOverlay } }
+        .onScrollGeometryChange(for: CGRect.self, of: { $0.visibleRect }) { _, new in
+            visibleRect = new
+        }
         .background(Color.secondary.opacity(0.06))
         .safeAreaInset(edge: .bottom, spacing: 0) { footBar }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if showsMagnetBar { magnetBar }
+        }
         .onAppear(perform: reload)
         #if os(macOS)
         // ⌘A takes the whole plane — unless the Find field is writing.
@@ -766,6 +772,18 @@ struct ProceedingsMapView: View {
             .padding(.vertical, 2)
             .frame(maxWidth: 280)
             .background(Capsule().fill(Color.secondary.opacity(0.12)))
+            // The magnet bar's switch: topics across the top of the
+            // screen, threads to and from the cards.
+            Button {
+                showsMagnetBar.toggle()
+                if showsMagnetBar { ensureMagnetNames() }
+            } label: {
+                Label("Magnets", systemImage: "rectangle.topthird.inset.filled")
+                    .font(.callout)
+                    .foregroundStyle(showsMagnetBar ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(showsMagnetBar ? "Hide the magnet bar" : "Show the magnet bar")
             Spacer()
         }
         .padding(.horizontal, 12)
@@ -1000,91 +1018,104 @@ struct ProceedingsMapView: View {
 
     // MARK: The Magnets view — a pole at each side, the papers between
 
-    /// One pole's name, written on the plane: a bare field styled like a
-    /// magnet caption. Clicking it draws its threads; Return lays the
-    /// papers out anew; an emptied field is named again from the topics.
-    private func magnetField(_ text: Binding<String>, at point: CGPoint,
-                             slot: Int) -> some View {
-        TextField("Topic", text: text)
-            .textFieldStyle(.plain)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(focusedMagnet == slot ? Color.accentColor : .secondary)
-            .multilineTextAlignment(.center)
-            .frame(width: 200)
-            .focused($focusedMagnet, equals: slot)
-            .onSubmit { magnetsEdited() }
-            .position(point)
-            .help("A magnet's topic — click for its threads, edit and press Return to pull the papers anew")
+    /// The magnet bar: twelve topics across the top of the screen, each
+    /// an editable field. Clicking one draws its threads down to the
+    /// papers it speaks for; Return lays the Magnets view out anew; an
+    /// emptied set names itself again from the papers.
+    private var magnetBar: some View {
+        HStack(spacing: 0) {
+            ForEach(magnetNames.indices, id: \.self) { slot in
+                TextField("Topic", text: $magnetNames[slot])
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(focusedMagnet == slot
+                                     ? Color.accentColor : .secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                    .focused($focusedMagnet, equals: slot)
+                    .onSubmit { magnetsEdited() }
+                    .frame(maxWidth: .infinity)
+                    .help("A magnet's topic — click for its threads, edit and press Return to pull the papers anew")
+            }
+        }
+        .frame(height: Self.magnetBarHeight)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Divider() }
+        .onAppear { ensureMagnetNames() }
     }
 
-    /// The reverse read: a selected (lifted) card shows its own pulls —
-    /// a thread to every magnet whose topic it carries, weight and
-    /// shade by strength, in the threads' quiet grey.
-    @ViewBuilder
-    private var nodeThreads: some View {
-        if let lifted = liftedID,
-           let item = items.first(where: { $0.id == lifted && !$0.isSetAside }) {
-            let at = overlayPositions[item.id] ?? positions[item.id]
-                ?? seedCache[item.id] ?? Self.canvasCenter
-            let pulls: [(anchor: CGPoint, strength: Int)] = magnetNames.indices
-                .compactMap { slot in
-                    let strength = magnetPull(item, Self.poleWords(magnetNames[slot]))
-                    guard strength > 0 else { return nil }
-                    return (Self.magnetSlots[slot], strength)
-                }
-            let strongest = pulls.map(\.strength).max() ?? 1
-            Canvas { context, _ in
+    /// The bar's height — also where the threads' upper ends sit.
+    private static let magnetBarHeight: CGFloat = 30
+
+    /// A magnet's place on the screen: the centre of its twelfth of
+    /// the bar, in the viewport's coordinates.
+    private func magnetAnchor(_ slot: Int, width: CGFloat) -> CGPoint {
+        CGPoint(x: width * (CGFloat(slot) + 0.5) / 12,
+                y: Self.magnetBarHeight / 2)
+    }
+
+    /// A plane point carried into the viewport — the scroll geometry's
+    /// visible rect is the bridge.
+    private func viewportPoint(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x - visibleRect.origin.x,
+                y: point.y - visibleRect.origin.y)
+    }
+
+    /// The threads, drawn over the viewport: a clicked magnet's lines
+    /// run down to every paper it speaks for, and a selected (lifted)
+    /// card answers upward with a line to every magnet whose topic it
+    /// carries — weight and shade by strength, in quiet grey. The bar
+    /// and foot bar draw over this, so a line vanishes cleanly under
+    /// them rather than crossing.
+    private var threadOverlay: some View {
+        Canvas { context, size in
+            func stroke(_ from: CGPoint, _ to: CGPoint, share: CGFloat) {
+                var path = Path()
+                path.move(to: from)
+                path.addLine(to: to)
+                context.stroke(
+                    path,
+                    with: .color(Color.gray.opacity(0.3 + 0.3 * share)),
+                    lineWidth: 0.5 + 1.5 * share)
+            }
+            if let slot = focusedMagnet, slot < magnetNames.count {
+                let pole = Self.poleWords(magnetNames[slot])
+                let anchor = magnetAnchor(slot, width: size.width)
+                let pulls: [(at: CGPoint, strength: Int)] = items
+                    .filter { !$0.isSetAside }
+                    .compactMap { item in
+                        let strength = magnetPull(item, pole)
+                        guard strength > 0 else { return nil }
+                        let at = overlayPositions[item.id] ?? positions[item.id]
+                            ?? seedCache[item.id] ?? Self.canvasCenter
+                        return (viewportPoint(at), strength)
+                    }
+                let strongest = pulls.map(\.strength).max() ?? 1
                 for pull in pulls {
-                    var path = Path()
-                    path.move(to: at)
-                    path.addLine(to: pull.anchor)
-                    let share = CGFloat(pull.strength) / CGFloat(strongest)
-                    context.stroke(
-                        path,
-                        with: .color(Color.gray.opacity(0.3 + 0.3 * share)),
-                        lineWidth: 0.5 + 1.5 * share)
+                    stroke(anchor, pull.at,
+                           share: CGFloat(pull.strength) / CGFloat(strongest))
                 }
             }
-            .frame(width: Self.canvasSize.width, height: Self.canvasSize.height)
-            .allowsHitTesting(false)
-        }
-    }
-
-    /// The clicked magnet's threads: a line to every paper it speaks
-    /// for, its width the strength of the pull — so a paper filed under
-    /// another magnet still shows how much this one claims it.
-    @ViewBuilder
-    private var magnetThreads: some View {
-        if let slot = focusedMagnet, slot < magnetNames.count {
-            let pole = Self.poleWords(magnetNames[slot])
-            let anchor = Self.magnetSlots[slot]
-            let pulls: [(at: CGPoint, strength: Int)] = items
-                .filter { !$0.isSetAside }
-                .compactMap { item in
-                    let strength = magnetPull(item, pole)
-                    guard strength > 0 else { return nil }
-                    let at = overlayPositions[item.id] ?? positions[item.id]
-                        ?? seedCache[item.id] ?? Self.canvasCenter
-                    return (at, strength)
-                }
-            let strongest = pulls.map(\.strength).max() ?? 1
-            Canvas { context, _ in
-                for pullLine in pulls {
-                    var path = Path()
-                    path.move(to: anchor)
-                    path.addLine(to: pullLine.at)
-                    let share = CGFloat(pullLine.strength) / CGFloat(strongest)
-                    // Quiet grey threads — relevance still reads in the
-                    // weight and shade, without the accent's shout.
-                    context.stroke(
-                        path,
-                        with: .color(Color.gray.opacity(0.3 + 0.3 * share)),
-                        lineWidth: 0.5 + 1.5 * share)
+            if let lifted = liftedID,
+               let item = items.first(where: { $0.id == lifted && !$0.isSetAside }) {
+                let at = viewportPoint(
+                    overlayPositions[item.id] ?? positions[item.id]
+                        ?? seedCache[item.id] ?? Self.canvasCenter)
+                let pulls: [(slot: Int, strength: Int)] = magnetNames.indices
+                    .compactMap { slot in
+                        let strength = magnetPull(
+                            item, Self.poleWords(magnetNames[slot]))
+                        guard strength > 0 else { return nil }
+                        return (slot, strength)
+                    }
+                let strongest = pulls.map(\.strength).max() ?? 1
+                for pull in pulls {
+                    stroke(at, magnetAnchor(pull.slot, width: size.width),
+                           share: CGFloat(pull.strength) / CGFloat(strongest))
                 }
             }
-            .frame(width: Self.canvasSize.width, height: Self.canvasSize.height)
-            .allowsHitTesting(false)
         }
+        .allowsHitTesting(false)
     }
 
     /// Where the twelve magnets stand: one row across the top of the
@@ -1191,32 +1222,12 @@ struct ProceedingsMapView: View {
         return count
     }
 
-    private func applyPoles() {
-        let standing = items.filter { !$0.isSetAside }
-
-        func pull(_ item: Item, _ pole: Set<String>) -> Int {
-            magnetPull(item, pole)
-        }
-        // The loose touch: how many of the magnet's words stand
-        // anywhere in the paper — the net under the full match.
-        func touch(_ item: Item, _ pole: Set<String>) -> Int {
-            guard !pole.isEmpty else { return 0 }
-            let text = item.topics.reduce(Self.poleWords(item.title)) {
-                $0.union(Self.poleWords($1))
-            }
-            return pole.reduce(0) { count, word in
-                text.contains { $0 == word || ($0.hasPrefix(word) && word.count >= 4) }
-                    ? count + 1 : count
-            }
-        }
-
-        // Name the magnets: the reader's kept names take their slots,
-        // then the empty slots fill greedily — each next name the one
-        // that speaks for the most papers still unspoken for, so the
-        // board covers the venue rather than repeating its loudest
-        // topic. No two names mere longer or shorter forms of each
-        // other; once nothing new is covered, the most shared names
-        // fill what remains.
+    /// Names the twelve magnets: the reader's kept names take their
+    /// slots, then the empty slots fill greedily — each next name the
+    /// one that speaks for the most papers still unspoken for, so the
+    /// board covers the venue rather than repeating its loudest topic.
+    /// No two names mere longer or shorter forms of each other.
+    private func nameMagnets(standing: [Item]) {
         let kept = UserDefaults.standard.stringArray(forKey: magnetsKey) ?? []
         for (slot, name) in kept.enumerated() where slot < magnetNames.count {
             let trimmed = name.trimmingCharacters(in: .whitespaces)
@@ -1230,7 +1241,7 @@ struct ProceedingsMapView: View {
         var covered = Set<String>()
         for name in taken {
             let pole = Self.poleWords(name)
-            for item in standing where pull(item, pole) > 0 {
+            for item in standing where magnetPull(item, pole) > 0 {
                 covered.insert(item.id)
             }
         }
@@ -1258,6 +1269,38 @@ struct ProceedingsMapView: View {
                 return other.contains(key) || key.contains(other)
             }
         }
+    }
+
+    /// The bar shown outside the Magnets view names itself from the
+    /// papers if the reader hasn't yet — without touching the layout.
+    private func ensureMagnetNames() {
+        guard magnetNames.allSatisfy({
+            $0.trimmingCharacters(in: .whitespaces).isEmpty
+        }) else { return }
+        nameMagnets(standing: items.filter { !$0.isSetAside })
+    }
+
+    private func applyPoles() {
+        let standing = items.filter { !$0.isSetAside }
+
+        func pull(_ item: Item, _ pole: Set<String>) -> Int {
+            magnetPull(item, pole)
+        }
+        // The loose touch: how many of the magnet's words stand
+        // anywhere in the paper — the net under the full match.
+        func touch(_ item: Item, _ pole: Set<String>) -> Int {
+            guard !pole.isEmpty else { return 0 }
+            let text = item.topics.reduce(Self.poleWords(item.title)) {
+                $0.union(Self.poleWords($1))
+            }
+            return pole.reduce(0) { count, word in
+                text.contains { $0 == word || ($0.hasPrefix(word) && word.count >= 4) }
+                    ? count + 1 : count
+            }
+        }
+
+        nameMagnets(standing: standing)
+        showsMagnetBar = true
         let poles = magnetNames.map { Self.poleWords($0) }
 
         // Every paper to one column: the strongest full claim, else the
