@@ -96,6 +96,8 @@ struct EPUBMapView: View {
     /// carrying the reader's macOS concepts.
     @State private var conceptLadder = ConceptLadder()
     @State private var faceTurner = CardFaceTurner()
+    /// The one per-frame card sweep feeding the turner and the lines.
+    @State private var cardTick = MapCardTick()
 
     /// True while concept cards are shown in the hallway — concepts
     /// join the items array in front of the article wall.
@@ -491,7 +493,15 @@ struct EPUBMapView: View {
                 && (!onlyOverlap || sharedIDs.isEmpty || sharedIDs.contains($0.id))
         }
         let years = shownCited.compactMap(\.year)
-        let newest = years.max()
+        // The near plane is TODAY, not the newest cited work: this
+        // year stands at the reader's plane and every citation lies
+        // as deep as its age. Anchored to the calendar so the corridor
+        // never re-anchors as selections change — the newest paper of
+        // one wall would otherwise stand at the reader's nose and read
+        // as now. Every companion (deep rank, Timeflow, floor bands,
+        // decade lines) shares this range, so they all agree.
+        let thisYear = Calendar.current.component(.year, from: Date())
+        let newest = years.max().map { max($0, thisYear) }
         let oldest = years.min()
         let span = Float(max((newest ?? 0) - (oldest ?? 0), 1))
         // The Sankey shares this span: its years stand at these Zs.
@@ -1385,7 +1395,7 @@ struct EPUBMapView: View {
             armMenu.setChipActive(Self.timeflowLeftChipID, timeflowLeftShown)
             armMenu.setChipActive(Self.timeflowRightChipID, timeflowRightShown)
             conceptLadder.install(in: content)
-            faceTurner.install(in: content)
+            faceTurner.install()
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
             floorBandLeft.install(in: content)
@@ -1397,6 +1407,11 @@ struct EPUBMapView: View {
             selectedCitationLines.install(in: content)
             conceptConnectionLines.install(in: content)
             citedToDeepLines.install(in: content)
+            cardTick.install(in: content,
+                             faceTurner: faceTurner,
+                             lines: [selectedCitationLines,
+                                     conceptConnectionLines,
+                                     citedToDeepLines])
             // Align to Room's wall: a wall-classified vertical plane on
             // the one tracking session, read when the chip is tapped.
             let roomWall = AnchorEntity(.plane(.vertical, classification: .wall,
@@ -1674,8 +1689,11 @@ struct EPUBMapView: View {
             }
             return entity
         }
-        holder.addChild(face(back: false))
-        holder.addChild(face(back: true))
+        let frontFace = face(back: false)
+        let backFace = face(back: true)
+        holder.addChild(frontFace)
+        holder.addChild(backFace)
+        holder.components.set(CardFacesComponent(front: frontFace, back: backFace))
 
         // Set Aside slips fade whole — glass and words together.
         if item.isAside {
@@ -2229,6 +2247,13 @@ struct EPUBNodeIDComponent: Component {
     let id: String
 }
 
+/// The card's two faces, cached at build time so the per-frame turner
+/// never walks a card's subtree hunting them by name.
+struct CardFacesComponent: Component {
+    let front: Entity
+    let back: Entity
+}
+
 /// The whole-space grab: close either hand into a fist and the space
 /// follows it; open the hand and the space sets down. Fist detection
 /// rides RealityKit hand anchors — the same SpatialTrackingSession the
@@ -2257,9 +2282,11 @@ final class FistGrab {
     /// — and re-opens past the wider bound, so the grip cannot flicker.
     private static let closeWithin: Float = 0.055
     private static let openBeyond: Float = 0.075
-    /// A pinch is not a fist: when the thumb tip touches the index tip
-    /// the system pinch owns the hand.
-    private static let pinchClearance: Float = 0.035
+    /// A pinch is not a fist: when the thumb tip actually touches the
+    /// index tip the system pinch owns the hand. Kept tight — a fist
+    /// wraps the thumb across the curled fingers, and a wider bound
+    /// read real fists as pinches and refused the grab.
+    private static let pinchClearance: Float = 0.02
     /// The carry is geared up — the space moves further than the hand,
     /// so a large room crosses the floor without long reaches.
     private static let carryGain: Float = 2.5
@@ -2299,8 +2326,21 @@ final class FistGrab {
             let bound = hands[index].isFist ? Self.openBeyond : Self.closeWithin
             let tips = hands[index].curlTips.map { $0.position(relativeTo: nil) }
             let thumb = hands[index].thumbTip.position(relativeTo: nil)
-            let curled = tips.allSatisfy { distance($0, palm) < bound }
-                && distance(thumb, tips[0]) > Self.pinchClearance
+            // A closed fist hides its own fingers from the cameras, so
+            // joints drop out (to the origin) or stray. Untracked tips
+            // don't vote, two of three carry the day, and a held fist
+            // takes two open fingers to let go — one noisy joint can
+            // neither refuse the grab nor spill the carry.
+            let tracked = tips.filter { $0 != .zero }
+            let curled: Bool
+            if hands[index].isFist {
+                curled = tracked.filter { distance($0, palm) >= bound }.count < 2
+            } else {
+                let pinching = thumb != .zero && tips[0] != .zero
+                    && distance(thumb, tips[0]) < Self.pinchClearance
+                curled = tracked.filter { distance($0, palm) < bound }.count >= 2
+                    && !pinching
+            }
 
             if curled {
                 if !hands[index].isFist {
@@ -3128,9 +3168,8 @@ private final class CitationLineManager {
 /// shared citation (3+ selected). Lines follow cards live each frame
 /// by querying EPUBNodeIDComponent world positions.
 @MainActor
-private final class SelectedCitationLines {
+private final class SelectedCitationLines: MapLineLayer {
     private var root: Entity?
-    private var sceneTick: EventSubscription?
 
     private struct LineData {
         let line: ModelEntity
@@ -3152,9 +3191,6 @@ private final class SelectedCitationLines {
         let r = Entity()
         content.add(r)
         root = r
-        sceneTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
-            MainActor.assumeIsolated { self?.tick(scene: event.scene) }
-        }
     }
 
     func rebuild(items: [EPUBMapItem]) {
@@ -3180,17 +3216,12 @@ private final class SelectedCitationLines {
         }
     }
 
-    private func tick(scene: RealityKit.Scene) {
-        guard !lineData.isEmpty else { return }
-        var posMap: [String: SIMD3<Float>] = [:]
-        for entity in scene.performQuery(EntityQuery(where: .has(EPUBNodeIDComponent.self))) {
-            if let comp = entity.components[EPUBNodeIDComponent.self] {
-                posMap[comp.id] = entity.position(relativeTo: nil)
-            }
-        }
+    var needsPositions: Bool { !lineData.isEmpty }
+
+    func relayout(positions: [String: SIMD3<Float>]) {
         for data in lineData {
-            guard let from = posMap[data.fromID],
-                  let to = posMap[data.toID] else { continue }
+            guard let from = positions[data.fromID],
+                  let to = positions[data.toID] else { continue }
             positionLine(data.line, from: from, to: to)
         }
     }
@@ -3241,15 +3272,14 @@ final class CardFaceTurner {
 
     private let session = ARKitSession()
     private let worldTracking = WorldTrackingProvider()
-    private var tick: EventSubscription?
+    private var started = false
 
-    func install(in content: RealityViewContent) {
+    func install() {
         // One session per instance: a second install (the space
         // remade around the same @State) must not run ARKit twice.
-        guard tick == nil else { return }
-        tick = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
-            MainActor.assumeIsolated { self?.turn(scene: event.scene) }
-        }
+        guard !started else { return }
+        started = true
+        CardFacesComponent.registerComponent()
         guard WorldTrackingProvider.isSupported else {
             print("Map/faces: world tracking unsupported — back faces stay dark")
             return
@@ -3263,30 +3293,77 @@ final class CardFaceTurner {
         }
     }
 
-    private func turn(scene: RealityKit.Scene) {
+    /// The viewer's place, when world tracking offers one — without it
+    /// (simulator, tracking not yet running) the fronts stand alone.
+    func headPosition() -> SIMD3<Float>? {
         guard worldTracking.state == .running,
               let device = worldTracking.queryDeviceAnchor(
                 atTimestamp: CACurrentMediaTime())
-        else { return }
+        else { return nil }
         let column = device.originFromAnchorTransform.columns.3
-        let head = SIMD3<Float>(column.x, column.y, column.z)
-        for card in scene.performQuery(
-            EntityQuery(where: .has(EPUBNodeIDComponent.self))) {
-            guard let front = card.findEntity(named: Self.frontName),
-                  let back = card.findEntity(named: Self.backName)
-            else { continue }
-            let forward = card.orientation(relativeTo: nil)
-                .act(SIMD3<Float>(0, 0, 1))
-            let d = simd_dot(forward, head - card.position(relativeTo: nil))
-            // A dead band about the card's plane: standing edge-on, the
-            // lit side holds rather than flickering with every sway.
-            let facing: Bool
-            if d > 0.05 { facing = true }
-            else if d < -0.05 { facing = false }
-            else { continue }
-            if front.isEnabled != facing { front.isEnabled = facing }
-            if back.isEnabled == facing { back.isEnabled = !facing }
+        return SIMD3<Float>(column.x, column.y, column.z)
+    }
+
+    /// One card's turn, its world position handed in by the shared
+    /// sweep; the faces come from the component cached at build.
+    func turn(card: Entity, at position: SIMD3<Float>, head: SIMD3<Float>) {
+        guard let faces = card.components[CardFacesComponent.self] else { return }
+        let forward = card.orientation(relativeTo: nil)
+            .act(SIMD3<Float>(0, 0, 1))
+        let d = simd_dot(forward, head - position)
+        // A dead band about the card's plane: standing edge-on, the
+        // lit side holds rather than flickering with every sway.
+        let facing: Bool
+        if d > 0.05 { facing = true }
+        else if d < -0.05 { facing = false }
+        else { return }
+        if faces.front.isEnabled != facing { faces.front.isEnabled = facing }
+        if faces.back.isEnabled == facing { faces.back.isEnabled = !facing }
+    }
+}
+
+/// One face of the shared per-frame sweep: a line layer that wants the
+/// cards' world positions whenever it has lines to lay.
+@MainActor
+private protocol MapLineLayer: AnyObject {
+    var needsPositions: Bool { get }
+    func relayout(positions: [String: SIMD3<Float>])
+}
+
+/// The single per-frame sweep over the cards. The face turner and the
+/// three line layers each used to run their own full-scene query every
+/// frame — folded here into one query whose one pass feeds them all.
+@MainActor
+private final class MapCardTick {
+    private var subscription: EventSubscription?
+    private var faceTurner: CardFaceTurner?
+    private var lines: [MapLineLayer] = []
+    private let cardQuery = EntityQuery(where: .has(EPUBNodeIDComponent.self))
+
+    func install(in content: RealityViewContent,
+                 faceTurner: CardFaceTurner,
+                 lines: [MapLineLayer]) {
+        self.faceTurner = faceTurner
+        self.lines = lines
+        subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+            MainActor.assumeIsolated { self?.tick(scene: event.scene) }
         }
+    }
+
+    private func tick(scene: RealityKit.Scene) {
+        let head = faceTurner?.headPosition()
+        let liveLines = lines.filter { $0.needsPositions }
+        guard head != nil || !liveLines.isEmpty else { return }
+        var positions: [String: SIMD3<Float>] = [:]
+        for card in scene.performQuery(cardQuery) {
+            let place = card.position(relativeTo: nil)
+            if let head { faceTurner?.turn(card: card, at: place, head: head) }
+            if !liveLines.isEmpty,
+               let id = card.components[EPUBNodeIDComponent.self]?.id {
+                positions[id] = place
+            }
+        }
+        for layer in liveLines { layer.relayout(positions: positions) }
     }
 }
 
@@ -3353,9 +3430,8 @@ nonisolated enum EPUBMapLayoutStore {
 /// extracted from. Rebuilt whenever the items array changes; positions
 /// track live each frame via EPUBNodeIDComponent.
 @MainActor
-private final class ConceptConnectionLines {
+private final class ConceptConnectionLines: MapLineLayer {
     private var root: Entity?
-    private var sceneTick: EventSubscription?
     private struct LineData { let line: ModelEntity; let fromID: String; let toID: String }
     private var lineData: [LineData] = []
 
@@ -3363,9 +3439,6 @@ private final class ConceptConnectionLines {
 
     func install(in content: RealityViewContent) {
         let r = Entity(); content.add(r); root = r
-        sceneTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
-            MainActor.assumeIsolated { self?.tick(scene: event.scene) }
-        }
     }
 
     /// Draws one line per edge — the caller resolves which nodes a
@@ -3389,17 +3462,12 @@ private final class ConceptConnectionLines {
         }
     }
 
-    private func tick(scene: RealityKit.Scene) {
-        guard !lineData.isEmpty else { return }
-        var posMap: [String: SIMD3<Float>] = [:]
-        for entity in scene.performQuery(EntityQuery(where: .has(EPUBNodeIDComponent.self))) {
-            if let comp = entity.components[EPUBNodeIDComponent.self] {
-                posMap[comp.id] = entity.position(relativeTo: nil)
-            }
-        }
+    var needsPositions: Bool { !lineData.isEmpty }
+
+    func relayout(positions: [String: SIMD3<Float>]) {
         for data in lineData {
-            guard let from = posMap[data.fromID],
-                  let to = posMap[data.toID] else { continue }
+            guard let from = positions[data.fromID],
+                  let to = positions[data.toID] else { continue }
             positionLine(data.line, from: from, to: to)
         }
     }
@@ -3436,9 +3504,8 @@ private final class ConceptConnectionLines {
 /// Amber lines from a selected citation card to the deep works it cites.
 /// Mirrors ConceptConnectionLines — same EPUBNodeIDComponent live-tracking.
 @MainActor
-private final class CitedToDeepLines {
+private final class CitedToDeepLines: MapLineLayer {
     private var root: Entity?
-    private var sceneTick: EventSubscription?
     private struct LineData { let line: ModelEntity; let fromID: String; let toID: String }
     private var lineData: [LineData] = []
 
@@ -3446,9 +3513,6 @@ private final class CitedToDeepLines {
 
     func install(in content: RealityViewContent) {
         let r = Entity(); content.add(r); root = r
-        sceneTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
-            MainActor.assumeIsolated { self?.tick(scene: event.scene) }
-        }
     }
 
     func rebuild(items: [EPUBMapItem]) {
@@ -3474,17 +3538,12 @@ private final class CitedToDeepLines {
         }
     }
 
-    private func tick(scene: RealityKit.Scene) {
-        guard !lineData.isEmpty else { return }
-        var posMap: [String: SIMD3<Float>] = [:]
-        for entity in scene.performQuery(EntityQuery(where: .has(EPUBNodeIDComponent.self))) {
-            if let comp = entity.components[EPUBNodeIDComponent.self] {
-                posMap[comp.id] = entity.position(relativeTo: nil)
-            }
-        }
+    var needsPositions: Bool { !lineData.isEmpty }
+
+    func relayout(positions: [String: SIMD3<Float>]) {
         for data in lineData {
-            guard let from = posMap[data.fromID],
-                  let to = posMap[data.toID] else { continue }
+            guard let from = positions[data.fromID],
+                  let to = positions[data.toID] else { continue }
             positionLine(data.line, from: from, to: to)
         }
     }
