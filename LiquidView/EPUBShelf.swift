@@ -675,6 +675,10 @@ struct ProceedingsMapView: View {
                     // subject — everything unthreaded steps back.
                     .opacity(connected == nil || connected!.contains(item.id)
                              ? 1 : 0.25)
+                    // The lifted card rises above its neighbours — its
+                    // grown frame must never swallow a click meant for
+                    // the card visually beside it.
+                    .zIndex(liftedID == item.id ? 1 : 0)
                 }
             }
         }
@@ -881,6 +885,9 @@ struct ProceedingsMapView: View {
             .onTapGesture {
                 selectedIDs = []
                 focusedMagnet = nil
+                // The lifted card sets down too — empty plane lets
+                // everything go.
+                liftedID = nil
             }
         #if os(iOS)
         return base.background(TwoFingerScrollConfigurator())
@@ -1781,7 +1788,10 @@ private struct ProceedingsMapNode: View {
             }
             #endif
         }
-        .padding(lifted ? 10 : 7)
+        .padding(.horizontal, lifted ? 10 : 7)
+        // A touch taller when lifted: the unfolded card gets air above
+        // and below its words, so it reads as raised, not just wider.
+        .padding(.vertical, lifted ? 14 : 7)
         .frame(width: cardWidth, alignment: .leading)
         // An opaque fill, not a material: sixty cards of live blur —
         // re-blurred each frame under a moving card — drag the drag.
@@ -1811,6 +1821,9 @@ private struct ProceedingsMapNode: View {
             }
         }
         .opacity(emphasis == .dimmed ? 0.25 : item.isSetAside ? 0.45 : 1)
+        // The whole pane answers the click — a faded or quiet card is
+        // as clickable as a bright one.
+        .contentShape(Rectangle())
         // One flattened layer, THEN the shadow — unflattened, every
         // text glyph casts its own, which reads wrong and costs a
         // shadow pass per element on every drag frame.
