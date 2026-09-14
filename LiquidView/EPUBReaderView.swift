@@ -208,11 +208,11 @@ struct EPUBReaderScreen: View {
 
     /// The palette and type marks on the faithful (Scrolling) foot bar —
     /// the same pair the Horizontal page bar carries.
-    @ViewBuilder private var faithfulTypeControls: some View {
-        HStack(spacing: 8) {
-            // The pile, right on the foot bar — the same pair the
-            // Horizontal page bar carries.
-            if let record = model.epubRecords.first(where: { $0.folder == book.id }) {
+    /// The pile at the foot bar's LEFT — the same pair the Horizontal
+    /// page bar carries at its own left edge.
+    @ViewBuilder private var faithfulPileControls: some View {
+        if let record = model.epubRecords.first(where: { $0.folder == book.id }) {
+            HStack(spacing: 8) {
                 Button { model.toggleTopOfPile(record) } label: {
                     Image(systemName: model.isTopOfPile(record) ? "pin.fill" : "pin")
                         .foregroundStyle(model.isTopOfPile(record)
@@ -230,10 +230,12 @@ struct EPUBReaderScreen: View {
                 }
                 .buttonStyle(.plain)
                 .help(model.isSetAside(record) ? "Bring Back" : "Set Aside")
-
-                Divider().frame(height: 14)
             }
+        }
+    }
 
+    @ViewBuilder private var faithfulTypeControls: some View {
+        HStack(spacing: 8) {
             Button { showsFaithfulPalette.toggle() } label: {
                 Image(systemName: "paintpalette")
                     .foregroundStyle(.secondary)
@@ -632,7 +634,8 @@ struct EPUBReaderScreen: View {
                            outlineAvailable: model.readingDoc(forBook: book) != nil,
                            showContents: $showsContents,
                            contents: { AnyView(faithfulContents) },
-                           accessoryContent: { AnyView(faithfulTypeControls) })
+                           accessoryContent: { AnyView(faithfulTypeControls) },
+                           leadingContent: { AnyView(faithfulPileControls) })
         }
     }
 

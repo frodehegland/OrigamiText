@@ -1058,9 +1058,9 @@ struct OrigamiReadingView: View {
     /// right at hand in Horizontal and Focus, not only up in the foot
     /// bar's Aa menu. The palette carries its own presented flag: the
     /// foot bar's palette shares the picker view but not the popover.
-    @ViewBuilder private var pageBarTypeControls: some View {
-        // The pile, right on the page bar: pin the book first in its
-        // journal, or set it aside without walking back to the list.
+    /// The pile on the page bar's LEFT: pin the book first in its
+    /// journal, or set it aside without walking back to the list.
+    @ViewBuilder private var pageBarPileControls: some View {
         if let record = model.epubRecord(forAddress: doc.id) {
             Button { model.toggleTopOfPile(record) } label: {
                 Image(systemName: model.isTopOfPile(record) ? "pin.fill" : "pin")
@@ -1082,7 +1082,9 @@ struct OrigamiReadingView: View {
 
             Divider().frame(height: 14)
         }
+    }
 
+    @ViewBuilder private var pageBarTypeControls: some View {
         Button { showsPageColorPicker.toggle() } label: {
             Image(systemName: "paintpalette")
                 .foregroundStyle(.secondary)
@@ -2215,6 +2217,7 @@ struct OrigamiReadingView: View {
                 }
                 Divider()
                 HStack {
+                    pageBarPileControls
                     Button {
                         turnPages(by: -shown)
                     } label: {
@@ -2279,6 +2282,7 @@ struct OrigamiReadingView: View {
                 // Nav bar — always present so controls are always reachable
                 Divider()
                 HStack {
+                    pageBarPileControls
                     Button {
                         turnPages(by: -1)
                     } label: {
@@ -3512,6 +3516,9 @@ struct ReadingFootBar: View {
     var typeMenu: (() -> AnyView)? = nil
     /// Accessibility controls rendered to the right of the Aa button.
     var accessoryContent: (() -> AnyView)? = nil
+    /// Controls at the bar's LEFT edge, before the title — the pile
+    /// pair rides here on the Scrolling reader.
+    var leadingContent: (() -> AnyView)? = nil
     /// The Focus mode's sub-options — Single Word and Sentence — rendered
     /// beside the Focus word when Focus is active. Nil hides the group.
     var focusContent: (() -> AnyView)? = nil
@@ -3529,6 +3536,9 @@ struct ReadingFootBar: View {
         // layout crash, Horizontal-only because the title is.)
         HStack(spacing: 14) {
             HStack(spacing: 14) {
+                if let leadingContent {
+                    leadingContent()
+                }
                 if readerMode == .horizontal, let title, !title.isEmpty {
                     Text(title)
                         .font(.caption)
