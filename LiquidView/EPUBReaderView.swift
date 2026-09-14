@@ -333,6 +333,26 @@ struct EPUBReaderScreen: View {
     @State private var findStamp = 0
     @State private var findForward = true
     @FocusState private var findFocused: Bool
+    /// Arrow-key navigation in Scrolling: ↑/↓ step the headings (the
+    /// stamp carries each press to the WebView), ←/→ walk the list.
+    @State private var headingStep = 0
+    @State private var headingStamp = 0
+    @State private var arrowMonitor: Any?
+
+    /// The paper before or after this one in its list — the journal's
+    /// papers when the book names a venue, the library otherwise,
+    /// pinned first as the lists show them.
+    private func openNeighbor(_ step: Int) {
+        guard let record = model.epubRecords.first(where: { $0.folder == book.id })
+        else { return }
+        let pool = record.venue.map { model.epubRecords(inPublication: $0) }
+            ?? model.shownEPUBRecords
+        let ordered = model.pinnedFirst(pool)
+        guard let index = ordered.firstIndex(where: { $0.id == record.id }),
+              ordered.indices.contains(index + step)
+        else { NSSound.beep(); return }
+        model.openStoredEPUB(ordered[index + step])
+    }
 
     private var findBar: some View {
         HStack(spacing: 8) {
@@ -623,7 +643,35 @@ struct EPUBReaderScreen: View {
             },
             findText: showsFind ? findText : "",
             findStamp: findStamp,
-            findForward: findForward)
+            findForward: findForward,
+            headingStep: headingStep,
+            headingStamp: headingStamp)
+        // Arrow keys in Scrolling: ← and → walk the journal's papers,
+        // ↑ and ↓ step the page's headings. A local monitor, because
+        // the WebView holds the keyboard focus.
+        .onAppear {
+            guard arrowMonitor == nil else { return }
+            arrowMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: .keyDown
+            ) { event in
+                guard event.modifierFlags
+                    .intersection(.deviceIndependentFlagsMask).isEmpty,
+                      !(NSApp.keyWindow?.firstResponder is NSTextView),
+                      EPUBReaderMode(rawValue: readerModeRaw) == .faithful
+                else { return event }
+                switch event.keyCode {
+                case 123: openNeighbor(-1); return nil          // ←
+                case 124: openNeighbor(+1); return nil          // →
+                case 125: headingStep = 1; headingStamp += 1; return nil   // ↓
+                case 126: headingStep = -1; headingStamp += 1; return nil  // ↑
+                default: return event
+                }
+            }
+        }
+        .onDisappear {
+            if let arrowMonitor { NSEvent.removeMonitor(arrowMonitor) }
+            arrowMonitor = nil
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // The same foot the native styles carry — clicking Full Width
             // (or an Outline shape) leaves the faithful page. The
@@ -857,9 +905,37 @@ struct EPUBReaderView: NSViewRepresentable {
     var findText: String = ""
     var findStamp: Int = 0
     var findForward: Bool = true
+    /// Arrow-key heading steps: +1 scrolls to the next heading, −1 to
+    /// the previous; the stamp distinguishes repeated steps.
+    var headingStep: Int = 0
+    var headingStamp: Int = 0
 
     /// The message channel name the injected bridge posts to.
     private static let bridgeName = "origami"
+
+    /// One arrow-key step through the page's headings: down to the
+    /// first heading below the fold, up to the last one above it — or
+    /// the page top when no heading stands higher.
+    private static func headingStepScript(direction: Int) -> String {
+        """
+        (function(dir){
+          const hs = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+            .filter(h => h.offsetParent !== null);
+          if (!hs.length) return;
+          const y = window.scrollY;
+          const top = h => h.getBoundingClientRect().top + window.scrollY;
+          let target = null;
+          if (dir > 0) {
+            target = hs.find(h => top(h) > y + 8);
+          } else {
+            const before = hs.filter(h => top(h) < y - 8);
+            target = before[before.length - 1];
+          }
+          if (target) { target.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+          else if (dir < 0) { window.scrollTo({top: 0, behavior: 'smooth'}); }
+        })(\(direction));
+        """
+    }
 
     /// Installs the document scripts: theme + appendix-hide before paint,
     /// then the metadata toggle button, the stretchtext toggler (before the
@@ -954,6 +1030,7 @@ struct EPUBReaderView: NSViewRepresentable {
         context.coordinator.pendingScrollFraction = initialScrollFraction
         if initialScrollFraction != nil { context.coordinator.restoredBookID = book.id }
         context.coordinator.handledFragmentStamp = fragmentStamp
+        context.coordinator.handledHeadingStamp = headingStamp
         load(into: webView, context: context)
         return webView
     }
@@ -999,6 +1076,7 @@ struct EPUBReaderView: NSViewRepresentable {
             coordinator.pendingScrollFraction =
                 coordinator.openedBookID == book.id ? nil : initialScrollFraction
             coordinator.handledFragmentStamp = fragmentStamp
+            coordinator.handledHeadingStamp = headingStamp
             load(into: webView, context: context)
             return
         }
@@ -1030,6 +1108,14 @@ struct EPUBReaderView: NSViewRepresentable {
                 configuration.caseSensitive = false
                 configuration.wraps = true
                 webView.find(findText, configuration: configuration) { _ in }
+            }
+        }
+        // Arrow keys: one step to the neighbouring heading, live.
+        if headingStamp != coordinator.handledHeadingStamp {
+            coordinator.handledHeadingStamp = headingStamp
+            if headingStep != 0 {
+                webView.evaluateJavaScript(
+                    Self.headingStepScript(direction: headingStep))
             }
         }
         // Annotations changed while the page is up: repaint, no reload.
@@ -1108,6 +1194,7 @@ struct EPUBReaderView: NSViewRepresentable {
         var finishedLoadID: String?
         var handledFragmentStamp = 0
         var handledFindStamp = 0
+        var handledHeadingStamp = 0
         /// What the page paints, kept current so a fresh load repaints.
         var annotations: [PaintedAnnotation] = []
         var paintedStamp = 0
