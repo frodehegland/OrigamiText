@@ -632,6 +632,7 @@ struct ProceedingsMapView: View {
                 // Return applies; an emptied field names itself again.
                 if viewChoice == .poles {
                     magnetThreads
+                    nodeThreads
                     ForEach(magnetNames.indices, id: \.self) { slot in
                         magnetField($magnetNames[slot],
                                     at: Self.magnetSlots[slot], slot: slot)
@@ -1014,6 +1015,39 @@ struct ProceedingsMapView: View {
             .onSubmit { magnetsEdited() }
             .position(point)
             .help("A magnet's topic — click for its threads, edit and press Return to pull the papers anew")
+    }
+
+    /// The reverse read: a selected (lifted) card shows its own pulls —
+    /// a thread to every magnet whose topic it carries, weight and
+    /// shade by strength, in the threads' quiet grey.
+    @ViewBuilder
+    private var nodeThreads: some View {
+        if let lifted = liftedID,
+           let item = items.first(where: { $0.id == lifted && !$0.isSetAside }) {
+            let at = overlayPositions[item.id] ?? positions[item.id]
+                ?? seedCache[item.id] ?? Self.canvasCenter
+            let pulls: [(anchor: CGPoint, strength: Int)] = magnetNames.indices
+                .compactMap { slot in
+                    let strength = magnetPull(item, Self.poleWords(magnetNames[slot]))
+                    guard strength > 0 else { return nil }
+                    return (Self.magnetSlots[slot], strength)
+                }
+            let strongest = pulls.map(\.strength).max() ?? 1
+            Canvas { context, _ in
+                for pull in pulls {
+                    var path = Path()
+                    path.move(to: at)
+                    path.addLine(to: pull.anchor)
+                    let share = CGFloat(pull.strength) / CGFloat(strongest)
+                    context.stroke(
+                        path,
+                        with: .color(Color.gray.opacity(0.3 + 0.3 * share)),
+                        lineWidth: 0.5 + 1.5 * share)
+                }
+            }
+            .frame(width: Self.canvasSize.width, height: Self.canvasSize.height)
+            .allowsHitTesting(false)
+        }
     }
 
     /// The clicked magnet's threads: a line to every paper it speaks
