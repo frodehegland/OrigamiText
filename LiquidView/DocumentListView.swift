@@ -515,6 +515,10 @@ struct JournalsListView: View {
 struct JournalBooksListView: View {
     @Environment(AppModel.self) private var model
     let name: String
+    /// The peek's narrow column asks for the papers alone — whatever
+    /// wide face (Map, a relation view) the venue is showing behind,
+    /// a 240-point strip is a list's width, not a map's.
+    var listOnly = false
     /// The Set Aside books stay tucked behind the foot pill until asked.
     @State private var showsSetAside = false
     /// Find at the foot of the papers: matching titles and authors
@@ -527,6 +531,14 @@ struct JournalBooksListView: View {
     @State private var mapListHideTask: Task<Void, Never>?
 
     var body: some View {
+        if listOnly {
+            documentsList
+        } else {
+            facePicker
+        }
+    }
+
+    @ViewBuilder private var facePicker: some View {
         // The face shown lives on the model (AppModel.venueViewMode):
         // wide faces move this view between ContentView's split-view
         // branches, and local @State would reset in the crossing.

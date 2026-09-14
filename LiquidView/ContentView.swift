@@ -287,7 +287,7 @@ struct ContentView: View {
                         .frame(width: 220)
                     if (showsPeekList || peekIsPinned) && peekSelectionHasList {
                         Divider()
-                        listPane
+                        listPane(papersOnly: true)
                             .scrollContentBackground(.hidden)
                             .frame(width: 240)
                     }
@@ -411,6 +411,13 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var listPane: some View {
+        listPane(papersOnly: false)
+    }
+
+    /// papersOnly: the peek's narrow column always shows a venue's
+    /// papers list, never its wide faces (the Map, a relation view) —
+    /// a 240-point strip is a list's width. The find bar rides with it.
+    @ViewBuilder private func listPane(papersOnly: Bool) -> some View {
         if model.sidebarSelection == .epubsAll {
             EPUBLibraryListView(mode: .all)
         } else if model.sidebarSelection == .epubsInbox {
@@ -426,7 +433,7 @@ struct ContentView: View {
         } else if model.sidebarSelection == .epubJournals {
             JournalsListView()
         } else if case .epubPublication(let name)? = model.sidebarSelection {
-            JournalBooksListView(name: name)
+            JournalBooksListView(name: name, listOnly: papersOnly)
         } else if case .epubPublicationAuthor(let venue, let author)? = model.sidebarSelection {
             PublicationFilteredListView(venue: venue, filter: .author(author))
         } else if case .epubPublicationTopic(let venue, let topic)? = model.sidebarSelection {
