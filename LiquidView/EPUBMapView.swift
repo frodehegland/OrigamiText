@@ -562,6 +562,14 @@ struct EPUBMapView: View {
             }
             items += concepts
         }
+        // A Focus whose concept card no longer stands (hidden, filtered,
+        // cut by the pool cap, or the concept row toggled away) would
+        // trap the room — nothing left to tap to lift it. Self-heal.
+        if let focused = focusedConceptID,
+           !items.contains(where: { $0.id == focused }) {
+            focusedConceptID = nil
+            focusedConceptArticleIDs = []
+        }
         // Stamp every item with the current theme so a theme switch makes
         // them visually unequal to their cached counterparts, triggering a
         // full card face rebuild rather than reusing stale light/dark textures.
@@ -1741,6 +1749,14 @@ struct EPUBMapView: View {
             raisedArticleIDs = Set(items.filter {
                 $0.kind == .article && !$0.isAside
             }.map(\.id))
+        }
+        // The mass deselect keeps tap semantics: a deselected citation
+        // retires its deep rank, a deselected focused concept lifts
+        // its Focus.
+        if kind != .citations { deepParentIDs = [] }
+        if kind != .concepts {
+            focusedConceptID = nil
+            focusedConceptArticleIDs = []
         }
         for index in items.indices {
             let item = items[index]
@@ -3227,6 +3243,9 @@ final class CardFaceTurner {
     private var tick: EventSubscription?
 
     func install(in content: RealityViewContent) {
+        // One session per instance: a second install (the space
+        // remade around the same @State) must not run ARKit twice.
+        guard tick == nil else { return }
         tick = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             MainActor.assumeIsolated { self?.turn(scene: event.scene) }
         }
