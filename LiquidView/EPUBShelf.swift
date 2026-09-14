@@ -570,7 +570,7 @@ struct ProceedingsMapView: View {
     /// layout; the computed views arrange the same cards around their
     /// labels; a saved view replays a kept arrangement.
     enum MapViewChoice: Equatable {
-        case standard, topics, authors, people, rank, poles
+        case standard, topics, authors, people, rank
         case saved(String)
 
         var title: String {
@@ -580,7 +580,6 @@ struct ProceedingsMapView: View {
             case .authors: "Authors"
             case .people: "People"
             case .rank: "Author Rank"
-            case .poles: "Magnets"
             case .saved(let name): name
             }
         }
@@ -717,7 +716,7 @@ struct ProceedingsMapView: View {
         // computed view is up, the magnets re-gather.
         .onChange(of: tagsFingerprint) {
             switch viewChoice {
-            case .topics, .authors, .people, .rank, .poles: switchView(to: viewChoice)
+            case .topics, .authors, .people, .rank: switchView(to: viewChoice)
             default: break
             }
         }
@@ -1033,14 +1032,12 @@ struct ProceedingsMapView: View {
             applyComputed { $0.people + $0.entities }
         case .rank:
             applyRankLadder()
-        case .poles:
-            applyPoles()
         case .saved(let name):
             applySaved(name)
         }
     }
 
-    // MARK: The Magnets view — a pole at each side, the papers between
+    // MARK: The magnet bar — topics across the top, threads on demand
 
     /// The magnet bar: twelve topics across the top of the screen, each
     /// an editable field. Clicking one draws its threads down to the
@@ -1164,14 +1161,6 @@ struct ProceedingsMapView: View {
             }
         }
         .allowsHitTesting(false)
-    }
-
-    /// Where the twelve magnets stand: one row across the top of the
-    /// plane, a column of papers hanging beneath each.
-    private static var magnetSlots: [CGPoint] {
-        (0..<12).map { slot in
-            CGPoint(x: canvasSize.width * (CGFloat(slot) + 0.5) / 12, y: 140)
-        }
     }
 
     /// Where an edited set of magnets is kept for this venue.
@@ -1366,80 +1355,6 @@ struct ProceedingsMapView: View {
             $0.trimmingCharacters(in: .whitespaces).isEmpty
         }) else { return }
         nameMagnets(standing: items.filter { !$0.isSetAside })
-    }
-
-    private func applyPoles() {
-        let standing = items.filter { !$0.isSetAside }
-
-        func pull(_ item: Item, _ pole: Set<String>) -> Int {
-            magnetPull(item, pole)
-        }
-        // The loose touch: how many of the magnet's words stand
-        // anywhere in the paper — the net under the full match.
-        func touch(_ item: Item, _ pole: Set<String>) -> Int {
-            guard !pole.isEmpty else { return 0 }
-            let text = item.topics.reduce(Self.poleWords(item.title)) {
-                $0.union(Self.poleWords($1))
-            }
-            return pole.reduce(0) { count, word in
-                text.contains { $0 == word || ($0.hasPrefix(word) && word.count >= 4) }
-                    ? count + 1 : count
-            }
-        }
-
-        nameMagnets(standing: standing)
-        showsMagnetBar = true
-        let poles = magnetNames.map { Self.poleWords($0) }
-
-        // Every paper to one column: the strongest full claim, else the
-        // strongest touch, else the emptiest column — none left out.
-        var columns: [[Item]] = Array(repeating: [], count: poles.count)
-        for item in standing {
-            var best: (slot: Int, strength: Int)?
-            for slot in poles.indices {
-                let strength = pull(item, poles[slot])
-                if strength > 0, strength > (best?.strength ?? 0) {
-                    best = (slot, strength)
-                }
-            }
-            if best == nil {
-                for slot in poles.indices {
-                    let strength = touch(item, poles[slot])
-                    if strength > 0, strength > (best?.strength ?? 0) {
-                        best = (slot, strength)
-                    }
-                }
-            }
-            let slot = best?.slot
-                ?? columns.indices.min { columns[$0].count < columns[$1].count }
-                ?? 0
-            columns[slot].append(item)
-        }
-
-        var next: [String: CGPoint] = [:]
-        for slot in columns.indices {
-            let anchor = Self.magnetSlots[slot]
-            let members = columns[slot].sorted { $0.title < $1.title }
-            // A strand, not a column: each card sways off the line by
-            // the golden angle as it descends, and a long strand packs
-            // tighter so its tail stays on the plane.
-            let step: CGFloat = members.count > 1
-                ? min(90, 1230 / CGFloat(members.count - 1)) : 90
-            for (index, item) in members.enumerated() {
-                let angle = Double(index) * 2.399963
-                next[item.id] = CGPoint(
-                    x: anchor.x + CGFloat(cos(angle)) * 66,
-                    y: 264 + step * CGFloat(index)
-                        + CGFloat(sin(angle)) * 18)
-            }
-        }
-        let seeds = Self.seeds(for: items)
-        for item in items where item.isSetAside {
-            next[item.id] = seeds[item.id] ?? Self.canvasCenter
-        }
-        if let fit = planeFit(for: next) { next = next.mapValues(fit) }
-        overlayPositions = next
-        clusterCaptions = []
     }
 
     /// The magnetic arrangement: every label two or more papers share
