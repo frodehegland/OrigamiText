@@ -610,10 +610,13 @@ struct ProceedingsMapView: View {
     /// The magnet bar across the top of the screen — toggled from the
     /// foot bar, standing over every view, kept per user.
     @AppStorage("mapMagnetBar") private var showsMagnetBar = false
-    /// The scroll viewport in content coordinates — the bridge between
-    /// the plane's cards and the screen-pinned magnet bar the threads
-    /// connect them to.
-    @State private var visibleRect: CGRect = .zero
+    /// The measured geometry that lets the threads bridge the scrolling
+    /// plane and the screen-pinned bar — nothing assumed, everything
+    /// read from the named "mapPlane" space: each magnet chip's centre,
+    /// the plane's (0,0) as it scrolls, and the overlay's own frame.
+    @State private var magnetCenters: [Int: CGPoint] = [:]
+    @State private var canvasOrigin: CGPoint = .zero
+    @State private var overlayFrame: CGRect = .zero
 
     /// One hallway meter drawn at this many points; the canvas center
     /// is the hallway's (0, 1.2) — mid-height of its article grid.
@@ -624,6 +627,13 @@ struct ProceedingsMapView: View {
         ScrollView([.horizontal, .vertical]) {
             ZStack(alignment: .topLeading) {
                 canvasBase
+                // The plane's (0,0), reported in screen space as it
+                // scrolls — the thread overlay's bridge to the cards.
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .onGeometryChange(for: CGPoint.self, of: {
+                        $0.frame(in: .named("mapPlane")).origin
+                    }) { canvasOrigin = $0 }
                 // The computed view's magnets, named — quiet captions
                 // beneath the cards that gather around them.
                 ForEach(clusterCaptions.indices, id: \.self) { index in
@@ -659,16 +669,22 @@ struct ProceedingsMapView: View {
         .defaultScrollAnchor(.center)
         // The threads live on the screen, not the plane: the plane's
         // cards scroll beneath while the magnets hold the top bar, so
-        // the lines bridge the two spaces here, over the viewport.
-        .overlay { if showsMagnetBar { threadOverlay } }
-        .onScrollGeometryChange(for: CGRect.self, of: { $0.visibleRect }) { _, new in
-            visibleRect = new
+        // the lines bridge the two spaces here, over the viewport —
+        // every endpoint measured in the shared "mapPlane" space.
+        .overlay {
+            if showsMagnetBar {
+                threadOverlay
+                    .onGeometryChange(for: CGRect.self, of: {
+                        $0.frame(in: .named("mapPlane"))
+                    }) { overlayFrame = $0 }
+            }
         }
         .background(Color.secondary.opacity(0.06))
         .safeAreaInset(edge: .bottom, spacing: 0) { footBar }
         .safeAreaInset(edge: .top, spacing: 0) {
             if showsMagnetBar { magnetBar }
         }
+        .coordinateSpace(.named("mapPlane"))
         .onAppear(perform: reload)
         #if os(macOS)
         // ⌘A takes the whole plane — unless the Find field is writing.
@@ -1035,6 +1051,10 @@ struct ProceedingsMapView: View {
                     .focused($focusedMagnet, equals: slot)
                     .onSubmit { magnetsEdited() }
                     .frame(maxWidth: .infinity)
+                    .onGeometryChange(for: CGPoint.self, of: {
+                        let frame = $0.frame(in: .named("mapPlane"))
+                        return CGPoint(x: frame.midX, y: frame.midY)
+                    }) { magnetCenters[slot] = $0 }
                     .help("A magnet's topic — click for its threads, edit and press Return to pull the papers anew")
             }
         }
@@ -1044,21 +1064,23 @@ struct ProceedingsMapView: View {
         .onAppear { ensureMagnetNames() }
     }
 
-    /// The bar's height — also where the threads' upper ends sit.
+    /// The bar's height.
     private static let magnetBarHeight: CGFloat = 30
 
-    /// A magnet's place on the screen: the centre of its twelfth of
-    /// the bar, in the viewport's coordinates.
-    private func magnetAnchor(_ slot: Int, width: CGFloat) -> CGPoint {
-        CGPoint(x: width * (CGFloat(slot) + 0.5) / 12,
-                y: Self.magnetBarHeight / 2)
+    /// A magnet chip's measured centre, carried into the overlay's own
+    /// coordinates. Nil until the bar has laid out.
+    private func magnetAnchor(_ slot: Int) -> CGPoint? {
+        guard let center = magnetCenters[slot] else { return nil }
+        return CGPoint(x: center.x - overlayFrame.minX,
+                       y: center.y - overlayFrame.minY)
     }
 
-    /// A plane point carried into the viewport — the scroll geometry's
-    /// visible rect is the bridge.
+    /// A plane point carried into the overlay's coordinates — the
+    /// measured canvas origin is the bridge, so the mapping holds
+    /// wherever toolbars and safe areas put the viewport.
     private func viewportPoint(_ point: CGPoint) -> CGPoint {
-        CGPoint(x: point.x - visibleRect.origin.x,
-                y: point.y - visibleRect.origin.y)
+        CGPoint(x: canvasOrigin.x + point.x - overlayFrame.minX,
+                y: canvasOrigin.y + point.y - overlayFrame.minY)
     }
 
     /// The threads, drawn over the viewport: a clicked magnet's lines
@@ -1078,9 +1100,9 @@ struct ProceedingsMapView: View {
                     with: .color(Color.gray.opacity(0.3 + 0.3 * share)),
                     lineWidth: 0.5 + 1.5 * share)
             }
-            if let slot = focusedMagnet, slot < magnetNames.count {
+            if let slot = focusedMagnet, slot < magnetNames.count,
+               let anchor = magnetAnchor(slot) {
                 let pole = Self.poleWords(magnetNames[slot])
-                let anchor = magnetAnchor(slot, width: size.width)
                 let pulls: [(at: CGPoint, strength: Int)] = items
                     .filter { !$0.isSetAside }
                     .compactMap { item in
@@ -1110,7 +1132,8 @@ struct ProceedingsMapView: View {
                     }
                 let strongest = pulls.map(\.strength).max() ?? 1
                 for pull in pulls {
-                    stroke(at, magnetAnchor(pull.slot, width: size.width),
+                    guard let anchor = magnetAnchor(pull.slot) else { continue }
+                    stroke(at, anchor,
                            share: CGFloat(pull.strength) / CGFloat(strongest))
                 }
             }
