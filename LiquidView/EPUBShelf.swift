@@ -664,7 +664,7 @@ struct ProceedingsMapView: View {
                             liftedID = liftedID == item.id ? nil : item.id
                         },
                         togglePin: { togglePin(item.id) },
-                        toggleSetAside: { toggleSetAside(item.id) },
+                        toggleSetAside: { setAsideDroppingToFloor(item) },
                         // A member of the ⌘A selection carries the rest.
                         groupDragged: { translation in
                             groupDragged(item, translation: translation)
@@ -862,6 +862,31 @@ struct ProceedingsMapView: View {
         items.map {
             "\($0.id):\($0.topics.count).\($0.people.count).\($0.entities.count).\($0.seriesCount)"
         }.joined(separator: "|")
+    }
+
+    /// The plane's floor: set-aside cards rest in a row along the
+    /// bottom edge, wrapping upward when the row fills.
+    private static func asideFloorPoint(index: Int) -> CGPoint {
+        CGPoint(x: 150 + CGFloat(index % 16) * 150,
+                y: canvasSize.height - 60 - CGFloat(index / 16) * 70)
+    }
+
+    /// Setting a card aside drops it to the plane's floor row; bringing
+    /// it back leaves it there for the hand to lift where it pleases.
+    private func setAsideDroppingToFloor(_ item: Item) {
+        if !item.isSetAside {
+            let point = Self.asideFloorPoint(
+                index: items.filter(\.isSetAside).count)
+            if viewChoice == .standard {
+                positions[item.id] = point
+                EPUBMapSharedLayout.save(
+                    updating: [item.key: Self.sharedPoint(point)],
+                    community: folder)
+            } else {
+                overlayPositions[item.id] = point
+            }
+        }
+        toggleSetAside(item.id)
     }
 
     /// Find on the plane: a card whose title or author carries the words
@@ -1429,9 +1454,8 @@ struct ProceedingsMapView: View {
                     - CGFloat(columns - 1) * 95,
                 y: Self.canvasSize.height - 240 + CGFloat(index / columns) * 92)
         }
-        let seeds = Self.seeds(for: items)
-        for item in items where item.isSetAside {
-            next[item.id] = seeds[item.id] ?? center
+        for (index, item) in items.filter(\.isSetAside).enumerated() {
+            next[item.id] = Self.asideFloorPoint(index: index)
         }
         let fit = planeFit(for: next)
         if let fit { next = next.mapValues(fit) }
@@ -1498,9 +1522,8 @@ struct ProceedingsMapView: View {
         if !newcomers.isEmpty {
             layRow("New to the series", newcomers.sorted { $0.title < $1.title })
         }
-        let seeds = Self.seeds(for: items)
-        for item in items where item.isSetAside {
-            next[item.id] = seeds[item.id] ?? Self.canvasCenter
+        for (index, item) in items.filter(\.isSetAside).enumerated() {
+            next[item.id] = Self.asideFloorPoint(index: index)
         }
         if let fit = planeFit(for: next) {
             next = next.mapValues(fit)

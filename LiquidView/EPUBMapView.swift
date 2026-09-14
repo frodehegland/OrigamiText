@@ -438,25 +438,26 @@ struct EPUBMapView: View {
         }
         articleYearZ = yearZ
 
-        // The Set Aside row: title-only slips, half faded, in their own
-        // row under the grid — the Mac's journal list, spatialized. A
-        // set-aside card always sits in the row (its wandering position
-        // is kept for its return).
-        let gridRows = standing.isEmpty ? 0 : (standing.count - 1) / columns + 1
-        let asideTop = 1.55 - Float(gridRows) * 0.18 - 0.10
+        // The Set Aside row: title-only slips, half faded, resting ON
+        // THE FLOOR — the room's quiet lowest shelf. A slip set aside
+        // while standing high (chip or menu, not the floor drop) comes
+        // down to the row; one already living low keeps its spot.
         let asideColumns = max(1, min(asides.count, 5))
         result.append(contentsOf: asides.enumerated().map { index, record in
             let column = index % asideColumns
             let row = index / asideColumns
+            let seed = SIMD3<Float>(
+                (Float(column) - Float(asideColumns - 1) / 2) * 0.24,
+                0.15 + Float(row) * 0.07,
+                -1.2) + spaceShift
+            var position = placed[record.id] ?? seed
+            if position.y > 0.85 { position = seed }
             return EPUBMapItem(
                 id: record.id,
                 title: record.title,
                 author: record.author,
                 kind: .article,
-                position: placed[record.id] ?? SIMD3<Float>(
-                    (Float(column) - Float(asideColumns - 1) / 2) * 0.24,
-                    asideTop - Float(row) * 0.08,
-                    -1.2) + spaceShift,
+                position: position,
                 citedIDs: citedIDsByArticle[record.id] ?? [],
                 isAside: true)
         })
