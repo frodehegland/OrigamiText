@@ -921,8 +921,17 @@ struct EPUBReaderView: NSViewRepresentable {
     private static func headingStepScript(direction: Int) -> String {
         """
         (function(dir){
-          const hs = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+          let hs = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
             .filter(h => h.offsetParent !== null);
+          // The paper's own title: a first heading with no text above it
+          // is where the reading already begins — never a stop. The top
+          // of the page (the plain scroll-up end) stands in for it.
+          if (hs.length) {
+            const range = document.createRange();
+            range.setStart(document.body, 0);
+            range.setEndBefore(hs[0]);
+            if (!range.toString().trim().length) { hs = hs.slice(1); }
+          }
           if (!hs.length) return;
           const y = window.scrollY;
           const top = h => h.getBoundingClientRect().top + window.scrollY;
