@@ -20,6 +20,9 @@ enum AppSettings {
     static let aiReadingSummaryPromptKey = "aiReadingSummaryPrompt"
     static let aiReadingProposalsPromptKey = "aiReadingProposalsPrompt"
     static let aiReadingIssuesPromptKey = "aiReadingIssuesPrompt"
+    /// The Summary's relevance sentence names this subject — set for the
+    /// conference at hand ("Hypertext"); cleared, the sentence is left out.
+    static let aiRelevanceTopicKey = "aiRelevanceTopic"
     static let aiPersonProfilesEnabledKey = "aiPersonProfilesEnabled"
     // The travelling view modules' tunable prompts (shared names with
     // Knowledge Space, so the module files port unchanged).
@@ -786,6 +789,7 @@ private struct AISettingsView: View {
         ReadingAnalysisKind.issues.defaultPrompt
     @AppStorage(AppSettings.aiPersonProfilePromptKey) private var personProfilePrompt = AuthorProfiles.defaultPrompt
     @AppStorage(AppSettings.aiPersonProfilesEnabledKey) private var personProfilesEnabled = true
+    @AppStorage(AppSettings.aiRelevanceTopicKey) private var relevanceTopic = "Hypertext"
     @State private var selection = "Summary"
 
     private var prompt: Binding<String> {
@@ -845,6 +849,15 @@ private struct AISettingsView: View {
                         .foregroundStyle(.secondary)
                     Button("Reset to Default") { prompt.wrappedValue = defaultValue }
                 }
+            }
+            Section {
+                TextField("Relevance to", text: $relevanceTopic)
+            } header: {
+                Text("Relevance")
+            } footer: {
+                Text("The AI Summary adds one sentence after the summary stating each paper's relevance to this subject — set for the conference at hand. Clear it and the sentence is left out.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section {
                 Toggle("Build person profiles continually", isOn: $personProfilesEnabled)

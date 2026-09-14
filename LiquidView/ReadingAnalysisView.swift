@@ -89,11 +89,34 @@ enum ReadingAnalysisKind: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The Summary's relevance subject — Settings ▸ AI, "Hypertext" by
+    /// default for the conference at hand. Empty leaves the sentence out.
+    static var relevanceTopic: String {
+        (UserDefaults.standard.string(forKey: AppSettings.aiRelevanceTopicKey)
+            ?? "Hypertext")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// The prompt as the reader has it — Settings ▸ AI — or the default.
+    /// The Summary carries one more ask, appended at run time so editing
+    /// the prompt never loses it: a sentence on the document's relevance
+    /// to the reader's subject of the moment.
     var prompt: String {
         let stored = (UserDefaults.standard.string(forKey: promptKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return stored.isEmpty ? defaultPrompt : stored
+        var prompt = stored.isEmpty ? defaultPrompt : stored
+        if self == .summary {
+            let topic = Self.relevanceTopic
+            if !topic.isEmpty {
+                prompt += """
+                 Immediately after the summary paragraph, add one more \
+                sentence stating the document's relevance to \(topic) — \
+                plainly, grounded in what the text actually does; if it \
+                bears no real relation to \(topic), say so in that sentence.
+                """
+            }
+        }
+        return prompt
     }
 }
 
