@@ -496,6 +496,137 @@ nonisolated enum EPUBMapViews {
     }
 }
 
+/// The Map's topic magnets, shared by the Mac's bar and the hallway's
+/// row: the naming that fills the slots from the papers' AI labels and
+/// titles, and the pull that decides which papers a topic speaks for.
+/// One algorithm, so both rooms show the same topics for a venue.
+nonisolated enum MapTopics {
+
+    /// A standing paper as the naming sees it: its identity, its title,
+    /// and the AI's labels for it (concepts, keywords, title topics).
+    typealias Paper = (id: String, title: String, topics: [String])
+
+    /// The words of a pole, topic, or title — lowercased, split on
+    /// anything that isn't a letter or digit.
+    static func words(_ text: String) -> Set<String> {
+        Set(text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty })
+    }
+
+    /// Everyday words that must not name a pole when the titles do.
+    static let stopWords: Set<String> = [
+        "the", "and", "for", "with", "from", "into", "through", "towards",
+        "toward", "using", "under", "over", "between", "across", "about",
+        "study", "case", "paper", "papers", "approach", "based", "beyond",
+        "when", "what", "where", "how", "why", "does", "their", "your",
+    ]
+    /// Short words that may: the field's own initialisms.
+    static let shortWords: Set<String> = [
+        "ai", "xr", "vr", "ar", "llm", "llms", "web", "html",
+    ]
+
+    /// A topic speaks for a text when each of its words stands in it —
+    /// whole, or as the stem of a longer word, so "hyper" pulls
+    /// "hypertextual" but "AI" never pulls "maintain".
+    static func speaks(_ pole: Set<String>, for textWords: Set<String>) -> Bool {
+        guard !pole.isEmpty else { return false }
+        return pole.allSatisfy { word in
+            textWords.contains {
+                $0 == word || ($0.hasPrefix(word) && word.count >= 4)
+            }
+        }
+    }
+
+    /// The pull: one per topic label the pole speaks for, and one for
+    /// the title — so papers the AI hasn't read yet answer too, and
+    /// sharpen as the extractions land.
+    static func pull(pole: Set<String>, topics: [String], title: String) -> Int {
+        var count = topics.reduce(0) { count, topic in
+            speaks(pole, for: words(topic)) ? count + 1 : count
+        }
+        if speaks(pole, for: words(title)) { count += 1 }
+        return count
+    }
+
+    /// The candidate names: every topic label and title word, each with
+    /// the papers it speaks for — so the titles hold the board up until
+    /// the AI's topics arrive.
+    static func candidates(_ standing: [Paper])
+        -> [(name: String, covers: Set<String>)] {
+        var covers: [String: Set<String>] = [:]
+        var display: [String: String] = [:]
+        for paper in standing {
+            for raw in paper.topics {
+                let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard label.count > 1 else { continue }
+                let key = label.lowercased()
+                if display[key] == nil { display[key] = label }
+                covers[key, default: []].insert(paper.id)
+            }
+            for word in words(paper.title)
+            where (word.count > 3 || shortWords.contains(word))
+                && !stopWords.contains(word) {
+                if display[word] == nil {
+                    display[word] = shortWords.contains(word) && word != "web"
+                        ? word.uppercased() : word.capitalized
+                }
+                covers[word, default: []].insert(paper.id)
+            }
+        }
+        return covers.sorted {
+            $0.value.count != $1.value.count
+                ? $0.value.count > $1.value.count : $0.key < $1.key
+        }.map { (display[$0.key] ?? $0.key, $0.value) }
+    }
+
+    /// Names the topic slots: the reader's kept names take theirs, then
+    /// the empty slots fill greedily — each next name the one that
+    /// speaks for the most papers still unspoken for, so the set covers
+    /// the venue rather than repeating its loudest topic. No two names
+    /// mere longer or shorter forms of each other. Empty slots drop.
+    static func names(standing: [Paper], kept: [String] = [],
+                      slots: Int = 12) -> [String] {
+        var names = Array(repeating: "", count: slots)
+        for (slot, name) in kept.enumerated() where slot < slots {
+            names[slot] = name.trimmingCharacters(in: .whitespaces)
+        }
+        var taken = Set(names.map { $0.lowercased() }.filter { !$0.isEmpty })
+        var covered = Set<String>()
+        for name in taken {
+            let pole = words(name)
+            for paper in standing
+            where pull(pole: pole, topics: paper.topics, title: paper.title) > 0 {
+                covered.insert(paper.id)
+            }
+        }
+        var pool = candidates(standing).filter { candidate in
+            let key = candidate.name.lowercased()
+            return !taken.contains(where: { $0.contains(key) || key.contains($0) })
+        }
+        for slot in names.indices where names[slot].isEmpty {
+            guard let best = pool.indices.max(by: {
+                let a = pool[$0], b = pool[$1]
+                let newA = a.covers.subtracting(covered).count
+                let newB = b.covers.subtracting(covered).count
+                if newA != newB { return newA < newB }
+                if a.covers.count != b.covers.count { return a.covers.count < b.covers.count }
+                return a.name > b.name
+            }) else { break }
+            let chosen = pool.remove(at: best)
+            let key = chosen.name.lowercased()
+            names[slot] = chosen.name
+            taken.insert(key)
+            covered.formUnion(chosen.covers)
+            pool.removeAll {
+                let other = $0.name.lowercased()
+                return other.contains(key) || key.contains(other)
+            }
+        }
+        return names.filter { !$0.isEmpty }
+    }
+}
+
 /// The proceedings as a flat map — Author's Map for one venue: every
 /// article a card on the plane, dragged where the reader wants it,
 /// opened with a double click. Positions persist through EPUBMapSharedLayout in
@@ -796,18 +927,18 @@ struct ProceedingsMapView: View {
             .padding(.vertical, 2)
             .frame(maxWidth: 280)
             .background(Capsule().fill(Color.secondary.opacity(0.12)))
-            // The magnet bar's switch: topics across the top of the
+            // The topic bar's switch: topics across the top of the
             // screen, threads to and from the cards.
             Button {
                 showsMagnetBar.toggle()
                 if showsMagnetBar { ensureMagnetNames() }
             } label: {
-                Label("Magnets", systemImage: "rectangle.topthird.inset.filled")
+                Label("Topics", systemImage: "rectangle.topthird.inset.filled")
                     .font(.callout)
                     .foregroundStyle(showsMagnetBar ? Color.accentColor : .secondary)
             }
             .buttonStyle(.plain)
-            .help(showsMagnetBar ? "Hide the magnet bar" : "Show the magnet bar")
+            .help(showsMagnetBar ? "Hide the topic bar" : "Show the topic bar")
             Spacer()
         }
         .padding(.horizontal, 12)
@@ -1249,84 +1380,25 @@ struct ProceedingsMapView: View {
         }
     }
 
-    /// The words of a pole, topic, or title — lowercased, split on
-    /// anything that isn't a letter or digit.
+    /// The words of a pole, topic, or title — the shared engine's split,
+    /// so the Mac's bar and the hallway's row agree to the letter.
     private static func poleWords(_ text: String) -> Set<String> {
-        Set(text.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty })
+        MapTopics.words(text)
     }
-
-    /// Everyday words that must not name a pole when the titles do.
-    private static let poleStopWords: Set<String> = [
-        "the", "and", "for", "with", "from", "into", "through", "towards",
-        "toward", "using", "under", "over", "between", "across", "about",
-        "study", "case", "paper", "papers", "approach", "based", "beyond",
-        "when", "what", "where", "how", "why", "does", "their", "your",
-    ]
-    /// Short words that may: the field's own initialisms.
-    private static let poleShortWords: Set<String> = [
-        "ai", "xr", "vr", "ar", "llm", "llms", "web", "html",
-    ]
 
     /// The candidate names for the magnet slots: every topic label and
     /// title word, each with the papers it speaks for — so the titles
     /// hold the board up until the AI's topics arrive.
     private func autoMagnetCandidates(_ standing: [Item])
         -> [(name: String, covers: Set<String>)] {
-        var covers: [String: Set<String>] = [:]
-        var display: [String: String] = [:]
-        for item in standing {
-            for raw in item.topics {
-                let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard label.count > 1 else { continue }
-                let key = label.lowercased()
-                if display[key] == nil { display[key] = label }
-                covers[key, default: []].insert(item.id)
-            }
-            for word in Self.poleWords(item.title)
-            where (word.count > 3 || Self.poleShortWords.contains(word))
-                && !Self.poleStopWords.contains(word) {
-                if display[word] == nil {
-                    display[word] = Self.poleShortWords.contains(word) && word != "web"
-                        ? word.uppercased() : word.capitalized
-                }
-                covers[word, default: []].insert(item.id)
-            }
-        }
-        return covers.sorted {
-            $0.value.count != $1.value.count
-                ? $0.value.count > $1.value.count : $0.key < $1.key
-        }.map { (display[$0.key] ?? $0.key, $0.value) }
-    }
-
-    /// The magnet board: twelve topics in a row along the top, each
-    /// paper in the column of the magnet that speaks for it most
-    /// strongly — through its topic labels and its title. Every paper
-    /// has a magnet: one no magnet fully claims goes to the one whose
-    /// words touch it, and the last stragglers join the emptiest
-    /// column. Set Aside cards keep their quiet row.
-    /// A magnet speaks for a text when each of its words stands in
-    /// it — whole, or as the stem of a longer word, so "hyper" pulls
-    /// "hypertextual" but "AI" never pulls "maintain".
-    private static func poleSpeaks(_ pole: Set<String>, for textWords: Set<String>) -> Bool {
-        guard !pole.isEmpty else { return false }
-        return pole.allSatisfy { word in
-            textWords.contains {
-                $0 == word || ($0.hasPrefix(word) && word.count >= 4)
-            }
-        }
+        MapTopics.candidates(standing.map { ($0.id, $0.title, $0.topics) })
     }
 
     /// The pull: one per topic label the magnet speaks for, and one
     /// for the title — so papers the AI hasn't read yet answer the
     /// magnets too, and sharpen as the extractions land.
     private func magnetPull(_ item: Item, _ pole: Set<String>) -> Int {
-        var count = item.topics.reduce(0) { count, topic in
-            Self.poleSpeaks(pole, for: Self.poleWords(topic)) ? count + 1 : count
-        }
-        if Self.poleSpeaks(pole, for: Self.poleWords(item.title)) { count += 1 }
-        return count
+        MapTopics.pull(pole: pole, topics: item.topics, title: item.title)
     }
 
     /// Names the twelve magnets: the reader's kept names take their

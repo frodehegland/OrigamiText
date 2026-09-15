@@ -99,6 +99,10 @@ struct EPUBMapView: View {
     /// The one per-frame card sweep feeding the turner and the lines.
     @State private var cardTick = MapCardTick()
 
+    /// True while the topic magnets stand in the hallway — the same
+    /// twelve the Mac's Map names for this venue, toggled from the
+    /// arm's Topics chip. Selecting one threads to its articles.
+    @State private var topicSpaceMode = false
     /// True while concept cards are shown in the hallway — concepts
     /// join the items array in front of the article wall.
     @State private var conceptSpaceMode = false
@@ -578,6 +582,15 @@ struct EPUBMapView: View {
             }
             items += concepts
         }
+        if topicSpaceMode {
+            // Topic magnets hold their selection through the rebuild too,
+            // so the threads stand while the room updates around them.
+            var topics = buildTopicItems()
+            for index in topics.indices where selected.contains(topics[index].id) {
+                topics[index].isSelected = true
+            }
+            items += topics
+        }
         // A Focus whose concept card no longer stands (hidden, filtered,
         // cut by the pool cap, or the concept row toggled away) would
         // trap the room — nothing left to tap to lift it. Self-heal.
@@ -668,6 +681,52 @@ struct EPUBMapView: View {
                 kind: .concept,
                 position: placed[conceptID] ?? seed)
         }
+    }
+
+    /// The Mac Map's topic magnets, standing in the hallway: the same
+    /// twelve labels the Mac names for this venue — the AI's paper
+    /// topics and the titles, greedily covering the standing articles —
+    /// in a row above the article wall. Selecting one threads down to
+    /// every article it speaks for, as the Mac's bar does.
+    private func buildTopicItems() -> [EPUBMapItem] {
+        guard let venue = model.openJournalVenue else { return [] }
+        let standing = topicStandingArticles(venue: venue)
+        guard !standing.isEmpty else { return [] }
+        // The reader's kept names on this device take their slots first,
+        // through the same key the Mac's bar keeps its edits under.
+        let kept = UserDefaults.standard.stringArray(forKey: "mapMagnets:\(venue)") ?? []
+        let names = MapTopics.names(standing: standing, kept: kept)
+        guard !names.isEmpty else { return [] }
+        let spacingX: Float = 0.30
+        let totalW = Float(names.count - 1) * spacingX
+        // Above the article wall's top row, a touch before its plane.
+        let topicY: Float = 2.05
+        let topicZ: Float = -1.15
+        return names.enumerated().map { i, name in
+            let topicID = "topic:" + name.lowercased()
+            let seed = SIMD3<Float>(
+                -totalW / 2 + Float(i) * spacingX,
+                topicY,
+                topicZ) + spaceShift
+            return EPUBMapItem(
+                id: topicID,
+                title: name,
+                author: "",
+                kind: .concept,
+                position: placed[topicID] ?? seed)
+        }
+    }
+
+    /// The venue's standing papers as the topic engine reads them —
+    /// the AI topics the Mac's Analyse wrote to the shared analyses
+    /// file (the headset reads, never writes), the titles carrying
+    /// papers the AI hasn't reached yet.
+    private func topicStandingArticles(venue: String) -> [MapTopics.Paper] {
+        model.records(inVenue: venue)
+            .filter { !model.setAsideIDs.contains($0.id) }
+            .map { record in
+                (record.id, record.title, model.allPaperTopics[record.id] ?? [])
+            }
     }
 
     /// The Timeflows follow the corridor: rebuilt whenever the raised
@@ -964,6 +1023,9 @@ struct EPUBMapView: View {
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
         ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
                      side: .left, group: EPUBMapView.conceptsChipID),
+        // The Mac Map's topic magnets, here in the hallway — a row of
+        // labels above the article wall, threads on selection.
+        ArmMenu.Chip(id: EPUBMapView.topicsChipID, title: "Topics", side: .left),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
     ], tracksPlanes: true,   // the flat pose finds the actual desk
@@ -1004,6 +1066,7 @@ struct EPUBMapView: View {
     /// the right arm's Set Aside chip acts on the selection instead.
     private static let showAsideChipID = "map.arm.setaside.show"
     private static let conceptsChipID = "map.arm.concepts"
+    private static let topicsChipID = "map.arm.topics"
     private static let revealConceptsChipID = "map.arm.concepts.reveal"
     private static let graphsChipID = "map.arm.graphs"
     private static let timelinesChipID = "map.arm.timelines"
@@ -1183,7 +1246,10 @@ struct EPUBMapView: View {
                 AnyView(cardFace(for: item))
             },
             constructorAttachment: { _, item -> AnyView in
-                guard item.kind == .concept && item.isSelected else {
+                // Topic magnets carry no buttons: selection alone is
+                // their whole voice — the threads to their articles.
+                guard item.kind == .concept && item.isSelected
+                    && !item.id.hasPrefix("topic:") else {
                     return AnyView(EmptyView())
                 }
                 return AnyView(
@@ -1203,6 +1269,10 @@ struct EPUBMapView: View {
         view = view.nodeMaxWidth { item in
             nodeMaxWidth(for: item)
         }
+        // No gaze glow on the cards: the hover effect lights the node's
+        // holder — an invisible sharp-cornered box, not the rounded
+        // glass face — so it reads as a ghost frame around every card.
+        view = view.shouldUseHoverNode { _ in false }
         view = view.attachmentAnchorRule { _, _ in
             // Centre horizontally, sit at the card's bottom edge,
             // then drop 2 cm so the button clears the card.
@@ -1722,9 +1792,24 @@ struct EPUBMapView: View {
     /// by text mention — the same source the concept picks select by.
     private func conceptEdges() -> [(from: String, to: String)] {
         var edges: [(from: String, to: String)] = []
-        for item in items where item.kind == .concept && item.isSelected {
+        for item in items where item.kind == .concept && item.isSelected
+            && !item.id.hasPrefix("topic:") {
             for docID in model.articleIDs(mentioning: item.title) {
                 edges.append((from: item.id, to: docID))
+            }
+        }
+        // A selected topic magnet threads to every article it speaks
+        // for — the same pull as the Mac bar's threads.
+        if let venue = model.openJournalVenue {
+            var standing: [MapTopics.Paper]?
+            for item in items where item.isSelected && item.id.hasPrefix("topic:") {
+                let papers = standing ?? topicStandingArticles(venue: venue)
+                standing = papers
+                let pole = MapTopics.words(item.title)
+                for paper in papers where MapTopics.pull(
+                    pole: pole, topics: paper.topics, title: paper.title) > 0 {
+                    edges.append((from: item.id, to: paper.id))
+                }
             }
         }
         return edges
@@ -1792,7 +1877,9 @@ struct EPUBMapView: View {
             let match: Bool = switch kind {
             case .documents: item.kind == .article && !item.isAside
             case .citations: item.kind == .cited || item.kind == .citedDeep
-            case .concepts: item.kind == .concept
+            // The topic magnets are their own family — Select's
+            // Concepts leaves them as they stand.
+            case .concepts: item.kind == .concept && !item.id.hasPrefix("topic:")
             }
             items[index].isSelected = match
         }
@@ -1997,7 +2084,8 @@ struct EPUBMapView: View {
             // brings the card back. A citation opens its record card
             // instead: everything we hold on it, and Acquire.
             guard item.kind == .article else {
-                openCitationCard(for: item)
+                // A topic magnet has no record behind it — nothing to open.
+                if !item.id.hasPrefix("topic:") { openCitationCard(for: item) }
                 return
             }
             let docID = item.id
@@ -2101,6 +2189,14 @@ struct EPUBMapView: View {
                 reload()
             }
             armMenu.setChipActive(Self.conceptsChipID, conceptSpaceMode)
+            return true
+        case Self.topicsChipID:
+            // The topic magnets stand or leave; leaving takes their
+            // selections' threads with them (reload rebuilds the lines
+            // from the items that remain).
+            topicSpaceMode.toggle()
+            armMenu.setChipActive(Self.topicsChipID, topicSpaceMode)
+            reload()
             return true
         case Self.pinChipID:
             let selected = items.filter { $0.kind == .article && $0.isSelected }
