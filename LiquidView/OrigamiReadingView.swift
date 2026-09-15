@@ -4814,6 +4814,17 @@ struct CitationCardSheet: View {
                     .keyboardShortcut(.defaultAction)
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.cancelAction)
+                } else if let found = libraryMatch {
+                    // A plain ACM citation names no address — but the
+                    // work itself stands on this shelf, matched by DOI
+                    // or by title and year. The local copy opens.
+                    Button("Open in Library") {
+                        dismiss()
+                        model.openEPUBRecord(withID: found.id)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 } else if let url = record?.webURL {
                     if let rec = record,
                        !model.acquisitions.contains(where: { $0.id == key }) {
