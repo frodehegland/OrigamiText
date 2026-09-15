@@ -1042,8 +1042,10 @@ struct EPUBMapView: View {
         ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
                      side: .left, group: EPUBMapView.conceptsChipID),
         // The Mac Map's topic magnets, here in the hallway — a row of
-        // labels above the article wall, threads on selection.
-        ArmMenu.Chip(id: EPUBMapView.topicsChipID, title: "Topics", side: .left),
+        // labels above the article wall, threads on selection. Rides
+        // the left forearm's underside, beside Graphs and Timelines.
+        ArmMenu.Chip(id: EPUBMapView.topicsChipID, title: "Topics", side: .left,
+                     underside: true),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
     ], tracksPlanes: true,   // the flat pose finds the actual desk
