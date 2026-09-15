@@ -154,7 +154,19 @@ final class ArmMenu {
             item.components.set(CollisionComponent(shapes: [.generateBox(size: target)]))
             item.components.set(InputTargetComponent())
             item.components.set(HoverEffectComponent())
-            if chip.watch { watchIDs.insert(chip.id) }
+            if chip.watch {
+                watchIDs.insert(chip.id)
+                // A slim rounded case behind the face — black, mostly
+                // transparent, so the worn thing reads with depth
+                // without covering the arm.
+                let body = ModelEntity(
+                    mesh: .generateBox(size: SIMD3<Float>(0.036, 0.044, 0.01),
+                                       cornerRadius: 0.004),
+                    materials: [SimpleMaterial(color: UIColor(white: 0, alpha: 0.3),
+                                               roughness: 0.4, isMetallic: false)])
+                body.position = SIMD3<Float>(0, 0, -0.006)
+                item.addChild(body)
+            }
             // The title must stand BEFORE the label view is built —
             // chipLabelView reads it, and an empty entry prints the id.
             titles[chip.id] = chip.title
@@ -164,7 +176,11 @@ final class ArmMenu {
             let label = Entity()
             label.components.set(ViewAttachmentComponent(
                 rootView: chipLabelView(chip.id, active: false)))
-            label.components.set(BillboardComponent())
+            // The watch is WORN — flush with the arm, oriented by the
+            // per-frame layout — while every word chip billboards.
+            if !chip.watch {
+                label.components.set(BillboardComponent())
+            }
             label.scale = SIMD3<Float>(repeating: 0.32)
             item.addChild(label)
 
@@ -329,17 +345,27 @@ final class ArmMenu {
         var rowPositions: [String: SIMD3<Float>] = [:]
         var topIndex = 0
         var underIndex = 0
+        // A worn watch takes the wrist end of the arm; the word row
+        // starts further up so its first chip clears the watch case.
+        let rowStart: Float = sideChips.contains(where: { $0.watch }) ? 0.10 : 0.04
         for chip in sideChips where chip.group == nil {
             guard let item = items[chip.id], item.isEnabled else { continue }
             if chip.watch {
-                // The watch is worn, not rowed: at the wrist itself,
-                // just off the skin — where a watch face sits.
-                item.position = alongArm * 0.01 + lift * 0.02
+                // The watch is worn, not rowed: just below the word
+                // row — beside Focus — off the skin, and FLUSH with
+                // the arm: its face normal is the dorsal lift, its
+                // twelve up toward the elbow.
+                item.position = alongArm * 0.045 + lift * 0.045
+                let x = simd_cross(alongArm, lift)
+                if simd_length(x) > 1e-5 {
+                    item.orientation = simd_quatf(simd_float3x3(columns: (
+                        simd_normalize(x), alongArm, lift)))
+                }
             } else if chip.underside {
                 item.position = alongArm * (0.04 + 0.05 * Float(underIndex)) - lift * 0.12
                 underIndex += 1
             } else {
-                item.position = alongArm * (0.04 + 0.05 * Float(topIndex)) + lift * 0.05
+                item.position = alongArm * (rowStart + 0.05 * Float(topIndex)) + lift * 0.05
                 topIndex += 1
             }
             rowPositions[chip.id] = item.position
@@ -448,30 +474,27 @@ final class ArmMenu {
 /// A forearm command rendered like the Knowledge Space nodes: a word on a
 /// semi-transparent glass panel with a thin frame. Non-interactive itself; the
 /// tap is handled by the collision on the entity it rides.
-/// The wrist watch: a rectangle in a watch face's proportions, worn at
-/// the wrist where a watch sits, telling the actual time so it reads as
-/// one at a glance. Pinching it is the tap on the entity it rides, like
-/// every chip. Origami addition (carry back to Author).
+/// The wrist watch: a rectangle in a watch face's proportions worn on
+/// the arm — a mostly transparent black shape naming its purpose,
+/// Views. Pinching it is the tap on the entity it rides, like every
+/// chip. Origami addition (carry back to Author).
 struct ArmWatchView: View {
     /// The watch's menus stand open: the border thickens and brightens,
     /// exactly as an active chip's does.
     var active: Bool = false
 
     var body: some View {
-        TimelineView(.everyMinute) { context in
-            Text(context.date, format: .dateTime.hour().minute())
-                .font(.system(size: 24, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(.white)
-                .frame(width: 96, height: 118)
-                .background(RoundedRectangle(cornerRadius: 26).fill(.regularMaterial))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 26)
-                        .strokeBorder(.white.opacity(active ? 0.85 : 0.35),
-                                      lineWidth: active ? 2.5 : 1)
-                )
-        }
-        .allowsHitTesting(false)
+        Text("Views")
+            .font(.system(size: 22, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white)
+            .frame(width: 96, height: 118)
+            .background(RoundedRectangle(cornerRadius: 26).fill(.black.opacity(0.25)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 26)
+                    .strokeBorder(.white.opacity(active ? 0.85 : 0.35),
+                                  lineWidth: active ? 2.5 : 1)
+            )
+            .allowsHitTesting(false)
     }
 }
 

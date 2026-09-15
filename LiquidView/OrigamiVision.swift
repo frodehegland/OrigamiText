@@ -2069,6 +2069,10 @@ struct VisionReaderView: View {
     @State private var openStretch: Set<String> = []
     @State private var citationTarget: CitationTarget?
     @State private var noteTarget: NoteTarget?
+    /// The long-pressed paragraph whose verb bar floats over the page,
+    /// and whether its Highlight kinds row stands open.
+    @State private var verbParagraph: LiquidDoc.Paragraph?
+    @State private var verbShowsKinds = false
     /// The selection a Note… is being written for, and the words typed.
     @State private var annotating: VisionModel.ReaderSelection?
     @State private var noteDraft = ""
@@ -2169,7 +2173,14 @@ struct VisionReaderView: View {
             // view lives on a RealityKit attachment, where a sheet has
             // no window to present in.
             .overlay {
-                if let target = citationTarget {
+                if let paragraph = verbParagraph {
+                    // The floating verbs, aligned to the document's
+                    // lower edge and lifted toward the reader.
+                    paragraphVerbBar(paragraph, doc: doc)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                        .padding(.bottom, 70)
+                        .offset(z: 40)
+                } else if let target = citationTarget {
                     VisionCitationSheet(doc: doc, key: target.key) {
                         citationTarget = nil
                     }
@@ -2696,7 +2707,7 @@ struct VisionReaderView: View {
                 // Links wear the body's own ink, and the words select:
                 // the selection carries the reader's verbs — Copy, Copy
                 // Citation, Highlight, Note — as on the phone.
-                VisionSelectableParagraph(
+                let selectable = VisionSelectableParagraph(
                     attributed: inline(paragraph, doc: doc, trailingStretch: trailingStretch),
                     baseSize: max((paragraphBaseSize(paragraph) + fontDelta) * typeScale, 6),
                     baseBold: paragraph.effectiveHeading != nil,
@@ -2722,11 +2733,75 @@ struct VisionReaderView: View {
                     },
                     onRemoveHighlights: { selected in
                         removeHighlights(doc: doc, paragraph: paragraph, selected: selected)
+                    },
+                    onLongPress: {
+                        verbShowsKinds = false
+                        verbParagraph = paragraph
                     })
+                // NO presented menu can appear on a RealityKit
+                // attachment (no window to present into) — the text
+                // view's own long-press recognizer summons the
+                // floating verb bar, drawn inside the panel itself.
+                selectable
             }
         }
         .padding(.bottom, 12)
         .id(paragraph.id)   // the contents land here
+    }
+
+    /// The floating verb bar: the reader's verbs on the long-pressed
+    /// paragraph, drawn INSIDE the panel (presentations cannot appear
+    /// on an attachment) and standing toward the reader like the
+    /// citation sheet. Highlight opens its kinds as a second row.
+    @ViewBuilder private func paragraphVerbBar(
+        _ paragraph: LiquidDoc.Paragraph, doc: LiquidDoc) -> some View {
+        let selection = VisionModel.ReaderSelection(
+            address: docID, paragraphID: paragraph.id,
+            text: paragraph.text, prefix: nil, suffix: nil)
+        VStack(spacing: 8) {
+            if verbShowsKinds {
+                HStack(spacing: 8) {
+                    ForEach(ReaderAnnotationKind.allCases, id: \.self) { kind in
+                        Button(VisionAnnotationInk.displayName(of: kind)) {
+                            model.addTag(kind, on: selection)
+                            verbParagraph = nil
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 10) {
+                Button("Cite", systemImage: "quote.opening") {
+                    copySelectionCitation(doc, paragraph: paragraph,
+                                          selected: paragraph.text)
+                    verbParagraph = nil
+                }
+                Button("Highlight", systemImage: "highlighter") {
+                    verbShowsKinds.toggle()
+                }
+                Button("Note\u{2026}", systemImage: "square.and.pencil") {
+                    noteDraft = ""
+                    annotating = selection
+                    verbParagraph = nil
+                }
+                Button("Lift", systemImage: "balloon") {
+                    model.floatText(on: selection)
+                    verbParagraph = nil
+                }
+                Button("Copy", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = paragraph.text
+                    verbParagraph = nil
+                }
+                Button {
+                    verbParagraph = nil
+                } label: {
+                    Image(systemName: "xmark")
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .padding(12)
+        .background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 16))
     }
 
     /// The reference list closing the reading, as on the Mac.
@@ -2998,7 +3073,9 @@ private struct VisionCitationSheet: View {
             .padding(.vertical, 12)
         }
         .frame(width: 460, height: 400)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+        // Solid paper, not glass: the record must read over the page
+        // behind it, not blend into it.
+        .background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 24))
         .shadow(radius: 12)
     }
 }
@@ -3091,10 +3168,26 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
     let onNote: (String, String?, String?) -> Void
     /// The selection whose touching highlights should be cleared.
     let onRemoveHighlights: (String) -> Void
+    /// A long press anywhere on the words — the floating verb bar's
+    /// summons, recognized INSIDE the text view (whose own gestures
+    /// swallow SwiftUI's long-press before it can fire).
+    var onLongPress: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    final class Coordinator: NSObject, UITextViewDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate,
+                             UIGestureRecognizerDelegate {
+        @objc func longPressed(_ recognizer: UILongPressGestureRecognizer) {
+            guard recognizer.state == .began else { return }
+            parent.onLongPress()
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
+        }
+
         var parent: VisionSelectableParagraph
         init(_ parent: VisionSelectableParagraph) { self.parent = parent }
 
@@ -3170,6 +3263,14 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
         view.textContainer.lineFragmentPadding = 0
         view.adjustsFontForContentSizeCategory = false
         view.delegate = context.coordinator
+        // The verb bar's summons, riding beside the text view's own
+        // selection gestures rather than losing to them.
+        let longPress = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.longPressed(_:)))
+        longPress.minimumPressDuration = 0.4
+        longPress.delegate = context.coordinator
+        view.addGestureRecognizer(longPress)
         return view
     }
 

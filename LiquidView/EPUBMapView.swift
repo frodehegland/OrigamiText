@@ -55,6 +55,9 @@ struct EPUBMapItem: ItemProtocol {
     /// The card opened to its abstract — asked for with the selected
     /// card's Abstract button, not by selection itself.
     var showsAbstract = false
+    /// Snapped off the map with Lift: the card reads as a slightly
+    /// extruded object, apart from the flat wall.
+    var isLifted = false
 
     var isAttachmentsEnabled: Bool {
         // Concepts carry Focus/Hide; documents and citations carry
@@ -74,6 +77,7 @@ struct EPUBMapItem: ItemProtocol {
             && isShared == other.isShared && citationCount == other.citationCount
             && abstract == other.abstract && visionTheme == other.visionTheme
             && isGhost == other.isGhost && showsAbstract == other.showsAbstract
+            && isLifted == other.isLifted
     }
 }
 
@@ -87,11 +91,11 @@ struct EPUBMapView: View {
     /// raised article. Empty until a journal is opened from the panel.
     @State private var items: [EPUBMapItem] = []
 
-    /// Lift is shelved for now — placing the lifted card in the room
-    /// wasn't landing on device (15 Sep 2026). The machinery stays;
-    /// turning this back on restores the button, and reload() below
-    /// stops sending stranded cards home.
-    private static let liftEnabled = false
+    /// Lift, take two (15 Sep evening): the lifted card is billboarded
+    /// and moves free — no surface pose fighting the hand — with the
+    /// very transparent ghost holding its place. Off sends every
+    /// lifted card home (reload() below).
+    private static let liftEnabled = true
 
     /// A snapped-off card: the held home its ghost stands at, and the
     /// surface pose (a quaternion's vector) once it rests on a wall or
@@ -488,7 +492,7 @@ struct EPUBMapView: View {
             // that: free in every axis until it is Put Back.
             var position = placed[record.id] ?? seed
             if liftedCards[record.id] == nil { position.z = seed.z }
-            return EPUBMapItem(
+            var item = EPUBMapItem(
                 id: record.id,
                 title: record.title,
                 // The year on the face, so the alignment reads at a glance.
@@ -499,6 +503,8 @@ struct EPUBMapView: View {
                 citedIDs: citedIDsByArticle[record.id] ?? [],
                 isPinned: model.pinnedIDs.contains(record.id),
                 abstract: abstractByArticle[record.id] ?? "")
+            item.isLifted = liftedCards[record.id] != nil
+            return item
         }
         articleYearZ = yearZ
 
@@ -589,16 +595,23 @@ struct EPUBMapView: View {
                 citedSpace.y(row: row, rowCount: citedRows),
                 citedSpace.z(agePlace: agePlace)) + spaceShift
             timelineZ[work.id] = seed.z
-            return EPUBMapItem(
+            // A moved card keeps its place on the plane; the timeline
+            // owns its depth — so a depth pinch re-spaces the years
+            // without touching where the hand left anything.
+            var position = placed[work.id] ?? seed
+            if liftedCards[work.id] == nil { position.z = seed.z }
+            var item = EPUBMapItem(
                 id: work.id,
                 title: work.title,
                 // The year on the face, so the depth reads at a glance.
                 author: work.year.map { "\(work.author) · \($0)" } ?? work.author,
                 kind: .cited,
-                position: placed[work.id] ?? seed,
+                position: position,
                 isShared: sharedIDs.contains(work.id),
                 citationCount: citationCounts[work.id] ?? 1,
                 abstract: facts[work.id]?.abstract ?? "")
+            item.isLifted = liftedCards[work.id] != nil
+            return item
         })
         citedTimelineZ = timelineZ
         citedFacts = facts
@@ -1110,10 +1123,11 @@ struct EPUBMapView: View {
         // Standing only while common ground does: the wall reduced to
         // the works every raised article cites — the green alone.
         ArmMenu.Chip(id: EPUBMapView.onlyOverlapChipID, title: "Only Overlap", side: .right),
-        // The left arm's working row: Focus, Select, then Concepts.
-        // Select unfolds its three kinds in a column away from the arm;
-        // Reveal All Concepts unfolds ABOVE Concepts the same way,
-        // hidden until a long-pinch asks for it.
+        // The left arm's working row: Focus, Views, Select, Show.
+        // Each parent unfolds its column away from the arm; option
+        // fans run up the forearm.
+        // Layout and Views left the arm for the Map's own toolbar
+        // (Author's bottom bar), standing under the wall.
         ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectChipID, title: "Select", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectCitationsChipID, title: "Citations",
@@ -1122,28 +1136,20 @@ struct EPUBMapView: View {
                      side: .left, group: EPUBMapView.selectChipID),
         ArmMenu.Chip(id: EPUBMapView.selectConceptsChipID, title: "Concepts",
                      side: .left, group: EPUBMapView.selectChipID),
-        ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts", side: .left),
+        // Show: what stands in the room — the citation walls, the
+        // topic magnets, the concept row — each a toggle in one place.
+        ArmMenu.Chip(id: EPUBMapView.showChipID, title: "Show", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.showCitationsChipID, title: "Citations",
+                     side: .left, group: EPUBMapView.showChipID),
+        ArmMenu.Chip(id: EPUBMapView.topicsChipID, title: "Topics",
+                     side: .left, group: EPUBMapView.showChipID),
+        ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts",
+                     side: .left, group: EPUBMapView.showChipID),
         ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
                      side: .left, group: EPUBMapView.conceptsChipID),
-        // The Mac Map's topic magnets, here in the hallway — a row of
-        // labels above the article wall, threads on selection. Rides
-        // the left forearm's underside, beside Graphs and Timelines.
-        ArmMenu.Chip(id: EPUBMapView.topicsChipID, title: "Topics", side: .left,
-                     underside: true),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
-        // The wrist watch, worn where a watch sits on the left arm:
-        // Author Map's layout house. Its face unfolds Layout (align,
-        // distribute, sort — the selection's verbs) and Views (the
-        // whole wall re-arranged, Author's arrangements); each fans
-        // its options up the forearm. The option chips join below.
-        ArmMenu.Chip(id: EPUBMapView.watchChipID, title: "Watch",
-                     side: .left, watch: true),
-        ArmMenu.Chip(id: EPUBMapView.watchLayoutChipID, title: "Layout",
-                     side: .left, group: EPUBMapView.watchChipID),
-        ArmMenu.Chip(id: EPUBMapView.watchViewsChipID, title: "Views",
-                     side: .left, group: EPUBMapView.watchChipID),
-    ] + EPUBMapView.watchOptionChips, tracksPlanes: true,   // the flat pose finds the actual desk
+    ], tracksPlanes: true,   // the flat pose finds the actual desk
        inverted: UserDefaults.standard.bool(forKey: "armMenuInverted"))
 
     /// The Settings' Swap Arms toggle — every chip on the opposite
@@ -1163,12 +1169,24 @@ struct EPUBMapView: View {
     @State private var timelinesOpen = false
     /// The Select chip's kinds, unfolded above it.
     @State private var selectOpen = false
+    /// The Show chip's families, unfolded above it.
+    @State private var showOpen = false
+    /// The Map toolbar's entity and its drag's starting place.
+    @State private var mapToolbarRoot: Entity?
+    @State private var toolbarDragStart: SIMD3<Float>?
     /// The watch's menus: the face open (Layout and Views standing
     /// above the wrist), and which option fan is unfolded — one at a
     /// time, or two long rows would ride the same forearm.
     @State private var watchOpen = false
     @State private var watchLayoutOpen = false
     @State private var watchViewsOpen = false
+    @State private var watchSavedOpen = false
+    /// The saved arrangements, five slots per venue — positions in
+    /// map space (the carried shift removed), persisted.
+    @State private var savedViews: [String: [String: SIMD3<Float>]] = [:]
+    /// Where every card stood the moment a Layout or Views option was
+    /// chosen — the watch's Undo restores it whole.
+    @State private var watchUndo: [String: SIMD3<Float>]?
     /// Concepts put away with their card's Hide button — back via the
     /// Concepts chip's long-pinch and Reveal All Concepts.
     @State private var hiddenConceptIDs: Set<String> = []
@@ -1185,6 +1203,8 @@ struct EPUBMapView: View {
     private static let setAsideChipID = "map.arm.setaside"
     private static let conceptsChipID = "map.arm.concepts"
     private static let topicsChipID = "map.arm.topics"
+    private static let showChipID = "map.arm.show"
+    private static let showCitationsChipID = "map.arm.show.citations"
     private static let revealConceptsChipID = "map.arm.concepts.reveal"
     private static let graphsChipID = "map.arm.graphs"
     private static let timelinesChipID = "map.arm.timelines"
@@ -1202,6 +1222,13 @@ struct EPUBMapView: View {
     private static let watchChipID = "map.arm.watch"
     private static let watchLayoutChipID = "map.arm.watch.layout"
     private static let watchViewsChipID = "map.arm.watch.views"
+    private static let watchUndoChipID = "map.arm.watch.undo"
+    private static let watchSavedChipID = "map.arm.watch.saved"
+    private static let watchSaveNowChipID = "map.arm.watch.saved.save"
+    private static let savedSlotCount = 5
+    private static func savedViewSlotID(_ slot: Int) -> String {
+        "map.arm.watch.saved.slot\(slot)"
+    }
 
     /// Author Map's Layout menu, verbatim — align, distribute, and
     /// sort the selected cards (all standing cards when none are).
@@ -1252,17 +1279,11 @@ struct EPUBMapView: View {
         "map.arm.watch.views." + option.rawValue
     }
 
-    /// Author Map's options as chips, each grouped under its watch
-    /// sub-menu — the fans the per-frame layout runs up the forearm.
-    private static var watchOptionChips: [ArmMenu.Chip] {
-        WatchLayoutOption.allCases.map {
-            ArmMenu.Chip(id: watchLayoutOptionID($0), title: $0.title,
-                         side: .left, group: watchLayoutChipID)
-        } + WatchViewOption.allCases.map {
-            ArmMenu.Chip(id: watchViewOptionID($0), title: $0.title,
-                         side: .left, group: watchViewsChipID)
-        }
-    }
+    /// The Views on offer — Timeline rests for now (the corridor's own
+    /// depth already carries time).
+    private static let offeredWatchViews: [WatchViewOption] =
+        WatchViewOption.allCases.filter { $0 != .timeline }
+
 
     var body: some View {
         engine
@@ -1363,10 +1384,19 @@ struct EPUBMapView: View {
                             readerPanels.dragStart[docID] = start
                             root.position = start + value.convert(
                                 value.gestureValue.translation3D, from: .local, to: .scene)
+                        } else if let toolbar = mapToolbarRoot,
+                                  isToolbarHandle(value.entity) {
+                            // The toolbar's move bar: the same free
+                            // three-axis drag the reader panels ride.
+                            let start = toolbarDragStart ?? toolbar.position
+                            toolbarDragStart = start
+                            toolbar.position = start + value.convert(
+                                value.gestureValue.translation3D, from: .local, to: .scene)
                         }
                     }
                     .onEnded { _ in
                         readerPanels.dragStart = [:]
+                        toolbarDragStart = nil
                     })
             // A long-pinch on the Concepts chip offers the way back for
             // hidden concepts: the Reveal All Concepts chip steps out
@@ -1414,9 +1444,9 @@ struct EPUBMapView: View {
                 CitedSpace.depthRange.upperBound)
             citedDepthSetting = Double(citedSpace.depth)
         }
-        // The pinch re-lays the whole spread — wandering cited cards
-        // rejoin the mapping. The reader's article placements hold.
-        placed = placed.filter { !$0.key.hasPrefix("cited:") }
+        // The pinch re-spaces the years alone: every card keeps its
+        // hand-given place on the plane, and the timeline re-maps
+        // each one's depth in the rebuild.
         reload()
     }
 
@@ -1438,6 +1468,7 @@ struct EPUBMapView: View {
                     return AnyView(
                         Button("Put Away") { model.removeFloat(item.id) }
                             .buttonStyle(.bordered)
+                            .scaleEffect(0.5, anchor: .top)
                     )
                 }
                 // Topic magnets carry no buttons: selection alone is
@@ -1452,6 +1483,7 @@ struct EPUBMapView: View {
                             Button("Hide") { hideConcept(item.id) }
                         }
                         .buttonStyle(.bordered)
+                        .scaleEffect(0.5, anchor: .top)
                     )
                 }
                 // Documents and citations, at the card's bottom middle:
@@ -1463,6 +1495,9 @@ struct EPUBMapView: View {
                    item.isSelected, !item.isGhost, !item.isAside {
                     return AnyView(
                         HStack(spacing: 8) {
+                            // Open: what the double tap does — the
+                            // reading in-situ (a citation, its card).
+                            Button("Open") { handleTap(count: 2, on: item) }
                             if !item.abstract.isEmpty {
                                 Button(item.showsAbstract ? "Hide Abstract" : "Abstract") {
                                     toggleAbstract(item)
@@ -1475,6 +1510,11 @@ struct EPUBMapView: View {
                             }
                         }
                         .buttonStyle(.bordered)
+                        // Quiet verbs under the card, not a toolbar —
+                        // half life-size (attachments render full).
+                        .controlSize(.small)
+                        .font(.caption)
+                        .scaleEffect(0.5, anchor: .top)
                     )
                 }
                 return AnyView(EmptyView())
@@ -1567,13 +1607,18 @@ struct EPUBMapView: View {
             if item.isGhost { return startPosition }
             // A snapped-off card moves free in every axis and courts
             // the room's surfaces: within reach of one it lands on the
-            // plane, and the per-frame tick turns it to lie along it.
-            if liftedCards[item.id] != nil {
+            // plane. State writes only ON CHANGE — a write per frame
+            // invalidates the whole view and drags like mud.
+            if let lifted = liftedCards[item.id] {
                 if let pose = surfacePose(for: proposed) {
-                    liftedCards[item.id]?.stuck = pose.orientation.vector
+                    if lifted.stuck != pose.orientation.vector {
+                        liftedCards[item.id]?.stuck = pose.orientation.vector
+                    }
                     return pose.position
                 }
-                liftedCards[item.id]?.stuck = nil
+                if lifted.stuck != nil {
+                    liftedCards[item.id]?.stuck = nil
+                }
                 return proposed
             }
             // EXPERIMENT — a journal card stays on its publication
@@ -1700,8 +1745,11 @@ struct EPUBMapView: View {
             armMenu.setChipVisible(Self.selectCitationsChipID, false)
             armMenu.setChipVisible(Self.selectDocumentsChipID, false)
             armMenu.setChipVisible(Self.selectConceptsChipID, false)
-            // The watch's menus wait folded until its face is pinched.
-            updateWatchChips()
+            // Show's families wait folded until the chip is pinched.
+            updateShowChips()
+            // Author Map's toolbar, standing under the wall — Layout
+            // and the Views moved off the arm to buttons.
+            content.add(makeMapToolbar())
             // The Graphs and Timelines groups wake folded; the sides
             // appear when their parent is pinched. The chips wear their
             // standing state — a floor lane or graph left on last
@@ -1734,14 +1782,13 @@ struct EPUBMapView: View {
                              lines: [selectedCitationLines,
                                      conceptConnectionLines,
                                      citedToDeepLines],
+                             // Lifted cards billboard at the NODE — the
+                             // tick yaws card AND collision toward the
+                             // head, so gaze can take a lifted card
+                             // from any side; everything else stands
+                             // upright.
                              anyLifted: { !liftedCards.isEmpty },
-                             liftedOrientation: { id in
-                                 // A lifted card wears its surface pose;
-                                 // floating again, it stands back up.
-                                 guard let lifted = liftedCards[id] else { return nil }
-                                 return lifted.stuck.map { simd_quatf(vector: $0) }
-                                     ?? simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
-                             })
+                             liftedFacesHead: { liftedCards[$0] != nil })
             // Align to Room's wall: a wall-classified vertical plane on
             // the one tracking session, read when the chip is tapped.
             let roomWall = AnchorEntity(.plane(.vertical, classification: .wall,
@@ -1830,19 +1877,14 @@ struct EPUBMapView: View {
         let s = Self.crisp
         if item.isGhost {
             // The lifted card's held place: its title's first line
-            // alone, very transparent — a slot, not a card.
+            // alone, very transparent — a slot, not a card. No frame:
+            // the faint words themselves are the marker.
             Text(shortTitle(item.title))
                 .font(AppFonts.body(6 * s, weight: .semibold))
                 .foregroundStyle(Color.white.opacity(0.6))
                 .lineLimit(1)
                 .padding(.horizontal, 7 * s)
                 .padding(.vertical, 5 * s)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8 * s)
-                        .strokeBorder(Color.white.opacity(0.3),
-                                      style: StrokeStyle(lineWidth: 0.6 * s,
-                                                         dash: [3 * s, 3 * s]))
-                )
                 .opacity(0.35)
         } else if item.isAside {
             // The whole slip fades — the words too, not just the paper.
@@ -1899,18 +1941,13 @@ struct EPUBMapView: View {
             }
             .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 14 * s),
                                    displayMode: item.isSelected ? .never : .always)
-            // No frame around the pane — a vertical rail at each side,
-            // inset past the rounded corners, brighter when selected.
-            .overlay(alignment: .leading) {
-                Rectangle().fill(Color.white.opacity(item.isSelected ? 0.9 : 0.35))
-                    .frame(width: (item.isSelected ? 3.5 : 1) * s)
-                    .padding(.vertical, 14 * s)
-            }
-            .overlay(alignment: .trailing) {
-                Rectangle().fill(Color.white.opacity(item.isSelected ? 0.9 : 0.35))
-                    .frame(width: (item.isSelected ? 3.5 : 1) * s)
-                    .padding(.vertical, 14 * s)
-            }
+            // No side rails: the concept pane wears one quiet rounded
+            // border, brightening whole when selected.
+            .overlay(
+                RoundedRectangle(cornerRadius: 14 * s)
+                    .strokeBorder(Color.white.opacity(item.isSelected ? 0.75 : 0.2),
+                                  lineWidth: (item.isSelected ? 1.6 : 0.6) * s)
+            )
         } else {
             // Half-size type for the half-size cards.
             let titleSize: CGFloat = switch item.kind {
@@ -1944,11 +1981,11 @@ struct EPUBMapView: View {
                     .foregroundStyle(Color.white.opacity(0.65))
                 if withAbstract && selected && item.showsAbstract
                     && !item.abstract.isEmpty {
-                    // The full abstract in fine print, asked for with
-                    // the card's Abstract button — sized to be read by
-                    // walking up to the card, not from afar.
+                    // The full abstract, asked for with the card's
+                    // Abstract button — readable without stepping
+                    // right up to the card.
                     Text(item.abstract)
-                        .font(.system(size: 2.6 * s))
+                        .font(.system(size: 5.6 * s))
                         .foregroundStyle(Color.white.opacity(0.8))
                         .multilineTextAlignment(.leading)
                         .padding(.top, 1.5 * s)
@@ -1961,24 +1998,29 @@ struct EPUBMapView: View {
             // itself is shaped (not a material fill, which paints the
             // attachment's backing square past the corners).
             .background {
-                if selected {
+                if selected && !item.isLifted {
                     RoundedRectangle(cornerRadius: 8 * s)
                         .fill(Color(white: 0.12))
                 }
             }
             .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 8 * s),
-                                   displayMode: selected ? .never : .always)
+                                   displayMode: (selected || item.isLifted)
+                                       ? .never : .always)
             // No frame around the pane — a vertical rail at each side,
             // inset past the rounded corners, brighter when selected.
+            // A LIFTED card carries no pane at all: its words print
+            // straight onto the extruded slab behind them.
             .overlay(alignment: .leading) {
                 Rectangle().fill(Color.white.opacity(selected ? 0.9 : 0.35))
                     .frame(width: (selected ? 3.0 : 0.7) * s)
                     .padding(.vertical, 8 * s)
+                    .opacity(item.isLifted ? 0 : 1)
             }
             .overlay(alignment: .trailing) {
                 Rectangle().fill(Color.white.opacity(selected ? 0.9 : 0.35))
                     .frame(width: (selected ? 3.0 : 0.7) * s)
                     .padding(.vertical, 8 * s)
+                    .opacity(item.isLifted ? 0 : 1)
             }
         }
     }
@@ -2050,10 +2092,25 @@ struct EPUBMapView: View {
         holder.addChild(frontFace)
         holder.addChild(backFace)
         holder.components.set(CardFacesComponent(front: frontFace, back: backFace))
-        // A floated passage always faces the reader — billboarded, the
-        // way no wall card is.
+        // A floated passage always faces the reader — billboarded on
+        // its face. (Lifted CARDS turn at the node instead, in
+        // MapCardTick, so their collision turns with them and the gaze
+        // can take them from any side.)
         if item.id.hasPrefix("float:") {
             holder.components.set(BillboardComponent())
+        }
+        // A lifted card is an OBJECT now, not a leaf of the wall: a
+        // slim dark extrusion behind the face sets it apart from the
+        // flat cards still standing in the map.
+        if item.isLifted {
+            let depth = ModelEntity(
+                mesh: .generateBox(size: SIMD3<Float>(extents.x * 0.98,
+                                                      extents.y * 0.98, 0.012),
+                                   cornerRadius: 0.004),
+                materials: [SimpleMaterial(color: UIColor(white: 0.08, alpha: 0.85),
+                                           roughness: 0.5, isMetallic: false)])
+            depth.position = SIMD3<Float>(0, 0, -0.008)
+            holder.addChild(depth)
         }
 
         // Set Aside slips fade whole — glass and words together.
@@ -2210,7 +2267,11 @@ struct EPUBMapView: View {
     }
 
     private func lift(_ item: EPUBMapItem) {
-        guard let position = item.position else { return }
+        // The LIVE card, not the attachment's captured copy — a drag
+        // or fist-carry since the button was built would otherwise
+        // leave the ghost standing off the card's true place.
+        let live = items.first { $0.id == item.id } ?? item
+        guard let position = live.position else { return }
         liftedCards[item.id] = LiftedCard(home: position)
         // The card steps toward the reader, visibly off its slot.
         placed[item.id] = position + SIMD3<Float>(0, 0, 0.3)
@@ -2381,18 +2442,40 @@ struct EPUBMapView: View {
 
     /// Writes the arranged plane positions back to the cards — depth
     /// stays the year's own — into the placement memory, and rebuilds.
+    /// The moment before is remembered whole, for the watch's Undo.
     private func applyWatchPositions(_ xy: [String: SIMD2<Float>]) {
+        var snapshot: [String: SIMD3<Float>] = [:]
         var moved: [EPUBMapItem] = []
         for index in items.indices {
             guard let target = xy[items[index].id],
                   var position = items[index].position else { continue }
+            snapshot[items[index].id] = position
             position.x = min(max(target.x, spaceShift.x - 3), spaceShift.x + 3)
             position.y = min(max(target.y, 0.95), 2.2)
             items[index].position = position
             moved.append(items[index])
         }
+        if !snapshot.isEmpty { watchUndo = snapshot }
         keepPlacements(of: moved)
         reload()
+        updateWatchChips()
+    }
+
+    /// The arrangement's way back: every card returns to where it stood
+    /// the moment the option was chosen. One step — a second pinch has
+    /// nothing further to restore until the next arrangement.
+    private func undoWatchArrangement() {
+        guard let snapshot = watchUndo else { return }
+        watchUndo = nil
+        var moved: [EPUBMapItem] = []
+        for index in items.indices {
+            guard let position = snapshot[items[index].id] else { continue }
+            items[index].position = position
+            moved.append(items[index])
+        }
+        keepPlacements(of: moved)
+        reload()
+        updateWatchChips()
     }
 
     // MARK: - The watch's Views — Author Map's arrangements
@@ -2462,7 +2545,7 @@ struct EPUBMapView: View {
                 xy[bucket[0].id] = center
                 continue
             }
-            let radius = 0.22 + 0.26 * Float(ring)
+            let radius = 0.45 + 0.5 * Float(ring)
             for (index, item) in bucket.enumerated() {
                 let angle = Float(index) / Float(bucket.count) * 2 * .pi - .pi / 2
                 xy[item.id] = SIMD2(center.x + cosf(angle) * radius,
@@ -2479,18 +2562,18 @@ struct EPUBMapView: View {
         let columnCounts = blocks.map {
             max(1, Int(Double($0.count).squareRoot().rounded(.up)))
         }
-        let widths = columnCounts.map { Float($0 - 1) * 0.28 }
-        let gap: Float = 0.4
+        let widths = columnCounts.map { Float($0 - 1) * 0.52 }
+        let gap: Float = 0.8
         let total = widths.reduce(0, +) + gap * Float(max(blocks.count - 1, 0))
         var x = center.x - total / 2
         var xy: [String: SIMD2<Float>] = [:]
         for (blockIndex, block) in blocks.enumerated() {
             let columns = columnCounts[blockIndex]
             let rows = (block.count + columns - 1) / columns
-            let top = center.y + 0.17 * Float(rows - 1) / 2
+            let top = center.y + 0.34 * Float(rows - 1) / 2
             for (index, item) in block.enumerated() {
-                xy[item.id] = SIMD2(x + Float(index % columns) * 0.28,
-                                    top - Float(index / columns) * 0.17)
+                xy[item.id] = SIMD2(x + Float(index % columns) * 0.52,
+                                    top - Float(index / columns) * 0.34)
             }
             x += widths[blockIndex] + gap
         }
@@ -2522,9 +2605,9 @@ struct EPUBMapView: View {
         let orphans = components.filter { $0.count == 1 }.flatMap { $0 }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         var xy = layWatchBlocks(islands, center: center)
-        let leading = center.x - 0.26 * Float(orphans.count - 1) / 2
+        let leading = center.x - 0.5 * Float(orphans.count - 1) / 2
         for (index, item) in orphans.enumerated() {
-            xy[item.id] = SIMD2(leading + 0.26 * Float(index), center.y - 0.6)
+            xy[item.id] = SIMD2(leading + 0.5 * Float(index), center.y - 1.0)
         }
         return xy
     }
@@ -2546,7 +2629,7 @@ struct EPUBMapView: View {
             .map(\.key)
         guard !hubs.isEmpty else { return nil }
         var xy: [String: SIMD2<Float>] = [:]
-        let spacing: Float = 0.85
+        let spacing: Float = 1.4
         let leading = center.x - spacing * Float(hubs.count - 1) / 2
         for (index, hub) in hubs.enumerated() {
             xy[hub] = SIMD2(leading + spacing * Float(index), center.y)
@@ -2569,16 +2652,16 @@ struct EPUBMapView: View {
             }
             for (index, item) in ordered.enumerated() {
                 let angle = Float(index) / Float(ordered.count) * 2 * .pi - .pi / 2
-                xy[item.id] = SIMD2(hubPlace.x + cosf(angle) * 0.3,
-                                    hubPlace.y + sinf(angle) * 0.21)
+                xy[item.id] = SIMD2(hubPlace.x + cosf(angle) * 0.58,
+                                    hubPlace.y + sinf(angle) * 0.42)
             }
         }
         let ordered = leftovers.sorted {
             $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
         }
-        let orphanLeading = center.x - 0.26 * Float(ordered.count - 1) / 2
+        let orphanLeading = center.x - 0.5 * Float(ordered.count - 1) / 2
         for (index, item) in ordered.enumerated() {
-            xy[item.id] = SIMD2(orphanLeading + 0.26 * Float(index), center.y - 0.65)
+            xy[item.id] = SIMD2(orphanLeading + 0.5 * Float(index), center.y - 1.1)
         }
         return xy
     }
@@ -2603,14 +2686,14 @@ struct EPUBMapView: View {
         }
         let dateless = articles.filter { year($0.id) == nil }.sorted(by: byTitle)
         if !dateless.isEmpty { columns.append(dateless) }
-        let spacing: Float = 0.3
+        let spacing: Float = 0.58
         let leading = center.x - spacing * Float(columns.count - 1) / 2
         var xy: [String: SIMD2<Float>] = [:]
         for (columnIndex, column) in columns.enumerated() {
-            let top = center.y + 0.17 * Float(column.count - 1) / 2
+            let top = center.y + 0.34 * Float(column.count - 1) / 2
             for (row, item) in column.enumerated() {
                 xy[item.id] = SIMD2(leading + spacing * Float(columnIndex),
-                                    top - 0.17 * Float(row))
+                                    top - 0.34 * Float(row))
             }
         }
         return xy
@@ -2991,29 +3074,19 @@ struct EPUBMapView: View {
             editNode = current.parent
         }
         switch armMenu.chipID(for: entity) {
+        case Self.showChipID:
+            // The families unfold above the chip, and fold away.
+            showOpen.toggle()
+            updateShowChips()
+            return true
+        case Self.showCitationsChipID:
+            toggleAllCitations()
+            return true
         case Self.conceptsChipID:
-            if conceptSpaceMode {
-                conceptSpaceMode = false
-                // The concepts leave, and any concept Focus with them.
-                focusedConceptID = nil
-                focusedConceptArticleIDs = []
-                updateSankey()
-                reload()
-            } else {
-                conceptLadder.close()
-                conceptSpaceMode = true
-                updateSankey()
-                reload()
-            }
-            armMenu.setChipActive(Self.conceptsChipID, conceptSpaceMode)
+            toggleConcepts()
             return true
         case Self.topicsChipID:
-            // The topic magnets stand or leave; leaving takes their
-            // selections' threads with them (reload rebuilds the lines
-            // from the items that remain).
-            topicSpaceMode.toggle()
-            armMenu.setChipActive(Self.topicsChipID, topicSpaceMode)
-            reload()
+            toggleTopics()
             return true
         case Self.pinChipID:
             let selected = items.filter { $0.kind == .article && $0.isSelected }
@@ -3080,26 +3153,6 @@ struct EPUBMapView: View {
         case Self.selectConceptsChipID:
             toggleSelect(.concepts)
             return true
-        case Self.watchChipID:
-            // The watch face: its two menus unfold above the wrist and
-            // fold away — closing takes any open option fan with it.
-            watchOpen.toggle()
-            if !watchOpen {
-                watchLayoutOpen = false
-                watchViewsOpen = false
-            }
-            updateWatchChips()
-            return true
-        case Self.watchLayoutChipID:
-            watchLayoutOpen.toggle()
-            if watchLayoutOpen { watchViewsOpen = false }
-            updateWatchChips()
-            return true
-        case Self.watchViewsChipID:
-            watchViewsOpen.toggle()
-            if watchViewsOpen { watchLayoutOpen = false }
-            updateWatchChips()
-            return true
         case Self.floorChipID:
             if floorShowRaw == FloorShow.nothing.rawValue {
                 floorShowRaw = floorShowLastRaw
@@ -3146,50 +3199,281 @@ struct EPUBMapView: View {
             reload()
             return true
         default:
-            // The watch's option fans: a choice acts and folds the
-            // whole watch menu away, per the arm menus' convention.
-            guard let id = armMenu.chipID(for: entity) else { return false }
-            if let option = WatchLayoutOption(rawValue:
-                String(id.dropFirst(Self.watchLayoutChipID.count + 1))),
-               id.hasPrefix(Self.watchLayoutChipID + ".") {
-                runWatchLayout(option)
-                closeWatchMenus()
-                return true
-            }
-            if let option = WatchViewOption(rawValue:
-                String(id.dropFirst(Self.watchViewsChipID.count + 1))),
-               id.hasPrefix(Self.watchViewsChipID + ".") {
-                runWatchView(option)
-                closeWatchMenus()
-                return true
-            }
             return false
         }
     }
 
-    /// The whole watch menu folded — the face keeps only its worn self.
-    private func closeWatchMenus() {
-        watchOpen = false
-        watchLayoutOpen = false
-        watchViewsOpen = false
+    /// Every standing article's citation wall rises at once — or,
+    /// standing, every wall retires. The arm's Show and the toolbar
+    /// share this one toggle.
+    private func toggleAllCitations() {
+        if raisedArticleIDs.isEmpty {
+            raisedArticleIDs = Set(items.filter {
+                $0.kind == .article && !$0.isAside && !$0.isGhost
+            }.map(\.id))
+        } else {
+            raisedArticleIDs = []
+            deepParentIDs = []
+        }
+        reload()
+        updateShowChips()
+    }
+
+    /// The concept space in and out; arriving concepts arrive SELECTED
+    /// — one pinch-drag moves the whole family.
+    private func toggleConcepts() {
+        if conceptSpaceMode {
+            conceptSpaceMode = false
+            // The concepts leave, and any concept Focus with them.
+            focusedConceptID = nil
+            focusedConceptArticleIDs = []
+            updateSankey()
+            reload()
+        } else {
+            conceptLadder.close()
+            conceptSpaceMode = true
+            updateSankey()
+            reload()
+            for index in items.indices
+            where items[index].kind == .concept
+                && !items[index].id.hasPrefix("topic:")
+                && !items[index].id.hasPrefix("float:") {
+                items[index].isSelected = true
+            }
+        }
+        armMenu.setChipActive(Self.conceptsChipID, conceptSpaceMode)
+        updateShowChips()
+    }
+
+    /// The topic magnets stand or leave; arriving, they arrive
+    /// selected, so one pinch-drag moves the whole row.
+    private func toggleTopics() {
+        topicSpaceMode.toggle()
+        armMenu.setChipActive(Self.topicsChipID, topicSpaceMode)
+        reload()
+        if topicSpaceMode {
+            for index in items.indices
+            where items[index].id.hasPrefix("topic:") {
+                items[index].isSelected = true
+            }
+        }
+        updateShowChips()
+    }
+
+    /// Show's families shown while the chip stands open, each wearing
+    /// its live standing — bright while its family is in the room.
+    private func updateShowChips() {
+        armMenu.setChipVisible(Self.showCitationsChipID, showOpen)
+        armMenu.setChipVisible(Self.topicsChipID, showOpen)
+        armMenu.setChipVisible(Self.conceptsChipID, showOpen)
+        armMenu.setChipActive(Self.showChipID,
+                              showOpen || !raisedArticleIDs.isEmpty
+                                || topicSpaceMode || conceptSpaceMode)
+        armMenu.setChipActive(Self.showCitationsChipID, !raisedArticleIDs.isEmpty)
+    }
+
+
+    // MARK: - Saved views: save and recall whole arrangements
+
+    private var savedViewsKey: String {
+        "mapSavedViews:\(model.openJournalVenue ?? "")"
+    }
+
+    private func loadSavedViews() -> [String: [String: SIMD3<Float>]] {
+        guard let data = UserDefaults.standard.data(forKey: savedViewsKey),
+              let views = try? JSONDecoder()
+                  .decode([String: [String: SIMD3<Float>]].self, from: data)
+        else { return [:] }
+        return views
+    }
+
+    private func persistSavedViews() {
+        guard let data = try? JSONEncoder().encode(savedViews) else { return }
+        UserDefaults.standard.set(data, forKey: savedViewsKey)
+    }
+
+    /// Save View: the standing articles' places, space-relative, into
+    /// the first free slot (the last slot rewrites once all are full).
+    private func saveCurrentView() {
+        savedViews = loadSavedViews()
+        let positions = Dictionary(uniqueKeysWithValues: items.compactMap {
+            item -> (String, SIMD3<Float>)? in
+            guard item.kind == .article, !item.isAside, !item.isGhost,
+                  let position = item.position else { return nil }
+            return (item.id, position - spaceShift)
+        })
+        guard !positions.isEmpty else { return }
+        let slot = (1...Self.savedSlotCount).first { savedViews["\($0)"] == nil }
+            ?? Self.savedSlotCount
+        savedViews["\(slot)"] = positions
+        persistSavedViews()
         updateWatchChips()
     }
 
-    /// The watch's chips shown and lit to match its open menus.
-    private func updateWatchChips() {
-        armMenu.setChipVisible(Self.watchLayoutChipID, watchOpen)
-        armMenu.setChipVisible(Self.watchViewsChipID, watchOpen)
-        for option in WatchLayoutOption.allCases {
-            armMenu.setChipVisible(Self.watchLayoutOptionID(option),
-                                   watchOpen && watchLayoutOpen)
+    /// A slot recalled: every remembered card returns to its saved
+    /// place, and Undo View remembers the moment before.
+    private func recallSavedView(_ saved: [String: SIMD3<Float>]) {
+        var snapshot: [String: SIMD3<Float>] = [:]
+        var moved: [EPUBMapItem] = []
+        for index in items.indices {
+            guard let stored = saved[items[index].id],
+                  let current = items[index].position else { continue }
+            snapshot[items[index].id] = current
+            items[index].position = stored + spaceShift
+            moved.append(items[index])
         }
-        for option in WatchViewOption.allCases {
-            armMenu.setChipVisible(Self.watchViewOptionID(option),
-                                   watchOpen && watchViewsOpen)
+        guard !moved.isEmpty else { return }
+        watchUndo = snapshot
+        keepPlacements(of: moved)
+        reload()
+        updateWatchChips()
+    }
+
+    /// The Views verbs live on the Map's own toolbar now; the arm has
+    /// nothing of theirs to show.
+    private func updateWatchChips() {}
+
+    /// Author Map's bottom bar, standing in the room under the wall:
+    /// Layout, Auto, and Saved unfold their options as a row above the
+    /// bar (nothing presents on an attachment), Undo View acts at once.
+    private struct MapToolbar: View {
+        let layoutOptions: [WatchLayoutOption]
+        let autoOptions: [WatchViewOption]
+        let runLayout: (WatchLayoutOption) -> Void
+        let runAuto: (WatchViewOption) -> Void
+        let saveNow: () -> Void
+        let savedSlots: () -> [Int]
+        let recall: (Int) -> Void
+        let undo: () -> Void
+        let selectKind: (SelectKind) -> Void
+        let showCitations: () -> Void
+        let showTopics: () -> Void
+        let showConcepts: () -> Void
+
+        private enum Tab { case select, show, layout, auto, saved }
+        @State private var open: Tab?
+        @State private var slots: [Int] = []
+
+        var body: some View {
+            VStack(spacing: 8) {
+                if let open {
+                    HStack(spacing: 6) {
+                        switch open {
+                        case .select:
+                            Button("Citations") { selectKind(.citations); self.open = nil }
+                            Button("Documents") { selectKind(.documents); self.open = nil }
+                            Button("Concepts") { selectKind(.concepts); self.open = nil }
+                        case .show:
+                            Button("Citations") { showCitations(); self.open = nil }
+                            Button("Topics") { showTopics(); self.open = nil }
+                            Button("Concepts") { showConcepts(); self.open = nil }
+                        case .layout:
+                            ForEach(layoutOptions, id: \.self) { option in
+                                Button(option.title) {
+                                    runLayout(option)
+                                    self.open = nil
+                                }
+                            }
+                        case .auto:
+                            ForEach(autoOptions, id: \.self) { option in
+                                Button(option.title) {
+                                    runAuto(option)
+                                    self.open = nil
+                                }
+                            }
+                        case .saved:
+                            Button("Save View") {
+                                saveNow()
+                                slots = savedSlots()
+                            }
+                            ForEach(slots, id: \.self) { slot in
+                                Button("View \(slot)") {
+                                    recall(slot)
+                                    self.open = nil
+                                }
+                            }
+                        }
+                    }
+                }
+                HStack(spacing: 10) {
+                    tab("Select", .select)
+                    tab("Show", .show)
+                    tab("Layout", .layout)
+                    tab("Auto", .auto)
+                    tab("Saved", .saved)
+                    Button("Undo View") { undo() }
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .padding(10)
+            .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 16))
         }
-        armMenu.setChipActive(Self.watchChipID, watchOpen)
-        armMenu.setChipActive(Self.watchLayoutChipID, watchLayoutOpen)
-        armMenu.setChipActive(Self.watchViewsChipID, watchViewsOpen)
+
+        private func tab(_ title: String, _ target: Tab) -> some View {
+            Button {
+                open = open == target ? nil : target
+                if target == .saved { slots = savedSlots() }
+            } label: {
+                // The open section reads bold — the row above is its.
+                Text(title).fontWeight(open == target ? .bold : .regular)
+            }
+        }
+    }
+
+    /// The toolbar's entity: a live attachment riding the carried
+    /// space, standing beneath the article wall.
+    private func makeMapToolbar() -> Entity {
+        let toolbar = Entity()
+        toolbar.components.set(ViewAttachmentComponent(rootView: MapToolbar(
+            layoutOptions: WatchLayoutOption.allCases,
+            autoOptions: Self.offeredWatchViews,
+            runLayout: { runWatchLayout($0) },
+            runAuto: { runWatchView($0) },
+            saveNow: { saveCurrentView() },
+            savedSlots: {
+                loadSavedViews().keys.compactMap(Int.init).sorted()
+            },
+            recall: { slot in
+                if let saved = loadSavedViews()["\(slot)"] {
+                    recallSavedView(saved)
+                }
+            },
+            undo: { undoWatchArrangement() },
+            selectKind: { toggleSelect($0) },
+            showCitations: { toggleAllCitations() },
+            showTopics: { toggleTopics() },
+            showConcepts: { toggleConcepts() })))
+        toolbar.components.set(MapSpaceNodeComponent())
+        toolbar.scale = SIMD3<Float>(repeating: 0.55)
+        toolbar.position = SIMD3<Float>(0, 0.85, -1.12) + spaceShift
+        // The regular move bar beneath — the reader panels' grammar:
+        // a slim line the hand drags anywhere, all three axes.
+        MapToolbarHandleComponent.registerComponent()
+        let bar = ModelEntity(
+            mesh: .generateBox(size: SIMD3<Float>(0.24, 0.008, 0.008),
+                               cornerRadius: 0.004),
+            materials: [SimpleMaterial(color: UIColor(white: 1, alpha: 0.9),
+                                       roughness: 0.6, isMetallic: false)])
+        bar.position = SIMD3<Float>(0, -0.05, 0)
+        bar.components.set(CollisionComponent(
+            shapes: [.generateBox(size: SIMD3<Float>(0.3, 0.035, 0.03))]))
+        bar.components.set(InputTargetComponent())
+        bar.components.set(HoverEffectComponent())
+        bar.components.set(MapToolbarHandleComponent())
+        toolbar.addChild(bar)
+        mapToolbarRoot = toolbar
+        return toolbar
+    }
+
+    /// Whether the dragged entity is (or rides) the toolbar's move bar.
+    private func isToolbarHandle(_ entity: Entity) -> Bool {
+        var node: Entity? = entity
+        while let current = node {
+            if current.components.has(MapToolbarHandleComponent.self) { return true }
+            node = current.parent
+        }
+        return false
     }
 
     /// Pin and Set Aside wear the selection's standing: bright while
@@ -3224,6 +3508,9 @@ struct EPUBMapView: View {
                                 || floorShowRightRaw != FloorShow.nothing.rawValue)
     }
 }
+
+/// Marks the Map toolbar's move bar, so the panel drag knows its own.
+struct MapToolbarHandleComponent: Component {}
 
 /// Marks the entities the fist carries: every card on the Map. The
 /// connection lines need no mark — the engine's MovableConnectionsSystem
@@ -3808,22 +4095,30 @@ private struct ReaderCloseGlyph: View {
     let onClose: () -> Void
 
     var body: some View {
-        Button(action: onClose) {
-            ZStack {
-                Circle()
-                    .fill(.white.opacity(0.22))
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-            }
-            .frame(width: 30, height: 30)
-            .padding(10)
-            .contentShape(Circle())
+        // The system window bar's grammar, and ONLY the circle. Not a
+        // Button: a plain-styled button still earns the system's glass
+        // plate on visionOS — a tap gesture with its own hover effect
+        // draws nothing but what we ask: a touch larger under the
+        // gaze, a touch quieter when not.
+        ZStack {
+            Circle()
+                .fill(.white.opacity(0.25))
+            Image(systemName: "xmark")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
         }
-        .buttonStyle(.plain)
+        .frame(width: 30, height: 30)
+        .contentShape(.circle)
         .hoverEffect { effect, isActive, _ in
-            effect.opacity(isActive ? 1 : 0.22)
+            effect
+                .opacity(isActive ? 1 : 0.6)
+                .scaleEffect(isActive ? 1.15 : 1)
         }
+        .onTapGesture(perform: onClose)
+        // Breathing room for the gaze growth: the attachment renders
+        // exactly its bounds, so without this margin the grown circle
+        // crops at the edges. Padding draws nothing — no plate.
+        .padding(6)
     }
 }
 
@@ -4328,18 +4623,18 @@ private final class MapCardTick {
     private var faceTurner: CardFaceTurner?
     private var lines: [MapLineLayer] = []
     private var anyLifted: (@MainActor () -> Bool)?
-    private var liftedOrientation: (@MainActor (String) -> simd_quatf?)?
+    private var liftedFacesHead: (@MainActor (String) -> Bool)?
     private let cardQuery = EntityQuery(where: .has(EPUBNodeIDComponent.self))
 
     func install(in content: RealityViewContent,
                  faceTurner: CardFaceTurner,
                  lines: [MapLineLayer],
                  anyLifted: @escaping @MainActor () -> Bool,
-                 liftedOrientation: @escaping @MainActor (String) -> simd_quatf?) {
+                 liftedFacesHead: @escaping @MainActor (String) -> Bool) {
         self.faceTurner = faceTurner
         self.lines = lines
         self.anyLifted = anyLifted
-        self.liftedOrientation = liftedOrientation
+        self.liftedFacesHead = liftedFacesHead
         subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             MainActor.assumeIsolated { self?.tick(scene: event.scene) }
         }
@@ -4348,22 +4643,30 @@ private final class MapCardTick {
     private func tick(scene: RealityKit.Scene) {
         let head = faceTurner?.headPosition()
         let liveLines = lines.filter { $0.needsPositions }
-        // The lifted cards' pose keeper rides the same sweep: a card
-        // stuck to a surface holds its plane's turn through rebuilds
-        // and drags; a re-floated one stands back up.
         let lifted = anyLifted?() ?? false
         guard head != nil || !liveLines.isEmpty || lifted else { return }
         var positions: [String: SIMD3<Float>] = [:]
+        let upright = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
         for card in scene.performQuery(cardQuery) {
             let place = card.position(relativeTo: nil)
             if let head { faceTurner?.turn(card: card, at: place, head: head) }
-            guard !liveLines.isEmpty || lifted,
-                  let id = card.components[EPUBNodeIDComponent.self]?.id
+            guard let id = card.components[EPUBNodeIDComponent.self]?.id
             else { continue }
             if !liveLines.isEmpty { positions[id] = place }
-            if lifted, let turn = liftedOrientation?(id),
-               abs(simd_dot(card.orientation.vector, turn.vector)) < 0.99995 {
-                card.orientation = turn
+            // The lifted cards billboard at the node — collision and
+            // face together — while every other card stands upright
+            // (which also rights a card just put back).
+            if lifted, liftedFacesHead?(id) == true, let head {
+                let toHead = head - place
+                if simd_length(SIMD2(toHead.x, toHead.z)) > 1e-4 {
+                    let turn = simd_quatf(angle: atan2(toHead.x, toHead.z),
+                                          axis: SIMD3<Float>(0, 1, 0))
+                    if abs(simd_dot(card.orientation.vector, turn.vector)) < 0.99995 {
+                        card.orientation = turn
+                    }
+                }
+            } else if abs(simd_dot(card.orientation.vector, upright.vector)) < 0.99995 {
+                card.orientation = upright
             }
         }
         for layer in liveLines { layer.relayout(positions: positions) }
@@ -4797,7 +5100,10 @@ struct CitationCardPanel: View {
             .padding(.vertical, 12)
         }
         .frame(width: 460, height: 400)
-        .glassBackgroundEffect()
+        // Solid paper, not glass: the record must read over any room.
+        .background(RoundedRectangle(cornerRadius: 24).fill(Color(white: 0.12)))
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 24),
+                               displayMode: .never)
     }
 }
 
