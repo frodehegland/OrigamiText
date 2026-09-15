@@ -4307,6 +4307,24 @@ final class AppModel {
         saveAnalysesFile()
     }
 
+    /// The one category the reader counts on: everything the venue says
+    /// about artificial intelligence gathers under "AI", whatever the
+    /// model coins — seeded into the prompt, folded from synonyms, and
+    /// enforced by a marker pass over the topics themselves.
+    private static let aiCategoryName = "AI"
+
+    /// Whether a topic or coined category unmistakably speaks of AI.
+    private nonisolated static func readsAsAI(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        for phrase in ["artificial intelligence", "machine learning",
+                       "language model", "deep learning", "neural",
+                       "generative", "chatbot", "chatgpt", "transformer"]
+        where lower.contains(phrase) { return true }
+        let words = Set(lower.components(
+            separatedBy: CharacterSet.alphanumerics.inverted))
+        return !words.isDisjoint(with: ["ai", "llm", "llms", "gpt", "genai"])
+    }
+
     /// One broad umbrella per topic, asked of the model after the
     /// per-paper pass — a venue's several hundred topics fold into a
     /// dozen groups. Chunked, each chunk shown the categories already
@@ -4314,22 +4332,24 @@ final class AppModel {
     /// carries no category and the sidebar files it under Other.
     private func categoriseTopics(_ topics: [String]) async -> [String: String] {
         var categories: [String: String] = [:]
-        var coined: [String] = []
+        var coined: [String] = [Self.aiCategoryName]
         let unique = Array(Set(topics.filter { !$0.isEmpty })).sorted()
         var start = 0
         while start < unique.count {
             let chunk = Array(unique[start ..< min(start + 40, unique.count)])
             start += 40
-            let existing = coined.isEmpty ? "none yet" : coined.joined(separator: ", ")
+            let existing = coined.joined(separator: ", ")
             let prompt = """
                 Existing categories: \(existing)
 
                 Give each topic below ONE broad category of one to three \
-                words (for example "Artificial Intelligence", "Social \
-                Media", "Hypertext & Narrative", "Methods & Analysis"). \
-                Reuse an existing category whenever it fits; coin a new \
-                one only when none does. Reply with one line per topic, \
-                in the exact form:
+                words (for example "AI", "Social Media", "Hypertext & \
+                Narrative", "Methods & Analysis"). File anything about \
+                artificial intelligence — machine learning, LLMs, \
+                generative models, agents, chatbots — under "AI". Reuse \
+                an existing category whenever it fits; coin a new one \
+                only when none does. Reply with one line per topic, in \
+                the exact form:
                 topic :: category
 
                 Topics:
@@ -4353,6 +4373,12 @@ final class AppModel {
             }
             for topic in chunk {
                 guard let category = replied[topic.lowercased()] else { continue }
+                // A coined "Artificial Intelligence", "Machine Learning"
+                // or kin folds into the one AI shelf.
+                if Self.readsAsAI(category) {
+                    categories[topic] = Self.aiCategoryName
+                    continue
+                }
                 // Case variants of a coined category fold together.
                 if let match = coined.first(where: {
                     $0.caseInsensitiveCompare(category) == .orderedSame
@@ -4363,6 +4389,11 @@ final class AppModel {
                     categories[topic] = category
                 }
             }
+        }
+        // The backstop: a topic that plainly says AI files under AI,
+        // whatever the model answered — or failed to.
+        for topic in unique where Self.readsAsAI(topic) {
+            categories[topic] = Self.aiCategoryName
         }
         return categories
     }
