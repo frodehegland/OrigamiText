@@ -115,6 +115,8 @@ struct SidebarView: View {
     /// (alphabetical, by first or last name) or "rank" (most papers
     /// across the whole series, per the imported reference dataset).
     @AppStorage("pubAuthorsSortMode") private var pubAuthorsSort = "first"
+    /// The concept categories' order: fullest first, or A to Z.
+    @AppStorage("pubTopicsSortMode") private var pubTopicsSort = "count"
 
     /// The sidebar's own selection: the model's, but only when it names
     /// a row this list actually shows. The app has states with no
@@ -546,15 +548,55 @@ struct SidebarView: View {
                                      pinned: pinnedTopicSet.contains(topic))
                         }
                     } else {
+                        // The same two orders the Authors wear: A to Z,
+                        // or the fullest first — fullness counted as
+                        // occurrences, each paper carrying a concept
+                        // counting one toward its category.
+                        HStack(spacing: 12) {
+                            Button { pubTopicsSort = "alpha" } label: {
+                                Image(systemName: "textformat.abc")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(pubTopicsSort == "alpha"
+                                             ? Color.accentColor : Color.secondary)
+                            .help("Categories A to Z")
+                            Button { pubTopicsSort = "count" } label: {
+                                Image(systemName: "chart.bar")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(pubTopicsSort == "count"
+                                             ? Color.accentColor : Color.secondary)
+                            .help("Categories whose concepts the conference names most, first")
+                            Spacer()
+                        }
+                        .font(.caption)
                         let grouped = Dictionary(grouping: sortedTopics) {
                             byCategory[$0] ?? "Other"
                         }
-                        // Fullest first, Other always last.
+                        // A concept's occurrences: the papers that carry
+                        // it, each counting once however often it names it.
+                        let occurrences: [String: Int] = {
+                            var counts: [String: Int] = [:]
+                            for topics in (analysis?.paperTopics ?? [:]).values {
+                                for topic in Set(topics) {
+                                    counts[topic, default: 0] += 1
+                                }
+                            }
+                            return counts
+                        }()
+                        let weight: (String) -> Int = { category in
+                            (grouped[category] ?? []).reduce(0) {
+                                $0 + (occurrences[$1] ?? 0)
+                            }
+                        }
+                        // Other always last, whichever order leads.
                         let categories = grouped.keys.sorted { a, b in
                             if (a == "Other") != (b == "Other") { return b == "Other" }
-                            let ca = grouped[a]?.count ?? 0
-                            let cb = grouped[b]?.count ?? 0
-                            return ca != cb ? ca > cb : a < b
+                            if pubTopicsSort == "count" {
+                                let wa = weight(a), wb = weight(b)
+                                if wa != wb { return wa > wb }
+                            }
+                            return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
                         }
                         ForEach(categories, id: \.self) { category in
                             DisclosureGroup(isExpanded: topicCategoryExpanded(category)) {
