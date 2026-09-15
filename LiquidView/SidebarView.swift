@@ -791,10 +791,13 @@ struct SidebarView: View {
             }
     }
 
-    /// The concept categories the reader has opened this session —
-    /// folded is the resting state, unlike the named sections above,
-    /// so the venue's topics never wall the sidebar.
-    @State private var expandedTopicCategories: Set<String> = []
+    /// The concept categories the reader has opened — folded is the
+    /// resting state, so the venue's topics never wall the sidebar.
+    /// Kept in defaults the way the sections' folds are: choosing a
+    /// concept re-makes the sidebar, and plain @State folded the very
+    /// group the reader was working in.
+    @State private var expandedTopicCategories: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "expandedTopicCategories") ?? [])
 
     private func topicCategoryExpanded(_ category: String) -> Binding<Bool> {
         Binding(
@@ -805,6 +808,8 @@ struct SidebarView: View {
                 } else {
                     expandedTopicCategories.remove(category)
                 }
+                UserDefaults.standard.set(Array(expandedTopicCategories),
+                                          forKey: "expandedTopicCategories")
             })
     }
 
