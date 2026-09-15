@@ -103,6 +103,9 @@ struct EPUBMapView: View {
     /// twelve the Mac's Map names for this venue, toggled from the
     /// arm's Topics chip. Selecting one threads to its articles.
     @State private var topicSpaceMode = false
+    /// The named topics, kept against their inputs' hash — reload runs
+    /// on every tap, and the greedy naming need not run with it.
+    @State private var topicNamesCache: (key: Int, names: [String])?
     /// True while concept cards are shown in the hallway — concepts
     /// join the items array in front of the article wall.
     @State private var conceptSpaceMode = false
@@ -695,7 +698,22 @@ struct EPUBMapView: View {
         // The reader's kept names on this device take their slots first,
         // through the same key the Mac's bar keeps its edits under.
         let kept = UserDefaults.standard.stringArray(forKey: "mapMagnets:\(venue)") ?? []
-        let names = MapTopics.names(standing: standing, kept: kept)
+        var hasher = Hasher()
+        hasher.combine(venue)
+        hasher.combine(kept)
+        for paper in standing {
+            hasher.combine(paper.id)
+            hasher.combine(paper.title)
+            hasher.combine(paper.topics)
+        }
+        let key = hasher.finalize()
+        let names: [String]
+        if let cache = topicNamesCache, cache.key == key {
+            names = cache.names
+        } else {
+            names = MapTopics.names(standing: standing, kept: kept)
+            topicNamesCache = (key, names)
+        }
         guard !names.isEmpty else { return [] }
         let spacingX: Float = 0.30
         let totalW = Float(names.count - 1) * spacingX
