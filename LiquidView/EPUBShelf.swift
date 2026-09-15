@@ -4,6 +4,9 @@ import SwiftUI
 #if os(iOS)
 import UIKit
 #endif
+#if os(macOS)
+import AppKit
+#endif
 
 /// A remembered EPUB in the reader's library: enough to list it (title,
 /// author, date) and to reopen its rendered page (the unpacked `folder`
@@ -912,6 +915,15 @@ struct ProceedingsMapView: View {
                     .foregroundStyle(.secondary)
                 TextField("Find", text: $findText)
                     .textFieldStyle(.plain)
+                    // Words no card carries: an error beep answers each
+                    // keystroke that stays unmatched.
+                    .onChange(of: findText) {
+                        guard !findText.trimmingCharacters(in: .whitespaces).isEmpty,
+                              !items.contains(where: matchesFind) else { return }
+                        #if os(macOS)
+                        NSSound.beep()
+                        #endif
+                    }
                 if !findText.isEmpty {
                     Button {
                         findText = ""
@@ -1026,13 +1038,22 @@ struct ProceedingsMapView: View {
     }
 
     /// Find on the plane: a card whose title or author carries the words
-    /// stands forward; the rest recede until the field clears.
+    /// stands forward; the rest recede until the field clears. When NO
+    /// card carries them, nothing fades — the map stands as it was, and
+    /// the beep on the field has already said why.
     private func emphasis(for item: Item) -> ProceedingsMapNode.Emphasis {
         let query = findText.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return .normal }
+        guard items.contains(where: matchesFind) else { return .normal }
+        return matchesFind(item) ? .matched : .dimmed
+    }
+
+    /// Whether Find's words stand in the card's title or author.
+    private func matchesFind(_ item: Item) -> Bool {
+        let query = findText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return false }
         return item.title.localizedCaseInsensitiveContains(query)
             || item.author.localizedCaseInsensitiveContains(query)
-            ? .matched : .dimmed
     }
 
     /// The plane itself. A click on empty plane lets the ⌘A selection

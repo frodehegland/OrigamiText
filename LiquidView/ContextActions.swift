@@ -95,6 +95,13 @@ enum ContextActionBuilder {
                         documentTitle: doc.title,
                         documentFilename: filename))
                 })
+                // Float: the words step off the page as a little slip
+                // (and a free card in the visionOS room) — the same
+                // annotation, one record.
+                actions.append(ContextAction(id: "float-selection", title: "Lift",
+                                             systemImage: "balloon") {
+                    model.floatSelection(trimmed, in: doc)
+                })
             }
             // The selected words as a person: offered when the library
             // knows the name (special text discovered, not marked up).

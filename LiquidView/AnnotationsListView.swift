@@ -135,16 +135,16 @@ struct AnnotationsListView: View {
     /// group order follows each book's newest annotation.
     private var groups: [BookGroup] {
         let query = model.searchText.trimmingCharacters(in: .whitespaces)
-        let shown = model.allAnnotations.filter { item in
-            guard !query.isEmpty else { return true }
-            let haystack = [item.exact,
-                            item.annotation.body?.value,
-                            item.annotation.creator?.name,
-                            bookTitle(for: item.address)]
-                .compactMap { $0 }
-                .joined(separator: " ")
-            return haystack.localizedCaseInsensitiveContains(query)
-        }
+        let shown = query.isEmpty ? model.allAnnotations
+            : model.searchNarrowed(model.allAnnotations) { item in
+                let haystack = [item.exact,
+                                item.annotation.body?.value,
+                                item.annotation.creator?.name,
+                                bookTitle(for: item.address)]
+                    .compactMap { $0 }
+                    .joined(separator: " ")
+                return haystack.localizedCaseInsensitiveContains(query)
+            }
         var order: [String] = []
         var byAddress: [String: [AppModel.LibraryAnnotation]] = [:]
         for item in shown {   // groups by most recently annotated book

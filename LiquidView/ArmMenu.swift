@@ -51,20 +51,36 @@ final class ArmMenu {
         /// The chip this one unfolds from. Grouped chips take no row
         /// slot: they stack off their parent AWAY from the arm — deeper
         /// beneath an underside parent, higher above a top-row one.
+        /// A chip whose parent is itself grouped (a sub-sub-menu) fans
+        /// up the arm from its parent instead, in two lanes.
         /// Origami addition (carry back to Author).
         let group: String?
+        /// Renders as the wrist watch: a watch-proportioned face worn
+        /// at the wrist itself — where a watch sits — rather than a
+        /// word in the forearm row. Takes no row slot.
+        /// Origami addition (carry back to Author).
+        let watch: Bool
 
         init(id: String, title: String, side: Side, underside: Bool = false,
-             group: String? = nil) {
+             group: String? = nil, watch: Bool = false) {
             self.id = id
             self.title = title
             self.side = side
             self.underside = underside
             self.group = group
+            self.watch = watch
         }
     }
 
     private let chips: [Chip]
+    /// Chip lookup for the layout's nesting test — a chip whose parent
+    /// is itself grouped fans along the arm. Origami addition (carry
+    /// back to Author).
+    private lazy var chipsByID: [String: Chip] =
+        Dictionary(chips.map { ($0.id, $0) }) { first, _ in first }
+    /// The chips wearing the watch face. Origami addition (carry back
+    /// to Author).
+    private var watchIDs: Set<String> = []
     /// Whether the session also tracks planes — the Hallway asks for
     /// this so a reading laid flat can find the actual desk. One
     /// session carries both; a second session breaks the device.
@@ -130,22 +146,30 @@ final class ArmMenu {
             let item = Entity()
             item.name = chip.id
             // A watch-button-sized target: small, but read at wrist distance
-            // where gaze is precise.
-            item.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(0.06, 0.035, 0.03))]))
+            // where gaze is precise. The watch face itself is taller
+            // than a chip — its target follows its proportions.
+            let target = chip.watch
+                ? SIMD3<Float>(0.035, 0.045, 0.03)
+                : SIMD3<Float>(0.06, 0.035, 0.03)
+            item.components.set(CollisionComponent(shapes: [.generateBox(size: target)]))
             item.components.set(InputTargetComponent())
             item.components.set(HoverEffectComponent())
+            if chip.watch { watchIDs.insert(chip.id) }
+            // The title must stand BEFORE the label view is built —
+            // chipLabelView reads it, and an empty entry prints the id.
+            titles[chip.id] = chip.title
 
             // The glass label rides the item, billboarded and shrunk to
             // forearm scale (attachments render life-size).
             let label = Entity()
-            label.components.set(ViewAttachmentComponent(rootView: ArmChipView(text: chip.title)))
+            label.components.set(ViewAttachmentComponent(
+                rootView: chipLabelView(chip.id, active: false)))
             label.components.set(BillboardComponent())
             label.scale = SIMD3<Float>(repeating: 0.32)
             item.addChild(label)
 
             menus[effectiveSide(of: chip)]?.addChild(item)
             items[chip.id] = item
-            titles[chip.id] = chip.title
         }
 
         // Predicted tracking keeps the chips glued to a moving wrist —
@@ -307,7 +331,11 @@ final class ArmMenu {
         var underIndex = 0
         for chip in sideChips where chip.group == nil {
             guard let item = items[chip.id], item.isEnabled else { continue }
-            if chip.underside {
+            if chip.watch {
+                // The watch is worn, not rowed: at the wrist itself,
+                // just off the skin — where a watch face sits.
+                item.position = alongArm * 0.01 + lift * 0.02
+            } else if chip.underside {
                 item.position = alongArm * (0.04 + 0.05 * Float(underIndex)) - lift * 0.12
                 underIndex += 1
             } else {
@@ -317,15 +345,33 @@ final class ArmMenu {
             rowPositions[chip.id] = item.position
         }
         // The unfolded groups: each sub-chip stacks off its parent away
-        // from the arm — never into the row beside it.
+        // from the arm — never into the row beside it. A sub-sub-chip
+        // (its parent itself grouped — the watch's Layout and Views
+        // columns) fans UP THE ARM from its parent instead, two lanes
+        // deep, so a long option list rides the forearm rather than
+        // towering into the room. Two passes resolve the two levels.
         var groupSteps: [String: Int] = [:]
-        for chip in sideChips {
-            guard let group = chip.group, let item = items[chip.id],
-                  item.isEnabled, let anchor = rowPositions[group] else { continue }
-            let step = groupSteps[group, default: 0] + 1
-            groupSteps[group] = step
-            let away: Float = chip.underside ? -1 : 1
-            item.position = anchor + lift * (away * 0.055 * Float(step))
+        var fanSteps: [String: Int] = [:]
+        var resolved = rowPositions
+        for _ in 0..<2 {
+            for chip in sideChips {
+                guard let group = chip.group, let item = items[chip.id],
+                      item.isEnabled, resolved[chip.id] == nil,
+                      let anchor = resolved[group] else { continue }
+                if chipsByID[group]?.group != nil {
+                    let step = fanSteps[group, default: 0]
+                    fanSteps[group] = step + 1
+                    item.position = anchor
+                        + alongArm * (0.065 + 0.06 * Float(step / 2))
+                        + lift * (Float(step % 2) * 0.055)
+                } else {
+                    let step = groupSteps[group, default: 0] + 1
+                    groupSteps[group] = step
+                    let away: Float = chip.underside ? -1 : 1
+                    item.position = anchor + lift * (away * 0.055 * Float(step))
+                }
+                resolved[chip.id] = item.position
+            }
         }
     }
 
@@ -384,8 +430,16 @@ final class ArmMenu {
         guard let label = items[id]?.children.first else { return }
         let active = activeIDs.contains(id)
         label.components.set(ViewAttachmentComponent(
-            rootView: ArmChipView(text: titles[id] ?? id, active: active)))
+            rootView: chipLabelView(id, active: active)))
         label.scale = SIMD3<Float>(repeating: active ? 0.37 : 0.32)
+    }
+
+    /// The chip's face: the watch for watch chips, the word chip for
+    /// the rest. Origami addition (carry back to Author).
+    private func chipLabelView(_ id: String, active: Bool) -> AnyView {
+        watchIDs.contains(id)
+            ? AnyView(ArmWatchView(active: active))
+            : AnyView(ArmChipView(text: titles[id] ?? id, active: active))
     }
 }
 
@@ -394,6 +448,33 @@ final class ArmMenu {
 /// A forearm command rendered like the Knowledge Space nodes: a word on a
 /// semi-transparent glass panel with a thin frame. Non-interactive itself; the
 /// tap is handled by the collision on the entity it rides.
+/// The wrist watch: a rectangle in a watch face's proportions, worn at
+/// the wrist where a watch sits, telling the actual time so it reads as
+/// one at a glance. Pinching it is the tap on the entity it rides, like
+/// every chip. Origami addition (carry back to Author).
+struct ArmWatchView: View {
+    /// The watch's menus stand open: the border thickens and brightens,
+    /// exactly as an active chip's does.
+    var active: Bool = false
+
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            Text(context.date, format: .dateTime.hour().minute())
+                .font(.system(size: 24, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+                .frame(width: 96, height: 118)
+                .background(RoundedRectangle(cornerRadius: 26).fill(.regularMaterial))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26)
+                        .strokeBorder(.white.opacity(active ? 0.85 : 0.35),
+                                      lineWidth: active ? 2.5 : 1)
+                )
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 struct ArmChipView: View {
     let text: String
     /// The chip's function stands on: a thicker, brighter border (the

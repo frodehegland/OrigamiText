@@ -41,7 +41,7 @@ struct TranscriptsView: View {
         add(model.drafts.published, as: .published)
         add(model.drafts.documents, as: .draft)
         if !model.searchText.isEmpty {
-            rows = rows.filter { matches($0.doc) }
+            rows = model.searchNarrowed(rows) { matches($0.doc) }
         }
         return rows.sorted { $0.doc.listedDate > $1.doc.listedDate }
     }
@@ -176,7 +176,7 @@ struct ExtractsListView: View {
         add(model.drafts.published, as: .published)
         add(model.drafts.documents, as: .draft)
         if !model.searchText.isEmpty {
-            rows = rows.filter {
+            rows = model.searchNarrowed(rows) {
                 $0.doc.title.localizedCaseInsensitiveContains(model.searchText)
                     || $0.doc.displayAuthor.localizedCaseInsensitiveContains(model.searchText)
                     || ($0.doc.body ?? []).contains { $0.text.localizedCaseInsensitiveContains(model.searchText) }
@@ -294,17 +294,24 @@ struct LettersListView: View {
     /// the offered ones. Desk notes join through the drafts store.
     private var folders: [(name: String, docs: [LiquidDoc])] {
         var seen: Set<String> = []
-        var byFolder: [String: [LiquidDoc]] = [:]
+        var filed: [(folder: String, doc: LiquidDoc)] = []
         let source = model.index.byID.values.map(\.doc) + model.drafts.published
             + model.drafts.documents
         for doc in source where seen.insert(doc.id).inserted {
             guard let folder = model.folder(for: doc), inScope(doc) else { continue }
-            if model.searchText.isEmpty
-                || doc.title.localizedCaseInsensitiveContains(model.searchText)
-                || doc.displayAuthor.localizedCaseInsensitiveContains(model.searchText)
-                || (doc.body ?? []).contains(where: { $0.text.localizedCaseInsensitiveContains(model.searchText) }) {
-                byFolder[folder, default: []].append(doc)
+            filed.append((folder, doc))
+        }
+        if !model.searchText.isEmpty {
+            filed = model.searchNarrowed(filed) {
+                $0.doc.title.localizedCaseInsensitiveContains(model.searchText)
+                    || $0.doc.displayAuthor.localizedCaseInsensitiveContains(model.searchText)
+                    || ($0.doc.body ?? []).contains(where: {
+                        $0.text.localizedCaseInsensitiveContains(model.searchText) })
             }
+        }
+        var byFolder: [String: [LiquidDoc]] = [:]
+        for entry in filed {
+            byFolder[entry.folder, default: []].append(entry.doc)
         }
         // Every offered folder shows, holding documents or not — a
         // folder is a place before it is a list. Folders surviving only

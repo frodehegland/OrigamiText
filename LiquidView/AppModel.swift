@@ -3302,9 +3302,35 @@ final class AppModel {
     /// "describing" annotation, not a page note.)
     func marginNotes(for doc: LiquidDoc) -> [WebAnnotation] {
         annotations(for: doc).filter {
-            $0.target.selectors.isEmpty && $0.body?.value.isEmpty == false
-                && $0.motivation == WebAnnotation.Motivation.commenting
+            ($0.target.selectors.isEmpty && $0.body?.value.isEmpty == false
+                && $0.motivation == WebAnnotation.Motivation.commenting)
+                // A floated quote stands as a slip too — the same
+                // annotation visionOS shows free in the room.
+                || $0.float != nil
         }
+    }
+
+    /// Float, from the selection menu: the words become a highlighting
+    /// annotation carrying a standing place — a quote slip on this
+    /// page, and a free billboarded card in the visionOS room.
+    func floatSelection(_ text: String, in doc: LiquidDoc,
+                        placement: WebAnnotation.Placement? = nil) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var annotation = WebAnnotation(
+            motivation: WebAnnotation.Motivation.highlighting,
+            creator: WebAnnotation.Person(name: authorName),
+            body: nil,
+            target: WebAnnotation.Target(
+                source: "origamitext://open/" + doc.id,
+                selectors: [.quote(exact: trimmed, prefix: nil, suffix: nil)]))
+        annotation.float = WebAnnotation.FloatPosition(x: 0, y: 1.35, z: -0.9)
+        // The standing place the caller measured — the gutter beside
+        // the lifted words — or, unmeasured, absolute page coordinates
+        // clear of the header, where the slip is seen at once.
+        annotation.placement = placement
+            ?? WebAnnotation.Placement(near: nil, dx: 160, dy: 300)
+        appendAnnotation(annotation, for: doc)
     }
 
     // MARK: The document annotation (one note on the whole document)
@@ -3428,6 +3454,34 @@ final class AppModel {
         marginNotePositions[id] = point
         let stored = marginNotePositions.mapValues { [Double($0.x), Double($0.y)] }
         UserDefaults.standard.set(stored, forKey: "marginNotePositions")
+    }
+
+    /// The lifted quotes on a book, by address — the WebView screen
+    /// has no LiquidDoc in hand.
+    func liftSlips(forAddress address: String) -> [WebAnnotation] {
+        _ = annotationsStamp
+        return AnnotationStore.load(for: address, in: Self.annotationsRoot)
+            .filter { $0.float != nil }
+    }
+
+    /// A slip's move on the WebView screen — the same write as
+    /// setNotePlacement, keyed by address.
+    func setNotePlacement(_ placement: WebAnnotation.Placement,
+                          forAnnotationID id: String, address: String) {
+        var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        guard let index = all.firstIndex(where: { $0.id == id }) else { return }
+        all[index].placement = placement
+        all[index].modified = .now
+        persistAnnotations(all, for: address)
+        annotationsStamp += 1
+    }
+
+    /// Put Away, by address — the WebView screen's slip removal.
+    func removeLiftSlip(id: String, address: String) {
+        var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        all.removeAll { $0.id == id }
+        persistAnnotations(all, for: address)
+        annotationsStamp += 1
     }
 
     func removeAnnotation(_ annotation: WebAnnotation, for doc: LiquidDoc) {
@@ -3834,7 +3888,7 @@ final class AppModel {
     func searchFilteredEPUBs(_ records: [EPUBRecord]) -> [EPUBRecord] {
         let query = searchText.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return records }
-        return records.filter { record in
+        return searchNarrowed(records) { record in
             if record.title.localizedCaseInsensitiveContains(query) { return true }
             if record.authorList.contains(where: {
                 $0.localizedCaseInsensitiveContains(query) }) { return true }
@@ -4862,7 +4916,7 @@ final class AppModel {
             entries.removeAll { superseded.contains($0.id) }
         }
         if !searchText.isEmpty {
-            entries = entries.filter { matches($0.doc) }
+            entries = searchNarrowed(entries) { matches($0.doc) }
         }
         return entries
     }
@@ -4872,6 +4926,25 @@ final class AppModel {
             || doc.author.localizedCaseInsensitiveContains(searchText)
             || doc.onBehalfOf?.localizedCaseInsensitiveContains(searchText) == true
             || (doc.body ?? []).contains { $0.text.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    /// The query the miss beep last answered, so a list recomputing on
+    /// every render pass sounds it once per query, not once per pass.
+    @ObservationIgnored private var findMissAnswered = ""
+
+    /// Find that never empties a list: when the words match nothing,
+    /// the list stands whole — nothing fades, nothing vanishes — and an
+    /// error beep answers instead.
+    func searchNarrowed<T>(_ all: [T], matches: (T) -> Bool) -> [T] {
+        let hits = all.filter(matches)
+        if hits.isEmpty, !all.isEmpty {
+            if findMissAnswered != searchText {
+                findMissAnswered = searchText
+                NSSound.beep()
+            }
+            return all
+        }
+        return hits
     }
 
     // MARK: - Authoring
@@ -5562,7 +5635,9 @@ final class AppModel {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = true   // .liquid packages show as folders if Author's type isn't registered
-        panel.allowsMultipleSelection = false
+        // A whole folder's worth at once: click, shift-click, and ⌘A
+        // all work in the panel, and every chosen file imports.
+        panel.allowsMultipleSelection = true
         panel.treatsFilePackagesAsDirectories = false
         // Keep this short: NSOpenPanel lays the message out on one line and
         // grows the window to fit it, then won't shrink below that width.
@@ -5577,8 +5652,8 @@ final class AppModel {
         // (FK_SidebarWidth2 in com.apple.finder), which a sandboxed app
         // cannot write. Users widen it by dragging the divider; macOS
         // keeps it system-wide.
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        importFile(at: url)
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls { importFile(at: url) }
     }
 
     /// Extensions the importer understands. Anything else opened or dropped
@@ -5927,7 +6002,7 @@ final class AppModel {
         }
         let sorted = notes.sorted { $0.listedDate > $1.listedDate }
         guard !searchText.isEmpty else { return sorted }
-        return sorted.filter { matches($0) }
+        return searchNarrowed(sorted) { matches($0) }
     }
 
     var filteredDrafts: [LiquidDoc] {
@@ -5936,7 +6011,7 @@ final class AppModel {
             $0.documentType != LiquidDoc.DocumentType.note.rawValue
         }
         guard !searchText.isEmpty else { return all }
-        return all.filter { matches($0) }
+        return searchNarrowed(all) { matches($0) }
     }
 
     var filteredPublished: [LiquidDoc] {
@@ -5944,13 +6019,13 @@ final class AppModel {
         // list alone, like every archived document.
         let all = drafts.published.filter { !isArchived($0) }
         guard !searchText.isEmpty else { return all }
-        return all.filter { matches($0) }
+        return searchNarrowed(all) { matches($0) }
     }
 
     var filteredArchived: [LiquidDoc] {
         let all = drafts.archived
         guard !searchText.isEmpty else { return all }
-        return all.filter { matches($0) }
+        return searchNarrowed(all) { matches($0) }
     }
 
     /// Shelves a draft: it leaves Drafts for Archived, nothing deleted.
@@ -6346,7 +6421,9 @@ final class AppModel {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         summaries.append(contentsOf: recordOnly)
         if !searchText.isEmpty {
-            summaries = summaries.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+            summaries = searchNarrowed(summaries) {
+                $0.name.localizedCaseInsensitiveContains(searchText)
+            }
         }
         return summaries
     }
@@ -6391,7 +6468,7 @@ final class AppModel {
     var hotParagraphs: [HotParagraph] {
         var paragraphs = LibraryInsights.hotParagraphs(byID: index.byID, backlinks: index.backlinks)
         if !searchText.isEmpty {
-            paragraphs = paragraphs.filter {
+            paragraphs = searchNarrowed(paragraphs) {
                 $0.paragraph.text.localizedCaseInsensitiveContains(searchText)
                     || $0.doc.title.localizedCaseInsensitiveContains(searchText)
                     || $0.doc.author.localizedCaseInsensitiveContains(searchText)

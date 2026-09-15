@@ -317,6 +317,26 @@ struct OrigamiReadingView: View {
         }
         return model.marginNotePosition(forAnnotationID: annotation.id)
     }
+
+    /// Where a fresh slip first stands: in the gutter beside the
+    /// paragraph its words were lifted from — top aligned with the
+    /// paragraph's, clear of the column — anchored there so it follows
+    /// the paragraph through every reading style. The old fixed spot
+    /// when the paragraph's frame is not yet known.
+    private func liftPlacement(for paragraphID: String, quote: String)
+        -> WebAnnotation.Placement {
+        guard let frame = paragraphFrames[paragraphID] else {
+            return WebAnnotation.Placement(near: nil, dx: 160, dy: 300)
+        }
+        let noteSize = max((NSFont.preferredFont(forTextStyle: .body).pointSize
+                            + CGFloat(fontDelta)) / 3, 8)
+        let card = MarginNoteView.cardSize(for: quote, fontSize: noteSize)
+        // The slip draws from its centre; dx and dy aim its left edge
+        // just past the column's right, its top at the paragraph's.
+        return WebAnnotation.Placement(near: paragraphID,
+                                       dx: frame.width + 14 + card.width / 2,
+                                       dy: card.height / 2)
+    }
     @State private var conceptTarget: LiquidDoc.Concept?
     @State private var citationTarget: CitationTarget?
     /// A jump link to a figure shows the figure in place, as a
@@ -466,6 +486,38 @@ struct OrigamiReadingView: View {
         var id: String { annotation.id }
     }
 
+    /// The lifted quotes, floating over the whole reading — Scrolling,
+    /// Full Width, Horizontal, and Focus alike. Positions are absolute
+    /// within the reading's frame; a drag keeps the new spot in the
+    /// annotation. Click opens the editor whose Delete puts it away.
+    @ViewBuilder private var liftSlipsLayer: some View {
+        let noteSize = max((NSFont.preferredFont(forTextStyle: .body).pointSize
+                            + CGFloat(fontDelta)) / 3, 8)
+        ForEach(model.marginNotes(for: doc).filter { $0.float != nil },
+                id: \.id) { annotation in
+            MarginNoteView(
+                note: annotation,
+                fontSize: noteSize,
+                position: slipPosition(for: annotation) ?? CGPoint(x: 160, y: 300),
+                onMove: { moved in
+                    model.setNotePlacement(
+                        WebAnnotation.Placement(near: nil, dx: moved.x, dy: moved.y),
+                        for: annotation, in: doc)
+                },
+                onOpen: {
+                    annotationEditor = AnnotationEditTarget(
+                        annotation: annotation, paragraphID: "")
+                })
+                // Ctrl-click closes the slip — the annotation leaves
+                // with it, here and in the visionOS room.
+                .contextMenu {
+                    Button("Put Away", role: .destructive) {
+                        model.removeAnnotation(annotation, for: doc)
+                    }
+                }
+        }
+    }
+
     /// A margin note being written: where the ctrl-click fell, in the
     /// article's own coordinates.
     private struct MarginNoteTarget: Identifiable {
@@ -480,7 +532,8 @@ struct OrigamiReadingView: View {
     @ViewBuilder private var marginNotesLayer: some View {
         let noteSize = max((NSFont.preferredFont(forTextStyle: .body).pointSize
                             + CGFloat(fontDelta)) / 3, 8)
-        ForEach(model.marginNotes(for: doc), id: \.id) { annotation in
+        ForEach(model.marginNotes(for: doc).filter { $0.float == nil },
+                id: \.id) { annotation in
             if let position = slipPosition(for: annotation) {
                 MarginNoteView(
                     note: annotation,
@@ -568,6 +621,17 @@ struct OrigamiReadingView: View {
                     }
                 }
             }
+            // A ctrl-click on the reading itself — no paragraph, no
+            // selection — offers the note on the whole document: the
+            // same W3C "describing" annotation the header pill edits,
+            // shareable to the document's Seed space. This inner menu
+            // also keeps the library's New Document / Import catch-all
+            // out of an open reading.
+            .contentShape(Rectangle())
+            .contextMenu { documentNoteMenuItems }
+            // The lifted quotes float over EVERY reading mode — an
+            // overlay on the reading itself, never in one page's flow.
+            .overlay(alignment: .topLeading) { liftSlipsLayer }
             // The contents, the fold toggles, and arriving fragments
             // all land through one door, after layout.
             .onChange(of: pendingScrollID) {
@@ -803,6 +867,23 @@ struct OrigamiReadingView: View {
             ReadingCommentComposer(preview: doc.title) { text in
                 model.addMarginNote(text, to: doc,
                                     placement: placement(for: target.point))
+            }
+        }
+        // The whole-document note, opened from the header pill or the
+        // reading's context menu. The sheet stands here, on the reading
+        // itself — in Horizontal and Focus the header (and its pill)
+        // may be off-page, and a sheet on an absent view never shows.
+        .sheet(isPresented: $showsDocumentAnnotation) {
+            DocumentAnnotationComposer(
+                title: doc.title,
+                text: model.documentAnnotation(forAddress: doc.id)?.body?.value ?? "") { text in
+                model.setDocumentAnnotation(text, forAddress: doc.id)
+            } onLift: { draft in
+                // The draft moves to a window of its own; the address
+                // pins it to this document wherever the reader goes.
+                openWindow(value: LiftedAnnotation(address: doc.id,
+                                                   title: doc.title,
+                                                   draft: draft))
             }
         }
         // An annotation chip opened: the whole note, with Delete, Copy
@@ -1667,10 +1748,14 @@ struct OrigamiReadingView: View {
         ScrollView {
             ZStack(alignment: .topLeading) {
                 // The page behind the paragraphs: a ctrl-click on no
-                // paragraph offers "Note…" — the note then stands where
-                // the click fell.
-                MarginNoteSurface(box: surfaceBox) { point in
+                // paragraph offers the whole-document note and "Note
+                // Here…" — a slip standing where the click fell.
+                MarginNoteSurface(
+                    box: surfaceBox,
+                    documentNoteTitle: documentNoteWritten ? "Edit Note…" : "Add Note…") { point in
                     marginNoteTarget = MarginNoteTarget(point: point)
+                } onDocumentNote: {
+                    showsDocumentAnnotation = true
                 }
                 VStack(alignment: .leading, spacing: flowSpacing) {
                     header
@@ -2515,6 +2600,28 @@ struct OrigamiReadingView: View {
         .dimmedForStretch(stretchFocus)
     }
 
+    /// Whether the whole-document note is written — the menu words
+    /// (Add vs Edit) and the pill's fill both ask.
+    private var documentNoteWritten: Bool {
+        !(model.documentAnnotation(forAddress: doc.id)?.body?.value ?? "").isEmpty
+    }
+
+    /// The reading's own background menu: the note on the whole
+    /// document — Add while none is written, Edit once one is — and
+    /// Share to Seed when the document came from a space and a note
+    /// stands to share.
+    @ViewBuilder private var documentNoteMenuItems: some View {
+        Button(documentNoteWritten ? "Edit Note…" : "Add Note…",
+               systemImage: "square.and.pencil") {
+            showsDocumentAnnotation = true
+        }
+        if doc.sourceURL.flatMap(HypermediaAddress.parse) != nil, documentNoteWritten {
+            Button("Share to Seed", systemImage: "paperplane") {
+                Task { await model.shareDocumentAnnotationToSeed(for: doc) }
+            }
+        }
+    }
+
     /// The pill opening the whole-document annotation: an outlined
     /// "Annotate" while none is written, a filled "Annotation" once
     /// one is — the line the book lists show under the author's name.
@@ -2542,17 +2649,6 @@ struct OrigamiReadingView: View {
         .help(written.isEmpty
               ? "Annotate the document as a whole"
               : "“\(written)” — click to edit")
-        .sheet(isPresented: $showsDocumentAnnotation) {
-            DocumentAnnotationComposer(title: doc.title, text: written) { text in
-                model.setDocumentAnnotation(text, forAddress: doc.id)
-            } onLift: { draft in
-                // The draft moves to a window of its own; the address
-                // pins it to this document wherever the reader goes.
-                openWindow(value: LiftedAnnotation(address: doc.id,
-                                                   title: doc.title,
-                                                   draft: draft))
-            }
-        }
     }
 
     /// Share the written annotation to the document's Seed space —
@@ -2652,6 +2748,9 @@ struct OrigamiReadingView: View {
         var map: [String: [ResolvedAnnotation]] = [:]
         for entry in model.resolvedAnnotations(for: doc) {
             guard let resolution = entry.resolution else { continue }
+            // A float is a slip (and a room card), never highlight ink
+            // — its quote selector is an anchor, not a marking.
+            guard entry.annotation.float == nil else { continue }
             map[resolution.paragraphID, default: []]
                 .append(ResolvedAnnotation(annotation: entry.annotation,
                                            resolution: resolution))
@@ -2856,7 +2955,7 @@ struct OrigamiReadingView: View {
                     })
                 }
             case .comment:
-                entries.append(.action(title: "Note…", symbol: "square.and.pencil") {
+                entries.append(.action(title: "Note Here…", symbol: "square.and.pencil") {
                     // A Note is a free slip on the page — it touches no
                     // text. It stands where the click fell (a quiet
                     // corner when the spot cannot be told).
@@ -2957,6 +3056,13 @@ struct OrigamiReadingView: View {
             var entries: [ParagraphMenuEntry] = [.separator]
             entries.append(.action(title: "Copy to Cite", symbol: "quote.opening") {
                 copyCitation(for: paragraph, quote: selected)
+            })
+            // Lift: the words step off the page as a little slip (and
+            // a free card in the visionOS room) — one annotation.
+            entries.append(.action(title: "Lift", symbol: "balloon") {
+                model.floatSelection(
+                    selected, in: doc,
+                    placement: liftPlacement(for: paragraph.id, quote: selected))
             })
             entries.append(.submenu(
                 title: "Highlight", symbol: "highlighter",
@@ -4009,7 +4115,7 @@ private struct ResolvedAnnotation: Identifiable {
 /// sentence at a third of the body size, on paper-white (light mode) or
 /// ink-black (dark). A click opens the whole note; click-and-hold drags
 /// it anywhere on the page, remembered on this Mac.
-private struct MarginNoteView: View {
+struct MarginNoteView: View {
     @Environment(\.colorScheme) private var colorScheme
     let note: WebAnnotation
     let fontSize: CGFloat
@@ -4021,9 +4127,20 @@ private struct MarginNoteView: View {
 
     @State private var hovering = false
 
+    /// A float's slip has no body — the quoted words themselves stand.
+    private var quotedExact: String? {
+        for selector in note.target.selectors {
+            if case .quote(let exact, _, _) = selector { return exact }
+        }
+        return nil
+    }
+
     /// The first sentence, "…" trailing when the note carries more.
     private var slipText: String {
-        let whole = note.body?.value ?? ""
+        Self.slipText(for: note.body?.value ?? quotedExact ?? "")
+    }
+
+    static func slipText(for whole: String) -> String {
         let sentences = OrigamiReading.sentences(of: whole)
         guard let first = sentences.first?
             .trimmingCharacters(in: .whitespacesAndNewlines), !first.isEmpty
@@ -4037,6 +4154,10 @@ private struct MarginNoteView: View {
 
     /// The slip's own type, as AppKit measures and SwiftUI draws it.
     private var slipFont: NSFont {
+        Self.slipFont(ofSize: fontSize)
+    }
+
+    static func slipFont(ofSize fontSize: CGFloat) -> NSFont {
         let size = max(fontSize, 10)
         let descriptor = NSFont.systemFont(ofSize: size).fontDescriptor
             .withDesign(.serif)?
@@ -4053,6 +4174,18 @@ private struct MarginNoteView: View {
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: [.font: slipFont])
         return CGSize(width: ceil(bounds.width), height: ceil(bounds.height))
+    }
+
+    /// The whole card's extent for these words at this size — the text
+    /// measured as above, the paddings added — so a placement can be
+    /// aimed before the slip exists.
+    static func cardSize(for whole: String, fontSize: CGFloat) -> CGSize {
+        let bounds = (slipText(for: whole) as NSString).boundingRect(
+            with: NSSize(width: 170, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: slipFont(ofSize: fontSize)])
+        return CGSize(width: ceil(bounds.width) + 23,
+                      height: ceil(bounds.height) + 16)
     }
 
     var body: some View {
@@ -4138,17 +4271,30 @@ final class MarginNoteSurfaceBox {
 
 struct MarginNoteSurface: NSViewRepresentable {
     let box: MarginNoteSurfaceBox
+    /// The whole-document note's menu words — "Add Note…" until one is
+    /// written, "Edit Note…" after.
+    let documentNoteTitle: String
     let onNote: (CGPoint) -> Void
+    let onDocumentNote: () -> Void
 
     final class Surface: NSView {
         var onNote: ((CGPoint) -> Void)?
+        var onDocumentNote: (() -> Void)?
+        var documentNoteTitle = "Add Note…"
         override var isFlipped: Bool { true }
 
         override func menu(for event: NSEvent) -> NSMenu? {
             let point = convert(event.locationInWindow, from: nil)
             let menu = NSMenu()
             menu.allowsContextMenuPlugIns = false
-            let item = NSMenuItem(title: "Note…", action: #selector(note(_:)),
+            // The note on the whole document first — then the slip
+            // standing at this spot on the page.
+            let docItem = NSMenuItem(title: documentNoteTitle,
+                                     action: #selector(documentNote(_:)),
+                                     keyEquivalent: "")
+            docItem.target = self
+            menu.addItem(docItem)
+            let item = NSMenuItem(title: "Note Here…", action: #selector(note(_:)),
                                   keyEquivalent: "")
             item.target = self
             item.representedObject = NSValue(point: point)
@@ -4160,17 +4306,25 @@ struct MarginNoteSurface: NSViewRepresentable {
             guard let value = sender.representedObject as? NSValue else { return }
             onNote?(value.pointValue)
         }
+
+        @objc private func documentNote(_ sender: NSMenuItem) {
+            onDocumentNote?()
+        }
     }
 
     func makeNSView(context: Context) -> Surface {
         let view = Surface()
         view.onNote = onNote
+        view.onDocumentNote = onDocumentNote
+        view.documentNoteTitle = documentNoteTitle
         box.surface = view
         return view
     }
 
     func updateNSView(_ view: Surface, context: Context) {
         view.onNote = onNote
+        view.onDocumentNote = onDocumentNote
+        view.documentNoteTitle = documentNoteTitle
         box.surface = view
     }
 }

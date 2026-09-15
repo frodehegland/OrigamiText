@@ -156,6 +156,69 @@ struct EPUBReaderScreen: View {
     let book: OpenEPUB
     var onClose: () -> Void
 
+    /// A lifted slip opened on the faithful page: the quote whole,
+    /// with Put Away.
+    private struct LiftTarget: Identifiable {
+        let annotation: WebAnnotation
+        var id: String { annotation.id }
+    }
+    @State private var liftTarget: LiftTarget?
+
+    /// The book's library address — the sidecar's key.
+    private var bookAddress: String {
+        model.epubRecords.first { $0.folder == book.id }?.id ?? book.id
+    }
+
+    /// The lifted quotes, floating over the WebView page.
+    @ViewBuilder private var liftSlipsLayer: some View {
+        let address = bookAddress
+        ForEach(model.liftSlips(forAddress: address), id: \.id) { annotation in
+            MarginNoteView(
+                note: annotation,
+                fontSize: 11,
+                position: CGPoint(
+                    x: annotation.placement.map { CGFloat($0.dx) } ?? 160,
+                    y: annotation.placement.map { CGFloat($0.dy) } ?? 300),
+                onMove: { moved in
+                    model.setNotePlacement(
+                        WebAnnotation.Placement(near: nil, dx: moved.x, dy: moved.y),
+                        forAnnotationID: annotation.id, address: address)
+                },
+                onOpen: { liftTarget = LiftTarget(annotation: annotation) })
+                // Ctrl-click closes the slip — the annotation goes too.
+                .contextMenu {
+                    Button("Put Away", role: .destructive) {
+                        model.removeLiftSlip(id: annotation.id, address: address)
+                    }
+                }
+        }
+        .sheet(item: $liftTarget) { target in
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Lifted Quote").font(.headline)
+                ScrollView {
+                    Text(target.annotation.target.selectors.compactMap {
+                        if case .quote(let exact, _, _) = $0 { return exact }
+                        return nil
+                    }.first ?? "")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 80, maxHeight: 240)
+                HStack {
+                    Button("Put Away", role: .destructive) {
+                        model.removeLiftSlip(id: target.annotation.id,
+                                             address: bookAddress)
+                        liftTarget = nil
+                    }
+                    Spacer()
+                    Button("Done") { liftTarget = nil }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(20)
+            .frame(width: 380)
+        }
+    }
+
     // Edited theme colours apply live: every override write bumps this,
     // and the changed CSS reinstalls on the WebView without a reload.
     @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
@@ -456,6 +519,9 @@ struct EPUBReaderScreen: View {
                 // An AI reading takes the whole page; the foot stays,
                 // so the way back is one click on any word.
                 ReadingAnalysisScreen(kind: kind)
+                    // The lifted quotes float over the faithful page
+                    // exactly as over the native styles.
+                    .overlay(alignment: .topLeading) { liftSlipsLayer }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         ReadingFootBar(modes: availableModes,
                                        outlineAvailable: model.readingDoc(forBook: book) != nil)

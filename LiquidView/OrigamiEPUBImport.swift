@@ -938,6 +938,22 @@ nonisolated enum OrigamiEPUBImporter {
 
         var currentBoxID: String?
         var boxOrdinal = 0
+        // Where each HTML id lands: the anchors a \label left behind —
+        // on a section container, on an element that became a paragraph,
+        // or on an inline <a id> inside one — each mapped to the
+        // paragraph a jump should scroll to. Container ids wait in
+        // pendingAnchors until the first paragraph under them appears.
+        var anchorTargets: [String: String] = [:]
+        var pendingAnchors: [String] = []
+        func appendParagraph(_ paragraph: LiquidDoc.Paragraph,
+                             anchors element: XMLTree.Element? = nil) {
+            if let element { pendingAnchors.append(contentsOf: descendantIDs(of: element)) }
+            for anchor in pendingAnchors where anchorTargets[anchor] == nil {
+                anchorTargets[anchor] = paragraph.id
+            }
+            pendingAnchors.removeAll()
+            paragraphs.append(paragraph)
+        }
         func visit(_ element: XMLTree.Element, stretchID: String? = nil) {
             // <h2> is the profile's top rank; a plain book's <h1>
             // chapter titles read at the same rank, its deeper ranks
@@ -951,6 +967,11 @@ nonisolated enum OrigamiEPUBImporter {
             }
             switch element.name {
             case "section", "div", "article":
+                // The container's id (a <section id> from \label after
+                // \section) waits for its first paragraph.
+                if let id = element.attributes["id"], !id.isEmpty {
+                    pendingAnchors.append(id)
+                }
                 for child in element.elements { visit(child, stretchID: stretchID) }
             case "aside":
                 // The export's stretchtext detail: the toggled anchor in
@@ -987,19 +1008,22 @@ nonisolated enum OrigamiEPUBImporter {
                         if !text.isEmpty { footnotes.append((idPrefix + id, text)) }
                     }
                 } else {
+                    if let id = element.attributes["id"], !id.isEmpty {
+                        pendingAnchors.append(id)
+                    }
                     for child in element.elements { visit(child, stretchID: stretchID) }
                 }
             case "hr":
-                paragraphs.append(LiquidDoc.Paragraph(id: stableID(), heading: nil, text: "---"))
+                appendParagraph(LiquidDoc.Paragraph(id: stableID(), heading: nil, text: "---"))
             case "pre":
                 // A code block comes back as the fenced paragraph the
                 // exporter wrote it from — whitespace exactly as is.
                 let language = element.attributes["data-language"] ?? ""
                 let code = element.plainText.trimmingCharacters(in: .newlines)
                 if !code.isEmpty {
-                    paragraphs.append(LiquidDoc.Paragraph(
+                    appendParagraph(LiquidDoc.Paragraph(
                         id: stableID(), heading: nil,
-                        text: "```\(language)\n\(code)\n```"))
+                        text: "```\(language)\n\(code)\n```"), anchors: element)
                 }
             case "model":
                 // An EPUB's embedded 3D model (the <model> element): the
@@ -1030,8 +1054,8 @@ nonisolated enum OrigamiEPUBImporter {
                     marker += "?poster=\(assetID)"
                 }
                 marker += ")"
-                paragraphs.append(LiquidDoc.Paragraph(
-                    id: stableID(), heading: nil, text: marker))
+                appendParagraph(LiquidDoc.Paragraph(
+                    id: stableID(), heading: nil, text: marker), anchors: element)
             case "figure", "img":
                 // A figure/image comes back as an asset plus an
                 // `![alt](asset:id)` marker paragraph — the same form the
@@ -1065,13 +1089,15 @@ nonisolated enum OrigamiEPUBImporter {
                         mediaType: LiquidDoc.mediaType(forExtension: ext),
                         dataBase64: data.base64EncodedString(),
                         alt: alt.isEmpty ? nil : alt))
-                    paragraphs.append(LiquidDoc.Paragraph(
-                        id: paragraphID, heading: nil, text: "![\(alt)](asset:\(assetID))"))
+                    appendParagraph(LiquidDoc.Paragraph(
+                        id: paragraphID, heading: nil, text: "![\(alt)](asset:\(assetID))"),
+                        anchors: element)
                 } else {
                     // Bytes missing: keep the reference visible rather than
                     // dropping the image silently.
-                    paragraphs.append(LiquidDoc.Paragraph(
-                        id: paragraphID, heading: nil, text: "![\(alt)](\(src))"))
+                    appendParagraph(LiquidDoc.Paragraph(
+                        id: paragraphID, heading: nil, text: "![\(alt)](\(src))"),
+                        anchors: element)
                 }
             case "table":
                 // The table stands in the flow as its own element: the
@@ -1084,13 +1110,14 @@ nonisolated enum OrigamiEPUBImporter {
                     text: tableFallbackText(of: element))
                 paragraph.tableID = element.attributes["data-table-id"]
                     ?? element.attributes["id"]
-                paragraphs.append(paragraph)
+                appendParagraph(paragraph, anchors: element)
             case "h1", "h2", "h3", "h4", "h5", "h6":
                 let text = inlineText(of: element, addressByCitationID: addressByCitationID, capture: capture)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return }
-                paragraphs.append(LiquidDoc.Paragraph(
-                    id: stableID(), heading: headingLevels[element.name], text: text))
+                appendParagraph(LiquidDoc.Paragraph(
+                    id: stableID(), heading: headingLevels[element.name], text: text),
+                    anchors: element)
             case "p", "blockquote":
                 let raw = inlineText(of: element, addressByCitationID: addressByCitationID, capture: capture)
                 // Split at double newlines so that Author-style exports (which pack
@@ -1121,7 +1148,7 @@ nonisolated enum OrigamiEPUBImporter {
                     paragraph.stretchID = stretchID
                     paragraph.boxID = currentBoxID
                     if offset == 0 { paragraph.speaker = speaker }
-                    paragraphs.append(paragraph)
+                    appendParagraph(paragraph, anchors: offset == 0 ? element : nil)
                 }
             case "li":
                 // A plain book's list items read as bulleted paragraphs —
@@ -1132,13 +1159,65 @@ nonisolated enum OrigamiEPUBImporter {
                 var paragraph = LiquidDoc.Paragraph(id: stableID(), heading: nil,
                                                     text: "\u{2022} " + text)
                 paragraph.stretchID = stretchID
-                paragraphs.append(paragraph)
+                appendParagraph(paragraph, anchors: element)
             default:
                 for child in element.elements { visit(child, stretchID: stretchID) }
             }
         }
         for child in main.elements { visit(child) }
+        // The in-document anchors' second pass: each token's raw
+        // #target becomes the id of the paragraph its \label landed on
+        // — the element's own id when it became a paragraph, else the
+        // first paragraph inside its container or the one holding the
+        // inline anchor. A target found nowhere unwraps to its words —
+        // never a dead link.
+        resolveJumpAnchors(&paragraphs, anchorTargets: anchorTargets, idPrefix: idPrefix)
         return (paragraphs, assets, footnotes)
+    }
+
+    /// Every `id` in the element's subtree — the anchors a \label left
+    /// behind, wherever the conversion hung them.
+    private static func descendantIDs(of element: XMLTree.Element) -> [String] {
+        var ids: [String] = []
+        if let id = element.attributes["id"], !id.isEmpty { ids.append(id) }
+        for child in element.elements {
+            ids.append(contentsOf: descendantIDs(of: child))
+        }
+        return ids
+    }
+
+    /// Rewrites the `origami-jump:#raw` placeholders inlineText left:
+    /// a raw target that is itself a paragraph id resolves directly;
+    /// otherwise the anchor map says which paragraph the id landed on;
+    /// what resolves nowhere loses its link and keeps its words.
+    private static func resolveJumpAnchors(_ paragraphs: inout [LiquidDoc.Paragraph],
+                                           anchorTargets: [String: String],
+                                           idPrefix: String) {
+        guard let token = try? NSRegularExpression(
+            pattern: #"\[([^\]\[]*)\]\(origami-jump:#([^)\s]+)\)"#) else { return }
+        let knownIDs = Set(paragraphs.map(\.id))
+        for index in paragraphs.indices {
+            let text = paragraphs[index].text
+            guard text.contains("(origami-jump:#") else { continue }
+            let whole = text as NSString
+            var rewritten = text
+            let matches = token.matches(in: text,
+                                        range: NSRange(location: 0, length: whole.length))
+            for match in matches {
+                let found = whole.substring(with: match.range)
+                let label = whole.substring(with: match.range(at: 1))
+                let raw = whole.substring(with: match.range(at: 2))
+                let resolved = knownIDs.contains(idPrefix + raw)
+                    ? idPrefix + raw
+                    : anchorTargets[raw]
+                let replacement = resolved.map { "[\(label)](origami-jump:\($0))" } ?? label
+                rewritten = rewritten.replacingOccurrences(of: found, with: replacement)
+            }
+            guard rewritten != text else { continue }
+            var copy = paragraphs[index].replacing(text: rewritten)
+            copy.boxID = paragraphs[index].boxID
+            paragraphs[index] = copy
+        }
     }
 
     /// The current export writes one paragraph across several source
@@ -1429,6 +1508,15 @@ nonisolated enum OrigamiEPUBImporter {
                         out += "[\(content)](origami-jump:\(target))"
                     } else if let href = inner.attributes["href"], href.hasPrefix("http") {
                         out += "[\(content)](\(href))"
+                    } else if let href = inner.attributes["href"], href.hasPrefix("#"),
+                              href.count > 1, !content.isEmpty {
+                        // A plain in-document anchor — a LaTeX
+                        // conversion's \ref ("Sec 6", "Figure 2"): the
+                        // raw #target rides the token until the whole
+                        // body is built, when it resolves to the
+                        // paragraph the \label's anchor landed on
+                        // (bodyParagraphs' second pass).
+                        out += "[\(content)](origami-jump:#\(href.dropFirst()))"
                     } else {
                         out += content
                     }

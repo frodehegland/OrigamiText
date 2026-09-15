@@ -250,6 +250,82 @@ final class VisionModel {
     /// in this device's own defaults.
     private(set) var epubRecords: [EPUBRecord] = VisionModel.loadEPUBRecords()
 
+    /// The floated passages: quotes lifted out of readings with Float.
+    /// Each is a W3C highlighting annotation carrying `origami:float`
+    /// in its book's sidecar — it travels with the EPUB and syncs like
+    /// every annotation. This mirror is rebuilt from the open venue's
+    /// sidecars; positions are map-space (the carried shift removed).
+    struct FloatingText: Identifiable, Equatable {
+        let id: String          // the annotation's own id
+        var text: String
+        var docID: String
+        var position: SIMD3<Float>?
+    }
+    var floatingTexts: [FloatingText] = []
+
+    /// Rereads the floats from the given books' sidecars — the Map
+    /// calls this as it rebuilds a venue, so a float made on another
+    /// device arrives with the sync beat.
+    func adoptFloats(for records: [EPUBRecord]) {
+        var floats: [FloatingText] = []
+        for record in records {
+            for annotation in annotations(forAddress: record.id) {
+                guard let place = annotation.float else { continue }
+                let exact = annotation.target.selectors.compactMap { selector -> String? in
+                    if case .quote(let exact, _, _) = selector { return exact }
+                    return nil
+                }.first
+                guard let exact, !exact.isEmpty else { continue }
+                floats.append(FloatingText(
+                    id: annotation.id, text: exact, docID: record.id,
+                    position: SIMD3<Float>(Float(place.x), Float(place.y),
+                                           Float(place.z))))
+            }
+        }
+        if floats != floatingTexts { floatingTexts = floats }
+    }
+
+    /// Float: the selection becomes a highlighting annotation carrying
+    /// its standing place — the room shows it free and billboarded,
+    /// and the sidecar keeps it with the book.
+    func floatText(on selection: ReaderSelection) {
+        let annotation = addAnnotation(
+            motivation: WebAnnotation.Motivation.highlighting, note: nil,
+            float: WebAnnotation.FloatPosition(x: 0, y: 1.35, z: -0.9),
+            on: selection)
+        guard let annotation else { return }
+        floatingTexts.append(FloatingText(
+            id: annotation.id, text: selection.text, docID: selection.address,
+            position: SIMD3<Float>(0, 1.35, -0.9)))
+    }
+
+    /// A dragged float keeps its new place — written into the
+    /// annotation, where it travels.
+    func setFloatPosition(_ position: SIMD3<Float>, id: String) {
+        let bare = id.hasPrefix("float:") ? String(id.dropFirst("float:".count)) : id
+        guard let float = floatingTexts.first(where: { $0.id == bare }) else { return }
+        var all = AnnotationStore.load(for: float.docID, in: Self.annotationsRoot)
+        guard let index = all.firstIndex(where: { $0.id == bare }) else { return }
+        all[index].float = WebAnnotation.FloatPosition(
+            x: Double(position.x), y: Double(position.y), z: Double(position.z))
+        AnnotationStore.save(all, for: float.docID, in: Self.annotationsRoot)
+        annotationsStamp += 1
+        if let mirror = floatingTexts.firstIndex(where: { $0.id == bare }) {
+            floatingTexts[mirror].position = position
+        }
+    }
+
+    /// Put Away: the float's annotation leaves the sidecar with it.
+    func removeFloat(_ id: String) {
+        let bare = id.hasPrefix("float:") ? String(id.dropFirst("float:".count)) : id
+        guard let float = floatingTexts.first(where: { $0.id == bare }) else { return }
+        var all = AnnotationStore.load(for: float.docID, in: Self.annotationsRoot)
+        all.removeAll { $0.id == bare }
+        AnnotationStore.save(all, for: float.docID, in: Self.annotationsRoot)
+        annotationsStamp += 1
+        floatingTexts.removeAll { $0.id == bare }
+    }
+
     /// The journal whose articles stand on the Map right now — set by
     /// the opening panel, nil puts the Map back to rest. One journal at
     /// a time; opening another replaces the nodes.
@@ -849,9 +925,12 @@ final class VisionModel {
         annotationsStamp += 1
     }
 
+    @discardableResult
     private func addAnnotation(motivation: String, note: String?,
-                               purpose: String? = nil, on selection: ReaderSelection) {
-        guard !selection.text.isEmpty else { return }
+                               purpose: String? = nil,
+                               float: WebAnnotation.FloatPosition? = nil,
+                               on selection: ReaderSelection) -> WebAnnotation? {
+        guard !selection.text.isEmpty else { return nil }
         // The anchoring ladder, most robust first: the paragraph's
         // stable id, then the exact words with disambiguating context.
         var selectors: [WebAnnotation.Selector] = []
@@ -863,16 +942,18 @@ final class VisionModel {
                                 prefix: selection.prefix?.isEmpty == false ? selection.prefix : nil,
                                 suffix: selection.suffix?.isEmpty == false ? selection.suffix : nil))
         let name = UserDefaults.standard.string(forKey: "authorName") ?? "Reader"
-        let annotation = WebAnnotation(
+        var annotation = WebAnnotation(
             motivation: motivation,
             creator: WebAnnotation.Person(name: name),
             body: note.map { WebAnnotation.TextualBody(value: $0, purpose: purpose) },
             target: WebAnnotation.Target(source: "origamitext://open/" + selection.address,
                                          selectors: selectors))
+        annotation.float = float
         var all = AnnotationStore.load(for: selection.address, in: Self.annotationsRoot)
         all.append(annotation)
         AnnotationStore.save(all, for: selection.address, in: Self.annotationsRoot)
         annotationsStamp += 1
+        return annotation
     }
 
     // MARK: - The time-spread's data lines
@@ -2623,6 +2704,11 @@ struct VisionReaderView: View {
                     onCopyCitation: { selected in
                         copySelectionCitation(doc, paragraph: paragraph, selected: selected)
                     },
+                    onFloat: { selected, prefix, suffix in
+                        model.floatText(on: VisionModel.ReaderSelection(
+                            address: docID, paragraphID: paragraph.id,
+                            text: selected, prefix: prefix, suffix: suffix))
+                    },
                     onHighlight: { kind, selected, prefix, suffix in
                         model.addTag(kind, on: VisionModel.ReaderSelection(
                             address: docID, paragraphID: paragraph.id,
@@ -2996,6 +3082,10 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
     /// A link was tapped; true means the reading handled it.
     let onLink: (URL) -> Bool
     let onCopyCitation: (String) -> Void
+    /// Float: the selected words step out of the page and stand free
+    /// in the room — a billboarded quote the hand can move anywhere.
+    /// Carries the selection's context, so the annotation re-anchors.
+    let onFloat: (String, String?, String?) -> Void
     /// The judgment, the exact words, and their neighbours for the anchor.
     let onHighlight: (ReaderAnnotationKind, String, String?, String?) -> Void
     let onNote: (String, String?, String?) -> Void
@@ -3060,8 +3150,13 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
                                 image: UIImage(systemName: "square.and.pencil")) { _ in
                 parent.onNote(pieces.selected, pieces.prefix, pieces.suffix)
             }
+            // Float: the words step off the page into the room.
+            let float = UIAction(title: "Lift",
+                                 image: UIImage(systemName: "balloon")) { _ in
+                parent.onFloat(pieces.selected, pieces.prefix, pieces.suffix)
+            }
             // Copy stands last — the reader's own verbs lead.
-            return UIMenu(children: [cite, highlight, note, copy])
+            return UIMenu(children: [cite, highlight, note, float, copy])
         }
     }
 

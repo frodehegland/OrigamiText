@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 // Lineage — the shared face over LineageCore: years as columns, papers
 // as dots sized by in-collection citations, citations as faint arcs.
@@ -118,8 +121,9 @@ struct LineageView: View {
     private func canvasArea(_ graph: LineageGraph, size: CGSize) -> some View {
         let positions = LineageLayout.layout(graph: graph, size: size)
         let matches = Set(LineageSearch.matches(searchText, in: graph))
+        // Words no work carries dim nothing — the whole lineage stands
+        // as it was, and the beep on the field has already answered.
         let searching = !matches.isEmpty
-            || searchText.trimmingCharacters(in: .whitespaces).count >= 2
         return ZStack(alignment: .topLeading) {
             TimelineView(.animation(minimumInterval: 1.0 / 60,
                                     paused: introStart == nil)) { timeline in
@@ -449,6 +453,15 @@ struct LineageView: View {
                 .textFieldStyle(.plain)
                 .font(.callout)
                 .frame(width: 170)
+                // Words no work carries: an error beep answers each
+                // keystroke that stays unmatched.
+                .onChange(of: searchText) {
+                    guard searchText.trimmingCharacters(in: .whitespaces).count >= 2,
+                          LineageSearch.matches(searchText, in: graph).isEmpty else { return }
+                    #if os(macOS)
+                    NSSound.beep()
+                    #endif
+                }
                 .onSubmit {
                     let matches = LineageSearch.matches(searchText, in: graph)
                     if let best = matches.max(by: {

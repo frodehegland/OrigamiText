@@ -116,6 +116,25 @@ public nonisolated struct WebAnnotation: Identifiable, Hashable, Sendable {
     /// The page note's standing place, when it has one. Nil for
     /// annotations anchored to words.
     public var placement: Placement? = nil
+
+    /// A floated passage's standing place in the Map's own space
+    /// (`origami:float`) — metres, with the carried space's shift
+    /// removed, so the quote rides the map on any device that renders
+    /// it. Nil for annotations that live only in the text.
+    public struct FloatPosition: Hashable, Sendable {
+        public var x: Double
+        public var y: Double
+        public var z: Double
+
+        public init(x: Double, y: Double, z: Double) {
+            self.x = x
+            self.y = y
+            self.z = z
+        }
+    }
+
+    /// Where the floated quote stands in the room, when it does.
+    public var float: FloatPosition? = nil
 }
 
 /// The reader's annotation vocabulary — the judgments a reader stamps
@@ -189,6 +208,7 @@ nonisolated extension WebAnnotation: Codable {
         case context = "@context"
         case id, type, motivation, created, modified, creator, body, target
         case placement = "origami:placement"
+        case float = "origami:float"
     }
 
     private static func iso8601(_ date: Date) -> String {
@@ -211,6 +231,7 @@ nonisolated extension WebAnnotation: Codable {
         try container.encodeIfPresent(body, forKey: .body)
         try container.encode(target, forKey: .target)
         try container.encodeIfPresent(placement, forKey: .placement)
+        try container.encodeIfPresent(float, forKey: .float)
     }
 
     public init(from decoder: Decoder) throws {
@@ -227,8 +248,11 @@ nonisolated extension WebAnnotation: Codable {
         body = try? container.decodeIfPresent(TextualBody.self, forKey: .body)
         target = try container.decode(Target.self, forKey: .target)
         placement = try? container.decodeIfPresent(Placement.self, forKey: .placement)
+        float = try? container.decodeIfPresent(FloatPosition.self, forKey: .float)
     }
 }
+
+nonisolated extension WebAnnotation.FloatPosition: Codable {}
 
 nonisolated extension WebAnnotation.Placement: Codable {
     private enum CodingKeys: String, CodingKey { case near, dx, dy }

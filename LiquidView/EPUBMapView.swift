@@ -49,8 +49,20 @@ struct EPUBMapItem: ItemProtocol {
     /// Stamped with the current visionTheme at build time so a theme
     /// switch makes all items visually unequal — forcing a full card rebuild.
     var visionTheme: String = ""
+    /// The place-holder standing in for a snapped-off card: barely
+    /// there, only the title's first line, immobile and untappable.
+    var isGhost = false
+    /// The card opened to its abstract — asked for with the selected
+    /// card's Abstract button, not by selection itself.
+    var showsAbstract = false
 
-    var isAttachmentsEnabled: Bool { kind == .concept && isSelected }
+    var isAttachmentsEnabled: Bool {
+        // Concepts carry Focus/Hide; documents and citations carry
+        // Lift / Put Back. Ghosts carry nothing.
+        isSelected && !isGhost
+            && (kind == .concept || kind == .article
+                || kind == .cited || kind == .citedDeep)
+    }
 
     func isVisuallyEqual(to other: EPUBMapItem) -> Bool {
         // Selection is visual now — the selected card wears an ember
@@ -61,6 +73,7 @@ struct EPUBMapItem: ItemProtocol {
             && isAside == other.isAside && isSelected == other.isSelected
             && isShared == other.isShared && citationCount == other.citationCount
             && abstract == other.abstract && visionTheme == other.visionTheme
+            && isGhost == other.isGhost && showsAbstract == other.showsAbstract
     }
 }
 
@@ -73,6 +86,41 @@ struct EPUBMapView: View {
     /// The room is quiet by default — citations rise only for the
     /// raised article. Empty until a journal is opened from the panel.
     @State private var items: [EPUBMapItem] = []
+
+    /// Lift is shelved for now — placing the lifted card in the room
+    /// wasn't landing on device (15 Sep 2026). The machinery stays;
+    /// turning this back on restores the button, and reload() below
+    /// stops sending stranded cards home.
+    private static let liftEnabled = false
+
+    /// A snapped-off card: the held home its ghost stands at, and the
+    /// surface pose (a quaternion's vector) once it rests on a wall or
+    /// desk — nil while it floats. Persisted, so a card left on the
+    /// wall is still there tomorrow.
+    struct LiftedCard: Codable {
+        var home: SIMD3<Float>
+        var stuck: SIMD4<Float>?
+    }
+    @State private var liftedCards: [String: LiftedCard] = EPUBMapView.loadLiftedCards()
+    /// The cards opened to their abstracts by the Abstract button —
+    /// selection alone shows the full title and authors now.
+    @State private var abstractOpenIDs: Set<String> = []
+    /// The desk the room offers as a landing surface, beside the wall.
+    @State private var deskAnchor: AnchorEntity?
+
+    private static let liftedCardsKey = "mapLiftedCards"
+
+    private static func loadLiftedCards() -> [String: LiftedCard] {
+        guard let data = UserDefaults.standard.data(forKey: liftedCardsKey),
+              let cards = try? JSONDecoder().decode([String: LiftedCard].self, from: data)
+        else { return [:] }
+        return cards
+    }
+
+    private func saveLiftedCards() {
+        guard let data = try? JSONEncoder().encode(liftedCards) else { return }
+        UserDefaults.standard.set(data, forKey: Self.liftedCardsKey)
+    }
 
     /// The articles whose citations stand on the wall — selection is
     /// additive and sticky, so several articles can hold their walls
@@ -136,10 +184,10 @@ struct EPUBMapView: View {
     /// The physical floor put to work: what lies written along it —
     /// world history by default, or nothing. Chosen in Time Data.
     @AppStorage("visionTheme") private var visionThemeRaw = VisionTheme.light.rawValue
-    /// Whether the Set Aside slips stand in the room at all — off by
-    /// default, a set-aside card simply leaves; the left arm's Set
-    /// Aside chip brings the quiet floor row back.
-    @AppStorage("mapShowsSetAside") private var showsSetAsideSlips = false
+    // Hidden means hidden: a set-aside card leaves the room entirely —
+    // never a small slip low on the floor. The old floor row's stored
+    // toggle ("mapShowsSetAside") is retired; the right arm's Set Aside
+    // chip and the Mac's lists still bring a card back.
     @AppStorage("floorShow") private var floorShowRaw = FloorShow.world.rawValue
     /// The middle lane's timeline — centre of the corridor.
     @AppStorage("floorShowMiddle") private var floorShowMiddleRaw = FloorShow.nothing.rawValue
@@ -324,6 +372,8 @@ struct EPUBMapView: View {
     private func journalItems(venue: String) -> [EPUBMapItem] {
         let records = model.records(inVenue: venue)
         adoptSharedLayout(for: records)
+        // The floats travel in the same sidecars the highlights do.
+        model.adoptFloats(for: records)
         let inJournal = Set(records.map(\.id))
 
         // The cited works, deduplicated across the whole journal, each
@@ -407,8 +457,7 @@ struct EPUBMapView: View {
         // the rest; the Set Aside collapse into a quiet row beneath.
         let shown = records.filter { !model.openDocIDs.contains($0.id) }
         let standing = model.pinnedFirstRecords(shown.filter { !model.setAsideIDs.contains($0.id) })
-        let asides = showsSetAsideSlips
-            ? shown.filter { model.setAsideIDs.contains($0.id) } : []
+        let asides: [EPUBRecord] = []
 
         let columns = max(1, Int(Double(standing.count * 7).squareRoot() / 2))
         // EXPERIMENT — the articles' own year scale: newest at the grid's
@@ -435,9 +484,10 @@ struct EPUBMapView: View {
                 depth) + spaceShift
             yearZ[record.id] = seed.z
             // A card left elsewhere keeps its place on the plane — the
-            // year reclaims only its depth.
+            // year reclaims only its depth. A lifted card escapes even
+            // that: free in every axis until it is Put Back.
             var position = placed[record.id] ?? seed
-            position.z = seed.z
+            if liftedCards[record.id] == nil { position.z = seed.z }
             return EPUBMapItem(
                 id: record.id,
                 title: record.title,
@@ -500,9 +550,13 @@ struct EPUBMapView: View {
         // When 2+ articles are raised but share no common citations,
         // the wall goes quiet — nothing overlaps, so nothing to show.
         let noOverlap = raisedArticleIDs.count >= 2 && sharedIDs.isEmpty
-        let shownCited = noOverlap ? [] : citedWorks.filter {
-            raisedIDs.contains($0.id)
-                && (!onlyOverlap || sharedIDs.isEmpty || sharedIDs.contains($0.id))
+        // A lifted citation stands regardless — snapped to its surface,
+        // it must not vanish when its article's wall retires.
+        let shownCited = citedWorks.filter { work in
+            if liftedCards[work.id] != nil { return true }
+            guard !noOverlap else { return false }
+            return raisedIDs.contains(work.id)
+                && (!onlyOverlap || sharedIDs.isEmpty || sharedIDs.contains(work.id))
         }
         let years = shownCited.compactMap(\.year)
         // The near plane is TODAY, not the newest cited work: this
@@ -559,11 +613,23 @@ struct EPUBMapView: View {
     }
 
     private func reload() {
+        // With Lift shelved, any card still lifted from an earlier run
+        // comes home — nothing may stand stranded with no Put Back.
+        if !Self.liftEnabled, !liftedCards.isEmpty {
+            for (id, lifted) in liftedCards { placed[id] = lifted.home }
+            liftedCards = [:]
+            saveLiftedCards()
+            savePlacedNow()
+        }
         let selected = Set(items.filter(\.isSelected).map(\.id))
         if let venue = model.openJournalVenue {
             var built = journalItems(venue: venue)
+            // Each lifted card's ghost: a transparent place-holder at
+            // the held home, title's first line alone.
+            built.append(contentsOf: ghostItems(among: built))
             for index in built.indices where selected.contains(built[index].id) {
                 built[index].isSelected = true
+                built[index].showsAbstract = abstractOpenIDs.contains(built[index].id)
             }
             items = built
             // A changed journal leaves stale raises behind — keep only
@@ -584,6 +650,25 @@ struct EPUBMapView: View {
                 concepts[index].isSelected = true
             }
             items += concepts
+        }
+        // The floated passages: quotes lifted out of a reading with
+        // Float — free of every year plane, billboarded, movable
+        // anywhere by hand. They stand whatever else the room shows.
+        items += model.floatingTexts.enumerated().map { index, float in
+            let id = "float:" + float.id
+            // The annotation's own place first — it travels with the
+            // book — then this room's memory, then a fresh seed.
+            let stored = float.position.map { $0 + spaceShift }
+            let seed = SIMD3<Float>(
+                -0.45 + 0.3 * Float(index % 4),
+                1.35 + 0.12 * Float(index / 4),
+                -0.9) + spaceShift
+            var item = EPUBMapItem(
+                id: id, title: float.text, author: "",
+                kind: .concept, position: stored ?? placed[id] ?? seed)
+            item.isSelected = selected.contains(id)
+            item.visionTheme = visionThemeRaw
+            return item
         }
         if topicSpaceMode {
             // Topic magnets hold their selection through the rebuild too,
@@ -1047,7 +1132,18 @@ struct EPUBMapView: View {
                      underside: true),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
-    ], tracksPlanes: true,   // the flat pose finds the actual desk
+        // The wrist watch, worn where a watch sits on the left arm:
+        // Author Map's layout house. Its face unfolds Layout (align,
+        // distribute, sort — the selection's verbs) and Views (the
+        // whole wall re-arranged, Author's arrangements); each fans
+        // its options up the forearm. The option chips join below.
+        ArmMenu.Chip(id: EPUBMapView.watchChipID, title: "Watch",
+                     side: .left, watch: true),
+        ArmMenu.Chip(id: EPUBMapView.watchLayoutChipID, title: "Layout",
+                     side: .left, group: EPUBMapView.watchChipID),
+        ArmMenu.Chip(id: EPUBMapView.watchViewsChipID, title: "Views",
+                     side: .left, group: EPUBMapView.watchChipID),
+    ] + EPUBMapView.watchOptionChips, tracksPlanes: true,   // the flat pose finds the actual desk
        inverted: UserDefaults.standard.bool(forKey: "armMenuInverted"))
 
     /// The Settings' Swap Arms toggle — every chip on the opposite
@@ -1067,6 +1163,12 @@ struct EPUBMapView: View {
     @State private var timelinesOpen = false
     /// The Select chip's kinds, unfolded above it.
     @State private var selectOpen = false
+    /// The watch's menus: the face open (Layout and Views standing
+    /// above the wrist), and which option fan is unfolded — one at a
+    /// time, or two long rows would ride the same forearm.
+    @State private var watchOpen = false
+    @State private var watchLayoutOpen = false
+    @State private var watchViewsOpen = false
     /// Concepts put away with their card's Hide button — back via the
     /// Concepts chip's long-pinch and Reveal All Concepts.
     @State private var hiddenConceptIDs: Set<String> = []
@@ -1097,6 +1199,70 @@ struct EPUBMapView: View {
     private static let selectCitationsChipID = "map.arm.select.citations"
     private static let selectDocumentsChipID = "map.arm.select.documents"
     private static let selectConceptsChipID = "map.arm.select.concepts"
+    private static let watchChipID = "map.arm.watch"
+    private static let watchLayoutChipID = "map.arm.watch.layout"
+    private static let watchViewsChipID = "map.arm.watch.views"
+
+    /// Author Map's Layout menu, verbatim — align, distribute, and
+    /// sort the selected cards (all standing cards when none are).
+    private enum WatchLayoutOption: String, CaseIterable {
+        case left, center, right, vertical, horizontal
+        case sortVertical, sortVerticalReverse
+        case sortHorizontal, sortHorizontalReverse
+        case time, timeReverse
+
+        var title: String {
+            switch self {
+            case .left: "Left"
+            case .center: "Center"
+            case .right: "Right"
+            case .vertical: "Vertical"
+            case .horizontal: "Horizontal"
+            case .sortVertical: "Sort Vertical"
+            case .sortVerticalReverse: "Vertical Reverse Sort"
+            case .sortHorizontal: "Sort Horizontal"
+            case .sortHorizontalReverse: "Horizontal Reverse Sort"
+            case .time: "Time"
+            case .timeReverse: "Time Reverse Sort"
+            }
+        }
+    }
+
+    /// Author Map's Views menu — the whole wall re-arranged.
+    private enum WatchViewOption: String, CaseIterable {
+        case magneticCenter, islands, spine, orbits, timeline, neighborhoods
+
+        var title: String {
+            switch self {
+            case .magneticCenter: "Magnetic Center"
+            case .islands: "Islands"
+            case .spine: "Spine"
+            case .orbits: "Orbits"
+            case .timeline: "Timeline"
+            case .neighborhoods: "Neighborhoods"
+            }
+        }
+    }
+
+    private static func watchLayoutOptionID(_ option: WatchLayoutOption) -> String {
+        "map.arm.watch.layout." + option.rawValue
+    }
+
+    private static func watchViewOptionID(_ option: WatchViewOption) -> String {
+        "map.arm.watch.views." + option.rawValue
+    }
+
+    /// Author Map's options as chips, each grouped under its watch
+    /// sub-menu — the fans the per-frame layout runs up the forearm.
+    private static var watchOptionChips: [ArmMenu.Chip] {
+        WatchLayoutOption.allCases.map {
+            ArmMenu.Chip(id: watchLayoutOptionID($0), title: $0.title,
+                         side: .left, group: watchLayoutChipID)
+        } + WatchViewOption.allCases.map {
+            ArmMenu.Chip(id: watchViewOptionID($0), title: $0.title,
+                         side: .left, group: watchViewsChipID)
+        }
+    }
 
     var body: some View {
         engine
@@ -1110,6 +1276,10 @@ struct EPUBMapView: View {
                 armMenu.setInverted(armMenuInverted)
             }
             .onChange(of: model.openDocIDs) {
+                reload()
+            }
+            // A passage floated (or put away) from a reading panel.
+            .onChange(of: model.floatingTexts) {
                 reload()
             }
             .onChange(of: model.openDocCitations) {
@@ -1262,21 +1432,52 @@ struct EPUBMapView: View {
                 AnyView(cardFace(for: item))
             },
             constructorAttachment: { _, item -> AnyView in
+                // A floated passage: one verb, back into nothing.
+                if item.id.hasPrefix("float:") {
+                    guard item.isSelected else { return AnyView(EmptyView()) }
+                    return AnyView(
+                        Button("Put Away") { model.removeFloat(item.id) }
+                            .buttonStyle(.bordered)
+                    )
+                }
                 // Topic magnets carry no buttons: selection alone is
                 // their whole voice — the threads to their articles.
-                guard item.kind == .concept && item.isSelected
-                    && !item.id.hasPrefix("topic:") else {
-                    return AnyView(EmptyView())
-                }
-                return AnyView(
-                    HStack(spacing: 8) {
-                        Button(focusedConceptID == item.id ? "Un-Focus" : "Focus") {
-                            focusConcept(item)
+                if item.kind == .concept && item.isSelected
+                    && !item.id.hasPrefix("topic:") {
+                    return AnyView(
+                        HStack(spacing: 8) {
+                            Button(focusedConceptID == item.id ? "Un-Focus" : "Focus") {
+                                focusConcept(item)
+                            }
+                            Button("Hide") { hideConcept(item.id) }
                         }
-                        Button("Hide") { hideConcept(item.id) }
-                    }
-                    .buttonStyle(.bordered)
-                )
+                        .buttonStyle(.bordered)
+                    )
+                }
+                // Documents and citations, at the card's bottom middle:
+                // Abstract opens the node to the paper's own abstract
+                // (what selection itself used to show), and — when Lift
+                // is on — the snap-off verb beside it.
+                if (item.kind == .article || item.kind == .cited
+                        || item.kind == .citedDeep),
+                   item.isSelected, !item.isGhost, !item.isAside {
+                    return AnyView(
+                        HStack(spacing: 8) {
+                            if !item.abstract.isEmpty {
+                                Button(item.showsAbstract ? "Hide Abstract" : "Abstract") {
+                                    toggleAbstract(item)
+                                }
+                            }
+                            if EPUBMapView.liftEnabled {
+                                Button(liftedCards[item.id] == nil ? "Lift" : "Put Back") {
+                                    toggleLift(item)
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                    )
+                }
+                return AnyView(EmptyView())
             },
             constructorNodeModelEntity: { item, texturedPlane in
                 cardEntity(for: item, texturedPlane: texturedPlane)
@@ -1297,10 +1498,17 @@ struct EPUBMapView: View {
                 offset: SIMD3<Float>(0, -0.02, 0))
         }
         view = view.onEndMoveNode { allItems, _, newItems in
+            // A lifted card's drag may have stuck it to (or freed it
+            // from) a surface — keep that standing.
+            if newItems.contains(where: { liftedCards[$0.id] != nil }) {
+                saveLiftedCards()
+            }
             // Gesture-based set-aside and pin: drag a document to the
             // floor to set it aside, or lift it above head height to pin
-            // it first in the grid.
-            for moved in newItems where moved.kind == .article {
+            // it first in the grid. A lifted card is exempt — low or
+            // high, it is on its way to a surface, not the pile.
+            for moved in newItems
+            where moved.kind == .article && liftedCards[moved.id] == nil {
                 guard let pos = moved.position else { continue }
                 if pos.y < 0.15 && !moved.isAside {
                     // Floor drop → set aside.
@@ -1354,6 +1562,20 @@ struct EPUBMapView: View {
             return moving.kind == .concept && item.kind == .concept
         }
         view = view.constrainMovedNode { item, proposed, startPosition in
+            // A ghost holds the lifted card's place — the slot is the
+            // whole point of it.
+            if item.isGhost { return startPosition }
+            // A snapped-off card moves free in every axis and courts
+            // the room's surfaces: within reach of one it lands on the
+            // plane, and the per-frame tick turns it to lie along it.
+            if liftedCards[item.id] != nil {
+                if let pose = surfacePose(for: proposed) {
+                    liftedCards[item.id]?.stuck = pose.orientation.vector
+                    return pose.position
+                }
+                liftedCards[item.id]?.stuck = nil
+                return proposed
+            }
             // EXPERIMENT — a journal card stays on its publication
             // year's plane: free in X and Y, held in Z, like the
             // citations below. Asides (not in the table) still move free.
@@ -1478,6 +1700,8 @@ struct EPUBMapView: View {
             armMenu.setChipVisible(Self.selectCitationsChipID, false)
             armMenu.setChipVisible(Self.selectDocumentsChipID, false)
             armMenu.setChipVisible(Self.selectConceptsChipID, false)
+            // The watch's menus wait folded until its face is pinched.
+            updateWatchChips()
             // The Graphs and Timelines groups wake folded; the sides
             // appear when their parent is pinched. The chips wear their
             // standing state — a floor lane or graph left on last
@@ -1509,20 +1733,37 @@ struct EPUBMapView: View {
                              faceTurner: faceTurner,
                              lines: [selectedCitationLines,
                                      conceptConnectionLines,
-                                     citedToDeepLines])
+                                     citedToDeepLines],
+                             anyLifted: { !liftedCards.isEmpty },
+                             liftedOrientation: { id in
+                                 // A lifted card wears its surface pose;
+                                 // floating again, it stands back up.
+                                 guard let lifted = liftedCards[id] else { return nil }
+                                 return lifted.stuck.map { simd_quatf(vector: $0) }
+                                     ?? simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+                             })
             // Align to Room's wall: a wall-classified vertical plane on
             // the one tracking session, read when the chip is tapped.
             let roomWall = AnchorEntity(.plane(.vertical, classification: .wall,
                                                minimumBounds: SIMD2<Float>(1, 1)))
             content.add(roomWall)
             roomWallAnchor = roomWall
+            // A landing desk for lifted cards, beside the wall.
+            let desk = AnchorEntity(.plane(.horizontal, classification: .table,
+                                           minimumBounds: SIMD2<Float>(0.4, 0.4)))
+            content.add(desk)
+            deskAnchor = desk
             fistGrab.install(
                 in: content,
                 move: { delta in
                     // Live: carry every card by the fist's motion. The
-                    // lines follow on their own each frame.
+                    // lines follow on their own each frame. A card
+                    // stuck to a real surface stays with the room, not
+                    // the carried space.
                     for entity in content.entities
                     where entity.components.has(MapSpaceNodeComponent.self) {
+                        if let id = entity.components[EPUBNodeIDComponent.self]?.id,
+                           liftedCards[id]?.stuck != nil { continue }
                         entity.position += delta
                     }
                 },
@@ -1587,7 +1828,23 @@ struct EPUBMapView: View {
     @ViewBuilder private func cardFace(for item: EPUBMapItem,
                                        withAbstract: Bool = true) -> some View {
         let s = Self.crisp
-        if item.isAside {
+        if item.isGhost {
+            // The lifted card's held place: its title's first line
+            // alone, very transparent — a slot, not a card.
+            Text(shortTitle(item.title))
+                .font(AppFonts.body(6 * s, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.6))
+                .lineLimit(1)
+                .padding(.horizontal, 7 * s)
+                .padding(.vertical, 5 * s)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8 * s)
+                        .strokeBorder(Color.white.opacity(0.3),
+                                      style: StrokeStyle(lineWidth: 0.6 * s,
+                                                         dash: [3 * s, 3 * s]))
+                )
+                .opacity(0.35)
+        } else if item.isAside {
             // The whole slip fades — the words too, not just the paper.
             Text(shortTitle(item.title))
                 .font(AppFonts.body(5.5 * s, weight: .semibold))
@@ -1645,13 +1902,13 @@ struct EPUBMapView: View {
             // No frame around the pane — a vertical rail at each side,
             // inset past the rounded corners, brighter when selected.
             .overlay(alignment: .leading) {
-                Rectangle().fill(Color.white.opacity(item.isSelected ? 0.85 : 0.35))
-                    .frame(width: (item.isSelected ? 2.5 : 1) * s)
+                Rectangle().fill(Color.white.opacity(item.isSelected ? 0.9 : 0.35))
+                    .frame(width: (item.isSelected ? 3.5 : 1) * s)
                     .padding(.vertical, 14 * s)
             }
             .overlay(alignment: .trailing) {
-                Rectangle().fill(Color.white.opacity(item.isSelected ? 0.85 : 0.35))
-                    .frame(width: (item.isSelected ? 2.5 : 1) * s)
+                Rectangle().fill(Color.white.opacity(item.isSelected ? 0.9 : 0.35))
+                    .frame(width: (item.isSelected ? 3.5 : 1) * s)
                     .padding(.vertical, 14 * s)
             }
         } else {
@@ -1676,19 +1933,20 @@ struct EPUBMapView: View {
                             .foregroundStyle(Color(red: 0.95, green: 0.68, blue: 0.25))
                     }
                     // The working name and the first author carry the
-                    // card; the subtitle and co-authors live in the
-                    // reading, not on the face.
-                    Text(shortTitle(item.title))
+                    // card; selection opens the FULL title and every
+                    // author's name — the abstract waits for its button.
+                    Text(selected ? item.title : shortTitle(item.title))
                         .font(AppFonts.body(titleSize * s, weight: .semibold))
                         .foregroundStyle(Color.white)
                 }
-                Text(shortByline(item.author))
+                Text(selected ? item.author : shortByline(item.author))
                     .font(.system(size: 5.5 * s))
                     .foregroundStyle(Color.white.opacity(0.65))
-                if withAbstract && selected && !item.abstract.isEmpty {
-                    // The full abstract in fine print, on the SELECTED
-                    // card alone — sized to be read by walking up to
-                    // the card, not from afar.
+                if withAbstract && selected && item.showsAbstract
+                    && !item.abstract.isEmpty {
+                    // The full abstract in fine print, asked for with
+                    // the card's Abstract button — sized to be read by
+                    // walking up to the card, not from afar.
                     Text(item.abstract)
                         .font(.system(size: 2.6 * s))
                         .foregroundStyle(Color.white.opacity(0.8))
@@ -1713,13 +1971,13 @@ struct EPUBMapView: View {
             // No frame around the pane — a vertical rail at each side,
             // inset past the rounded corners, brighter when selected.
             .overlay(alignment: .leading) {
-                Rectangle().fill(Color.white.opacity(selected ? 0.85 : 0.35))
-                    .frame(width: (selected ? 2.0 : 0.7) * s)
+                Rectangle().fill(Color.white.opacity(selected ? 0.9 : 0.35))
+                    .frame(width: (selected ? 3.0 : 0.7) * s)
                     .padding(.vertical, 8 * s)
             }
             .overlay(alignment: .trailing) {
-                Rectangle().fill(Color.white.opacity(selected ? 0.85 : 0.35))
-                    .frame(width: (selected ? 2.0 : 0.7) * s)
+                Rectangle().fill(Color.white.opacity(selected ? 0.9 : 0.35))
+                    .frame(width: (selected ? 3.0 : 0.7) * s)
                     .padding(.vertical, 8 * s)
             }
         }
@@ -1792,6 +2050,11 @@ struct EPUBMapView: View {
         holder.addChild(frontFace)
         holder.addChild(backFace)
         holder.components.set(CardFacesComponent(front: frontFace, back: backFace))
+        // A floated passage always faces the reader — billboarded, the
+        // way no wall card is.
+        if item.id.hasPrefix("float:") {
+            holder.components.set(BillboardComponent())
+        }
 
         // Set Aside slips fade whole — glass and words together.
         if item.isAside {
@@ -1851,7 +2114,11 @@ struct EPUBMapView: View {
     /// Select's unfolded kinds: Citations stands only while cited
     /// cards do — there is nothing to select on a quiet wall. Called
     /// on the parent pinch and again on every reload, so a rising or
-    /// falling wall corrects the open column live.
+    /// falling wall corrects the open column live. Each kind chip
+    /// wears its standing — bright with the active border while its
+    /// whole family is selected — and Select itself stays lit while
+    /// any menu-made selection stands, so the folded menu still says
+    /// something is chosen.
     private func updateSelectChips() {
         let citationsStand = items.contains {
             $0.kind == .cited || $0.kind == .citedDeep
@@ -1860,11 +2127,526 @@ struct EPUBMapView: View {
                                selectOpen && citationsStand)
         armMenu.setChipVisible(Self.selectDocumentsChipID, selectOpen)
         armMenu.setChipVisible(Self.selectConceptsChipID, selectOpen)
+        armMenu.setChipActive(Self.selectCitationsChipID, selectKindStands(.citations))
+        armMenu.setChipActive(Self.selectDocumentsChipID, selectKindStands(.documents))
+        armMenu.setChipActive(Self.selectConceptsChipID, selectKindStands(.concepts))
+        armMenu.setChipActive(Self.selectChipID,
+                              selectOpen || SelectKind.allCases.contains(where: selectKindStands))
+    }
+
+    /// The Select menu's choice as a toggle: a kind whose whole family
+    /// already stands selected — its chip bright when the menu reopens
+    /// — lets them all go; any other choice selects that kind alone.
+    /// Either way the chosen menu folds away.
+    private func toggleSelect(_ kind: SelectKind) {
+        if selectKindStands(kind) {
+            deselectKind(kind)
+        } else {
+            selectOnly(kind)
+        }
+        selectOpen = false
+        updateSelectChips()
+    }
+
+    /// Whether the kind's whole family is selected — the shape only
+    /// the Select menu makes, and the state its chip wears.
+    private func selectKindStands(_ kind: SelectKind) -> Bool {
+        let family = items.filter { matchesSelectKind(kind, $0) }
+        return !family.isEmpty && family.allSatisfy(\.isSelected)
+    }
+
+    /// The menu-made selection let go, with the same tap semantics as
+    /// deselecting by hand: citations retire their deep rank, a
+    /// focused concept lifts its Focus.
+    private func deselectKind(_ kind: SelectKind) {
+        for index in items.indices where matchesSelectKind(kind, items[index]) {
+            items[index].isSelected = false
+        }
+        if kind == .citations { deepParentIDs = [] }
+        if kind == .concepts {
+            focusedConceptID = nil
+            focusedConceptArticleIDs = []
+        }
+        updateStandingChips()
+        reload()
+    }
+
+    private func matchesSelectKind(_ kind: SelectKind, _ item: EPUBMapItem) -> Bool {
+        guard !item.isGhost else { return false }
+        return switch kind {
+        case .documents: item.kind == .article && !item.isAside
+        case .citations: item.kind == .cited || item.kind == .citedDeep
+        // The topic magnets and floated passages are their own families
+        // — Select's Concepts leaves them as they stand.
+        case .concepts: item.kind == .concept && !item.id.hasPrefix("topic:")
+            && !item.id.hasPrefix("float:")
+        }
+    }
+
+    /// Abstract, on a selected card: the node opens to the paper's own
+    /// abstract in fine print — what selection alone used to show.
+    private func toggleAbstract(_ item: EPUBMapItem) {
+        if abstractOpenIDs.contains(item.id) {
+            abstractOpenIDs.remove(item.id)
+        } else {
+            abstractOpenIDs.insert(item.id)
+        }
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            items[index].showsAbstract = abstractOpenIDs.contains(item.id)
+        }
+    }
+
+    // MARK: - Lift — a card snapped off the map, stuck to a surface
+
+    /// Lift: the card snaps off the map — a ghost holds its place —
+    /// and rides the hand free of the year planes, courting the room's
+    /// surfaces. Put Back: it returns whole to the held place.
+    private func toggleLift(_ item: EPUBMapItem) {
+        if liftedCards[item.id] != nil {
+            putBack(item)
+        } else {
+            lift(item)
+        }
+    }
+
+    private func lift(_ item: EPUBMapItem) {
+        guard let position = item.position else { return }
+        liftedCards[item.id] = LiftedCard(home: position)
+        // The card steps toward the reader, visibly off its slot.
+        placed[item.id] = position + SIMD3<Float>(0, 0, 0.3)
+        saveLiftedCards()
+        savePlacedNow()
+        reload()
+    }
+
+    private func putBack(_ item: EPUBMapItem) {
+        guard let lifted = liftedCards[item.id] else { return }
+        liftedCards[item.id] = nil
+        placed[item.id] = lifted.home
+        saveLiftedCards()
+        savePlacedNow()
+        reload()
+    }
+
+    private func savePlacedNow() {
+        EPUBMapLayoutStore.save(placed, community: model.index.folderURL,
+                                sharedKeys: sharedKeyByID)
+        sharedLayoutAdoptedAt = Date()
+    }
+
+    /// The lifted cards' place-holders, one per lifted card still in
+    /// the room — a card whose journal closed leaves no stray ghost.
+    private func ghostItems(among built: [EPUBMapItem]) -> [EPUBMapItem] {
+        liftedCards.compactMap { id, lifted in
+            guard let original = built.first(where: { $0.id == id }) else { return nil }
+            var ghost = EPUBMapItem(
+                id: "ghost:" + id,
+                title: String(original.title.split(separator: "\n").first ?? ""),
+                author: "",
+                kind: original.kind,
+                position: lifted.home)
+            ghost.isGhost = true
+            ghost.visionTheme = original.visionTheme
+            return ghost
+        }
+    }
+
+    /// Where a floating lifted card would land: the nearest room
+    /// surface within reach — the wall's plane, the desk's top — with
+    /// the pose the card wears there. Nil in open air.
+    private func surfacePose(for position: SIMD3<Float>)
+        -> (position: SIMD3<Float>, orientation: simd_quatf)? {
+        let reach: Float = 0.12
+        var best: (position: SIMD3<Float>, orientation: simd_quatf, distance: Float)?
+        if let wall = roomWallAnchor, wall.isAnchored {
+            let point = wall.position(relativeTo: nil)
+            // A plane anchor's local Y is its normal; flattened, and
+            // pointed into the room (toward the viewer when known).
+            var normal = wall.convert(direction: SIMD3<Float>(0, 1, 0), to: nil)
+            normal.y = 0
+            let length = simd_length(normal)
+            if length > 1e-3 {
+                normal /= length
+                if let head = faceTurner.headPosition(),
+                   simd_dot(normal, head - point) < 0 {
+                    normal = -normal
+                }
+                let distance = simd_dot(position - point, normal)
+                if abs(distance) < reach {
+                    let landed = position - normal * distance + normal * 0.015
+                    // The card's front (+Z) turned along the normal.
+                    let turn = simd_quatf(angle: atan2(normal.x, normal.z),
+                                          axis: SIMD3<Float>(0, 1, 0))
+                    best = (landed, turn, abs(distance))
+                }
+            }
+        }
+        if let desk = deskAnchor, desk.isAnchored {
+            let deskPlace = desk.position(relativeTo: nil)
+            let gap = position.y - deskPlace.y
+            let across = simd_length(SIMD2(position.x - deskPlace.x,
+                                           position.z - deskPlace.z))
+            if gap > -0.05, gap < reach, across < 1.2,
+               best == nil || abs(gap) < best!.distance {
+                var landed = position
+                landed.y = deskPlace.y + 0.01
+                // Lying flat, face up: the front turned to the ceiling.
+                let flat = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
+                best = (landed, flat, abs(gap))
+            }
+        }
+        return best.map { ($0.position, $0.orientation) }
+    }
+
+    // MARK: - The watch's Layout — Author Map's align, distribute, sort
+
+    /// The cards a Layout verb moves: the selected standing articles,
+    /// or every standing article when nothing is chosen.
+    private func watchLayoutTargets() -> [EPUBMapItem] {
+        let standing = items.filter {
+            $0.kind == .article && !$0.isAside && !$0.isGhost
+                && $0.position != nil && liftedCards[$0.id] == nil
+        }
+        let selected = standing.filter(\.isSelected)
+        return selected.isEmpty ? standing : selected
+    }
+
+    /// A record's own date, for the Time sorts — the undated sort last.
+    private func watchDate(_ id: String) -> Date {
+        model.epubRecords.first { $0.id == id }?.dateISO
+            .flatMap(LiquidDoc.parseISO8601) ?? .distantFuture
+    }
+
+    private func runWatchLayout(_ option: WatchLayoutOption) {
+        let targets = watchLayoutTargets()
+        guard targets.count > 1 else { return }
+        var xy: [String: SIMD2<Float>] = [:]
+        for target in targets {
+            guard let position = target.position else { continue }
+            xy[target.id] = SIMD2(position.x, position.y)
+        }
+        let xs = xy.values.map(\.x), ys = xy.values.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(),
+              let minY = ys.min(), let maxY = ys.max() else { return }
+        let count = Float(targets.count)
+        // A degenerate span (a stacked pile) opens to the wall's pitch.
+        let spanX = max(maxX - minX, (count - 1) * 0.28)
+        let spanY = max(maxY - minY, (count - 1) * 0.17)
+        func spreadY(_ ordered: [EPUBMapItem]) {
+            let top = (minY + maxY) / 2 + spanY / 2
+            for (index, item) in ordered.enumerated() {
+                xy[item.id]?.y = top - spanY * Float(index) / max(count - 1, 1)
+            }
+        }
+        func spreadX(_ ordered: [EPUBMapItem]) {
+            let leading = (minX + maxX) / 2 - spanX / 2
+            for (index, item) in ordered.enumerated() {
+                xy[item.id]?.x = leading + spanX * Float(index) / max(count - 1, 1)
+            }
+        }
+        let byTitle: (EPUBMapItem, EPUBMapItem) -> Bool = {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+        switch option {
+        case .left:
+            for id in xy.keys { xy[id]?.x = minX }
+        case .center:
+            let mid = xs.reduce(0, +) / count
+            for id in xy.keys { xy[id]?.x = mid }
+        case .right:
+            for id in xy.keys { xy[id]?.x = maxX }
+        case .vertical:
+            // Spread down the wall in the standing top-to-bottom order.
+            spreadY(targets.sorted { ($0.position?.y ?? 0) > ($1.position?.y ?? 0) })
+        case .horizontal:
+            // One row: the cards keep their x and meet at the middle
+            // height — Author's Horizontal is the vertical center align.
+            let mid = ys.reduce(0, +) / count
+            for id in xy.keys { xy[id]?.y = mid }
+        case .sortVertical:
+            spreadY(targets.sorted(by: byTitle))
+        case .sortVerticalReverse:
+            spreadY(targets.sorted { byTitle($1, $0) })
+        case .sortHorizontal:
+            spreadX(targets.sorted(by: byTitle))
+        case .sortHorizontalReverse:
+            spreadX(targets.sorted { byTitle($1, $0) })
+        case .time:
+            spreadX(targets.sorted { watchDate($0.id) < watchDate($1.id) })
+        case .timeReverse:
+            spreadX(targets.sorted { watchDate($0.id) > watchDate($1.id) })
+        }
+        applyWatchPositions(xy)
+    }
+
+    /// Writes the arranged plane positions back to the cards — depth
+    /// stays the year's own — into the placement memory, and rebuilds.
+    private func applyWatchPositions(_ xy: [String: SIMD2<Float>]) {
+        var moved: [EPUBMapItem] = []
+        for index in items.indices {
+            guard let target = xy[items[index].id],
+                  var position = items[index].position else { continue }
+            position.x = min(max(target.x, spaceShift.x - 3), spaceShift.x + 3)
+            position.y = min(max(target.y, 0.95), 2.2)
+            items[index].position = position
+            moved.append(items[index])
+        }
+        keepPlacements(of: moved)
+        reload()
+    }
+
+    // MARK: - The watch's Views — Author Map's arrangements
+
+    private func runWatchView(_ option: WatchViewOption) {
+        let articles = items.filter {
+            $0.kind == .article && !$0.isAside && !$0.isGhost
+                && $0.position != nil && liftedCards[$0.id] == nil
+        }
+        guard articles.count > 1 else { return }
+        let xs = articles.compactMap { $0.position?.x }
+        let ys = articles.compactMap { $0.position?.y }
+        let center = SIMD2<Float>(
+            xs.reduce(0, +) / Float(xs.count),
+            min(max(ys.reduce(0, +) / Float(ys.count), 1.2), 1.6))
+        let adjacency = inJournalAdjacency(articles)
+        let xy: [String: SIMD2<Float>]
+        switch option {
+        case .magneticCenter:
+            xy = magneticCenterPositions(articles, adjacency: adjacency, center: center)
+        case .spine:
+            // Author's Spine walks the document's Section nodes; the
+            // wall has none, so it falls back exactly as Author does.
+            xy = magneticCenterPositions(articles, adjacency: adjacency, center: center)
+        case .islands:
+            xy = islandsPositions(articles, adjacency: adjacency, center: center)
+        case .orbits:
+            xy = orbitsPositions(articles, center: center)
+                ?? magneticCenterPositions(articles, adjacency: adjacency, center: center)
+        case .timeline:
+            xy = timelinePositions(articles, center: center)
+        case .neighborhoods:
+            xy = neighborhoodsPositions(articles, adjacency: adjacency, center: center)
+                ?? magneticCenterPositions(articles, adjacency: adjacency, center: center)
+        }
+        applyWatchPositions(xy)
+    }
+
+    /// The undirected in-journal citation links — which standing cards
+    /// cite each other. The arrangements' one graph.
+    private func inJournalAdjacency(_ articles: [EPUBMapItem]) -> [String: Set<String>] {
+        let ids = Set(articles.map(\.id))
+        var adjacency: [String: Set<String>] = [:]
+        for article in articles {
+            for cited in article.citedIDs where ids.contains(cited) && cited != article.id {
+                adjacency[article.id, default: []].insert(cited)
+                adjacency[cited, default: []].insert(article.id)
+            }
+        }
+        return adjacency
+    }
+
+    /// Author's Magnetic Center: the most-connected cards at the
+    /// middle, each lower connection count a ring further out, the
+    /// unconnected in the outermost band.
+    private func magneticCenterPositions(_ articles: [EPUBMapItem],
+                                         adjacency: [String: Set<String>],
+                                         center: SIMD2<Float>) -> [String: SIMD2<Float>] {
+        let buckets = Dictionary(grouping: articles) { adjacency[$0.id]?.count ?? 0 }
+            .sorted { $0.key > $1.key }
+            .map { $0.value.sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            } }
+        var xy: [String: SIMD2<Float>] = [:]
+        for (ring, bucket) in buckets.enumerated() {
+            if ring == 0, bucket.count == 1 {
+                xy[bucket[0].id] = center
+                continue
+            }
+            let radius = 0.22 + 0.26 * Float(ring)
+            for (index, item) in bucket.enumerated() {
+                let angle = Float(index) / Float(bucket.count) * 2 * .pi - .pi / 2
+                xy[item.id] = SIMD2(center.x + cosf(angle) * radius,
+                                    center.y + sinf(angle) * radius * 0.55)
+            }
+        }
+        return xy
+    }
+
+    /// Blocks side by side around the center — each a small grid sized
+    /// from its count. The shape Islands and Neighborhoods share.
+    private func layWatchBlocks(_ blocks: [[EPUBMapItem]],
+                                center: SIMD2<Float>) -> [String: SIMD2<Float>] {
+        let columnCounts = blocks.map {
+            max(1, Int(Double($0.count).squareRoot().rounded(.up)))
+        }
+        let widths = columnCounts.map { Float($0 - 1) * 0.28 }
+        let gap: Float = 0.4
+        let total = widths.reduce(0, +) + gap * Float(max(blocks.count - 1, 0))
+        var x = center.x - total / 2
+        var xy: [String: SIMD2<Float>] = [:]
+        for (blockIndex, block) in blocks.enumerated() {
+            let columns = columnCounts[blockIndex]
+            let rows = (block.count + columns - 1) / columns
+            let top = center.y + 0.17 * Float(rows - 1) / 2
+            for (index, item) in block.enumerated() {
+                xy[item.id] = SIMD2(x + Float(index % columns) * 0.28,
+                                    top - Float(index / columns) * 0.17)
+            }
+            x += widths[blockIndex] + gap
+        }
+        return xy
+    }
+
+    /// Author's Islands: each connected cluster on its own ground,
+    /// side by side; the unconnected gather in a band beneath.
+    private func islandsPositions(_ articles: [EPUBMapItem],
+                                  adjacency: [String: Set<String>],
+                                  center: SIMD2<Float>) -> [String: SIMD2<Float>] {
+        let byID = Dictionary(uniqueKeysWithValues: articles.map { ($0.id, $0) })
+        var claimed: Set<String> = []
+        var components: [[EPUBMapItem]] = []
+        for article in articles where !claimed.contains(article.id) {
+            var queue = [article.id]
+            var members: [EPUBMapItem] = []
+            claimed.insert(article.id)
+            while let id = queue.popLast() {
+                if let item = byID[id] { members.append(item) }
+                for next in adjacency[id] ?? [] where !claimed.contains(next) {
+                    claimed.insert(next)
+                    queue.append(next)
+                }
+            }
+            components.append(members)
+        }
+        let islands = components.filter { $0.count > 1 }.sorted { $0.count > $1.count }
+        let orphans = components.filter { $0.count == 1 }.flatMap { $0 }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        var xy = layWatchBlocks(islands, center: center)
+        let leading = center.x - 0.26 * Float(orphans.count - 1) / 2
+        for (index, item) in orphans.enumerated() {
+            xy[item.id] = SIMD2(leading + 0.26 * Float(index), center.y - 0.6)
+        }
+        return xy
+    }
+
+    /// Author's Orbits: a card cited by two or more fellows becomes a
+    /// hub with its citers circling it; cards citing no hub gather
+    /// beneath. No hubs at all → nil, and Magnetic Center stands in.
+    private func orbitsPositions(_ articles: [EPUBMapItem],
+                                 center: SIMD2<Float>) -> [String: SIMD2<Float>]? {
+        let ids = Set(articles.map(\.id))
+        var citedBy: [String: Int] = [:]
+        for article in articles {
+            for cited in article.citedIDs where ids.contains(cited) && cited != article.id {
+                citedBy[cited, default: 0] += 1
+            }
+        }
+        let hubs = citedBy.filter { $0.value >= 2 }
+            .sorted { ($0.value, $1.key) > ($1.value, $0.key) }
+            .map(\.key)
+        guard !hubs.isEmpty else { return nil }
+        var xy: [String: SIMD2<Float>] = [:]
+        let spacing: Float = 0.85
+        let leading = center.x - spacing * Float(hubs.count - 1) / 2
+        for (index, hub) in hubs.enumerated() {
+            xy[hub] = SIMD2(leading + spacing * Float(index), center.y)
+        }
+        var orbiters: [String: [EPUBMapItem]] = [:]
+        var leftovers: [EPUBMapItem] = []
+        for article in articles where xy[article.id] == nil {
+            let hub = article.citedIDs.filter { xy[$0] != nil }
+                .max { citedBy[$0, default: 0] < citedBy[$1, default: 0] }
+            if let hub {
+                orbiters[hub, default: []].append(article)
+            } else {
+                leftovers.append(article)
+            }
+        }
+        for (hub, members) in orbiters {
+            guard let hubPlace = xy[hub] else { continue }
+            let ordered = members.sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+            for (index, item) in ordered.enumerated() {
+                let angle = Float(index) / Float(ordered.count) * 2 * .pi - .pi / 2
+                xy[item.id] = SIMD2(hubPlace.x + cosf(angle) * 0.3,
+                                    hubPlace.y + sinf(angle) * 0.21)
+            }
+        }
+        let ordered = leftovers.sorted {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+        let orphanLeading = center.x - 0.26 * Float(ordered.count - 1) / 2
+        for (index, item) in ordered.enumerated() {
+            xy[item.id] = SIMD2(orphanLeading + 0.26 * Float(index), center.y - 0.65)
+        }
+        return xy
+    }
+
+    /// Author's Timeline: columns by year, oldest at the left, each
+    /// column alphabetical; the dateless close the right.
+    private func timelinePositions(_ articles: [EPUBMapItem],
+                                   center: SIMD2<Float>) -> [String: SIMD2<Float>] {
+        let dateByID = Dictionary(
+            model.epubRecords.map { ($0.id, $0.dateISO) }) { first, _ in first }
+        func year(_ id: String) -> Int? {
+            dateByID[id]?.flatMap { Int($0.prefix(4)) }
+        }
+        let byTitle: (EPUBMapItem, EPUBMapItem) -> Bool = {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+        let dated = Dictionary(grouping: articles.filter { year($0.id) != nil }) {
+            year($0.id) ?? 0
+        }
+        var columns: [[EPUBMapItem]] = dated.keys.sorted().map {
+            (dated[$0] ?? []).sorted(by: byTitle)
+        }
+        let dateless = articles.filter { year($0.id) == nil }.sorted(by: byTitle)
+        if !dateless.isEmpty { columns.append(dateless) }
+        let spacing: Float = 0.3
+        let leading = center.x - spacing * Float(columns.count - 1) / 2
+        var xy: [String: SIMD2<Float>] = [:]
+        for (columnIndex, column) in columns.enumerated() {
+            let top = center.y + 0.17 * Float(column.count - 1) / 2
+            for (row, item) in column.enumerated() {
+                xy[item.id] = SIMD2(leading + spacing * Float(columnIndex),
+                                    top - 0.17 * Float(row))
+            }
+        }
+        return xy
+    }
+
+    /// Author's Neighborhoods: one block per topic, side by side, the
+    /// most-connected cards leading each block; the untopiced close
+    /// the row. No topics to read → nil, and Magnetic Center stands in.
+    private func neighborhoodsPositions(_ articles: [EPUBMapItem],
+                                        adjacency: [String: Set<String>],
+                                        center: SIMD2<Float>) -> [String: SIMD2<Float>]? {
+        guard let venue = model.openJournalVenue else { return nil }
+        let topicsByID = Dictionary(
+            topicStandingArticles(venue: venue).map { ($0.id, $0.topics) }) { first, _ in first }
+        var blocks: [String: [EPUBMapItem]] = [:]
+        for article in articles {
+            blocks[topicsByID[article.id]?.first ?? "", default: []].append(article)
+        }
+        guard blocks.keys.contains(where: { !$0.isEmpty }) else { return nil }
+        let ordered = blocks.sorted {
+            if $0.key.isEmpty != $1.key.isEmpty { return $1.key.isEmpty }
+            return $0.value.count > $1.value.count
+        }.map { block in
+            block.value.sorted {
+                let left = adjacency[$0.id]?.count ?? 0
+                let right = adjacency[$1.id]?.count ?? 0
+                if left != right { return left > right }
+                return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+        }
+        return layWatchBlocks(ordered, center: center)
     }
 
     /// The Select chip's kinds — one family selected whole, everything
     /// else deselected.
-    private enum SelectKind { case citations, documents, concepts }
+    private enum SelectKind: CaseIterable { case citations, documents, concepts }
 
     /// The arm's Select pick: selection reduced to one kind alone.
     /// Documents raise every wall; Citations keep the standing walls
@@ -1879,7 +2661,7 @@ struct EPUBMapView: View {
         }
         if kind == .documents {
             raisedArticleIDs = Set(items.filter {
-                $0.kind == .article && !$0.isAside
+                $0.kind == .article && !$0.isAside && !$0.isGhost
             }.map(\.id))
         }
         // The mass deselect keeps tap semantics: a deselected citation
@@ -1891,15 +2673,7 @@ struct EPUBMapView: View {
             focusedConceptArticleIDs = []
         }
         for index in items.indices {
-            let item = items[index]
-            let match: Bool = switch kind {
-            case .documents: item.kind == .article && !item.isAside
-            case .citations: item.kind == .cited || item.kind == .citedDeep
-            // The topic magnets are their own family — Select's
-            // Concepts leaves them as they stand.
-            case .concepts: item.kind == .concept && !item.id.hasPrefix("topic:")
-            }
-            items[index].isSelected = match
+            items[index].isSelected = matchesSelectKind(kind, items[index])
         }
         updateStandingChips()
         reload()
@@ -1943,13 +2717,22 @@ struct EPUBMapView: View {
         citedTimelineZ = citedTimelineZ.mapValues { $0 + delta.z }
         articleYearZ = articleYearZ.mapValues { $0 + delta.z }
         for index in items.indices {
-            if let position = items[index].position {
+            // A surface-stuck card keeps its wall; everything else —
+            // ghosts and floating lifted cards included — travels.
+            if let position = items[index].position,
+               liftedCards[items[index].id]?.stuck == nil {
                 items[index].position = position + delta
             }
         }
-        for (id, position) in placed {
+        for (id, position) in placed where liftedCards[id]?.stuck == nil {
             placed[id] = position + delta
         }
+        // The held homes travel with the space, so each ghost keeps
+        // standing in its slot of the carried map.
+        for id in liftedCards.keys {
+            liftedCards[id]?.home += delta
+        }
+        saveLiftedCards()
         for item in items {
             if let position = item.position {
                 placed[item.id] = position
@@ -2024,7 +2807,8 @@ struct EPUBMapView: View {
     private func keepPlacements(of moved: [EPUBMapItem]) {
         for item in moved {
             var position = item.position
-            if item.kind == .cited || item.kind == .citedDeep {
+            if (item.kind == .cited || item.kind == .citedDeep)
+                && liftedCards[item.id] == nil {
                 let z = citedTimelineZ[item.id] ?? item.position?.z
                 if let z { position?.z = z }
             }
@@ -2033,6 +2817,11 @@ struct EPUBMapView: View {
             }
             if let position {
                 placed[item.id] = position
+                // A float's place travels IN its annotation — written
+                // in map space, the carried shift removed.
+                if item.id.hasPrefix("float:") {
+                    model.setFloatPosition(position - spaceShift, id: item.id)
+                }
             }
         }
         EPUBMapLayoutStore.save(placed, community: model.index.folderURL,
@@ -2043,6 +2832,8 @@ struct EPUBMapView: View {
     }
 
     private func handleTap(count: Int, on item: EPUBMapItem) {
+        // A ghost only holds a place — it answers nothing.
+        guard !item.isGhost else { return }
         switch count {
         case 1:
             // Selecting draws the citation lines — an article's run to
@@ -2055,6 +2846,11 @@ struct EPUBMapView: View {
             let willSelect = !item.isSelected
             if let index = items.firstIndex(where: { $0.id == item.id }) {
                 items[index].isSelected = willSelect
+                // Deselecting folds an opened abstract away with it.
+                if !willSelect {
+                    abstractOpenIDs.remove(item.id)
+                    items[index].showsAbstract = false
+                }
             }
             updateStandingChips()
             // Deselecting a focused concept lifts its Focus — the
@@ -2102,8 +2898,11 @@ struct EPUBMapView: View {
             // brings the card back. A citation opens its record card
             // instead: everything we hold on it, and Acquire.
             guard item.kind == .article else {
-                // A topic magnet has no record behind it — nothing to open.
-                if !item.id.hasPrefix("topic:") { openCitationCard(for: item) }
+                // A topic magnet or floated passage has no record
+                // behind it — nothing to open.
+                if !item.id.hasPrefix("topic:"), !item.id.hasPrefix("float:") {
+                    openCitationCard(for: item)
+                }
                 return
             }
             let docID = item.id
@@ -2269,16 +3068,37 @@ struct EPUBMapView: View {
             // The three kinds unfold above the chip, and fold away.
             selectOpen.toggle()
             updateSelectChips()
-            armMenu.setChipActive(Self.selectChipID, selectOpen)
             return true
         case Self.selectCitationsChipID:
-            selectOnly(.citations)
+            // A choice acts and folds the menu; the chosen chip stands
+            // bright, and choosing it again lets its selection go.
+            toggleSelect(.citations)
             return true
         case Self.selectDocumentsChipID:
-            selectOnly(.documents)
+            toggleSelect(.documents)
             return true
         case Self.selectConceptsChipID:
-            selectOnly(.concepts)
+            toggleSelect(.concepts)
+            return true
+        case Self.watchChipID:
+            // The watch face: its two menus unfold above the wrist and
+            // fold away — closing takes any open option fan with it.
+            watchOpen.toggle()
+            if !watchOpen {
+                watchLayoutOpen = false
+                watchViewsOpen = false
+            }
+            updateWatchChips()
+            return true
+        case Self.watchLayoutChipID:
+            watchLayoutOpen.toggle()
+            if watchLayoutOpen { watchViewsOpen = false }
+            updateWatchChips()
+            return true
+        case Self.watchViewsChipID:
+            watchViewsOpen.toggle()
+            if watchViewsOpen { watchLayoutOpen = false }
+            updateWatchChips()
             return true
         case Self.floorChipID:
             if floorShowRaw == FloorShow.nothing.rawValue {
@@ -2326,8 +3146,50 @@ struct EPUBMapView: View {
             reload()
             return true
         default:
+            // The watch's option fans: a choice acts and folds the
+            // whole watch menu away, per the arm menus' convention.
+            guard let id = armMenu.chipID(for: entity) else { return false }
+            if let option = WatchLayoutOption(rawValue:
+                String(id.dropFirst(Self.watchLayoutChipID.count + 1))),
+               id.hasPrefix(Self.watchLayoutChipID + ".") {
+                runWatchLayout(option)
+                closeWatchMenus()
+                return true
+            }
+            if let option = WatchViewOption(rawValue:
+                String(id.dropFirst(Self.watchViewsChipID.count + 1))),
+               id.hasPrefix(Self.watchViewsChipID + ".") {
+                runWatchView(option)
+                closeWatchMenus()
+                return true
+            }
             return false
         }
+    }
+
+    /// The whole watch menu folded — the face keeps only its worn self.
+    private func closeWatchMenus() {
+        watchOpen = false
+        watchLayoutOpen = false
+        watchViewsOpen = false
+        updateWatchChips()
+    }
+
+    /// The watch's chips shown and lit to match its open menus.
+    private func updateWatchChips() {
+        armMenu.setChipVisible(Self.watchLayoutChipID, watchOpen)
+        armMenu.setChipVisible(Self.watchViewsChipID, watchOpen)
+        for option in WatchLayoutOption.allCases {
+            armMenu.setChipVisible(Self.watchLayoutOptionID(option),
+                                   watchOpen && watchLayoutOpen)
+        }
+        for option in WatchViewOption.allCases {
+            armMenu.setChipVisible(Self.watchViewOptionID(option),
+                                   watchOpen && watchViewsOpen)
+        }
+        armMenu.setChipActive(Self.watchChipID, watchOpen)
+        armMenu.setChipActive(Self.watchLayoutChipID, watchLayoutOpen)
+        armMenu.setChipActive(Self.watchViewsChipID, watchViewsOpen)
     }
 
     /// Pin and Set Aside wear the selection's standing: bright while
@@ -2339,6 +3201,9 @@ struct EPUBMapView: View {
                               selected.contains { $0.isPinned })
         armMenu.setChipActive(Self.setAsideChipID,
                               selected.contains { model.setAsideIDs.contains($0.id) })
+        // The Select kinds wear the same live standing: a hand-tapped
+        // card can complete or break a family, and the chips follow.
+        updateSelectChips()
     }
 
     /// Folds and unfolds the left underside's two groups. The hidden
@@ -3462,13 +4327,19 @@ private final class MapCardTick {
     private var subscription: EventSubscription?
     private var faceTurner: CardFaceTurner?
     private var lines: [MapLineLayer] = []
+    private var anyLifted: (@MainActor () -> Bool)?
+    private var liftedOrientation: (@MainActor (String) -> simd_quatf?)?
     private let cardQuery = EntityQuery(where: .has(EPUBNodeIDComponent.self))
 
     func install(in content: RealityViewContent,
                  faceTurner: CardFaceTurner,
-                 lines: [MapLineLayer]) {
+                 lines: [MapLineLayer],
+                 anyLifted: @escaping @MainActor () -> Bool,
+                 liftedOrientation: @escaping @MainActor (String) -> simd_quatf?) {
         self.faceTurner = faceTurner
         self.lines = lines
+        self.anyLifted = anyLifted
+        self.liftedOrientation = liftedOrientation
         subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             MainActor.assumeIsolated { self?.tick(scene: event.scene) }
         }
@@ -3477,14 +4348,22 @@ private final class MapCardTick {
     private func tick(scene: RealityKit.Scene) {
         let head = faceTurner?.headPosition()
         let liveLines = lines.filter { $0.needsPositions }
-        guard head != nil || !liveLines.isEmpty else { return }
+        // The lifted cards' pose keeper rides the same sweep: a card
+        // stuck to a surface holds its plane's turn through rebuilds
+        // and drags; a re-floated one stands back up.
+        let lifted = anyLifted?() ?? false
+        guard head != nil || !liveLines.isEmpty || lifted else { return }
         var positions: [String: SIMD3<Float>] = [:]
         for card in scene.performQuery(cardQuery) {
             let place = card.position(relativeTo: nil)
             if let head { faceTurner?.turn(card: card, at: place, head: head) }
-            if !liveLines.isEmpty,
-               let id = card.components[EPUBNodeIDComponent.self]?.id {
-                positions[id] = place
+            guard !liveLines.isEmpty || lifted,
+                  let id = card.components[EPUBNodeIDComponent.self]?.id
+            else { continue }
+            if !liveLines.isEmpty { positions[id] = place }
+            if lifted, let turn = liftedOrientation?(id),
+               abs(simd_dot(card.orientation.vector, turn.vector)) < 0.99995 {
+                card.orientation = turn
             }
         }
         for layer in liveLines { layer.relayout(positions: positions) }
