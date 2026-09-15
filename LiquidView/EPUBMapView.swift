@@ -1030,7 +1030,6 @@ struct EPUBMapView: View {
         // Reveal All Concepts unfolds ABOVE Concepts the same way,
         // hidden until a long-pinch asks for it.
         ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
-        ArmMenu.Chip(id: EPUBMapView.showAsideChipID, title: "Set Aside", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectChipID, title: "Select", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectCitationsChipID, title: "Citations",
                      side: .left, group: EPUBMapView.selectChipID),
@@ -1082,9 +1081,6 @@ struct EPUBMapView: View {
     private static let alignChipID = "map.arm.align"
     private static let pinChipID = "map.arm.pin"
     private static let setAsideChipID = "map.arm.setaside"
-    /// The left arm's view toggle: shows and hides the aside slips —
-    /// the right arm's Set Aside chip acts on the selection instead.
-    private static let showAsideChipID = "map.arm.setaside.show"
     private static let conceptsChipID = "map.arm.concepts"
     private static let topicsChipID = "map.arm.topics"
     private static let revealConceptsChipID = "map.arm.concepts.reveal"
@@ -1336,14 +1332,14 @@ struct EPUBMapView: View {
             selectedCitationLines.rebuild(items: Array(allItems))
             citedToDeepLines.rebuild(items: Array(allItems))
         }
-        // Selected concepts travel as one, and selected citations too:
-        // dragging any selected card carries the rest of its selected
-        // FAMILY by the same delta — Select ▸ Citations then a drag
-        // moves the whole wall in X and Y while every card keeps its
-        // year's Z, the documents standing still. An unselected card
-        // still moves alone, and the families never cross.
+        // Selected cards travel as one: dragging any selected card
+        // carries the rest of its selected FAMILY by the same delta —
+        // Select ▸ Documents then a drag moves every selected article
+        // together, Select ▸ Citations the whole wall, each card
+        // keeping its own year's Z. An unselected card still moves
+        // alone, and the families never cross.
         view = view.shouldCheckMoveAnotherNodes { item in
-            item.isSelected && (item.kind == .concept
+            item.isSelected && (item.kind == .article || item.kind == .concept
                 || item.kind == .cited || item.kind == .citedDeep)
         }
         view = view.shouldMoveAnotherNode { moving, item in
@@ -1351,6 +1347,9 @@ struct EPUBMapView: View {
             let citations: Set<EPUBMapItem.Kind> = [.cited, .citedDeep]
             if citations.contains(moving.kind) {
                 return citations.contains(item.kind)
+            }
+            if moving.kind == .article {
+                return item.kind == .article
             }
             return moving.kind == .concept && item.kind == .concept
         }
@@ -1493,7 +1492,6 @@ struct EPUBMapView: View {
                                   floorShowRightRaw != FloorShow.nothing.rawValue)
             armMenu.setChipActive(Self.timeflowLeftChipID, timeflowLeftShown)
             armMenu.setChipActive(Self.timeflowRightChipID, timeflowRightShown)
-            armMenu.setChipActive(Self.showAsideChipID, showsSetAsideSlips)
             conceptLadder.install(in: content)
             faceTurner.install()
             sankeyWallLeft.install(in: content)
@@ -2231,11 +2229,6 @@ struct EPUBMapView: View {
             for item in selected { model.toggleSetAside(item.id) }
             reload()
             updateStandingChips()
-            return true
-        case Self.showAsideChipID:
-            showsSetAsideSlips.toggle()
-            armMenu.setChipActive(Self.showAsideChipID, showsSetAsideSlips)
-            reload()
             return true
         case Self.graphsChipID:
             graphsOpen.toggle()
