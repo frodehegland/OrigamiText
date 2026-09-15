@@ -563,9 +563,17 @@ struct SidebarView: View {
                                              pinned: pinnedTopicSet.contains(topic))
                                 }
                             } label: {
+                                // The name is the latch, not just the
+                                // chevron: a click folds and unfolds.
                                 Text("\(category) (\(grouped[category]?.count ?? 0))")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        topicCategoryExpanded(category)
+                                            .wrappedValue.toggle()
+                                    }
                             }
                         }
                     }
