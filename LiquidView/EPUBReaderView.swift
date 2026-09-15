@@ -93,6 +93,7 @@ enum ReaderStyle {
         th:last-child, td:last-child { padding-right: 0; }
         pre { background: rgba(127, 127, 127, 0.12); padding: 0.8em 1em; border-radius: 4px; overflow-x: auto; }
         pre code { font-size: 0.85em; white-space: pre-wrap; }
+        .affiliation, .author-detail, .author-detail a, .byline, .license, .license a, .acm-reference { color: inherit !important; }
         \(theme.css)
         """
     }
@@ -990,6 +991,10 @@ struct EPUBReaderView: NSViewRepresentable {
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: progressScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        // After the theme's style stands: a book's unreadable greys —
+        // author lines, copyright blocks — take the body ink.
+        controller.addUserScript(WKUserScript(source: greyContrastScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -1147,6 +1152,9 @@ struct EPUBReaderView: NSViewRepresentable {
             // The marks swap live too — the guard at the script's top
             // makes a re-run a re-application, never a second listener.
             webView.evaluateJavaScript(Self.endnoteScript(foldMarks: noteFolds))
+            // A new page colour makes different greys unreadable — the
+            // contrast pass walks again under the fresh theme.
+            webView.evaluateJavaScript(Self.greyContrastScript)
         }
     }
 
@@ -1522,6 +1530,40 @@ struct EPUBReaderView: NSViewRepresentable {
         })();
         """
     }
+
+    /// A book's greys in the theme's ink: any element an EPUB paints in
+    /// grey that cannot be read against the theme's page — computed
+    /// colour against computed background, greys alone, so a book's
+    /// coloured links and inks stay its own — is re-inked to inherit
+    /// the body colour. Author lines and copyright blocks are the usual
+    /// culprits, unreadable on the dark themes. Runs after load and
+    /// after every live theme change; a second run is a re-application.
+    private static let greyContrastScript = """
+    (function(){
+      if (!document.body) return;
+      function lum(c){
+        var a=[c[0],c[1],c[2]].map(function(v){v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);});
+        return 0.2126*a[0]+0.7152*a[1]+0.0722*a[2];
+      }
+      function parse(s){
+        var m=/rgba?\\(([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)(?:,\\s*([\\d.]+))?\\)/.exec(s);
+        return m?[+m[1],+m[2],+m[3],m[4]===undefined?1:+m[4]]:null;
+      }
+      var bg=parse(getComputedStyle(document.body).backgroundColor);
+      if(!bg||bg[3]===0){bg=[255,255,255,1];}
+      var bgL=lum(bg);
+      function contrast(c){var L=lum(c);var hi=Math.max(L,bgL),lo=Math.min(L,bgL);return (hi+0.05)/(lo+0.05);}
+      var els=document.body.getElementsByTagName('*');
+      for(var i=0;i<els.length;i++){
+        var c=parse(getComputedStyle(els[i]).color);
+        if(!c)continue;
+        var sat=Math.max(c[0],c[1],c[2])-Math.min(c[0],c[1],c[2]);
+        if(sat>16)continue;
+        if(contrast(c)>=3)continue;
+        els[i].style.setProperty('color','inherit','important');
+      }
+    })();
+    """
 
     /// Hides the appendix before first paint.
     private static let hideScript = """
