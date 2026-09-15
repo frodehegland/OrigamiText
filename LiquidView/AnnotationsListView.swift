@@ -120,6 +120,10 @@ extension Color {
 struct AnnotationsListView: View {
     @Environment(AppModel.self) private var model
 
+    /// The book being connected to Seed, while the address sheet stands.
+    @State private var seedLinkTarget: BookGroup?
+    @State private var seedURLDraft = ""
+
     private struct BookGroup: Identifiable {
         let address: String
         let title: String
@@ -184,14 +188,46 @@ struct AnnotationsListView: View {
                         row(for: item, isOrphan: orphans.contains(item.id))
                     }
                 } header: {
-                    Text(group.title)
-                        .contextMenu {
-                            Button("Export Annotations…") {
-                                exportAnnotations(for: group)
+                    HStack(spacing: 6) {
+                        Text(group.title)
+                        if model.seedLinks[group.address] != nil {
+                            // Connected: this book speaks on a Seed doc.
+                            Image(systemName: "leaf")
+                                .foregroundStyle(.secondary)
+                                .help("Connected to Seed — control-click to share")
+                        }
+                    }
+                    .contextMenu {
+                        Button("Export Annotations…") {
+                            exportAnnotations(for: group)
+                        }
+                        Divider()
+                        if model.seedLinks[group.address] != nil {
+                            Button("Share Annotations to Seed") {
+                                shareToSeed(group)
+                            }
+                            Button("Disconnect from Seed") {
+                                model.unlinkSeed(bookAddress: group.address)
+                                model.showNote("Disconnected “\(group.title)” from Seed")
+                            }
+                        } else {
+                            Button("Connect to Seed…") {
+                                seedURLDraft = ""
+                                seedLinkTarget = group
                             }
                         }
+                    }
                 }
             }
+        }
+        .alert("Connect to Seed", isPresented: Binding(
+            get: { seedLinkTarget != nil },
+            set: { if !$0 { seedLinkTarget = nil } })) {
+            TextField("https://ht26.hyper.media/…", text: $seedURLDraft)
+            Button("Connect") { connectSeed() }
+            Button("Cancel", role: .cancel) { seedLinkTarget = nil }
+        } message: {
+            Text("Paste the document's web address on its Seed space. It resolves to the document's hm:// identity, and Share posts this book's annotations there as comments.")
         }
         .overlay {
             if groups.isEmpty {
@@ -291,6 +327,41 @@ struct AnnotationsListView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try? data.write(to: url, options: .atomic)
         model.showNote("Exported the annotations of “\(group.title)”")
+    }
+
+    // MARK: Seed
+
+    /// Resolves the pasted web URL to the document's hm:// identity and
+    /// keeps the connection — in the community folder, so every device
+    /// shares it.
+    private func connectSeed() {
+        guard let group = seedLinkTarget else { return }
+        let url = seedURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        seedLinkTarget = nil
+        guard !url.isEmpty else { return }
+        Task {
+            do {
+                try await model.linkSeed(bookAddress: group.address, urlString: url)
+                model.showNote("Connected “\(group.title)” to Seed")
+            } catch {
+                model.showNote("Could not connect to Seed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Posts the book's annotations to its Seed document as signed
+    /// comments — each once; a second share sends only what is new.
+    private func shareToSeed(_ group: BookGroup) {
+        Task {
+            do {
+                let posted = try await model.shareAnnotationsToSeed(bookAddress: group.address)
+                model.showNote(posted == 0
+                    ? "Every annotation is already on Seed"
+                    : "Shared \(posted) annotation\(posted == 1 ? "" : "s") to Seed")
+            } catch {
+                model.showNote("Could not share to Seed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func icon(for motivation: String) -> String {

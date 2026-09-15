@@ -478,6 +478,12 @@ nonisolated private struct HMAccountPayload: Decodable {
     let metadata: HMMetadata?
 }
 
+/// `/hm/api/config` — the one field that matters here. Served raw, not
+/// SuperJSON-wrapped.
+nonisolated private struct HMSiteConfig: Decodable {
+    let registeredAccountUid: String?
+}
+
 // MARK: - Fetcher
 
 nonisolated enum HypermediaFetcher {
@@ -546,6 +552,44 @@ nonisolated enum HypermediaFetcher {
         }
         return headers
     }
+
+    // MARK: Web URL → hm:// via the site config
+
+    /// Eric's addressing rule for a Seed site: any regular web URL on it
+    /// names the document `hm://<registeredAccountUid>/<path>` — the
+    /// account uid read once per host from `/hm/api/config`. The second
+    /// door for pages whose OPTIONS carries no Hypermedia headers.
+    static func resolveViaConfig(url: URL) async throws -> HypermediaAddress {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              let host = url.host else { throw HypermediaError.invalidAddress }
+        let originString = "\(scheme)://\(host)"
+        let uid: String
+        if let cached = await configCache.name(for: originString) {
+            uid = cached
+        } else {
+            guard let configURL = URL(string: originString + "/hm/api/config"),
+                  let data = try? await get(configURL),
+                  let config = try? JSONDecoder().decode(HMSiteConfig.self, from: data),
+                  let registered = config.registeredAccountUid, !registered.isEmpty else {
+                throw HypermediaError.notASpace(host)
+            }
+            uid = registered
+            await configCache.remember(registered, for: originString)
+        }
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let path = url.path.split(separator: "/").map(String.init).filter { !$0.isEmpty }
+        let version = comps?.queryItems?
+            .first(where: { $0.name == "v" })?.value
+            .flatMap { $0.isEmpty ? nil : $0 }
+        return HypermediaAddress(
+            uid: uid, path: path, version: version,
+            blockRef: HypermediaAddress.blockID(fromFragment: comps?.fragment),
+            origin: URL(string: originString))
+    }
+
+    /// Each host's registered account uid, looked up once a session.
+    private static let configCache = HypermediaNameCache()
 
     // MARK: Listing
 
@@ -703,8 +747,13 @@ nonisolated enum HypermediaFetcher {
             throw HypermediaError.invalidAddress
         }
         let headers = try await hypermediaHeaders(for: url)
-        guard let id = headers["x-hypermedia-id"], var address = HypermediaAddress.parse(id) else {
-            throw HypermediaError.notASpace(host)
+        var address: HypermediaAddress
+        if let id = headers["x-hypermedia-id"], let parsed = HypermediaAddress.parse(id) {
+            address = parsed
+        } else {
+            // The page told us nothing — the site config still can:
+            // its registered account plus the URL's own path.
+            address = try await resolveViaConfig(url: url)
         }
         // The page URL's own version and fragment still apply.
         if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {

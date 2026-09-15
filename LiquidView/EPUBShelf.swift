@@ -1815,12 +1815,13 @@ private struct ProceedingsMapNode: View {
     }
 
     /// The abstract reads as text, not chrome: the app's serif body
-    /// face, full black on the light card.
+    /// face, full black on the light card. The iOS target does not
+    /// carry AppFonts; the system serif stands in there.
     private var abstractFont: Font {
         #if os(macOS)
         AppFonts.body(10)
         #else
-        AppFonts.body(12)
+        .system(size: 12, design: .serif)
         #endif
     }
 

@@ -4111,6 +4111,8 @@ final class AppModel {
         globalPinnedTopics = analysesFile.pinnedTopics
         // Document extractions share the folder the same way.
         documentExtractions = ExtractionsFile.read(from: folder).extractions
+        // The books' Seed connections travel with the folder too.
+        seedLinks = SeedLinksFile.read(from: folder).links
         // The citation graph shares the folder: adopt what other
         // devices fetched, then quietly research a few more works.
         CitationGraph.mirrorFolder = folder
@@ -4396,6 +4398,138 @@ final class AppModel {
             categories[topic] = Self.aiCategoryName
         }
         return categories
+    }
+
+    // MARK: Seed links — a book's counterpart document on a Seed space
+
+    /// A book's Seed counterpart: the web URL the reader gave and the
+    /// canonical hm:// identity it resolved to — plus which annotations
+    /// have already been spoken there, so Share posts each only once.
+    struct SeedLink: Codable {
+        var webURL: String
+        var canonicalID: String
+        var sharedAnnotationIDs: Set<String>
+
+        init(webURL: String, canonicalID: String,
+             sharedAnnotationIDs: Set<String> = []) {
+            self.webURL = webURL
+            self.canonicalID = canonicalID
+            self.sharedAnnotationIDs = sharedAnnotationIDs
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            webURL = (try? c.decode(String.self, forKey: .webURL)) ?? ""
+            canonicalID = (try? c.decode(String.self, forKey: .canonicalID)) ?? ""
+            sharedAnnotationIDs =
+                (try? c.decode(Set<String>.self, forKey: .sharedAnnotationIDs)) ?? []
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case webURL, canonicalID, sharedAnnotationIDs
+        }
+    }
+
+    /// On-disk container in the shared library folder, beside the
+    /// analyses — every device shares the same connections.
+    private struct SeedLinksFile: Codable {
+        var links: [String: SeedLink] = [:]
+        static let filename = "_seed-links.json"
+
+        static func read(from folder: URL) -> SeedLinksFile {
+            let url = folder.appendingPathComponent(filename)
+            guard let data = try? Data(contentsOf: url),
+                  let file = try? JSONDecoder().decode(SeedLinksFile.self, from: data)
+            else { return SeedLinksFile() }
+            return file
+        }
+
+        func write(to folder: URL) {
+            let url = folder.appendingPathComponent(Self.filename)
+            if let data = try? JSONEncoder().encode(self) {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
+
+    /// Book address → its Seed link.
+    private(set) var seedLinks: [String: SeedLink] = [:]
+
+    private func saveSeedLinks() {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        var file = SeedLinksFile()
+        file.links = seedLinks
+        file.write(to: folder)
+    }
+
+    /// Connects a book to its Seed document: any regular web URL on the
+    /// space resolves to the canonical hm:// identity — the page's own
+    /// Hypermedia headers, or the site config's registeredAccountUid.
+    /// The fetch also learns the document's version, which a comment
+    /// must reference.
+    func linkSeed(bookAddress: String, urlString: String) async throws {
+        let result = try await HypermediaFetcher.fetch(
+            urlString: urlString, spaces: hypermedia.spaces)
+        hypermedia.rememberDocument(id: result.canonicalID,
+                                    origin: result.origin,
+                                    version: result.version)
+        var link = seedLinks[bookAddress]
+            ?? SeedLink(webURL: urlString, canonicalID: result.canonicalID)
+        link.webURL = urlString
+        link.canonicalID = result.canonicalID
+        seedLinks[bookAddress] = link
+        saveSeedLinks()
+    }
+
+    func unlinkSeed(bookAddress: String) {
+        seedLinks.removeValue(forKey: bookAddress)
+        saveSeedLinks()
+    }
+
+    /// Shares the book's annotations to its Seed document, each as one
+    /// signed comment — the quoted words, then the reader's note. Every
+    /// annotation is spoken once; re-sharing posts only what is new.
+    /// Returns how many were posted.
+    @discardableResult
+    func shareAnnotationsToSeed(bookAddress: String) async throws -> Int {
+        guard var link = seedLinks[bookAddress], !link.canonicalID.isEmpty else {
+            throw HypermediaError.serverError("This book is not connected to a Seed document.")
+        }
+        // The comment must name the document's version; a fresh launch
+        // has not fetched one yet — resolve again from the kept URL.
+        if hypermedia.documentVersions[link.canonicalID]?.isEmpty != false {
+            let result = try await HypermediaFetcher.fetch(
+                urlString: link.webURL, spaces: hypermedia.spaces)
+            hypermedia.rememberDocument(id: result.canonicalID,
+                                        origin: result.origin,
+                                        version: result.version)
+            link.canonicalID = result.canonicalID
+        }
+        let waiting = allAnnotations.filter {
+            $0.address == bookAddress && !link.sharedAnnotationIDs.contains($0.id)
+        }
+        var posted = 0
+        for item in waiting {
+            var parts: [String] = []
+            if let exact = item.exact, !exact.isEmpty {
+                parts.append("\u{201C}\(exact)\u{201D}")
+            }
+            if let note = item.annotation.body?.value, !note.isEmpty {
+                parts.append(note)
+            }
+            guard !parts.isEmpty else { continue }
+            parts.append("\u{2014} shared from Origami Text")
+            try await hypermedia.postComment(text: parts.joined(separator: "\n"),
+                                             on: link.canonicalID, replyTo: nil)
+            // Remembered one by one: an error mid-run keeps what was said.
+            link.sharedAnnotationIDs.insert(item.id)
+            seedLinks[bookAddress] = link
+            saveSeedLinks()
+            posted += 1
+        }
+        return posted
     }
 
     // MARK: Document entity extraction (see EntityExtraction.swift)

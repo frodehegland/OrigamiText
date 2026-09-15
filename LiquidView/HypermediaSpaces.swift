@@ -42,6 +42,13 @@ final class HypermediaSpaces {
         }
     }
 
+    /// Remembers where a document lives and which version was read —
+    /// enough to speak on it — without caching a converted body.
+    func rememberDocument(id: String, origin: URL, version: String?) {
+        documentOrigins[id] = origin
+        documentVersions[id] = version
+    }
+
     // MARK: Account
 
     /// The person's signing key, when they have made an account. Kept in
