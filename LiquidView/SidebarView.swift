@@ -532,22 +532,42 @@ struct SidebarView: View {
                     .font(.caption)
             }
 
-            // Topics — clickable after AI analysis; control-click to pin or set aside
+            // Topics — clickable after AI analysis; control-click to pin
+            // or set aside. Grouped under the analysis's broad
+            // categories, each folded until opened — a venue generates
+            // too many topics to stand in one flat list.
             DisclosureGroup(isExpanded: isExpanded("PubTopics")) {
                 if !sortedTopics.isEmpty {
-                    ForEach(sortedTopics, id: \.self) { topic in
-                        Text(topic)
-                            .font(.caption2)
-                            .lineLimit(1)
-                            .tag(SidebarItem.epubPublicationTopic(name, topic))
-                            .contextMenu {
-                                if pinnedTopicSet.contains(topic) {
-                                    Button("Unpin") { model.unpinGlobalTopic(topic) }
-                                } else {
-                                    Button("Pin") { model.pinGlobalTopic(topic) }
+                    let byCategory = analysis?.topicCategories ?? [:]
+                    if byCategory.isEmpty {
+                        // An analysis from before categories: flat, as ever.
+                        ForEach(sortedTopics, id: \.self) { topic in
+                            topicRow(topic, venue: name,
+                                     pinned: pinnedTopicSet.contains(topic))
+                        }
+                    } else {
+                        let grouped = Dictionary(grouping: sortedTopics) {
+                            byCategory[$0] ?? "Other"
+                        }
+                        // Fullest first, Other always last.
+                        let categories = grouped.keys.sorted { a, b in
+                            if (a == "Other") != (b == "Other") { return b == "Other" }
+                            let ca = grouped[a]?.count ?? 0
+                            let cb = grouped[b]?.count ?? 0
+                            return ca != cb ? ca > cb : a < b
+                        }
+                        ForEach(categories, id: \.self) { category in
+                            DisclosureGroup(isExpanded: topicCategoryExpanded(category)) {
+                                ForEach(grouped[category] ?? [], id: \.self) { topic in
+                                    topicRow(topic, venue: name,
+                                             pinned: pinnedTopicSet.contains(topic))
                                 }
-                                Button("Set Aside") { model.setAsideTopic(topic, inPublication: name) }
+                            } label: {
+                                Text("\(category) (\(grouped[category]?.count ?? 0))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
+                        }
                     }
                 } else {
                     Text(isAnalysing
@@ -702,6 +722,40 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    /// One concept row — the same face and menu flat or grouped.
+    @ViewBuilder
+    private func topicRow(_ topic: String, venue: String, pinned: Bool) -> some View {
+        Text(topic)
+            .font(.caption2)
+            .lineLimit(1)
+            .tag(SidebarItem.epubPublicationTopic(venue, topic))
+            .contextMenu {
+                if pinned {
+                    Button("Unpin") { model.unpinGlobalTopic(topic) }
+                } else {
+                    Button("Pin") { model.pinGlobalTopic(topic) }
+                }
+                Button("Set Aside") { model.setAsideTopic(topic, inPublication: venue) }
+            }
+    }
+
+    /// The concept categories the reader has opened this session —
+    /// folded is the resting state, unlike the named sections above,
+    /// so the venue's topics never wall the sidebar.
+    @State private var expandedTopicCategories: Set<String> = []
+
+    private func topicCategoryExpanded(_ category: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedTopicCategories.contains(category) },
+            set: { open in
+                if open {
+                    expandedTopicCategories.insert(category)
+                } else {
+                    expandedTopicCategories.remove(category)
+                }
+            })
     }
 
     private func isExpanded(_ title: String) -> Binding<Bool> {

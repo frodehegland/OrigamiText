@@ -4160,6 +4160,11 @@ final class AppModel {
         var paperTopics: [String: [String]] = [:]   // record.id → [topic]
         var setAsideAuthors: Set<String> = []
         var setAsideTopics: Set<String> = []
+        /// Each topic's broad umbrella (topic → category), assigned by
+        /// the model after the per-paper pass — the sidebar folds the
+        /// venue's many topics under these few. Optional: analyses run
+        /// before categories existed decode without it and list flat.
+        var topicCategories: [String: String]? = nil
 
         /// Visible topics after filtering set-aside items, sorted.
         var allTopics: [String] {
@@ -4295,9 +4300,71 @@ final class AppModel {
 
         var updated = publicationAnalyses[name] ?? PublicationAnalysis()
         updated.paperTopics = paperTopics
+        updated.topicCategories = await categoriseTopics(
+            Array(paperTopics.values.joined()))
         publicationAnalyses[name] = updated
         analysesRevision += 1
         saveAnalysesFile()
+    }
+
+    /// One broad umbrella per topic, asked of the model after the
+    /// per-paper pass — a venue's several hundred topics fold into a
+    /// dozen groups. Chunked, each chunk shown the categories already
+    /// coined so the set stays small; a topic the reply misses simply
+    /// carries no category and the sidebar files it under Other.
+    private func categoriseTopics(_ topics: [String]) async -> [String: String] {
+        var categories: [String: String] = [:]
+        var coined: [String] = []
+        let unique = Array(Set(topics.filter { !$0.isEmpty })).sorted()
+        var start = 0
+        while start < unique.count {
+            let chunk = Array(unique[start ..< min(start + 40, unique.count)])
+            start += 40
+            let existing = coined.isEmpty ? "none yet" : coined.joined(separator: ", ")
+            let prompt = """
+                Existing categories: \(existing)
+
+                Give each topic below ONE broad category of one to three \
+                words (for example "Artificial Intelligence", "Social \
+                Media", "Hypertext & Narrative", "Methods & Analysis"). \
+                Reuse an existing category whenever it fits; coin a new \
+                one only when none does. Reply with one line per topic, \
+                in the exact form:
+                topic :: category
+
+                Topics:
+                \(chunk.joined(separator: "\n"))
+                """
+            guard let (text, _) = try? await OrigamiLLM.shared.respond(
+                instructions: "Group academic topic keywords under broad umbrella categories. Follow the output format exactly.",
+                to: prompt)
+            else { continue }
+            var replied: [String: String] = [:]
+            for line in text.components(separatedBy: .newlines) {
+                let parts = line.components(separatedBy: "::")
+                guard parts.count == 2 else { continue }
+                let topic = parts[0].trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "-• "))
+                let category = parts[1].trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                guard !topic.isEmpty, !category.isEmpty, category.count < 40
+                else { continue }
+                replied[topic.lowercased()] = category
+            }
+            for topic in chunk {
+                guard let category = replied[topic.lowercased()] else { continue }
+                // Case variants of a coined category fold together.
+                if let match = coined.first(where: {
+                    $0.caseInsensitiveCompare(category) == .orderedSame
+                }) {
+                    categories[topic] = match
+                } else {
+                    coined.append(category)
+                    categories[topic] = category
+                }
+            }
+        }
+        return categories
     }
 
     // MARK: Document entity extraction (see EntityExtraction.swift)
