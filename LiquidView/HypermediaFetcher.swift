@@ -375,7 +375,9 @@ nonisolated private struct HMDocumentInfoWire: Decodable {
     let version: String?
     let breadcrumbs: [HMBreadcrumb]
     let metadata: HMMetadata
-    let isRedirect: Bool
+    /// A path that has MOVED away: nothing of its own to read here.
+    /// A path that is REPUBLISHED is a different matter — see below.
+    let isMovedAway: Bool
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -388,13 +390,37 @@ nonisolated private struct HMDocumentInfoWire: Decodable {
         version = try? c.decode(String.self, forKey: .version)
         breadcrumbs = (try? c.decode([HMBreadcrumb].self, forKey: .breadcrumbs)) ?? []
         metadata = (try? c.decode(HMMetadata.self, forKey: .metadata)) ?? HMMetadata()
-        // A redirect stub has redirectInfo set; presence is all that matters.
-        isRedirect = c.contains(.redirectInfo) && !((try? c.decodeNil(forKey: .redirectInfo)) ?? true)
+        // Two kinds of redirect wear the same field, and the difference
+        // is the whole conference: a path that MOVED has nothing to read
+        // here, while a path REPUBLISHED (`republish: true`) is this
+        // space showing another's document as its own — which is exactly
+        // how a proceedings is assembled, every paper named under /pro
+        // and pointing at the author's copy. Dropping those emptied the
+        // shelf: ht26.hyper.media lists 73 documents, and 60 of them —
+        // the entire proceedings — are republished.
+        let redirect = try? c.decode(HMRedirectInfo.self, forKey: .redirectInfo)
+        isMovedAway = redirect != nil && redirect?.republish != true
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, path, authors, sortTime, updateTime, createTime, version, breadcrumbs, metadata, redirectInfo
     }
+}
+
+/// `redirectInfo` on a listing entry. `republish` tells a republished
+/// document (the space's own listing of someone else's paper) from a
+/// path that simply moved.
+nonisolated private struct HMRedirectInfo: Decodable {
+    let republish: Bool
+    let target: String?
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        republish = (try? c.decode(Bool.self, forKey: .republish)) ?? false
+        target = try? c.decode(String.self, forKey: .target)
+    }
+
+    private enum CodingKeys: String, CodingKey { case republish, target }
 }
 
 nonisolated private struct HMBreadcrumb: Decodable {
@@ -616,7 +642,7 @@ nonisolated enum HypermediaFetcher {
             throw HypermediaError.decodingFailed(error.localizedDescription)
         }
         return payload.results.compactMap { wire in
-            guard !wire.isRedirect else { return nil }
+            guard !wire.isMovedAway else { return nil }
             let uid = wire.id?.uid ?? space.uid
             let path = wire.id?.path ?? wire.path
             let address = HypermediaAddress(uid: uid, path: path, version: nil, blockRef: nil, origin: nil)
