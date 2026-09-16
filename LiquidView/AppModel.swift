@@ -3571,6 +3571,21 @@ final class AppModel {
         annotationsStamp += 1
     }
 
+    /// A written note rewritten, by address — the same write as
+    /// `updateAnnotation(_:note:for:)`, for the WebView screen, which
+    /// holds a book rather than a LiquidDoc.
+    func updateAnnotation(id: String, note: String, address: String) {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        guard let index = all.firstIndex(where: { $0.id == id }) else { return }
+        all[index].body = WebAnnotation.TextualBody(value: trimmed,
+                                                    purpose: all[index].body?.purpose)
+        all[index].modified = .now
+        persistAnnotations(all, for: address)
+        annotationsStamp += 1
+    }
+
     /// Put Away, by address — the WebView screen's slip removal.
     func removeLiftSlip(id: String, address: String) {
         var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)

@@ -204,6 +204,60 @@ struct EPUBReaderScreen: View {
         model.epubRecords.first { $0.folder == book.id }?.id ?? book.id
     }
 
+    /// A comment being written or read on the faithful page.
+    private struct CommentTarget: Identifiable {
+        let annotation: WebAnnotation
+        var id: String { annotation.id }
+    }
+    @State private var commentTarget: CommentTarget?
+
+    /// The comments that landed on a heading, standing as slips over the
+    /// page — the same little slips the native readings float, and the
+    /// same verbs: drag to move, click to open and write, ctrl-click to
+    /// delete. Positions are absolute within the reader's frame, as a
+    /// lifted quote's are, since a WebView page reports no frames to
+    /// SwiftUI. Fresh slips step down the page so several never stack.
+    @ViewBuilder private var commentSlipsLayer: some View {
+        let address = bookAddress
+        let slips = headingComments
+        ForEach(Array(slips.enumerated()), id: \.element.id) { index, annotation in
+            MarginNoteView(
+                note: annotation,
+                fontSize: 11,
+                position: CGPoint(
+                    x: annotation.placement.map { CGFloat($0.dx) } ?? 120,
+                    y: annotation.placement.map { CGFloat($0.dy) }
+                        ?? (120 + CGFloat(index) * 54)),
+                onMove: { moved in
+                    model.setNotePlacement(
+                        WebAnnotation.Placement(near: nil, dx: moved.x, dy: moved.y),
+                        forAnnotationID: annotation.id, address: address)
+                },
+                onOpen: { commentTarget = CommentTarget(annotation: annotation) })
+                // Ctrl-click deletes the note: it leaves the sidecar and
+                // does not come back.
+                .contextMenu {
+                    Button("Delete", role: .destructive) {
+                        model.removeAnnotation(id: annotation.id, address: address)
+                    }
+                }
+        }
+        .sheet(item: $commentTarget) { target in
+            // The reader's own words, so they stay editable — the same
+            // sheet the native readings open.
+            AnnotationEditorSheet(
+                text: target.annotation.body?.value ?? "",
+                onDelete: {
+                    model.removeAnnotation(id: target.annotation.id, address: address)
+                },
+                onCopy: { text in copyCommentCitation(target.annotation, note: text) },
+                onSave: { text in
+                    model.updateAnnotation(id: target.annotation.id, note: text,
+                                           address: address)
+                })
+        }
+    }
+
     /// The lifted quotes, floating over the WebView page.
     @ViewBuilder private var liftSlipsLayer: some View {
         let address = bookAddress
@@ -573,7 +627,11 @@ struct EPUBReaderScreen: View {
                                        outlineAvailable: model.readingDoc(forBook: book) != nil)
                     }
             } else if readerMode == .faithful {
+                // A comment on a heading floats over the page rather
+                // than inking the heading; the slips stand above the
+                // WebView, where the reader left them.
                 faithfulReader
+                    .overlay(alignment: .topLeading) { commentSlipsLayer }
             } else if let doc = model.readingDoc(forBook: book) {
                 // A native reading style over the book's structured
                 // body — the OrigamiReadingView carries the foot bar,
@@ -844,11 +902,45 @@ struct EPUBReaderScreen: View {
         }
     }
 
+    /// The ids of the book's headings, from the book's own document —
+    /// how a comment anchored to a section's name is told from one
+    /// anchored to a paragraph. Empty when the document cannot be read,
+    /// in which case nothing changes and comments paint as before.
+    private var headingIDs: Set<String> {
+        guard let body = model.readingDoc(forBook: book)?.body else { return [] }
+        return Set(body.filter { $0.effectiveHeading != nil }.map(\.id))
+    }
+
+    /// Comments that landed on a heading. A comment paints its words in
+    /// the kind's ink, and a comment with no words left to mark paints
+    /// its whole element — which on a heading turns the section's name
+    /// yellow, reading as a marking OF the heading. A heading's words
+    /// are the document's structure, not a passage to mark, so these
+    /// stand as slips over the page instead (see `commentSlipsLayer`).
+    private var headingComments: [WebAnnotation] {
+        _ = model.annotationsStamp
+        let headings = headingIDs
+        guard !headings.isEmpty else { return [] }
+        return model.annotations(forBook: book).filter { annotation in
+            guard annotation.float == nil,
+                  annotation.motivation == WebAnnotation.Motivation.commenting,
+                  annotation.body?.value.isEmpty == false else { return false }
+            return annotation.target.selectors.contains { selector in
+                if case .fragment(let value, _) = selector { return headings.contains(value) }
+                return false
+            }
+        }
+    }
+
     /// The open book's sidecar annotations, flattened to what the page
     /// script paints: the stable fragment id, the exact words, the note.
+    /// Comments on headings are left out — they float instead.
     private var paintedAnnotations: [PaintedAnnotation] {
         _ = model.annotationsStamp   // repaint when annotations change
-        return model.annotations(forBook: book).map { annotation in
+        let floating = Set(headingComments.map(\.id))
+        return model.annotations(forBook: book).filter {
+            !floating.contains($0.id)
+        }.map { annotation in
             var fragment: String?
             var exact = ""
             for selector in annotation.target.selectors {
@@ -927,6 +1019,38 @@ struct EPUBReaderScreen: View {
                 publication: record?.publication,
                 quote: text,
                 annotation: model.documentAnnotation(forAddress: address)?.body?.value,
+                address: address,
+                sourceFile: record?.originalFilename,
+                doi: record?.doi,
+                renditions: [("epub", address)]),
+            documentTitle: record?.title ?? book.title,
+            documentFilename: record?.originalFilename)
+        CitationClipboard.write(citation)
+        model.showNote("Copied citation to clipboard")
+    }
+
+    /// Copy, from a comment slip: a citation to this book carrying the
+    /// reader's note in its Annotation field, and the commented words as
+    /// the quote when the comment stands on any. The same clipboard the
+    /// native readings write, so it pastes into Author the same way.
+    private func copyCommentCitation(_ annotation: WebAnnotation, note: String) {
+        let record = model.epubRecords.first { $0.folder == book.id }
+        let address = record?.id ?? book.id
+        let quote = annotation.quotedText
+        let citation = OrigamiCitation(
+            to: address,
+            fragment: nil,
+            rel: "cites",
+            quotedText: quote ?? "",
+            author: record?.author ?? "",
+            year: record?.dateISO.map { String($0.prefix(4)) } ?? "",
+            bibtex: OrigamiReading.bibTeXEntry(
+                title: record?.title ?? book.title,
+                author: record?.author ?? "",
+                year: record?.dateISO.map { String($0.prefix(4)) },
+                publication: record?.publication,
+                quote: quote,
+                annotation: note,
                 address: address,
                 sourceFile: record?.originalFilename,
                 doi: record?.doi,
@@ -2239,6 +2363,13 @@ struct EPUBReaderView: NSViewRepresentable {
           var range = findRange(host, a.exact)
             || findRange(document.body, a.exact);
           if (!range && host) {
+            // The words are gone, so the whole element would take the
+            // ink. Never for a comment on a heading: that turns the
+            // section's name yellow, which reads as a marking OF the
+            // heading. Those comments stand as slips over the page
+            // instead (EPUBReaderScreen.commentSlipsLayer), and this
+            // guard holds even for an anchor Swift could not match.
+            if (a.kind === 'comment' && /^H[1-6]$/.test(host.tagName)) return;
             range = document.createRange();
             range.selectNodeContents(host);
           }

@@ -534,9 +534,23 @@ struct OrigamiReadingView: View {
     @ViewBuilder private var marginNotesLayer: some View {
         let noteSize = max((NSFont.preferredFont(forTextStyle: .body).pointSize
                             + CGFloat(fontDelta)) / 3, 8)
-        ForEach(model.marginNotes(for: doc).filter { $0.float == nil },
-                id: \.id) { annotation in
-            if let position = slipPosition(for: annotation) {
+        // The page's own notes, plus the comments that landed on a
+        // heading — which stand here as slips rather than inking the
+        // heading. A slip the reader has dragged carries its own
+        // placement thereafter, like any other.
+        let headingSlips = headingComments
+        let placed = Dictionary(headingSlips.map { ($0.annotation.id, $0.paragraphID) },
+                                uniquingKeysWith: { first, _ in first })
+        let pageNotes = model.marginNotes(for: doc).filter { $0.float == nil }
+        let standing = Set(pageNotes.map(\.id))
+        let notes = pageNotes
+            + headingSlips.map(\.annotation).filter { !standing.contains($0.id) }
+        ForEach(notes, id: \.id) { annotation in
+            let anchored = placed[annotation.id].flatMap { paragraphID in
+                gutterPosition(besideParagraph: paragraphID,
+                               text: annotation.body?.value ?? "")
+            }
+            if let position = slipPosition(for: annotation) ?? anchored {
                 MarginNoteView(
                     note: annotation,
                     fontSize: noteSize,
@@ -907,8 +921,14 @@ struct OrigamiReadingView: View {
         // (a citation to this document, the note in its Annotation
         // field), and Save.
         .sheet(item: $annotationEditor) { target in
+            // A lifted quote opens as itself: the passage, read-only.
+            // Everything else is the reader's own note, to write.
+            let isLift = target.annotation.float != nil
             AnnotationEditorSheet(
-                text: target.annotation.body?.value ?? "",
+                text: isLift
+                    ? (target.annotation.quotedText ?? "")
+                    : (target.annotation.body?.value ?? ""),
+                editable: !isLift,
                 onDelete: { model.removeAnnotation(target.annotation, for: doc) },
                 onCopy: { text in
                     copyAnnotationCitation(paragraphID: target.paragraphID,
@@ -2778,11 +2798,54 @@ struct OrigamiReadingView: View {
             // A float is a slip (and a room card), never highlight ink
             // — its quote selector is an anchor, not a marking.
             guard entry.annotation.float == nil else { continue }
+            // Nor does a comment ink a heading: a section's name painted
+            // in comment yellow reads as a marking OF the heading, and
+            // the words of a heading are the document's structure, not a
+            // passage to mark. It stands as a slip in the gutter instead
+            // (see `headingComments`).
+            guard !isHeadingComment(entry.annotation, at: resolution.paragraphID)
+            else { continue }
             map[resolution.paragraphID, default: []]
                 .append(ResolvedAnnotation(annotation: entry.annotation,
                                            resolution: resolution))
         }
         return map
+    }
+
+    /// Whether this is a reader's comment that landed on a heading.
+    private func isHeadingComment(_ annotation: WebAnnotation,
+                                  at paragraphID: String) -> Bool {
+        guard annotation.motivation == WebAnnotation.Motivation.commenting,
+              annotation.body?.value.isEmpty == false else { return false }
+        return (doc.body ?? []).first { $0.id == paragraphID }?
+            .effectiveHeading != nil
+    }
+
+    /// Comments that landed on a heading, with the heading they name —
+    /// shown as slips beside it rather than as ink upon it. Old ones
+    /// included: a document whose headings are already yellow reads
+    /// right the moment this ships, with nothing rewritten in the
+    /// sidecar (the anchor is still the comment's provenance).
+    private var headingComments: [(annotation: WebAnnotation, paragraphID: String)] {
+        model.resolvedAnnotations(for: doc).compactMap { entry in
+            guard let resolution = entry.resolution,
+                  entry.annotation.float == nil,
+                  isHeadingComment(entry.annotation, at: resolution.paragraphID)
+            else { return nil }
+            return (entry.annotation, resolution.paragraphID)
+        }
+    }
+
+    /// Where a slip with no standing place of its own goes: the gutter
+    /// beside the block it names, clear of the column — the same spot a
+    /// freshly lifted quote takes.
+    private func gutterPosition(besideParagraph paragraphID: String,
+                                text: String) -> CGPoint? {
+        let placement = liftPlacement(for: paragraphID, quote: text)
+        guard let near = placement.near, let frame = paragraphFrames[near] else {
+            return nil
+        }
+        return CGPoint(x: frame.minX + placement.dx, y: frame.minY + placement.dy)
     }
 
     // MARK: - One paragraph
@@ -4363,8 +4426,17 @@ struct MarginNoteSurface: NSViewRepresentable {
 /// three verbs — Delete it, Copy it as a citation to this document
 /// (the note riding in the citation's Annotation field, for Author),
 /// or Save the rewrite.
-private struct AnnotationEditorSheet: View {
+/// One annotation opened: the reader's note to write, or a lifted quote
+/// to read. Shared by the native reading views and the faithful page's
+/// screen, so a slip opens the same way whichever reading it floats over.
+struct AnnotationEditorSheet: View {
     let text: String
+    /// A lifted quote is the DOCUMENT's words, not the reader's note:
+    /// shown whole and read-only, with the verbs alone to act — a click
+    /// on a slip must not be able to rewrite what was lifted (and its
+    /// note body is empty, so an editable box would offer to overwrite
+    /// the passage with whatever was typed into it).
+    var editable: Bool = true
     let onDelete: () -> Void
     let onCopy: (String) -> Void
     let onSave: (String) -> Void
@@ -4374,11 +4446,20 @@ private struct AnnotationEditorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Annotation").font(.headline)
-            TextEditor(text: $draft)
-                .font(.body)
-                .frame(minHeight: 140)
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+            Text(editable ? "Annotation" : "Lifted Quote").font(.headline)
+            if editable {
+                TextEditor(text: $draft)
+                    .font(.body)
+                    .frame(minHeight: 140)
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+            } else {
+                ScrollView {
+                    Text(text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(minHeight: 140, maxHeight: 280)
+            }
             HStack {
                 Button("Delete", role: .destructive) {
                     onDelete()
@@ -4390,11 +4471,16 @@ private struct AnnotationEditorSheet: View {
                     dismiss()
                 }
                 .help("Copy as a citation to this document, your annotation in its Annotation field — paste into Author")
-                Button("Save") {
-                    onSave(draft)
-                    dismiss()
+                if editable {
+                    Button("Save") {
+                        onSave(draft)
+                        dismiss()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
                 }
-                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)

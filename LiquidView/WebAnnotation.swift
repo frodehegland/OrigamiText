@@ -135,6 +135,18 @@ public nonisolated struct WebAnnotation: Identifiable, Hashable, Sendable {
 
     /// Where the floated quote stands in the room, when it does.
     public var float: FloatPosition? = nil
+
+    /// The words this annotation stands on, from its quote selector —
+    /// the document's own text, not the reader's note (which lives in
+    /// `body`). A lifted quote keeps its passage here, which is why a
+    /// lift must never be opened as an editable note: there would be
+    /// nothing in the box, and saving would write over the record.
+    public var quotedText: String? {
+        for selector in target.selectors {
+            if case .quote(let exact, _, _) = selector, !exact.isEmpty { return exact }
+        }
+        return nil
+    }
 }
 
 /// The reader's annotation vocabulary — the judgments a reader stamps
