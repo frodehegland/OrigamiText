@@ -9,6 +9,7 @@ import AppKit
 struct EPUBQuickViewScreen: View {
     let book: OpenEPUB
     @Environment(AppModel.self) private var model
+    @Environment(\.colorScheme) private var colorScheme
 
     // The reader's own theme and type, so a look matches the reading.
     @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
@@ -37,10 +38,19 @@ struct EPUBQuickViewScreen: View {
     @AppStorage("readingFontDelta") private var fontDelta = 3.0
     @AppStorage("readingLineSpacing") private var lineSpacing = 3.0
 
+    /// The reading's chosen theme — the page's colours, and the foot
+    /// bar's, so a look wears one skin rather than a themed page above a
+    /// system-grey bar. Edited theme colours apply live: every override
+    /// write bumps the tick.
+    private var theme: ReaderTheme {
+        _ = themeEditTick
+        return ReaderTheme(rawValue: themeRaw) ?? .highContrast
+    }
+
     private var css: String {
         _ = themeEditTick
         return ReaderStyle.css(bodyFont: bodyFont, headingFont: headingFont,
-                               theme: ReaderTheme(rawValue: themeRaw) ?? .highContrast,
+                               theme: theme,
                                fontDelta: fontDelta, lineSpacing: lineSpacing)
     }
 
@@ -54,6 +64,30 @@ struct EPUBQuickViewScreen: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            reader
+            // This window is a look, not a keeping: its unpack is deleted
+            // the moment it closes. So the way to keep the book stands at
+            // the foot, centred, in the lab's ember — unmissable, and in
+            // a bar of its own rather than an overlay, so it never sits
+            // over the words it is asking about. The bar wears the
+            // reading's own theme, as the page above it does.
+            // Only when there is a file to import: a button that cannot
+            // do its one job should not be there at all.
+            if book.sourceFile != nil {
+                Divider()
+                ImportToLibraryButton(book: book)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .background(theme.background(for: colorScheme)
+                                ?? Color(nsColor: .windowBackgroundColor))
+            }
+        }
+        .background(theme.background(for: colorScheme)
+                    ?? Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var reader: some View {
         EPUBReaderView(
             book: book,
             css: css,
@@ -153,7 +187,10 @@ struct EPUBQuickViewScreen: View {
 /// tells the model to forget the window. Held strongly by the model for
 /// the window's lifetime (NSWindow.delegate is weak).
 final class EPUBQuickViewWindowDelegate: NSObject, NSWindowDelegate {
-    private let root: URL
+    /// The temporary unpack this window reads from — also what names the
+    /// book (`quickview:<folder>`), so the model can find the window a
+    /// given look belongs to.
+    let root: URL
     var onClose: () -> Void = {}
 
     init(root: URL) {
@@ -164,4 +201,40 @@ final class EPUBQuickViewWindowDelegate: NSObject, NSWindowDelegate {
         try? FileManager.default.removeItem(at: root)
         onClose()
     }
+}
+
+/// The look-only window's foot: an ember button, centred — a reader must
+/// not close the window without noticing that the book was never kept.
+/// The page and the bar wear the same reading theme, which is the point
+/// of rendering it here: a themed page above a system-grey bar reads as
+/// two windows badly joined.
+#Preview("Import to Library", traits: .fixedLayout(width: 560, height: 300)) {
+    let theme = ReaderTheme(rawValue: UserDefaults.standard
+        .string(forKey: AppSettings.readerThemeKey) ?? "") ?? .highContrast
+    let ink = theme.textColor(for: .light) ?? .primary
+    let paper = theme.background(for: .light) ?? Color(nsColor: .textBackgroundColor)
+    return VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("The Native Architecture of Reality")
+                .font(.custom(ReaderStyle.defaultHeadingFont, size: 22).weight(.semibold))
+            Text("…and so the last lines of a book being looked at, set in the reading's own type and colours, above the one thing it still needs.")
+                .font(.custom(ReaderStyle.defaultBodyFont, size: 15))
+        }
+        .foregroundStyle(ink)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(34)
+        .background(paper)
+        Divider()
+        ImportToLibraryButton(
+            book: OpenEPUB(id: "quickview:preview", title: "A Book",
+                           content: URL(fileURLWithPath: "/tmp/paper.html"),
+                           base: URL(fileURLWithPath: "/tmp"),
+                           // A book being looked at names its own file —
+                           // which is what makes the offer appear at all.
+                           sourceFile: URL(fileURLWithPath: "/tmp/a-book.epub")))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 9)
+            .background(paper)
+    }
+    .environment(AppModel())
 }

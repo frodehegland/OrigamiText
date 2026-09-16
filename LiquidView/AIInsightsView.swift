@@ -106,7 +106,8 @@ struct AIInsightsView: View {
                 }
                 return .handled
             }
-            return .systemAction
+            // A cited book or DOI opens here too, not in a browser.
+            return model.claimLink(url) ? .handled : .systemAction
         })
     }
 

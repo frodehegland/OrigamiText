@@ -63,6 +63,9 @@ struct LiquidViewApp: App {
                 Button("Import…") { model.importDocumentFile() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
                 Button("Import Reference Dataset…") { model.importReferenceDatasetPanel() }
+                // A capsule's page, read here: gemtext is another
+                // hypermedia protocol the reader speaks.
+                Button("Open Gemini URL…") { model.openGeminiURLPrompt() }
                 Button("Export to XR (Author Map)…") { model.showXRExport = true }
                 Button("Export Library Manifest…") { model.exportLibraryManifest() }
                 Divider()
@@ -95,6 +98,7 @@ struct LiquidViewApp: App {
                 Button("Export…") { model.exportDraft() }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
                     .disabled(model.draftEditor == nil)
+                Button("Export as Gemtext (.gmi)…") { model.exportGemtextFront() }
             }
             // The window toolbar is bare, as in Knowledge Space — these
             // menu items are where its former controls live on.

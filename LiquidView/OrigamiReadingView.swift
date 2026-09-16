@@ -508,10 +508,12 @@ struct OrigamiReadingView: View {
                     annotationEditor = AnnotationEditTarget(
                         annotation: annotation, paragraphID: "")
                 })
-                // Ctrl-click closes the slip — the annotation leaves
-                // with it, here and in the visionOS room.
+                // Ctrl-click deletes the note: the annotation leaves the
+                // sidecar, here and in the visionOS room, and does not
+                // come back. "Put Away" sounded like a drawer it could
+                // be fetched from again; the verb now says what happens.
                 .contextMenu {
-                    Button("Put Away", role: .destructive) {
+                    Button("Delete", role: .destructive) {
                         model.removeAnnotation(annotation, for: doc)
                     }
                 }
@@ -589,6 +591,21 @@ struct OrigamiReadingView: View {
     private func rendered(_ text: String) -> AttributedString {
         OrigamiReading.inlineAttributed(text, in: doc, citations: citationStyle,
                                         markStyle: markedStyle, appearance: colorScheme)
+    }
+
+    /// Citations and links in the reading's own ink, never the system's
+    /// blue. The AppKit paragraphs carry that rule in their run
+    /// attributes (see SelectableParagraph); a plain SwiftUI `Text` —
+    /// the Outline's fold labels — would otherwise paint every link with
+    /// the accent colour. A run that already chose a colour (a mark, a
+    /// dimmed span) keeps it.
+    private func inkedLinks(in attributed: AttributedString, ink: Color) -> AttributedString {
+        var out = attributed
+        let linked = out.runs.compactMap {
+            $0.link != nil && $0.foregroundColor == nil ? $0.range : nil
+        }
+        for range in linked { out[range].foregroundColor = ink }
+        return out
     }
 
     private var enabledActions: [OrigamiContextAction] {
@@ -945,7 +962,9 @@ struct OrigamiReadingView: View {
                 }
                 return .handled
             }
-            return .systemAction
+            // A book behind a link, a DOI, a capsule page: the app's own
+            // door, since this override shadows the window's.
+            return model.claimLink(url) ? .handled : .systemAction
         })
     }
 
@@ -1163,6 +1182,13 @@ struct OrigamiReadingView: View {
 
             Divider().frame(height: 14)
         }
+        // No Import to Library here. This bar belongs to the DOCUMENT
+        // being read — which may be a letter, or a PDF that came in as a
+        // draft — and `model.openEPUB` is whatever book was last opened,
+        // not this reading. Keying an import offer to it put the button
+        // on documents that had nothing to do with any book. A book that
+        // is only being looked at carries the offer in its own chrome
+        // (EPUBReaderScreen's foot, and the look-only window's).
     }
 
     @ViewBuilder private var pageBarTypeControls: some View {
@@ -2244,7 +2270,8 @@ struct OrigamiReadingView: View {
                             }
                             .padding(.top, 8)
                         } label: {
-                            Text(rendered(heading.text))
+                            Text(inkedLinks(in: rendered(heading.text),
+                                            ink: themeHeading ?? .primary))
                                 .font(headingFont(level: section.level))
                                 .foregroundStyle(themeHeading.map(AnyShapeStyle.init)
                                                  ?? AnyShapeStyle(.primary))
@@ -3180,6 +3207,9 @@ struct OrigamiReadingView: View {
                 return true
             }
         }
+        // A book behind a link, a DOI that leads to one, a capsule page,
+        // a Seed document: all read here rather than in a browser.
+        if model.claimLink(url) { return true }
         return NSWorkspace.shared.open(url)
     }
 

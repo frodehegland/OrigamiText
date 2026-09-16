@@ -17,6 +17,23 @@ import Foundation
 /// re-exports. Citations carry three mutually consistent encodings
 /// generated from one internal model: the visible reference text,
 /// `data-bibtex`, and `data-csl-json`.
+/// The link schemes a book's words carry as real anchors: the web, and
+/// the network hypermedia protocols the reader opens itself rather than
+/// handing to a browser — Seed's `hm://` and Gemini's `gemini://` (see
+/// EPUBReaderView's navigation policy). The exporter writes them and the
+/// importer reads them back from this one list, so a link that leaves as
+/// an anchor returns as the same markdown it left as.
+nonisolated enum OrigamiEPUBLinks {
+    static let anchorSchemes = ["https", "http", "gemini", "hm"]
+
+    /// The list as a regex alternation, for the inline markdown converter.
+    static let schemePattern = "(?:" + anchorSchemes.joined(separator: "|") + ")"
+
+    static func isAnchored(href: String) -> Bool {
+        anchorSchemes.contains(href.prefix { $0 != ":" }.lowercased())
+    }
+}
+
 nonisolated enum OrigamiEPUBExportError: LocalizedError {
     /// A generated XHTML document is not well-formed — export is refused so
     /// a broken EPUB (one that shows the reader an error page) never ships.
@@ -1128,8 +1145,9 @@ nonisolated enum OrigamiEPUBExporter {
         html = html.replacingOccurrences(of: "\\*([^*]+)\\*", with: "<em>$1</em>",
                                          options: .regularExpression)
         html = html.replacingOccurrences(
-            of: "\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)",
+            of: "\\[([^\\]]+)\\]\\((\(OrigamiEPUBLinks.schemePattern)://[^)\\s]+)\\)",
             with: "<a href=\"$2\">$1</a>", options: .regularExpression)
+        html = linkifyingBareURLs(in: html)
         // In-document jumps — the import's resolved \\ref links: a real
         // anchor to the target's exported address (what any reader
         // follows), the stable id in data-target-id for the round trip
@@ -1259,6 +1277,75 @@ nonisolated enum OrigamiEPUBExporter {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    /// A bare address written into the words becomes a real anchor.
+    ///
+    /// A reader who pastes a link means a link: without this, a book's
+    /// own URL — a `.epub` on a share service, a capsule page, a DOI —
+    /// prints as dead characters no click can follow, and the whole point
+    /// of an address in a reading system is that it is followable. The
+    /// reader opens the ones it can itself (see `AppModel.claimLink`),
+    /// which is why a linked book downloads and opens here rather than
+    /// being handed to a browser.
+    ///
+    /// Only the schemes the app follows are touched, and only in the
+    /// words: an address already inside an anchor — a markdown link's
+    /// href, converted just above, or a citation's — is left exactly as
+    /// it is, so no anchor ever nests inside another.
+    private static func linkifyingBareURLs(in html: String) -> String {
+        guard html.contains("://") else { return html }
+        let text = html as NSString
+        let whole = NSRange(location: 0, length: text.length)
+
+        // Where anchors already stand, including their attributes and
+        // their words.
+        var taken: [NSRange] = []
+        if let anchors = try? NSRegularExpression(pattern: "<a\\b[^>]*>.*?</a>",
+                                                  options: [.dotMatchesLineSeparators,
+                                                            .caseInsensitive]) {
+            taken = anchors.matches(in: html, range: whole).map(\.range)
+        }
+        // And any remaining tag, so an address inside an attribute (an
+        // image's src, a data- value) is never rewritten.
+        if let tags = try? NSRegularExpression(pattern: "<[^>]+>") {
+            taken += tags.matches(in: html, range: whole).map(\.range)
+        }
+
+        let pattern = "\(OrigamiEPUBLinks.schemePattern)://[^\\s<>\"']+"
+        guard let urls = try? NSRegularExpression(pattern: pattern,
+                                                  options: [.caseInsensitive]) else {
+            return html
+        }
+        var out = html
+        // Back to front, so earlier ranges stay valid as the string grows.
+        for match in urls.matches(in: html, range: whole).reversed() {
+            guard !taken.contains(where: { NSIntersectionRange($0, match.range).length > 0 })
+            else { continue }
+            var url = text.substring(with: match.range)
+            // Sentence punctuation is the sentence's, not the address's:
+            // "see https://example.org/book.epub." ends in a full stop,
+            // and a closing bracket belongs to the prose unless the
+            // address opened one itself.
+            var trimmed = 0
+            while let last = url.last {
+                if ".,!?".contains(last)
+                    || (last == ")" && !url.contains("(")) {
+                    url.removeLast()
+                    trimmed += 1
+                } else {
+                    break
+                }
+            }
+            guard url.contains("://"), url.hasSuffix("/") || url.count > 10 else { continue }
+            let range = NSRange(location: match.range.location,
+                                length: match.range.length - trimmed)
+            // The address is already XML-escaped (&amp; and friends),
+            // which is exactly how an href carries it.
+            out = (out as NSString).replacingCharacters(
+                in: range, with: "<a href=\"\(url)\">\(url)</a>")
+        }
+        return out
     }
 
     /// Throws unless `xhtml` is well-formed XML — the guarantee that an
@@ -1585,6 +1672,7 @@ nonisolated enum OrigamiEPUBExporter {
     th:last-child, td:last-child { padding-right: 0; }
     pre { background: rgba(127, 127, 127, 0.12); padding: 0.8em 1em; border-radius: 4px; overflow-x: auto; }
     pre code { font-size: 0.85em; white-space: pre-wrap; }
+    a, a:link, a:visited { color: inherit; }
     a.citation { text-decoration: none; }
     dfn { font-style: normal; border-bottom: 0.08em dotted #999999; }
     #references li { margin-bottom: 0.6em; }

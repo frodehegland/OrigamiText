@@ -661,16 +661,9 @@ struct DocumentDetailView: View {
             }
             return .handled
         }
-        if url.scheme?.lowercased() == "origamitext" {
-            model.handleURL(url)
-            return .handled
-        }
-        // A Hypermedia address opens through the same reader.
-        if url.scheme?.lowercased() == "hm" || HypermediaAddress.parse(url.absoluteString) != nil {
-            Task { await model.openHypermediaURL(url.absoluteString) }
-            return .handled
-        }
-        return .systemAction
+        // In-app addresses, a Hypermedia document, a capsule page, a book
+        // behind a link, a DOI that leads to one — all through one door.
+        return model.claimLink(url) ? .handled : .systemAction
     }
 
     private func transclusionKey(_ paragraph: LiquidDoc.Paragraph, _ match: AddressMatch) -> String {

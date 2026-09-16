@@ -30,6 +30,18 @@
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
+			<string>Gemtext Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>info.futuretextlab.gemtext</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
 			<string>LaTeX Source</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
@@ -52,6 +64,31 @@
 			<array>
 				<string>origamitext</string>
 			</array>
+		</dict>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Gemtext Document</string>
+			<key>UTTypeIdentifier</key>
+			<string>info.futuretextlab.gemtext</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>gmi</string>
+					<string>gemini</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>text/gemini</string>
+				</array>
+			</dict>
 		</dict>
 	</array>
 	<key>UTExportedTypeDeclarations</key>

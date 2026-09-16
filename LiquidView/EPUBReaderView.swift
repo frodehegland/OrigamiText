@@ -15,10 +15,45 @@ struct OpenEPUB: Identifiable, Hashable, Sendable {
     let base: URL
     var chapters: [URL] = []
     var nav: URL? = nil
+    /// The `.epub` this reading came from, when the book is only being
+    /// looked at and has no shelf record yet — what Import to Library
+    /// acts on. Nil for a shelved book, which is already the library's.
+    var sourceFile: URL? = nil
 }
 
 // EPUBRecord — the shelf's remembered book — lives in EPUBShelf.swift,
 // shared with the visionOS target.
+
+/// Import to Library — the one thing a book that is only being looked at
+/// still needs.
+///
+/// It stands exactly where the pile's verbs stand for a shelved book (pin,
+/// set aside), because those verbs have nothing to act on until the book
+/// is the library's. And it stands in the lab's ember orange, loudly:
+/// a look-only window deletes its unpack when it closes, so a reader who
+/// misses this loses the book.
+struct ImportToLibraryButton: View {
+    @Environment(AppModel.self) private var model
+    let book: OpenEPUB
+
+    var body: some View {
+        Button {
+            model.importOpenBook(book)
+        } label: {
+            Label("Import to Library", systemImage: "books.vertical.fill")
+                .font(.callout.weight(.semibold))
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+        }
+        // A button, filled in the lab's ember: not a link to read past,
+        // but the one thing to press.
+        .buttonStyle(.borderedProminent)
+        .tint(EmberIconLabelStyle.ember)
+        .help("Keep this book: add it to the library, where it can be pinned, annotated and cited")
+        .accessibilityLabel("Import to Library")
+        .accessibilityHint("This book is only being looked at; importing keeps it")
+    }
+}
 
 /// A semantic element the reader's WebView reported — the Step 0 bridge.
 /// `kind` is the format's own type (equation, citation, concept, heading,
@@ -295,6 +330,17 @@ struct EPUBReaderScreen: View {
                 .buttonStyle(.plain)
                 .help(model.isSetAside(record) ? "Bring Back" : "Set Aside")
             }
+        } else if book.sourceFile != nil {
+            // No record AND a file of its own to import: the book is
+            // being looked at, not kept. Pinning and setting aside are
+            // verbs of the pile, and there is no pile yet — so the place
+            // they would stand offers the one verb that matters.
+            //
+            // The `sourceFile` test is what keeps this honest: a shelved
+            // book has no source file (it IS the library's), so no
+            // moment of a slow or missing record lookup can flash an
+            // import offer over a book already in the library.
+            ImportToLibraryButton(book: book)
         }
     }
 
@@ -665,6 +711,7 @@ struct EPUBReaderScreen: View {
             onFollowLink: { address, fragment in
                 model.openEPUB(address: address, fragment: fragment)
             },
+            onExternalLink: { model.claimLink($0) },
             resolveTransclusion: { address, fragment in
                 model.transcludedText(forAddress: address, fragment: fragment)
             },
@@ -939,6 +986,10 @@ struct EPUBReaderView: NSViewRepresentable {
     /// A cross-document quote link was clicked — its target address and the
     /// paragraph fragment, if any. The "live" half of a quote link.
     var onFollowLink: (_ address: String, _ fragment: String?) -> Void = { _, _ in }
+    /// An address the app may open itself — a book behind a link, a DOI,
+    /// a capsule page, a Seed document. Answers true when it took the
+    /// link, false when it belongs to the browser (see AppModel.claimLink).
+    var onExternalLink: (URL) -> Bool = { _ in false }
     /// Resolves a quote link to its source passage for inline transclusion.
     var resolveTransclusion: (_ address: String, _ fragment: String?) -> String? = { _, _ in nil }
     /// Resolves an endnote dagger's id to the note's words — Author's
@@ -1023,6 +1074,16 @@ struct EPUBReaderView: NSViewRepresentable {
                                            noteFolds: Bool) {
         controller.addUserScript(WKUserScript(source: themeScript(css: themeCSS),
                                               injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        // And again once the document is parsed. At document start there
+        // is no <head> yet, so the theme's style can only be appended to
+        // <html> — which puts it BEFORE the book's own stylesheet in
+        // document order, and a book that paints its own body (Author's
+        // `origami.css` carries a prefers-color-scheme rule) then wins on
+        // equal specificity and the reading ignores the chosen theme. The
+        // second run moves the very same element to the end of <head>,
+        // where the theme belongs: last word, always.
+        controller.addUserScript(WKUserScript(source: themeScript(css: themeCSS),
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: hideScript,
                                               injectionTime: .atDocumentStart, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: toggleButtonScript,
@@ -1124,6 +1185,7 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onCopyQuote = onCopyQuote
         coordinator.glossaryDefinition = glossaryDefinition
         coordinator.onFollowLink = onFollowLink
+        coordinator.onExternalLink = onExternalLink
         coordinator.resolveTransclusion = resolveTransclusion
         coordinator.resolveEndnote = resolveEndnote
         coordinator.onCitation = onCitation
@@ -1253,6 +1315,7 @@ struct EPUBReaderView: NSViewRepresentable {
         var onCopyQuote: (String) -> Void = { _ in }
         var glossaryDefinition: (String) -> (name: String, description: String)? = { _ in nil }
         var onFollowLink: (_ address: String, _ fragment: String?) -> Void = { _, _ in }
+        var onExternalLink: (URL) -> Bool = { _ in false }
         var resolveTransclusion: (_ address: String, _ fragment: String?) -> String? = { _, _ in nil }
         var resolveEndnote: (String) -> String? = { _ in nil }
         var onCitation: (_ key: String, _ ref: String) -> Void = { _, _ in }
@@ -1386,15 +1449,25 @@ struct EPUBReaderView: NSViewRepresentable {
                 if !link.address.isEmpty { onFollowLink(link.address, link.fragment) }
                 decisionHandler(.cancel); return
             }
-            // A clicked web link opens in the user's browser, not in the reader.
-            // Exception: the https://origamitext.app/o/ carrier URL is our own
-            // identity link — intercept it just like origamitext://.
-            if (scheme == "http" || scheme == "https"), navigationAction.navigationType == .linkActivated {
-                if let parsed = CitationClipboard.parse(href: url.absoluteString),
-                   !parsed.to.isEmpty {
-                    onFollowLink(parsed.to, parsed.fragment)
-                    decisionHandler(.cancel); return
-                }
+            // The https://origamitext.app/o/ carrier URL is our own
+            // identity link — intercepted just like origamitext://.
+            if (scheme == "http" || scheme == "https"),
+               navigationAction.navigationType == .linkActivated,
+               let parsed = CitationClipboard.parse(href: url.absoluteString),
+               !parsed.to.isEmpty {
+                onFollowLink(parsed.to, parsed.fragment)
+                decisionHandler(.cancel); return
+            }
+            // Anything Origami Text opens itself — a book behind a link,
+            // a DOI that leads to one, a capsule page, a Seed document —
+            // is claimed before the browser is offered anything.
+            if onExternalLink(url) {
+                decisionHandler(.cancel); return
+            }
+            // Any other clicked web link opens in the user's browser,
+            // not in the reader.
+            if (scheme == "http" || scheme == "https"),
+               navigationAction.navigationType == .linkActivated {
                 NSWorkspace.shared.open(url)
                 decisionHandler(.cancel); return
             }

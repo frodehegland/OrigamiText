@@ -57,6 +57,11 @@ struct EPUBPileMenu: View {
     }
 
     var body: some View {
+        // A book is the most citable thing on the shelf, and the shelf is
+        // where a reader reaches for its citation — the same verb, in the
+        // same first place, as on a document row.
+        Button("Copy to Cite") { model.copyCitation(book: record) }
+        Divider()
         Toggle("Pin", isOn: Binding(
             get: { model.isTopOfPile(record) },
             set: { _ in model.toggleTopOfPile(record) }))
@@ -919,6 +924,7 @@ struct AcquisitionsListView: View {
 
 /// One wish: everything known about it, and the doors to acquiring it.
 private struct AcquisitionRow: View {
+    @Environment(AppModel.self) private var model
     let wanted: EPUBAcquisitions.Wanted
     let enrichment: CitationLookup.Enrichment?
     let dismiss: () -> Void
@@ -1010,7 +1016,9 @@ private struct AcquisitionRow: View {
     private func searchButton(_ title: String, url: URL?, help: String) -> some View {
         if let url {
             Button(title) {
-                NSWorkspace.shared.open(url)
+                // A wished-for work's DOI may lead to an EPUB Origami
+                // Text can shelve; a search engine never does.
+                if !model.claimLink(url) { NSWorkspace.shared.open(url) }
             }
             .buttonStyle(.bordered)
             .controlSize(.small)

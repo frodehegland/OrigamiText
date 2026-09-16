@@ -104,8 +104,11 @@ nonisolated enum VisualMeta {
     }
 
     /// The machine-readable block, kept as a single paragraph so the marker
-    /// structure survives intact for end-of-document parsers.
-    private static func metaBlock(for doc: LiquidDoc, identity: AuthorIdentity?) -> String {
+    /// structure survives intact for end-of-document parsers. Exports that
+    /// carry the appendix in their own container — the gemtext export's
+    /// final preformatted block — ask for the payload directly, so the
+    /// generator stays the one voice for it.
+    static func metaBlock(for doc: LiquidDoc, identity: AuthorIdentity?) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         let createdStamp = formatter.string(from: doc.created)

@@ -819,11 +819,16 @@ final class AppModel {
             importLaTeX(at: url)
         case "xml":
             importBITS(at: url)
+        case "gmi", "gemini":
+            // A gemtext page double-clicked or dropped: the app declares
+            // itself a viewer for the type, so it must read it rather
+            // than decline it.
+            importGemtext(at: url)
         case "json":
             queueReferenceDatasetImport(url)
         default:
             NSSound.beep()
-            showNote("Origami Text opens EPUB files (and imports LaTeX and ACM XML).")
+            showNote("Origami Text opens EPUB files (and imports LaTeX, ACM XML, and gemtext).")
         }
     }
 
@@ -1057,10 +1062,13 @@ final class AppModel {
         let convertible = names
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .map { url.appendingPathComponent($0) }
-            .filter { ["epub", "zip", "tex", "xml"].contains($0.pathExtension.lowercased()) }
+            .filter {
+                ["epub", "zip", "tex", "xml", "gmi", "gemini"]
+                    .contains($0.pathExtension.lowercased())
+            }
         guard !convertible.isEmpty else {
             NSSound.beep()
-            showNote("No EPUB, LaTeX, or ACM XML files in “\(url.lastPathComponent)”.")
+            showNote("No EPUB, LaTeX, ACM XML, or gemtext files in “\(url.lastPathComponent)”.")
             return
         }
         showNote("Importing \(convertible.count) documents\u{2026}")
@@ -1103,6 +1111,9 @@ final class AppModel {
                     }
                 case "zip", "tex":
                     outcome = self.importLaTeX(at: file, andOpen: false)
+                    await Task.yield()
+                case "gmi", "gemini":
+                    outcome = self.importGemtext(at: file, andOpen: false)
                     await Task.yield()
                 default:
                     outcome = self.importBITS(at: file, andOpen: false)
@@ -1393,6 +1404,14 @@ final class AppModel {
     /// cache the reader serves from, rebuildable from this file.
     nonisolated static func storedEPUBURL(inFolder folder: String) -> URL {
         epubsRoot.appendingPathComponent(folder + ".epub")
+    }
+
+    /// The unpacked folder the reader serves a book from — a derived
+    /// cache, rebuildable from the stored .epub. Named here so surfaces
+    /// outside this file (the gemtext export, which re-reads a shelved
+    /// book's document) can reach it without a second copy of the path.
+    nonisolated static func unpackedEPUBURL(inFolder folder: String) -> URL {
+        epubsRoot.appendingPathComponent(folder, isDirectory: true)
     }
 
     func storedEPUBURL(for record: EPUBRecord) -> URL {
@@ -1847,6 +1866,28 @@ final class AppModel {
         return map
     }
 
+    /// Whether an incoming book is a shelf record in other clothes —
+    /// the same dc:identifier, the same DOI, or the same title under
+    /// the same first author. Empty fields never match.
+    nonisolated static func epubDuplicateMatch(
+        record: EPUBRecord, title: String,
+        meta: OrigamiEPUBImporter.PackageMetadata) -> Bool {
+        if let identifier = meta.identifier, !identifier.isEmpty,
+           record.packageIdentifier == identifier { return true }
+        if let doi = meta.doi, !doi.isEmpty,
+           record.doi?.lowercased() == doi.lowercased() { return true }
+        let incoming = title.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !incoming.isEmpty,
+              record.title.trimmingCharacters(in: .whitespaces).lowercased() == incoming
+        else { return false }
+        let author = (meta.authors.first ?? meta.author ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        let standing = (record.authorList.first ?? record.author)
+            .trimmingCharacters(in: .whitespaces)
+        return !author.isEmpty
+            && standing.lowercased() == author.lowercased()
+    }
+
     /// The filesystem half of an EPUB import — unzip, canonical copy,
     /// metadata — callable off the main actor, so a batch never freezes
     /// the app. The main-actor half is `applyPreparedImport`.
@@ -1918,8 +1959,13 @@ final class AppModel {
     /// Batches pass `deferHousekeeping` and persist + rebuild once at
     /// the end, instead of re-encoding the manifest per book.
     @discardableResult
+    /// `dedupe: false` for sources that carry their own address and so
+    /// answer the question themselves — a capsule's pages share an author
+    /// (the host) and often a heading ("Index", a date), which the
+    /// title-plus-author gate below would read as the same page twice.
     private func applyPreparedImport(_ prepared: PreparedEPUBImport,
-                                     deferHousekeeping: Bool = false) -> EPUBRecord? {
+                                     deferHousekeeping: Bool = false,
+                                     dedupe: Bool = true) -> EPUBRecord? {
         guard let fresh = prepared.fresh else {
             guard let existing = epubRecords.first(where: { $0.folder == prepared.folder })
             else { return nil }
@@ -1946,6 +1992,25 @@ final class AppModel {
         }
         let meta = fresh.meta
         let bookID = meta.origamiID ?? prepared.identity
+        // The duplicate gate: the same book under ANOTHER filename
+        // must not shelve twice. Identity speaks in order — the
+        // package's own dc:identifier, the DOI, then title plus first
+        // author. The same folder or bookID is a refresh (below),
+        // never a duplicate.
+        if dedupe, let twin = epubRecords.first(where: { record in
+            record.folder != prepared.folder && record.id != bookID
+                && Self.epubDuplicateMatch(record: record,
+                                           title: fresh.title, meta: meta)
+        }) {
+            // The fresh unpack is surplus: its folder and canonical
+            // copy leave, and the standing record answers.
+            try? FileManager.default.removeItem(
+                at: Self.epubsRoot.appendingPathComponent(prepared.folder))
+            try? FileManager.default.removeItem(
+                at: Self.epubsRoot.appendingPathComponent(prepared.folder + ".epub"))
+            showNote("Already in the library as \u{201C}\(twin.title)\u{201D} — skipped \(fresh.originalFilename)")
+            return twin
+        }
         // Rows display the authors joined; the Authors view lists
         // the book under each of them.
         let authors = meta.authors
@@ -1992,11 +2057,11 @@ final class AppModel {
     /// Already-imported, still-unpacked books are reused as-is. Returns the
     /// record, or nil on failure.
     @discardableResult
-    func importEPUB(at url: URL) -> EPUBRecord? {
+    func importEPUB(at url: URL, dedupe: Bool = true) -> EPUBRecord? {
         do {
             let prepared = try Self.prepareEPUBImport(
                 at: url, epubsRoot: Self.epubsRoot, existing: epubImportSnapshot)
-            return applyPreparedImport(prepared)
+            return applyPreparedImport(prepared, dedupe: dedupe)
         } catch {
             NSSound.beep()
             showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
@@ -2198,6 +2263,11 @@ final class AppModel {
         }
         epubRecords.removeAll { $0.id == record.id }
         unfileEPUB(record.id)
+        // A gemtext page's retained source and registry entry go with the
+        // book. Nothing is lost by forgetting: the id derives from the
+        // address, so fetching that capsule page again lands on the same
+        // document it always was.
+        GemtextStore.forget(documentID: record.id)
         if epubTopOfPile.remove(record.id) != nil {
             UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
         }
@@ -2234,6 +2304,27 @@ final class AppModel {
                 NSSound.beep()
                 showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// Import to Library, from a book the reader is only looking at: the
+    /// file joins the shelf through the ordinary door — unpacked into the
+    /// app's own store, recorded, mirrored to the community folder — and
+    /// opens in the main window as a book of the library's. The look-only
+    /// window has done its work and closes behind it.
+    func importOpenBook(_ book: OpenEPUB) {
+        guard let source = book.sourceFile else {
+            NSSound.beep()
+            showNote("This book's file is no longer at hand — File ▸ Import… will add it.")
+            return
+        }
+        openEPUBFile(at: source)
+        // The window that showed the look: matched by the unpack folder
+        // its delegate holds, which is what the book's id is made from.
+        if let index = quickViewWindows.firstIndex(where: {
+            "quickview:" + $0.delegate.root.lastPathComponent == book.id
+        }) {
+            quickViewWindows[index].window.close()
         }
     }
 
@@ -2276,19 +2367,23 @@ final class AppModel {
                 showNote("Could not read “\(url.lastPathComponent)”: \(error.localizedDescription)")
                 return
             }
-            showQuickView(unpacked: unpacked, spine: spine, root: root)
+            showQuickView(unpacked: unpacked, spine: spine, root: root, source: url)
         }
     }
 
     private func showQuickView(unpacked: OrigamiEPUBImporter.Unpacked,
-                               spine: OrigamiEPUBImporter.BookSpine?, root: URL) {
+                               spine: OrigamiEPUBImporter.BookSpine?, root: URL,
+                               source: URL? = nil) {
         let chapters = (spine?.chapters ?? []).map { root.appendingPathComponent($0) }
         let book = OpenEPUB(id: "quickview:" + root.lastPathComponent,
                             title: unpacked.title,
                             content: unpacked.content,
                             base: root,
                             chapters: chapters.isEmpty ? [unpacked.content] : chapters,
-                            nav: spine?.nav.map { root.appendingPathComponent($0) })
+                            nav: spine?.nav.map { root.appendingPathComponent($0) },
+                            // The file itself, so the look can become a
+                            // keeping: Import to Library acts on this.
+                            sourceFile: source)
         let hosting = NSHostingController(
             rootView: EPUBQuickViewScreen(book: book).environment(self))
         let window = NSWindow(contentViewController: hosting)
@@ -5641,7 +5736,7 @@ final class AppModel {
         panel.treatsFilePackagesAsDirectories = false
         // Keep this short: NSOpenPanel lays the message out on one line and
         // grows the window to fit it, then won't shrink below that width.
-        panel.message = "Import an EPUB (or a zip of a whole conference), Word, Markdown, PDF, transcript, LaTeX (zip/.tex), or ACM XML file — or a folder of them."
+        panel.message = "Import an EPUB (or a zip of a whole conference), Word, Markdown, PDF, transcript, LaTeX (zip/.tex), ACM XML, or gemtext file — or a folder of them."
         panel.prompt = "Import"
         // Room to browse. The panel is user-resizable on its own — touching
         // its style mask breaks the sandboxed panel's dragging — and macOS
@@ -5660,7 +5755,7 @@ final class AppModel {
     /// is treated as a native Origami Document and decoded (see `openFile`).
     static let importableExtensions: Set<String> = [
         "epub", "pdf", "doc", "docx", "md", "markdown", "txt", "rtf", "rtfd", "liquid",
-        "zip", "tex", "xml"
+        "zip", "tex", "xml", "gmi", "gemini"
     ]
 
     /// Imports one file into a new draft — a PDF with a text layer, a Word
@@ -5712,6 +5807,11 @@ final class AppModel {
             case "xml":
                 // Likewise an ACM Digital Library paper (BITS/JATS XML).
                 importBITS(at: url)
+                return
+            case "gmi", "gemini":
+                // A gemtext page: parsed, filed on the shelf, and read —
+                // a read-only source, its bytes kept unmodified beside it.
+                importGemtext(at: url)
                 return
             case "md", "markdown", "txt":
                 // A file that reads as a meeting transcript (speaker names
@@ -6506,6 +6606,16 @@ final class AppModel {
             documentFilename: record?.originalFilename,
             annotation: annotation))
         showNote("Citation copied as BibTeX")
+    }
+
+    /// Copy to Cite on a book, from its shelf record: the venue it was
+    /// published in and its DOI ride along, which the bare listing
+    /// document does not carry — a book's citation wants both.
+    func copyCitation(book record: EPUBRecord) {
+        var doc = epubListingDoc(record)
+        doc.publication = record.publication
+        doc.doi = record.doi
+        copyCitation(doc: doc)
     }
 
     func copyParagraphLink(doc: LiquidDoc, paragraphID: String) {

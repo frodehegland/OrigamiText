@@ -1506,7 +1506,8 @@ nonisolated enum OrigamiEPUBImporter {
                         // An in-document jump comes back as its token,
                         // the stable id intact.
                         out += "[\(content)](origami-jump:\(target))"
-                    } else if let href = inner.attributes["href"], href.hasPrefix("http") {
+                    } else if let href = inner.attributes["href"],
+                              OrigamiEPUBLinks.isAnchored(href: href) {
                         out += "[\(content)](\(href))"
                     } else if let href = inner.attributes["href"], href.hasPrefix("#"),
                               href.count > 1, !content.isEmpty {

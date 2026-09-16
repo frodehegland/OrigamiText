@@ -190,6 +190,21 @@ enum ContextActionBuilder {
                               systemImage: "book.closed") {
                     model.exportEPUB(doc)
                 },
+                ContextAction(id: "export-gemtext", title: "Export as Gemtext…",
+                              systemImage: "text.alignleft") {
+                    model.exportGemtext(doc)
+                },
+            ]
+            // A page read from a capsule can be read again: the same
+            // document, a new digest when the capsule's words have moved.
+            if model.gemtextSourceURL(for: doc) != nil {
+                actions.append(ContextAction(id: "reload-gemtext",
+                                             title: "Fetch Again from Gemini",
+                                             systemImage: "arrow.clockwise") {
+                    Task { await model.reloadGemtext(doc) }
+                })
+            }
+            actions += [
                 ContextAction(id: "show-in-finder", title: "Show in Finder",
                               systemImage: "folder") {
                     NSWorkspace.shared.activateFileViewerSelecting([doc.fileURL])

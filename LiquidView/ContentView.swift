@@ -263,18 +263,11 @@ struct ContentView: View {
         .background(TitlebarSeparatorDisabler())
         .background(WindowBackgroundSetter(color: NSColor(themeBG)))
         .environment(\.openURL, OpenURLAction { url in
-            // origamitext:// links clicked inside documents navigate in-app,
-            // through the same follow path as the links panel.
-            if url.scheme?.lowercased() == "origamitext" {
-                model.handleURL(url)
-                return .handled
-            }
-            // hm:// addresses (and gateway URLs) read here, not in a browser.
-            if url.scheme?.lowercased() == "hm" || HypermediaAddress.parse(url.absoluteString) != nil {
-                Task { await model.openHypermediaURL(url.absoluteString) }
-                return .handled
-            }
-            return .systemAction
+            // Everything Origami Text can open itself — an in-app
+            // address, a Seed document, a capsule page, an EPUB anywhere,
+            // a DOI that may lead to one — is claimed here rather than
+            // handed to a browser. See AppModel.claimLink.
+            model.claimLink(url) ? .handled : .systemAction
         })
     }
 
