@@ -347,7 +347,15 @@ final class ArmMenu {
         var underIndex = 0
         // A worn watch takes the wrist end of the arm; the word row
         // starts further up so its first chip clears the watch case.
-        let rowStart: Float = sideChips.contains(where: { $0.watch }) ? 0.10 : 0.04
+        // The right arm's row begins nearer the wrist than the left's:
+        // it carries five words to the left's four, and the last of
+        // them was reaching the elbow. (Origami tuning, 16 Sep 2026.)
+        let rowStart: Float
+        if sideChips.contains(where: { $0.watch }) {
+            rowStart = 0.10
+        } else {
+            rowStart = side == .right ? 0.02 : 0.04
+        }
         for chip in sideChips where chip.group == nil {
             guard let item = items[chip.id], item.isEnabled else { continue }
             if chip.watch {
@@ -377,26 +385,19 @@ final class ArmMenu {
         // deep, so a long option list rides the forearm rather than
         // towering into the room. Two passes resolve the two levels.
         //
-        // A long list under a row chip takes the same fan: a column of
-        // a dozen options would stand two thirds of a metre into the
-        // room, which is no menu at all. Origami addition (Layout's
-        // eleven arrangements now ride the right forearm) — carry back
-        // to Author.
+        // A long list is no exception: Layout's eleven arrangements
+        // climb away from the arm as one ladder, the way Interatlas's
+        // level rungs do (GlobeModel.updateWristBand — Core just above
+        // the wrist, Visible Stars on top).
         var groupSteps: [String: Int] = [:]
         var fanSteps: [String: Int] = [:]
         var resolved = rowPositions
-        var childCounts: [String: Int] = [:]
-        for chip in sideChips {
-            guard let group = chip.group, items[chip.id]?.isEnabled == true
-            else { continue }
-            childCounts[group, default: 0] += 1
-        }
         for _ in 0..<2 {
             for chip in sideChips {
                 guard let group = chip.group, let item = items[chip.id],
                       item.isEnabled, resolved[chip.id] == nil,
                       let anchor = resolved[group] else { continue }
-                if chipsByID[group]?.group != nil || childCounts[group, default: 0] > 8 {
+                if chipsByID[group]?.group != nil {
                     let step = fanSteps[group, default: 0]
                     fanSteps[group] = step + 1
                     item.position = anchor

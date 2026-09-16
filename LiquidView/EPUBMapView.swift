@@ -1195,8 +1195,10 @@ struct EPUBMapView: View {
     @State private var showOpen = false
     /// The right arm's two fans: Layout's options and Saved View's
     /// slots. One at a time, or two long rows would ride the same
-    /// forearm.
+    /// forearm. Auto is a menu inside Layout's, so it opens only
+    /// while Layout stands open.
     @State private var watchLayoutOpen = false
+    @State private var watchAutoOpen = false
     @State private var watchSavedOpen = false
     /// The saved arrangements, five slots per venue — positions in
     /// map space (the carried shift removed), persisted.
@@ -1242,23 +1244,28 @@ struct EPUBMapView: View {
     private static let watchSavedChipID = "map.arm.watch.saved"
     private static let watchSaveNowChipID = "map.arm.watch.saved.save"
     private static let gatherChipID = "map.arm.gather"
+    private static let autoChipID = "map.arm.auto"
     private static let introChipID = "map.arm.intro"
     private static let savedSlotCount = 5
     private static func savedViewSlotID(_ slot: Int) -> String {
         "map.arm.watch.saved.slot\(slot)"
     }
 
-    /// Author Map's Layout options as chips, fanning up the right
-    /// forearm from the folded Layout chip. Align to Room rides at the
-    /// end of the same fan: it arranges the room rather than the cards,
-    /// but it is the one act of arrangement left without a word of its
-    /// own now the toolbar is gone.
+    /// Author Map's Layout options as chips, climbing away from the
+    /// right forearm as one ladder from the folded Layout chip — the
+    /// shape Interatlas's level rungs take. Auto stands at the top of
+    /// the ladder and unfolds the whole-wall arrangements along the
+    /// arm, a menu inside a menu.
     private static var layoutOptionChips: [ArmMenu.Chip] {
         WatchLayoutOption.allCases.map {
             ArmMenu.Chip(id: watchLayoutOptionID($0), title: $0.title,
                          side: .right, group: watchLayoutChipID)
-        } + [ArmMenu.Chip(id: alignChipID, title: "Align to Room",
+        } + [ArmMenu.Chip(id: autoChipID, title: "Auto",
                           side: .right, group: watchLayoutChipID)]
+        + offeredWatchViews.map {
+            ArmMenu.Chip(id: watchViewOptionID($0), title: $0.title,
+                         side: .right, group: autoChipID)
+        }
     }
 
     /// The five saved slots, standing under Saved View — each one shows
@@ -1316,16 +1323,12 @@ struct EPUBMapView: View {
     }
 
     private static func watchViewOptionID(_ option: WatchViewOption) -> String {
-        "map.arm.watch.views." + option.rawValue
+        autoChipID + "." + option.rawValue
     }
 
     /// The Views on offer — Timeline rests for now (the corridor's own
-    /// depth already carries time).
-    ///
-    /// These whole-wall arrangements have no chip at present: the arms
-    /// carry Layout, Gather and the view verbs, and the toolbar that
-    /// held Auto is gone. The machinery below stands ready for a word
-    /// of its own.
+    /// depth already carries time). These are Auto's arrangements, at
+    /// the top of Layout's ladder.
     private static let offeredWatchViews: [WatchViewOption] =
         WatchViewOption.allCases.filter { $0 != .timeline }
 
@@ -3218,14 +3221,25 @@ struct EPUBMapView: View {
             openIntroduction()
             return true
         case Self.alignChipID:
+            // No chip stands for this at present — Frode had Align to
+            // Room taken off the arm on 16 Sep. The act waits here.
             alignSpaceToRoom()
             closeWatchMenus()
             return true
         case Self.watchLayoutChipID:
-            // Layout's options fan up the forearm, and fold away. Only
-            // one fan at a time rides the arm.
+            // Layout's options climb away from the arm, and fold away.
+            // Only one fan at a time rides the forearm.
             watchLayoutOpen.toggle()
-            if watchLayoutOpen { watchSavedOpen = false }
+            if watchLayoutOpen {
+                watchSavedOpen = false
+            } else {
+                watchAutoOpen = false
+            }
+            updateWatchChips()
+            return true
+        case Self.autoChipID:
+            // The whole-wall arrangements, at the top of the ladder.
+            watchAutoOpen.toggle()
             updateWatchChips()
             return true
         case Self.gatherChipID:
@@ -3257,6 +3271,13 @@ struct EPUBMapView: View {
                let option = WatchLayoutOption(
                    rawValue: String(id.dropFirst(Self.watchLayoutChipID.count + 1))) {
                 runWatchLayout(option)
+                closeWatchMenus()
+                return true
+            }
+            if id.hasPrefix(Self.autoChipID + "."),
+               let option = WatchViewOption(
+                   rawValue: String(id.dropFirst(Self.autoChipID.count + 1))) {
+                runWatchView(option)
                 closeWatchMenus()
                 return true
             }
@@ -3301,9 +3322,10 @@ struct EPUBMapView: View {
         model.openDocIDs.insert(docID)
     }
 
-    /// Both of the right arm's fans folded away.
+    /// Every one of the right arm's fans folded away.
     private func closeWatchMenus() {
         watchLayoutOpen = false
+        watchAutoOpen = false
         watchSavedOpen = false
         updateWatchChips()
     }
@@ -3533,14 +3555,19 @@ struct EPUBMapView: View {
     }
 
     /// The right arm's fans shown and lit to match what is open: the
-    /// Layout options (Align to Room at their end), and the slots that
-    /// actually hold an arrangement. Undo View wears whether there is
-    /// anything to undo.
+    /// Layout ladder with Auto at its top, Auto's own arrangements,
+    /// and the slots that actually hold a view. Undo View wears
+    /// whether there is anything to undo.
     private func updateWatchChips() {
         for option in WatchLayoutOption.allCases {
             armMenu.setChipVisible(Self.watchLayoutOptionID(option), watchLayoutOpen)
         }
-        armMenu.setChipVisible(Self.alignChipID, watchLayoutOpen)
+        armMenu.setChipVisible(Self.autoChipID, watchLayoutOpen)
+        for option in Self.offeredWatchViews {
+            armMenu.setChipVisible(Self.watchViewOptionID(option),
+                                   watchLayoutOpen && watchAutoOpen)
+        }
+        armMenu.setChipActive(Self.autoChipID, watchAutoOpen)
         let kept = Set(loadSavedViews().keys.compactMap(Int.init))
         for slot in 1...Self.savedSlotCount {
             armMenu.setChipVisible(Self.savedViewSlotID(slot),
