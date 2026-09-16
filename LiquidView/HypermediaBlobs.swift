@@ -216,6 +216,17 @@ nonisolated struct HypermediaIdentity: Sendable {
         try Curve25519.Signing.PrivateKey(rawRepresentation: seed).signature(for: data)
     }
 
+    /// The full 64-byte Ed25519 private key: the signing seed, then its
+    /// public half. The form that proves itself when read back, and the
+    /// one to hand another app — an account that cannot leave the app
+    /// that made it is not an account, it is a hostage.
+    var privateKey: Data { seed + principal.dropFirst(2) }
+
+    /// Lowercase hex, the least ambiguous way to write a key down.
+    static func hex(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
+    }
+
     /// The bytes an account address stands for.
     static func principal(fromUID uid: String) -> Data? {
         guard let bytes = Multibase.decodeBase58btc(uid), bytes.count == 34,

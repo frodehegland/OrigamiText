@@ -1471,10 +1471,39 @@ private struct HypermediaSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Button("Sign Out", role: .destructive) {
-                model.hypermedia.signOut()
+            // The way out. An account made here must be usable in Seed
+            // and on another Mac, or it is trapped in this app — and the
+            // key is the only thing that carries it.
+            HStack {
+                Menu("Copy Key") {
+                    Button("Private Key (hex)") {
+                        copyKey(HypermediaIdentity.hex(identity.privateKey),
+                                what: "Private key")
+                    }
+                    Button("Private Key (base64)") {
+                        copyKey(identity.privateKey.base64EncodedString(),
+                                what: "Private key")
+                    }
+                    Divider()
+                    Button("Signing Seed (hex)") {
+                        copyKey(HypermediaIdentity.hex(identity.seed),
+                                what: "Signing seed")
+                    }
+                    Button("Account Address") {
+                        copyKey(identity.uid, what: "Account address")
+                    }
+                }
+                .fixedSize()
+                .help("Copy this account's key, to sign in with it in Seed or on another Mac")
+                Button("Sign Out", role: .destructive) {
+                    model.hypermedia.signOut()
+                }
+                .help("Forget the key on this Mac. The account itself is untouched — the same key signs back in.")
             }
-            .help("Forget the key on this Mac. The account itself is untouched — the same recovery phrase brings it back.")
+            Text("The private key IS the account: anyone holding it can speak as you. Copy it to sign in elsewhere, and keep it as you would a password.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         } else {
             // Two doors, because an account is a key: make a new one, or
             // bring the one you already have.
@@ -1483,6 +1512,14 @@ private struct HypermediaSettingsView: View {
                 Button("Sign In to an Existing Account") { showSignIn = true }
             }
         }
+    }
+
+    /// A key onto the clipboard, and a word that it happened — a copy
+    /// with no acknowledgement leaves the reader wondering.
+    private func copyKey(_ value: String, what: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        profileNote = "\(what) copied to the clipboard."
     }
 
     // MARK: Spaces
