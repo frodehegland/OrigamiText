@@ -330,6 +330,84 @@ nonisolated enum HypermediaSignIn {
         return nil
     }
 
+    /// The key inside a file Seed wrote — the JSON export, or any file
+    /// whose text is the key.
+    ///
+    /// The JSON's shape is not assumed: every string in it is tried, and
+    /// every array of numbers that could be key bytes, with the fields
+    /// whose names suggest a key tried first. What comes back is the
+    /// text that was found, so it runs through exactly the same reading
+    /// (and the same self-check) as a pasted key — and where in the file
+    /// it came from, to say so.
+    static func keyText(inFile data: Data) -> (text: String, how: String)? {
+        if let json = try? JSONSerialization.jsonObject(with: data) {
+            var strings: [(path: String, value: String)] = []
+            var byteArrays: [(path: String, value: Data)] = []
+            collect(json, at: "", strings: &strings, byteArrays: &byteArrays)
+            // A field that names itself is likelier than one that does not.
+            let telling = ["privatekey", "private_key", "secretkey", "secret_key",
+                           "signingkey", "signing_key", "secret", "seed", "key"]
+            func rank(_ path: String) -> Int {
+                let lower = path.lowercased()
+                for (index, name) in telling.enumerated() where lower.contains(name) {
+                    return index
+                }
+                return telling.count
+            }
+            for entry in strings.sorted(by: { rank($0.path) < rank($1.path) }) {
+                if privateKey(from: entry.value) != nil {
+                    return (entry.value, entry.path.isEmpty
+                            ? "Read from the file."
+                            : "Read from the file's \(entry.path).")
+                }
+            }
+            for entry in byteArrays.sorted(by: { rank($0.path) < rank($1.path) }) {
+                let hex = HypermediaIdentity.hex(entry.value)
+                if privateKey(from: hex) != nil {
+                    return (hex, entry.path.isEmpty
+                            ? "Read from the file's bytes."
+                            : "Read from the file's \(entry.path) bytes.")
+                }
+            }
+            return nil
+        }
+        // Not JSON: a .key or .txt holding the key itself.
+        guard let text = String(data: data, encoding: .utf8),
+              privateKey(from: text) != nil else { return nil }
+        return (text, "Read from the file.")
+    }
+
+    /// Walks a decoded JSON tree, gathering every string and every array
+    /// of bytes, each with the dotted path it was found at.
+    private static func collect(_ value: Any, at path: String,
+                                strings: inout [(path: String, value: String)],
+                                byteArrays: inout [(path: String, value: Data)]) {
+        switch value {
+        case let text as String:
+            strings.append((path, text))
+        case let dictionary as [String: Any]:
+            for (key, child) in dictionary {
+                collect(child, at: path.isEmpty ? key : "\(path).\(key)",
+                        strings: &strings, byteArrays: &byteArrays)
+            }
+        case let array as [Any]:
+            // An array of small whole numbers is very likely key bytes.
+            let numbers = array.compactMap { $0 as? NSNumber }
+            if numbers.count == array.count,
+               array.count == 32 || array.count == 64 || array.count == 68,
+               numbers.allSatisfy({ $0.intValue >= 0 && $0.intValue <= 255 }) {
+                byteArrays.append((path, Data(numbers.map { UInt8($0.intValue) })))
+                return
+            }
+            for (index, child) in array.enumerated() {
+                collect(child, at: "\(path)[\(index)]",
+                        strings: &strings, byteArrays: &byteArrays)
+            }
+        default:
+            break
+        }
+    }
+
     /// Every byte string the text could be, cheapest reading first.
     private static func decodings(of text: String) -> [Data] {
         let compact = text.filter { !$0.isWhitespace && $0 != "\"" }

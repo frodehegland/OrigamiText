@@ -1640,6 +1640,7 @@ private struct SignInToHypermediaAccountSheet: View {
     @State private var chosen: String?
     @State private var isSigningIn = false
     @State private var error: String?
+    @State private var fileNote: String?
 
     private var candidates: [HypermediaSignIn.Candidate] {
         HypermediaSignIn.candidates(for: phrase)
@@ -1660,7 +1661,19 @@ private struct SignInToHypermediaAccountSheet: View {
                 .lineLimit(2...4)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.callout, design: .monospaced))
-                .onChange(of: phrase) { chosen = nil }
+                .onChange(of: phrase) { chosen = nil; fileNote = nil }
+
+            // Seed writes the key to a file; reading it here saves a
+            // copy-and-paste of the one string that must not go astray.
+            HStack(spacing: 8) {
+                Button("Open Seed's Key File\u{2026}") { openKeyFile() }
+                if let fileNote {
+                    Text(fileNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
 
             TextField("Name", text: $name, prompt: Text("The name spaces show beside your address"))
                 .textFieldStyle(.roundedBorder)
@@ -1734,6 +1747,35 @@ private struct SignInToHypermediaAccountSheet: View {
     private var selected: HypermediaSignIn.Candidate? {
         if let chosen { return candidates.first { $0.id == chosen } }
         return candidates.count == 1 ? candidates.first : nil
+    }
+
+    /// The key out of a file Seed wrote. What is found lands in the field
+    /// above, so the reader sees the key and its account exactly as if it
+    /// had been pasted — nothing is signed in behind their back.
+    private func openKeyFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the key file Seed wrote — its JSON export, or any file holding the key."
+        panel.prompt = "Open"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        error = nil
+        guard let data = try? Data(contentsOf: url) else {
+            fileNote = nil
+            error = "That file could not be read."
+            return
+        }
+        guard let found = HypermediaSignIn.keyText(inFile: data) else {
+            fileNote = nil
+            error = "No key could be found in \(url.lastPathComponent)."
+            return
+        }
+        phrase = found.text
+        chosen = nil
+        fileNote = found.how
     }
 
     private func signIn() {
