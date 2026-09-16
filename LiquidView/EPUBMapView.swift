@@ -1101,11 +1101,10 @@ struct EPUBMapView: View {
     /// the right forearm, exactly as in Author's Map; Pin and Set Aside
     /// ride the left, acting on the selected card.
     @State private var armMenu = ArmMenu(chips: [
-        // The right arm, per the arm-layout guide: Pin and Set Aside
-        // stand over the forearm, acting on the selected cards;
-        // Documents and Settings hang beneath it.
-        ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .right),
-        ArmMenu.Chip(id: EPUBMapView.setAsideChipID, title: "Set Aside", side: .right),
+        // The right arm holds the room's own doors: Documents, Settings
+        // and Align to Room hang beneath the forearm. The verbs that
+        // act on chosen cards moved to the left arm, beside the
+        // choosing.
         ArmMenu.Chip(id: EPUBMapView.documentsChipID, title: "Documents", side: .right,
                      underside: true),
         ArmMenu.Chip(id: EPUBMapView.settingsChipID, title: "Settings", side: .right,
@@ -1116,6 +1115,17 @@ struct EPUBMapView: View {
         // so they stand inside Show rather than under the arm — and
         // each is one command: both walls, or all three lanes. Choosing
         // a single wall or lane is not a thing the arm offers.
+        //
+        // What hangs beneath the left forearm instead: the three verbs
+        // that act on what has been chosen, under the hand that chose
+        // it. Set Aside and Pin take the selected cards; Focus keeps
+        // the selection and its connections, and clears the rest.
+        ArmMenu.Chip(id: EPUBMapView.setAsideChipID, title: "Set Aside", side: .left,
+                     underside: true),
+        ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .left,
+                     underside: true),
+        ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left,
+                     underside: true),
         // Standing only while common ground does: the wall reduced to
         // the works every raised article cites — the green alone.
         ArmMenu.Chip(id: EPUBMapView.onlyOverlapChipID, title: "Only Overlap", side: .right),
@@ -1128,7 +1138,7 @@ struct EPUBMapView: View {
         //     [D] Select | Show [A]
         // D lets every selection go; A brings every family into the
         // room. The two words between them unfold their own lists away
-        // from the arm. Focus keeps its place at the end of the row.
+        // from the arm.
         ArmMenu.Chip(id: EPUBMapView.deselectAllChipID, title: "D", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectChipID, title: "Select", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectCitationsChipID, title: "Citations",
@@ -1158,7 +1168,6 @@ struct EPUBMapView: View {
         ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
                      side: .left, group: EPUBMapView.conceptsChipID),
         ArmMenu.Chip(id: EPUBMapView.showAllChipID, title: "A", side: .left),
-        ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
     ], tracksPlanes: true,   // the flat pose finds the actual desk
