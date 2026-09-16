@@ -11,7 +11,7 @@ extension AppModel {
     /// Bump whenever the guide's text changes: the next Intro click
     /// replaces the unpacked copy with the new edition. The document id
     /// stays `introGuideID`, so the reader's annotations survive editions.
-    nonisolated static let introGuideVersion = 4
+    nonisolated static let introGuideVersion = 5
     nonisolated static let introGuideID = "origami-text-intro"
 
     nonisolated static func introGuideDoc() -> LiquidDoc {
@@ -34,6 +34,7 @@ extension AppModel {
             p("Your Library", heading: 1),
             p("Bringing books in", heading: 2),
             p("Open an EPUB with Cmd-O or drag one into the window; it is unpacked into the app's own shelf and remembered. A zip of LaTeX sources — an ACM proceedings download, say — imports directly: the paper's title, authors, venue, citations, and even its live tables are captured on the way in. Unread books show their titles in bold until you open them."),
+            p("A book double-clicked from outside your community folder opens in a window of its own, to look at rather than to keep — and that window's foot carries one orange button, Import to Library. Press it and the book joins the shelf, where it can be pinned, annotated and cited; close the window without pressing it and nothing is kept, so the button is loud on purpose."),
             p("The shelves", heading: 2),
             p("The Library section of the sidebar offers the same books several ways. Pinned holds the books you have pinned — right-click any book and choose Pin, and it floats first in every list, wearing a small pin beside its title. Time is the home list, every book newest first. Alpha is the same books by title; both can narrow to unread from their sidebar context menus. Below the standing shelves come your own folders — file a book from its context menu — and Set Aside, where books rest out of the way without leaving the library. Move to Trash, available wherever a book is listed, sends the unpacked copy to the macOS Trash, recoverable as anything else there."),
             p("Journals", heading: 2),
@@ -56,6 +57,8 @@ extension AppModel {
             p("Select words and right-click for the Highlight menu: Important, Quotable, Great, Disagree, Language Issue, Problematic, What is this?, Highlight, and Strikethrough. Each has a bare key — I, Q, G, D, L, P, slash, H, X — so a judgment is one keystroke. The annotated words themselves take the kind's colour; nothing is boxed or framed. With nothing selected, the sentence under the pointer is what is annotated — never the whole paragraph. Triple-click selects a sentence, or a paragraph; which one is a toggle in Settings, Reading."),
             p("Notes on the page", heading: 2),
             p("Note Here, from the right-click menu, writes a free-standing slip — a small paper note touching no text, showing its first sentence. Drag it where you like; its place is anchored to the nearest paragraph and travels with the annotation itself, so it stands correctly at any window size and on any Mac. Click a slip to read, edit, copy, or delete it."),
+            p("A comment on a heading stands as a slip too, in the gutter beside it. A heading's words are the document's structure rather than a passage to mark, so the section's name is never painted in a comment's colour."),
+            p("A lifted quote — words that stepped off the page to travel with the book — floats as a slip of its own over every reading style. It is the document's words, not yours, so clicking one shows the passage whole and read-only, with Delete, Copy, and Done; only your own notes open to be written."),
             p("The document annotation", heading: 2),
             p("Under the title of every reading stands a pill: Annotate, outlined, while the document as a whole carries no note of yours; Annotation, filled, once it does. This is your one-line judgment of the whole work, and it is what the book lists print beneath the author's name — your own words, not the publisher's. Add Note, from a right-click anywhere on the reading, opens the same note."),
             p("The Annotations view", heading: 2),
@@ -70,6 +73,17 @@ extension AppModel {
             p("All of it runs on this Mac, through Apple's on-device language model. Nothing you read and nothing you write leaves the machine."),
 
             // MARK: Approaches and technologies
+
+            // MARK: Books and pages from elsewhere
+
+            p("Reaching Out", heading: 1),
+            p("A book behind a link", heading: 2),
+            p("An address that names an EPUB — anywhere: in a book you are reading, in a letter, on a capsule page, in a citation's editions — is Origami Text's to answer, not a browser's. Click it and the book is fetched, checked to be a book at all, and opened on your shelf. A share link from Dropbox works in either form, the preview address and the download one alike, and they count as one book, so clicking either again simply opens the copy you already have. A link that turns out to be a web page, or a file behind a login, says so plainly rather than quietly handing you to Safari."),
+            p("A DOI", heading: 2),
+            p("Click a DOI and Origami Text goes looking for an EPUB edition of the work: first in the publisher's own full-text records at Crossref, then on the page the DOI leads to. When an edition is advertised it downloads and opens like any book. Most publishers offer only PDF, so most of the time it reports that nothing was found and opens the page — the honest answer, quickly."),
+            p("Gemini and gemtext", heading: 2),
+            p("Gemtext is the hypertext of the Gemini protocol: six line types, no inline markup, no fonts, no control over how it looks — the client decides, which is to say you do. Origami Text reads it as another hypermedia protocol beside Seed. Open a capsule with File, Open Gemini URL, or drop a .gmi file in; the page becomes a document on your shelf, annotatable like any book, its original bytes kept beside it untouched. Links on the page open the next capsule page here, so a capsule can be walked without leaving the reader. Certificates are trusted on first sight and pinned, as the Gemini community does; if a capsule ever serves a different certificate, the reading stops and shows you both fingerprints before anything is sent."),
+            p("Any document here exports as gemtext too, from File or a document's own menu. Everything the format cannot carry — emphasis, tables, mathematics, spatial maps — degrades decisively, and the whole Visual-Meta appendix rides along in a preformatted block at the end: visible monospaced text in any Gemini client, and machine-readable with no server involved."),
 
             p("Approaches and Technologies", heading: 1),
             p("The Origami EPUB profile and Visual-Meta", heading: 2),

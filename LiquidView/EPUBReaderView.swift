@@ -619,18 +619,23 @@ struct EPUBReaderScreen: View {
                 // An AI reading takes the whole page; the foot stays,
                 // so the way back is one click on any word.
                 ReadingAnalysisScreen(kind: kind)
-                    // The lifted quotes float over the faithful page
-                    // exactly as over the native styles.
+                    // The lifted quotes float over an AI reading too —
+                    // as they do over the faithful page and the native
+                    // styles.
                     .overlay(alignment: .topLeading) { liftSlipsLayer }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         ReadingFootBar(modes: availableModes,
                                        outlineAvailable: model.readingDoc(forBook: book) != nil)
                     }
             } else if readerMode == .faithful {
-                // A comment on a heading floats over the page rather
-                // than inking the heading; the slips stand above the
-                // WebView, where the reader left them.
+                // The slips stand above the WebView, where the reader
+                // left them: lifted quotes (which had no layer here at
+                // all, so a quote lifted in Scrolling — the mode every
+                // book opens in — left a slip nobody could see), and
+                // comments on headings, which float rather than ink the
+                // heading.
                 faithfulReader
+                    .overlay(alignment: .topLeading) { liftSlipsLayer }
                     .overlay(alignment: .topLeading) { commentSlipsLayer }
             } else if let doc = model.readingDoc(forBook: book) {
                 // A native reading style over the book's structured
