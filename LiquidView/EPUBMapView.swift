@@ -201,6 +201,14 @@ struct EPUBMapView: View {
     /// The theme the floor returns to when its arm chip toggles it
     /// back on.
     @AppStorage("floorShowLast") private var floorShowLastRaw = FloorShow.world.rawValue
+    /// What the middle and right lanes showed before Timelines was
+    /// turned away, so all three come back as they stood.
+    @AppStorage("floorShowMiddleLast") private var floorShowMiddleLastRaw = FloorShow.hypertext.rawValue
+    @AppStorage("floorShowRightLast") private var floorShowRightLastRaw = FloorShow.computing.rawValue
+    /// Whether the front EPUBs stand in the room — Show's Documents.
+    /// The citation walls they raised are Citations' family, and keep
+    /// standing without them.
+    @AppStorage("mapDocumentsShown") private var documentsShown = true
 
     /// The floor's writing, laid flat on the real ground under the
     /// corridor, each event at its year's exact depth.
@@ -460,7 +468,9 @@ struct EPUBMapView: View {
         // The journal's articles, front and centre: pinned first, then
         // the rest; the Set Aside collapse into a quiet row beneath.
         let shown = records.filter { !model.openDocIDs.contains($0.id) }
-        let standing = model.pinnedFirstRecords(shown.filter { !model.setAsideIDs.contains($0.id) })
+        let standing = documentsShown
+            ? model.pinnedFirstRecords(shown.filter { !model.setAsideIDs.contains($0.id) })
+            : []
         let asides: [EPUBRecord] = []
 
         let columns = max(1, Int(Double(standing.count * 7).squareRoot() / 2))
@@ -1102,24 +1112,10 @@ struct EPUBMapView: View {
                      underside: true),
         ArmMenu.Chip(id: EPUBMapView.alignChipID, title: "Align to Room", side: .right,
                      underside: true),
-        // Graphs and Timelines hang beneath the left forearm as two
-        // groups: the parent chip unfolds its sides (the sub-chips are
-        // hidden until then, and the row packs over them). Graphs are
-        // the two sankey walls; Timelines the floor's lanes.
-        ArmMenu.Chip(id: EPUBMapView.graphsChipID, title: "Graphs", side: .left,
-                     underside: true),
-        ArmMenu.Chip(id: EPUBMapView.timeflowLeftChipID, title: "Left", side: .left,
-                     underside: true, group: EPUBMapView.graphsChipID),
-        ArmMenu.Chip(id: EPUBMapView.timeflowRightChipID, title: "Right", side: .left,
-                     underside: true, group: EPUBMapView.graphsChipID),
-        ArmMenu.Chip(id: EPUBMapView.timelinesChipID, title: "Timelines", side: .left,
-                     underside: true),
-        ArmMenu.Chip(id: EPUBMapView.floorChipID, title: "Left", side: .left,
-                     underside: true, group: EPUBMapView.timelinesChipID),
-        ArmMenu.Chip(id: EPUBMapView.floorMiddleChipID, title: "Center", side: .left,
-                     underside: true, group: EPUBMapView.timelinesChipID),
-        ArmMenu.Chip(id: EPUBMapView.floorRightChipID, title: "Right", side: .left,
-                     underside: true, group: EPUBMapView.timelinesChipID),
+        // Graphs and Timelines are families of the room like any other,
+        // so they stand inside Show rather than under the arm — and
+        // each is one command: both walls, or all three lanes. Choosing
+        // a single wall or lane is not a thing the arm offers.
         // Standing only while common ground does: the wall reduced to
         // the works every raised article cites — the green alone.
         ArmMenu.Chip(id: EPUBMapView.onlyOverlapChipID, title: "Only Overlap", side: .right),
@@ -1128,25 +1124,41 @@ struct EPUBMapView: View {
         // fans run up the forearm.
         // Layout and Views left the arm for the Map's own toolbar
         // (Author's bottom bar), standing under the wall.
-        ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
+        // The toolbar, as one reads it along the arm:
+        //     [D] Select | Show [A]
+        // D lets every selection go; A brings every family into the
+        // room. The two words between them unfold their own lists away
+        // from the arm. Focus keeps its place at the end of the row.
+        ArmMenu.Chip(id: EPUBMapView.deselectAllChipID, title: "D", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectChipID, title: "Select", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectCitationsChipID, title: "Citations",
                      side: .left, group: EPUBMapView.selectChipID),
         ArmMenu.Chip(id: EPUBMapView.selectDocumentsChipID, title: "Documents",
                      side: .left, group: EPUBMapView.selectChipID),
+        ArmMenu.Chip(id: EPUBMapView.selectTopicsChipID, title: "Topics",
+                     side: .left, group: EPUBMapView.selectChipID),
         ArmMenu.Chip(id: EPUBMapView.selectConceptsChipID, title: "Concepts",
                      side: .left, group: EPUBMapView.selectChipID),
-        // Show: what stands in the room — the citation walls, the
-        // topic magnets, the concept row — each a toggle in one place.
+        // Show: what stands in the room — the front EPUBs, the citation
+        // walls, the topic magnets, the floor's timelines, the graph
+        // walls, the concept row — each one command in one place.
         ArmMenu.Chip(id: EPUBMapView.showChipID, title: "Show", side: .left),
         ArmMenu.Chip(id: EPUBMapView.showCitationsChipID, title: "Citations",
                      side: .left, group: EPUBMapView.showChipID),
+        ArmMenu.Chip(id: EPUBMapView.showDocumentsChipID, title: "Documents",
+                     side: .left, group: EPUBMapView.showChipID),
         ArmMenu.Chip(id: EPUBMapView.topicsChipID, title: "Topics",
+                     side: .left, group: EPUBMapView.showChipID),
+        ArmMenu.Chip(id: EPUBMapView.timelinesChipID, title: "Timelines",
+                     side: .left, group: EPUBMapView.showChipID),
+        ArmMenu.Chip(id: EPUBMapView.graphsChipID, title: "Graphs",
                      side: .left, group: EPUBMapView.showChipID),
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts",
                      side: .left, group: EPUBMapView.showChipID),
         ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
                      side: .left, group: EPUBMapView.conceptsChipID),
+        ArmMenu.Chip(id: EPUBMapView.showAllChipID, title: "A", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
     ], tracksPlanes: true,   // the flat pose finds the actual desk
@@ -1162,11 +1174,6 @@ struct EPUBMapView: View {
     @State private var sharedCitedStanding = false
     /// Focus: show only selected items and their direct connections.
     @State private var focusMode = false
-    /// Which left-underside group stands unfolded — Graphs' or
-    /// Timelines' sides. One at a time, or two rows of "Left" chips
-    /// would stand shoulder to shoulder.
-    @State private var graphsOpen = false
-    @State private var timelinesOpen = false
     /// The Select chip's kinds, unfolded above it.
     @State private var selectOpen = false
     /// The Show chip's families, unfolded above it.
@@ -1208,15 +1215,16 @@ struct EPUBMapView: View {
     private static let revealConceptsChipID = "map.arm.concepts.reveal"
     private static let graphsChipID = "map.arm.graphs"
     private static let timelinesChipID = "map.arm.timelines"
-    private static let timeflowLeftChipID = "map.arm.timeflow.left"
-    private static let timeflowRightChipID = "map.arm.timeflow.right"
-    private static let floorChipID = "map.arm.floor"
-    private static let floorMiddleChipID = "map.arm.floor.middle"
-    private static let floorRightChipID = "map.arm.floor.right"
     private static let onlyOverlapChipID = "map.arm.onlyoverlap"
     private static let focusChipID = "map.arm.focus"
     private static let selectChipID = "map.arm.select"
     private static let selectCitationsChipID = "map.arm.select.citations"
+    /// The toolbar's two bare letters: D lets every selection go, A
+    /// brings every family into the room.
+    private static let deselectAllChipID = "map.arm.deselect.all"
+    private static let showAllChipID = "map.arm.show.all"
+    private static let selectTopicsChipID = "map.arm.select.topics"
+    private static let showDocumentsChipID = "map.arm.show.documents"
     private static let selectDocumentsChipID = "map.arm.select.documents"
     private static let selectConceptsChipID = "map.arm.select.concepts"
     private static let watchChipID = "map.arm.watch"
@@ -1742,29 +1750,20 @@ struct EPUBMapView: View {
             // Only Overlap steps in only when common ground stands.
             armMenu.setChipVisible(Self.onlyOverlapChipID, false)
             armMenu.setChipVisible(Self.revealConceptsChipID, false)
-            // Select's three kinds wait folded until the parent pinch.
+            // Select's kinds wait folded until the parent pinch.
             armMenu.setChipVisible(Self.selectCitationsChipID, false)
             armMenu.setChipVisible(Self.selectDocumentsChipID, false)
+            armMenu.setChipVisible(Self.selectTopicsChipID, false)
             armMenu.setChipVisible(Self.selectConceptsChipID, false)
             // Show's families wait folded until the chip is pinched.
             updateShowChips()
             // Author Map's toolbar, standing under the wall — Layout
             // and the Views moved off the arm to buttons.
             content.add(makeMapToolbar())
-            // The Graphs and Timelines groups wake folded; the sides
-            // appear when their parent is pinched. The chips wear their
-            // standing state — a floor lane or graph left on last
-            // session reads active from the first frame, the parents
-            // bright while anything of theirs stands.
-            updateArmGroups()
-            armMenu.setChipActive(Self.floorChipID,
-                                  floorShowRaw != FloorShow.nothing.rawValue)
-            armMenu.setChipActive(Self.floorMiddleChipID,
-                                  floorShowMiddleRaw != FloorShow.nothing.rawValue)
-            armMenu.setChipActive(Self.floorRightChipID,
-                                  floorShowRightRaw != FloorShow.nothing.rawValue)
-            armMenu.setChipActive(Self.timeflowLeftChipID, timeflowLeftShown)
-            armMenu.setChipActive(Self.timeflowRightChipID, timeflowRightShown)
+            // Every family of Show — the lanes and graph walls among
+            // them — wears its standing from the first frame, so a
+            // timeline or wall left on last session reads active
+            // straight away. updateShowChips above has done it.
             conceptLadder.install(in: content)
             faceTurner.install()
             sankeyWallLeft.install(in: content)
@@ -2184,9 +2183,11 @@ struct EPUBMapView: View {
         armMenu.setChipVisible(Self.selectCitationsChipID,
                                selectOpen && citationsStand)
         armMenu.setChipVisible(Self.selectDocumentsChipID, selectOpen)
+        armMenu.setChipVisible(Self.selectTopicsChipID, selectOpen)
         armMenu.setChipVisible(Self.selectConceptsChipID, selectOpen)
         armMenu.setChipActive(Self.selectCitationsChipID, selectKindStands(.citations))
         armMenu.setChipActive(Self.selectDocumentsChipID, selectKindStands(.documents))
+        armMenu.setChipActive(Self.selectTopicsChipID, selectKindStands(.topics))
         armMenu.setChipActive(Self.selectConceptsChipID, selectKindStands(.concepts))
         armMenu.setChipActive(Self.selectChipID,
                               selectOpen || SelectKind.allCases.contains(where: selectKindStands))
@@ -2238,6 +2239,9 @@ struct EPUBMapView: View {
         // — Select's Concepts leaves them as they stand.
         case .concepts: item.kind == .concept && !item.id.hasPrefix("topic:")
             && !item.id.hasPrefix("float:")
+        // The magnets, which Concepts leaves alone, are a family of
+        // their own — and now Select's own third kind.
+        case .topics: item.kind == .concept && item.id.hasPrefix("topic:")
         }
     }
 
@@ -2730,13 +2734,20 @@ struct EPUBMapView: View {
 
     /// The Select chip's kinds — one family selected whole, everything
     /// else deselected.
-    private enum SelectKind: CaseIterable { case citations, documents, concepts }
+    private enum SelectKind: CaseIterable { case citations, documents, topics, concepts }
 
     /// The arm's Select pick: selection reduced to one kind alone.
     /// Documents raise every wall; Citations keep the standing walls
     /// (their cards only exist while raised) and select what stands;
     /// Concepts wake the concept row first if it was away.
     private func selectOnly(_ kind: SelectKind) {
+        if kind == .topics && !topicSpaceMode {
+            // Nothing to select while the magnets are away: they come
+            // in first, as Concepts' row does.
+            topicSpaceMode = true
+            armMenu.setChipActive(Self.topicsChipID, true)
+            reload()
+        }
         if kind == .concepts && !conceptSpaceMode {
             conceptSpaceMode = true
             armMenu.setChipActive(Self.conceptsChipID, true)
@@ -3083,6 +3094,35 @@ struct EPUBMapView: View {
         case Self.showCitationsChipID:
             toggleAllCitations()
             return true
+        case Self.showDocumentsChipID:
+            // The front EPUBs leave the room and come back; their
+            // raised walls are Citations' business, not theirs.
+            documentsShown.toggle()
+            reload()
+            updateShowChips()
+            return true
+        case Self.selectTopicsChipID:
+            toggleSelect(.topics)
+            return true
+        case Self.deselectAllChipID:
+            // Every selection let go, with the same semantics a hand
+            // deselecting each would have.
+            for kind in SelectKind.allCases where selectKindStands(kind) {
+                deselectKind(kind)
+            }
+            for index in items.indices { items[index].isSelected = false }
+            deepParentIDs = []
+            focusedConceptID = nil
+            focusedConceptArticleIDs = []
+            selectOpen = false
+            updateSelectChips()
+            updateStandingChips()
+            reload()
+            return true
+        case Self.showAllChipID:
+            // Every family into the room at once.
+            showEverything()
+            return true
         case Self.conceptsChipID:
             toggleConcepts()
             return true
@@ -3104,26 +3144,12 @@ struct EPUBMapView: View {
             updateStandingChips()
             return true
         case Self.graphsChipID:
-            graphsOpen.toggle()
-            if graphsOpen { timelinesOpen = false }
-            updateArmGroups()
+            // Both walls together: the arm offers the family, not a side.
+            setGraphsShown(!(timeflowLeftShown || timeflowRightShown))
             return true
         case Self.timelinesChipID:
-            timelinesOpen.toggle()
-            if timelinesOpen { graphsOpen = false }
-            updateArmGroups()
-            return true
-        case Self.timeflowLeftChipID:
-            timeflowLeftShown.toggle()
-            armMenu.setChipActive(Self.timeflowLeftChipID, timeflowLeftShown)
-            updateArmGroups()
-            updateSankey()
-            return true
-        case Self.timeflowRightChipID:
-            timeflowRightShown.toggle()
-            armMenu.setChipActive(Self.timeflowRightChipID, timeflowRightShown)
-            updateArmGroups()
-            updateSankey()
+            // All three lanes together, for the same reason.
+            setTimelinesShown(!timelinesStand)
             return true
         case Self.onlyOverlapChipID:
             // The wall narrowed to the common ground, and back.
@@ -3153,37 +3179,6 @@ struct EPUBMapView: View {
             return true
         case Self.selectConceptsChipID:
             toggleSelect(.concepts)
-            return true
-        case Self.floorChipID:
-            if floorShowRaw == FloorShow.nothing.rawValue {
-                floorShowRaw = floorShowLastRaw
-            } else {
-                floorShowLastRaw = floorShowRaw
-                floorShowRaw = FloorShow.nothing.rawValue
-            }
-            armMenu.setChipActive(Self.floorChipID,
-                                  floorShowRaw != FloorShow.nothing.rawValue)
-            updateArmGroups()
-            return true
-        case Self.floorMiddleChipID:
-            if floorShowMiddleRaw == FloorShow.nothing.rawValue {
-                floorShowMiddleRaw = FloorShow.world.rawValue
-            } else {
-                floorShowMiddleRaw = FloorShow.nothing.rawValue
-            }
-            armMenu.setChipActive(Self.floorMiddleChipID,
-                                  floorShowMiddleRaw != FloorShow.nothing.rawValue)
-            updateArmGroups()
-            return true
-        case Self.floorRightChipID:
-            if floorShowRightRaw == FloorShow.nothing.rawValue {
-                floorShowRightRaw = FloorShow.world.rawValue
-            } else {
-                floorShowRightRaw = FloorShow.nothing.rawValue
-            }
-            armMenu.setChipActive(Self.floorRightChipID,
-                                  floorShowRightRaw != FloorShow.nothing.rawValue)
-            updateArmGroups()
             return true
         case Self.settingsChipID:
             openWindow(id: "settings")
@@ -3261,16 +3256,88 @@ struct EPUBMapView: View {
         updateShowChips()
     }
 
+    /// Whether any of the floor's three lanes stands.
+    private var timelinesStand: Bool {
+        floorShowRaw != FloorShow.nothing.rawValue
+            || floorShowMiddleRaw != FloorShow.nothing.rawValue
+            || floorShowRightRaw != FloorShow.nothing.rawValue
+    }
+
+    /// Both graph walls at once — the family, not a side. Turning them
+    /// away remembers nothing to restore: both come back together.
+    private func setGraphsShown(_ shown: Bool) {
+        timeflowLeftShown = shown
+        timeflowRightShown = shown
+        updateSankey()
+        updateShowChips()
+    }
+
+    /// All three floor lanes at once. Going away, each lane's theme is
+    /// remembered, so coming back restores what stood rather than
+    /// imposing one history on all three.
+    private func setTimelinesShown(_ shown: Bool) {
+        if shown {
+            if floorShowRaw == FloorShow.nothing.rawValue {
+                floorShowRaw = floorShowLastRaw == FloorShow.nothing.rawValue
+                    ? FloorShow.world.rawValue : floorShowLastRaw
+            }
+            if floorShowMiddleRaw == FloorShow.nothing.rawValue {
+                floorShowMiddleRaw = floorShowMiddleLastRaw == FloorShow.nothing.rawValue
+                    ? FloorShow.hypertext.rawValue : floorShowMiddleLastRaw
+            }
+            if floorShowRightRaw == FloorShow.nothing.rawValue {
+                floorShowRightRaw = floorShowRightLastRaw == FloorShow.nothing.rawValue
+                    ? FloorShow.computing.rawValue : floorShowRightLastRaw
+            }
+        } else {
+            if floorShowRaw != FloorShow.nothing.rawValue { floorShowLastRaw = floorShowRaw }
+            if floorShowMiddleRaw != FloorShow.nothing.rawValue {
+                floorShowMiddleLastRaw = floorShowMiddleRaw
+            }
+            if floorShowRightRaw != FloorShow.nothing.rawValue {
+                floorShowRightLastRaw = floorShowRightRaw
+            }
+            floorShowRaw = FloorShow.nothing.rawValue
+            floorShowMiddleRaw = FloorShow.nothing.rawValue
+            floorShowRightRaw = FloorShow.nothing.rawValue
+        }
+        updateShowChips()
+    }
+
+    /// A — every family into the room at once: the front EPUBs, their
+    /// citation walls, the magnets, the floor's lanes, both graph
+    /// walls, the concept row. The one command that makes the room
+    /// whole again after any amount of hiding.
+    private func showEverything() {
+        documentsShown = true
+        if !topicSpaceMode { toggleTopics() }
+        if !conceptSpaceMode { toggleConcepts() }
+        if raisedArticleIDs.isEmpty { toggleAllCitations() }
+        setGraphsShown(true)
+        setTimelinesShown(true)
+        showOpen = false
+        reload()
+        updateShowChips()
+    }
+
     /// Show's families shown while the chip stands open, each wearing
     /// its live standing — bright while its family is in the room.
     private func updateShowChips() {
-        armMenu.setChipVisible(Self.showCitationsChipID, showOpen)
-        armMenu.setChipVisible(Self.topicsChipID, showOpen)
-        armMenu.setChipVisible(Self.conceptsChipID, showOpen)
+        for id in [Self.showCitationsChipID, Self.showDocumentsChipID,
+                   Self.topicsChipID, Self.timelinesChipID,
+                   Self.graphsChipID, Self.conceptsChipID] {
+            armMenu.setChipVisible(id, showOpen)
+        }
         armMenu.setChipActive(Self.showChipID,
                               showOpen || !raisedArticleIDs.isEmpty
-                                || topicSpaceMode || conceptSpaceMode)
+                                || topicSpaceMode || conceptSpaceMode
+                                || !documentsShown || timelinesStand
+                                || timeflowLeftShown || timeflowRightShown)
         armMenu.setChipActive(Self.showCitationsChipID, !raisedArticleIDs.isEmpty)
+        armMenu.setChipActive(Self.showDocumentsChipID, documentsShown)
+        armMenu.setChipActive(Self.timelinesChipID, timelinesStand)
+        armMenu.setChipActive(Self.graphsChipID,
+                              timeflowLeftShown || timeflowRightShown)
     }
 
 
@@ -3495,19 +3562,6 @@ struct EPUBMapView: View {
     /// sides take no place (the row packs over them); each parent
     /// stands active while any of its group is on, so a folded group
     /// still shows something is standing.
-    private func updateArmGroups() {
-        armMenu.setChipVisible(Self.timeflowLeftChipID, graphsOpen)
-        armMenu.setChipVisible(Self.timeflowRightChipID, graphsOpen)
-        armMenu.setChipVisible(Self.floorChipID, timelinesOpen)
-        armMenu.setChipVisible(Self.floorMiddleChipID, timelinesOpen)
-        armMenu.setChipVisible(Self.floorRightChipID, timelinesOpen)
-        armMenu.setChipActive(Self.graphsChipID,
-                              timeflowLeftShown || timeflowRightShown)
-        armMenu.setChipActive(Self.timelinesChipID,
-                              floorShowRaw != FloorShow.nothing.rawValue
-                                || floorShowMiddleRaw != FloorShow.nothing.rawValue
-                                || floorShowRightRaw != FloorShow.nothing.rawValue)
-    }
 }
 
 /// Marks the Map toolbar's move bar, so the panel drag knows its own.
