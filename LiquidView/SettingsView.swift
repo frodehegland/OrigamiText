@@ -1612,13 +1612,13 @@ private struct SignInToHypermediaAccountSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Sign In to an Existing Account")
                 .font(.headline)
-            Text("Your account is a signing key. Enter its twelve-word secret recovery phrase — or the raw key, as hex or base64 — and the account it names will appear below.")
+            Text("Your account IS a signing key, so signing in means giving Origami Text that key. Paste the private key Seed shows you — hex, base64 or base58, in whatever shape it comes — and the account it names appears below. A twelve-word recovery phrase works too.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            TextField("Recovery phrase", text: $phrase,
-                      prompt: Text("twelve words, separated by spaces"),
+            TextField("Private key", text: $phrase,
+                      prompt: Text("the private key from Seed — or twelve words"),
                       axis: .vertical)
                 .lineLimit(2...4)
                 .textFieldStyle(.roundedBorder)
@@ -1664,7 +1664,7 @@ private struct SignInToHypermediaAccountSheet: View {
                     .buttonStyle(.plain)
                 }
             } else if !phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("That is not yet twelve words, or a 32-byte key.")
+                Text("That is not yet a key Origami Text can read, or twelve words.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

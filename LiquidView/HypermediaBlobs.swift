@@ -258,20 +258,18 @@ nonisolated enum HypermediaSignIn {
         var id: String { label + uid }
     }
 
-    /// Every account the given words or key could mean, most likely
-    /// first. Empty when the input is neither a plausible phrase nor a
-    /// key of the right size.
+    /// Every account the given key or words could mean, most likely
+    /// first. Empty when the input is neither a readable key nor a
+    /// plausible phrase.
     static func candidates(for input: String) -> [Candidate] {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
-        // A raw key first: unambiguous, so it stands alone.
-        if let raw = rawSeed(from: trimmed) {
-            return identity(from: raw).map {
-                [Candidate(label: "Raw key",
-                           detail: "The 32-byte signing seed, as given.",
-                           seed: raw, uid: $0.uid)]
-            } ?? []
+        // A private key is the direct answer, and needs no guessing: one
+        // key, one account. It stands alone.
+        if let key = privateKey(from: trimmed), let id = identity(from: key.seed) {
+            return [Candidate(label: "Private key", detail: key.how,
+                              seed: key.seed, uid: id.uid)]
         }
 
         let words = trimmed.split(whereSeparator: { $0.isWhitespace }).map {
@@ -303,21 +301,93 @@ nonisolated enum HypermediaSignIn {
         try? HypermediaIdentity(seed: seed)
     }
 
-    /// A 32-byte key written as hex or base64.
-    static func rawSeed(from text: String) -> Data? {
-        let compact = text.filter { !$0.isWhitespace }
-        if compact.count == 64, compact.allSatisfy(\.isHexDigit) {
+    /// A private key as Seed might hand it over, in whatever shape it
+    /// arrives: hex (with or without `0x`), base64, base64url, or
+    /// base58 (bare, or multibase `z`). The bytes inside may be the bare
+    /// 32-byte signing seed, the 64-byte Ed25519 private key (seed then
+    /// public half), a libp2p protobuf-wrapped key, or a multicodec
+    /// `ed25519-priv` key. Whitespace and newlines are ignored, so a
+    /// pasted line wraps harmlessly.
+    ///
+    /// A 64-byte key proves itself: its second half must be the public
+    /// key its first half derives, and when that holds the account is
+    /// certain rather than merely plausible.
+    static func privateKey(from text: String) -> (seed: Data, how: String)? {
+        for bytes in decodings(of: text) {
+            if let found = seedInside(bytes) { return found }
+        }
+        return nil
+    }
+
+    /// Every byte string the text could be, cheapest reading first.
+    private static func decodings(of text: String) -> [Data] {
+        let compact = text.filter { !$0.isWhitespace && $0 != "\"" }
+        guard !compact.isEmpty else { return [] }
+        var found: [Data] = []
+        func add(_ data: Data?) {
+            guard let data, !data.isEmpty, !found.contains(data) else { return }
+            found.append(data)
+        }
+        let hexBody = compact.hasPrefix("0x") || compact.hasPrefix("0X")
+            ? String(compact.dropFirst(2)) : compact
+        if hexBody.count % 2 == 0, hexBody.count >= 64, hexBody.allSatisfy(\.isHexDigit) {
             var bytes = Data()
-            var index = compact.startIndex
-            while index < compact.endIndex {
-                let next = compact.index(index, offsetBy: 2)
-                guard let byte = UInt8(compact[index..<next], radix: 16) else { return nil }
+            var index = hexBody.startIndex
+            while index < hexBody.endIndex {
+                let next = hexBody.index(index, offsetBy: 2)
+                guard let byte = UInt8(hexBody[index..<next], radix: 16) else { bytes = Data(); break }
                 bytes.append(byte)
                 index = next
             }
-            return bytes
+            add(bytes)
         }
-        if let data = Data(base64Encoded: compact), data.count == 32 { return data }
+        add(Data(base64Encoded: compact))
+        // base64url, as tools that put keys in URLs emit it.
+        var url = compact.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while url.count % 4 != 0 { url.append("=") }
+        add(Data(base64Encoded: url))
+        add(Multibase.decodeBase58btc(compact))
+        add(Multibase.decodeBase58btc("z" + compact))
+        return found
+    }
+
+    /// The 32-byte signing seed inside a byte string, and how it was
+    /// read — unwrapping the envelopes a key travels in.
+    private static func seedInside(_ bytes: Data) -> (seed: Data, how: String)? {
+        // libp2p's protobuf: field 1 = key type (1 = Ed25519), field 2 =
+        // the key bytes. This is how IPFS-descended tools serialise one.
+        if bytes.count > 4, bytes[bytes.startIndex] == 0x08,
+           bytes[bytes.startIndex + 1] == 0x01,
+           bytes[bytes.startIndex + 2] == 0x12 {
+            let length = Int(bytes[bytes.startIndex + 3])
+            let body = bytes.dropFirst(4)
+            if body.count >= length, length == 64 || length == 32 {
+                let inner = Data(body.prefix(length))
+                if let found = seedInside(inner) {
+                    return (found.seed, "A libp2p-wrapped Ed25519 private key. " + found.how)
+                }
+            }
+        }
+        // multicodec ed25519-priv (0x1300, varint 0x80 0x26).
+        if bytes.count == 34, bytes[bytes.startIndex] == 0x80,
+           bytes[bytes.startIndex + 1] == 0x26 {
+            return (Data(bytes.dropFirst(2)),
+                    "A multicodec ed25519-priv key.")
+        }
+        // The full Ed25519 private key: seed, then the public half. It
+        // checks itself.
+        if bytes.count == 64 {
+            let seed = Data(bytes.prefix(32))
+            let tail = Data(bytes.suffix(32))
+            if let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed),
+               key.publicKey.rawRepresentation == tail {
+                return (seed, "A 64-byte Ed25519 private key whose public half matches — this is certainly the right account.")
+            }
+        }
+        if bytes.count == 32 {
+            return (bytes, "A 32-byte signing seed, as given.")
+        }
         return nil
     }
 
