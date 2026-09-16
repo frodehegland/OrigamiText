@@ -376,15 +376,27 @@ final class ArmMenu {
         // columns) fans UP THE ARM from its parent instead, two lanes
         // deep, so a long option list rides the forearm rather than
         // towering into the room. Two passes resolve the two levels.
+        //
+        // A long list under a row chip takes the same fan: a column of
+        // a dozen options would stand two thirds of a metre into the
+        // room, which is no menu at all. Origami addition (Layout's
+        // eleven arrangements now ride the right forearm) — carry back
+        // to Author.
         var groupSteps: [String: Int] = [:]
         var fanSteps: [String: Int] = [:]
         var resolved = rowPositions
+        var childCounts: [String: Int] = [:]
+        for chip in sideChips {
+            guard let group = chip.group, items[chip.id]?.isEnabled == true
+            else { continue }
+            childCounts[group, default: 0] += 1
+        }
         for _ in 0..<2 {
             for chip in sideChips {
                 guard let group = chip.group, let item = items[chip.id],
                       item.isEnabled, resolved[chip.id] == nil,
                       let anchor = resolved[group] else { continue }
-                if chipsByID[group]?.group != nil {
+                if chipsByID[group]?.group != nil || childCounts[group, default: 0] > 8 {
                     let step = fanSteps[group, default: 0]
                     fanSteps[group] = step + 1
                     item.position = anchor
