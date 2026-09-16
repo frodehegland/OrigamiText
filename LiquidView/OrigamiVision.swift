@@ -315,7 +315,8 @@ final class VisionModel {
         }
     }
 
-    /// Put Away: the float's annotation leaves the sidecar with it.
+    /// Delete: the float's annotation leaves the sidecar with it, for
+    /// good — which is why the verb is not a putting-away.
     func removeFloat(_ id: String) {
         let bare = id.hasPrefix("float:") ? String(id.dropFirst("float:".count)) : id
         guard let float = floatingTexts.first(where: { $0.id == bare }) else { return }

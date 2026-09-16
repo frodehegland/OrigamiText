@@ -3586,7 +3586,7 @@ final class AppModel {
         annotationsStamp += 1
     }
 
-    /// Put Away, by address — the WebView screen's slip removal.
+    /// A slip deleted, by address — the WebView screen's removal.
     func removeLiftSlip(id: String, address: String) {
         var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
         all.removeAll { $0.id == id }

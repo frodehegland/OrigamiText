@@ -192,7 +192,7 @@ struct EPUBReaderScreen: View {
     var onClose: () -> Void
 
     /// A lifted slip opened on the faithful page: the quote whole,
-    /// with Put Away.
+    /// with Delete.
     private struct LiftTarget: Identifiable {
         let annotation: WebAnnotation
         var id: String { annotation.id }
@@ -274,9 +274,10 @@ struct EPUBReaderScreen: View {
                         forAnnotationID: annotation.id, address: address)
                 },
                 onOpen: { liftTarget = LiftTarget(annotation: annotation) })
-                // Ctrl-click closes the slip — the annotation goes too.
+                // Ctrl-click deletes the slip: the annotation leaves the
+                // sidecar and does not come back.
                 .contextMenu {
-                    Button("Put Away", role: .destructive) {
+                    Button("Delete", role: .destructive) {
                         model.removeLiftSlip(id: annotation.id, address: address)
                     }
                 }
@@ -293,7 +294,7 @@ struct EPUBReaderScreen: View {
                 }
                 .frame(minHeight: 80, maxHeight: 240)
                 HStack {
-                    Button("Put Away", role: .destructive) {
+                    Button("Delete", role: .destructive) {
                         model.removeLiftSlip(id: target.annotation.id,
                                              address: bookAddress)
                         liftTarget = nil

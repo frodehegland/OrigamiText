@@ -1462,11 +1462,12 @@ struct EPUBMapView: View {
                 AnyView(cardFace(for: item))
             },
             constructorAttachment: { _, item -> AnyView in
-                // A floated passage: one verb, back into nothing.
+                // A floated passage: one verb, and it does not come
+                // back — the annotation leaves the sidecar with the card.
                 if item.id.hasPrefix("float:") {
                     guard item.isSelected else { return AnyView(EmptyView()) }
                     return AnyView(
-                        Button("Put Away") { model.removeFloat(item.id) }
+                        Button("Delete") { model.removeFloat(item.id) }
                             .buttonStyle(.bordered)
                             .scaleEffect(0.5, anchor: .top)
                     )
