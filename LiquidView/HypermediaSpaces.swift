@@ -100,6 +100,36 @@ final class HypermediaSpaces {
         }
     }
 
+    /// Signs in to an account that already exists: the key is the
+    /// account, so signing in IS bringing the key. The seed is saved and
+    /// the profile republished under the given name, so the spaces know
+    /// the name to show beside the address they already knew.
+    ///
+    /// Unlike `createAccount`, nothing is generated — the address that
+    /// comes out is whatever the key says it is, which is why the caller
+    /// confirms the address before this is called.
+    func signIn(seed: Data, name: String) async throws {
+        let existing = try HypermediaIdentity(seed: seed)
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        HypermediaKeychain.save(service: Self.keychainService, account: Self.keychainAccount,
+                                password: seed.base64EncodedString())
+        if !trimmed.isEmpty {
+            UserDefaults.standard.set(trimmed, forKey: AppSettings.hypermediaAccountNameKey)
+        }
+        identity = existing
+        let failed = await publishProfile()
+        if failed.count == profileDestinations.count {
+            throw HypermediaError.serverError("Signed in, but the profile could not be published to any space (\(failed.joined(separator: ", "))). Your key is saved; try Publish Profile Again later.")
+        }
+    }
+
+    /// Forgets the key. The account itself is untouched — it lives in the
+    /// spaces that hold its documents, and the same phrase brings it back.
+    func signOut() {
+        HypermediaKeychain.delete(service: Self.keychainService, account: Self.keychainAccount)
+        identity = nil
+    }
+
     /// Where the profile goes: every followed space, plus the gateway.
     private var profileDestinations: [URL] {
         var origins = spaces.map(\.origin)

@@ -1,5 +1,8 @@
 import Foundation
 import CryptoKit
+// PBKDF2 for the BIP-39 phrase: CryptoKit has no key-stretching, and the
+// standard's parameters are fixed, so CommonCrypto does that one step.
+import CommonCrypto
 
 // Writing to the Hypermedia protocol.
 //
@@ -218,6 +221,133 @@ nonisolated struct HypermediaIdentity: Sendable {
         guard let bytes = Multibase.decodeBase58btc(uid), bytes.count == 34,
               bytes.prefix(2) == principalPrefix else { return nil }
         return bytes
+    }
+}
+
+// MARK: - Signing in to an account that already exists
+
+/// Bringing an existing Hypermedia account into this app.
+///
+/// An account IS its key, so signing in means supplying the key — as the
+/// twelve-word secret recovery phrase the Seed app hands out, or as the
+/// raw 32-byte signing seed.
+///
+/// The phrase is BIP-39: the words are stretched with PBKDF2-HMAC-SHA512,
+/// 2048 rounds, salted "mnemonic", exactly as that standard says. What
+/// this code could NOT establish is the last step — whether Seed takes
+/// the Ed25519 seed as the first 32 bytes of those 64, or as the
+/// SLIP-0010 master key derived from them. The two give different
+/// accounts, and guessing would silently sign a person in as somebody
+/// they are not.
+///
+/// So both are derived and both addresses are shown, and the reader
+/// confirms which is theirs before anything is saved (Seed's own
+/// `seed key derive "<words>"` prints the address to compare, and a
+/// profile on hyper.media shows it too). When the answer is known for
+/// certain, drop the other candidate and this comment with it.
+nonisolated enum HypermediaSignIn {
+
+    /// One reading of a phrase: how the seed was derived, and the account
+    /// address that reading produces.
+    struct Candidate: Identifiable, Sendable {
+        /// "First 32 bytes" / "SLIP-0010" / "Raw key".
+        let label: String
+        let detail: String
+        let seed: Data
+        let uid: String
+        var id: String { label + uid }
+    }
+
+    /// Every account the given words or key could mean, most likely
+    /// first. Empty when the input is neither a plausible phrase nor a
+    /// key of the right size.
+    static func candidates(for input: String) -> [Candidate] {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        // A raw key first: unambiguous, so it stands alone.
+        if let raw = rawSeed(from: trimmed) {
+            return identity(from: raw).map {
+                [Candidate(label: "Raw key",
+                           detail: "The 32-byte signing seed, as given.",
+                           seed: raw, uid: $0.uid)]
+            } ?? []
+        }
+
+        let words = trimmed.split(whereSeparator: { $0.isWhitespace }).map {
+            $0.lowercased()
+        }
+        guard words.count >= 12 else { return [] }
+        let phrase = words.joined(separator: " ")
+        guard let bip39 = bip39Seed(phrase: phrase) else { return [] }
+
+        var found: [Candidate] = []
+        let firstHalf = bip39.prefix(32)
+        if let id = identity(from: Data(firstHalf)) {
+            found.append(Candidate(
+                label: "First 32 bytes",
+                detail: "The seed's first half used directly as the signing key.",
+                seed: Data(firstHalf), uid: id.uid))
+        }
+        let master = slip10MasterKey(seed: bip39)
+        if let id = identity(from: master), master != Data(firstHalf) {
+            found.append(Candidate(
+                label: "SLIP-0010",
+                detail: "The standard Ed25519 master key derived from the seed.",
+                seed: master, uid: id.uid))
+        }
+        return found
+    }
+
+    private static func identity(from seed: Data) -> HypermediaIdentity? {
+        try? HypermediaIdentity(seed: seed)
+    }
+
+    /// A 32-byte key written as hex or base64.
+    static func rawSeed(from text: String) -> Data? {
+        let compact = text.filter { !$0.isWhitespace }
+        if compact.count == 64, compact.allSatisfy(\.isHexDigit) {
+            var bytes = Data()
+            var index = compact.startIndex
+            while index < compact.endIndex {
+                let next = compact.index(index, offsetBy: 2)
+                guard let byte = UInt8(compact[index..<next], radix: 16) else { return nil }
+                bytes.append(byte)
+                index = next
+            }
+            return bytes
+        }
+        if let data = Data(base64Encoded: compact), data.count == 32 { return data }
+        return nil
+    }
+
+    /// BIP-39: PBKDF2-HMAC-SHA512 over the words, salted "mnemonic",
+    /// 2048 rounds, 64 bytes out. The words are not checksum-checked —
+    /// the derived address is the check that matters, and it is shown.
+    static func bip39Seed(phrase: String, passphrase: String = "") -> Data? {
+        let password = Array(phrase.decomposedStringWithCompatibilityMapping.utf8)
+        let salt = Array(("mnemonic" + passphrase)
+            .decomposedStringWithCompatibilityMapping.utf8)
+        var derived = [UInt8](repeating: 0, count: 64)
+        let status = CCKeyDerivationPBKDF(
+            CCPBKDFAlgorithm(kCCPBKDF2),
+            password.withUnsafeBufferPointer { $0.baseAddress?.withMemoryRebound(
+                to: CChar.self, capacity: password.count) { $0 } },
+            password.count,
+            salt, salt.count,
+            CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA512),
+            2048,
+            &derived, derived.count)
+        guard status == kCCSuccess else { return nil }
+        return Data(derived)
+    }
+
+    /// SLIP-0010's master key for Ed25519: HMAC-SHA512 of the seed under
+    /// the key "ed25519 seed", left half.
+    static func slip10MasterKey(seed: Data) -> Data {
+        let key = SymmetricKey(data: Data("ed25519 seed".utf8))
+        let mac = HMAC<SHA512>.authenticationCode(for: seed, using: key)
+        return Data(mac).prefix(32)
     }
 }
 

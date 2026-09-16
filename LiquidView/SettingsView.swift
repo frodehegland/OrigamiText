@@ -1372,6 +1372,7 @@ private struct HypermediaSettingsView: View {
 
     // Account state.
     @State private var showCreateAccount = false
+    @State private var showSignIn = false
     @State private var isPublishingProfile = false
     @State private var profileNote: String? = nil
 
@@ -1430,6 +1431,9 @@ private struct HypermediaSettingsView: View {
         .sheet(isPresented: $showCreateAccount) {
             CreateHypermediaAccountSheet()
         }
+        .sheet(isPresented: $showSignIn) {
+            SignInToHypermediaAccountSheet()
+        }
     }
 
     // MARK: Account
@@ -1467,8 +1471,17 @@ private struct HypermediaSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Button("Sign Out", role: .destructive) {
+                model.hypermedia.signOut()
+            }
+            .help("Forget the key on this Mac. The account itself is untouched — the same recovery phrase brings it back.")
         } else {
-            Button("Create an Account") { showCreateAccount = true }
+            // Two doors, because an account is a key: make a new one, or
+            // bring the one you already have.
+            HStack {
+                Button("Create an Account") { showCreateAccount = true }
+                Button("Sign In to an Existing Account") { showSignIn = true }
+            }
         }
     }
 
@@ -1575,6 +1588,133 @@ private struct HypermediaSettingsView: View {
 
 /// Create an Account: a name, and a signing key made on the spot. The
 /// profile goes out to every followed space at once.
+/// Signing in to an account that already exists elsewhere — the Seed app,
+/// another Mac. The account is its key, so this takes the twelve-word
+/// secret recovery phrase (or the raw signing key) and shows which
+/// account it comes out as BEFORE saving anything: the app cannot be
+/// certain, from the phrase alone, which of two standard derivations Seed
+/// uses, and an account signed in wrongly would be a stranger wearing
+/// your name. Confirm the address, then it is kept.
+private struct SignInToHypermediaAccountSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var phrase = ""
+    @State private var name = ""
+    @State private var chosen: String?
+    @State private var isSigningIn = false
+    @State private var error: String?
+
+    private var candidates: [HypermediaSignIn.Candidate] {
+        HypermediaSignIn.candidates(for: phrase)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Sign In to an Existing Account")
+                .font(.headline)
+            Text("Your account is a signing key. Enter its twelve-word secret recovery phrase — or the raw key, as hex or base64 — and the account it names will appear below.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField("Recovery phrase", text: $phrase,
+                      prompt: Text("twelve words, separated by spaces"),
+                      axis: .vertical)
+                .lineLimit(2...4)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.callout, design: .monospaced))
+                .onChange(of: phrase) { chosen = nil }
+
+            TextField("Name", text: $name, prompt: Text("The name spaces show beside your address"))
+                .textFieldStyle(.roundedBorder)
+
+            if !candidates.isEmpty {
+                Divider()
+                if candidates.count > 1 {
+                    Text("Two standards would read this phrase differently. Choose the address that is yours — `seed key derive \"…\"` prints it, and so does your profile on the web.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(candidates) { candidate in
+                    Button {
+                        chosen = candidate.id
+                    } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: chosen == candidate.id
+                                  ? "largecircle.fill.circle" : "circle")
+                                .foregroundStyle(chosen == candidate.id
+                                                 ? Color.accentColor : .secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(candidate.uid)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(candidates.count > 1
+                                     ? "\(candidate.label) — \(candidate.detail)"
+                                     : candidate.detail)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else if !phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("That is not yet twelve words, or a 32-byte key.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isSigningIn)
+                Button(isSigningIn ? "Signing In\u{2026}" : "Sign In") { signIn() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isSigningIn || selected == nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        .onAppear {
+            if name.isEmpty { name = model.authorIdentity.name }
+        }
+    }
+
+    /// The candidate to sign in as: the chosen one, or the only one.
+    private var selected: HypermediaSignIn.Candidate? {
+        if let chosen { return candidates.first { $0.id == chosen } }
+        return candidates.count == 1 ? candidates.first : nil
+    }
+
+    private func signIn() {
+        guard let selected, !isSigningIn else { return }
+        isSigningIn = true
+        error = nil
+        Task {
+            do {
+                try await model.hypermedia.signIn(seed: selected.seed, name: name)
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+            }
+            isSigningIn = false
+        }
+    }
+}
+
 private struct CreateHypermediaAccountSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -1632,3 +1772,11 @@ private struct CreateHypermediaAccountSheet: View {
     }
 }
 
+
+/// Signing in to an existing Hypermedia account. The empty state: the
+/// phrase field, the name, and nothing claimed until words are typed —
+/// the account address appears only when there is one to show.
+#Preview("Sign in to a Hypermedia account") {
+    SignInToHypermediaAccountSheet()
+        .environment(AppModel())
+}
