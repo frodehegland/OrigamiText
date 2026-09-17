@@ -2648,11 +2648,13 @@ struct EPUBMapView: View {
                         }
                     }
                 }
-                // The list stands 1.5 cm below the button that opened
-                // it. Attachments lay out at 1360 points to the metre
-                // and this whole block is drawn at 0.8, so 25.5 points
-                // is the centimetre and a half asked for.
-                .padding(.top, 25.5)
+                // The list stands 3 cm below the button that opened it
+                // — a centimetre and a half further down than it did
+                // (17 Sep 2026), which is what reads right in the
+                // room. Attachments lay out at 1360 points to the
+                // metre and this whole block is drawn at 0.8, so 25.5
+                // points is a centimetre and a half: two of them.
+                .padding(.top, 51)
             }
         }
     }
