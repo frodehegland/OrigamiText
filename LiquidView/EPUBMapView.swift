@@ -1154,6 +1154,10 @@ struct EPUBMapView: View {
         // walls, the topic magnets, the floor's timelines, the graph
         // walls, the concept row — each one command in one place.
         ArmMenu.Chip(id: EPUBMapView.showChipID, title: "Show", side: .left),
+        // A closes the row, right after Show — the word row is these
+        // four and nothing else, so it is declared here beside its
+        // neighbour rather than below Show's own list.
+        ArmMenu.Chip(id: EPUBMapView.showAllChipID, title: "A", side: .left),
         ArmMenu.Chip(id: EPUBMapView.showCitationsChipID, title: "Citations",
                      side: .left, group: EPUBMapView.showChipID),
         ArmMenu.Chip(id: EPUBMapView.showDocumentsChipID, title: "Documents",
@@ -1172,7 +1176,6 @@ struct EPUBMapView: View {
         // Show — and it only steps out while common ground does.
         ArmMenu.Chip(id: EPUBMapView.onlyOverlapChipID, title: "Only Overlap",
                      side: .left, group: EPUBMapView.showChipID),
-        ArmMenu.Chip(id: EPUBMapView.showAllChipID, title: "A", side: .left),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
     ] + EPUBMapView.layoutOptionChips + EPUBMapView.savedViewChips,
