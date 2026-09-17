@@ -1200,7 +1200,7 @@ struct EPUBMapView: View {
     /// forearm. Auto is a menu inside Layout's, so it opens only
     /// while Layout stands open.
     @State private var watchLayoutOpen = false
-    @State private var watchAutoOpen = false
+    @State private var openLayoutFan: LayoutFan?
     @State private var watchSavedOpen = false
     /// The saved arrangements, five slots per venue — positions in
     /// map space (the carried shift removed), persisted.
@@ -1249,7 +1249,6 @@ struct EPUBMapView: View {
     private static let watchSavedChipID = "map.arm.watch.saved"
     private static let watchSaveNowChipID = "map.arm.watch.saved.save"
     private static let gatherChipID = "map.arm.gather"
-    private static let autoChipID = "map.arm.auto"
     private static let introChipID = "map.arm.intro"
     private static let savedSlotCount = 5
     private static func savedViewSlotID(_ slot: Int) -> String {
@@ -1262,14 +1261,20 @@ struct EPUBMapView: View {
     /// the ladder and unfolds the whole-wall arrangements along the
     /// arm, a menu inside a menu.
     private static var layoutOptionChips: [ArmMenu.Chip] {
-        WatchLayoutOption.allCases.map {
-            ArmMenu.Chip(id: watchLayoutOptionID($0), title: $0.title,
+        // The ladder: four words climbing away from the arm.
+        LayoutFan.allCases.map {
+            ArmMenu.Chip(id: $0.chipID, title: $0.title,
                          side: .right, group: watchLayoutChipID)
-        } + [ArmMenu.Chip(id: autoChipID, title: "Auto",
-                          side: .right, group: watchLayoutChipID)]
+        }
+        // Each family's own commands, fanning along the arm from its
+        // rung — a menu inside a menu inside the row.
+        + WatchLayoutOption.allCases.map {
+            ArmMenu.Chip(id: watchLayoutOptionID($0), title: $0.title,
+                         side: .right, group: $0.family.chipID)
+        }
         + offeredWatchViews.map {
             ArmMenu.Chip(id: watchViewOptionID($0), title: $0.title,
-                         side: .right, group: autoChipID)
+                         side: .right, group: LayoutFan.auto.chipID)
         }
     }
 
@@ -1282,10 +1287,36 @@ struct EPUBMapView: View {
         }
     }
 
-    /// Author Map's Layout menu, verbatim — align, distribute, and
-    /// sort the selected cards (all standing cards when none are).
+    /// The four rungs of Layout's ladder, each unfolding its own fan
+    /// along the arm. Three are ways of arranging the chosen cards by
+    /// hand; Auto is the whole wall re-made.
+    private enum LayoutFan: String, CaseIterable {
+        case align, distribute, sort, auto
+
+        var title: String {
+            switch self {
+            case .align: "Align"
+            case .distribute: "Distribute"
+            case .sort: "Sort"
+            case .auto: "Auto"
+            }
+        }
+
+        var chipID: String { "map.arm.layout." + rawValue }
+    }
+
+    /// Author Map's Layout commands, in three families — the cards
+    /// chosen, or every standing card when none are.
+    ///
+    /// Two departures from Author, agreed 17 Sep 2026. Author's
+    /// "Horizontal" is the vertical CENTRE align, which beside "Sort
+    /// Horizontal" read as its opposite: it is Middle here, Center's
+    /// counterpart. And Across is new — an even spread left to right
+    /// in the order the cards already stand, which Author has no
+    /// command for (its horizontal spreads all sort first).
     private enum WatchLayoutOption: String, CaseIterable {
-        case left, center, right, vertical, horizontal
+        case left, center, right, middle
+        case down, across
         case sortVertical, sortVerticalReverse
         case sortHorizontal, sortHorizontalReverse
         case time, timeReverse
@@ -1295,14 +1326,26 @@ struct EPUBMapView: View {
             case .left: "Left"
             case .center: "Center"
             case .right: "Right"
-            case .vertical: "Vertical"
-            case .horizontal: "Horizontal"
-            case .sortVertical: "Sort Vertical"
-            case .sortVerticalReverse: "Vertical Reverse Sort"
-            case .sortHorizontal: "Sort Horizontal"
-            case .sortHorizontalReverse: "Horizontal Reverse Sort"
-            case .time: "Time"
-            case .timeReverse: "Time Reverse Sort"
+            case .middle: "Middle"
+            case .down: "Down"
+            case .across: "Across"
+            // A sort names its key and its direction, and nothing
+            // else: which way the cards run follows from the word.
+            case .sortVertical: "A–Z Down"
+            case .sortVerticalReverse: "Z–A Down"
+            case .sortHorizontal: "A–Z Across"
+            case .sortHorizontalReverse: "Z–A Across"
+            case .time: "Oldest First"
+            case .timeReverse: "Newest First"
+            }
+        }
+
+        var family: LayoutFan {
+            switch self {
+            case .left, .center, .right, .middle: .align
+            case .down, .across: .distribute
+            case .sortVertical, .sortVerticalReverse, .sortHorizontal,
+                 .sortHorizontalReverse, .time, .timeReverse: .sort
             }
         }
     }
@@ -1376,7 +1419,7 @@ struct EPUBMapView: View {
     }
 
     private static func watchViewOptionID(_ option: WatchViewOption) -> String {
-        autoChipID + "." + option.rawValue
+        LayoutFan.auto.chipID + "." + option.rawValue
     }
 
     /// The Views on offer — Timeline rests for now (the corridor's own
@@ -2568,14 +2611,18 @@ struct EPUBMapView: View {
             for id in xy.keys { xy[id]?.x = mid }
         case .right:
             for id in xy.keys { xy[id]?.x = maxX }
-        case .vertical:
-            // Spread down the wall in the standing top-to-bottom order.
-            spreadY(targets.sorted { ($0.position?.y ?? 0) > ($1.position?.y ?? 0) })
-        case .horizontal:
+        case .middle:
             // One row: the cards keep their x and meet at the middle
-            // height — Author's Horizontal is the vertical center align.
+            // height — Center's counterpart, Author's "Horizontal".
             let mid = ys.reduce(0, +) / count
             for id in xy.keys { xy[id]?.y = mid }
+        case .down:
+            // Spread down the wall in the standing top-to-bottom order.
+            spreadY(targets.sorted { ($0.position?.y ?? 0) > ($1.position?.y ?? 0) })
+        case .across:
+            // And the same left to right, in the order they stand —
+            // no sort, just even air between them.
+            spreadX(targets.sorted { ($0.position?.x ?? 0) < ($1.position?.x ?? 0) })
         case .sortVertical:
             spreadY(targets.sorted(by: byTitle))
         case .sortVerticalReverse:
@@ -3407,9 +3454,14 @@ struct EPUBMapView: View {
             // Layout's options climb away from the arm, and fold away.
             openOnly(watchLayoutOpen ? nil : .layout)
             return true
-        case Self.autoChipID:
-            // The whole-wall arrangements, at the top of the ladder.
-            watchAutoOpen.toggle()
+        case LayoutFan.align.chipID, LayoutFan.distribute.chipID,
+             LayoutFan.sort.chipID, LayoutFan.auto.chipID:
+            // A rung of Layout's ladder: its own commands fan along
+            // the arm, and opening one folds whichever stood open.
+            let fan = LayoutFan.allCases.first {
+                $0.chipID == armMenu.chipID(for: entity)
+            }
+            openLayoutFan = openLayoutFan == fan ? nil : fan
             updateWatchChips()
             return true
         case Self.gatherChipID:
@@ -3442,9 +3494,10 @@ struct EPUBMapView: View {
                 closeWatchMenus()
                 return true
             }
-            if id.hasPrefix(Self.autoChipID + "."),
+            let autoID = LayoutFan.auto.chipID
+            if id.hasPrefix(autoID + "."),
                let option = WatchViewOption(
-                   rawValue: String(id.dropFirst(Self.autoChipID.count + 1))) {
+                   rawValue: String(id.dropFirst(autoID.count + 1))) {
                 runWatchView(option)
                 closeWatchMenus()
                 return true
@@ -3509,7 +3562,7 @@ struct EPUBMapView: View {
         watchLayoutOpen = fold == .layout
         watchSavedOpen = fold == .saved
         // Auto lives in Layout's ladder: it cannot stand without it.
-        if fold != .layout { watchAutoOpen = false }
+        if fold != .layout { openLayoutFan = nil }
         updateSelectChips()
         updateShowChips()
         updateWatchChips()
@@ -3762,14 +3815,17 @@ struct EPUBMapView: View {
     /// whether there is anything to undo.
     private func updateWatchChips() {
         for option in WatchLayoutOption.allCases {
-            armMenu.setChipVisible(Self.watchLayoutOptionID(option), watchLayoutOpen)
+            armMenu.setChipVisible(Self.watchLayoutOptionID(option),
+                                   watchLayoutOpen && openLayoutFan == option.family)
         }
-        armMenu.setChipVisible(Self.autoChipID, watchLayoutOpen)
+        for fan in LayoutFan.allCases {
+            armMenu.setChipVisible(fan.chipID, watchLayoutOpen)
+            armMenu.setChipActive(fan.chipID, openLayoutFan == fan)
+        }
         for option in Self.offeredWatchViews {
             armMenu.setChipVisible(Self.watchViewOptionID(option),
-                                   watchLayoutOpen && watchAutoOpen)
+                                   watchLayoutOpen && openLayoutFan == .auto)
         }
-        armMenu.setChipActive(Self.autoChipID, watchAutoOpen)
         let kept = Set(loadSavedViews().keys.compactMap(Int.init))
         for slot in 1...Self.savedSlotCount {
             armMenu.setChipVisible(Self.savedViewSlotID(slot),
