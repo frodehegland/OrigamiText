@@ -75,17 +75,19 @@ final class ArmMenu {
     // MARK: - An unfolded menu's measures
 
     /// An unfolded group stands close: a chip's own glass is about a
-    /// centimetre tall at forearm scale, so 3.6 cm rung to rung reads
-    /// as one list rather than a scattering — and a twelve-rung ladder
-    /// then reaches 43 cm off the arm instead of two thirds of a
-    /// metre. (Origami tuning, 17 Sep 2026 — carry back to Author.)
-    private static let groupStep: Float = 0.036
+    /// centimetre tall at forearm scale, so 2.6 cm rung to rung reads
+    /// as one list rather than a scattering, with about a centimetre
+    /// and a half of air left between the words — and a twelve-rung
+    /// ladder then reaches 31 cm off the arm, where it began the day
+    /// at two thirds of a metre. (Origami tuning, 17 Sep 2026 — carry
+    /// back to Author.)
+    private static let groupStep: Float = 0.026
     /// A menu inside a menu fans along the arm in two lanes: how far
     /// out it starts, the step between columns, and the second lane's
-    /// lift.
-    private static let fanReach: Float = 0.055
+    /// lift — the same close measure as the ladder's.
+    private static let fanReach: Float = 0.05
     private static let fanStep: Float = 0.05
-    private static let fanLane: Float = 0.04
+    private static let fanLane: Float = 0.026
     /// The softness asked for: the arm leads, an unfolded menu follows
     /// 70 ms behind — most of a gap closed in about a sixth of a
     /// second. Deliberate motion is barely late; the fast shiver of

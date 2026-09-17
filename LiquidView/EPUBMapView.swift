@@ -1131,23 +1131,21 @@ struct EPUBMapView: View {
         // each is one command: both walls, or all three lanes. Choosing
         // a single wall or lane is not a thing the arm offers.
         //
-        // What hangs beneath the left forearm instead: the three verbs
-        // that act on what has been chosen, under the hand that chose
-        // it. Focus keeps the selection and its connections and clears
-        // the rest; Pin and Set Aside take the selected cards.
+        // Beneath the left forearm, one verb: Focus keeps the selection
+        // and its connections and clears the rest. Pin and Set Aside
+        // have left the arm (17 Sep 2026) — they act on ONE card, and
+        // a chosen card now carries them as its own buttons.
         ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left,
                      underside: true),
-        ArmMenu.Chip(id: EPUBMapView.pinChipID, title: "Pin", side: .left,
-                     underside: true),
-        ArmMenu.Chip(id: EPUBMapView.setAsideChipID, title: "Set Aside", side: .left,
-                     underside: true),
-        // The left arm's working row, as one reads it along the arm:
-        //     [D] Select | Show [A]
-        // D lets every selection go; A brings every family into the
-        // room. The two words between them unfold their own lists away
-        // from the arm.
-        ArmMenu.Chip(id: EPUBMapView.deselectAllChipID, title: "D", side: .left),
+        // The left arm's working row, from the wrist toward the elbow:
+        //     Show [A] Select [D]
+        // Each word unfolds its own list away from the arm, and the
+        // bare letter beside it does that word for everything: A brings
+        // every family into the room, D lets every selection go.
+        ArmMenu.Chip(id: EPUBMapView.showChipID, title: "Show", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.showAllChipID, title: "A", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectChipID, title: "Select", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.deselectAllChipID, title: "D", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectCitationsChipID, title: "Citations",
                      side: .left, group: EPUBMapView.selectChipID),
         ArmMenu.Chip(id: EPUBMapView.selectDocumentsChipID, title: "Documents",
@@ -1156,14 +1154,9 @@ struct EPUBMapView: View {
                      side: .left, group: EPUBMapView.selectChipID),
         ArmMenu.Chip(id: EPUBMapView.selectConceptsChipID, title: "Concepts",
                      side: .left, group: EPUBMapView.selectChipID),
-        // Show: what stands in the room — the front EPUBs, the citation
-        // walls, the topic magnets, the floor's timelines, the graph
-        // walls, the concept row — each one command in one place.
-        ArmMenu.Chip(id: EPUBMapView.showChipID, title: "Show", side: .left),
-        // A closes the row, right after Show — the word row is these
-        // four and nothing else, so it is declared here beside its
-        // neighbour rather than below Show's own list.
-        ArmMenu.Chip(id: EPUBMapView.showAllChipID, title: "A", side: .left),
+        // Show's families: the front EPUBs, the citation walls, the
+        // topic magnets, the floor's timelines, the graph walls, the
+        // concept row — each one command in one place.
         ArmMenu.Chip(id: EPUBMapView.showCitationsChipID, title: "Citations",
                      side: .left, group: EPUBMapView.showChipID),
         ArmMenu.Chip(id: EPUBMapView.showDocumentsChipID, title: "Documents",
@@ -3340,6 +3333,10 @@ struct EPUBMapView: View {
         case Self.topicsChipID:
             toggleTopics()
             return true
+        // No chips stand for these since they left the arm (17 Sep
+        // 2026) — a chosen card carries them itself. The acts keep
+        // their place here, taking the whole selection, for the day a
+        // word wants them back.
         case Self.pinChipID:
             let selected = items.filter { $0.kind == .article && $0.isSelected }
             guard !selected.isEmpty else { return true }
@@ -3783,17 +3780,12 @@ struct EPUBMapView: View {
         armMenu.setChipActive(Self.watchUndoChipID, watchUndo != nil)
     }
 
-    /// Pin and Set Aside wear the selection's standing: bright while
-    /// any selected article is pinned (or set aside). Refreshed on
-    /// every selection change and after the chips themselves act.
+    /// Pin and Set Aside have no chip to wear their standing since
+    /// they left the arm — a chosen card carries them itself, and its
+    /// own button says Pin or Unpin. What remains here: the Select
+    /// kinds wear their live standing, because a hand-tapped card can
+    /// complete or break a family.
     private func updateStandingChips() {
-        let selected = items.filter { $0.kind == .article && $0.isSelected }
-        armMenu.setChipActive(Self.pinChipID,
-                              selected.contains { $0.isPinned })
-        armMenu.setChipActive(Self.setAsideChipID,
-                              selected.contains { model.setAsideIDs.contains($0.id) })
-        // The Select kinds wear the same live standing: a hand-tapped
-        // card can complete or break a family, and the chips follow.
         updateSelectChips()
     }
 
