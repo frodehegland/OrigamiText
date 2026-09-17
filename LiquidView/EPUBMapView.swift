@@ -660,6 +660,16 @@ struct EPUBMapView: View {
             for index in built.indices where selected.contains(built[index].id) {
                 built[index].isSelected = true
                 built[index].showsAbstract = abstractOpenIDs.contains(built[index].id)
+                // A chosen card steps a centimetre toward the reader,
+                // so its grown face and its opened abstract stand in
+                // FRONT of the cards beside it rather than cutting
+                // through them. Depth is reseeded from the year on
+                // every sweep, so this never accumulates — except on a
+                // lifted card, whose Z is its own and is kept, which
+                // is why one is left where it stands.
+                if !built[index].isGhost, liftedCards[built[index].id] == nil {
+                    built[index].position?.z += Self.selectedStep
+                }
             }
             items = built
             // A changed journal leaves stale raises behind — keep only
@@ -1371,6 +1381,11 @@ struct EPUBMapView: View {
     }
 
     // MARK: - The automatic arrangements' one measure
+
+    /// How far a chosen card steps toward the reader — 1 cm, enough
+    /// that a grown face and an open abstract pass in front of their
+    /// neighbours instead of clipping into them.
+    private static let selectedStep: Float = 0.01
 
     /// The air between two cards in every automatic arrangement: 5 cm
     /// (Frode's measure, 17 Sep 2026). Every spacing below is this gap
