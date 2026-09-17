@@ -5328,17 +5328,10 @@ struct MapReaderPanel: View {
     }
 }
 
-#Preview("Citation record card") {
-    CitationCardPanel(
-        citationKey: "10.1145/3800935.3830889",
-        title: "As We May Think, Revisited: Trails Through a Reading",
-        author: "Vannevar Bush, Douglas Engelbart",
-        year: 2026,
-        abstract: "A record's paper must read over any room behind it — "
-            + "black ink on white, wholly opaque, at any brightness.",
-        doi: "10.1145/3800935.3830889") {}
-        .environment(VisionModel())
-}
+// No #Preview for this card: Xcode's preview agent cannot launch this
+// app — the JIT executor times out after 15 s and the blank executor
+// stub traps (PreviewsInjection/JITExecutorWaiter.swift:83), which only
+// fills the crash reporter. Checked 17 Sep 2026.
 
 /// A citation's record card, opened in-situ by a double-tap: all the
 /// data we hold — title, author, year, abstract — with Acquire at the
