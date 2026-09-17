@@ -72,6 +72,30 @@ final class ArmMenu {
         }
     }
 
+    // MARK: - An unfolded menu's measures
+
+    /// An unfolded group stands close: a chip's own glass is about a
+    /// centimetre tall at forearm scale, so 3.6 cm rung to rung reads
+    /// as one list rather than a scattering — and a twelve-rung ladder
+    /// then reaches 43 cm off the arm instead of two thirds of a
+    /// metre. (Origami tuning, 17 Sep 2026 — carry back to Author.)
+    private static let groupStep: Float = 0.036
+    /// A menu inside a menu fans along the arm in two lanes: how far
+    /// out it starts, the step between columns, and the second lane's
+    /// lift.
+    private static let fanReach: Float = 0.055
+    private static let fanStep: Float = 0.05
+    private static let fanLane: Float = 0.04
+    /// The softness asked for: the arm leads, an unfolded menu follows
+    /// 70 ms behind — most of a gap closed in about a sixth of a
+    /// second. Deliberate motion is barely late; the fast shiver of
+    /// the derived directions is cut to a fifth. Frame-rate
+    /// independent (the exponential form), so 90 Hz and 60 Hz feel
+    /// alike. Raise it for softer, lower it for stricter.
+    private static let subChipSettle: Float = 0.07
+    /// Chips shown just now, which take their place outright.
+    private var needsPlacing: Set<String> = []
+
     private let chips: [Chip]
     /// Chip lookup for the layout's nesting test — a chip whose parent
     /// is itself grouped fans along the arm. Origami addition (carry
@@ -186,6 +210,8 @@ final class ArmMenu {
 
             menus[effectiveSide(of: chip)]?.addChild(item)
             items[chip.id] = item
+            // Nothing eases out of the wrist on the first frame.
+            needsPlacing.insert(chip.id)
         }
 
         // Predicted tracking keeps the chips glued to a moving wrist —
@@ -397,21 +423,46 @@ final class ArmMenu {
                 guard let group = chip.group, let item = items[chip.id],
                       item.isEnabled, resolved[chip.id] == nil,
                       let anchor = resolved[group] else { continue }
+                let target: SIMD3<Float>
                 if chipsByID[group]?.group != nil {
                     let step = fanSteps[group, default: 0]
                     fanSteps[group] = step + 1
-                    item.position = anchor
-                        + alongArm * (0.065 + 0.06 * Float(step / 2))
-                        + lift * (Float(step % 2) * 0.055)
+                    target = anchor
+                        + alongArm * (Self.fanReach + Self.fanStep * Float(step / 2))
+                        + lift * (Float(step % 2) * Self.fanLane)
                 } else {
                     let step = groupSteps[group, default: 0] + 1
                     groupSteps[group] = step
                     let away: Float = chip.underside ? -1 : 1
-                    item.position = anchor + lift * (away * 0.055 * Float(step))
+                    target = anchor + lift * (away * Self.groupStep * Float(step))
                 }
-                resolved[chip.id] = item.position
+                // The place is the target's, so a menu inside a menu
+                // hangs off where its parent BELONGS, not off wherever
+                // its parent has eased to — otherwise the softening
+                // compounds down the chain.
+                resolved[chip.id] = target
+                item.position = settling(item, toward: target, id: chip.id,
+                                         deltaTime: deltaTime)
             }
         }
+    }
+
+    /// A sub-chip eases into place instead of snapping there. The chips
+    /// are children of the wrist anchor, so the arm's own motion is
+    /// untouched by this — what settles is the OFFSET, and with it the
+    /// jitter in the derived along-arm and dorsal directions that a
+    /// chip a third of a metre out otherwise magnifies into a wobble.
+    /// Origami addition (carry back to Author).
+    private func settling(_ item: Entity, toward target: SIMD3<Float>,
+                          id: String, deltaTime: Float) -> SIMD3<Float> {
+        guard !needsPlacing.contains(id) else {
+            // Just unfolded: it opens where it belongs, rather than
+            // flying out from wherever it last stood.
+            needsPlacing.remove(id)
+            return target
+        }
+        let ease = min(1, 1 - expf(-deltaTime / Self.subChipSettle))
+        return simd_mix(item.position, target, SIMD3<Float>(repeating: ease))
     }
 
     // MARK: - Visibility
@@ -439,7 +490,11 @@ final class ArmMenu {
     /// Shows or hides one chip — a command that only means something
     /// sometimes steps away otherwise.
     func setChipVisible(_ id: String, _ visible: Bool) {
-        items[id]?.isEnabled = visible
+        guard let item = items[id] else { return }
+        // A chip coming back takes its place outright: the settling is
+        // for the wobble of a menu already standing, not an entrance.
+        if visible, !item.isEnabled { needsPlacing.insert(id) }
+        item.isEnabled = visible
     }
 
     /// Every chip's current title, for redrawing the label when its
