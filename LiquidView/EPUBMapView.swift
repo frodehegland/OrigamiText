@@ -1995,17 +1995,8 @@ struct EPUBMapView: View {
                 // attachment a material paints the whole backing
                 // surface square — this API clips it to the corners.
                 .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 5 * s))
-                // No frame — just the two side rails, like every card.
-                .overlay(alignment: .leading) {
-                    Rectangle().fill(Color.white.opacity(0.25))
-                        .frame(width: 0.6 * s)
-                        .padding(.vertical, 5 * s)
-                }
-                .overlay(alignment: .trailing) {
-                    Rectangle().fill(Color.white.opacity(0.25))
-                        .frame(width: 0.6 * s)
-                        .padding(.vertical, 5 * s)
-                }
+                // The side rails are away for now: the glass alone
+                // names the slip's edges (17 Sep 2026).
                 .opacity(0.5)
         } else if item.kind == .concept {
             // The arm chips' glass, in the concepts' own serif voice.
@@ -2102,22 +2093,10 @@ struct EPUBMapView: View {
             .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 8 * s),
                                    displayMode: (selected || item.isLifted)
                                        ? .never : .always)
-            // No frame around the pane — a vertical rail at each side,
-            // inset past the rounded corners, brighter when selected.
-            // A LIFTED card carries no pane at all: its words print
-            // straight onto the extruded slab behind them.
-            .overlay(alignment: .leading) {
-                Rectangle().fill(Color.white.opacity(selected ? 0.9 : 0.35))
-                    .frame(width: (selected ? 3.0 : 0.7) * s)
-                    .padding(.vertical, 8 * s)
-                    .opacity(item.isLifted ? 0 : 1)
-            }
-            .overlay(alignment: .trailing) {
-                Rectangle().fill(Color.white.opacity(selected ? 0.9 : 0.35))
-                    .frame(width: (selected ? 3.0 : 0.7) * s)
-                    .padding(.vertical, 8 * s)
-                    .opacity(item.isLifted ? 0 : 1)
-            }
+            // The side rails are away for now (17 Sep 2026). What a
+            // chosen card wears instead: the solid dark pane above,
+            // and the fifth it grows by. A LIFTED card carries no pane
+            // at all — its words print straight onto the extruded slab.
         }
     }
 
@@ -3319,9 +3298,9 @@ struct EPUBMapView: View {
         }
         switch armMenu.chipID(for: entity) {
         case Self.showChipID:
-            // The families unfold above the chip, and fold away.
-            showOpen.toggle()
-            updateShowChips()
+            // The families unfold above the chip, and fold away —
+            // taking any other standing menu with them.
+            openOnly(showOpen ? nil : .show)
             return true
         case Self.showCitationsChipID:
             toggleAllCitations()
@@ -3397,9 +3376,9 @@ struct EPUBMapView: View {
             reload()
             return true
         case Self.selectChipID:
-            // The three kinds unfold above the chip, and fold away.
-            selectOpen.toggle()
-            updateSelectChips()
+            // The kinds unfold above the chip, and fold away — taking
+            // any other standing menu with them.
+            openOnly(selectOpen ? nil : .select)
             return true
         case Self.selectCitationsChipID:
             // A choice acts and folds the menu; the chosen chip stands
@@ -3429,14 +3408,7 @@ struct EPUBMapView: View {
             return true
         case Self.watchLayoutChipID:
             // Layout's options climb away from the arm, and fold away.
-            // Only one fan at a time rides the forearm.
-            watchLayoutOpen.toggle()
-            if watchLayoutOpen {
-                watchSavedOpen = false
-            } else {
-                watchAutoOpen = false
-            }
-            updateWatchChips()
+            openOnly(watchLayoutOpen ? nil : .layout)
             return true
         case Self.autoChipID:
             // The whole-wall arrangements, at the top of the ladder.
@@ -3447,9 +3419,7 @@ struct EPUBMapView: View {
             gatherNodes()
             return true
         case Self.watchSavedChipID:
-            watchSavedOpen.toggle()
-            if watchSavedOpen { watchLayoutOpen = false }
-            updateWatchChips()
+            openOnly(watchSavedOpen ? nil : .saved)
             return true
         case Self.watchSaveNowChipID:
             // The arrangement kept in the first free slot; its chip
@@ -3523,11 +3493,28 @@ struct EPUBMapView: View {
         model.openDocIDs.insert(docID)
     }
 
-    /// Every one of the right arm's fans folded away.
+    /// Every menu folded away — after a choice has acted.
     private func closeWatchMenus() {
-        watchLayoutOpen = false
-        watchAutoOpen = false
-        watchSavedOpen = false
+        openOnly(nil)
+    }
+
+    /// The chits that unfold sub-items. Auto is not among them: it
+    /// stands INSIDE Layout's ladder, so it folds with its parent
+    /// rather than against it.
+    private enum ArmFold { case select, show, layout, saved }
+
+    /// One menu at a time, across both arms: opening a chit's
+    /// sub-items folds whatever else stood open. Two lists standing at
+    /// once crowded the room, and either could be a dozen chips long.
+    private func openOnly(_ fold: ArmFold?) {
+        selectOpen = fold == .select
+        showOpen = fold == .show
+        watchLayoutOpen = fold == .layout
+        watchSavedOpen = fold == .saved
+        // Auto lives in Layout's ladder: it cannot stand without it.
+        if fold != .layout { watchAutoOpen = false }
+        updateSelectChips()
+        updateShowChips()
         updateWatchChips()
     }
 
@@ -3709,6 +3696,10 @@ struct EPUBMapView: View {
         armMenu.setChipVisible(Self.onlyOverlapChipID,
                                showOpen && (sharedCitedStanding || onlyOverlap))
         armMenu.setChipActive(Self.onlyOverlapChipID, onlyOverlap)
+        // Reveal All Concepts hangs off Concepts, which hangs off
+        // Show: folding Show takes it too, rather than leaving it
+        // stranded in the air. A long-pinch asks for it again.
+        if !showOpen { armMenu.setChipVisible(Self.revealConceptsChipID, false) }
     }
 
 
