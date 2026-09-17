@@ -2094,7 +2094,7 @@ struct EPUBMapView: View {
                     }
                     // The working name and the first author carry the
                     // card; selection opens the FULL title and every
-                    // author's name — the abstract waits for its button.
+                    // author's name — and, on a paper, its abstract.
                     Text(selected ? item.title : shortTitle(item.title))
                         .font(AppFonts.body(titleSize * s, weight: .semibold))
                         .foregroundStyle(Color.white)
@@ -2102,11 +2102,14 @@ struct EPUBMapView: View {
                 Text(selected ? item.author : shortByline(item.author))
                     .font(.system(size: 5.5 * s))
                     .foregroundStyle(Color.white.opacity(0.65))
-                if withAbstract && selected && item.showsAbstract
-                    && !item.abstract.isEmpty {
-                    // The full abstract, asked for with the card's
-                    // Abstract button — readable without stepping
-                    // right up to the card.
+                // A chosen PAPER opens its abstract with everything
+                // else: it has no Abstract button to ask with, and the
+                // front row is what one reads from. A citation still
+                // waits to be asked — its own button does it.
+                if withAbstract && selected && !item.abstract.isEmpty,
+                   item.kind == .article || item.showsAbstract {
+                    // The full abstract in fine print — readable
+                    // without stepping right up to the card.
                     Text(item.abstract)
                         .font(.system(size: 5.6 * s))
                         .foregroundStyle(Color.white.opacity(0.8))
@@ -2369,8 +2372,6 @@ struct EPUBMapView: View {
         }
     }
 
-    /// Abstract, on a selected card: the node opens to the paper's own
-    /// abstract in fine print — what selection alone used to show.
     /// How many papers stand chosen — what decides whether a card
     /// offers its own verbs or the one verb that acts on many.
     private var selectedPaperCount: Int {
@@ -2385,56 +2386,73 @@ struct EPUBMapView: View {
     /// arrangements right there (nothing may present a menu on an
     /// attachment, so the options are buttons like everything else).
     @ViewBuilder private func paperButtons(for item: EPUBMapItem) -> some View {
-        let many = selectedPaperCount > 1
-        VStack(spacing: 6) {
-            if many {
-                Button("Layout") {
-                    layoutRowCardID = layoutRowCardID == item.id ? nil : item.id
+        if selectedPaperCount > 1 {
+            manyPaperButtons(for: item)
+                .buttonStyle(.bordered)
+                // Layout's own list stands HALF AGAIN the size of a
+                // card's quiet verbs: eleven arrangements is a menu to
+                // read across the room and pinch at, not a footnote.
+                .controlSize(.regular)
+                .scaleEffect(0.8, anchor: .top)
+        } else {
+            onePaperButtons(for: item)
+                .buttonStyle(.bordered)
+                // Quiet verbs under the card, not a toolbar — half
+                // life-size (attachments render full).
+                .controlSize(.small)
+                .font(.caption)
+                .scaleEffect(0.5, anchor: .top)
+        }
+    }
+
+    /// Several papers chosen: the one verb that acts on many, and the
+    /// arrangements it unfolds — four to a row, so eleven words do not
+    /// run off into the room.
+    @ViewBuilder private func manyPaperButtons(for item: EPUBMapItem) -> some View {
+        VStack(spacing: 8) {
+            Button("Layout") {
+                layoutRowCardID = layoutRowCardID == item.id ? nil : item.id
+            }
+            if layoutRowCardID == item.id {
+                let options = Array(WatchLayoutOption.allCases)
+                let rows = stride(from: 0, to: options.count, by: 4).map {
+                    Array(options[$0..<min($0 + 4, options.count)])
                 }
-                if layoutRowCardID == item.id {
-                    let options = Array(WatchLayoutOption.allCases)
-                    let rows = stride(from: 0, to: options.count, by: 4).map {
-                        Array(options[$0..<min($0 + 4, options.count)])
-                    }
-                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                        HStack(spacing: 6) {
-                            ForEach(row, id: \.self) { option in
-                                Button(option.title) {
-                                    runWatchLayout(option)
-                                    layoutRowCardID = nil
-                                }
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: 8) {
+                        ForEach(row, id: \.self) { option in
+                            Button(option.title) {
+                                runWatchLayout(option)
+                                layoutRowCardID = nil
                             }
                         }
                     }
                 }
-            } else {
-                HStack(spacing: 8) {
-                    Button("Open") { handleTap(count: 2, on: item) }
-                    if EPUBMapView.liftEnabled {
-                        Button(liftedCards[item.id] == nil ? "Lift" : "Put Back") {
-                            toggleLift(item)
-                        }
-                    }
-                    Button("Set Aside") {
-                        model.toggleSetAside(item.id)
-                        reload()
-                        updateStandingChips()
-                    }
-                    // Pinned, the word names the way back out.
-                    Button(item.isPinned ? "Unpin" : "Pin") {
-                        model.togglePinned(item.id)
-                        reload()
-                        updateStandingChips()
-                    }
-                }
             }
         }
-        .buttonStyle(.bordered)
-        // Quiet verbs under the card, not a toolbar — half life-size
-        // (attachments render full).
-        .controlSize(.small)
-        .font(.caption)
-        .scaleEffect(0.5, anchor: .top)
+    }
+
+    /// One paper chosen: its own four verbs.
+    @ViewBuilder private func onePaperButtons(for item: EPUBMapItem) -> some View {
+        HStack(spacing: 8) {
+            Button("Open") { handleTap(count: 2, on: item) }
+            if EPUBMapView.liftEnabled {
+                Button(liftedCards[item.id] == nil ? "Lift" : "Put Back") {
+                    toggleLift(item)
+                }
+            }
+            Button("Set Aside") {
+                model.toggleSetAside(item.id)
+                reload()
+                updateStandingChips()
+            }
+            // Pinned, the word names the way back out.
+            Button(item.isPinned ? "Unpin" : "Pin") {
+                model.togglePinned(item.id)
+                reload()
+                updateStandingChips()
+            }
+        }
     }
 
     private func toggleAbstract(_ item: EPUBMapItem) {
