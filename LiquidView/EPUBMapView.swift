@@ -473,7 +473,13 @@ struct EPUBMapView: View {
             : []
         let asides: [EPUBRecord] = []
 
-        let columns = max(1, Int(Double(standing.count * 7).squareRoot() / 2))
+        let columns = Self.wallColumns(standing.count)
+        // The seeded rectangle IS the Wall: same columns, same 5 cm of
+        // air, same height — so a room never touched and a room reset
+        // stand alike, and only their order differs (pinned first here,
+        // alphabetical there).
+        let seedTop = Self.wallTop(rows: (standing.count + columns - 1)
+            / max(columns, 1))
         // EXPERIMENT — the articles' own year scale: newest at the grid's
         // plane, each older year a step deeper. A single-year proceedings
         // stands flat as before, only held; a journal spanning years
@@ -493,8 +499,8 @@ struct EPUBMapView: View {
             }
             let depth: Float = -1.2 - (agePlace ?? 0) * min(1.2, Float(articleSpan) * 0.1)
             let seed = SIMD3<Float>(
-                (Float(column) - Float(columns - 1) / 2) * 0.28,
-                1.55 - Float(row) * 0.18,
+                (Float(column) - Float(columns - 1) / 2) * Self.columnPitch,
+                seedTop - Float(row) * Self.rowPitch,
                 depth) + spaceShift
             yearZ[record.id] = seed.z
             // A card left elsewhere keeps its place on the plane — the
@@ -1305,12 +1311,16 @@ struct EPUBMapView: View {
         }
     }
 
-    /// Author Map's Views menu — the whole wall re-arranged.
+    /// Author Map's Views menu — the whole wall re-arranged. Wall
+    /// leads: it is the arrangement the room begins in, and the one to
+    /// come back to.
     private enum WatchViewOption: String, CaseIterable {
+        case wall
         case magneticCenter, islands, spine, orbits, timeline, neighborhoods
 
         var title: String {
             switch self {
+            case .wall: "Wall"
             case .magneticCenter: "Magnetic Center"
             case .islands: "Islands"
             case .spine: "Spine"
@@ -1319,6 +1329,50 @@ struct EPUBMapView: View {
             case .neighborhoods: "Neighborhoods"
             }
         }
+    }
+
+    // MARK: - The automatic arrangements' one measure
+
+    /// The air between two cards in every automatic arrangement: 5 cm
+    /// (Frode's measure, 17 Sep 2026). Every spacing below is this gap
+    /// plus the card it has to clear — no arrangement keeps a figure
+    /// of its own any more.
+    private static let autoGap: Float = 0.05
+    /// A card's own size in metres. An article's face carries at most
+    /// 100 points of text (`nodeMaxWidth`) with 8 points of padding a
+    /// side, and the engine's raster measures 1000 points to the
+    /// metre; its height is a wrapped title, a byline, and 6 points of
+    /// padding above and below. A SELECTED card grows past this — it
+    /// opens its full title and every author — so a chosen card leans
+    /// over its neighbours, by design.
+    private static let cardSize = SIMD2<Float>(0.116, 0.045)
+    /// Card to card: left to right, and top to bottom.
+    private static let columnPitch = cardSize.x + autoGap
+    private static let rowPitch = cardSize.y + autoGap
+    /// Rings and ellipses are squashed to the card's own proportion,
+    /// so a step outward is a row's step down.
+    private static let pitchAspect = rowPitch / columnPitch
+    /// A ring wide enough that its `count` cards keep the gap between
+    /// them — and never narrower than a single card's pitch.
+    private static func ringRadius(_ count: Int) -> Float {
+        max(columnPitch, Float(count) * columnPitch / (2 * .pi))
+    }
+
+    /// How many cards stand across the wall. Wider than tall, because
+    /// the room gives a reader a whole wall's breadth and only the
+    /// band from the chest to above the head. The seeded room and the
+    /// Wall arrangement share this one rule, so a room never touched
+    /// and a room reset stand the same.
+    private static func wallColumns(_ count: Int) -> Int {
+        max(1, Int((Double(count) * 7).squareRoot() / 2))
+    }
+
+    /// The wall's top row, centred on eye height — and never so high
+    /// that its last row would be clamped into the floor of the band
+    /// a card may stand in (0.95…2.2).
+    private static func wallTop(rows: Int) -> Float {
+        let span = Float(max(rows - 1, 0)) * rowPitch
+        return min(2.15, max(0.95 + span, 1.5 + span / 2))
     }
 
     private static func watchLayoutOptionID(_ option: WatchLayoutOption) -> String {
@@ -2430,8 +2484,8 @@ struct EPUBMapView: View {
               let minY = ys.min(), let maxY = ys.max() else { return }
         let count = Float(targets.count)
         // A degenerate span (a stacked pile) opens to the wall's pitch.
-        let spanX = max(maxX - minX, (count - 1) * 0.28)
-        let spanY = max(maxY - minY, (count - 1) * 0.17)
+        let spanX = max(maxX - minX, (count - 1) * Self.columnPitch)
+        let spanY = max(maxY - minY, (count - 1) * Self.rowPitch)
         func spreadY(_ ordered: [EPUBMapItem]) {
             let top = (minY + maxY) / 2 + spanY / 2
             for (index, item) in ordered.enumerated() {
@@ -2533,6 +2587,8 @@ struct EPUBMapView: View {
         let adjacency = inJournalAdjacency(articles)
         let xy: [String: SIMD2<Float>]
         switch option {
+        case .wall:
+            xy = wallPositions(articles)
         case .magneticCenter:
             xy = magneticCenterPositions(articles, adjacency: adjacency, center: center)
         case .spine:
@@ -2567,6 +2623,43 @@ struct EPUBMapView: View {
         return adjacency
     }
 
+    /// Wall: every standing paper in a plain rectangle, alphabetical
+    /// by title from the top left, the cards a hand's width of air
+    /// apart. This is the room's starting arrangement and the one to
+    /// come back to when the place has become a mess — so it stands
+    /// where the room is, not wherever the cards have drifted to, and
+    /// the same books always land in the same order.
+    ///
+    /// Depth is not ours to set: a paper's Z is its year, and reload
+    /// reclaims it on every sweep. The rectangle is what the reader
+    /// sees standing in front of the wall.
+    private func wallPositions(_ articles: [EPUBMapItem]) -> [String: SIMD2<Float>] {
+        let ordered = articles.sorted {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+        guard !ordered.isEmpty else { return [:] }
+        let count = ordered.count
+        // Near enough square in the room's own measure, and never
+        // taller than the band a card may stand in (0.95…2.2) — a
+        // rectangle that runs off the top would only be clamped into
+        // a pile at the ceiling.
+        let rowsAvailable = max(1, Int((2.15 - 0.95) / Self.rowPitch) + 1)
+        var columns = Self.wallColumns(count)
+        while (count + columns - 1) / columns > rowsAvailable, columns < count {
+            columns += 1
+        }
+        let rows = (count + columns - 1) / columns
+        let leading = spaceShift.x - Self.columnPitch * Float(columns - 1) / 2
+        let top = Self.wallTop(rows: rows)
+        var xy: [String: SIMD2<Float>] = [:]
+        for (index, item) in ordered.enumerated() {
+            xy[item.id] = SIMD2(
+                leading + Self.columnPitch * Float(index % columns),
+                top - Self.rowPitch * Float(index / columns))
+        }
+        return xy
+    }
+
     /// Author's Magnetic Center: the most-connected cards at the
     /// middle, each lower connection count a ring further out, the
     /// unconnected in the outermost band.
@@ -2579,16 +2672,22 @@ struct EPUBMapView: View {
                 $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
             } }
         var xy: [String: SIMD2<Float>] = [:]
+        // Each ring is only as wide as its own cards need, and always
+        // a card's pitch clear of the ring inside it.
+        var inner: Float = 0
         for (ring, bucket) in buckets.enumerated() {
             if ring == 0, bucket.count == 1 {
                 xy[bucket[0].id] = center
+                inner = Self.columnPitch / 2
                 continue
             }
-            let radius = 0.45 + 0.5 * Float(ring)
+            let radius = max(Self.ringRadius(bucket.count), inner + Self.columnPitch)
+            inner = radius
             for (index, item) in bucket.enumerated() {
                 let angle = Float(index) / Float(bucket.count) * 2 * .pi - .pi / 2
-                xy[item.id] = SIMD2(center.x + cosf(angle) * radius,
-                                    center.y + sinf(angle) * radius * 0.55)
+                xy[item.id] = SIMD2(
+                    center.x + cosf(angle) * radius,
+                    center.y + sinf(angle) * radius * Self.pitchAspect)
             }
         }
         return xy
@@ -2601,18 +2700,21 @@ struct EPUBMapView: View {
         let columnCounts = blocks.map {
             max(1, Int(Double($0.count).squareRoot().rounded(.up)))
         }
-        let widths = columnCounts.map { Float($0 - 1) * 0.52 }
-        let gap: Float = 0.8
+        let widths = columnCounts.map { Float($0 - 1) * Self.columnPitch }
+        // Between blocks, one empty card slot — wider than the air
+        // inside a block, so the grounds read apart without a chasm.
+        let gap = Self.columnPitch + Self.autoGap
         let total = widths.reduce(0, +) + gap * Float(max(blocks.count - 1, 0))
         var x = center.x - total / 2
         var xy: [String: SIMD2<Float>] = [:]
         for (blockIndex, block) in blocks.enumerated() {
             let columns = columnCounts[blockIndex]
             let rows = (block.count + columns - 1) / columns
-            let top = center.y + 0.34 * Float(rows - 1) / 2
+            let top = center.y + Self.rowPitch * Float(rows - 1) / 2
             for (index, item) in block.enumerated() {
-                xy[item.id] = SIMD2(x + Float(index % columns) * 0.52,
-                                    top - Float(index / columns) * 0.34)
+                xy[item.id] = SIMD2(
+                    x + Float(index % columns) * Self.columnPitch,
+                    top - Float(index / columns) * Self.rowPitch)
             }
             x += widths[blockIndex] + gap
         }
@@ -2644,9 +2746,12 @@ struct EPUBMapView: View {
         let orphans = components.filter { $0.count == 1 }.flatMap { $0 }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         var xy = layWatchBlocks(islands, center: center)
-        let leading = center.x - 0.5 * Float(orphans.count - 1) / 2
+        // The band hangs one row under the lowest island card — the
+        // same gap as anywhere else, so the two read as one wall.
+        let floor = (xy.values.map(\.y).min() ?? center.y) - Self.rowPitch * 2
+        let leading = center.x - Self.columnPitch * Float(orphans.count - 1) / 2
         for (index, item) in orphans.enumerated() {
-            xy[item.id] = SIMD2(leading + 0.5 * Float(index), center.y - 1.0)
+            xy[item.id] = SIMD2(leading + Self.columnPitch * Float(index), floor)
         }
         return xy
     }
@@ -2667,16 +2772,14 @@ struct EPUBMapView: View {
             .sorted { ($0.value, $1.key) > ($1.value, $0.key) }
             .map(\.key)
         guard !hubs.isEmpty else { return nil }
-        var xy: [String: SIMD2<Float>] = [:]
-        let spacing: Float = 1.4
-        let leading = center.x - spacing * Float(hubs.count - 1) / 2
-        for (index, hub) in hubs.enumerated() {
-            xy[hub] = SIMD2(leading + spacing * Float(index), center.y)
-        }
+        // Who circles whom is settled first: an orbit's width follows
+        // the count of its citers, and the hubs can then stand as
+        // close as the widest orbit allows.
+        let hubSet = Set(hubs)
         var orbiters: [String: [EPUBMapItem]] = [:]
         var leftovers: [EPUBMapItem] = []
-        for article in articles where xy[article.id] == nil {
-            let hub = article.citedIDs.filter { xy[$0] != nil }
+        for article in articles where !hubSet.contains(article.id) {
+            let hub = article.citedIDs.filter { hubSet.contains($0) }
                 .max { citedBy[$0, default: 0] < citedBy[$1, default: 0] }
             if let hub {
                 orbiters[hub, default: []].append(article)
@@ -2684,23 +2787,32 @@ struct EPUBMapView: View {
                 leftovers.append(article)
             }
         }
+        let radii = orbiters.mapValues { Self.ringRadius($0.count) }
+        let spacing = 2 * (radii.values.max() ?? Self.columnPitch) + Self.columnPitch
+        var xy: [String: SIMD2<Float>] = [:]
+        let leading = center.x - spacing * Float(hubs.count - 1) / 2
+        for (index, hub) in hubs.enumerated() {
+            xy[hub] = SIMD2(leading + spacing * Float(index), center.y)
+        }
         for (hub, members) in orbiters {
-            guard let hubPlace = xy[hub] else { continue }
+            guard let hubPlace = xy[hub], let radius = radii[hub] else { continue }
             let ordered = members.sorted {
                 $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
             }
             for (index, item) in ordered.enumerated() {
                 let angle = Float(index) / Float(ordered.count) * 2 * .pi - .pi / 2
-                xy[item.id] = SIMD2(hubPlace.x + cosf(angle) * 0.58,
-                                    hubPlace.y + sinf(angle) * 0.42)
+                xy[item.id] = SIMD2(
+                    hubPlace.x + cosf(angle) * radius,
+                    hubPlace.y + sinf(angle) * radius * Self.pitchAspect)
             }
         }
         let ordered = leftovers.sorted {
             $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
         }
-        let orphanLeading = center.x - 0.5 * Float(ordered.count - 1) / 2
+        let floor = (xy.values.map(\.y).min() ?? center.y) - Self.rowPitch * 2
+        let orphanLeading = center.x - Self.columnPitch * Float(ordered.count - 1) / 2
         for (index, item) in ordered.enumerated() {
-            xy[item.id] = SIMD2(orphanLeading + 0.5 * Float(index), center.y - 1.1)
+            xy[item.id] = SIMD2(orphanLeading + Self.columnPitch * Float(index), floor)
         }
         return xy
     }
@@ -2725,14 +2837,13 @@ struct EPUBMapView: View {
         }
         let dateless = articles.filter { year($0.id) == nil }.sorted(by: byTitle)
         if !dateless.isEmpty { columns.append(dateless) }
-        let spacing: Float = 0.58
-        let leading = center.x - spacing * Float(columns.count - 1) / 2
+        let leading = center.x - Self.columnPitch * Float(columns.count - 1) / 2
         var xy: [String: SIMD2<Float>] = [:]
         for (columnIndex, column) in columns.enumerated() {
-            let top = center.y + 0.34 * Float(column.count - 1) / 2
+            let top = center.y + Self.rowPitch * Float(column.count - 1) / 2
             for (row, item) in column.enumerated() {
-                xy[item.id] = SIMD2(leading + spacing * Float(columnIndex),
-                                    top - 0.34 * Float(row))
+                xy[item.id] = SIMD2(leading + Self.columnPitch * Float(columnIndex),
+                                    top - Self.rowPitch * Float(row))
             }
         }
         return xy
@@ -3347,10 +3458,23 @@ struct EPUBMapView: View {
         let ys = cards.compactMap { $0.position?.y }
         let center = SIMD2<Float>(xs.reduce(0, +) / Float(xs.count),
                                   ys.reduce(0, +) / Float(ys.count))
+        // Never tighter than the Wall would stand them: 5 cm of air is
+        // the floor for every automatic arrangement, this one too. A
+        // spread already at that measure has nowhere left to go.
+        let spanX = (xs.max() ?? 0) - (xs.min() ?? 0)
+        let spanY = (ys.max() ?? 0) - (ys.min() ?? 0)
+        let columns = max(1, Int((Float(cards.count) * Self.pitchAspect)
+            .squareRoot().rounded()))
+        let rows = (cards.count + columns - 1) / columns
+        let tightest = max(
+            spanX > 1e-4 ? Float(columns - 1) * Self.columnPitch / spanX : 0,
+            spanY > 1e-4 ? Float(rows - 1) * Self.rowPitch / spanY : 0)
+        let factor = max(0.8, tightest)
+        guard factor < 1 else { return }
         var xy: [String: SIMD2<Float>] = [:]
         for card in cards {
             guard let position = card.position else { continue }
-            xy[card.id] = center + (SIMD2(position.x, position.y) - center) * 0.8
+            xy[card.id] = center + (SIMD2(position.x, position.y) - center) * factor
         }
         applyWatchPositions(xy)
     }
