@@ -3074,9 +3074,13 @@ private struct VisionCitationSheet: View {
             .padding(.vertical, 12)
         }
         .frame(width: 460, height: 400)
-        // Solid paper, not glass: the record must read over the page
-        // behind it, not blend into it.
-        .background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 24))
+        // Paper, and paper alone: white, wholly opaque, black ink — the
+        // record must read over the page behind it, never blend into
+        // it. The light scheme carries the ink, so the byline's grey
+        // and the DOI's fainter grey resolve against black.
+        .foregroundStyle(.black)
+        .environment(\.colorScheme, .light)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 24))
         .shadow(radius: 12)
     }
 }

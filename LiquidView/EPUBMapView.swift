@@ -5328,6 +5328,18 @@ struct MapReaderPanel: View {
     }
 }
 
+#Preview("Citation record card") {
+    CitationCardPanel(
+        citationKey: "10.1145/3800935.3830889",
+        title: "As We May Think, Revisited: Trails Through a Reading",
+        author: "Vannevar Bush, Douglas Engelbart",
+        year: 2026,
+        abstract: "A record's paper must read over any room behind it — "
+            + "black ink on white, wholly opaque, at any brightness.",
+        doi: "10.1145/3800935.3830889") {}
+        .environment(VisionModel())
+}
+
 /// A citation's record card, opened in-situ by a double-tap: all the
 /// data we hold — title, author, year, abstract — with Acquire at the
 /// bottom centre for a work the library does not yet have. Acquiring
@@ -5400,8 +5412,15 @@ struct CitationCardPanel: View {
             .padding(.vertical, 12)
         }
         .frame(width: 460, height: 400)
-        // Solid paper, not glass: the record must read over any room.
-        .background(RoundedRectangle(cornerRadius: 24).fill(Color(white: 0.12)))
+        // Paper, and paper alone: white, wholly opaque, black ink. A
+        // record has to read over any room standing behind it, at any
+        // brightness — glass and white-on-dark both gave way to the
+        // corridor. The light scheme carries the ink: the secondary
+        // and tertiary greys resolve against it, so the byline and the
+        // DOI stay quiet without going pale.
+        .foregroundStyle(.black)
+        .environment(\.colorScheme, .light)
+        .background(RoundedRectangle(cornerRadius: 24).fill(Color.white))
         .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 24),
                                displayMode: .never)
     }
