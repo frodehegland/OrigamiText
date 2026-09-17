@@ -1215,6 +1215,9 @@ struct EPUBMapView: View {
     /// Where every card stood the moment a Layout or Views option was
     /// chosen — the watch's Undo restores it whole.
     @State private var watchUndo: [String: SIMD3<Float>]?
+    /// The card whose Layout options stand unfolded beneath it, while
+    /// several papers are chosen. One at a time.
+    @State private var layoutRowCardID: String?
     /// Concepts put away with their card's Hide button — back via the
     /// Concepts chip's long-pinch and Reveal All Concepts.
     @State private var hiddenConceptIDs: Set<String> = []
@@ -1583,12 +1586,17 @@ struct EPUBMapView: View {
                         .scaleEffect(0.5, anchor: .top)
                     )
                 }
-                // Documents and citations, at the card's bottom middle:
-                // Abstract opens the node to the paper's own abstract
-                // (what selection itself used to show), and — when Lift
-                // is on — the snap-off verb beside it.
-                if (item.kind == .article || item.kind == .cited
-                        || item.kind == .citedDeep),
+                // A chosen paper in the front row carries its own verbs
+                // underneath — and only while it is the one chosen.
+                // With several in hand, every verb that acts on one
+                // card gives way to the one that acts on many.
+                if item.kind == .article, item.isSelected,
+                   !item.isGhost, !item.isAside {
+                    return AnyView(paperButtons(for: item))
+                }
+                // A citation keeps the row it had: Open, its abstract
+                // when the reference carried one, and the snap-off verb.
+                if item.kind == .cited || item.kind == .citedDeep,
                    item.isSelected, !item.isGhost, !item.isAside {
                     return AnyView(
                         HStack(spacing: 8) {
@@ -2137,16 +2145,26 @@ struct EPUBMapView: View {
         var ghost = UnlitMaterial()
         ghost.color = .init(tint: .clear)
         ghost.blending = .transparent(opacity: 0.0)
+        // Selection grows the face, as an active chip grows — and a
+        // chosen PAPER grows further than a citation does: the front
+        // row is what the hand works with, and it now carries its own
+        // verbs underneath.
+        let grown: Float = if !item.isSelected {
+            1.0
+        } else if item.kind == .article {
+            1.2
+        } else {
+            1.06
+        }
         let holder = ModelEntity(
-            mesh: .generateBox(width: extents.x, height: extents.y, depth: 0.004),
+            mesh: .generateBox(width: extents.x * grown,
+                               height: extents.y * grown, depth: 0.004),
             materials: [ghost])
 
         // Attachments lay out at 1360 points to the metre; the raster
         // ruler used 1000 — 1.36 keeps every card its familiar size,
         // divided by the crisp factor the supersampled face carries.
-        // Selection grows the face a touch, as an active chip grows.
-        let scale: Float = 1.36 / Float(Self.crisp)
-            * (item.isSelected ? 1.06 : 1.0)
+        let scale: Float = 1.36 / Float(Self.crisp) * grown
         func face(back: Bool) -> Entity {
             let entity = Entity()
             // Named so the face turner can find the pair each frame:
@@ -2209,8 +2227,11 @@ struct EPUBMapView: View {
         // themselves from the cards each frame.
         holder.components.set(MapSpaceNodeComponent())
         holder.components.set(EPUBNodeIDComponent(id: item.id))
+        // The body and the pinch target grow with the face, so the
+        // gaze frame still fits a chosen card and its verbs still hang
+        // clear beneath it (the attachment anchors on these bounds).
         let shape = ShapeResource.generateBox(size: SIMD3<Float>(
-            extents.x + 0.008, extents.y + 0.008, 0.012))
+            extents.x * grown + 0.008, extents.y * grown + 0.008, 0.012))
         return (holder, shape)
     }
 
@@ -2335,6 +2356,72 @@ struct EPUBMapView: View {
 
     /// Abstract, on a selected card: the node opens to the paper's own
     /// abstract in fine print — what selection alone used to show.
+    /// How many papers stand chosen — what decides whether a card
+    /// offers its own verbs or the one verb that acts on many.
+    private var selectedPaperCount: Int {
+        items.filter {
+            $0.kind == .article && $0.isSelected && !$0.isAside && !$0.isGhost
+        }.count
+    }
+
+    /// The verbs under a chosen paper. One paper in hand: Open, Lift,
+    /// Set Aside, Pin — each acting on this card alone. Several in
+    /// hand: Layout, which acts on all of them, and unfolds Author's
+    /// arrangements right there (nothing may present a menu on an
+    /// attachment, so the options are buttons like everything else).
+    @ViewBuilder private func paperButtons(for item: EPUBMapItem) -> some View {
+        let many = selectedPaperCount > 1
+        VStack(spacing: 6) {
+            if many {
+                Button("Layout") {
+                    layoutRowCardID = layoutRowCardID == item.id ? nil : item.id
+                }
+                if layoutRowCardID == item.id {
+                    let options = Array(WatchLayoutOption.allCases)
+                    let rows = stride(from: 0, to: options.count, by: 4).map {
+                        Array(options[$0..<min($0 + 4, options.count)])
+                    }
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        HStack(spacing: 6) {
+                            ForEach(row, id: \.self) { option in
+                                Button(option.title) {
+                                    runWatchLayout(option)
+                                    layoutRowCardID = nil
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Button("Open") { handleTap(count: 2, on: item) }
+                    if EPUBMapView.liftEnabled {
+                        Button(liftedCards[item.id] == nil ? "Lift" : "Put Back") {
+                            toggleLift(item)
+                        }
+                    }
+                    Button("Set Aside") {
+                        model.toggleSetAside(item.id)
+                        reload()
+                        updateStandingChips()
+                    }
+                    // Pinned, the word names the way back out.
+                    Button(item.isPinned ? "Unpin" : "Pin") {
+                        model.togglePinned(item.id)
+                        reload()
+                        updateStandingChips()
+                    }
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        // Quiet verbs under the card, not a toolbar — half life-size
+        // (attachments render full).
+        .controlSize(.small)
+        .font(.caption)
+        .scaleEffect(0.5, anchor: .top)
+    }
+
     private func toggleAbstract(_ item: EPUBMapItem) {
         if abstractOpenIDs.contains(item.id) {
             abstractOpenIDs.remove(item.id)
