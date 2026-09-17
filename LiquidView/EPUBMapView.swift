@@ -1787,12 +1787,19 @@ struct EPUBMapView: View {
         // holder — an invisible sharp-cornered box, not the rounded
         // glass face — so it reads as a ghost frame around every card.
         view = view.shouldUseHoverNode { _ in false }
-        view = view.attachmentAnchorRule { _, _ in
-            // Centre horizontally, sit at the card's bottom edge,
-            // then drop 2 cm so the button clears the card.
-            AnchorRule(
+        view = view.attachmentAnchorRule { _, item in
+            // Centre horizontally, sit at the card's bottom edge, then
+            // drop clear of it. A single paper's four verbs — Open,
+            // Lift, Set Aside, Pin — hang 0.8 cm under the card: the
+            // 2 cm every other row takes read as a gap with nothing in
+            // it, the verbs adrift from the card they belong to.
+            // (17 Sep 2026.)
+            let gap: Float = item.kind == .article && selectedPaperCount == 1
+                ? 0.008
+                : 0.02
+            return AnchorRule(
                 anchor: SIMD3<Float>(0.5, 0, 0.5),
-                offset: SIMD3<Float>(0, -0.02, 0))
+                offset: SIMD3<Float>(0, -gap, 0))
         }
         view = view.onEndMoveNode { allItems, _, newItems in
             // A lifted card's drag may have stuck it to (or freed it
@@ -2090,10 +2097,15 @@ struct EPUBMapView: View {
     /// live attachment face alike, so they wrap identically.
     private func nodeMaxWidth(for item: EPUBMapItem) -> CGFloat {
         if item.isAside { return 85.0 * Self.crisp }
+        // A chosen card is a tenth wider as well as taller: its full
+        // title and every author have a little more room to run, and
+        // the card reads as the one in hand from across the room.
+        // (17 Sep 2026.)
+        let chosen: CGFloat = item.isSelected && !item.isGhost ? 1.1 : 1.0
         switch item.kind {
-        case .article: return 100.0 * Self.crisp
-        case .cited: return 75.0 * Self.crisp
-        case .citedDeep: return 60.0 * Self.crisp
+        case .article: return 100.0 * chosen * Self.crisp
+        case .cited: return 75.0 * chosen * Self.crisp
+        case .citedDeep: return 60.0 * chosen * Self.crisp
         case .concept: return 240.0 * Self.crisp
         }
     }

@@ -578,11 +578,20 @@ struct ArmChipView: View {
     /// slight growth is the label entity's scale, set by the menu).
     var active: Bool = false
 
+    /// A bare letter — the row's A and D, which do their word for
+    /// everything — is a chit, not a word: sized to a square rather
+    /// than shrunk to one character, and its letter set larger, so it
+    /// reads from across the room like the words beside it.
+    /// (Origami addition, 17 Sep 2026 — carry back to Author.)
+    private var isLetter: Bool { text.count == 1 }
+
     var body: some View {
         Text(text)
-            .font(.system(size: 22, weight: .semibold))
+            .font(.system(size: isLetter ? 32 : 22, weight: .semibold))
             .foregroundStyle(.white)
             .fixedSize()
+            .frame(minWidth: isLetter ? 44 : 0,
+                   minHeight: isLetter ? 44 : 0)
             .padding(.horizontal, 16)
             .padding(.vertical, 9)
             .background(RoundedRectangle(cornerRadius: 16).fill(.regularMaterial))
