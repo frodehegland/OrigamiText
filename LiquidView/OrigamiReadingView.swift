@@ -732,15 +732,20 @@ struct OrigamiReadingView: View {
             looser: { stepLineSpacing(by: 1) },
             tighter: { stepLineSpacing(by: -1) }))
         .onChange(of: expandParagraphs) { _, on in
-            if on { computeParagraphSplits() }
+            guard on else { return }
+            guard nativeReading("Paragraphs") else { return }
+            computeParagraphSplits()
         }
         .onChange(of: colourKeySentences) { _, on in
-            if on { computeKeySentences() }
+            guard on else { return }
+            guard nativeReading("Colour Key Sentences") else { return }
+            computeKeySentences()
         }
         // Key Statement asks the same question of the model the
         // bolding does, and paints the answer instead of weighting it.
         .onChange(of: coloringModeRaw) { _, raw in
             if TextColoringMode(rawValue: raw) == .keyStatement {
+                guard nativeReading("Key Statement") else { return }
                 computeKeySentences()
             }
         }
@@ -1314,6 +1319,17 @@ struct OrigamiReadingView: View {
     private var paragraphOptionsView: some View {
         @Bindable var model = model
         return VStack(alignment: .leading, spacing: 12) {
+            if readerMode == .faithful {
+                // The book's own pages: these three re-read the text,
+                // and the publisher's HTML is not ours to re-read.
+                Text("These need one of Origami\u{2019}s own readings. "
+                     + "Scrolling shows the book\u{2019}s own pages — try "
+                     + "Full Width, Horizontal or Focus.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 240, alignment: .leading)
+            }
             Toggle(isOn: $expandParagraphs) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Paragraphs")
@@ -1342,6 +1358,7 @@ struct OrigamiReadingView: View {
             }
             .toggleStyle(.switch)
         }
+        .disabled(readerMode == .faithful)
         .padding(12)
         .frame(minWidth: 260)
     }
@@ -3453,9 +3470,14 @@ struct OrigamiReadingView: View {
         Task {
             for paragraph in candidates {
                 guard expandParagraphs else { break }
-                let segments = (try? await ReadingAI.paragraphBreaks(paragraph.text))
-                    ?? [paragraph.text]
-                paragraphSplits[paragraph.id] = segments.joined(separator: "\n\n")
+                do {
+                    let segments = try await ReadingAI.paragraphBreaks(paragraph.text)
+                    paragraphSplits[paragraph.id] = segments.joined(separator: "\n\n")
+                } catch {
+                    modelRefused(error, doing: "read for shifts in meaning")
+                    expandParagraphs = false
+                    return
+                }
             }
         }
     }
@@ -3495,10 +3517,54 @@ struct OrigamiReadingView: View {
         Task {
             for paragraph in candidates {
                 guard colourKeySentences || coloringMode == .keyStatement else { break }
-                let sentence = (try? await ReadingAI.keySentence(paragraph.text)) ?? nil
-                keySentences[paragraph.id] = sentence ?? ""
+                do {
+                    // A real answer is cached — including "no sentence
+                    // stands out", which is an answer and stops the
+                    // paragraph being asked again.
+                    let sentence = try await ReadingAI.keySentence(paragraph.text)
+                    keySentences[paragraph.id] = sentence ?? ""
+                } catch {
+                    // A refusal is NOT an answer: nothing is cached, so
+                    // the question can be asked again once the model is
+                    // there. Saying nothing here was the whole bug —
+                    // the switch stood on over a page that would never
+                    // be painted. (17 Sep 2026.)
+                    modelRefused(error, doing: "read for key sentences")
+                    colourKeySentences = false
+                    if coloringMode == .keyStatement {
+                        coloringModeRaw = TextColoringMode.off.rawValue
+                    }
+                    return
+                }
             }
         }
+    }
+
+    /// Whether the reading being shown is one Origami renders itself.
+    /// Scrolling is the book's own HTML in a WebView: its words are the
+    /// publisher's to lay out, and nothing here can re-break, re-flow
+    /// or re-colour them. A switch asked for there turns itself back
+    /// off and says why, rather than standing on over a page it cannot
+    /// touch — which is exactly how the key-sentence colour looked
+    /// broken. (17 Sep 2026.)
+    private func nativeReading(_ what: String) -> Bool {
+        guard readerMode == .faithful else { return true }
+        flashNotice("\(what) needs one of Origami\u{2019}s own readings — "
+                    + "Scrolling shows the book\u{2019}s own pages. "
+                    + "Try Full Width, Horizontal or Focus.")
+        expandParagraphs = false
+        colourKeySentences = false
+        if coloringMode == .keyStatement {
+            coloringModeRaw = TextColoringMode.off.rawValue
+        }
+        return false
+    }
+
+    /// The model was asked and would not answer. Name the reason where
+    /// the reader can see it, and let the asking feature fall back to
+    /// off rather than stand on over a page it cannot change.
+    private func modelRefused(_ error: Error, doing what: String) {
+        flashNotice("Could not \(what): \(ReadingAI.reason(error))")
     }
 
     /// Only a paragraph of several sentences has filler for its key

@@ -75,6 +75,41 @@ public nonisolated enum ReadingAI {
         public var errorDescription: String? { ReadingAI.unavailableReason }
     }
 
+    /// A short, true reason a reading question went unanswered, for the
+    /// notice the reader sees. FoundationModels reports some conditions
+    /// as its own error and others as the model manager's underlying
+    /// code, so both are read — 1026 is the asset simply not being on
+    /// the machine, which reports "available" right up until it is
+    /// asked. (17 Sep 2026.)
+    public static func reason(_ error: Error) -> String {
+        let text = error.localizedDescription
+        let full = String(describing: error)
+        if full.contains("ModelManagerError") {
+            return "Apple\u{2019}s own model is not on this Mac. Turn on Apple "
+                + "Intelligence in System Settings, or choose a server model "
+                + "in Settings \u{25B8} AI."
+        }
+        #if canImport(FoundationModels)
+        if let generation = error as? LanguageModelSession.GenerationError {
+            switch generation {
+            case .exceededContextWindowSize:
+                return "the passage is longer than the model\u{2019}s context."
+            case .assetsUnavailable:
+                return "the model\u{2019}s assets are not on this machine yet."
+            case .guardrailViolation:
+                return "the model declined to answer this passage."
+            case .unsupportedLanguageOrLocale:
+                return "the model does not read this language."
+            case .rateLimited:
+                return "the model is busy \u{2014} try again in a moment."
+            default:
+                return text
+            }
+        }
+        #endif
+        return text
+    }
+
     /// The preset's prompt over the text, answered by the reader's
     /// chosen model (Settings ▸ AI) — Apple's on-device model by
     /// default, an endpoint model when one is selected, Apple's again
@@ -96,6 +131,30 @@ public nonisolated enum ReadingAI {
         #endif
     }
 
+    /// One place where every reading question is asked, so they all
+    /// go to the model the READER chose (Settings ▸ AI) — an endpoint
+    /// when one is selected, Apple's built-in model otherwise, with
+    /// Apple standing in when an endpoint is unreachable. Rewrite has
+    /// always gone through here; Paragraphs and Key Statement asked
+    /// Apple's model directly, which on a Mac with an endpoint chosen
+    /// and Apple Intelligence not downloaded threw on every paragraph
+    /// — and the callers swallowed it, so the colour simply never
+    /// came. (17 Sep 2026.)
+    @MainActor
+    private static func answer(to prompt: String) async throws -> String {
+        #if os(macOS)
+        let (text, _) = try await OrigamiLLM.shared.respond(
+            instructions: nil, to: prompt)
+        return text
+        #elseif canImport(FoundationModels)
+        guard isAvailable else { throw Unavailable() }
+        let session = LanguageModelSession()
+        return try await session.respond(to: prompt).content
+        #else
+        throw Unavailable()
+        #endif
+    }
+
     /// Where the meaning shifts inside one long paragraph, as the
     /// on-device model reads it. The model only chooses BETWEEN which
     /// sentences the breaks fall — the words themselves are split from
@@ -104,14 +163,11 @@ public nonisolated enum ReadingAI {
     /// side is dropped.
     @MainActor
     public static func paragraphBreaks(_ text: String) async throws -> [String] {
-        #if canImport(FoundationModels)
-        guard isAvailable else { throw Unavailable() }
         let sentences = OrigamiReading.flowLines(text, breakOnComma: false)
         guard sentences.count >= minimumRun * 2 else { return [text] }
         let numbered = sentences.enumerated()
             .map { "\($0.offset + 1). \($0.element)" }
             .joined(separator: "\n")
-        let session = LanguageModelSession()
         let prompt = """
         The numbered lines below are the consecutive sentences of one \
         long paragraph. To help reading, decide where new paragraphs \
@@ -123,8 +179,8 @@ public nonisolated enum ReadingAI {
 
         \(numbered)
         """
-        let response = try await session.respond(to: prompt)
-        let starts = breakStarts(from: response.content, count: sentences.count)
+        let content = try await answer(to: prompt)
+        let starts = breakStarts(from: content, count: sentences.count)
         guard !starts.isEmpty else { return [text] }
         var segments: [String] = []
         var begin = 0
@@ -133,9 +189,6 @@ public nonisolated enum ReadingAI {
             begin = start - 1
         }
         return segments
-        #else
-        throw Unavailable()
-        #endif
     }
 
     /// The one sentence in a paragraph with the most to say, as the
@@ -146,14 +199,11 @@ public nonisolated enum ReadingAI {
     /// answer names no sentence.
     @MainActor
     public static func keySentence(_ text: String) async throws -> String? {
-        #if canImport(FoundationModels)
-        guard isAvailable else { throw Unavailable() }
         let sentences = OrigamiReading.flowLines(text, breakOnComma: false)
         guard sentences.count >= minimumRun else { return nil }
         let numbered = sentences.enumerated()
             .map { "\($0.offset + 1). \($0.element)" }
             .joined(separator: "\n")
-        let session = LanguageModelSession()
         let prompt = """
         The numbered lines below are the consecutive sentences of one \
         paragraph. Choose the single sentence with the most to say — \
@@ -163,19 +213,16 @@ public nonisolated enum ReadingAI {
 
         \(numbered)
         """
-        let response = try await session.respond(to: prompt)
+        let content = try await answer(to: prompt)
         guard let regex = try? NSRegularExpression(pattern: #"\d+"#) else { return nil }
-        let answer = response.content as NSString
+        let reply = content as NSString
         guard let match = regex.firstMatch(
-                  in: response.content,
-                  range: NSRange(location: 0, length: answer.length)),
-              let number = Int(answer.substring(with: match.range)),
+                  in: content,
+                  range: NSRange(location: 0, length: reply.length)),
+              let number = Int(reply.substring(with: match.range)),
               (1...sentences.count).contains(number)
         else { return nil }
         return sentences[number - 1]
-        #else
-        throw Unavailable()
-        #endif
     }
 
     /// No paragraph reads shorter than this many sentences.
