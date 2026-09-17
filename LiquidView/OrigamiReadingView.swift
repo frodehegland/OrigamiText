@@ -375,7 +375,8 @@ struct OrigamiReadingView: View {
     @State private var keepNotice: String?
     // The reading functions: the text expanded into meaning-paragraphs
     // (p), broken into flow lines (f), and each paragraph's key
-    // sentence bolded (b).
+    // sentence in the Key Statement colour (b — still the b key, which
+    // readers' hands know, though the sentence no longer bolds).
     @State private var expandParagraphs = false
     @State private var showsFocusColorPicker = false
     @State private var showsFocusFlow = false
@@ -405,7 +406,7 @@ struct OrigamiReadingView: View {
     @AppStorage(AppSettings.readAloudRateKey) private var readAloudRate: Double = 1.0
     @AppStorage(AppSettings.readAloudVoiceIDKey) private var readAloudVoiceID = ""
 
-    @State private var boldKeySentences = false
+    @State private var colourKeySentences = false
     /// The model's paragraph breaks, cached per paragraph id.
     @State private var paragraphSplits: [String: String] = [:]
     /// The model's key sentence per paragraph id, cached — empty where
@@ -733,7 +734,7 @@ struct OrigamiReadingView: View {
         .onChange(of: expandParagraphs) { _, on in
             if on { computeParagraphSplits() }
         }
-        .onChange(of: boldKeySentences) { _, on in
+        .onChange(of: colourKeySentences) { _, on in
             if on { computeKeySentences() }
         }
         // Key Statement asks the same question of the model the
@@ -816,7 +817,7 @@ struct OrigamiReadingView: View {
                 if letter == "p" {
                     expandParagraphs.toggle()
                 } else if letter == "b" {
-                    boldKeySentences.toggle()
+                    colourKeySentences.toggle()
                 } else {
                     model.flowReading.toggle()
                 }
@@ -1331,10 +1332,10 @@ struct OrigamiReadingView: View {
                 }
             }
             .toggleStyle(.switch)
-            Toggle(isOn: $boldKeySentences) {
+            Toggle(isOn: $colourKeySentences) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Bold Key Sentences")
-                    Text("Each paragraph's load-bearing sentence, bold")
+                    Text("Colour Key Sentences")
+                    Text("Each paragraph's load-bearing sentence, in orange")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1381,11 +1382,11 @@ struct OrigamiReadingView: View {
                   : "Colour the text: \(coloringMode.displayName) — click to change")
 
             // One ¶ for how the text breaks: the popover gathers the
-            // paragraph and flow options (and Bold Key Sentences, which
-            // had no icon of its own) — bold and accented while any of
-            // them stands on.
+            // paragraph and flow options (and Colour Key Sentences,
+            // which has no icon of its own) — bold and accented while
+            // any of them stands on.
             Button { showsParagraphOptions.toggle() } label: {
-                let anyOn = expandParagraphs || model.flowReading || boldKeySentences
+                let anyOn = expandParagraphs || model.flowReading || colourKeySentences
                 Text("¶")
                     .font(.callout.weight(anyOn ? .semibold : .regular))
                     .foregroundStyle(anyOn ? Color.accentColor : .secondary)
@@ -3468,12 +3469,12 @@ struct OrigamiReadingView: View {
     }
 
     /// Asks the model for every substantial paragraph's key sentence,
-    /// one paragraph at a time, caching each answer; the bolding lands
+    /// one paragraph at a time, caching each answer; the colour lands
     /// as the answers arrive.
     private func computeKeySentences() {
         guard ReadingAI.isAvailable else {
             flashNotice("The on-device model isn\u{2019}t available, so no key sentence can be found.")
-            boldKeySentences = false
+            colourKeySentences = false
             // Whichever reading asked, it cannot be answered: the
             // colour goes back off rather than standing on over a page
             // it will never paint.
@@ -3493,7 +3494,7 @@ struct OrigamiReadingView: View {
         flashNotice("Reading for each paragraph\u{2019}s key sentence\u{2026}")
         Task {
             for paragraph in candidates {
-                guard boldKeySentences || coloringMode == .keyStatement else { break }
+                guard colourKeySentences || coloringMode == .keyStatement else { break }
                 let sentence = (try? await ReadingAI.keySentence(paragraph.text)) ?? nil
                 keySentences[paragraph.id] = sentence ?? ""
             }
@@ -3558,7 +3559,7 @@ struct OrigamiReadingView: View {
                                   themeRaw, String(themeEditTick)])
         parts.append(contentsOf: [String(model.flowReading),
                                   String(flowBreakOnComma),
-                                  String(boldKeySentences),
+                                  String(colourKeySentences),
                                   String(keySentences.count)])
         parts.append(contentsOf: [findText, findCurrentID ?? "",
                                   String(glossaryOverviewOn), glossaryDisplayRaw])
@@ -3589,16 +3590,24 @@ struct OrigamiReadingView: View {
         -> AttributedString {
         var attributed = rendered(readingText(for: paragraph))
         // The b view function: the paragraph's key sentence — the
-        // model's cached choice — stands bold.
-        if boldKeySentences, let needle = keySentenceNeedle(for: paragraph) {
+        // model's cached choice — stands in orange. It used to stand
+        // bold; weight read as the author's own emphasis, and a
+        // paragraph's point is the reader's finding, not the author's
+        // typography. (17 Sep 2026.) The colour is the Key Statement
+        // rule's, so the two ways of asking the same question — this
+        // toggle and the Aa menu's Key Statement — paint alike, and
+        // one edit of that rule changes both.
+        if colourKeySentences, let needle = keySentenceNeedle(for: paragraph) {
             let plain = String(attributed.characters)
             if let range = plain.range(of: needle),
                let attributedRange = Range(range, in: attributed) {
-                let runs = attributed[attributedRange].runs
-                    .map { ($0.range, $0.inlinePresentationIntent) }
-                for (runRange, intent) in runs {
-                    attributed[runRange].inlinePresentationIntent =
-                        (intent ?? []).union(.stronglyEmphasized)
+                let color = TextColorRule.decodeList(colorRulesRaw)
+                    .first { $0.category == .keyStatement }?.color
+                let paintable = attributed[attributedRange].runs.compactMap { run in
+                    run.foregroundColor == nil && run.link == nil ? run.range : nil
+                }
+                for runRange in paintable {
+                    attributed[runRange].foregroundColor = color
                 }
             }
         }

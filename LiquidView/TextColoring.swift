@@ -220,11 +220,12 @@ public nonisolated struct TextColorRule: Codable, Identifiable, Hashable, Sendab
         TextColorRule(category: .concession, enabled: true, hex: "#8A7AAF"),
         TextColorRule(category: .refutation, enabled: true, hex: "#C4342B"),
         TextColorRule(category: .originality, enabled: true, hex: "#7B3FA6"),
-        // Key Statement: a deep rose that belongs to no word class, so
-        // a whole sentence in it cannot be misread as grammar or as a
-        // move of argument — and dark enough to read as running type
-        // rather than a highlighter's stripe.
-        TextColorRule(category: .keyStatement, enabled: true, hex: "#A3216B"),
+        // Key Statement: orange (Frode's choice, 17 Sep 2026) — the
+        // one sentence a reader's eye should land on, in the hue this
+        // app already uses for a reader's own marks rather than for a
+        // word class. Dark enough to read as running type rather than
+        // a highlighter's stripe.
+        TextColorRule(category: .keyStatement, enabled: true, hex: "#D2691E"),
     ]
 
     /// The persisted form.
@@ -375,7 +376,8 @@ extension OrigamiReading {
     /// model's choice, put through the same flow and markdown passes
     /// the paragraph went through), because only the caller knows which
     /// paragraph this is. Key Statement paints nothing until that
-    /// answer arrives, which is the same patience the bolding shows.
+    /// answer arrives, which is the same patience the ¶ menu's Colour
+    /// Key Sentences shows.
     public static func colorCoded(_ attributed: AttributedString,
                                   mode: TextColoringMode,
                                   rules: [TextColorRule],
