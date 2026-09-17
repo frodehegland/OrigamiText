@@ -736,6 +736,13 @@ struct OrigamiReadingView: View {
         .onChange(of: boldKeySentences) { _, on in
             if on { computeKeySentences() }
         }
+        // Key Statement asks the same question of the model the
+        // bolding does, and paints the answer instead of weighting it.
+        .onChange(of: coloringModeRaw) { _, raw in
+            if TextColoringMode(rawValue: raw) == .keyStatement {
+                computeKeySentences()
+            }
+        }
         // The moment's notice, briefly.
         .overlay(alignment: .bottom) {
             if let keepNotice {
@@ -1370,8 +1377,8 @@ struct OrigamiReadingView: View {
             .buttonStyle(.plain)
             .fixedSize()
             .help(coloringMode == .off
-                  ? "Colour words — by Grammar, Meaning, or Argument"
-                  : "Colour words: \(coloringMode.displayName) — click to change")
+                  ? "Colour the text — by Grammar, Meaning, Argument, or each paragraph's Key Statement"
+                  : "Colour the text: \(coloringMode.displayName) — click to change")
 
             // One ¶ for how the text breaks: the popover gathers the
             // paragraph and flow options (and Bold Key Sentences, which
@@ -3465,8 +3472,14 @@ struct OrigamiReadingView: View {
     /// as the answers arrive.
     private func computeKeySentences() {
         guard ReadingAI.isAvailable else {
-            flashNotice("The on-device model isn\u{2019}t available, so nothing can be bolded.")
+            flashNotice("The on-device model isn\u{2019}t available, so no key sentence can be found.")
             boldKeySentences = false
+            // Whichever reading asked, it cannot be answered: the
+            // colour goes back off rather than standing on over a page
+            // it will never paint.
+            if coloringMode == .keyStatement {
+                coloringModeRaw = TextColoringMode.off.rawValue
+            }
             return
         }
         let candidates = (doc.body ?? []).filter { paragraph in
@@ -3480,7 +3493,7 @@ struct OrigamiReadingView: View {
         flashNotice("Reading for each paragraph\u{2019}s key sentence\u{2026}")
         Task {
             for paragraph in candidates {
-                guard boldKeySentences else { break }
+                guard boldKeySentences || coloringMode == .keyStatement else { break }
                 let sentence = (try? await ReadingAI.keySentence(paragraph.text)) ?? nil
                 keySentences[paragraph.id] = sentence ?? ""
             }
@@ -3492,6 +3505,26 @@ struct OrigamiReadingView: View {
     private func wantsKeySentence(_ text: String) -> Bool {
         OrigamiReading.flowLines(text, breakOnComma: false).count
             >= ReadingAI.minimumRun
+    }
+
+    /// The paragraph's key sentence as it stands in the rendered text:
+    /// the model's cached answer, put through the same flow and
+    /// markdown passes the paragraph itself went through, so it can be
+    /// found in it. Nil until the model has answered, or for a heading.
+    /// Both readings of the key sentence — the b function's bold and
+    /// the Key Statement colour — look it up here, so they can never
+    /// disagree about which sentence carries the paragraph.
+    private func keySentenceNeedle(for paragraph: LiquidDoc.Paragraph) -> String? {
+        guard paragraph.heading == nil,
+              let sentence = keySentences[paragraph.id], !sentence.isEmpty
+        else { return nil }
+        var needle = sentence
+        if model.flowReading {
+            needle = OrigamiReading.flowText(needle,
+                                             breakOnComma: flowBreakOnComma,
+                                             doubleBreakOnPeriod: false)
+        }
+        return String(rendered(needle).characters)
     }
 
     /// One line at the bottom of the window, briefly.
@@ -3557,15 +3590,7 @@ struct OrigamiReadingView: View {
         var attributed = rendered(readingText(for: paragraph))
         // The b view function: the paragraph's key sentence — the
         // model's cached choice — stands bold.
-        if boldKeySentences, paragraph.heading == nil,
-           let sentence = keySentences[paragraph.id], !sentence.isEmpty {
-            var needle = sentence
-            if model.flowReading {
-                needle = OrigamiReading.flowText(needle,
-                                                 breakOnComma: flowBreakOnComma,
-                                                 doubleBreakOnPeriod: false)
-            }
-            needle = String(rendered(needle).characters)
+        if boldKeySentences, let needle = keySentenceNeedle(for: paragraph) {
             let plain = String(attributed.characters)
             if let range = plain.range(of: needle),
                let attributedRange = Range(range, in: attributed) {
@@ -3678,7 +3703,10 @@ struct OrigamiReadingView: View {
         if coloringMode != .off {
             attributed = OrigamiReading.colorCoded(
                 attributed, mode: coloringMode,
-                rules: TextColorRule.decodeList(colorRulesRaw))
+                rules: TextColorRule.decodeList(colorRulesRaw),
+                keySentence: coloringMode == .keyStatement
+                    ? keySentenceNeedle(for: paragraph)
+                    : nil)
         }
         return attributed
     }

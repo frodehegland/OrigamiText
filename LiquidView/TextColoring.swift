@@ -27,6 +27,10 @@ public nonisolated enum TextColoringMode: String, CaseIterable, Identifiable, Se
     // mode — the moves of academic argument painted by their cue
     // phrases.
     case argument
+    // Origami addition: one sentence a paragraph — the line that
+    // carries it, as the on-device model reads it. The same choice the
+    // b view function bolds, in colour instead.
+    case keyStatement
 
     public var id: String { rawValue }
 
@@ -36,6 +40,7 @@ public nonisolated enum TextColoringMode: String, CaseIterable, Identifiable, Se
         case .grammar: "Grammar"
         case .meaning: "Meaning"
         case .argument: "Argument"
+        case .keyStatement: "Key Statement"
         }
     }
 }
@@ -55,6 +60,9 @@ public nonisolated enum TextColorCategory: String, CaseIterable, Codable, Sendab
     // extends, usesMethodIn, compares), and Hyland's hedges.
     case context, claim, evidence, method, comparison
     case concession, refutation, originality
+    // The paragraph's load-bearing sentence, whole — not a word class
+    // or a cue phrase but one sentence the model picked out.
+    case keyStatement
 
     public var displayName: String {
         switch self {
@@ -81,6 +89,7 @@ public nonisolated enum TextColorCategory: String, CaseIterable, Codable, Sendab
         case .concession: "Concession"
         case .refutation: "Refutation"
         case .originality: "Originality"
+        case .keyStatement: "Key Statement"
         }
     }
 
@@ -110,6 +119,7 @@ public nonisolated enum TextColorCategory: String, CaseIterable, Codable, Sendab
         case .concession: "admittedly"
         case .refutation: "however"
         case .originality: "for the first time"
+        case .keyStatement: "This is the sentence that carries the paragraph."
         }
     }
 
@@ -119,6 +129,7 @@ public nonisolated enum TextColorCategory: String, CaseIterable, Codable, Sendab
         case .person, .place, .organization, .time, .quantity: .meaning
         case .context, .claim, .evidence, .method, .comparison,
              .concession, .refutation, .originality: .argument
+        case .keyStatement: .keyStatement
         default: .grammar
         }
     }
@@ -209,6 +220,11 @@ public nonisolated struct TextColorRule: Codable, Identifiable, Hashable, Sendab
         TextColorRule(category: .concession, enabled: true, hex: "#8A7AAF"),
         TextColorRule(category: .refutation, enabled: true, hex: "#C4342B"),
         TextColorRule(category: .originality, enabled: true, hex: "#7B3FA6"),
+        // Key Statement: a deep rose that belongs to no word class, so
+        // a whole sentence in it cannot be misread as grammar or as a
+        // move of argument — and dark enough to read as running type
+        // rather than a highlighter's stripe.
+        TextColorRule(category: .keyStatement, enabled: true, hex: "#A3216B"),
     ]
 
     /// The persisted form.
@@ -354,9 +370,16 @@ extension OrigamiReading {
     /// being made. Words that already carry a colour or a link (marks,
     /// glossary, citations, the stretch controls) keep their own — and
     /// earlier passes win over later ones.
+    /// `keySentence` is the paragraph's load-bearing sentence as it
+    /// stands in this text — the caller prepares it (the on-device
+    /// model's choice, put through the same flow and markdown passes
+    /// the paragraph went through), because only the caller knows which
+    /// paragraph this is. Key Statement paints nothing until that
+    /// answer arrives, which is the same patience the bolding shows.
     public static func colorCoded(_ attributed: AttributedString,
                                   mode: TextColoringMode,
-                                  rules: [TextColorRule]) -> AttributedString {
+                                  rules: [TextColorRule],
+                                  keySentence: String? = nil) -> AttributedString {
         guard mode != .off else { return attributed }
         let plain = String(attributed.characters)
         guard !plain.isEmpty else { return attributed }
@@ -447,6 +470,16 @@ extension OrigamiReading {
                     }
                 }
             }
+        case .keyStatement:
+            // One sentence, whole: the paragraph's own point in its
+            // own colour, every other line left as written.
+            guard let color = colors[.keyStatement],
+                  let needle = keySentence?.trimmingCharacters(
+                      in: .whitespacesAndNewlines),
+                  !needle.isEmpty,
+                  let range = plain.range(of: needle)
+            else { break }
+            paint(range, color)
         }
         return out
     }
