@@ -10,6 +10,9 @@ import SwiftUI
 import RealityKit
 import ARKit
 import QuartzCore
+// A note's voice: the microphone's words, for SpatialNotePanel.
+import Speech
+import AVFoundation
 
 /// One node on the Map: a journal's article, a work it cites (standing
 /// a level behind). Position mutates as the engine
@@ -710,6 +713,22 @@ struct EPUBMapView: View {
             item.visionTheme = visionThemeRaw
             return item
         }
+        // The spatial notes: blank pads pulled off the wrist and
+        // written in, each standing where it was dropped. They belong
+        // to the journal, not to any book, and travel in the community
+        // folder as JSON the Mac's flat map reads.
+        spatialNotes = SpatialNotes.notes(venue: model.openJournalVenue ?? "",
+                                          community: model.index.folderURL)
+        items += spatialNotes.map { note in
+            let id = Self.noteItemPrefix + note.id
+            var item = EPUBMapItem(
+                id: id, title: note.text, author: "", kind: .concept,
+                position: SIMD3<Float>(Float(note.x), Float(note.y),
+                                       Float(note.z)) + spaceShift)
+            item.isSelected = selected.contains(id)
+            item.visionTheme = visionThemeRaw
+            return item
+        }
         if topicSpaceMode {
             // Topic magnets hold their selection through the rebuild too,
             // so the threads stand while the room updates around them.
@@ -1123,7 +1142,10 @@ struct EPUBMapView: View {
         // Author's whole align-and-sort house, Gather draws the spread
         // in, and the three view verbs keep, recall and undo an
         // arrangement whole.
-        ArmMenu.Chip(id: EPUBMapView.watchLayoutChipID, title: "Layout", side: .right),
+        // Layout left the arm on 17 Sep 2026: a chosen node carries it
+        // now, where it acts on what is in hand. Its ladder is not
+        // built at all, so no rung can strand at the wrist — the code
+        // and the chip ids stand ready for the day it returns.
         ArmMenu.Chip(id: EPUBMapView.gatherChipID, title: "Gather", side: .right),
         ArmMenu.Chip(id: EPUBMapView.watchSavedChipID, title: "Saved View", side: .right),
         ArmMenu.Chip(id: EPUBMapView.watchSaveNowChipID, title: "Save View", side: .right),
@@ -1147,6 +1169,13 @@ struct EPUBMapView: View {
         // a chosen card now carries them as its own buttons.
         ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left,
                      underside: true),
+        // Worn at the left wrist, where the watch used to sit: a blank
+        // pad, no word on it and no time. It is not a command — it is
+        // a THING. Pull one off into the room and it becomes a note
+        // standing in the place you dropped it; a double tap opens it
+        // for writing or dictating. (17 Sep 2026.)
+        ArmMenu.Chip(id: EPUBMapView.notePadChipID, title: "", side: .left,
+                     watch: true),
         // The left arm's working row, from the wrist toward the elbow:
         //     Show [A] Select [D]
         // Each word unfolds its own list away from the arm, and the
@@ -1187,7 +1216,7 @@ struct EPUBMapView: View {
                      side: .left, group: EPUBMapView.showChipID),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
-    ] + EPUBMapView.layoutOptionChips + EPUBMapView.savedViewChips,
+    ] + EPUBMapView.savedViewChips,
        tracksPlanes: true,   // the flat pose finds the actual desk
        inverted: UserDefaults.standard.bool(forKey: "armMenuInverted"))
 
@@ -1221,6 +1250,9 @@ struct EPUBMapView: View {
     /// The card whose Layout options stand unfolded beneath it, while
     /// several papers are chosen. One at a time.
     @State private var layoutRowCardID: String?
+    /// The spatial notes standing in this journal's room, as the
+    /// community file holds them.
+    @State private var spatialNotes: [SpatialNotes.Note] = []
     /// Concepts put away with their card's Hide button — back via the
     /// Concepts chip's long-pinch and Reveal All Concepts.
     @State private var hiddenConceptIDs: Set<String> = []
@@ -1259,6 +1291,7 @@ struct EPUBMapView: View {
     private static let watchSavedChipID = "map.arm.watch.saved"
     private static let watchSaveNowChipID = "map.arm.watch.saved.save"
     private static let gatherChipID = "map.arm.gather"
+    private static let notePadChipID = "map.arm.notepad"
     private static let introChipID = "map.arm.intro"
     private static let savedSlotCount = 5
     private static func savedViewSlotID(_ slot: Int) -> String {
@@ -1545,8 +1578,20 @@ struct EPUBMapView: View {
                                 value.gestureValue.translation3D, from: .local, to: .scene)
                         }
                     }
-                    .onEnded { _ in
+                    .onEnded { value in
                         readerPanels.dragStart = [:]
+                        // A pad pulled off the wrist: where the hand
+                        // let go, a note stands. A pinch that barely
+                        // moved is a tap, and leaves the pad alone —
+                        // 6 cm is a deliberate pull.
+                        if armMenu.chipID(for: value.entity) == Self.notePadChipID {
+                            let travel = value.convert(
+                                value.gestureValue.translation3D,
+                                from: .local, to: .scene)
+                            guard simd_length(travel) > 0.06 else { return }
+                            makeNote(at: value.entity.position(relativeTo: nil)
+                                     + travel)
+                        }
                     })
             // A long-pinch on the Concepts chip offers the way back for
             // hidden concepts: the Reveal All Concepts chip steps out
@@ -1622,10 +1667,33 @@ struct EPUBMapView: View {
                             .scaleEffect(0.5, anchor: .top)
                     )
                 }
+                // A note's own two verbs: the words, and the end of
+                // them. Write is what the double tap does.
+                if item.id.hasPrefix(EPUBMapView.noteItemPrefix), item.isSelected {
+                    guard let note = note(for: item.id) else {
+                        return AnyView(EmptyView())
+                    }
+                    return AnyView(
+                        HStack(spacing: 8) {
+                            Button("Write") { openNoteEditor(note) }
+                            Button("Delete") {
+                                SpatialNotes.delete(note,
+                                                    community: model.index.folderURL)
+                                spatialNotes.removeAll { $0.id == note.id }
+                                reload()
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .font(.caption)
+                        .scaleEffect(0.5, anchor: .top)
+                    )
+                }
                 // Topic magnets carry no buttons: selection alone is
                 // their whole voice — the threads to their articles.
                 if item.kind == .concept && item.isSelected
-                    && !item.id.hasPrefix("topic:") {
+                    && !item.id.hasPrefix("topic:")
+                    && !item.id.hasPrefix(EPUBMapView.noteItemPrefix) {
                     return AnyView(
                         HStack(spacing: 8) {
                             Button(focusedConceptID == item.id ? "Un-Focus" : "Focus") {
@@ -1902,6 +1970,11 @@ struct EPUBMapView: View {
             armMenu.setChipVisible(Self.selectDocumentsChipID, false)
             armMenu.setChipVisible(Self.selectTopicsChipID, false)
             armMenu.setChipVisible(Self.selectConceptsChipID, false)
+            // The note pad is away for now (17 Sep 2026): pulling a
+            // pad off the wrist unsettled the arm, and a demo comes
+            // first. One line brings it back, and everything behind it
+            // — the notes, their writing, their file — stands ready.
+            armMenu.setChipVisible(Self.notePadChipID, false)
             // Show's families wait folded until the chip is pinched.
             updateShowChips()
             // And so do the right arm's two fans — Layout's options
@@ -2049,6 +2122,34 @@ struct EPUBMapView: View {
                 // The side rails are away for now: the glass alone
                 // names the slip's edges (17 Sep 2026).
                 .opacity(0.5)
+        } else if item.id.hasPrefix(Self.noteItemPrefix) {
+            // A note wears the shape of the pad it came off — the
+            // watch's proportions — with the words written across it.
+            // Empty, it is a blank pad and says only what it is.
+            VStack(alignment: .leading, spacing: 0) {
+                if item.title.isEmpty {
+                    Text("Note")
+                        .font(.system(size: 6 * s, weight: .semibold,
+                                      design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.35))
+                } else {
+                    Text(item.title)
+                        .font(.system(size: 6.5 * s, design: .rounded))
+                        .foregroundStyle(Color.white)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(8)
+                }
+            }
+            .padding(7 * s)
+            // 80 × 98 points at the crisp factor — 8 cm of paper in the
+            // room, in the pad's own proportions.
+            .frame(width: 80 * s, height: 98 * s, alignment: .topLeading)
+            .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 10 * s))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10 * s)
+                    .strokeBorder(Color.white.opacity(item.isSelected ? 0.75 : 0.25),
+                                  lineWidth: (item.isSelected ? 1.6 : 0.6) * s)
+            )
         } else if item.kind == .concept {
             // The arm chips' glass, in the concepts' own serif voice.
             // Real material — this face rides a live attachment now,
@@ -2387,6 +2488,67 @@ struct EPUBMapView: View {
         }
     }
 
+    // MARK: - Spatial notes
+
+    /// A note's item id: the store's id behind this mark, the way
+    /// floats and topics name themselves.
+    private static let noteItemPrefix = "note:"
+
+    /// The note a card stands for, if it stands for one.
+    private func note(for itemID: String) -> SpatialNotes.Note? {
+        guard itemID.hasPrefix(Self.noteItemPrefix) else { return nil }
+        let id = String(itemID.dropFirst(Self.noteItemPrefix.count))
+        return spatialNotes.first { $0.id == id }
+    }
+
+    /// A pad pulled off the wrist: a note comes into being where the
+    /// hand let it go, and opens for writing at once.
+    private func makeNote(at drop: SIMD3<Float>) {
+        let place = drop - spaceShift
+        let note = SpatialNotes.Note(
+            venue: model.openJournalVenue ?? "",
+            x: Double(place.x),
+            // Never below the knee or above the reach — a note dropped
+            // wildly still stands where it can be read.
+            y: Double(min(max(place.y, 0.4), 2.2)),
+            z: Double(place.z))
+        SpatialNotes.save(note, community: model.index.folderURL)
+        spatialNotes.append(note)
+        reload()
+        openNoteEditor(note)
+    }
+
+    /// The note's own panel, standing where the note stands: the words
+    /// to type, the microphone to speak them, and the ways out.
+    private func openNoteEditor(_ note: SpatialNotes.Note) {
+        let panelID = "note-edit:" + note.id
+        let at = SIMD3<Float>(Float(note.x), Float(note.y), Float(note.z))
+            + spaceShift + SIMD3<Float>(0, 0, 0.08)
+        readerPanels.open(
+            docID: panelID,
+            at: at,
+            view: AnyView(
+                SpatialNotePanel(
+                    note: note,
+                    write: { written in
+                        var kept = note
+                        kept.text = written
+                        SpatialNotes.save(kept, community: model.index.folderURL)
+                        if let index = spatialNotes.firstIndex(where: { $0.id == note.id }) {
+                            spatialNotes[index] = kept
+                        }
+                        reload()
+                    },
+                    remove: {
+                        SpatialNotes.delete(note, community: model.index.folderURL)
+                        spatialNotes.removeAll { $0.id == note.id }
+                        readerPanels.close(docID: panelID)
+                        reload()
+                    },
+                    onClose: { readerPanels.close(docID: panelID) })),
+            onClose: { readerPanels.close(docID: panelID) })
+    }
+
     /// How many papers stand chosen — what decides whether a card
     /// offers its own verbs or the one verb that acts on many.
     private var selectedPaperCount: Int {
@@ -2433,16 +2595,34 @@ struct EPUBMapView: View {
                 let rows = stride(from: 0, to: options.count, by: 4).map {
                     Array(options[$0..<min($0 + 4, options.count)])
                 }
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                VStack(spacing: 8) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        HStack(spacing: 8) {
+                            ForEach(row, id: \.self) { option in
+                                Button(option.title) {
+                                    runWatchLayout(option)
+                                    layoutRowCardID = nil
+                                }
+                            }
+                        }
+                    }
+                    // Auto's whole-wall arrangements ride here too now
+                    // the arm has no Layout: Wall among them, which is
+                    // the room's way back from a mess.
                     HStack(spacing: 8) {
-                        ForEach(row, id: \.self) { option in
+                        ForEach(Self.offeredWatchViews, id: \.self) { option in
                             Button(option.title) {
-                                runWatchLayout(option)
+                                runWatchView(option)
                                 layoutRowCardID = nil
                             }
                         }
                     }
                 }
+                // The list stands 1.5 cm below the button that opened
+                // it. Attachments lay out at 1360 points to the metre
+                // and this whole block is drawn at 0.8, so 25.5 points
+                // is the centimetre and a half asked for.
+                .padding(.top, 25.5)
             }
         }
     }
@@ -3201,6 +3381,20 @@ struct EPUBMapView: View {
                 if item.id.hasPrefix("float:") {
                     model.setFloatPosition(position - spaceShift, id: item.id)
                 }
+                // A note's place travels in the journal's own file, in
+                // the same map space — so the Mac's flat map finds it
+                // where the hallway left it.
+                if let note = note(for: item.id) {
+                    var moved = note
+                    let place = position - spaceShift
+                    moved.x = Double(place.x)
+                    moved.y = Double(place.y)
+                    moved.z = Double(place.z)
+                    SpatialNotes.save(moved, community: model.index.folderURL)
+                    if let index = spatialNotes.firstIndex(where: { $0.id == note.id }) {
+                        spatialNotes[index] = moved
+                    }
+                }
             }
         }
         EPUBMapLayoutStore.save(placed, community: model.index.folderURL,
@@ -3277,6 +3471,11 @@ struct EPUBMapView: View {
             // brings the card back. A citation opens its record card
             // instead: everything we hold on it, and Acquire.
             guard item.kind == .article else {
+                // A note opens for writing — by hand or by voice.
+                if let note = note(for: item.id) {
+                    openNoteEditor(note)
+                    return
+                }
                 // A topic magnet or floated passage has no record
                 // behind it — nothing to open.
                 if !item.id.hasPrefix("topic:"), !item.id.hasPrefix("float:") {
@@ -5279,6 +5478,170 @@ enum ReadingDeskTheme: String, CaseIterable, Identifiable {
 /// beneath — the reader itself manages the card's leave and return
 /// through its own appear and disappear. On the desk, the panel wears
 /// the chosen theme's page instead of glass.
+/// A spatial note opened for writing, standing where the note stands:
+/// the words to type, and the microphone to speak them instead. The
+/// system keyboard carries its own dictation key; Dictate is here as
+/// well because a note in a room is often made with both hands full.
+///
+/// Nothing is kept until Done — except a deletion, which is at once.
+struct SpatialNotePanel: View {
+    let note: SpatialNotes.Note
+    let write: (String) -> Void
+    let remove: () -> Void
+    let onClose: () -> Void
+
+    @State private var draft: String = ""
+    @State private var dictation = SpatialNoteDictation()
+    @State private var started = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Note")
+                    .font(.headline)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                }
+                .buttonBorderShape(.circle)
+            }
+            TextEditor(text: $draft)
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.white.opacity(0.08)))
+                .frame(minHeight: 180)
+            if let trouble = dictation.trouble {
+                Text(trouble)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
+                Button {
+                    if dictation.isListening {
+                        dictation.stop()
+                    } else {
+                        // The words arrive as they are heard, appended
+                        // to whatever is already written.
+                        dictation.start(appendingTo: draft) { draft = $0 }
+                    }
+                } label: {
+                    Label(dictation.isListening ? "Stop" : "Dictate",
+                          systemImage: dictation.isListening
+                              ? "stop.circle" : "mic")
+                }
+                .buttonStyle(.bordered)
+                .tint(dictation.isListening ? .red : nil)
+                Spacer()
+                Button("Delete", role: .destructive) {
+                    dictation.stop()
+                    remove()
+                }
+                Button("Done") {
+                    dictation.stop()
+                    write(draft)
+                    onClose()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(18)
+        .frame(width: 440)
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 24))
+        .onAppear {
+            // The panel may be rebuilt as the room refreshes; the words
+            // already typed must not be thrown away by that.
+            guard !started else { return }
+            started = true
+            draft = note.text
+        }
+        .onDisappear { dictation.stop() }
+    }
+}
+
+/// Speech to text for a note: the microphone's words, on device when
+/// the hardware allows it. Nothing is recorded or kept — the audio
+/// goes straight to the recogniser and the words to the draft.
+@MainActor @Observable final class SpatialNoteDictation {
+    private(set) var isListening = false
+    /// What to tell the reader when the microphone cannot be had.
+    private(set) var trouble: String?
+
+    private var recogniser: SFSpeechRecognizer?
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    private let engine = AVAudioEngine()
+
+    func start(appendingTo existing: String,
+               onWords: @escaping (String) -> Void) {
+        guard !isListening else { return }
+        trouble = nil
+        SFSpeechRecognizer.requestAuthorization { [weak self] status in
+            Task { @MainActor in
+                guard let self else { return }
+                guard status == .authorized else {
+                    self.trouble = "Speech recognition is not allowed. "
+                        + "The keyboard's own microphone key still dictates."
+                    return
+                }
+                self.listen(appendingTo: existing, onWords: onWords)
+            }
+        }
+    }
+
+    private func listen(appendingTo existing: String,
+                        onWords: @escaping (String) -> Void) {
+        let recogniser = SFSpeechRecognizer()
+        guard let recogniser, recogniser.isAvailable else {
+            trouble = "No speech recogniser is available for this language."
+            return
+        }
+        self.recogniser = recogniser
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        // On device when the hardware can: the words never leave.
+        request.requiresOnDeviceRecognition = recogniser.supportsOnDeviceRecognition
+        self.request = request
+
+        let stem = existing.isEmpty ? "" : existing + "\n"
+        task = recogniser.recognitionTask(with: request) { [weak self] result, error in
+            Task { @MainActor in
+                if let result {
+                    onWords(stem + result.bestTranscription.formattedString)
+                }
+                if error != nil || result?.isFinal == true { self?.stop() }
+            }
+        }
+
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            request.append(buffer)
+        }
+        engine.prepare()
+        do {
+            try engine.start()
+            isListening = true
+        } catch {
+            trouble = "The microphone could not be started."
+            stop()
+        }
+    }
+
+    func stop() {
+        if engine.isRunning {
+            engine.stop()
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        request?.endAudio()
+        task?.cancel()
+        request = nil
+        task = nil
+        isListening = false
+    }
+}
+
 struct MapReaderPanel: View {
     @Environment(VisionModel.self) private var model
     let docID: String

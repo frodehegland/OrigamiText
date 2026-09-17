@@ -534,7 +534,7 @@ final class ArmMenu {
     /// the rest. Origami addition (carry back to Author).
     private func chipLabelView(_ id: String, active: Bool) -> AnyView {
         watchIDs.contains(id)
-            ? AnyView(ArmWatchView(active: active))
+            ? AnyView(ArmWatchView(text: titles[id] ?? "", active: active))
             : AnyView(ArmChipView(text: titles[id] ?? id, active: active))
     }
 }
@@ -545,16 +545,20 @@ final class ArmMenu {
 /// semi-transparent glass panel with a thin frame. Non-interactive itself; the
 /// tap is handled by the collision on the entity it rides.
 /// The wrist watch: a rectangle in a watch face's proportions worn on
-/// the arm — a mostly transparent black shape naming its purpose,
-/// Views. Pinching it is the tap on the entity it rides, like every
-/// chip. Origami addition (carry back to Author).
+/// the arm — a mostly transparent black shape, which may name its
+/// purpose or say nothing at all. A BLANK one is a thing rather than a
+/// command: Origami's hallway wears an empty pad here, and a reader
+/// pulls notes off it. Pinching it is the tap on the entity it rides,
+/// like every chip. Origami addition (carry back to Author).
 struct ArmWatchView: View {
+    /// Empty for a wordless shape.
+    var text: String = ""
     /// The watch's menus stand open: the border thickens and brightens,
     /// exactly as an active chip's does.
     var active: Bool = false
 
     var body: some View {
-        Text("Views")
+        Text(text)
             .font(.system(size: 22, weight: .semibold, design: .rounded))
             .foregroundStyle(.white)
             .frame(width: 96, height: 118)

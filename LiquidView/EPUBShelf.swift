@@ -428,6 +428,189 @@ nonisolated enum EPUBMapSharedLayout {
     }
 }
 
+// MARK: - Spatial notes
+
+/// A spatial note: words a reader left standing in the room, in a place
+/// of their own choosing. Made in the Vision Pro's hallway — a blank
+/// pad pulled off the wrist and dropped where it belongs — and read on
+/// the Mac's flat map at the same place, because both speak the
+/// hallway's meters: x right of the room's centre, y up from the floor.
+/// Z is the hallway's own depth, which the flat map has no use for and
+/// keeps untouched.
+///
+/// One file per community folder, mirrored locally so a reader with no
+/// folder chosen still keeps their notes, and merged per note — the
+/// newest writing of a note wins, whichever home holds it. A deleted
+/// note leaves a tombstone, so merging with a stale copy from another
+/// device cannot bring it back.
+nonisolated enum SpatialNotes {
+
+    struct Note: Codable, Identifiable, Hashable {
+        var id: String
+        /// The journal this note stands with. A note belongs to its
+        /// proceedings, not to every room.
+        var venue: String
+        var text: String
+        var x: Double
+        var y: Double
+        var z: Double
+        var created: Date
+        var modified: Date
+        var deleted: Bool
+
+        init(id: String = UUID().uuidString, venue: String, text: String = "",
+             x: Double, y: Double, z: Double,
+             created: Date = Date(), modified: Date = Date(),
+             deleted: Bool = false) {
+            self.id = id
+            self.venue = venue
+            self.text = text
+            self.x = x
+            self.y = y
+            self.z = z
+            self.created = created
+            self.modified = modified
+            self.deleted = deleted
+        }
+
+        /// The first line, for a card that must name itself in a word
+        /// or two — an empty note names itself by its blankness.
+        var firstLine: String {
+            text.split(separator: "\n").first.map(String.init) ?? ""
+        }
+    }
+
+    struct File: Codable {
+        var notes: [String: Note] = [:]
+        var modified: Date = .distantPast
+    }
+
+    private static let sharedName = "origami-spatial-notes.json"
+
+    /// Stamps to the millisecond. Plain ISO8601 keeps whole seconds
+    /// only, and merging is decided by which writing is newer — two
+    /// edits in one second must not become a coin toss.
+    private static var stamp: ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }
+
+    private static var encoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let formatter = stamp
+        encoder.dateEncodingStrategy = .custom { date, coder in
+            var container = coder.singleValueContainer()
+            try container.encode(formatter.string(from: date))
+        }
+        return encoder
+    }
+
+    private static var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        let fractional = stamp
+        let whole = ISO8601DateFormatter()
+        decoder.dateDecodingStrategy = .custom { coder in
+            let text = try coder.singleValueContainer().decode(String.self)
+            // A file written before the millisecond stamp still reads.
+            if let date = fractional.date(from: text) { return date }
+            if let date = whole.date(from: text) { return date }
+            throw DecodingError.dataCorruptedError(
+                in: try coder.singleValueContainer(),
+                debugDescription: "not a date: \(text)")
+        }
+        return decoder
+    }
+
+    private static var mirrorURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)
+            .first ?? FileManager.default.temporaryDirectory
+        try? FileManager.default.createDirectory(
+            at: base, withIntermediateDirectories: true)
+        return base.appendingPathComponent(sharedName)
+    }
+
+    /// Every note either home holds, tombstones and all.
+    static func all(community folder: URL?) -> [String: Note] {
+        let mirror = read(at: mirrorURL)
+        let shared = folder.flatMap { url in
+            withScope(url) { read(at: $0.appendingPathComponent(sharedName)) }
+        }
+        return merged(mirror, shared).notes
+    }
+
+    /// The notes standing in one journal's room, oldest first — the
+    /// order a reader wrote them in. Ties break on the id, so the order
+    /// is the same on every device rather than the dictionary's whim.
+    static func notes(venue: String, community folder: URL?) -> [Note] {
+        all(community: folder).values
+            .filter { !$0.deleted && $0.venue == venue }
+            .sorted {
+                $0.created == $1.created ? $0.id < $1.id : $0.created < $1.created
+            }
+    }
+
+    /// Writes one note to both homes, stamped now. Every other note
+    /// stands — the other journals', the other devices'.
+    static func save(_ note: Note, community folder: URL?) {
+        var stamped = note
+        stamped.modified = Date()
+        write(stamped, community: folder)
+    }
+
+    /// The note goes, and says so: a tombstone keeps its id with the
+    /// deletion's own stamp, which merging respects.
+    static func delete(_ note: Note, community folder: URL?) {
+        var stone = note
+        stone.deleted = true
+        stone.text = ""
+        stone.modified = Date()
+        write(stone, community: folder)
+    }
+
+    private static func write(_ note: Note, community folder: URL?) {
+        var file = File(notes: all(community: folder))
+        file.notes[note.id] = note
+        file.modified = note.modified
+        guard let data = try? encoder.encode(file) else { return }
+        try? data.write(to: mirrorURL, options: .atomic)
+        if let folder {
+            withScope(folder) {
+                try? data.write(to: $0.appendingPathComponent(sharedName),
+                                options: .atomic)
+            }
+        }
+    }
+
+    private static func merged(_ a: File?, _ b: File?) -> File {
+        switch (a, b) {
+        case (nil, nil): return File()
+        case let (one?, nil): return one
+        case let (nil, one?): return one
+        case let (l?, r?):
+            var notes = l.notes
+            for (id, note) in r.notes {
+                if let held = notes[id], held.modified >= note.modified { continue }
+                notes[id] = note
+            }
+            return File(notes: notes, modified: max(l.modified, r.modified))
+        }
+    }
+
+    private static func read(at url: URL) -> File? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? decoder.decode(File.self, from: data)
+    }
+
+    private static func withScope<T>(_ url: URL, _ body: (URL) -> T) -> T {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return body(url)
+    }
+}
+
 /// The Map's saved views: named arrangements kept on this device, and
 /// the shared copies a reader chose to publish to the community folder.
 /// Positions speak the layout file's meters, keyed by the book's
@@ -630,6 +813,105 @@ nonisolated enum MapTopics {
     }
 }
 
+/// One spatial note on the flat map: the hallway's paper, drawn where
+/// the headset left it. Drag it and the place travels back; double-click
+/// to read and write the words. Deliberately unlike an article card —
+/// a note is a reader's own hand, not a published thing.
+struct SpatialNoteCard: View {
+    let note: SpatialNotes.Note
+    let at: CGPoint
+    let open: () -> Void
+    let moved: (CGPoint) -> Void
+
+    @State private var drag: CGSize = .zero
+
+    private var place: CGPoint {
+        CGPoint(x: at.x + drag.width, y: at.y + drag.height)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if note.text.isEmpty {
+                Text("Note")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(note.text)
+                    .font(.callout)
+                    .lineLimit(6)
+                    .multilineTextAlignment(.leading)
+            }
+        }
+        .padding(10)
+        .frame(width: 150, height: 184, alignment: .topLeading)
+        .background {
+            // Paper, in the ember the app keeps for a reader's own
+            // marks — it must never be mistaken for a paper's card.
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(red: 0.98, green: 0.92, blue: 0.70))
+                .shadow(radius: drag == .zero ? 2 : 8)
+        }
+        .overlay(alignment: .bottomLeading) {
+            Text(note.created, format: .dateTime.year().month(.abbreviated).day())
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(10)
+        }
+        .foregroundStyle(.black)
+        .position(place)
+        .gesture(
+            DragGesture()
+                .onChanged { drag = $0.translation }
+                .onEnded { value in
+                    drag = .zero
+                    moved(CGPoint(x: at.x + value.translation.width,
+                                  y: at.y + value.translation.height))
+                })
+        .onTapGesture(count: 2, perform: open)
+        .accessibilityLabel(note.text.isEmpty ? "Empty note" : note.text)
+        .accessibilityHint("Double-click to write; drag to move")
+    }
+}
+
+/// A spatial note's words, on the Mac: the same note the headset made,
+/// written with a keyboard instead of a voice.
+struct SpatialNoteEditor: View {
+    let note: SpatialNotes.Note
+    let write: (String) -> Void
+    let remove: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Spatial Note")
+                .font(.headline)
+            Text("Made \(note.created, format: .dateTime.year().month().day().hour().minute()) — standing in the room at \(note.x, specifier: "%.2f") m across, \(note.y, specifier: "%.2f") m up.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextEditor(text: $draft)
+                .font(.body)
+                .frame(minWidth: 380, minHeight: 200)
+            HStack {
+                Button("Delete", role: .destructive) {
+                    remove()
+                    dismiss()
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Done") {
+                    write(draft)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .onAppear { draft = note.text }
+    }
+}
+
 /// The proceedings as a flat map — Author's Map for one venue: every
 /// article a card on the plane, dragged where the reader wants it,
 /// opened with a double click. Positions persist through EPUBMapSharedLayout in
@@ -688,6 +970,14 @@ struct ProceedingsMapView: View {
 
     /// The foot bar's Find: matching cards light up, the rest recede.
     @State private var findText = ""
+
+    /// The spatial notes standing in this venue's room — made in the
+    /// Vision Pro's hallway, carried here by the community file. Drawn
+    /// at the same meters the cards are, so a note left beside a paper
+    /// is beside that paper here too.
+    @State private var notes: [SpatialNotes.Note] = []
+    /// The note opened for reading and writing.
+    @State private var editingNote: SpatialNotes.Note?
 
     /// The clicked card, lifted off the plane until clicked again or
     /// another takes its place. Views are only layouts: switching one
@@ -818,6 +1108,25 @@ struct ProceedingsMapView: View {
                     // the card visually beside it.
                     .zIndex(liftedID == item.id ? 1 : 0)
                 }
+                // The hallway's spatial notes, standing on the same
+                // plane: read them, move them, write in them. A note
+                // made here reaches the headset the same way.
+                ForEach(notes) { note in
+                    SpatialNoteCard(
+                        note: note,
+                        at: Self.canvasPoint(
+                            EPUBMapSharedLayout.Point(x: note.x, y: note.y)),
+                        open: { editingNote = note },
+                        moved: { point in
+                            let place = Self.sharedPoint(point)
+                            var moved = note
+                            moved.x = place.x
+                            moved.y = place.y
+                            SpatialNotes.save(moved, community: folder)
+                            reload()
+                        })
+                    .zIndex(2)
+                }
             }
         }
         .defaultScrollAnchor(.center)
@@ -827,6 +1136,17 @@ struct ProceedingsMapView: View {
             if showsMagnetBar { magnetBar }
         }
         .coordinateSpace(.named("mapPlane"))
+        .sheet(item: $editingNote) { note in
+            SpatialNoteEditor(note: note) { written in
+                var kept = note
+                kept.text = written
+                SpatialNotes.save(kept, community: folder)
+                reload()
+            } remove: {
+                SpatialNotes.delete(note, community: folder)
+                reload()
+            }
+        }
         .onAppear(perform: reload)
         #if os(macOS)
         // ⌘A takes the whole plane — unless the Find field is writing.
@@ -1193,6 +1513,7 @@ struct ProceedingsMapView: View {
     private func reload() {
         apply(EPUBMapSharedLayout.load(community: folder))
         refreshSavedNames()
+        notes = SpatialNotes.notes(venue: venue, community: folder)
     }
 
     // MARK: Views — layouts over the same cards

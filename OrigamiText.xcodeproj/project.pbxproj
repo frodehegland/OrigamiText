@@ -1095,6 +1095,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Origami Text";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The microphone carries your voice into a spatial note while you dictate. Nothing is recorded or kept — only the words.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech recognition turns your dictation into the text of a spatial note, on this device when the hardware allows.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1127,6 +1129,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Origami Text";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The microphone carries your voice into a spatial note while you dictate. Nothing is recorded or kept — only the words.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech recognition turns your dictation into the text of a spatial note, on this device when the hardware allows.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
