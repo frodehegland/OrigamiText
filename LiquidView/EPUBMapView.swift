@@ -419,6 +419,12 @@ struct EPUBMapView: View {
                 } else if collecting {
                     let text = paragraph.text
                         .trimmingCharacters(in: .whitespacesAndNewlines)
+                    // The abstract ENDS at the paper's apparatus: an
+                    // ACM paper prints CCS Concepts, its keywords and
+                    // its reference format as plain paragraphs under
+                    // the same heading, and a card that swept them in
+                    // read as a form rather than an argument.
+                    if Self.endsTheAbstract(text) { break }
                     if !text.isEmpty { abstractParts.append(text) }
                 }
             }
@@ -636,6 +642,25 @@ struct EPUBMapView: View {
         citedTimelineZ = timelineZ
         citedFacts = facts
         return result
+    }
+
+    /// Whether a paragraph standing under the Abstract heading is no
+    /// longer the abstract but the paper's apparatus: its CCS
+    /// concepts, its keywords, or its ACM Reference Format block.
+    /// An ACM paper prints all three as paragraphs under that same
+    /// heading, and a card is for the argument alone. The markers are
+    /// read off the paragraph's opening, with any markdown emphasis
+    /// the importers add stripped first.
+    private static func endsTheAbstract(_ text: String) -> Bool {
+        let opening = text
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let markers = ["ccs concepts", "ccs concept", "additional key words",
+                       "additional keywords", "keywords", "key words",
+                       "acm reference format", "reference format"]
+        return markers.contains { opening.hasPrefix($0) }
     }
 
     /// The connection pool: every citation edge the Map could draw —
@@ -1169,13 +1194,14 @@ struct EPUBMapView: View {
         // a chosen card now carries them as its own buttons.
         ArmMenu.Chip(id: EPUBMapView.focusChipID, title: "Focus", side: .left,
                      underside: true),
-        // Worn at the left wrist, where the watch used to sit: a blank
-        // pad, no word on it and no time. It is not a command — it is
-        // a THING. Pull one off into the room and it becomes a note
-        // standing in the place you dropped it; a double tap opens it
-        // for writing or dictating. (17 Sep 2026.)
-        ArmMenu.Chip(id: EPUBMapView.notePadChipID, title: "", side: .left,
-                     watch: true),
+        // The note pad worn at the left wrist — a blank pad pulled off
+        // into the room as a standing note — is OUT for the demo
+        // (17 Sep 2026): pulling a pad off unsettled the arm. Merely
+        // hiding it was not enough, because a declared watch pushes
+        // the whole word row 10 cm up the arm to clear a watch case
+        // that no longer stands. So the chip is not declared at all;
+        // its id, its pinch routing, ArmWatchView and SpatialNotes all
+        // stand ready for the day it returns, tweaked.
         // The left arm's working row, from the wrist toward the elbow:
         //     Show [A] Select [D]
         // Each word unfolds its own list away from the arm, and the
@@ -1454,12 +1480,19 @@ struct EPUBMapView: View {
         max(1, Int((Double(count) * 7).squareRoot() / 2))
     }
 
-    /// The wall's top row, centred on eye height — and never so high
-    /// that its last row would be clamped into the floor of the band
-    /// a card may stand in (0.95…2.2).
+    /// The wall's top row: 1.55 m, chest-to-brow, so the papers hang
+    /// BENEATH the citation wall's band (whose rows run 1.39…1.95) and
+    /// a raised wall is never hidden behind the papers that raised it.
+    /// Centring the rectangle on eye height instead — as it did for a
+    /// few hours on 17 Sep 2026 — put its top at 1.785 for a 61-paper
+    /// journal and swallowed the citations whole.
+    ///
+    /// A journal with more rows than that band can hold still lowers
+    /// its top no further than the floor of a card's reach (0.95), and
+    /// nothing stands above 2.15.
     private static func wallTop(rows: Int) -> Float {
         let span = Float(max(rows - 1, 0)) * rowPitch
-        return min(2.15, max(0.95 + span, 1.5 + span / 2))
+        return min(2.15, max(1.55, 0.95 + span))
     }
 
     private static func watchLayoutOptionID(_ option: WatchLayoutOption) -> String {
@@ -1970,11 +2003,8 @@ struct EPUBMapView: View {
             armMenu.setChipVisible(Self.selectDocumentsChipID, false)
             armMenu.setChipVisible(Self.selectTopicsChipID, false)
             armMenu.setChipVisible(Self.selectConceptsChipID, false)
-            // The note pad is away for now (17 Sep 2026): pulling a
-            // pad off the wrist unsettled the arm, and a demo comes
-            // first. One line brings it back, and everything behind it
-            // — the notes, their writing, their file — stands ready.
-            armMenu.setChipVisible(Self.notePadChipID, false)
+            // (The note pad that rode the wrist is not declared at
+            // all now — see the chips above.)
             // Show's families wait folded until the chip is pinched.
             updateShowChips()
             // And so do the right arm's two fans — Layout's options
