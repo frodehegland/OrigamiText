@@ -6119,6 +6119,9 @@ struct MapReaderPanel: View {
     /// The reading view inside, shared with VisionReaderView — the
     /// Horizontal view earns a panel wide enough for whole pages.
     @AppStorage("visionReaderMode") private var readerModeRaw = "scroll"
+    /// The reading the Origami View was entered from, so the same
+    /// button unfolds the paper back to it.
+    @AppStorage("visionReaderModeBeforeOrigami") private var modeBeforeOrigami = "scroll"
 
     private var isDesk: Bool { model.readingDeskDocID == docID }
     private var theme: ReadingDeskTheme {
@@ -6140,13 +6143,15 @@ struct MapReaderPanel: View {
         case .flat: "Stand the page back up"
         }
     }
-    /// Horizontal hugs its columns' full breadth (the reader sizes
-    /// itself); every other view keeps the page width.
+    /// Horizontal hugs its columns' full breadth, and the folded sheet
+    /// its own spread (each reader sizes itself); every other view
+    /// keeps the page width.
     private var panelWidth: CGFloat? {
-        isHorizontal ? nil : 640
+        isHorizontal || isOrigami ? nil : 640
     }
 
     private var isHorizontal: Bool { readerModeRaw == "horizontal" }
+    private var isOrigami: Bool { readerModeRaw == "origami" }
 
     var body: some View {
         if isDesk {
@@ -6157,7 +6162,7 @@ struct MapReaderPanel: View {
             panel
                 .background(RoundedRectangle(cornerRadius: 24).fill(theme.page))
                 .environment(\.colorScheme, theme.scheme)
-        } else if isHorizontal {
+        } else if isHorizontal || isOrigami {
             // Horizontal in the room curves its columns, each wearing
             // its own glass inside the reader — the panel adds no flat
             // slab for the text to stick out of.
@@ -6168,9 +6173,11 @@ struct MapReaderPanel: View {
         }
     }
 
-    /// Whether the panel stands as separate floating pieces (the
-    /// room's curved Horizontal) rather than one dressed sheet.
-    private var isLoose: Bool { isHorizontal && !isDesk }
+    /// Whether the panel stands as separate floating pieces — the
+    /// room's curved Horizontal, or the Origami View, whose facets
+    /// carry their own paper and must not stand on a glass slab —
+    /// rather than one dressed sheet.
+    private var isLoose: Bool { (isHorizontal || isOrigami) && !isDesk }
 
     private var panel: some View {
         VStack(spacing: isLoose ? 12 : 0) {
@@ -6211,6 +6218,24 @@ struct MapReaderPanel: View {
                 }
                 .buttonBorderShape(.circle)
                 .help(poseHelp)
+                // The Origami View: the page folded into space as a
+                // folding screen. Beside the document and the pose,
+                // because it is a third way to hold the same paper —
+                // and the way back is the same button.
+                Button {
+                    if isOrigami {
+                        readerModeRaw = modeBeforeOrigami
+                    } else {
+                        modeBeforeOrigami = readerModeRaw
+                        readerModeRaw = "origami"
+                    }
+                } label: {
+                    Image(systemName: "rectangle.split.3x1")
+                }
+                .buttonBorderShape(.circle)
+                .help(isOrigami
+                      ? "Unfold the paper — back to the reading"
+                      : "Origami View — fold the paper into space")
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)

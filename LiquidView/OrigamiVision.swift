@@ -2173,6 +2173,11 @@ struct VisionReaderView: View {
     @State private var aiError: String?
     /// One point either way for every reading, remembered — the Aa menu.
     @AppStorage("visionReaderFontDelta") private var fontDelta = 0.0
+    /// The Origami View: which fold stands open — nil, and the whole
+    /// sheet is creased shut — and how tightly the rest pleat. The
+    /// tightness is remembered; which fold is open is this sitting's.
+    @State private var openFacet: Int? = 0
+    @AppStorage("visionOrigamiFold") private var foldDepth = 0.6
     /// The desk theme — when this reading IS the desk, the Horizontal
     /// columns wear its paper instead of the room's glass.
     @AppStorage("readingDeskTheme") private var deskThemeRaw =
@@ -2221,7 +2226,7 @@ struct VisionReaderView: View {
     /// The Mac's reading views, here: Default (the EPUB's own pages),
     /// Scroll, Horizontal, Focus, Outline, and AI.
     private enum Mode: String, CaseIterable {
-        case faithful, scroll, horizontal, focus, outline, ai
+        case faithful, scroll, horizontal, focus, outline, ai, origami
 
         var word: String {
             switch self {
@@ -2231,6 +2236,7 @@ struct VisionReaderView: View {
             case .focus: "Focus"
             case .outline: "Outline"
             case .ai: "AI"
+            case .origami: "Origami"
             }
         }
     }
@@ -2262,6 +2268,8 @@ struct VisionReaderView: View {
                     focusView(doc)
                 case .ai:
                     aiView(doc)
+                case .origami:
+                    origamiView(doc)
                 case .scroll, .outline:
                     scrollBody(doc)
                 }
@@ -2536,6 +2544,338 @@ struct VisionReaderView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             footBar(doc, proxy: nil)
         }
+    }
+
+    // MARK: Origami — the paper folded into space
+
+    /// One facet of the folded sheet: the paragraphs written on it,
+    /// where its hinge stands in the room, which way its crease turns,
+    /// and how wide the panel runs.
+    private struct Facet: Identifiable {
+        let index: Int
+        let paragraphs: [LiquidDoc.Paragraph]
+        /// The crease this facet hangs from, in points across and in
+        /// depth — placed where the facet before it came to an end, so
+        /// the creases actually MEET rather than merely looking folded.
+        let hingeX: CGFloat
+        let hingeZ: CGFloat
+        /// Signed: mountain one way, valley the other. Zero for the
+        /// facet lying open.
+        let angle: Double
+        let width: CGFloat
+        /// Settled here, once, against the sheet's real length — a fold
+        /// remembered from a longer document cannot point past the end
+        /// of a shorter one.
+        let isOpen: Bool
+        var id: Int { index }
+    }
+
+    /// The widest a pleat stands, and the width the open facet takes.
+    /// A long document folds TIGHTER, as paper does — the pleat narrows
+    /// as the sections multiply.
+    private static let pleatWidest: CGFloat = 180
+    private static let pleatNarrowest: CGFloat = 44
+    private static let openFacetWidth: CGFloat = 520
+    /// How wide the whole folded sheet may stand. The reading rides a
+    /// render texture: attachments draw at 2×, and past 8192px the body
+    /// simply fails to appear (the Horizontal view learned this the
+    /// hard way). Every pleat width below is a share of this.
+    private static let spreadBudget: CGFloat = 3600
+    /// And how much of that sheet stands in front of the reader at
+    /// once. Spread flat, a long screen is wider than a room; the panel
+    /// holds this much — about a metre and a quarter — and the rest of
+    /// the sheet walks by swipe, as the Horizontal columns do.
+    private static let sheetWindow: CGFloat = 1700
+    /// Fully folded, a crease turns this far. Kept off 90° so a pleat
+    /// never stands edge-on and vanishes, and low enough that the
+    /// deepest crease (pleat × sin) stays about 15 cm off the plane —
+    /// a window's own volume has to hold it.
+    private static let foldAngleMax: Double = 58
+
+    private func pleatWidth(count: Int) -> CGFloat {
+        guard count > 1 else { return Self.pleatWidest }
+        let share = (Self.spreadBudget - Self.openFacetWidth) / CGFloat(count - 1)
+        return max(Self.pleatNarrowest, min(Self.pleatWidest, share))
+    }
+
+    /// How many facets the sheet can hold at its tightest pleat.
+    private var mostFacets: Int {
+        Int((Self.spreadBudget - Self.openFacetWidth) / Self.pleatNarrowest) + 1
+    }
+
+    /// The document creased into facets. Past what the sheet can hold
+    /// even folded tight, the tail rides together on the last facet:
+    /// FEWER CREASES, never fewer words — a sheet with more folds than
+    /// it has room for is still one uncut sheet.
+    private func creased(_ doc: LiquidDoc) -> [[LiquidDoc.Paragraph]] {
+        let pages = horizontalPages(of: doc)
+        let most = mostFacets
+        guard pages.count > most, most > 1 else { return pages }
+        let tail = pages[(most - 1)...].flatMap { $0 }
+        return Array(pages[..<(most - 1)]) + [tail]
+    }
+
+    /// The sheet creased at its headings and nowhere else — origami's
+    /// own rule, one sheet and no cuts, so every paragraph lands on
+    /// some facet. (The Horizontal view's section rule exactly: a bare
+    /// heading rides atop the section that follows it.)
+    private func facets(of doc: LiquidDoc) -> [Facet] {
+        let pages = creased(doc)
+        let pleat = pleatWidth(count: pages.count)
+        let angle = Self.foldAngleMax * min(max(foldDepth, 0), 1)
+        let openIndex = openFacet.map { min($0, pages.count - 1) }
+        var out: [Facet] = []
+        var x: CGFloat = 0
+        var z: CGFloat = 0
+        for (index, page) in pages.enumerated() {
+            let isOpen = openIndex == index
+            let width = isOpen ? Self.openFacetWidth : pleat
+            // 山, 谷, 山 — mountain, valley, mountain. The alternation
+            // is the whole trick: it is what lets a flat sheet stand
+            // up in space instead of lying down.
+            let turn: Double = index.isMultiple(of: 2) ? 1 : -1
+            let facetAngle = isOpen ? 0 : turn * angle
+            out.append(Facet(index: index, paragraphs: page,
+                             hingeX: x, hingeZ: z,
+                             angle: facetAngle, width: width, isOpen: isOpen))
+            // Where this facet ends is where the next one hinges. A
+            // positive turn about Y sends the far edge away from the
+            // reader, so depth carries the minus.
+            let radians = facetAngle * .pi / 180
+            x += width * CGFloat(cos(radians))
+            z -= width * CGFloat(sin(radians))
+        }
+        return out
+    }
+
+    /// The Origami View (折り紙): the reading standing in the room as a
+    /// folding screen — a 屏風 byōbu of one's own document.
+    ///
+    /// One facet lies open, flat and facing the reader, carrying its
+    /// words at reading size. The rest stand as narrow pleats, each
+    /// wearing its section's name along the fold the way a book wears
+    /// its spine — so the shape of the whole document stays in view
+    /// while one part of it is being read. Tap a pleat and that crease
+    /// opens as the last one folds away; fold the sheet shut and the
+    /// document is a slim concertina, a folded letter, title outward.
+    private func origamiView(_ doc: LiquidDoc) -> some View {
+        let sheet = facets(of: doc)
+        let spread = (sheet.last?.hingeX ?? 0)
+            + (sheet.last.map { $0.width * CGFloat(cos($0.angle * .pi / 180)) } ?? 0)
+        return VStack(spacing: 0) {
+            ScrollView(.horizontal) {
+                ZStack(alignment: .topLeading) {
+                    ForEach(sheet) { facet in
+                        facetView(facet, doc: doc, of: sheet.count)
+                    }
+                }
+                // The pleats lean out of the plane both ways; the frame
+                // has to own that depth or the screen is clipped flat.
+                .frame(width: max(spread, Self.openFacetWidth),
+                       height: 660, alignment: .topLeading)
+                .frame(depth: Self.pleatWidest, alignment: .center)
+                .padding(.horizontal, 24)
+                .padding(.top, 18)
+            }
+            // The pleats lean out of the plane, so the scroll must not
+            // shear them off at its edges.
+            .scrollClipDisabled()
+            .frame(width: min(max(spread, Self.openFacetWidth) + 48,
+                              Self.sheetWindow))
+            foldBar(doc, sheet: sheet)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            footBar(doc, proxy: nil)
+        }
+    }
+
+    /// One facet in its place: hinged on its leading edge, turned by
+    /// its crease, and stood where the fold before it left off.
+    @ViewBuilder private func facetView(_ facet: Facet, doc: LiquidDoc,
+                                        of count: Int) -> some View {
+        let face = Group {
+            if facet.isOpen {
+                openFacetView(facet, doc: doc, of: count)
+            } else {
+                pleatView(facet, doc: doc)
+            }
+        }
+        face
+            .frame(width: facet.width, height: 620, alignment: .topLeading)
+            .background(facetPaper(facet))
+            // Every fold is a hinge on the facet's OWN leading edge —
+            // the true 3D rotation, not a perspective projection: on
+            // visionOS the anchored form is the one that really turns a
+            // view in space (Apple's own note on rotation3DEffect).
+            // The anchor's TYPE chooses the modifier: UnitPoint3D takes
+            // the true 3D rotation, a plain UnitPoint the flat
+            // perspective projection. Spelled out, because the paper
+            // has to really turn in the room.
+            .rotation3DEffect(.degrees(facet.angle), axis: (x: 0, y: 1, z: 0),
+                              anchor: UnitPoint3D.leading)
+            .offset(x: facet.hingeX)
+            .offset(z: facet.hingeZ)
+            .animation(.smooth(duration: 0.45), value: facet.angle)
+            .animation(.smooth(duration: 0.45), value: facet.hingeX)
+    }
+
+    /// The facet lying open: its section at reading size, as any other
+    /// view of this document would set it.
+    private func openFacetView(_ facet: Facet, doc: LiquidDoc,
+                               of count: Int) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if facet.index == 0 {
+                    Text(doc.title)
+                        .font(AppFonts.heading((26 + fontDelta) * typeScale))
+                        .padding(.bottom, 4)
+                    Text("\(doc.displayAuthor) · \(doc.listedDateText)")
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 16)
+                }
+                flowView(facet.paragraphs, doc: doc)
+                if facet.index == count - 1 {
+                    referencesSection(doc)
+                }
+            }
+            .padding(22)
+        }
+    }
+
+    /// A pleat: the section's name turned along its fold, read up the
+    /// crease as a spine is read, with the weight of the section under
+    /// it in fine print. The whole panel is the button that opens it.
+    private func pleatView(_ facet: Facet, doc: LiquidDoc) -> some View {
+        // The section's weight as its PARAGRAPH count, not its words:
+        // the fold slider redraws every pleat as it moves, and counting
+        // words means splitting the whole document on every frame of
+        // the drag.
+        let weight = facet.paragraphs.count
+        return Button {
+            open(facet.index)
+        } label: {
+            VStack(spacing: 10) {
+                Text(facetName(facet, doc: doc))
+                    .font(AppFonts.body(15 * typeScale, weight: .regular))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(width: 520, alignment: .leading)
+                    .fixedSize()
+                    // Turned a quarter, so the name reads UP the fold.
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: facet.width, height: 540, alignment: .center)
+                Text("¶\(weight)")
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open this fold — \(facetName(facet, doc: doc))")
+    }
+
+    /// A facet's name: its own first heading, or — for the sheet's
+    /// opening facet, which often has none — the document's title.
+    private func facetName(_ facet: Facet, doc: LiquidDoc) -> String {
+        if let heading = facet.paragraphs.first(where: { $0.effectiveHeading != nil }) {
+            return heading.text
+        }
+        return facet.index == 0 ? doc.title : "…"
+    }
+
+    /// The paper itself. A mountain fold catches the light along its
+    /// crease; a valley runs into shadow — which is all a folded sheet
+    /// really is to the eye, and what tells the two folds apart.
+    @ViewBuilder private func facetPaper(_ facet: Facet) -> some View {
+        let isMountain = facet.angle >= 0
+        let page = isDesk ? deskTheme.page : Color(white: 0.96)
+        RoundedRectangle(cornerRadius: 3)
+            .fill(page)
+            .overlay {
+                LinearGradient(
+                    colors: isMountain
+                        ? [.white.opacity(0.55), .clear, .black.opacity(0.10)]
+                        : [.black.opacity(0.12), .clear, .white.opacity(0.35)],
+                    startPoint: .leading, endPoint: .trailing)
+                    .blendMode(.plusLighter)
+                    .opacity(facet.isOpen ? 0.25 : 1)
+            }
+            .overlay(alignment: isMountain ? .leading : .trailing) {
+                // The crease itself: one bright hair of light where the
+                // paper turns.
+                Rectangle()
+                    .fill(.white.opacity(0.7))
+                    .frame(width: 0.75)
+            }
+            .shadow(color: .black.opacity(0.28), radius: 7, x: 0, y: 3)
+    }
+
+    /// The fold's own controls: how tightly the sheet pleats, the way
+    /// from fold to fold, and the word that shuts it.
+    private func foldBar(_ doc: LiquidDoc, sheet: [Facet]) -> some View {
+        HStack(spacing: 14) {
+            Button {
+                step(-1, of: sheet.count)
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .disabled((openFacet ?? 0) <= 0)
+            .help("The fold before this one")
+            if let open = openFacet {
+                Text("Fold \(open + 1) of \(sheet.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            } else {
+                Text("Folded shut · \(sheet.count) folds")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Button {
+                step(1, of: sheet.count)
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .disabled(openFacet == nil || (openFacet ?? 0) >= sheet.count - 1)
+            .help("The fold after this one")
+            separator
+            // 開く and 折る — spread the screen flat, or crease it home.
+            Image(systemName: "rectangle.split.3x1")
+                .foregroundStyle(.tertiary)
+            Slider(value: $foldDepth, in: 0...1)
+                .frame(width: 180)
+                .help("How tightly the sheet folds — spread flat, or creased home")
+            separator
+            Button(openFacet == nil ? "Open a Fold" : "Fold Shut") {
+                withAnimation(.smooth(duration: 0.5)) {
+                    openFacet = openFacet == nil ? 0 : nil
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .help(openFacet == nil
+                  ? "Open the first fold and read it"
+                  : "Fold the whole sheet shut — the document as a folded letter")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    /// Opening a fold closes whichever stood open — one crease flat at
+    /// a time, as a folding screen behaves.
+    private func open(_ index: Int) {
+        withAnimation(.smooth(duration: 0.5)) {
+            openFacet = openFacet == index ? nil : index
+        }
+    }
+
+    private func step(_ by: Int, of count: Int) {
+        guard count > 0 else { return }
+        let next = min(max((openFacet ?? 0) + by, 0), count - 1)
+        withAnimation(.smooth(duration: 0.5)) { openFacet = next }
     }
 
     // MARK: AI — the on-device reading
@@ -2949,7 +3289,8 @@ struct VisionReaderView: View {
 
     private func footBar(_ doc: LiquidDoc, proxy: ScrollViewProxy?) -> some View {
         let headings = (doc.body ?? []).filter { $0.effectiveHeading != nil }
-        let modes: [Mode] = [.faithful, .scroll, .horizontal, .focus, .outline, .ai]
+        let modes: [Mode] = [.faithful, .scroll, .horizontal, .focus,
+                             .outline, .ai, .origami]
         return HStack(spacing: 12) {
             Spacer()
             ForEach(Array(modes.enumerated()), id: \.offset) { index, word in
