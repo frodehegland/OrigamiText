@@ -4361,6 +4361,10 @@ final class FistGrab {
         let curlTips: [AnchorEntity]
         var isFist = false
         var lastPalm: SIMD3<Float>?
+        /// When the closed pose was first seen. A fist has to be HELD
+        /// before it takes the room — a single noisy frame used to be
+        /// enough, and the whole space leapt at 2.5× the hand.
+        var closedSince: Double?
     }
 
     private var hands: [Hand] = []
@@ -4377,11 +4381,22 @@ final class FistGrab {
     /// — and re-opens past the wider bound, so the grip cannot flicker.
     private static let closeWithin: Float = 0.055
     private static let openBeyond: Float = 0.075
-    /// A pinch is not a fist: when the thumb tip actually touches the
-    /// index tip the system pinch owns the hand. Kept tight — a fist
-    /// wraps the thumb across the curled fingers, and a wider bound
-    /// read real fists as pinches and refused the grab.
-    private static let pinchClearance: Float = 0.02
+    /// A pinch is not a fist: with the thumb tip at the index tip the
+    /// system pinch owns the hand. Still tight, because a fist wraps
+    /// the thumb ACROSS the curled fingers — its tip lands over the
+    /// middle of the index, 4 cm and more from that finger's tip — but
+    /// 3 cm rather than 2, so a loose pinch made while the other
+    /// fingers curl is not read as a grab. (18 Sep 2026.)
+    private static let pinchClearance: Float = 0.03
+    /// A fist wraps its thumb in with the fingers. A relaxed or clawed
+    /// hand leaves it out at 12 cm and more from the palm's middle, so
+    /// this asks only for the wrap, generously — it must never refuse a
+    /// real fist, only the curl of a hand doing something else.
+    private static let thumbWithin: Float = 0.10
+    /// And the pose must hold this long before it takes the room. Long
+    /// enough that a flicker of noise or a hand passing through a curl
+    /// cannot grab; short enough that a deliberate fist feels immediate.
+    private static let holdBefore: Double = 0.2
     /// The carry is geared up — the space moves further than the hand,
     /// so a large room crosses the floor without long reaches.
     private static let carryGain: Float = 2.5
@@ -4412,57 +4427,109 @@ final class FistGrab {
     }
 
     private func tick() {
+        let now = CACurrentMediaTime()
         for index in hands.indices {
+            // A hand the cameras have lost keeps its LAST pose on the
+            // anchor — it does not always fall to the origin — so a
+            // hand lowered out of view with its fingers loosely curled
+            // used to read as a fist and hold the room. Both tests now:
+            // the anchor must be live, and its place real.
             let palm = hands[index].palm.position(relativeTo: nil)
-            // An untracked hand's anchors all sit at the origin — which
-            // would read as a perfect fist. Skip it.
-            guard palm != .zero else { continue }
-
-            let bound = hands[index].isFist ? Self.openBeyond : Self.closeWithin
-            let tips = hands[index].curlTips.map { $0.position(relativeTo: nil) }
-            let thumb = hands[index].thumbTip.position(relativeTo: nil)
-            // A closed fist hides its own fingers from the cameras, so
-            // joints drop out (to the origin) or stray. Untracked tips
-            // don't vote, two of three carry the day, and a held fist
-            // takes two open fingers to let go — one noisy joint can
-            // neither refuse the grab nor spill the carry.
-            let tracked = tips.filter { $0 != .zero }
-            let curled: Bool
-            if hands[index].isFist {
-                curled = tracked.filter { distance($0, palm) >= bound }.count < 2
-            } else {
-                let pinching = thumb != .zero && tips[0] != .zero
-                    && distance(thumb, tips[0]) < Self.pinchClearance
-                curled = tracked.filter { distance($0, palm) < bound }.count >= 2
-                    && !pinching
+            guard hands[index].palm.isAnchored, palm != .zero else {
+                letGo(index)
+                continue
             }
 
-            if curled {
-                if !hands[index].isFist {
-                    hands[index].isFist = true
-                    hands[index].lastPalm = palm
-                    if driving == nil {
-                        driving = index
-                        carried = .zero
-                    }
-                } else if driving == index, let last = hands[index].lastPalm {
+            // Only joints the cameras actually hold get a vote; a
+            // closed fist hides its own fingers, so joints do drop out.
+            let tracked = hands[index].curlTips.compactMap { anchor -> SIMD3<Float>? in
+                let place = anchor.position(relativeTo: nil)
+                return anchor.isAnchored && place != .zero ? place : nil
+            }
+            let thumbAnchor = hands[index].thumbTip
+            let thumb = thumbAnchor.position(relativeTo: nil)
+            let thumbTracked = thumbAnchor.isAnchored && thumb != .zero
+            let indexTipAnchor = hands[index].curlTips[0]
+            let indexTip = indexTipAnchor.position(relativeTo: nil)
+            let indexTracked = indexTipAnchor.isAnchored && indexTip != .zero
+
+            let closedNow: Bool
+            if hands[index].isFist {
+                // A fist already carrying the room lets go only when two
+                // fingers clearly leave the palm — one noisy joint must
+                // not spill the carry.
+                closedNow = tracked.filter {
+                    distance($0, palm) >= Self.openBeyond
+                }.count < 2
+            } else {
+                // Taking the room asks for much more than it did. It
+                // used to be two fingers of three within reach of the
+                // palm, which a relaxed hand, a claw, a hand holding
+                // something or a hand half-seen all satisfy. Now: every
+                // finger the cameras can see is curled, the thumb is
+                // wrapped in with them, no pinch is in progress — and
+                // the whole pose holds for `holdBefore`.
+                let pinching = thumbTracked && indexTracked
+                    && distance(thumb, indexTip) < Self.pinchClearance
+                // Two fingers drawn right in, as before — AND not one
+                // finger left standing out. That second half is what a
+                // relaxed hand, a claw and a hand holding something all
+                // fail: some finger of theirs is always extended. The
+                // ring finger of a real fist may curl loosely, so it is
+                // not asked to come as far as the others.
+                let twoDrawnIn = tracked.filter {
+                    distance($0, palm) < Self.closeWithin
+                }.count >= 2
+                let noneStandingOut = tracked.allSatisfy {
+                    distance($0, palm) < Self.openBeyond
+                }
+                let thumbWrapped = thumbTracked
+                    && distance(thumb, palm) < Self.thumbWithin
+                closedNow = tracked.count >= 2 && twoDrawnIn && noneStandingOut
+                    && thumbWrapped && !pinching
+            }
+
+            if closedNow {
+                if hands[index].isFist {
+                    guard driving == index, let last = hands[index].lastPalm else { continue }
                     let delta = (palm - last) * Self.carryGain
                     hands[index].lastPalm = palm
                     if delta != .zero {
                         carried += delta
                         move?(delta)
                     }
+                } else {
+                    // Held long enough? Then the hand takes the room —
+                    // from where it stands now, so nothing jumps.
+                    let since = hands[index].closedSince ?? now
+                    hands[index].closedSince = since
+                    guard now - since >= Self.holdBefore else { continue }
+                    hands[index].isFist = true
+                    hands[index].lastPalm = palm
+                    if driving == nil {
+                        driving = index
+                        carried = .zero
+                    }
                 }
-            } else if hands[index].isFist {
-                hands[index].isFist = false
-                hands[index].lastPalm = nil
-                if driving == index {
-                    driving = nil
-                    release?(carried)
-                    carried = .zero
-                }
+            } else {
+                hands[index].closedSince = nil
+                letGo(index)
             }
         }
+    }
+
+    /// The hand sets the space down — the fist opened, or the cameras
+    /// lost the hand mid-carry. Either way the room stays where it has
+    /// got to rather than following a pose nobody can see.
+    private func letGo(_ index: Int) {
+        hands[index].closedSince = nil
+        guard hands[index].isFist else { return }
+        hands[index].isFist = false
+        hands[index].lastPalm = nil
+        guard driving == index else { return }
+        driving = nil
+        release?(carried)
+        carried = .zero
     }
 }
 
