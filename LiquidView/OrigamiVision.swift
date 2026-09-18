@@ -186,6 +186,21 @@ final class VisionModel {
     let index = LibraryIndex()
     let bots = VisionBotStore()
     private static let bookmarkKey = "communityFolderBookmark"
+    /// The folder's path in the clear, so a folder that cannot be
+    /// reopened can still be named to the reader.
+    private static let folderPathKey = "communityFolderPath"
+
+    /// What became of the remembered community folder. A bookmark that
+    /// no longer opens — the app reinstalled, iCloud Drive
+    /// re-provisioned, the folder moved — is the one cause of an empty
+    /// room the reader cannot see from the empty room itself, so it is
+    /// carried here and said plainly.
+    enum FolderStatus: Equatable {
+        case never
+        case open
+        case unreachable(path: String)
+    }
+    private(set) var folderStatus: FolderStatus = .never
 
     init() {
         restoreFolder()
@@ -193,23 +208,71 @@ final class VisionModel {
     }
 
     func openFolder(_ url: URL) {
-        guard url.startAccessingSecurityScopedResource() else { return }
+        guard url.startAccessingSecurityScopedResource() else {
+            folderStatus = .unreachable(path: url.path(percentEncoded: false))
+            return
+        }
         if let bookmark = try? url.bookmarkData() {
             UserDefaults.standard.set(bookmark, forKey: Self.bookmarkKey)
         }
+        UserDefaults.standard.set(url.path(percentEncoded: false),
+                                  forKey: Self.folderPathKey)
+        folderStatus = .open
         index.setFolder(url)
         loadAnalyses(from: url)
         scanFolderForEPUBs()
     }
 
     private func restoreFolder() {
-        guard let data = UserDefaults.standard.data(forKey: Self.bookmarkKey) else { return }
+        let remembered = UserDefaults.standard.string(forKey: Self.folderPathKey) ?? ""
+        guard let data = UserDefaults.standard.data(forKey: Self.bookmarkKey) else {
+            folderStatus = remembered.isEmpty ? .never : .unreachable(path: remembered)
+            return
+        }
         var stale = false
-        guard let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &stale),
-              url.startAccessingSecurityScopedResource() else { return }
+        guard let url = try? URL(resolvingBookmarkData: data,
+                                 bookmarkDataIsStale: &stale) else {
+            folderStatus = .unreachable(path: remembered)
+            return
+        }
+        guard url.startAccessingSecurityScopedResource() else {
+            folderStatus = .unreachable(
+                path: remembered.isEmpty ? url.path(percentEncoded: false) : remembered)
+            return
+        }
+        // A bookmark goes stale across app updates and iCloud
+        // re-provisioning. Refreshed here, while the folder is open, the
+        // next launch still finds it — the old code resolved a stale
+        // bookmark and let it rot until it failed outright, taking the
+        // whole documents timeline with it and saying nothing.
+        if stale, let fresh = try? url.bookmarkData() {
+            UserDefaults.standard.set(fresh, forKey: Self.bookmarkKey)
+        }
+        UserDefaults.standard.set(url.path(percentEncoded: false),
+                                  forKey: Self.folderPathKey)
+        folderStatus = .open
         index.setFolder(url)
         loadAnalyses(from: url)
         scanFolderForEPUBs()
+    }
+
+    /// What the shelf knows about itself in one line: enough to tell a
+    /// room that is genuinely empty from a folder that never opened.
+    var shelfDiagnostic: String {
+        var parts: [String] = []
+        switch folderStatus {
+        case .never:
+            parts.append("No community folder chosen")
+        case .open:
+            parts.append("Community folder open")
+        case .unreachable(let path):
+            parts.append("Community folder could not be reopened"
+                         + (path.isEmpty ? "" : " — \(path)"))
+        }
+        parts.append("\(epubRecords.count) on the shelf")
+        parts.append("\(index.timeline.count) indexed")
+        if index.isScanning { parts.append("scanning…") }
+        return parts.joined(separator: " · ")
     }
 
     private func loadAnalyses(from folder: URL) {
@@ -1422,9 +1485,23 @@ struct VisionOpeningView: View {
                             Image(systemName: "point.3.filled.connected.trianglepath.dotted")
                         }
                         .help("Lineage — the shelf's citation web")
+                        // The folder stands here always, not only in the
+                        // empty state: once a single book is on the
+                        // shelf the empty view is gone, and with it the
+                        // only way back to a folder that stopped
+                        // opening.
+                        Button {
+                            choosingFolder = true
+                        } label: {
+                            Image(systemName: "folder")
+                        }
+                        .help("Choose the iCloud folder your community shares")
                     }
                     .padding(.horizontal)
                     .padding(.vertical, 6)
+                    if case .unreachable(let path) = model.folderStatus {
+                        folderLostNote(path: path)
+                    }
                     switch shelf {
                     case .articles: articlesList
                     case .journals: journalsList
@@ -1473,6 +1550,29 @@ struct VisionOpeningView: View {
         }
     }
 
+    /// The folder was remembered and would not open. Said here, above
+    /// the lists, because every other symptom — no journals, no
+    /// articles, no documents — looks exactly like an empty shelf.
+    private func folderLostNote(path: String) -> some View {
+        HStack(spacing: 8) {
+            Label("The community folder could not be reopened",
+                  systemImage: "exclamationmark.triangle")
+                .font(.callout)
+            if !path.isEmpty {
+                Text(path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Button("Choose Folder Again…") { choosingFolder = true }
+                .controlSize(.small)
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 6)
+    }
+
     /// Journals: every venue on the shelf. Tap one for its articles —
     /// in the panel for now; the spatial Map view is being rebuilt on
     /// Author's basis.
@@ -1486,7 +1586,12 @@ struct VisionOpeningView: View {
                 // (still importing, or none in the folder), or books
                 // that name no venue.
                 if model.epubRecords.isEmpty {
-                    Text("EPUBs in the community folder join the shelf on their own — iCloud may still be downloading them. Settings (on your right arm) shows the shelf and can rescan.")
+                    VStack(spacing: 6) {
+                        Text("EPUBs in the community folder join the shelf on their own — iCloud may still be downloading them. Settings (on your right arm) shows the shelf and can rescan.")
+                        Text(model.shelfDiagnostic)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
                     Text("\(model.epubRecords.count) article\(model.epubRecords.count == 1 ? " is" : "s are") on the shelf, but none declares the journal or proceedings it is part of.")
                 }
@@ -1523,7 +1628,15 @@ struct VisionOpeningView: View {
             ContentUnavailableView {
                 Label("No Articles Yet", systemImage: "doc.text")
             } description: {
-                Text("EPUBs in the community folder join the shelf on their own.")
+                VStack(spacing: 6) {
+                    Text("EPUBs in the community folder join the shelf on their own.")
+                    Text(model.shelfDiagnostic)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } actions: {
+                Button("Open EPUB…") { choosingEPUB = true }
+                Button("Choose Folder…") { choosingFolder = true }
             }
         } else {
             List(records) { record in

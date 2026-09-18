@@ -106,6 +106,15 @@ final class LibraryIndex {
         let generation = scanGeneration
         isScanning = true
         Task.detached(priority: .userInitiated) {
+            #if !os(macOS)
+            // visionOS and iOS reach the folder through a security-scoped
+            // bookmark. This scan holds the scope itself rather than
+            // trusting an access opened elsewhere in the app — the EPUB
+            // scan beside it already does, and a lost scope here shows
+            // as a documents timeline that is simply, silently empty.
+            let scoped = folderURL.startAccessingSecurityScopedResource()
+            defer { if scoped { folderURL.stopAccessingSecurityScopedResource() } }
+            #endif
             let result = LibraryScanner.scan(folder: folderURL)
             await MainActor.run {
                 guard generation == self.scanGeneration else { return }
