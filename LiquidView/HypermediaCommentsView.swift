@@ -77,7 +77,7 @@ struct HypermediaCommentsView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(threads) { comment in
                         CommentThread(comment: comment, depth: 0, showPortraits: showPortraits,
-                                      canReply: model.hypermedia.identity != nil) { target in
+                                      canReply: model.hypermedia.hasAccount) { target in
                             replyingTo = target
                         }
                     }
@@ -91,7 +91,7 @@ struct HypermediaCommentsView: View {
     /// Below the thread: a place to speak, once there is an account to
     /// speak as.
     @ViewBuilder private var composer: some View {
-        if model.hypermedia.identity == nil {
+        if !model.hypermedia.hasAccount {
             HStack(spacing: 10) {
                 Text("Create an account to comment here.")
                     .font(.callout)

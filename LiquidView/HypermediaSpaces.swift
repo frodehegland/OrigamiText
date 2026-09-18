@@ -53,7 +53,23 @@ final class HypermediaSpaces {
 
     /// The person's signing key, when they have made an account. Kept in
     /// the Keychain; only the seed is stored.
+    ///
+    /// Never read at launch. Reaching into the Keychain can raise the
+    /// system's password panel, and an app that asks to be let into a
+    /// network before it has drawn a page has asked the wrong thing
+    /// first. The key is fetched at the moment something must be signed
+    /// — see `loadIdentity()`.
     private(set) var identity: HypermediaIdentity?
+    private var identityLoaded = false
+    /// Whether there is an account on this Mac, answered without the
+    /// key: the address and name sit in plain preferences, so the reader
+    /// can be shown as signed in without touching the Keychain.
+    var hasAccount: Bool { !accountUID.isEmpty || !accountName.isEmpty }
+    /// The account address (`z6Mk…`), as recorded when the account was
+    /// made or signed in to.
+    var accountUID: String {
+        UserDefaults.standard.string(forKey: AppSettings.hypermediaAccountUIDKey) ?? ""
+    }
     /// The name the profile was published with.
     var accountName: String {
         UserDefaults.standard.string(forKey: AppSettings.hypermediaAccountNameKey) ?? ""
@@ -75,10 +91,29 @@ final class HypermediaSpaces {
            let saved = try? JSONDecoder().decode([HypermediaSpace].self, from: data) {
             spaces = saved
         }
+    }
+
+    /// The key itself, brought out of the Keychain the first time it is
+    /// genuinely needed — signing a comment, publishing a profile, or
+    /// showing the key to be copied. The only call that can raise the
+    /// Keychain panel, so it is never made on a path the reader did not
+    /// ask for, and never at launch.
+    @discardableResult
+    func loadIdentity() -> HypermediaIdentity? {
+        if identityLoaded { return identity }
+        identityLoaded = true
+        guard hasAccount else { return nil }
         if let stored = HypermediaKeychain.load(service: Self.keychainService, account: Self.keychainAccount),
            let seed = Data(base64Encoded: stored) {
             identity = try? HypermediaIdentity(seed: seed)
         }
+        // An account made before the address was kept in preferences:
+        // write it down now, so later launches know there is an account
+        // without asking the Keychain to prove it.
+        if let identity, accountUID.isEmpty {
+            UserDefaults.standard.set(identity.uid, forKey: AppSettings.hypermediaAccountUIDKey)
+        }
+        return identity
     }
 
     /// Makes the account: a new key, saved, and a profile carrying the
@@ -93,7 +128,9 @@ final class HypermediaSpaces {
         HypermediaKeychain.save(service: Self.keychainService, account: Self.keychainAccount,
                                 password: fresh.seed.base64EncodedString())
         UserDefaults.standard.set(trimmed, forKey: AppSettings.hypermediaAccountNameKey)
+        UserDefaults.standard.set(fresh.uid, forKey: AppSettings.hypermediaAccountUIDKey)
         identity = fresh
+        identityLoaded = true
         let failed = await publishProfile()
         if failed.count == profileDestinations.count {
             throw HypermediaError.serverError("The profile could not be published to any space (\(failed.joined(separator: ", "))). Your key is saved; try Publish Profile Again later.")
@@ -116,7 +153,9 @@ final class HypermediaSpaces {
         if !trimmed.isEmpty {
             UserDefaults.standard.set(trimmed, forKey: AppSettings.hypermediaAccountNameKey)
         }
+        UserDefaults.standard.set(existing.uid, forKey: AppSettings.hypermediaAccountUIDKey)
         identity = existing
+        identityLoaded = true
         let failed = await publishProfile()
         if failed.count == profileDestinations.count {
             throw HypermediaError.serverError("Signed in, but the profile could not be published to any space (\(failed.joined(separator: ", "))). Your key is saved; try Publish Profile Again later.")
@@ -127,7 +166,10 @@ final class HypermediaSpaces {
     /// spaces that hold its documents, and the same phrase brings it back.
     func signOut() {
         HypermediaKeychain.delete(service: Self.keychainService, account: Self.keychainAccount)
+        UserDefaults.standard.removeObject(forKey: AppSettings.hypermediaAccountUIDKey)
+        UserDefaults.standard.removeObject(forKey: AppSettings.hypermediaAccountNameKey)
         identity = nil
+        identityLoaded = true
     }
 
     /// Where the profile goes: every followed space, plus the gateway.
@@ -142,7 +184,7 @@ final class HypermediaSpaces {
     /// Publishes the profile everywhere; returns the domains that did not
     /// take it.
     func publishProfile() async -> [String] {
-        guard let identity else { return [] }
+        guard let identity = loadIdentity() else { return [] }
         var failed: [String] = []
         for origin in profileDestinations {
             if (try? await publishProfile(identity: identity, to: origin)) == nil {
@@ -161,7 +203,7 @@ final class HypermediaSpaces {
     /// the space the document was read from. Returns the record id.
     @discardableResult
     func postComment(text: String, on canonicalID: String, replyTo parent: HypermediaComment?) async throws -> String {
-        guard let identity else { throw HypermediaError.serverError("Create an account in Settings ▸ Hypermedia to comment.") }
+        guard let identity = loadIdentity() else { throw HypermediaError.serverError("Create an account in Settings ▸ Hypermedia to comment.") }
         guard let address = HypermediaAddress.parse(canonicalID) else { throw HypermediaError.invalidAddress }
         guard let version = documentVersions[canonicalID], !version.isEmpty else {
             throw HypermediaError.serverError("The document's version is not known; open it again and retry.")
@@ -200,7 +242,7 @@ final class HypermediaSpaces {
         // A new space should know who the reader is before they speak
         // there. Best effort: the space is followed either way, and the
         // profile can be published again from Settings.
-        if let identity {
+        if hasAccount, let identity = loadIdentity() {
             try? await publishProfile(identity: identity, to: space.origin)
         }
         return space

@@ -42,13 +42,21 @@ final class HypermediaSession {
 
     // MARK: - Hypothesis sign in / out
 
+    /// Who the reader was signed in as, taken from preferences alone.
+    /// The token stays in the Keychain until a request needs it — asking
+    /// the Keychain at launch would put a password panel in front of the
+    /// app before it had shown a page.
     private func restoreHypothesisSession() {
         let username = UserDefaults.standard.string(forKey: AppSettings.hypothesisUsernameKey) ?? ""
-        guard !username.isEmpty,
-              HypermediaKeychain.load(service: AppSettings.hypothesisService,
-                                      account: username) != nil
-        else { return }
+        guard !username.isEmpty else { return }
         hypothesisAuthState = .signedIn(username: username)
+    }
+
+    /// The token for the signed-in account, fetched at the moment a
+    /// request is made.
+    func hypothesisToken() -> String? {
+        guard case .signedIn(let username) = hypothesisAuthState else { return nil }
+        return HypermediaKeychain.load(service: AppSettings.hypothesisService, account: username)
     }
 
     func connectHypothesis(token: String) async {

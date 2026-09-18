@@ -50,9 +50,12 @@ enum AppSettings {
     static let readAloudVoiceIDKey = "readAloud.voiceID"
     static let readAloudEngineKey = "readAloud.engine"
     // Hypermedia protocol: the followed spaces, as JSON ([HypermediaSpace]),
-    // and the name the account was created with.
+    // and the name and address the account was created with. The address
+    // is kept in the clear so the app knows an account exists without
+    // opening the Keychain — the key itself stays behind that door.
     static let hypermediaSpacesKey           = "hypermedia.spaces"
     static let hypermediaAccountNameKey      = "hypermedia.account.name"
+    static let hypermediaAccountUIDKey       = "hypermedia.account.uid"
     // Hypermedia / Hypothesis
     static let hypothesisUsernameKey         = "hypothesis.username"
     static let hypothesisPublicEnabledKey    = "hypothesis.publicAnnotationsEnabled"
@@ -1434,16 +1437,25 @@ private struct HypermediaSettingsView: View {
         .sheet(isPresented: $showSignIn) {
             SignInToHypermediaAccountSheet()
         }
+        .task {
+            // An account made before the address was kept in plain
+            // preferences: fetch the key once, here, where the reader
+            // came looking for their account — and write the address
+            // down, so no later launch has to ask the Keychain at all.
+            if model.hypermedia.hasAccount, model.hypermedia.accountUID.isEmpty {
+                model.hypermedia.loadIdentity()
+            }
+        }
     }
 
     // MARK: Account
 
     @ViewBuilder private var accountRows: some View {
-        if let identity = model.hypermedia.identity {
+        if model.hypermedia.hasAccount {
             LabeledContent("Account") {
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(model.hypermedia.accountName)
-                    Text(identity.uid)
+                    Text(model.hypermedia.accountUID)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1477,20 +1489,17 @@ private struct HypermediaSettingsView: View {
             HStack {
                 Menu("Copy Key") {
                     Button("Private Key (hex)") {
-                        copyKey(HypermediaIdentity.hex(identity.privateKey),
-                                what: "Private key")
+                        copyKey(what: "Private key") { HypermediaIdentity.hex($0.privateKey) }
                     }
                     Button("Private Key (base64)") {
-                        copyKey(identity.privateKey.base64EncodedString(),
-                                what: "Private key")
+                        copyKey(what: "Private key") { $0.privateKey.base64EncodedString() }
                     }
                     Divider()
                     Button("Signing Seed (hex)") {
-                        copyKey(HypermediaIdentity.hex(identity.seed),
-                                what: "Signing seed")
+                        copyKey(what: "Signing seed") { HypermediaIdentity.hex($0.seed) }
                     }
                     Button("Account Address") {
-                        copyKey(identity.uid, what: "Account address")
+                        copyKey(model.hypermedia.accountUID, what: "Account address")
                     }
                 }
                 .fixedSize()
@@ -1520,6 +1529,17 @@ private struct HypermediaSettingsView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
         profileNote = "\(what) copied to the clipboard."
+    }
+
+    /// The same, for the parts only the key itself can give: the key is
+    /// fetched from the Keychain here, at the press, rather than being
+    /// held ready from launch.
+    private func copyKey(what: String, from form: (HypermediaIdentity) -> String) {
+        guard let identity = model.hypermedia.loadIdentity() else {
+            profileNote = "The signing key could not be read from your Keychain."
+            return
+        }
+        copyKey(form(identity), what: what)
     }
 
     // MARK: Spaces
