@@ -4,7 +4,62 @@ import RealityKit
 import UniformTypeIdentifiers
 import FoundationModels
 import WebKit
+import UIKit
 import os
+
+/// Decoded figure images by asset id: an asset's base64 becomes a
+/// UIImage once, not once per render pass — a reading redraws on every
+/// fold of the Origami View and every drag of a slider, and a figure
+/// is measured as well as drawn. NSCache empties itself under memory
+/// pressure. (The Mac reading's figureImageCache, for this platform.)
+private let visionFigureCache = NSCache<NSString, UIImage>()
+
+private func visionFigureImage(for asset: LiquidDoc.Asset) -> UIImage? {
+    if let hit = visionFigureCache.object(forKey: asset.id as NSString) { return hit }
+    guard let data = asset.data, let image = UIImage(data: data) else { return nil }
+    visionFigureCache.setObject(image, forKey: asset.id as NSString)
+    return image
+}
+
+/// One figure in a visionOS reading: the image as the document carries
+/// it — or, when the asset is missing or will not decode, a quiet plate
+/// naming what should have stood there and why it could not. A blank
+/// line is the thing this view exists to prevent: it is what every
+/// figure in every reading here was until now.
+struct VisionFigureView: View {
+    let asset: LiquidDoc.Asset?
+    let alt: String
+
+    var body: some View {
+        if let asset, let image = visionFigureImage(for: asset) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                // Wide as the column allows, and never so tall that a
+                // figure pushes the words it belongs to off the page.
+                .frame(maxWidth: .infinity)
+                .frame(maxHeight: 440)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .accessibilityLabel(alt.isEmpty ? "Figure" : alt)
+        } else {
+            // Said plainly, so a figure that cannot be drawn is a
+            // question one can answer — an SVG, say, which UIImage
+            // does not read — rather than a silence.
+            VStack(alignment: .leading, spacing: 4) {
+                Label(alt.isEmpty ? "Figure" : alt, systemImage: "photo")
+                    .font(.callout)
+                Text(asset == nil
+                     ? "The document does not carry this image."
+                     : "\(asset?.filename ?? "") · \(asset?.mediaType ?? "") could not be drawn.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}
 
 /// Origami Text for visionOS — the same app (one bundle id, one App Store
 /// listing), the same library. The session is not a document but the
@@ -2507,11 +2562,20 @@ struct VisionReaderView: View {
                             .textCase(.uppercase)
                             .foregroundStyle(.secondary)
                     }
-                    Text(inline(paragraph, doc: doc))
-                        .font(paragraph.effectiveHeading != nil
-                            ? AppFonts.heading((30 + fontDelta) * typeScale)
-                            : AppFonts.body((22 + fontDelta) * typeScale))
-                        .tint(.primary)
+                    // Focus draws its one paragraph itself, so it needs
+                    // the figure branch of its own: a figure alone and
+                    // large is one of the better things this view does.
+                    if let reference = LiquidDoc.imageReference(in: paragraph.text) {
+                        VisionFigureView(
+                            asset: doc.assets.first { $0.id == reference.id },
+                            alt: reference.alt)
+                    } else {
+                        Text(inline(paragraph, doc: doc))
+                            .font(paragraph.effectiveHeading != nil
+                                ? AppFonts.heading((30 + fontDelta) * typeScale)
+                                : AppFonts.body((22 + fontDelta) * typeScale))
+                            .tint(.primary)
+                    }
                 }
                 .frame(maxWidth: 560, alignment: .leading)
                 .padding(28)
@@ -3054,11 +3118,18 @@ struct VisionReaderView: View {
         if isOpen {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(run) { paragraph in
-                    Text(OrigamiReading.stretchRevealed(
-                            inline(paragraph, doc: doc),
-                            id: id, closing: paragraph.id == run.last?.id))
-                        .font(font(for: paragraph))
-                        .tint(.primary)
+                    // A figure can stand inside an opened stretch too.
+                    if let reference = LiquidDoc.imageReference(in: paragraph.text) {
+                        VisionFigureView(
+                            asset: doc.assets.first { $0.id == reference.id },
+                            alt: reference.alt)
+                    } else {
+                        Text(OrigamiReading.stretchRevealed(
+                                inline(paragraph, doc: doc),
+                                id: id, closing: paragraph.id == run.last?.id))
+                            .font(font(for: paragraph))
+                            .tint(.primary)
+                    }
                 }
             }
             .padding(.leading, 14)
@@ -3157,6 +3228,19 @@ struct VisionReaderView: View {
                 .buttonStyle(.plain)
                 .help(expanded.contains(paragraph.id)
                       ? "Fold this section" : "Open this section")
+            } else if let reference = LiquidDoc.imageReference(in: paragraph.text) {
+                // A figure. This branch was missing entirely, so every
+                // image in every reading here came out as a blank line:
+                // the paragraph went to the inline markdown parser,
+                // which drops images on the floor (AttributedString has
+                // no way to carry one). The Mac's reading has had this
+                // branch all along. (18 Sep 2026.)
+                // No caption is drawn here: in an Origami document a
+                // figure's caption is the paragraph that FOLLOWS it,
+                // which renders itself, exactly as on the Mac.
+                VisionFigureView(
+                    asset: doc.assets.first { $0.id == reference.id },
+                    alt: reference.alt)
             } else {
                 // Links wear the body's own ink, and the words select:
                 // the selection carries the reader's verbs — Copy, Copy
