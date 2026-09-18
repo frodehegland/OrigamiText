@@ -61,6 +61,13 @@ struct EPUBMapItem: ItemProtocol {
     /// Snapped off the map with Lift: the card reads as a slightly
     /// extruded object, apart from the flat wall.
     var isLifted = false
+    /// How long the document itself is, against the longest in the open
+    /// journal: 0 for the shortest paper, 1 for the longest. The card's
+    /// paper grows a little taller with it, so a thick paper looks like
+    /// one from across the room — the real EPUB's body, not the card's
+    /// own words. Nil for anything that is not a read document.
+    /// (18 Sep 2026.)
+    var lengthShare: Double?
 
     var isAttachmentsEnabled: Bool {
         // Concepts carry Focus/Hide; documents and citations carry
@@ -80,7 +87,7 @@ struct EPUBMapItem: ItemProtocol {
             && isShared == other.isShared && citationCount == other.citationCount
             && abstract == other.abstract && visionTheme == other.visionTheme
             && isGhost == other.isGhost && showsAbstract == other.showsAbstract
-            && isLifted == other.isLifted
+            && isLifted == other.isLifted && lengthShare == other.lengthShare
     }
 }
 
@@ -151,6 +158,8 @@ struct EPUBMapView: View {
     /// carrying the reader's macOS concepts.
     @State private var conceptLadder = ConceptLadder()
     @State private var faceTurner = CardFaceTurner()
+    /// Every real surface in the room, for a lifted card to rest on.
+    @State private var roomSurfaces = RoomSurfaces()
     /// The one per-frame card sweep feeding the turner and the lines.
     @State private var cardTick = MapCardTick()
 
@@ -406,8 +415,17 @@ struct EPUBMapView: View {
         // Each paper's own abstract, read from under its Abstract
         // heading — the fine print on the card's front face.
         var abstractByArticle: [String: String] = [:]
+        // And each paper's length, in words of its own body — the same
+        // walk, so a long journal costs nothing extra for it.
+        var wordsByArticle: [String: Int] = [:]
         for record in records {
             guard let doc = model.index.byID[record.id]?.doc else { continue }
+            // The document's whole length, counted on its own: the
+            // abstract walk below stops the moment the abstract ends,
+            // so it can say nothing about the paper's size.
+            wordsByArticle[record.id] = (doc.body ?? []).reduce(0) {
+                $0 + $1.text.split(whereSeparator: \.isWhitespace).count
+            }
             var collecting = false
             var abstractParts: [String] = []
             for paragraph in doc.body ?? [] {
@@ -499,6 +517,20 @@ struct EPUBMapView: View {
         let articleYears = standing.compactMap(articleYear)
         let newestArticleYear = articleYears.max()
         let articleSpan = max((newestArticleYear ?? 0) - (articleYears.min() ?? 0), 1)
+        // Length against the journal's own range: the shortest paper on
+        // the wall reads 0, the longest 1. Measured across the standing
+        // cards rather than against a fixed word count, so a volume of
+        // short notes still shows which of them runs long. A journal
+        // whose papers are all one size says nothing — every share nil,
+        // every card its plain height.
+        let standingWords = standing.compactMap { wordsByArticle[$0.id] }
+        let shortestWords = standingWords.min() ?? 0
+        let longestWords = standingWords.max() ?? 0
+        let wordSpan = longestWords - shortestWords
+        func lengthShare(_ record: EPUBRecord) -> Double? {
+            guard wordSpan > 0, let words = wordsByArticle[record.id] else { return nil }
+            return Double(words - shortestWords) / Double(wordSpan)
+        }
         var yearZ: [String: Float] = [:]
         var result: [EPUBMapItem] = standing.enumerated().map { index, record in
             let column = index % columns
@@ -529,6 +561,7 @@ struct EPUBMapView: View {
                 isPinned: model.pinnedIDs.contains(record.id),
                 abstract: abstractByArticle[record.id] ?? "")
             item.isLifted = liftedCards[record.id] != nil
+            item.lengthShare = lengthShare(record)
             return item
         }
         articleYearZ = yearZ
@@ -1202,13 +1235,18 @@ struct EPUBMapView: View {
         // that no longer stands. So the chip is not declared at all;
         // its id, its pinch routing, ArmWatchView and SpatialNotes all
         // stand ready for the day it returns, tweaked.
-        // The left arm's working row, from the wrist toward the elbow:
-        //     Show [A] Select [D]
-        // Each word unfolds its own list away from the arm, and the
-        // bare letter beside it does that word for everything: A brings
-        // every family into the room, D lets every selection go.
-        ArmMenu.Chip(id: EPUBMapView.showChipID, title: "Show", side: .left),
+        // The left arm's working row. Declared from the WRIST toward
+        // the elbow, which is the reverse of how it is read: worn and
+        // looked at, the row reads
+        //     [D] Select | Show [A]
+        // — so each letter stands after the word it does for
+        // everything. A brings every family into the room, D lets every
+        // selection go; the two words unfold their own lists away from
+        // the arm. (Read against the arm, 17 Sep 2026: the declaration
+        // order is the mirror of the reading order, so a change asked
+        // for in reading terms is made backwards here.)
         ArmMenu.Chip(id: EPUBMapView.showAllChipID, title: "A", side: .left),
+        ArmMenu.Chip(id: EPUBMapView.showChipID, title: "Show", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectChipID, title: "Select", side: .left),
         ArmMenu.Chip(id: EPUBMapView.deselectAllChipID, title: "D", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectCitationsChipID, title: "Citations",
@@ -1273,6 +1311,11 @@ struct EPUBMapView: View {
     /// Where every card stood the moment a Layout or Views option was
     /// chosen — the watch's Undo restores it whole.
     @State private var watchUndo: [String: SIMD3<Float>]?
+    /// How far Gather carried the whole space, when it did. The cards'
+    /// own snapshot cannot say this: the walls, the graphs and the
+    /// floor's lanes travelled with them, so Undo puts the space back
+    /// before it puts the cards back.
+    @State private var watchUndoShift: SIMD3<Float>?
     /// The card whose Layout options stand unfolded beneath it, while
     /// several papers are chosen. One at a time.
     @State private var layoutRowCardID: String?
@@ -1459,6 +1502,13 @@ struct EPUBMapView: View {
     /// opens its full title and every author — so a chosen card leans
     /// over its neighbours, by design.
     private static let cardSize = SIMD2<Float>(0.116, 0.045)
+        * documentCardMagnify
+    /// A document card stands a little larger than its raster measures
+    /// — paper and words together, so the wrapping is untouched and the
+    /// title reads from a step further back. (18 Sep 2026.) Every
+    /// arrangement's pitch above wears it too, so the 5 cm of air
+    /// between cards is still 5 cm.
+    static let documentCardMagnify: Float = 1.15
     /// Card to card: left to right, and top to bottom.
     private static let columnPitch = cardSize.x + autoGap
     private static let rowPitch = cardSize.y + autoGap
@@ -2023,6 +2073,10 @@ struct EPUBMapView: View {
             // straight away. updateShowChips above has done it.
             conceptLadder.install(in: content)
             faceTurner.install()
+            // The room's own surfaces, read from the first frame: a
+            // card lifted a minute from now needs the walls already
+            // known, not scanned at the moment of the drop.
+            roomSurfaces.install()
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
             floorBandLeft.install(in: content)
@@ -2045,7 +2099,12 @@ struct EPUBMapView: View {
                              // from any side; everything else stands
                              // upright.
                              anyLifted: { !liftedCards.isEmpty },
-                             liftedFacesHead: { liftedCards[$0] != nil })
+                             liftedFacesHead: { liftedCards[$0] != nil },
+                             // A card that has taken a real surface
+                             // keeps that surface's pose instead.
+                             stuckOrientation: {
+                                 liftedCards[$0]?.stuck.map(simd_quatf.init(vector:))
+                             })
             // Align to Room's wall: a wall-classified vertical plane on
             // the one tracking session, read when the chip is tapped.
             let roomWall = AnchorEntity(.plane(.vertical, classification: .wall,
@@ -2108,6 +2167,19 @@ struct EPUBMapView: View {
         case .citedDeep: return 60.0 * chosen * Self.crisp
         case .concept: return 240.0 * Self.crisp
         }
+    }
+
+    /// The tallest a long document's paper grows: 9 points of extra
+    /// air above AND below the words, so the longest paper in a journal
+    /// stands about two fifths taller than the shortest. The row pitch
+    /// (cardSize + 5 cm) is unchanged, so even the tallest card keeps
+    /// three good centimetres from its neighbour below.
+    private static let lengthRise: CGFloat = 9
+    private static func lengthRise(for item: EPUBMapItem) -> CGFloat {
+        guard item.kind == .article, !item.isSelected,
+              !item.isGhost, !item.isAside,
+              let share = item.lengthShare else { return 0 }
+        return lengthRise * CGFloat(max(0, min(1, share)))
     }
 
     /// The title up to its colon — the working name, not the subtitle.
@@ -2253,8 +2325,11 @@ struct EPUBMapView: View {
                     // The working name and the first author carry the
                     // card; selection opens the FULL title and every
                     // author's name — and, on a paper, its abstract.
+                    // Not bold: a card carries one title and nothing
+                    // competes with it, so weight is asked to do work
+                    // the card's own size already does. (18 Sep 2026.)
                     Text(selected ? item.title : shortTitle(item.title))
-                        .font(AppFonts.body(titleSize * s, weight: .semibold))
+                        .font(AppFonts.body(titleSize * s, weight: .regular))
                         .foregroundStyle(Color.white)
                 }
                 Text(selected ? item.author : shortByline(item.author))
@@ -2277,7 +2352,14 @@ struct EPUBMapView: View {
             }
             .multilineTextAlignment(.center)
             .padding(.horizontal, (item.kind == .article ? 8 : 7) * s)
-            .padding(.vertical, (item.kind == .article ? 6 : 5) * s)
+            // A long paper is a taller sheet: the length's share of the
+            // journal's range buys up to `lengthRise` more points of
+            // paper above and below the words, which stay their own
+            // size and stay centred on it. A chosen card drops the rise
+            // — it is already growing a fifth and opening its abstract,
+            // and two growths at once read as a glitch.
+            .padding(.vertical, ((item.kind == .article ? 6 : 5)
+                                 + Self.lengthRise(for: item)) * s)
             // Selection sets the pane solid — glass no more. The glass
             // itself is shaped (not a material fill, which paints the
             // attachment's backing square past the corners).
@@ -2325,12 +2407,19 @@ struct EPUBMapView: View {
         // chosen PAPER grows further than a citation does: the front
         // row is what the hand works with, and it now carries its own
         // verbs underneath.
-        let grown: Float = if !item.isSelected {
+        var grown: Float = if !item.isSelected {
             1.0
         } else if item.kind == .article {
             1.2
         } else {
             1.06
+        }
+        // And every document card stands a little larger than that,
+        // chosen or not: the front row is what the room is for. The
+        // face's layout is untouched — this magnifies the whole card,
+        // body and words alike, so nothing re-wraps.
+        if item.kind == .article, !item.isGhost {
+            grown *= Self.documentCardMagnify
         }
         let holder = ModelEntity(
             mesh: .generateBox(width: extents.x * grown,
@@ -2385,9 +2474,11 @@ struct EPUBMapView: View {
         // slim dark extrusion behind the face sets it apart from the
         // flat cards still standing in the map.
         if item.isLifted {
+            // The slab grows with the face it stands behind — a card
+            // magnified or chosen must not overhang its own edge.
             let depth = ModelEntity(
-                mesh: .generateBox(size: SIMD3<Float>(extents.x * 0.98,
-                                                      extents.y * 0.98, 0.012),
+                mesh: .generateBox(size: SIMD3<Float>(extents.x * grown * 0.98,
+                                                      extents.y * grown * 0.98, 0.012),
                                    cornerRadius: 0.004),
                 materials: [SimpleMaterial(color: UIColor(white: 0.08, alpha: 0.85),
                                            roughness: 0.5, isMetallic: false)])
@@ -2764,12 +2855,29 @@ struct EPUBMapView: View {
         }
     }
 
-    /// Where a floating lifted card would land: the nearest room
-    /// surface within reach — the wall's plane, the desk's top — with
-    /// the pose the card wears there. Nil in open air.
+    /// How near a real surface a held card has to come before it takes
+    /// it. Not so far that a card crossing a room flattens against a
+    /// wall it was only passing, near enough that a hand does not have
+    /// to touch the plaster. (18 cm, 17 Sep 2026.)
+    private static let surfaceReach: Float = 0.18
+
+    /// Where a floating lifted card would land: the nearest real
+    /// surface within reach, with the pose the card wears there — every
+    /// wall, table, counter, seat and the floor itself, as plane
+    /// detection reports them. Nil in open air.
+    ///
+    /// The Map's own two plane anchors (one wall, one table) stand in
+    /// while plane detection has nothing yet — the simulator, or the
+    /// first seconds in a room.
     private func surfacePose(for position: SIMD3<Float>)
         -> (position: SIMD3<Float>, orientation: simd_quatf)? {
-        let reach: Float = 0.12
+        if roomSurfaces.isReading,
+           let pose = roomSurfaces.nearestPose(to: position,
+                                               reach: Self.surfaceReach,
+                                               head: faceTurner.headPosition()) {
+            return pose
+        }
+        let reach = Self.surfaceReach
         var best: (position: SIMD3<Float>, orientation: simd_quatf, distance: Float)?
         if let wall = roomWallAnchor, wall.isAnchored {
             let point = wall.position(relativeTo: nil)
@@ -2911,7 +3019,12 @@ struct EPUBMapView: View {
             items[index].position = position
             moved.append(items[index])
         }
-        if !snapshot.isEmpty { watchUndo = snapshot }
+        // A fresh arrangement is a fresh step back: whatever a Gather
+        // carried before it is no longer part of the way home.
+        if !snapshot.isEmpty {
+            watchUndo = snapshot
+            watchUndoShift = nil
+        }
         keepPlacements(of: moved)
         reload()
         updateWatchChips()
@@ -2921,11 +3034,18 @@ struct EPUBMapView: View {
     /// the moment the option was chosen. One step — a second pinch has
     /// nothing further to restore until the next arrangement.
     private func undoWatchArrangement() {
-        guard let snapshot = watchUndo else { return }
+        // Gather carried the whole space as well as the cards: the
+        // space goes back first, so the walls and the graphs return
+        // with them rather than standing where the carry left them.
+        if let shift = watchUndoShift {
+            watchUndoShift = nil
+            commitSpaceShift(-shift)
+        }
+        let snapshot = watchUndo
         watchUndo = nil
         var moved: [EPUBMapItem] = []
         for index in items.indices {
-            guard let position = snapshot[items[index].id] else { continue }
+            guard let position = snapshot?[items[index].id] else { continue }
             items[index].position = position
             moved.append(items[index])
         }
@@ -3620,16 +3740,18 @@ struct EPUBMapView: View {
             return true
         case Self.showCitationsChipID:
             toggleAllCitations()
+            foldLists()
             return true
         case Self.showDocumentsChipID:
             // The front EPUBs leave the room and come back; their
             // raised walls are Citations' business, not theirs.
             documentsShown.toggle()
             reload()
-            updateShowChips()
+            foldLists()
             return true
         case Self.selectTopicsChipID:
             toggleSelect(.topics)
+            foldLists()
             return true
         case Self.deselectAllChipID:
             // Every selection let go, with the same semantics a hand
@@ -3647,14 +3769,18 @@ struct EPUBMapView: View {
             reload()
             return true
         case Self.showAllChipID:
-            // Every family into the room at once.
+            // Every family into the room at once — and the list folds
+            // behind it, as D's does for Select.
             showEverything()
+            foldLists()
             return true
         case Self.conceptsChipID:
             toggleConcepts()
+            foldLists()
             return true
         case Self.topicsChipID:
             toggleTopics()
+            foldLists()
             return true
         // No chips stand for these since they left the arm (17 Sep
         // 2026) — a chosen card carries them itself. The acts keep
@@ -3677,16 +3803,19 @@ struct EPUBMapView: View {
         case Self.graphsChipID:
             // Both walls together: the arm offers the family, not a side.
             setGraphsShown(!(timeflowLeftShown || timeflowRightShown))
+            foldLists()
             return true
         case Self.timelinesChipID:
             // All three lanes together, for the same reason.
             setTimelinesShown(!timelinesStand)
+            foldLists()
             return true
         case Self.onlyOverlapChipID:
             // The wall narrowed to the common ground, and back.
             onlyOverlap.toggle()
             armMenu.setChipActive(Self.onlyOverlapChipID, onlyOverlap)
             reload()
+            foldLists()
             return true
         case Self.focusChipID:
             // Show only selected items and their direct connections.
@@ -3704,12 +3833,15 @@ struct EPUBMapView: View {
             // A choice acts and folds the menu; the chosen chip stands
             // bright, and choosing it again lets its selection go.
             toggleSelect(.citations)
+            foldLists()
             return true
         case Self.selectDocumentsChipID:
             toggleSelect(.documents)
+            foldLists()
             return true
         case Self.selectConceptsChipID:
             toggleSelect(.concepts)
+            foldLists()
             return true
         case Self.settingsChipID:
             openWindow(id: "settings")
@@ -3758,6 +3890,7 @@ struct EPUBMapView: View {
             hiddenConceptIDs = []
             armMenu.setChipVisible(Self.revealConceptsChipID, false)
             reload()
+            foldLists()
             return true
         default:
             // The right arm's two fans: a choice acts and folds the
@@ -3832,6 +3965,14 @@ struct EPUBMapView: View {
     /// One menu at a time, across both arms: opening a chit's
     /// sub-items folds whatever else stood open. Two lists standing at
     /// once crowded the room, and either could be a dozen chips long.
+    /// A choice taken inside Show or Select folds the list it came
+    /// from: the act is done, and the arm goes back to its four words
+    /// rather than leaving a column of options standing in the air.
+    /// Opening the same word again brings the list back.
+    private func foldLists() {
+        openOnly(nil)
+    }
+
     private func openOnly(_ fold: ArmFold?) {
         selectOpen = fold == .select
         showOpen = fold == .show
@@ -3844,11 +3985,72 @@ struct EPUBMapView: View {
         updateWatchChips()
     }
 
-    /// Gather: every standing card steps a fifth of the way toward the
-    /// middle of the spread. Pinching again draws them in further, so
-    /// the wall closes as far as the hand asks; Undo View restores the
-    /// moment before the first pinch of a run.
+    /// Gather: the spread drawn in, and then the whole group carried to
+    /// the reader — its centre at eye height, a step and a half in
+    /// front of wherever they are turned. The one command for a room
+    /// that has been walked away from: whatever the cards are doing and
+    /// wherever they have got to, Gather brings them back to the face.
+    /// Pinching again draws them in further; Undo View gives back the
+    /// last Gather whole — the tightening and the carry together.
     private func gatherNodes() {
+        tightenSpread()
+        bringGroupToReader()
+    }
+
+    /// How far in front of the eyes the gathered group's centre stands.
+    /// Near enough to read a title, far enough that a wall of sixty
+    /// papers is seen whole.
+    private static let gatherDistance: Float = 1.4
+
+    /// The centre of the document group brought to the reader's eyes.
+    /// A translation and nothing else: the arrangement, and every
+    /// card's place within it, stands exactly as it was — including
+    /// each card's own depth, so a time-spread keeps its years.
+    private func bringGroupToReader() {
+        let cards = items.filter {
+            $0.kind == .article && !$0.isAside && !$0.isGhost
+                && $0.position != nil && liftedCards[$0.id] == nil
+        }
+        let positions = cards.compactMap(\.position)
+        guard !positions.isEmpty else {
+            flashGatherChip("Nothing to Gather")
+            return
+        }
+        let centre = positions.reduce(SIMD3<Float>.zero, +) / Float(positions.count)
+        guard let head = faceTurner.headPose() else {
+            // No head pose — the simulator, or tracking not yet running.
+            // The corridor's walking height stands in for the eyes, and
+            // the group keeps its ground plan.
+            carrySpace(SIMD3<Float>(0, CitedSpace.walkHeight - centre.y, 0))
+            return
+        }
+        let target = head.position + head.forward * Self.gatherDistance
+        carrySpace(target - centre)
+    }
+
+    /// One carry of the whole space, remembered so Undo View can give
+    /// it back — the last one, as with every other arrangement here:
+    /// one step home, not a history.
+    private func carrySpace(_ delta: SIMD3<Float>) {
+        guard delta != .zero else { return }
+        watchUndoShift = delta
+        commitSpaceShift(delta)
+        reload()
+        updateWatchChips()
+    }
+
+    /// The chip says what it could not do, then takes its name back.
+    private func flashGatherChip(_ message: String) {
+        armMenu.setChipTitle(Self.gatherChipID, message)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            armMenu.setChipTitle(Self.gatherChipID, "Gather")
+        }
+    }
+
+    /// Every standing card steps toward the middle of the spread, never
+    /// tighter than the Wall would stand them.
+    private func tightenSpread() {
         let cards = items.filter {
             $0.kind == .article && !$0.isAside && !$0.isGhost
                 && $0.position != nil && liftedCards[$0.id] == nil
@@ -4080,6 +4282,7 @@ struct EPUBMapView: View {
         }
         guard !moved.isEmpty else { return }
         watchUndo = snapshot
+        watchUndoShift = nil
         keepPlacements(of: moved)
         reload()
         updateWatchChips()
@@ -4109,7 +4312,8 @@ struct EPUBMapView: View {
         }
         armMenu.setChipActive(Self.watchLayoutChipID, watchLayoutOpen)
         armMenu.setChipActive(Self.watchSavedChipID, watchSavedOpen)
-        armMenu.setChipActive(Self.watchUndoChipID, watchUndo != nil)
+        armMenu.setChipActive(Self.watchUndoChipID,
+                              watchUndo != nil || watchUndoShift != nil)
     }
 
     /// Pin and Set Aside have no chip to wear their standing since
@@ -5203,6 +5407,31 @@ final class CardFaceTurner {
         return SIMD3<Float>(column.x, column.y, column.z)
     }
 
+    /// Where the reader is and which way they are turned: the eyes'
+    /// own height, and the gaze flattened to the floor — a look up or
+    /// down must not send anything gathered to the ceiling or the
+    /// carpet. Nil on the same terms as `headPosition()`.
+    func headPose() -> (position: SIMD3<Float>, forward: SIMD3<Float>)? {
+        guard worldTracking.state == .running,
+              let device = worldTracking.queryDeviceAnchor(
+                atTimestamp: CACurrentMediaTime())
+        else { return nil }
+        let matrix = device.originFromAnchorTransform
+        let place = SIMD3<Float>(matrix.columns.3.x, matrix.columns.3.y,
+                                 matrix.columns.3.z)
+        // The device looks down its own -Z, as every ARKit camera does.
+        var forward = -SIMD3<Float>(matrix.columns.2.x, matrix.columns.2.y,
+                                    matrix.columns.2.z)
+        forward.y = 0
+        let length = simd_length(forward)
+        // Straight up or straight down: no heading to read, so the
+        // space's own facing stands in.
+        guard length > 1e-4 else {
+            return (place, SIMD3<Float>(0, 0, -1))
+        }
+        return (place, forward / length)
+    }
+
     /// One card's turn, its world position handed in by the shared
     /// sweep; the faces come from the component cached at build.
     func turn(card: Entity, at position: SIMD3<Float>, head: SIMD3<Float>) {
@@ -5218,6 +5447,117 @@ final class CardFaceTurner {
         else { return }
         if faces.front.isEnabled != facing { faces.front.isEnabled = facing }
         if faces.back.isEnabled == facing { faces.back.isEnabled = !facing }
+    }
+}
+
+/// Every real surface the room offers a lifted card to rest on: each
+/// wall, each table, the floor, a counter, a seat — whatever plane
+/// detection finds, with its own extent, so a card sticks where the
+/// surface actually is and not to its infinite plane.
+///
+/// The Map used to hold two RealityKit plane anchors: ONE wall of at
+/// least a metre square and ONE table. A lifted card could stick to
+/// those and nothing else — the second wall of a room, a low shelf, a
+/// desk too small, the floor itself all went unfelt. This reads
+/// ARKit's plane detection directly, which reports them all.
+@MainActor
+final class RoomSurfaces {
+
+    private let session = ARKitSession()
+    private let planeDetection = PlaneDetectionProvider(
+        alignments: [.horizontal, .vertical])
+    private var planes: [UUID: PlaneAnchor] = [:]
+    private var started = false
+
+    /// Whether any real surface is known — the caller falls back to its
+    /// own plane anchors while this is false (the simulator, or the
+    /// seconds before the room is scanned).
+    var isReading: Bool { !planes.isEmpty }
+
+    func install() {
+        // One session per instance: a second install (the space remade
+        // around the same @State) must not run ARKit twice.
+        guard !started else { return }
+        started = true
+        guard PlaneDetectionProvider.isSupported else {
+            print("Map/surfaces: plane detection unsupported — lifted cards float")
+            return
+        }
+        Task { [session, planeDetection] in
+            do {
+                try await session.run([planeDetection])
+            } catch {
+                print("Map/surfaces: plane detection failed to run: \(error)")
+                return
+            }
+            for await update in planeDetection.anchorUpdates {
+                switch update.event {
+                case .added, .updated: self.planes[update.anchor.id] = update.anchor
+                case .removed: self.planes[update.anchor.id] = nil
+                }
+            }
+        }
+    }
+
+    /// Where a card held at `position` would rest: the nearest surface
+    /// whose face is within `reach` and whose own extent is under the
+    /// card. Nil in open air.
+    ///
+    /// A vertical surface turns the card's front out of the wall toward
+    /// the reader; a horizontal one lays it flat, face up.
+    func nearestPose(to position: SIMD3<Float>, reach: Float,
+                     head: SIMD3<Float>?)
+        -> (position: SIMD3<Float>, orientation: simd_quatf)? {
+        // A card may hang a little off an edge and still be on the
+        // shelf — half a card's width of grace around every extent.
+        let margin: Float = 0.06
+        var best: (position: SIMD3<Float>, orientation: simd_quatf, gap: Float)?
+        for plane in planes.values {
+            let originFromAnchor = plane.originFromAnchorTransform
+            let centre = SIMD3<Float>(originFromAnchor.columns.3.x,
+                                      originFromAnchor.columns.3.y,
+                                      originFromAnchor.columns.3.z)
+            // A plane anchor's local +Y is its normal.
+            var normal = SIMD3<Float>(originFromAnchor.columns.1.x,
+                                      originFromAnchor.columns.1.y,
+                                      originFromAnchor.columns.1.z)
+            let length = simd_length(normal)
+            guard length > 1e-4 else { continue }
+            normal /= length
+            let gap = simd_dot(position - centre, normal)
+            guard abs(gap) < reach else { continue }
+            guard best == nil || abs(gap) < best!.gap else { continue }
+            // Is the surface actually under the card? The extent's own
+            // frame says so — its plane is the extent space's X and Z.
+            let extent = plane.geometry.extent
+            let originFromExtent = originFromAnchor * extent.anchorFromExtentTransform
+            let local = simd_inverse(originFromExtent)
+                * SIMD4<Float>(position, 1)
+            guard abs(local.x) < extent.width / 2 + margin,
+                  abs(local.z) < extent.height / 2 + margin else { continue }
+            let landed = position - normal * gap
+            if abs(simd_dot(normal, SIMD3<Float>(0, 1, 0))) > 0.85 {
+                // A table, the floor, a seat: the card lies flat, face
+                // to the ceiling, a centimetre clear of the surface.
+                var flatPlace = landed
+                flatPlace.y += gap > 0 ? 0.01 : -0.01
+                let flat = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
+                best = (flatPlace, flat, abs(gap))
+            } else {
+                // A wall, a window, a door: the front turned out of it,
+                // toward the reader when their place is known.
+                var out = normal
+                if let head, simd_dot(out, head - centre) < 0 { out = -out }
+                out.y = 0
+                let flatLength = simd_length(out)
+                guard flatLength > 1e-4 else { continue }
+                out /= flatLength
+                let turn = simd_quatf(angle: atan2(out.x, out.z),
+                                      axis: SIMD3<Float>(0, 1, 0))
+                best = (landed + out * 0.015, turn, abs(gap))
+            }
+        }
+        return best.map { ($0.position, $0.orientation) }
     }
 }
 
@@ -5239,17 +5579,23 @@ private final class MapCardTick {
     private var lines: [MapLineLayer] = []
     private var anyLifted: (@MainActor () -> Bool)?
     private var liftedFacesHead: (@MainActor (String) -> Bool)?
+    /// The pose a card took from the real surface it rests on — a wall's
+    /// plane, a table's top. It outranks the billboard: a card lying on
+    /// a desk must stay lying on it, whoever walks round it.
+    private var stuckOrientation: (@MainActor (String) -> simd_quatf?)?
     private let cardQuery = EntityQuery(where: .has(EPUBNodeIDComponent.self))
 
     func install(in content: RealityViewContent,
                  faceTurner: CardFaceTurner,
                  lines: [MapLineLayer],
                  anyLifted: @escaping @MainActor () -> Bool,
-                 liftedFacesHead: @escaping @MainActor (String) -> Bool) {
+                 liftedFacesHead: @escaping @MainActor (String) -> Bool,
+                 stuckOrientation: @escaping @MainActor (String) -> simd_quatf?) {
         self.faceTurner = faceTurner
         self.lines = lines
         self.anyLifted = anyLifted
         self.liftedFacesHead = liftedFacesHead
+        self.stuckOrientation = stuckOrientation
         subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             MainActor.assumeIsolated { self?.tick(scene: event.scene) }
         }
@@ -5268,10 +5614,18 @@ private final class MapCardTick {
             guard let id = card.components[EPUBNodeIDComponent.self]?.id
             else { continue }
             if !liveLines.isEmpty { positions[id] = place }
+            // A card resting on a real surface wears that surface's
+            // pose — flat on a table, flush to a wall — and neither
+            // billboards nor rights itself.
+            if lifted, let stuck = stuckOrientation?(id) {
+                if abs(simd_dot(card.orientation.vector, stuck.vector)) < 0.99995 {
+                    card.orientation = stuck
+                }
+            }
             // The lifted cards billboard at the node — collision and
             // face together — while every other card stands upright
             // (which also rights a card just put back).
-            if lifted, liftedFacesHead?(id) == true, let head {
+            else if lifted, liftedFacesHead?(id) == true, let head {
                 let toHead = head - place
                 if simd_length(SIMD2(toHead.x, toHead.z)) > 1e-4 {
                     let turn = simd_quatf(angle: atan2(toHead.x, toHead.z),
