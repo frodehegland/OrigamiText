@@ -21,14 +21,33 @@ private func visionFigureImage(for asset: LiquidDoc.Asset) -> UIImage? {
     return image
 }
 
+/// Which figure a window stands for: the reading it belongs to and the
+/// asset within it. Ids, not bytes — a window value is archived by the
+/// system, and a figure's megabytes have no business travelling through
+/// it when the document is in the index already.
+struct VisionFigureTarget: Codable, Hashable {
+    let docID: String
+    let assetID: String
+}
+
 /// One figure in a visionOS reading: the image as the document carries
 /// it — or, when the asset is missing or will not decode, a quiet plate
 /// naming what should have stood there and why it could not. A blank
 /// line is the thing this view exists to prevent: it is what every
 /// figure in every reading here was until now.
+///
+/// Double-tap and the figure takes a window of its own (the "figure"
+/// WindowGroup) — the Mac's double-click, and the phone's double-tap
+/// into its figure card.
 struct VisionFigureView: View {
     let asset: LiquidDoc.Asset?
     let alt: String
+    /// The reading this figure stands in, so its window can find it.
+    /// Empty for a figure with no document behind it — the plate then
+    /// simply has nothing to open.
+    var docID: String = ""
+
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         if let asset, let image = visionFigureImage(for: asset) {
@@ -41,6 +60,13 @@ struct VisionFigureView: View {
                 .frame(maxHeight: 440)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .accessibilityLabel(alt.isEmpty ? "Figure" : alt)
+                .onTapGesture(count: 2) {
+                    guard !docID.isEmpty else { return }
+                    openWindow(id: "figure",
+                               value: VisionFigureTarget(docID: docID,
+                                                         assetID: asset.id))
+                }
+                .help("Double-tap for this figure in a window of its own")
         } else {
             // Said plainly, so a figure that cannot be drawn is a
             // question one can answer — an SVG, say, which UIImage
@@ -58,6 +84,57 @@ struct VisionFigureView: View {
             .padding(14)
             .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
         }
+    }
+}
+
+/// A figure in a window of its own: the image as large as the window is
+/// made, its caption beneath, and the paper it came from named — so a
+/// figure stood on a wall an hour later still says what it belongs to.
+/// Resize the window and the figure takes the room; the reading it was
+/// lifted from keeps its place.
+struct VisionFigureWindow: View {
+    @Environment(VisionModel.self) private var model
+    let target: VisionFigureTarget
+
+    private var doc: LiquidDoc? { model.index.byID[target.docID]?.doc }
+    private var asset: LiquidDoc.Asset? {
+        doc?.assets.first { $0.id == target.assetID }
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            if let asset, let image = visionFigureImage(for: asset) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityLabel(asset.alt ?? "Figure")
+                if let caption = asset.alt, !caption.isEmpty {
+                    Text(caption)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 720)
+                }
+                if let doc {
+                    Text(doc.title)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            } else {
+                // The window opened and the figure was not there —
+                // said, as everywhere else, rather than shown blank.
+                ContentUnavailableView {
+                    Label("Figure Not Available", systemImage: "photo")
+                } description: {
+                    Text(doc == nil
+                         ? "The document this figure belongs to is no longer open."
+                         : "This copy of the document does not carry the figure.")
+                }
+            }
+        }
+        .padding(20)
     }
 }
 
@@ -212,6 +289,23 @@ struct OrigamiVisionApp: App {
             // Panels open IN FRONT of the reader, within reach — never
             // where the closed window last stood, possibly behind them
             // in the hallway.
+            WindowPlacement(.utilityPanel)
+        }
+
+        // A figure lifted out of its reading: double-tap the image and
+        // it takes a window of its own, to be made as large as the
+        // reader likes and stood anywhere in the room — the Mac's
+        // double-click-for-a-window, here. The reading keeps its place
+        // behind it, so a figure can be studied beside its argument
+        // rather than instead of it.
+        WindowGroup(id: "figure", for: VisionFigureTarget.self) { $target in
+            if let target {
+                VisionFigureWindow(target: target)
+                    .environment(model)
+            }
+        }
+        .defaultSize(width: 900, height: 700)
+        .defaultWindowPlacement { _, _ in
             WindowPlacement(.utilityPanel)
         }
 
@@ -2568,7 +2662,7 @@ struct VisionReaderView: View {
                     if let reference = LiquidDoc.imageReference(in: paragraph.text) {
                         VisionFigureView(
                             asset: doc.assets.first { $0.id == reference.id },
-                            alt: reference.alt)
+                            alt: reference.alt, docID: docID)
                     } else {
                         Text(inline(paragraph, doc: doc))
                             .font(paragraph.effectiveHeading != nil
@@ -3122,7 +3216,7 @@ struct VisionReaderView: View {
                     if let reference = LiquidDoc.imageReference(in: paragraph.text) {
                         VisionFigureView(
                             asset: doc.assets.first { $0.id == reference.id },
-                            alt: reference.alt)
+                            alt: reference.alt, docID: docID)
                     } else {
                         Text(OrigamiReading.stretchRevealed(
                                 inline(paragraph, doc: doc),
@@ -3240,7 +3334,7 @@ struct VisionReaderView: View {
                 // which renders itself, exactly as on the Mac.
                 VisionFigureView(
                     asset: doc.assets.first { $0.id == reference.id },
-                    alt: reference.alt)
+                    alt: reference.alt, docID: docID)
             } else {
                 // Links wear the body's own ink, and the words select:
                 // the selection carries the reader's verbs — Copy, Copy
