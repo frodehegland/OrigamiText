@@ -159,6 +159,19 @@ final class AppModel {
 
     var showLinksInspector = false
     var showXRExport = false
+
+    /// Where Have I Read This? — the phrase finder over one's own
+    /// reading (ReadingSearch.swift). One search at a time, so the
+    /// panel and the Services entry answer the same question.
+    let readingSearch = ReadingSearch()
+
+    /// A phrase lifted from another app — the Services entry, or the
+    /// menu with something on the clipboard. The window is opened by
+    /// whoever calls this; the search starts at once so the answer is
+    /// waiting by the time it appears.
+    func findInMyReading(_ phrase: String) {
+        readingSearch.run(phrase, in: self)
+    }
     /// The EPUB currently open in the faithful WebView reader, if any. When
     /// set, the detail pane renders it; navigating anywhere else clears it.
     var openEPUB: OpenEPUB?
@@ -189,6 +202,14 @@ final class AppModel {
     /// Stored by MainWindowConnector so the AppDelegate can open the main
     /// window from its NSEvent monitor (which can't access SwiftUI environment).
     var openMainWindow: (() -> Void)?
+    /// The same trick for the phrase finder, so a Service — which
+    /// arrives in the AppDelegate, outside any SwiftUI environment —
+    /// can bring its window up.
+    var openReadingSearchWindow: (() -> Void)?
+
+    func opensReadingSearchWindow() {
+        openReadingSearchWindow?()
+    }
     /// When the model came up — a quick view reads this to tell a library
     /// window the reader had open from one the launch itself created.
     private let launchedAt = Date()
@@ -1564,6 +1585,66 @@ final class AppModel {
         let doc = Self.structuredDoc(from: result, record: record,
                                      fallbackID: record.folder, base: base)
         editorSession = EditorSession(record: record, doc: doc)
+    }
+
+    /// Edit ▸ Edit Document… — a correction session on a file the shelf
+    /// has never seen: an EPUB just built, a copy a colleague sent, a
+    /// guide written this morning. Nothing is imported and nothing
+    /// joins the library; the file is unpacked into a working folder of
+    /// its own, read by the same structured import the readers use, and
+    /// exported when it is right. (19 Sep 2026 — the shelf was the only
+    /// door to the Editor until now, which meant importing a document
+    /// merely to fix a word in it.)
+    func beginEditFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.epub]
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Edit"
+        panel.message = "Choose an EPUB to correct. It is not added to the shelf."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        beginEdit(fileAt: url)
+    }
+
+    /// The same, for a file already in hand.
+    func beginEdit(fileAt url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        // A working folder of its own, under the app's temporary
+        // directory — never the shelf's store, which is what would
+        // make this an import.
+        let working = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OrigamiEditor", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let name = url.deletingPathExtension().lastPathComponent
+        do {
+            let unpacked = try OrigamiEPUBImporter.unpack(at: url, into: working)
+            let result = try OrigamiEPUBImporter.importDocument(inUnpackedFolder: working)
+            let meta = OrigamiEPUBImporter.importMetadata(inUnpackedFolder: working)
+            let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
+            let contentSubpath = unpacked.content.path
+                .replacingOccurrences(of: working.path + "/", with: "")
+            // A record standing for the file, not for a shelf book: its
+            // folder is the file's own name, which is what the export
+            // panel offers back as the filename. Nothing resolves it
+            // under the EPUBs directory, because adopt — the one act
+            // that would — is not offered for a file session.
+            let record = EPUBRecord(
+                id: meta.origamiID ?? result.origamiID ?? identity,
+                title: unpacked.title,
+                author: meta.authors.first ?? result.author ?? "Unknown",
+                authors: meta.authors.isEmpty ? nil : meta.authors,
+                dateISO: meta.date ?? result.date,
+                folder: name,
+                contentSubpath: contentSubpath,
+                openedAt: .now,
+                publication: meta.publication ?? result.publication)
+            let doc = Self.structuredDoc(from: result, record: record,
+                                         fallbackID: identity, base: working)
+            editorSession = EditorSession(record: record, doc: doc, sourceFile: url)
+        } catch {
+            NSSound.beep()
+            editionAlert("Could not open \u{201C}\(name)\u{201D} for editing: \(error.localizedDescription)")
+        }
     }
 
     /// Writes the corrected document as the authoritative EPUB wherever

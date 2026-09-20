@@ -111,5 +111,29 @@
 			</dict>
 		</dict>
 	</array>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Where Have I Read This?</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>findInMyReading</string>
+			<key>NSPortName</key>
+			<string>Origami Text</string>
+			<key>NSSendTypes</key>
+			<array>
+				<string>NSStringPboardType</string>
+				<string>public.utf8-plain-text</string>
+			</array>
+			<key>NSRequiredContext</key>
+			<dict>
+				<key>NSTextContent</key>
+				<string>None</string>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

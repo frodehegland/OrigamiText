@@ -62,6 +62,9 @@ struct LiquidViewApp: App {
                     .keyboardShortcut("o", modifiers: .command)
                 Button("Import…") { model.importDocumentFile() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
+                // A paper that is free to read, brought in as a
+                // document rather than as a page — see FetchOnline.
+                Button("Fetch by DOI or URL…") { model.fetchOnlineDocumentPrompt() }
                 Button("Import Reference Dataset…") { model.importReferenceDatasetPanel() }
                 // A capsule's page, read here: gemtext is another
                 // hypermedia protocol the reader speaks.
@@ -76,6 +79,12 @@ struct LiquidViewApp: App {
             // camera reads a printed page and opens its document at
             // that place.
             PageCaptureCommands()
+            // Edit ▸ Edit Document… — the Editor reached without the
+            // shelf. Publisher builds only, and only with Editor Mode
+            // on, exactly as the book's context-menu entry.
+            #if DEBUG || EDITOR
+            EditorCommands(model: model)
+            #endif
             CommandGroup(replacing: .saveItem) {
                 // Replacing .saveItem also removes the system Close item,
                 // so it is restored here — Settings and every other window
@@ -125,6 +134,9 @@ struct LiquidViewApp: App {
             // views, fold/unfold (⌘−/⌘+), and the type (⇧⌘±, ⌥⌘±) —
             // answered by the front reading.
             ReadingCommands(model: model)
+            // The Liquid verb, in this app's own menus: a phrase from
+            // the clipboard (or typed) found in everything one has read.
+            ReadingSearchCommands(model: model)
             CommandMenu("Go") {
                 Button("Back") { model.goBack() }
                     .keyboardShortcut("[", modifiers: .command)
@@ -178,6 +190,14 @@ struct LiquidViewApp: App {
         }
         .defaultSize(width: 900, height: 940)
         #endif
+
+        // Where Have I Read This? — a phrase from any app, found in
+        // one's own reading (ReadingSearch.swift).
+        Window("Where Have I Read This?", id: "readingSearch") {
+            ReadingSearchView()
+                .environment(model)
+        }
+        .defaultSize(width: 720, height: 560)
 
         // File ▸ Hold Up a Page… — the camera reads a printed page and
         // opens its document in the main window at the page's place.
@@ -241,6 +261,57 @@ private struct PageCaptureCommands: Commands {
     }
 }
 
+/// Where Have I Read This?, in the Edit menu beside the other things
+/// one does to a piece of text. Takes whatever is on the clipboard so
+/// the verb works the moment a phrase is copied — and the same act is
+/// offered to every other app through the Services menu (see
+/// AppDelegate's service provider).
+private struct ReadingSearchCommands: Commands {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            Button("Where Have I Read This?") {
+                let clipboard = NSPasteboard.general.string(forType: .string) ?? ""
+                openWindow(id: "readingSearch")
+                if !clipboard.trimmingCharacters(in: .whitespaces).isEmpty {
+                    model.findInMyReading(clipboard)
+                }
+            }
+            // ⌥⌘F: ⌘F is the reading's own find and ⇧⌘F is Flow, while
+            // ⌃⌘F is macOS's Enter Full Screen everywhere.
+            .keyboardShortcut("f", modifiers: [.command, .option])
+        }
+    }
+}
+
+/// Editor Mode in the Edit menu: correcting a document that is not on
+/// the shelf. The book's context menu edits what the library already
+/// holds; this edits a file — one just exported, one a colleague sent —
+/// without importing it first, which is the difference between fixing a
+/// word and adopting a stranger into the library.
+#if DEBUG || EDITOR
+private struct EditorCommands: Commands {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            if model.isEditorModeOn {
+                Divider()
+                Button("Edit Document\u{2026}") {
+                    model.beginEditFile()
+                    if model.editorSession != nil {
+                        openWindow(id: "epub-editor")
+                    }
+                }
+            }
+        }
+    }
+}
+#endif
+
 /// Captures the SwiftUI openWindow action and the NSWindow reference so that
 /// the AppKit NSEvent monitor (no SwiftUI environment) can reopen or restore
 /// the main window after it has been closed or minimised.
@@ -251,7 +322,10 @@ private struct MainWindowConnector: View {
     var body: some View {
         EmptyView()
             .background(MainNSWindowCapture())
-            .onAppear { model.openMainWindow = { openWindow(id: "main") } }
+            .onAppear {
+                model.openMainWindow = { openWindow(id: "main") }
+                model.openReadingSearchWindow = { openWindow(id: "readingSearch") }
+            }
     }
 }
 
@@ -330,6 +404,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the tab bar (and its + button) never appears.
         NSWindow.allowsAutomaticWindowTabbing = false
 
+        // The Liquid lift: any app's selection can ask this app where
+        // it was read. The provider is registered here; the menu entry
+        // itself is declared in Info.plist (NSServices).
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
+
         // Handled here rather than via menu shortcuts so they work even when
         // a text view has focus (text views claim keys like ⌘L for
         // themselves before the menu sees them).
@@ -379,6 +459,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         model?.saveDraftIfNeeded()
+    }
+
+    /// The Services entry, named by Info.plist's NSMessage: a phrase
+    /// selected in any app at all — a mail, a web page, a colleague's
+    /// draft — asked of one's own reading. The app comes forward with
+    /// the answer; nothing is pasted back, because the question is
+    /// "where did I read this", not "change this".
+    @objc func findInMyReading(_ pasteboard: NSPasteboard,
+                               userData: String?,
+                               error: AutoreleasingUnsafeMutablePointer<NSString>) {
+        guard let phrase = pasteboard.string(forType: .string),
+              !phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            error.pointee = "Select some words first." as NSString
+            return
+        }
+        guard let model else {
+            error.pointee = "Origami Text is still starting up — try again." as NSString
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        model.findInMyReading(phrase)
+        model.opensReadingSearchWindow()
     }
 
     private func flushPending() {

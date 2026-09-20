@@ -141,10 +141,12 @@ enum OnlineFetch {
     private static func request(_ url: URL, accept: String? = nil) -> URLRequest {
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        let contact = UserDefaults.standard.string(forKey: AppSettings.authorEmailKey) ?? ""
-        let mail = contact.isEmpty ? "info@futuretextlab.info" : contact
-        request.setValue("OrigamiText/1.0 (https://futuretextlab.info; mailto:\(mail))",
-                         forHTTPHeaderField: "User-Agent")
+        // The app's own contact, not the reader's: these registries ask
+        // to know which software is calling so they can reach its
+        // maintainer, and a reader's address is not ours to send.
+        request.setValue(
+            "OrigamiText/1.0 (https://futuretextlab.info; mailto:info@futuretextlab.info)",
+            forHTTPHeaderField: "User-Agent")
         if let accept { request.setValue(accept, forHTTPHeaderField: "Accept") }
         return request
     }
@@ -200,20 +202,25 @@ enum OnlineFetch {
                 if finding.title.isEmpty {
                     finding.title = work["title"] as? String ?? ""
                 }
-                // Europe PMC carries JATS for anything with a PMCID —
-                // the best source there is, and freely fetchable.
-                if let ids = work["ids"] as? [String: Any],
-                   let pmcid = (ids["pmcid"] as? String)?
-                    .components(separatedBy: "/").last, !pmcid.isEmpty,
-                   let xml = URL(string: "https://www.ebi.ac.uk/europepmc/webservices/rest/\(pmcid)/fullTextXML") {
-                    finding.sources.append(Source(kind: .structuredXML, url: xml,
-                                                  host: "Europe PMC"))
-                }
                 for location in (work["locations"] as? [[String: Any]]) ?? [] {
                     guard location["is_oa"] as? Bool == true else { continue }
                     let host = ((location["source"] as? [String: Any])?["display_name"]
                         as? String) ?? "the publisher"
-                    if let pdf = (location["pdf_url"] as? String).flatMap(URL.init(string:)) {
+                    let landing = location["landing_page_url"] as? String ?? ""
+                    let pdfText = location["pdf_url"] as? String ?? ""
+                    // Europe PMC hands out JATS for anything with a
+                    // PMCID — the best source there is, and freely
+                    // fetchable. OpenAlex does not put the PMCID in
+                    // `ids`; it is in the PMC location's own URLs, so
+                    // it is read from there. (Found by running this
+                    // against a PLOS paper: the XML was being missed
+                    // and a 3.8MB PDF taken instead.)
+                    if let pmcid = pmcID(in: landing) ?? pmcID(in: pdfText),
+                       let xml = URL(string: "https://www.ebi.ac.uk/europepmc/webservices/rest/\(pmcid)/fullTextXML") {
+                        finding.sources.append(Source(kind: .structuredXML, url: xml,
+                                                      host: "Europe PMC"))
+                    }
+                    if let pdf = URL(string: pdfText), !pdfText.isEmpty {
                         finding.sources.append(Source(kind: kind(of: pdf), url: pdf, host: host))
                     }
                 }
@@ -225,6 +232,10 @@ enum OnlineFetch {
             finding.isOpenAccess = true
             if finding.status == "unknown" { finding.status = "arXiv" }
             finding.sources.append(Source(kind: .pdf, url: pdf, host: "arXiv"))
+            if finding.title.isEmpty, let meta = await arxivMetadata(arxiv) {
+                finding.title = meta.title
+                if finding.authors.isEmpty { finding.authors = meta.authors }
+            }
             if finding.title.isEmpty { finding.title = "arXiv:\(arxiv)" }
         }
 
@@ -241,6 +252,55 @@ enum OnlineFetch {
             .sorted { $0.kind < $1.kind }
             .filter { seen.insert($0.url.absoluteString).inserted }
         return finding
+    }
+
+    /// A PubMed Central id out of any of its URL forms:
+    /// `pmc.ncbi.nlm.nih.gov/articles/PMC10434894/…`, the older
+    /// `/pmc/articles/PMC10434894`, and the bare-number landing page
+    /// `/pmc/articles/10434894`.
+    static func pmcID(in text: String) -> String? {
+        if let match = text.range(of: "PMC\\d+", options: [.regularExpression, .caseInsensitive]) {
+            return String(text[match]).uppercased()
+        }
+        if let match = text.range(of: "/pmc/articles/(\\d+)",
+                                  options: [.regularExpression, .caseInsensitive]),
+           let number = String(text[match]).components(separatedBy: "/").last {
+            return "PMC" + number
+        }
+        return nil
+    }
+
+    /// arXiv's own metadata, so a paper fetched by its arXiv address
+    /// arrives with a title and its authors rather than a bare id.
+    private static func arxivMetadata(_ id: String) async -> (title: String, authors: String)? {
+        guard let url = URL(string: "https://export.arxiv.org/api/query?id_list=\(id)"),
+              let (data, response) = try? await URLSession.shared.data(for: request(url)),
+              (response as? HTTPURLResponse)?.statusCode == 200
+        else { return nil }
+        let feed = String(decoding: data, as: UTF8.self)
+        // The Atom feed's first <entry>: its title, and every <name>.
+        guard let entry = feed.range(of: "(?s)<entry>.*?</entry>",
+                                     options: .regularExpression) else { return nil }
+        let body = String(feed[entry])
+        func tag(_ name: String, in text: String) -> [String] {
+            let pattern = "(?s)<\(name)>(.*?)</\(name)>"
+            var found: [String] = []
+            var cursor = text.startIndex
+            while let range = text.range(of: pattern, options: .regularExpression,
+                                         range: cursor..<text.endIndex) {
+                let inner = String(text[range])
+                    .replacingOccurrences(of: "<\(name)>", with: "")
+                    .replacingOccurrences(of: "</\(name)>", with: "")
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !inner.isEmpty { found.append(inner) }
+                cursor = range.upperBound
+            }
+            return found
+        }
+        let title = tag("title", in: body).first ?? ""
+        let authors = tag("name", in: body).joined(separator: ", ")
+        return title.isEmpty ? nil : (title, authors)
     }
 
     private static func kind(of url: URL) -> Source.Kind {

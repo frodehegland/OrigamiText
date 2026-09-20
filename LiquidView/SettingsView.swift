@@ -1178,6 +1178,25 @@ private struct LibrarySettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // Where Have I Read This? looks — the phrase finder that
+            // answers from any app through the Services menu.
+            Section {
+                Toggle("Search my documents and EPUBs", isOn: Binding(
+                    get: { ReadingSearchSettings.searchesLibrary },
+                    set: { ReadingSearchSettings.searchesLibrary = $0 }))
+                Toggle("Search Reader's PDFs", isOn: Binding(
+                    get: { ReadingSearchSettings.searchesPDFs },
+                    set: { ReadingSearchSettings.searchesPDFs = $0 }))
+                .disabled(model.readerLibraryURL == nil)
+            } header: {
+                Text("Where Have I Read This?")
+            } footer: {
+                Text(model.readerLibraryURL == nil
+                     ? "Select a phrase in any app and choose Where Have I Read This? from its Services menu (or ⌃⌘F here) to find where you read it. Name a Reader Library above and your PDFs can be searched as well."
+                     : "Select a phrase in any app and choose Where Have I Read This? from its Services menu (or ⌃⌘F here). Your documents and shelf EPUBs are searched from the index; Reader's PDFs are read from the library folder above, which takes a moment longer. A PDF answer opens in Reader at the page it names.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 LabeledContent("Interatlas Links") {
                     Text(model.interatlasAppPath.map {

@@ -22,6 +22,12 @@ import SwiftUI
 @MainActor @Observable
 final class EditorSession {
     let record: EPUBRecord
+    /// The file this session was opened from when it did NOT come off
+    /// the shelf — Edit ▸ Edit Document… on a document the library has
+    /// never seen. Nil for a shelf book. Adopt is a shelf act (it
+    /// replaces a distributed copy and republishes it), so a session
+    /// with a source file exports and nothing more.
+    let sourceFile: URL?
     private let base: LiquidDoc
 
     var title: String
@@ -37,8 +43,9 @@ final class EditorSession {
     private let originalOrder: [String]
     private let originalReferences: [String: String]
 
-    init(record: EPUBRecord, doc: LiquidDoc) {
+    init(record: EPUBRecord, doc: LiquidDoc, sourceFile: URL? = nil) {
         self.record = record
+        self.sourceFile = sourceFile
         self.base = doc
         self.title = doc.title
         self.paragraphs = doc.body ?? []
@@ -159,11 +166,14 @@ struct DocumentEditorView: View {
         if let session = model.editorSession {
             EditorContent(session: session)
                 .navigationTitle("Edit — \(session.record.title)")
+                // A file session says which file, since the library
+                // cannot be asked.
+                .navigationSubtitle(session.sourceFile?.lastPathComponent ?? "")
         } else {
             ContentUnavailableView(
                 "Nothing Being Edited",
                 systemImage: "pencil.slash",
-                description: Text("Choose Edit Document… from a book's context menu."))
+                description: Text("Choose Edit Document… from a book's context menu, or from the Edit menu for a file that is not on the shelf."))
         }
     }
 }
@@ -221,8 +231,16 @@ private struct EditorContent: View {
                     model.exportAuthoritativeEdition(session)
                 }
                 .disabled(session.changeCount == 0)
+                // Adopt replaces a distributed copy and republishes it.
+                // A file that is not on the shelf has no copy to
+                // replace, so the act is not offered — Export is the
+                // whole of it, and the exported file can be imported
+                // afterwards like any other.
                 Button("Adopt…") { model.adoptEdition(session) }
-                    .disabled(session.changeCount == 0)
+                    .disabled(session.changeCount == 0 || session.sourceFile != nil)
+                    .help(session.sourceFile == nil
+                          ? "Replace the distributed copy on this shelf and in the community folder"
+                          : "This document is not on the shelf — export the corrected file instead")
             }
         }
         .sheet(isPresented: $showsPreview) {

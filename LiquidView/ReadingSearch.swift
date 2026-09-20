@@ -64,65 +64,24 @@ enum ReadingSearchSettings {
     /// a toggle rather than an assumption, because a reader who only
     /// wants their PDFs searched should be able to say so.
     static let searchesLibraryKey = "findInReading.searchesLibrary"
-    /// Reader's PDFs.
+    /// Reader's PDFs — the Reader Library the app already knows
+    /// (Settings ▸ Library), whose security scope AppModel holds open
+    /// for citation resolving. This searches the same folder rather
+    /// than asking for a second one: one Reader library, one answer to
+    /// where it is.
     static let searchesPDFsKey = "findInReading.searchesPDFs"
-    /// The folder Reader keeps its PDFs in — a security-scoped
-    /// bookmark, as the community folder is.
-    static let pdfFolderBookmarkKey = "findInReading.pdfFolderBookmark"
-    /// Its path in the clear, so the setting can name the folder even
-    /// when the bookmark will not open.
-    static let pdfFolderPathKey = "findInReading.pdfFolderPath"
 
     static var searchesLibrary: Bool {
         get { UserDefaults.standard.object(forKey: searchesLibraryKey) as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: searchesLibraryKey) }
     }
+    /// On by default: a reader who has told the app where Reader keeps
+    /// its papers means for them to count as their reading. It is a
+    /// toggle all the same — a big PDF library is seconds of work, and
+    /// some will want the library alone.
     static var searchesPDFs: Bool {
-        get { UserDefaults.standard.object(forKey: searchesPDFsKey) as? Bool ?? false }
+        get { UserDefaults.standard.object(forKey: searchesPDFsKey) as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: searchesPDFsKey) }
-    }
-    static var pdfFolderPath: String {
-        UserDefaults.standard.string(forKey: pdfFolderPathKey) ?? ""
-    }
-
-    /// The remembered folder, opened for reading. Nil when none has
-    /// been chosen or the bookmark no longer resolves — the caller
-    /// says so rather than searching nothing in silence.
-    static func pdfFolder() -> URL? {
-        guard let data = UserDefaults.standard.data(forKey: pdfFolderBookmarkKey) else { return nil }
-        var stale = false
-        guard let url = try? URL(resolvingBookmarkData: data,
-                                 options: [.withSecurityScope],
-                                 relativeTo: nil,
-                                 bookmarkDataIsStale: &stale),
-              url.startAccessingSecurityScopedResource()
-        else { return nil }
-        // Refreshed while it is open, so an app update does not lose it
-        // (the community folder learned this the hard way).
-        if stale, let fresh = try? url.bookmarkData(options: [.withSecurityScope],
-                                                    includingResourceValuesForKeys: nil,
-                                                    relativeTo: nil) {
-            UserDefaults.standard.set(fresh, forKey: pdfFolderBookmarkKey)
-        }
-        return url
-    }
-
-    /// Asks for the folder Reader reads from, and remembers it.
-    @MainActor static func choosePDFFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Search This Folder"
-        panel.message = "Choose the folder Reader keeps its PDFs in. Its sub-folders are searched too."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        if let bookmark = try? url.bookmarkData(options: [.withSecurityScope],
-                                                includingResourceValuesForKeys: nil,
-                                                relativeTo: nil) {
-            UserDefaults.standard.set(bookmark, forKey: pdfFolderBookmarkKey)
-        }
-        UserDefaults.standard.set(url.path(percentEncoded: false), forKey: pdfFolderPathKey)
-        searchesPDFs = true
     }
 }
 
@@ -143,10 +102,12 @@ final class ReadingSearch {
     private(set) var scopeNote = ""
     private var generation = 0
 
-    /// How much text a hit shows around the phrase.
-    private static let passageRadius = 140
+    /// How much text a hit shows around the phrase. Nonisolated, both
+    /// of these: the PDF sweep reads them off the main actor, and a
+    /// main-actor constant there is a Swift 6 error.
+    nonisolated private static let passageRadius = 140
     /// A guard against a runaway sweep of someone's whole disk.
-    private static let pdfFileLimit = 2_000
+    nonisolated private static let pdfFileLimit = 2_000
 
     func clear() {
         phrase = ""
@@ -183,9 +144,12 @@ final class ReadingSearch {
             isSearching = false
             return
         }
-        guard let folder = ReadingSearchSettings.pdfFolder() else {
+        // Reader's own library, as Settings ▸ Library names it. Its
+        // security scope is already held open by AppModel for citation
+        // resolving, so nothing is asked of the reader here.
+        guard let folder = model.readerLibraryURL else {
             scopeNote = Self.note(notes, pdfs: nil)
-                + " · Reader's PDF folder could not be opened — choose it again in Settings."
+                + " Reader's library is not set — name it in Settings ▸ Library to search your PDFs too."
             isSearching = false
             return
         }
@@ -256,7 +220,7 @@ final class ReadingSearch {
 
     nonisolated private static func searchPDFs(needle: String, folder: URL)
         -> (hits: [ReadingHit], filesRead: Int) {
-        defer { folder.stopAccessingSecurityScopedResource() }
+        // The scope is AppModel's to hold and to drop — this only reads.
         let manager = FileManager.default
         guard let walker = manager.enumerator(
             at: folder, includingPropertiesForKeys: [.isRegularFileKey],
@@ -445,9 +409,10 @@ struct ReadingSearchView: View {
             }
             model.open(doc, fragment: paragraphID)
         case .pdf(let url, _):
-            // Reader — or whatever opens PDFs here. The page is in the
-            // row, because a file URL cannot carry one across apps.
-            NSWorkspace.shared.open(url)
+            // Reader itself when it is installed, as a cited PDF opens
+            // (AppModel.openPDFInReader). The page is named in the row,
+            // because a file URL cannot carry one across apps.
+            model.openPDFInReader(url)
         }
     }
 }
