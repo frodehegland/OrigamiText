@@ -62,7 +62,18 @@ nonisolated enum PDFImporter {
             content = String(text[..<start.lowerBound])
         }
 
-        let body = paragraphs(from: content)
+        // The structured read: headings kept, words rejoined across
+        // line breaks, the running head left out of the prose (see
+        // PDFStructure). It works from the page geometry, so it is
+        // only attempted where the pages are — a Visual-Meta appendix
+        // has already been cut from `content` above, and the flat
+        // rebuild below still serves when the structural read finds
+        // nothing to improve.
+        var body = paragraphs(from: content)
+        let structured = PDFStructure.read(pdf)
+        if structured.headingsFound > 0, structured.body.count >= body.count / 2 {
+            body = structured.body
+        }
         guard !body.isEmpty else { throw PDFImportError.noTextLayer }
         return Result(title: title ?? url.deletingPathExtension().lastPathComponent,
                       author: author,
