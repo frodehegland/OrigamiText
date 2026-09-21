@@ -505,6 +505,10 @@ nonisolated enum OrigamiEPUBExporter {
         try assertWellFormed(html, file: "content/paper.html")
         try assertWellFormed(nav, file: "content/nav.html")
         try assertAnchorsResolve(in: html, file: "content/paper.html")
+        // Structure the profile promises, which valid XHTML can still break.
+        for warning in profileWarnings(in: html) {
+            NSLog("Origami EPUB export: %@", warning)
+        }
         try assertAnchorsResolve(in: nav, file: "content/nav.html", targetsIn: html)
 
         // Derived from the actual output, never boilerplate: escaped text
@@ -790,11 +794,22 @@ nonisolated enum OrigamiEPUBExporter {
                 openBoxID = nil
             }
         }
+        // A bulleted or numbered run becomes one real list, so a reading
+        // system — and a screen reader — knows it is a list, and each item
+        // keeps its own address.
+        var openListTag: String?
+        func closeList() {
+            if let tag = openListTag {
+                lines.append("</\(tag)>")
+                openListTag = nil
+            }
+        }
         for element in body {
             let stretchID = element.paragraph.stretchID
             if stretchID != openStretchID { closeStretch() }
             if element.paragraph.boxID != openBoxID { closeBox() }
             if element.opensSection {
+                closeList()
                 closeBox()
                 closeStretch()
                 if sectionOpen {
@@ -842,6 +857,22 @@ nonisolated enum OrigamiEPUBExporter {
             }
             // A table's caption — the "Table N:" paragraph standing
             // directly over it — prints bold, as the paper prints it.
+            // A run of items is one list. Opened when the first item
+            // arrives, closed by anything that is not an item — including
+            // a new section, a box, or the end of the body.
+            if html.hasPrefix("<li ") {
+                let ordered = Self.listItem(of: element.text)?.ordered ?? false
+                if openListTag == nil {
+                    openListTag = ordered ? "ol" : "ul"
+                    lines.append("<\(openListTag!)>")
+                } else if openListTag != (ordered ? "ol" : "ul") {
+                    closeList()
+                    openListTag = ordered ? "ol" : "ul"
+                    lines.append("<\(openListTag!)>")
+                }
+            } else {
+                closeList()
+            }
             if html.hasPrefix("<table"), let lastIndex = lines.indices.last {
                 let previous = lines[lastIndex]
                 if previous.range(of: "^<p [^>]*>Table \\d",
@@ -858,6 +889,7 @@ nonisolated enum OrigamiEPUBExporter {
                 pendingACMReference = nil
             }
         }
+        closeList()
         closeBox()
         closeStretch()
         if let pending = pendingACMReference { lines.append(pending) }
@@ -1088,7 +1120,13 @@ nonisolated enum OrigamiEPUBExporter {
                 .trimmingCharacters(in: .newlines)
             let languageAttribute = language.isEmpty
                 ? "" : " data-language=\"\(attributeEscaped(language))\""
-            return "<pre \(anchors)\(languageAttribute)><code>\(escaped(code))</code></pre>"
+            // `class="language-…"` is the profile's convention (and what
+            // every highlighter reads); `data-language` stays for the round
+            // trip. The code itself is untouched — no styling spans, no
+            // escaping beyond XML's own: the reader paints it.
+            let codeClass = language.isEmpty
+                ? "" : " class=\"language-\(attributeEscaped(language.lowercased()))\""
+            return "<pre \(anchors)\(languageAttribute)><code\(codeClass)>\(escaped(code))</code></pre>"
         }
         let inline = inlineHTML(from: element.text, citations: citations,
                                 noteAddresses: noteAddresses,
@@ -1096,6 +1134,17 @@ nonisolated enum OrigamiEPUBExporter {
                                 anchoredNoteRefs: anchoredNoteRefs)
         if let level = element.headingLevel {
             return "<h\(level + 1) \(anchors)>\(inline)</h\(level + 1)>"
+        }
+        // A bulleted or numbered paragraph is an item of a list, not a
+        // paragraph that happens to start with a dot. The marker is the
+        // list's to draw, so it is dropped from the words; the item keeps
+        // the paragraph's own id, so every item stays addressable.
+        if element.headingLevel == nil, let item = listItem(of: element.text) {
+            let marked = inlineHTML(from: item.text, citations: citations,
+                                    noteAddresses: noteAddresses,
+                                    noteNumbers: noteNumbers,
+                                    anchoredNoteRefs: anchoredNoteRefs)
+            return "<li \(anchors)>\(marked)</li>"
         }
         // An endnote opens with its printed number as a back link to
         // the first mark that cites it. The number may already lead the
@@ -1120,6 +1169,24 @@ nonisolated enum OrigamiEPUBExporter {
             return "<p \(anchors)><strong class=\"speaker\">\(escaped(speaker)):</strong>\(rest)</p>"
         }
         return "<p \(anchors)>\(inline)</p>"
+    }
+
+    /// Whether a paragraph is written as a list item, and what it says
+    /// without its marker. `•`, `-` and `*` make an unordered list; `1.`,
+    /// `2)` and the like an ordered one.
+    static func listItem(of text: String) -> (ordered: Bool, text: String)? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count > 2 else { return nil }
+        for marker in ["• ", "· ", "– ", "— ", "- ", "* "] where trimmed.hasPrefix(marker) {
+            let rest = String(trimmed.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)
+            return rest.isEmpty ? nil : (false, rest)
+        }
+        // "1. ", "2) " — a number, a dot or bracket, a space.
+        if let match = trimmed.range(of: "^\\d{1,3}[.)] ", options: .regularExpression) {
+            let rest = String(trimmed[match.upperBound...]).trimmingCharacters(in: .whitespaces)
+            return rest.isEmpty ? nil : (true, rest)
+        }
+        return nil
     }
 
     /// Escapes the text, then layers the inline conventions: markdown
@@ -1352,6 +1419,88 @@ nonisolated enum OrigamiEPUBExporter {
     /// exported content document never shows the reader an XML error page.
     /// Uses `XMLParser` (Foundation, every platform), which reports the
     /// offending line and column on failure.
+    /// What in this export contradicts the Origami profile.
+    ///
+    /// Not well-formedness — that is `assertWellFormed`'s job and it
+    /// refuses to ship. These are the claims the profile makes about a
+    /// document's *structure*, which a file can break while remaining
+    /// perfectly valid XHTML: a section-sized paragraph that no reader can
+    /// address, a bullet list that is only bullet characters, a title that
+    /// lives nowhere in the content document, code that never says what
+    /// language it is. The September 2026 article shipped with the first
+    /// three, which is why this exists.
+    ///
+    /// Returned rather than thrown: a warning belongs in front of the
+    /// writer, not in the way of their export.
+    static func profileWarnings(in xhtml: String) -> [String] {
+        var warnings: [String] = []
+
+        // A paragraph that carries several paragraphs' worth of words, with
+        // the breaks written as whitespace HTML will collapse.
+        let paragraphs = matches(of: "<p\\b[^>]*>(.*?)</p>", in: xhtml)
+        var runOn = 0
+        var unaddressed = 0
+        for paragraph in paragraphs {
+            let words = paragraph.replacingOccurrences(of: "<[^>]+>", with: " ",
+                                                       options: .regularExpression)
+                .split(whereSeparator: \.isWhitespace).count
+            let breaks = paragraph.contains("\n") || paragraph.contains("\t")
+            if words > 150, breaks { runOn += 1 }
+        }
+        for tag in matches(of: "<p\\b[^>]*>", in: xhtml) where !tag.contains(" id=") {
+            unaddressed += 1
+        }
+        if runOn > 0 {
+            warnings.append("\(runOn) paragraph\(runOn == 1 ? "" : "s") over 150 words "
+                + "contain line breaks written as whitespace — HTML collapses those, so the "
+                + "breaks will not show and the words are one addressable unit.")
+        }
+        if unaddressed > 0 {
+            warnings.append("\(unaddressed) paragraph\(unaddressed == 1 ? "" : "s") carry no id, "
+                + "so nothing can cite them.")
+        }
+
+        // Bullets that are characters rather than lists — whether the
+        // paragraph opens with one, or carries them inside it (which is
+        // what a run-on paragraph does with a list the writer typed).
+        let opening = matches(of: "<p\\b[^>]*>\\s*[•·]\\s", in: xhtml).count
+        let buried = paragraphs.reduce(0) { total, paragraph in
+            total + matches(of: "[\\n\\r][ \\t]*[•·][ \\t]", in: paragraph).count
+        }
+        let bulleted = opening + buried
+        if bulleted > 0 {
+            warnings.append("\(bulleted) bullet\(bulleted == 1 ? "" : "s") "
+                + "\(bulleted == 1 ? "is a character" : "are characters") rather than list "
+                + "\(bulleted == 1 ? "item" : "items") — a screen reader will not announce a list.")
+        }
+
+        // The document's own name, in the document.
+        if !xhtml.contains("<h1") {
+            warnings.append("The content document has no <h1>: its title is declared only in the "
+                + "package document, so the heading tree has no root.")
+        }
+
+        // Code that does not say what it is.
+        for tag in matches(of: "<pre\\b[^>]*>(?:\\s*<code\\b[^>]*>)?", in: xhtml)
+        where !tag.contains("language-") && !tag.contains("data-language") {
+            warnings.append("A code block names no language, so no reader can colour it.")
+            break
+        }
+
+        return warnings
+    }
+
+    /// Every match of a pattern, as written.
+    private static func matches(of pattern: String, in text: String) -> [String] {
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
+            return []
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        return expression.matches(in: text, range: range).compactMap { match in
+            Range(match.range, in: text).map { String(text[$0]) }
+        }
+    }
+
     private static func assertWellFormed(_ xhtml: String, file: String) throws {
         let parser = XMLParser(data: Data(xhtml.utf8))
         parser.shouldResolveExternalEntities = false

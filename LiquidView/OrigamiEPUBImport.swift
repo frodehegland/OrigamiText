@@ -945,6 +945,11 @@ nonisolated enum OrigamiEPUBImporter {
         // pendingAnchors until the first paragraph under them appears.
         var anchorTargets: [String: String] = [:]
         var pendingAnchors: [String] = []
+        // Which kind of list the walk is inside, and where an ordered one
+        // has got to — so `<li>` items come back as the "• " or "1. "
+        // paragraphs the author wrote.
+        var listDepthOrdered: [Bool] = []
+        var orderedItemNumber = 1
         func appendParagraph(_ paragraph: LiquidDoc.Paragraph,
                              anchors element: XMLTree.Element? = nil) {
             if let element { pendingAnchors.append(contentsOf: descendantIDs(of: element)) }
@@ -1118,6 +1123,26 @@ nonisolated enum OrigamiEPUBImporter {
                 appendParagraph(LiquidDoc.Paragraph(
                     id: stableID(), heading: headingLevels[element.name], text: text),
                     anchors: element)
+            case "li":
+                // A list item returns as the paragraph it was written as,
+                // its marker restored so the document round-trips to the
+                // same words. The list's own <ul>/<ol> carries no text.
+                let text = inlineText(of: element, addressByCitationID: addressByCitationID,
+                                      capture: capture)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return }
+                let ordered = (listDepthOrdered.last ?? false)
+                let marker = ordered ? "\(orderedItemNumber). " : "• "
+                if ordered { orderedItemNumber += 1 }
+                appendParagraph(LiquidDoc.Paragraph(
+                    id: stableID(), heading: nil, text: marker + text), anchors: element)
+            case "ul", "ol":
+                listDepthOrdered.append(element.name == "ol")
+                let resumeNumber = orderedItemNumber
+                orderedItemNumber = 1
+                for child in element.elements { visit(child, stretchID: stretchID) }
+                listDepthOrdered.removeLast()
+                orderedItemNumber = resumeNumber
             case "p", "blockquote":
                 let raw = inlineText(of: element, addressByCitationID: addressByCitationID, capture: capture)
                 // Split at double newlines so that Author-style exports (which pack

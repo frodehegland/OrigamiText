@@ -1,0 +1,99 @@
+import Testing
+@testable import Origami_Text
+
+// MARK: - The Origami profile's structural promises
+//
+// The September 2026 article shipped as a valid EPUB that contradicted the
+// profile it was arguing for: thirteen section-sized paragraphs whose breaks
+// were whitespace HTML collapses, bullet lists that were bullet characters,
+// and no <h1>. All of it well-formed XHTML, so no existing check caught it.
+// These lock the structural claims down.
+
+@Suite("Origami EPUB profile")
+struct OrigamiEPUBProfileTests {
+
+    /// A section-sized paragraph with its breaks written as whitespace —
+    /// exactly the shape Author's export produced.
+    private var runOnArticle: String {
+        let words = Array(repeating: "substrate", count: 200).joined(separator: " ")
+        return """
+        <html><body><h1>A Paper</h1><section><p id="P-1">\(words)
+        \t\(words)</p></section></body></html>
+        """
+    }
+
+    @Test("A section-sized paragraph with collapsing breaks is reported")
+    func runOnParagraph() {
+        let warnings = OrigamiEPUBExporter.profileWarnings(in: runOnArticle)
+        #expect(warnings.contains { $0.contains("collapses") })
+    }
+
+    @Test("A paragraph with no id is reported — nothing can cite it")
+    func unaddressedParagraph() {
+        let html = "<html><body><h1>T</h1><p>Words with no anchor.</p></body></html>"
+        #expect(OrigamiEPUBExporter.profileWarnings(in: html).contains { $0.contains("no id") })
+    }
+
+    @Test("Bullet characters standing in for a list are reported")
+    func bulletCharacters() {
+        let html = """
+        <html><body><h1>T</h1><p id="P-1">• PDF provides stability</p>
+        <p id="P-2">• HTML delivers interactivity</p></body></html>
+        """
+        let warnings = OrigamiEPUBExporter.profileWarnings(in: html)
+        #expect(warnings.contains { $0.contains("bullet character") })
+    }
+
+    @Test("A real list is not reported")
+    func realListIsFine() {
+        let html = """
+        <html><body><h1>T</h1><ul><li id="P-1">PDF provides stability</li>
+        <li id="P-2">HTML delivers interactivity</li></ul></body></html>
+        """
+        #expect(OrigamiEPUBExporter.profileWarnings(in: html).isEmpty)
+    }
+
+    @Test("A content document with no title heading is reported")
+    func missingTitleHeading() {
+        let html = "<html><body><section><h2 id=\"H-1\">A Section</h2></section></body></html>"
+        #expect(OrigamiEPUBExporter.profileWarnings(in: html).contains { $0.contains("<h1>") })
+    }
+
+    @Test("Code that names no language is reported; code that names one is not")
+    func codeLanguage() {
+        let unnamed = "<html><body><h1>T</h1><pre id=\"P-1\"><code>let x = 1</code></pre></body></html>"
+        #expect(OrigamiEPUBExporter.profileWarnings(in: unnamed).contains { $0.contains("names no language") })
+
+        let named = """
+        <html><body><h1>T</h1><pre id="P-1" data-language="swift"><code class="language-swift">let x = 1</code></pre></body></html>
+        """
+        #expect(!OrigamiEPUBExporter.profileWarnings(in: named).contains { $0.contains("names no language") })
+    }
+
+    @Test("A conforming document raises nothing")
+    func conformingDocument() {
+        let html = """
+        <html><body><h1 id="P-title">A Paper</h1>
+        <section><h2 id="H-1">A Section</h2>
+        <p id="P-1">A paragraph of ordinary length, with its own address.</p>
+        <p id="P-2">Another, separately addressable.</p></section></body></html>
+        """
+        #expect(OrigamiEPUBExporter.profileWarnings(in: html).isEmpty)
+    }
+
+    // MARK: - List markers
+
+    @Test("Markers a writer actually types are recognised, and prose is not")
+    func listMarkers() {
+        #expect(OrigamiEPUBExporter.listItem(of: "• PDF provides stability")?.ordered == false)
+        #expect(OrigamiEPUBExporter.listItem(of: "- HTML delivers interactivity")?.ordered == false)
+        #expect(OrigamiEPUBExporter.listItem(of: "1. LaTeX as overhead")?.ordered == true)
+        #expect(OrigamiEPUBExporter.listItem(of: "12) Template workflows")?.ordered == true)
+        // A horizontal rule is not a list, and a number in prose is not either.
+        #expect(OrigamiEPUBExporter.listItem(of: "---") == nil)
+        #expect(OrigamiEPUBExporter.listItem(of: "1.5 times the measure") == nil)
+        #expect(OrigamiEPUBExporter.listItem(of: "Minimalist Formatting: strips back") == nil)
+        // The marker is the list's to draw, so it leaves the words.
+        #expect(OrigamiEPUBExporter.listItem(of: "• PDF provides stability")?.text == "PDF provides stability")
+    }
+}
