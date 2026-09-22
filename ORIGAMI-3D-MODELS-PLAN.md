@@ -41,7 +41,9 @@ already applies to `data-latex`.
 
 **Budgets, so a document stays a document.** A spatial figure above ~25 MB
 should warn at export, and above ~100 MB should be refused with a message
-naming the figure. An EPUB that is 90% turbine is not a paper.
+naming the figure. An EPUB that is 90% turbine is not a paper. §11 is about
+how to stay under that, and it turns out to be easy — but only if you do the
+right thing, which is not the obvious one.
 
 ---
 
@@ -299,6 +301,12 @@ with the Author write-up.
    size budget.
 7. **Do not invent a glTF** by converting USDZ at export (§1).
 8. **Agree the base64 threshold** in §6 with Origami Text before shipping.
+9. **Reduce textures at import, visibly** (§11): 2048² cap at quality 85 by
+   default, never upscaling, higher quality for normal maps, constant-value
+   maps turned back into scalars. Show the author the before and after
+   sizes and let them choose a different cap per figure.
+10. **Ask once for the original's URL or DOI** at drop time, and write it as
+    `data-model-source`. It is the only moment the author reliably knows it.
 
 ---
 
@@ -336,6 +344,131 @@ describing it.
 
 Steps 1–3 are the format. They are also the only steps that are expensive to
 get wrong, because they are the ones that end up in files other people hold.
+
+---
+
+## 11. Compression: what actually works
+
+Measured on 22 September 2026 against real models from Frode's Downloads
+folder, using the USD tools macOS now ships at `/usr/bin` (`usdzip`,
+`usdcat`, `usdchecker`) — not estimated.
+
+### The fact that decides everything
+
+**A USDZ is an uncompressed zip.** The format requires every entry be
+*stored*, not deflated, so the file can be memory-mapped and read without
+inflation. Checked on four models: 5, 16, 10 and 5 entries, **every one
+stored**. So the container does nothing for you, and anything you want
+compressed has to be compressed before it goes in.
+
+### Where the bytes actually are
+
+| Model | Size | Textures | Geometry (`.usdc`) |
+|---|---|---|---|
+| `3d_brain_anatomy` | 24.54 MB | **90%** | 9% |
+| `neuron_cell_structure` | 32.78 MB | **81%** | 18% |
+| `chameleon_anim_mtl_variant` | 14.90 MB | **78%** | 20% |
+
+Geometry is a rounding error. **Textures are the file.** Every instinct
+that says "decimate the mesh" is aimed at the 9–20%.
+
+The brain model's textures are **8192 × 8192**. Its normal map alone is
+14.5 MB — over half the document-sized file — for a figure that will be
+looked at in a column perhaps 600 pixels wide.
+
+### The levers, in order of what they are worth
+
+**1. Cap texture resolution — 90 to 97%.** The only lever that matters.
+
+| | Textures |
+|---|---|
+| as shipped (8192²) | 22.0 MB |
+| capped at 2048² | **2.1 MB** (−90%) |
+| capped at 1024² | **0.68 MB** (−97%) |
+
+Rebuilt with `usdzip` at the 2048 cap, the whole model goes **24.54 MB →
+4.3 MB, an 82% reduction**, and still loads and validates. (`usdchecker`
+reports two complaints on the rebuild — a shader property typed `token`
+instead of `string`, and a constant occlusion value — and both are present
+in the *original* too. They are the source model's, not the reduction's. I
+checked.)
+
+Recommended default: **2048² cap, JPEG quality 85**, with 4096² available
+for a figure whose whole point is surface detail, and 1024² offered when
+the author wants the document small. Normal maps are the exception that
+needs watching: they carry direction, not colour, so JPEG artefacts become
+visible lighting errors. Cap them at the same resolution but keep quality
+higher (92+), or leave them PNG if the model is small enough to afford it.
+
+**2. Let the EPUB zip deflate the USDZ — 8 to 11%, free.** The EPUB
+container *is* deflate, and a USDZ is stored, so simply not setting
+`ZIP_STORED` when adding the model recovers 8–11%: 24.54 → 22.67 MB, 32.78
+→ 29.22 MB, 14.90 → 13.33 MB. Every byte of that saving comes from the
+`.usdc` geometry — the textures are already JPEG and incompressible. This
+costs nothing and needs no decision, but note it only helps a reader who
+unpacks the book (Reader does, to `Caches/EPUBs/<hash>/`); a reader
+memory-mapping straight out of the container would rather have it stored.
+Small enough either way that unpacking wins.
+
+**3. Channel-pack the material maps — up to 3×.** Roughness, metallic and
+ambient occlusion are each a single greyscale channel usually shipped as
+three separate full-colour images. Packed into the R, G and B of one
+texture (the ORM convention, which `UsdPreviewSurface` and glTF both
+understand) that is three files down to one.
+
+**4. Drop constant-value textures.** The brain model ships a **1 × 1 pixel**
+JPEG for metallic. It is a scalar wearing a texture's clothes. A material
+whose map is a single uniform value should be a number in the shader.
+
+**5. Geometry, last.** Decimation and LOD are aimed at 9–20% of the bytes,
+and they are the lossy operation an author is most likely to object to,
+because it changes the object rather than its picture. For glTF the real
+tools are Draco (`KHR_draco_mesh_compression`) and meshopt; USDZ supports
+neither, so on the Apple side `.usdc` is already as good as it gets. Do
+this only when a genuinely huge scan blows the budget after steps 1–4.
+
+### One trap, found the hard way
+
+A naive resize pass **upscales**. `sips -Z 2048` applied to that 1 × 1
+metallic texture produced a 2048 × 2048 image and grew the file from 4 KB
+to 51 KB. Whatever does the capping must clamp, never stretch: skip any
+image already at or below the cap.
+
+### What the format should say about it
+
+Compression is not only an engineering question here — it is a
+**provenance** question, and that is the part a format can address that a
+build script cannot.
+
+A reduced model in a paper is like a downsampled photograph in a figure:
+expected, fine, and something the record should state rather than hide. So
+where the exporter has reduced a model, the figure says so:
+
+```html
+data-model-reduced="textures:2048 quality:85"
+data-model-source-bytes="25724928"
+data-model-source="https://doi.org/10.5281/zenodo.1234567"
+```
+
+- `data-model-reduced` — what was done, in terms a reader can evaluate.
+- `data-model-source-bytes` — what it was, so the reduction is visible.
+- `data-model-source` — **where the full-resolution original lives**, when
+  it lives anywhere. This is the scholarly move, and the one that makes the
+  budget in §1 defensible rather than merely restrictive: a paper does not
+  carry the dataset, it cites it. A spatial figure should be allowed to be
+  a figure, with the real thing one resolvable identifier away.
+
+The exporter check (§8.6) gains: a spatial figure over budget whose
+`data-model-source` is absent should warn — not because the reduction is
+wrong, but because the original then has nowhere to be found.
+
+### What this means for Author
+
+Steps 1, 3 and 4 belong in Author's import, not its export, so the author
+sees the reduced model and can object. Step 2 belongs in whatever writes
+the EPUB. Step 5 should be offered, never automatic. And the author should
+be asked once, at drop time, for the URL or DOI of the full-resolution
+original — the moment they are most likely to know it.
 
 ---
 
