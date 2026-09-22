@@ -52,9 +52,11 @@ result as the author's: a silently lossy conversion (materials, animation,
 variants) is worse than an honest absence. This is the same rule the format
 already applies to `data-latex`.
 
-**Budgets, so a document stays a document.** A spatial figure above ~25 MB
-should warn at export, and above ~100 MB should be refused with a message
-naming the figure. An EPUB that is 90% turbine is not a paper. §11 is about
+**Budgets warn; they never refuse.** A spatial figure above ~25 MB warns at
+export and above ~100 MB warns louder, naming the figure and saying what a
+further reduction would buy — and then does as it is told. An EPUB that is
+90% turbine is not a paper, but it is the author's document, and a tool that
+refuses to export it teaches people to fight the tool. §11 is about
 how to stay under that, and it turns out to be easy — but only if you do the
 right thing, which is not the obvious one.
 
@@ -73,7 +75,6 @@ differs.
          data-model-units="m"
          data-model-extent="0.42 1.10 0.42"
          data-model-up="Y"
-         data-model-extract="usdz glb"
          aria-describedby="P-9F2A1C40-…-desc"
          interactive="">
     <source src="models/turbine.usdz" type="model/vnd.usdz+zip"/>
@@ -118,7 +119,7 @@ our namespace and cannot be broken by the spec changing under us. If
 | `data-model-units` | yes | `m`, `cm`, or `mm` — the unit the extent is in |
 | `data-model-extent` | yes | Real-world bounding box, `x y z`, in those units |
 | `data-model-up` | yes | `Y` or `Z` — USD and glTF disagree, and a model that arrives on its side is the commonest bug in this whole area |
-| `data-model-extract` | yes | Space-separated list of what the reader may pull out: `usdz`, `glb`, `poster` |
+| `data-model-license` | when terms exist | A URL naming the terms the model is offered under |
 | `data-filename` | yes | The name to give the extracted file (Author's spelling; keep it) |
 | `aria-describedby` | when a long description exists | Points at a `<details>` after the figure |
 
@@ -147,9 +148,13 @@ on its own.
 
 Consequences for the exporter:
 
-- The poster is **rendered at export**, by the authoring app, from a
-  sensible camera. It is never left for the reading system to generate,
-  because the reading system may have no 3D engine at all.
+- The poster is **rendered once, at authoring time** — when the model is
+  dropped, by Quick Look — and that image is what ships. Never left for the
+  reading system to generate, because the reading system may have no 3D
+  engine at all; and at authoring rather than export so the writer sees the
+  still the reader will see, and can re-frame it if the camera is wrong.
+  (This document said "export" here and "import" in §8; Author does it at
+  drop, and the spec now says one thing.)
 - The poster carries **real alt text**, and joins the existing accessibility
   rule: `OrigamiEPUB.AccessibilityFacts.allImagesHaveAltText` already
   withdraws `schema:alternativeText` and `accessModeSufficient=textual`
@@ -211,11 +216,14 @@ Context menu, everywhere: **Extract Model…**, **Copy as Citation** (the
 figure is addressable, so its `origami-anchor` is the figure's id — this
 falls out of work already shipped), and **Open in…** where a handler exists.
 
-`data-model-extract` exists so an author can publish a figure that may be
-looked at but not taken — a licensed dataset, an unreleased design. It is a
-declaration, not enforcement; the bytes are in the file either way, and the
-format should not pretend otherwise. Say so in the spec text rather than
-implying a protection we are not providing.
+**There is no permitted-actions list.** An earlier draft had
+`data-model-extract`, naming what a reader "may" pull out. The Author work
+rightly killed it: the bytes are in the file, the plan itself conceded it was
+"a declaration, not enforcement", and publishing it invites an implementer to
+build a permission system that does not exist and a reader to believe in one.
+Where the intent is licensing, `data-model-license` pointing at real terms is
+honest — a reader can show it beside the extract command without pretending
+to police it.
 
 ---
 
@@ -260,13 +268,16 @@ in the draft JSON base64-encoded. A 20 MB USDZ becomes ~27 MB of base64
 inside a file that is opened, parsed and re-saved on every edit. That is
 fine for a 200 KB screenshot and not fine for a model.
 
-Recommendation: **a size threshold, and sidecar files above it.** Under
-~2 MB, base64 in the document as now. Above it, the bytes live beside the
-draft and the asset carries a relative path and a `sha256` — machinery §8 of
-the format document already defines for wrapped files, reused rather than
-reinvented. On export both paths produce the same EPUB. This needs to be the
-same decision in Author, or a document will round-trip through the two apps
-and change shape.
+Recommendation, simplified after the Author review: **sidecar every model,
+with no threshold.** An earlier draft proposed base64 under 2 MB and a
+sidecar above it; essentially every model crosses 2 MB, so the threshold
+only adds a branch that is never taken and a second format to keep working.
+So: model bytes always live beside the draft, with the asset carrying a
+relative path and a `sha256` — machinery §8 of the format document already
+defines for wrapped files, reused rather than reinvented.
+
+Author has no equivalent decision: its model bytes ride binary inside the
+`.liquid` attachment's `fileWrapper`, not base64 in JSON.
 
 ---
 
@@ -305,8 +316,8 @@ with the Author write-up.
    keep the original bytes where the original was already an open
    interchange format (glTF), so the sibling is the author's file and not a
    round-trip.
-2. **Render the poster at import**, not at export, so the author sees the
-   still that readers will see and can re-frame it.
+2. **Render the poster at drop**, so the author sees the still that readers
+   will see and can re-frame it. Already done — Quick Look.
 3. **Ask for, or derive, the real-world extent and up-axis**, and let the
    author correct them. USD scenes carry `metersPerUnit` and `upAxis`; read
    them, and treat them as a default the author may override, not as truth.
@@ -399,6 +410,36 @@ The brain model's textures are **8192 × 8192**. Its normal map alone is
 looked at in a column perhaps 600 pixels wide.
 
 ### The levers, in order of what they are worth
+
+**How, not just what: this must be in-process.** The measurements below were
+taken by shelling out to `usdzip`, which I can do and **Author cannot** —
+it is sandboxed (`com.apple.security.app-sandbox`), and so is any App Store
+build of Origami Text or Reader. A sandboxed app cannot execute `/usr/bin/usdzip`.
+So the pipeline is: read the USDZ as a zip, resize the texture entries with
+ImageIO in memory, and write a new archive **keeping every entry name
+unchanged** so the `.usdc`'s relative references still resolve — no scene
+rewriting at all. (Correction contributed by the Author work, 22 September;
+the earlier draft of this section assumed the command-line tools.)
+
+**And the one thing that will bite you: USDZ requires 64-byte alignment.**
+Every entry's *data* must begin on a 64-byte boundary so the archive can be
+memory-mapped and the `.usdc` read in place. Measured on real files: every
+entry aligned, achieved by padding the zip `extra` field by 12–66 bytes.
+`usdzip` does this for you; `Foundation`, `ZIPFoundation` and Python's
+`zipfile` do not. A naive rewrite — same names, stored, no padding — fails
+validation outright:
+
+```
+$ usdchecker --arkit brain-naive.usdz
+Error: (usdUtilsValidators:UsdzPackageValidator.ByteMisalignment)
+File '3d-brain-anatomy.usdc' in package 'brain-naive.usdz' has an invalid offset 51.
+```
+
+Note `--arkit`: the plain `usdchecker` run passes this file happily, so the
+alignment bug is invisible unless you ask for the package rules. Whatever
+writes the archive must emit the padding, and the export check should run
+`--arkit`'s equivalent — or simply assert `dataOffset % 64 == 0` for every
+entry, which is three lines and needs no USD dependency at all.
 
 **1. Cap texture resolution — 90 to 97%.** The only lever that matters.
 
