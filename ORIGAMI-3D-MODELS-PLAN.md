@@ -9,6 +9,18 @@ have it embedded; on export to Origami EPUB it shows as a preview until the
 reader extracts it — double-click on macOS, the way you'd pull out an image
 or a table; a pinch in visionOS.
 
+> **Reconciled with Author, same day.** This was written before reading
+> Author's code, which turned out to implement most of it already —
+> `LAModelAttachment` and `OrigamiTextExporter` emit `<model>` elements,
+> posters, `OEBPS/models/` and conformant manifest fallbacks today. Three
+> things below have been **corrected to match Author**, which was right and
+> this document was not: `<source>` children instead of a `src` attribute
+> (§2), no separate `data-model-poster` (§2), and reduction at **export**
+> rather than import (§11), because Author's "carrier, not converter"
+> principle is correct and the `.liquid` must keep the writer's bytes.
+> The remaining gaps are in `~/Documents/author_mac_forxcode/ORIGAMI-3D-MODELS.md`
+> as AU-M1…AU-M8.
+
 ---
 
 ## 1. What kind of object
@@ -21,9 +33,10 @@ Required always: a rendered poster image.**
 | **USDZ** (`model/vnd.usdz+zip`) | **required** | One file with its textures inside — the only Apple-native form that can be embedded without dragging companion files along. It is what QuickLook, AR Quick Look, RealityKit, Reality Composer and the `<model>` element all consume with no conversion, so every Apple-platform reader renders it for free. Published format (Pixar USD plus Apple's zip profile), not a private one. |
 | **glTF 2.0 binary** (`model/gltf-binary`) | **encouraged; always declared** | The Khronos open standard: what `<model-viewer>`, three.js, Babylon, Blender and every non-Apple engine read. Without it a spatial figure is a figure only Apple users can open, which is the same failure as a PDF only Acrobat can read — and this format's whole argument is against that. |
 | **Poster** (PNG or JPEG) | **required** | Not a nicety. See §3: in most reading systems the poster *is* the figure. |
-| `.reality` | no | Proprietary, compiled, version-locked to a toolchain. Not interchange. |
-| bare `.usd` / `.usda` / `.usdc` | no | They reference textures as separate files. An embedded figure must be one file. |
-| `.obj`, `.fbx`, `.dae`, `.stl` | no | OBJ has no scene graph and no PBR materials; FBX is proprietary; all of them want companion files. Convert to USDZ on import. |
+| `.reality` | not published | Proprietary, compiled, version-locked to a toolchain. Fine to drop in; warn, and convert or refuse at export. |
+| bare `.usd` / `.usda` / `.usdc` | not published as-is | They reference textures as separate files, so embedding one alone ships a model with no textures. Package to USDZ at export with `usdzip` — the same scene, wrapped, not a re-encode. |
+| `.gltf` (JSON) | not published as-is | Same problem: external buffers and textures. Package to `.glb` at export. |
+| `.obj`, `.fbx`, `.dae`, `.stl` | no | OBJ has no scene graph and no PBR materials; FBX is proprietary; all want companion files. Convert at drop, where the writer can see the result. |
 | point clouds (`.ply`, `.e57`) | not v1 | A different rendering problem. Worth its own element later, not this one. |
 
 **The pattern this follows is the format's own.** Origami already says
@@ -55,15 +68,16 @@ differs.
 
 ```html
 <figure id="P-9F2A1C40-…" data-id="P-9F2A1C40-…" class="origami-model">
-  <model src="models/turbine.usdz"
-         data-model-glb="models/turbine.glb"
-         data-model-poster="images/turbine-poster.png"
+  <model id="M-9F2A1C40-…"
+         data-filename="Turbine assembly"
          data-model-units="m"
          data-model-extent="0.42 1.10 0.42"
          data-model-up="Y"
          data-model-extract="usdz glb"
-         data-model-filename="Turbine assembly"
-         aria-describedby="P-9F2A1C40-…-desc">
+         aria-describedby="P-9F2A1C40-…-desc"
+         interactive="">
+    <source src="models/turbine.usdz" type="model/vnd.usdz+zip"/>
+    <source src="models/turbine.glb"  type="model/gltf-binary"/>
     <img src="images/turbine-poster.png"
          alt="Cutaway of the turbine assembly, blades foreground, housing
               sectioned to show the bearing race." />
@@ -72,18 +86,26 @@ differs.
 </figure>
 ```
 
-**The id stays on the `<figure>`.** That is where Origami puts it today, so
-every existing anchor, citation, backlink and `origami-anchor` keeps
-resolving with no change to the addressing rules. A spatial figure is
-addressable in exactly the way a paragraph is — which is the claim the
-format makes, now extended to something that is not text.
+**`<source>` children, not a `src` attribute** — Author already emits this
+and it is the better shape: it is how `<video>` and `<picture>` offer
+alternatives, it needs no `data-` invention, and the USDZ and its glTF
+sibling sit side by side with no new vocabulary. There is likewise **no
+`data-model-poster`**: the poster is the fallback `<img>`, and naming it
+twice invites the two to disagree.
+
+Author puts `M-<uuid>` on the `<model>` and `P-<uuid>` on the `<figure>`.
+Both are useful, but the spec must say which one is cited: **the figure's
+`P-` id**, because that is the id space `origami.json`, the endnote and
+glossary back-links, and Reader's `origami-anchor` citation blocks already
+use. `M-` is an internal handle, not an address.
 
 **We depend on almost nothing from `<model>` itself.** The element is very
 young; its attribute surface is still moving, and Apple's developer
 documentation does not describe it at all (it is a WebKit implementation of
 a W3C Immersive Web draft). So the design leans on only the two parts that
-are stable by construction — `src`, and the fact that unknown elements
-render their children — and puts everything of ours in `data-*`, which is
+are stable by construction — `<source>` children, and the fact that an
+unknown element renders its children — and puts everything of ours in
+`data-*`, which is
 our namespace and cannot be broken by the spec changing under us. If
 `<model>` gains a standard poster or scale attribute later, we emit that
 *as well*; nothing has to be rewritten.
@@ -92,14 +114,12 @@ our namespace and cannot be broken by the spec changing under us. If
 
 | Attribute | Required | Meaning |
 |---|---|---|
-| `src` | yes | The USDZ, relative to the content document |
-| `data-model-glb` | when present | The glTF sibling. Absent means there isn't one |
-| `data-model-poster` | yes | The rendered still. Same file the fallback `<img>` uses |
+| `<source src type>` | yes, one or more | The USDZ first, the glTF sibling after it when there is one |
 | `data-model-units` | yes | `m`, `cm`, or `mm` — the unit the extent is in |
 | `data-model-extent` | yes | Real-world bounding box, `x y z`, in those units |
 | `data-model-up` | yes | `Y` or `Z` — USD and glTF disagree, and a model that arrives on its side is the commonest bug in this whole area |
 | `data-model-extract` | yes | Space-separated list of what the reader may pull out: `usdz`, `glb`, `poster` |
-| `data-model-filename` | yes | The name to give the extracted file, without extension |
+| `data-filename` | yes | The name to give the extracted file (Author's spelling; keep it) |
 | `aria-describedby` | when a long description exists | Points at a `<details>` after the figure |
 
 `data-model-extent` and `data-model-units` exist because of the pinch. A
@@ -301,10 +321,12 @@ with the Author write-up.
    size budget.
 7. **Do not invent a glTF** by converting USDZ at export (§1).
 8. **Agree the base64 threshold** in §6 with Origami Text before shipping.
-9. **Reduce textures at import, visibly** (§11): 2048² cap at quality 85 by
+9. **Reduce textures at export, visibly** (§11): 2048² cap at quality 85 by
    default, never upscaling, higher quality for normal maps, constant-value
-   maps turned back into scalars. Show the author the before and after
-   sizes and let them choose a different cap per figure.
+   maps turned back into scalars — with a preflight sheet showing each
+   figure's size before and after and a per-figure override. Export, not
+   import: the `.liquid` keeps the writer's bytes byte for byte, which is
+   Author's own principle and the right one.
 10. **Ask once for the original's URL or DOI** at drop time, and write it as
     `data-model-source`. It is the only moment the author reliably knows it.
 
@@ -464,9 +486,22 @@ wrong, but because the original then has nowhere to be found.
 
 ### What this means for Author
 
-Steps 1, 3 and 4 belong in Author's import, not its export, so the author
-sees the reduced model and can object. Step 2 belongs in whatever writes
-the EPUB. Step 5 should be offered, never automatic. And the author should
+All of this belongs in **export**, not import. `LAModelAttachment`'s header
+states Author's principle — "this app is a carrier, not a converter, and a
+re-encoded model is a changed model" — and it is right: the `.liquid` is the
+writer's working copy and must keep what they gave it. But publication is a
+different act. The exported EPUB is already a rendering: it renders posters,
+flattens to XHTML, drops the editing model. A reduced texture set belongs
+there, with the original intact behind it.
+
+(An earlier draft of this section said "reduce at import so the author can
+see it". Reading Author's design showed that to be wrong.) The "so the
+author can see it" requirement is real and is met instead by a **preflight
+sheet at export**: one row per spatial figure, size before and after, the
+cap applied, and a per-figure override — 4096² where surface detail is the
+point, 1024² where small matters, *Original* to opt out. Nothing silent.
+
+Step 5 (geometry) should be offered, never automatic. And the author should
 be asked once, at drop time, for the URL or DOI of the full-resolution
 original — the moment they are most likely to know it.
 
