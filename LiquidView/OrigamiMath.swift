@@ -276,7 +276,13 @@ nonisolated enum MathMLBodyScanner {
                   let innerRange = Range(match.range(at: 2), in: html) else { continue }
             let attributes = String(html[attrRange])
             let inner = String(html[innerRange])
-            guard let id = attribute("id", in: attributes), id.hasPrefix("eq-") else { continue }
+            // Any `math` element carrying an id is an equation. Being
+            // `<math>` is the semantic signal; the id only addresses it.
+            // This used to require an `eq-` prefix, which made an equation
+            // written to the profile's own example (`id="E-71B2…"`)
+            // invisible — and inferring a kind from an id prefix is
+            // exactly what the format forbids.
+            guard let id = attribute("id", in: attributes), !id.isEmpty else { continue }
             let display = attribute("display", in: attributes)
                 .flatMap(EquationDisplay.init) ?? .inline
             let tex = texAnnotation(in: inner)

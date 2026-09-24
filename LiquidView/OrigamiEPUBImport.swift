@@ -163,29 +163,46 @@ nonisolated enum OrigamiEPUBImporter {
         else { throw OrigamiEPUBImportError.missingContent }
         let html = String(decoding: contentData, as: UTF8.self)
 
-        // Visual-Meta: the package file first, the embedded copy second.
-        let visualMetaData = source.entry("visual-meta.json")
+        // Both records are declared in the package as <link rel="record">
+        // carrying a `properties` value that says which record it is. The
+        // profile forbids finding them by filename, so the declaration is
+        // asked first; the well-known name is the pre-1.0 fallback, and the
+        // embedded copy is Visual-Meta's last resort.
+        let declaredRecord: (String) -> Data? = { properties in
+            recordHref(in: opf, properties: properties).flatMap { href in
+                source.entry(joinedPath(opfDirectory, href)) ?? source.entry(href)
+            }
+        }
+        let visualMetaData = declaredRecord("origami:visual-meta")
+            ?? source.entry("visual-meta.json")
             ?? source.entryWithSuffix("visual-meta.json")
             ?? embeddedVisualMeta(in: html)
         let visualMeta = visualMetaData.flatMap {
             (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
         }
 
-        // Author EPUB format: origami.json carries the reference pool and
-        // document metadata. When present it replaces Visual-Meta as the
-        // citation source and signals single-spine layout, so backmatter.xhtml
-        // (bibliography) is not parsed as body content.
-        let origamiJSON: [String: Any]? = visualMeta == nil
-            ? (source.entry("origami.json") ?? source.entryWithSuffix("origami.json"))
-                .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
-            : nil
+        // The interaction record is read whether or not the semantic record
+        // is there. The profile divides them — concepts, citations and
+        // structure in Visual-Meta; tables, layouts and models here — but
+        // every pre-1.0 export carries the semantic keys in both. So each
+        // fact has one home and one fallback rather than being merged:
+        // merging two copies of a reference list turned 32 references
+        // into 63.
+        let origamiJSON: [String: Any]? = (declaredRecord("origami:interaction")
+            ?? source.entry("origami.json")
+            ?? source.entryWithSuffix("origami.json"))
+            .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
 
         // The citation pool, split back into its two homes: internal
         // citations (an origamitext:// URL names their address) become
-        // links again; external records become references.
-        let pool = origamiJSON != nil
-            ? citationPool(fromOrigamiJSON: origamiJSON!)
-            : citationPool(fromVisualMeta: visualMeta)
+        // links again; external records become references. Visual-Meta is
+        // authoritative for citations; the interaction record answers only
+        // when Visual-Meta said nothing at all.
+        var pool = citationPool(fromVisualMeta: visualMeta)
+        if pool.references.isEmpty, pool.addressByCitationID.isEmpty,
+           let origamiJSON {
+            pool = citationPool(fromOrigamiJSON: origamiJSON)
+        }
         let addressByCitationID = pool.addressByCitationID
         let bibtexByAddress = pool.bibtexByAddress
         var references = pool.references
@@ -202,7 +219,10 @@ nonisolated enum OrigamiEPUBImporter {
                 urls: node["urls"] as? [String] ?? [])
         }
 
-        let map = visualMeta?["map"] as? [String: Any]
+        // Authored layouts belong to the interaction record; pre-1.0
+        // exports put them in Visual-Meta, so that is the fallback.
+        let map = (origamiJSON?["map"] as? [String: Any])
+            ?? (visualMeta?["map"] as? [String: Any])
         let layouts: [LiquidDoc.Layout] = dictionaries(map?["views"]).enumerated().map { position, view in
             let positions = dictionaries(view["nodes"]).compactMap { node -> LiquidDoc.Layout.Position? in
                 guard let ref = node["ref"] as? String else { return nil }
@@ -222,10 +242,12 @@ nonisolated enum OrigamiEPUBImporter {
             return LiquidDoc.MapConnection(from: from, to: to)
         }
 
-        // Live tables: the Visual-Meta `tables` array is the raw source
-        // (values and formulas both). The body's <table> elements only
-        // supply placement (their data-table-id links here).
-        let tables: [LiquidDoc.Table] = dictionaries(visualMeta?["tables"]).compactMap { raw in
+        // Live tables: the `tables` array is the raw source (values and
+        // formulas both); the body's <table> elements only supply placement
+        // (their data-table-id links here). The interaction record owns it
+        // in the profile, Visual-Meta held it before that.
+        let tableSource = origamiJSON?["tables"] ?? visualMeta?["tables"]
+        let tables: [LiquidDoc.Table] = dictionaries(tableSource).compactMap { raw in
             guard let identifier = raw["identifier"] as? String, !identifier.isEmpty else { return nil }
             let cellRows = raw["cells"] as? [[[String: Any]]] ?? []
             let cells: [[LiquidDoc.Table.Cell]] = cellRows.map { row in
@@ -241,14 +263,7 @@ nonisolated enum OrigamiEPUBImporter {
                 cells: cells)
         }
 
-        // Mathematics: prefer a Visual-Meta equations block, fall back to a
-        // scan of the content document's `math[id]` elements. MathML in the
-        // body renders natively in the reader; this index powers citing and
-        // copying equations.
         let equationHref = joinedPath(opfDirectory, contentHref)
-        let equations = EquationIndex.build(visualMetaText: html,
-                                            contentHTML: html,
-                                            contentHref: equationHref).entries
 
         // Resolve an image `src` (relative to the content document) to its
         // bytes in the package, so figures import as assets.
@@ -260,58 +275,127 @@ nonisolated enum OrigamiEPUBImporter {
                 ?? source.entryWithSuffix("/\((src as NSString).lastPathComponent)")
         }
 
-        // The Origami profile is one semantic content document; a plain
-        // EPUB (no Origami metadata) is often many — one per chapter —
-        // so those read whole: every spine document in order, paragraph
-        // and asset ids prefixed per chapter so they stay unique, and
-        // images kept within a budget so a picture-heavy book does not
-        // balloon the document (the markers stay visible regardless).
-        var body: [LiquidDoc.Paragraph]
-        var bodyAssets: [LiquidDoc.Asset]
+        // Every spine document is read, in order. An element's address is
+        // its document path plus its id, so nothing is renamed to keep ids
+        // distinct across documents — the path does that. Ids are never
+        // rewritten: a rewritten id is not the id the publication
+        // published, and every citation, annotation and metadata reference
+        // to it would silently fail to resolve.
+        //
+        // Two details earn their keep. A publication that carries records
+        // skips its glossary, bibliography and endnote *sections*, because
+        // the records supply those entries — reading them as body text as
+        // well printed the reference list twice. The judgement is per
+        // section rather than per document so that a colophon sitting
+        // beside them still reaches the reader, which is the whole point
+        // of a colophon. And a multi-document book keeps images within a
+        // budget so a picture-heavy one does not balloon the document (the
+        // markers stay visible regardless); a single document has no
+        // budget, as before.
+        var body: [LiquidDoc.Paragraph] = []
+        var bodyAssets: [LiquidDoc.Asset] = []
         var capturedFootnotes: [(id: String, text: String)] = []
         let capture = CitationCapture()
-        let spineHrefs = spineContentHrefs(in: opf)
-        if visualMeta == nil, origamiJSON == nil, spineHrefs.count > 1 {
-            body = []
-            bodyAssets = []
-            var imageBudget = 12_000_000
-            for (index, href) in spineHrefs.enumerated() {
+        let hasRecords = visualMeta != nil || origamiJSON != nil
+        // A publication that declares the profile has canonical addresses
+        // of the form `path#id`, always — whether it holds one content
+        // document or twenty (profile §5.1). Bare ids are the pre-1.0
+        // form, kept only for publications that do not declare the
+        // profile, so that annotations already written against them still
+        // resolve. This is a property of the migration, not of the format.
+        let declaresProfile = firstCapture(
+            in: opf,
+            pattern: "<meta[^>]*property=\"dcterms:conformsTo\"[^>]*>\\s*([^<]+)")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .hasPrefix("https://origamitext.org/profile/") ?? false
+        let readable: [(href: String, xhtml: String)] = spineContentHrefs(in: opf)
+            .compactMap { href in
                 guard let data = source.entry(joinedPath(opfDirectory, href))
-                        ?? source.entry(href) else { continue }
-                let chapterDir = (joinedPath(opfDirectory, href) as NSString)
-                    .deletingLastPathComponent
-                let resolve: (String) -> Data? = { src in
-                    let full = joinedPath(chapterDir, src)
-                    guard let bytes = source.entry(full)
-                            ?? source.entry(src)
-                            ?? source.entryWithSuffix("/\((src as NSString).lastPathComponent)"),
-                          bytes.count <= imageBudget else { return nil }
-                    imageBudget -= bytes.count
-                    return bytes
-                }
-                guard let (part, partAssets, partFootnotes) = try? bodyParagraphs(
-                    fromXHTML: String(decoding: data, as: UTF8.self),
-                    addressByCitationID: [:],
-                    resolveImage: resolve,
-                    contentDir: chapterDir,
-                    idPrefix: "s\(index + 1)-",
-                    capture: capture) else { continue }
-                body += part
-                bodyAssets += partAssets
-                capturedFootnotes += partFootnotes
+                        ?? source.entry(href) else { return nil }
+                return (href, String(decoding: data, as: UTF8.self))
             }
-            guard !body.isEmpty else { throw OrigamiEPUBImportError.missingContent }
-        } else {
-            let (part, partAssets, partFootnotes) = try bodyParagraphs(
-                fromXHTML: html,
+        var imageBudget = readable.count > 1 ? 12_000_000 : Int.max
+        typealias Read = (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset],
+                          footnotes: [(id: String, text: String)], bodyBearing: Int)
+        let read: (String, String, Bool, Int) -> Read? = { href, xhtml, qualifying, offset in
+            let documentDir = (joinedPath(opfDirectory, href) as NSString)
+                .deletingLastPathComponent
+            let resolve: (String) -> Data? = { src in
+                let full = joinedPath(documentDir, src)
+                guard let bytes = source.entry(full)
+                        ?? source.entry(src)
+                        ?? source.entryWithSuffix("/\((src as NSString).lastPathComponent)"),
+                      bytes.count <= imageBudget else { return nil }
+                imageBudget -= bytes.count
+                return bytes
+            }
+            return try? bodyParagraphs(
+                fromXHTML: xhtml,
                 addressByCitationID: addressByCitationID,
-                resolveImage: resolveImage,
-                contentDir: contentDir,
+                resolveImage: resolve,
+                contentDir: documentDir,
+                documentPath: qualifying ? href : "",
+                skippingRecordSections: hasRecords,
+                ordinalOffset: offset,
                 capture: capture)
-            body = part
-            bodyAssets = partAssets
-            capturedFootnotes = partFootnotes
         }
+
+        // A first pass answers one question: how many documents carry the
+        // work's own text? Not how many are in the spine — a publication
+        // with records has a backmatter document whose glossary and
+        // bibliography belong to the records, and whose colophon is about
+        // the publication rather than part of it.
+        var offset = 0
+        var first: [(href: String, read: Read)] = []
+        for document in readable {
+            guard let outcome = read(document.href, document.xhtml, true, offset),
+                  !outcome.paragraphs.isEmpty else { continue }
+            offset += outcome.paragraphs.count
+            first.append((document.href, outcome))
+        }
+        // A pre-1.0 publication with one body document keeps bare ids, so
+        // the annotations already written against it still resolve. A
+        // publication that declares the profile is addressed by path and
+        // fragment unconditionally: an element's identity must not depend
+        // on how many documents happen to sit beside it (§5.1). The
+        // re-read costs one parse, and only in the legacy case.
+        let bodyDocuments = first.filter { $0.read.bodyBearing > 0 }.count
+        var parts = first
+        if !declaresProfile, bodyDocuments <= 1, !first.isEmpty {
+            imageBudget = Int.max
+            offset = 0
+            parts = []
+            for document in readable {
+                guard let outcome = read(document.href, document.xhtml, false, offset),
+                      !outcome.paragraphs.isEmpty else { continue }
+                offset += outcome.paragraphs.count
+                parts.append((document.href, outcome))
+            }
+        }
+        for part in parts {
+            body += part.read.paragraphs
+            bodyAssets += part.read.assets
+            capturedFootnotes += part.read.footnotes
+        }
+        guard !body.isEmpty else { throw OrigamiEPUBImportError.missingContent }
+
+        // Mathematics: prefer a Visual-Meta equations block, fall back to a
+        // scan of the `math[id]` elements. MathML in the body renders
+        // natively in the reader; this index powers citing and copying
+        // equations. The block's entries carry their own hrefs and so
+        // already span documents; a body scan is run per document, with
+        // that document's href, or an equation in a later part would have
+        // no address to be cited by.
+        let fromBlock = EquationIndex.build(visualMetaText: html,
+                                            contentHTML: html,
+                                            contentHref: equationHref)
+        let equations: [EquationEntry] = fromBlock.fromVisualMeta
+            ? fromBlock.entries
+            : readable.flatMap { document in
+                EquationIndex.build(visualMetaText: nil,
+                                    contentHTML: document.xhtml,
+                                    contentHref: joinedPath(opfDirectory, document.href)).entries
+            }
 
         // What the anchors carried joins the pool: the citation's display
         // text as the author wrote it, and the number tying it to the
@@ -712,6 +796,55 @@ nonisolated enum OrigamiEPUBImporter {
         return nil
     }
 
+    /// The sections whose entries come from the records instead: the
+    /// glossary, the bibliography, the endnotes. Named by EPUB's own
+    /// structural semantics, so the judgement is the document's own rather
+    /// than a guess from a filename.
+    ///
+    /// A colophon is deliberately absent. It is the one piece of
+    /// backmatter written to be read — the human-readable statement of
+    /// what metadata the publication carries and where — so it belongs in
+    /// the flow.
+    private static let recordSectionTypes: Set<String> =
+        ["glossary", "bibliography", "endnotes"]
+
+    /// Whether this element is such a section.
+    private static func isRecordSection(_ element: XMLTree.Element) -> Bool {
+        sectionKinds(of: element).contains(where: recordSectionTypes.contains)
+    }
+
+    /// Whether this element is the publication's colophon — the
+    /// human-readable statement of what metadata it carries and where.
+    private static func isColophonSection(_ element: XMLTree.Element) -> Bool {
+        sectionKinds(of: element).contains("colophon")
+    }
+
+    private static func sectionKinds(of element: XMLTree.Element) -> [String] {
+        let declared = element.attributes["epub:type"]
+            ?? element.attributes["role"]
+            ?? ""
+        return declared.split(separator: " ")
+            // DPUB-ARIA spells the same semantics `doc-bibliography`.
+            .map { String($0.hasPrefix("doc-") ? $0.dropFirst(4) : $0) }
+    }
+
+    /// A package-declared metadata record's href. The profile declares each
+    /// record as `<link rel="record" properties="origami:…">` in the package
+    /// metadata, so a reader finds a record by what it says it is rather
+    /// than by what it happens to be called.
+    private static func recordHref(in opf: String, properties: String) -> String? {
+        for link in captures(in: opf, pattern: "<link\\s[^>]*>") {
+            guard let rel = firstCapture(in: link, pattern: "\\srel=\"([^\"]+)\""),
+                  rel.split(separator: " ").contains("record"),
+                  let declared = firstCapture(in: link, pattern: "\\sproperties=\"([^\"]+)\""),
+                  declared.split(separator: " ").map(String.init).contains(properties),
+                  let href = firstCapture(in: link, pattern: "\\shref=\"([^\"]+)\"")
+            else { continue }
+            return xmlUnescaped(href)
+        }
+        return nil
+    }
+
     /// Every match's first capture group (the whole match when the
     /// pattern has none), in order.
     private static func captures(in text: String, pattern: String) -> [String] {
@@ -908,10 +1041,12 @@ nonisolated enum OrigamiEPUBImporter {
                                        addressByCitationID: [String: String],
                                        resolveImage: (String) -> Data?,
                                        contentDir: String = "",
-                                       idPrefix: String = "",
+                                       documentPath: String = "",
+                                       skippingRecordSections: Bool = false,
+                                       ordinalOffset: Int = 0,
                                        capture: CitationCapture? = nil)
         throws -> (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset],
-                   footnotes: [(id: String, text: String)]) {
+                   footnotes: [(id: String, text: String)], bodyBearing: Int) {
         // Strip <script> elements before XML parsing: their JSON/JS content
         // may contain bare & characters (e.g. bibtex strings) that are valid
         // JSON but not valid XML, causing NSXMLParser to reject the file.
@@ -925,16 +1060,34 @@ nonisolated enum OrigamiEPUBImporter {
         let root = try XMLTree.parse(Data(sanitized.utf8))
         // The Origami profile wraps the flow in <main>; a plain EPUB's
         // chapters write their content straight into <body>.
-        guard let main = root.firstDescendant(named: "main")
-                ?? root.firstDescendant(named: "body") else {
+        let documentBody = root.firstDescendant(named: "body")
+        guard let main = root.firstDescendant(named: "main") ?? documentBody else {
             throw OrigamiEPUBImportError.missingContent
+        }
+
+        // An element's address is its document path and its id. With one
+        // content document the path is dropped and the published id stands
+        // alone; with many, the path is what keeps ids distinct. Either
+        // way the id itself travels exactly as published.
+        let address: (String) -> String = { id in
+            documentPath.isEmpty ? id : "\(documentPath)#\(id)"
         }
 
         var paragraphs: [LiquidDoc.Paragraph] = []
         var assets: [LiquidDoc.Asset] = []
         var footnotes: [(id: String, text: String)] = []
         var assetOrdinal = 0
-        var fallbackOrdinal = 0
+        // Synthesised ids (`p12` for a paragraph the publication left
+        // unnamed) continue across documents rather than restarting, so
+        // they stay distinct even where addresses carry no path.
+        var fallbackOrdinal = ordinalOffset
+        // How many paragraphs came from the work itself rather than from a
+        // colophon. A colophon is *about* the publication, so a document
+        // holding only one does not make the publication multi-document —
+        // which matters, because that decision is what chooses between
+        // bare ids and path-qualified addresses.
+        var bodyBearing = 0
+        var colophonDepth = 0
 
         var currentBoxID: String?
         var boxOrdinal = 0
@@ -957,6 +1110,7 @@ nonisolated enum OrigamiEPUBImporter {
                 anchorTargets[anchor] = paragraph.id
             }
             pendingAnchors.removeAll()
+            if colophonDepth == 0 { bodyBearing += 1 }
             paragraphs.append(paragraph)
         }
         func visit(_ element: XMLTree.Element, stretchID: String? = nil) {
@@ -966,18 +1120,28 @@ nonisolated enum OrigamiEPUBImporter {
             let headingLevels = ["h1": 1, "h2": 1, "h3": 2, "h4": 3, "h5": 3, "h6": 3]
             let stableID: () -> String = {
                 fallbackOrdinal += 1
-                return idPrefix + (element.attributes["data-id"]
+                return address(element.attributes["data-id"]
                     ?? element.attributes["id"]
                     ?? "p\(fallbackOrdinal)")
             }
             switch element.name {
             case "section", "div", "article":
+                // A glossary, bibliography or endnote section is the
+                // records' business: they supply those entries, and
+                // reading the section as well printed the reference list
+                // twice. Skipped only where records exist — a plain EPUB's
+                // bibliography is the only copy it has. A colophon is
+                // never skipped: it is written to be read.
+                if skippingRecordSections, isRecordSection(element) { return }
                 // The container's id (a <section id> from \label after
                 // \section) waits for its first paragraph.
                 if let id = element.attributes["id"], !id.isEmpty {
                     pendingAnchors.append(id)
                 }
+                let colophon = isColophonSection(element)
+                if colophon { colophonDepth += 1 }
                 for child in element.elements { visit(child, stretchID: stretchID) }
+                if colophon { colophonDepth -= 1 }
             case "aside":
                 // The export's stretchtext detail: the toggled anchor in
                 // the host paragraph is chrome, but the aside's content
@@ -992,7 +1156,7 @@ nonisolated enum OrigamiEPUBImporter {
                     for child in element.elements { visit(child, stretchID: stretchID) }
                     currentBoxID = saved
                 } else if (element.attributes["class"] ?? "").contains("ot-stretchtext-content") {
-                    let blockID = element.attributes["id"].map { idPrefix + $0 } ?? stableID()
+                    let blockID = element.attributes["id"].map(address) ?? stableID()
                     for child in element.elements { visit(child, stretchID: blockID) }
                 } else if (element.attributes["epub:type"] ?? "").contains("footnote")
                     || (element.attributes["role"] ?? "").contains("doc-footnote") {
@@ -1010,7 +1174,7 @@ nonisolated enum OrigamiEPUBImporter {
                             }
                             .joined(separator: " ")
                             .trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !text.isEmpty { footnotes.append((idPrefix + id, text)) }
+                        if !text.isEmpty { footnotes.append((address(id), text)) }
                     }
                 } else {
                     if let id = element.attributes["id"], !id.isEmpty {
@@ -1031,23 +1195,34 @@ nonisolated enum OrigamiEPUBImporter {
                         text: "```\(language)\n\(code)\n```"), anchors: element)
                 }
             case "model":
-                // An EPUB's embedded 3D model (the <model> element): the
-                // marker carries the model file's package-relative path —
-                // the 3D bytes stay on disk, never base64 in the document
-                // — and the poster image inside becomes an asset the
-                // marker names, the fallback where no 3D can show.
-                guard let src = element.attributes["src"], !src.isEmpty else {
+                // A literal <model> element: the shape Author exported
+                // before 22 September 2026 (§13). Packages written since
+                // carry no such element — the element is not in EPUB's
+                // content model, and EPUBCheck rejects any file holding
+                // one — so this branch exists only for books already on
+                // disk. It states the same facts, on the element itself
+                // and on its <source> children.
+                let sourceChild = element.firstDescendant(named: "source")
+                guard let src = element.attributes["src"] ?? sourceChild?.attributes["src"],
+                      !src.isEmpty else {
                     for child in element.elements { visit(child, stretchID: stretchID) }
                     return
                 }
-                let modelAlt = element.firstDescendant(named: "img")?.attributes["alt"]
+                let poster = element.firstDescendant(named: "img")
+                // The fallback <img>'s alt is the description on this
+                // shape; Author had no description field when it was
+                // written, so it is often empty, and empty stands.
+                let modelAlt = poster?.attributes["alt"]
                     ?? element.attributes["alt"] ?? ""
-                var marker = "![\(modelAlt)](model:\(joinedPath(contentDir, src))"
-                if let poster = element.firstDescendant(named: "img"),
-                   let posterSrc = poster.attributes["src"], !posterSrc.isEmpty,
+                var legacy = spatialFigureFacts(
+                    from: element, path: joinedPath(contentDir, src), alt: modelAlt)
+                if let type = sourceChild?.attributes["type"], !type.isEmpty {
+                    legacy.mediaType = type
+                }
+                if let poster, let posterSrc = poster.attributes["src"], !posterSrc.isEmpty,
                    let data = resolveImage(posterSrc), !data.isEmpty {
                     assetOrdinal += 1
-                    let assetID = "\(idPrefix)img\(assetOrdinal)"
+                    let assetID = address("img\(assetOrdinal)")
                     let name = (posterSrc as NSString).lastPathComponent
                     let ext = (name as NSString).pathExtension.lowercased()
                     assets.append(LiquidDoc.Asset(
@@ -1056,12 +1231,65 @@ nonisolated enum OrigamiEPUBImporter {
                         mediaType: LiquidDoc.mediaType(forExtension: ext),
                         dataBase64: data.base64EncodedString(),
                         alt: modelAlt.isEmpty ? nil : modelAlt))
-                    marker += "?poster=\(assetID)"
+                    legacy.posterID = assetID
                 }
-                marker += ")"
                 appendParagraph(LiquidDoc.Paragraph(
-                    id: stableID(), heading: nil, text: marker), anchors: element)
+                    id: stableID(), heading: nil,
+                    text: LiquidDoc.modelMarker(for: legacy)), anchors: element)
             case "figure", "img":
+                // A spatial figure first. A 3D model is carried by
+                // whichever element holds `data-model-src` — the <img>
+                // poster in the normal case, an <a> where the writer
+                // chose no poster — and it is found by that attribute
+                // alone, never by the tag name and never by looking for
+                // a <model> element, which current packages do not
+                // contain (§3.3, §7). `model-upgrade.js` sits in the
+                // package for Safari's sake; it is never run here, and
+                // never needs to be.
+                if let carrier = element.firstDescendant(carrying: "data-model-src"),
+                   let modelSrc = carrier.attributes["data-model-src"], !modelSrc.isEmpty {
+                    // The figure's words are its <figcaption>, which the
+                    // poster's alt repeats. Where the writer wrote no
+                    // description there is neither a figcaption nor an
+                    // alt, and nothing is then what a reader shows: the
+                    // file name is not a description, and presenting it
+                    // as one would assert an accessibility the document
+                    // does not have (§9). An <a> carrier's link text is
+                    // the file name, so it is deliberately not read.
+                    let caption = element.firstDescendant(named: "figcaption")?.plainText
+                        .replacingOccurrences(of: #"\s+"#, with: " ",
+                                              options: .regularExpression)
+                        .trimmingCharacters(in: .whitespaces) ?? ""
+                    let words = caption.isEmpty
+                        ? (carrier.attributes["alt"] ?? "") : caption
+                    var figure = spatialFigureFacts(
+                        from: carrier, path: joinedPath(contentDir, modelSrc), alt: words)
+                    // The poster is real content, not a placeholder: it
+                    // becomes an asset like any figure's image, and it
+                    // is what stands until a reader deliberately asks
+                    // for the model (§6).
+                    if let posterSrc = carrier.attributes["src"], !posterSrc.isEmpty,
+                       let data = resolveImage(posterSrc), !data.isEmpty {
+                        assetOrdinal += 1
+                        let assetID = address("img\(assetOrdinal)")
+                        let name = (posterSrc as NSString).lastPathComponent
+                        let ext = (name as NSString).pathExtension.lowercased()
+                        assets.append(LiquidDoc.Asset(
+                            id: assetID,
+                            filename: name.isEmpty ? "\(assetID).png" : name,
+                            mediaType: LiquidDoc.mediaType(forExtension: ext),
+                            dataBase64: data.base64EncodedString(),
+                            alt: words.isEmpty ? nil : words))
+                        figure.posterID = assetID
+                    }
+                    // The paragraph takes the <figure>'s own anchors, so
+                    // the `P-<uuid>` id internal links and citations
+                    // resolve to lands on this figure (§3.4).
+                    appendParagraph(LiquidDoc.Paragraph(
+                        id: stableID(), heading: nil,
+                        text: LiquidDoc.modelMarker(for: figure)), anchors: element)
+                    return
+                }
                 // A figure/image comes back as an asset plus an
                 // `![alt](asset:id)` marker paragraph — the same form the
                 // exporter reads, so authoring round-trips.
@@ -1085,7 +1313,7 @@ nonisolated enum OrigamiEPUBImporter {
                 let paragraphID = stableID()
                 if let data = resolveImage(src), !data.isEmpty {
                     assetOrdinal += 1
-                    let assetID = "\(idPrefix)img\(assetOrdinal)"
+                    let assetID = address("img\(assetOrdinal)")
                     let name = (src as NSString).lastPathComponent
                     let ext = (name as NSString).pathExtension.lowercased()
                     assets.append(LiquidDoc.Asset(
@@ -1167,7 +1395,7 @@ nonisolated enum OrigamiEPUBImporter {
                         id = stableID()
                     } else {
                         fallbackOrdinal += 1
-                        id = idPrefix + "p\(fallbackOrdinal)"
+                        id = address("p\(fallbackOrdinal)")
                     }
                     var paragraph = LiquidDoc.Paragraph(id: id, heading: nil, text: text)
                     paragraph.stretchID = stretchID
@@ -1190,14 +1418,34 @@ nonisolated enum OrigamiEPUBImporter {
             }
         }
         for child in main.elements { visit(child) }
+
+        // A writer may put the colophon after </main> — it is end matter,
+        // and one content document holds the whole publication. It is
+        // also the one piece of end matter written to be read (§7.4.5),
+        // so a reader must not let the <main> boundary silently withhold
+        // it. Anything else outside <main> stays outside: a running
+        // header would only repeat the title, and the Visual-Meta
+        // payload block is metadata rather than text.
+        if let documentBody, main !== documentBody {
+            func visitColophons(in element: XMLTree.Element) {
+                for child in element.elements where child !== main {
+                    if isColophonSection(child) {
+                        visit(child)
+                    } else {
+                        visitColophons(in: child)
+                    }
+                }
+            }
+            visitColophons(in: documentBody)
+        }
         // The in-document anchors' second pass: each token's raw
         // #target becomes the id of the paragraph its \label landed on
         // — the element's own id when it became a paragraph, else the
         // first paragraph inside its container or the one holding the
         // inline anchor. A target found nowhere unwraps to its words —
         // never a dead link.
-        resolveJumpAnchors(&paragraphs, anchorTargets: anchorTargets, idPrefix: idPrefix)
-        return (paragraphs, assets, footnotes)
+        resolveJumpAnchors(&paragraphs, anchorTargets: anchorTargets, address: address)
+        return (paragraphs, assets, footnotes, bodyBearing)
     }
 
     /// Every `id` in the element's subtree — the anchors a \label left
@@ -1217,7 +1465,7 @@ nonisolated enum OrigamiEPUBImporter {
     /// what resolves nowhere loses its link and keeps its words.
     private static func resolveJumpAnchors(_ paragraphs: inout [LiquidDoc.Paragraph],
                                            anchorTargets: [String: String],
-                                           idPrefix: String) {
+                                           address: (String) -> String) {
         guard let token = try? NSRegularExpression(
             pattern: #"\[([^\]\[]*)\]\(origami-jump:#([^)\s]+)\)"#) else { return }
         let knownIDs = Set(paragraphs.map(\.id))
@@ -1232,8 +1480,8 @@ nonisolated enum OrigamiEPUBImporter {
                 let found = whole.substring(with: match.range)
                 let label = whole.substring(with: match.range(at: 1))
                 let raw = whole.substring(with: match.range(at: 2))
-                let resolved = knownIDs.contains(idPrefix + raw)
-                    ? idPrefix + raw
+                let resolved = knownIDs.contains(address(raw))
+                    ? address(raw)
                     : anchorTargets[raw]
                 let replacement = resolved.map { "[\(label)](origami-jump:\($0))" } ?? label
                 rewritten = rewritten.replacingOccurrences(of: found, with: replacement)
@@ -1576,6 +1824,46 @@ nonisolated enum OrigamiEPUBImporter {
     }
 }
 
+// MARK: - Spatial figures
+
+/// The facts a `[data-model-src]` carrier states about its model, read
+/// under exactly the names the reading spec gives them (§4). The caller
+/// supplies the package-relative path, already joined, and the figure's
+/// words — its caption, never its file name (§9).
+///
+/// `origami.json`'s `models` array repeats all of this and the two are
+/// guaranteed to agree (§5), so the attributes alone are read: they are
+/// on the element the paragraph is being built from, and a reader may
+/// take either as its source of truth.
+private func spatialFigureFacts(from carrier: XMLTree.Element,
+                                path: String,
+                                alt: String) -> LiquidDoc.SpatialFigure {
+    let attributes = carrier.attributes
+    // Units and extent are stated together or not at all, so one
+    // without the other is dropped rather than guessed from (§4.2).
+    let extent = attributes["data-model-extent"]?
+        .split(whereSeparator: \.isWhitespace)
+        .compactMap { Double($0) }
+    let statesSize = attributes["data-model-units"] == "m" && extent?.count == 3
+    return LiquidDoc.SpatialFigure(
+        path: path,
+        alt: alt,
+        posterID: nil,
+        modelID: attributes["data-model-id"],
+        mediaType: attributes["data-model-media-type"]
+            ?? LiquidDoc.modelMediaType(forExtension: (path as NSString).pathExtension),
+        // Author's own spelling on the older `<model>` shape was
+        // `data-filename`; both name the writer's file.
+        filename: attributes["data-model-filename"] ?? attributes["data-filename"],
+        bytes: attributes["data-model-bytes"].flatMap { Int($0) },
+        upAxis: attributes["data-model-up"] == "Z" ? "Z" : "Y",
+        units: statesSize ? "m" : nil,
+        extent: statesSize ? extent : nil,
+        reduced: attributes["data-model-reduced"],
+        sourceBytes: attributes["data-model-source-bytes"].flatMap { Int($0) },
+        source: attributes["data-model-source"])
+}
+
 // MARK: - A small XML tree
 
 /// The content document as a walkable tree — XMLParser underneath, so
@@ -1617,6 +1905,21 @@ private final class XMLTree: NSObject, XMLParserDelegate {
             for element in elements {
                 if element.name == name { return element }
                 if let found = element.firstDescendant(named: name) { return found }
+            }
+            return nil
+        }
+
+        /// The first element in this subtree — this one included —
+        /// carrying the named attribute. How a spatial figure's carrier
+        /// is found: the reading spec's single normative selector is
+        /// `[data-model-src]`, and a reader must not rely on the tag
+        /// name, the file-name pattern or the `<figure>` wrapper, since
+        /// the carrier is an `<img>` where a poster exists and an `<a>`
+        /// where none does (§3.3).
+        func firstDescendant(carrying attribute: String) -> Element? {
+            if attributes[attribute] != nil { return self }
+            for element in elements {
+                if let found = element.firstDescendant(carrying: attribute) { return found }
             }
             return nil
         }
