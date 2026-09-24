@@ -87,6 +87,452 @@ struct VisionFigureView: View {
     }
 }
 
+/// A live table in a visionOS reading — the Mac's `OrigamiTableView`,
+/// brought across whole: a clean grid with its header ruled off, never
+/// the pipe-text stand-in. Where the document's cells carry formulas
+/// the numbers are live: an input the maths reads can be typed over and
+/// everything computed from it follows, and Reset puts the document's
+/// own numbers back. The arithmetic is the shared `LATable`, so it is
+/// the same arithmetic the Mac and Author do.
+struct VisionTableView: View {
+    let table: LiquidDoc.Table
+
+    /// The reader's what-ifs: numbers typed over the inputs, keyed
+    /// "row,col" — never the document's words.
+    @State private var overrides: [String: String] = [:]
+
+    /// Whether any cell computes — a static table reads as written.
+    private var live: Bool {
+        table.cells.contains { row in
+            row.contains { ($0.formula ?? "").isEmpty == false }
+        }
+    }
+
+    /// The grid with the overrides applied and the formulas recomputed.
+    private var computed: [[LiquidDoc.Table.Cell]] {
+        let laTable = table.laTable()
+        for (key, value) in overrides {
+            let parts = key.split(separator: ",")
+            guard parts.count == 2, let row = Int(parts[0]), let col = Int(parts[1])
+            else { continue }
+            laTable.setValue(value, row: row, column: col)
+        }
+        laTable.recalculate()
+        return LiquidDoc.Table(laTable).cells
+    }
+
+    var body: some View {
+        let cells = live ? computed : table.cells
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 5) {
+                    ForEach(Array(cells.enumerated()), id: \.offset) { row, rowCells in
+                        GridRow {
+                            ForEach(Array(rowCells.enumerated()), id: \.offset) { col, cell in
+                                cellView(cell,
+                                         original: row < table.cells.count
+                                             && col < table.cells[row].count
+                                             ? table.cells[row][col] : nil,
+                                         row: row, col: col)
+                            }
+                        }
+                        if row == 0 && cells.count > 1 {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(10)
+            }
+            if live, !overrides.isEmpty {
+                Button("Reset") {
+                    withAnimation(.snappy) { overrides = [:] }
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .help("Back to the document's own numbers")
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+            }
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.quaternary.opacity(0.4))
+        }
+    }
+
+    @ViewBuilder
+    private func cellView(_ cell: LiquidDoc.Table.Cell,
+                          original: LiquidDoc.Table.Cell?,
+                          row: Int, col: Int) -> some View {
+        let key = "\(row),\(col)"
+        if let formula = cell.formula, !formula.isEmpty {
+            // A computed cell whispers what it is: a dotted line under
+            // the number, the formula on the pointer.
+            Text(cell.value)
+                .font(cellFont(row: row))
+                .underline(pattern: .dot, color: .secondary.opacity(0.5))
+                .help(formula.hasPrefix("=") ? formula : "= " + formula)
+                .contentTransition(.numericText())
+                .animation(.snappy, value: cell.value)
+        } else if live, Double((original?.value ?? cell.value)
+            .replacingOccurrences(of: ",", with: "")) != nil {
+            TextField("", text: overrideBinding(key, original: original?.value ?? cell.value))
+                .textFieldStyle(.plain)
+                .font(cellFont(row: row))
+                .fixedSize()
+                .foregroundStyle(overrides[key] == nil
+                                 ? AnyShapeStyle(.primary)
+                                 : AnyShapeStyle(Color.accentColor))
+                .help("An input the maths reads — try another number; Reset restores the document's.")
+        } else {
+            Text(cell.value)
+                .font(cellFont(row: row))
+                .textSelection(.enabled)
+        }
+    }
+
+    private func cellFont(row: Int) -> Font {
+        AppFonts.body(14, weight: row == 0 ? .semibold : .regular)
+    }
+
+    /// Typing over an input keeps the what-if beside the document's own
+    /// number; typing the original back lets the what-if go.
+    private func overrideBinding(_ key: String, original: String) -> Binding<String> {
+        Binding(get: { overrides[key] ?? original },
+                set: { typed in
+                    if typed == original {
+                        overrides.removeValue(forKey: key)
+                    } else {
+                        overrides[key] = typed
+                    }
+                })
+    }
+}
+
+/// A spatial figure in a visionOS reading — a 3D model an Origami EPUB
+/// carries, read as `ORIGAMI-3D-MODEL-READ-SPEC.md` (23 September 2026)
+/// says to read it:
+///
+/// - the **poster is the resting state** (§6.1). The writer opened the
+///   model in its own window, turned it to the side worth showing and
+///   pressed a camera button: that angle is a choice, not a thumbnail.
+///   So nothing auto-renders and nothing auto-spins in its place (§6.2);
+///   the poster is drawn on the page's own colour with its alpha intact
+///   — no white plate behind it, no frame around it, and no assumption
+///   that it is square (§6.5);
+/// - **activation is deliberate** (§6.3): the reader pinches the poster
+///   and pulls, and the model leaves the page into the room — a
+///   double-tap does the same where a scroll view claims the drag;
+/// - `data-model-up` is **trusted as stated** rather than defaulted
+///   (§4.1) — a model that arrives on its side is this whole area's
+///   commonest bug — so a stated `Z` is turned upright here;
+/// - the file is offered for extraction **byte for byte**, under the
+///   writer's own name rather than the package's (§10), and
+///   `data-model-source` stands as a link to the full-resolution
+///   original wherever the package names one;
+/// - where the bytes are a format Apple's frameworks do not read — glTF
+///   is the real case — the poster stands and says so, which is the
+///   spec's instruction and better than an empty stage (§11.5).
+///
+/// Real-world size belongs in the room, not on the page: a page has no
+/// metres. `data-model-extent` is honoured literally where the model
+/// stands in space — see `SpatialModels.open` — and the facts the
+/// document states travel with it on `VisionModelFactsPanel`, which is
+/// where this figure's buttons used to be.
+struct VisionSpatialFigureView: View {
+    let figure: LiquidDoc.SpatialFigure
+    let doc: LiquidDoc
+    /// The paragraph the marker stands in, so the volume can find it.
+    let paragraphID: String
+
+    @Environment(VisionModel.self) private var model
+    /// Whether this gesture has already pulled the model out, so one
+    /// long pull stands one model rather than a dozen.
+    @State private var pulled = false
+    /// How far the poster has been drawn toward the reader, so the
+    /// picture leans as it is pulled and springs back if let go early.
+    @State private var lift: CGFloat = 0
+
+    /// The poster's box.
+    private static let stageHeight: CGFloat = 440
+
+    private var poster: LiquidDoc.Asset? {
+        figure.posterID.flatMap { id in doc.assets.first { $0.id == id } }
+    }
+
+    /// The model file inside the unpacked book, when it is really there.
+    private var modelURL: URL? {
+        let url = doc.fileURL.appendingPathComponent(figure.path)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Whether this figure can leave the page at all.
+    private var canPull: Bool {
+        modelURL != nil && figure.isNativelyRenderable
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            posterImage
+            if !figure.alt.isEmpty {
+                // The figure's own words — its <figcaption>, which the
+                // importer carried onto the marker. Where the writer
+                // wrote none, nothing stands here (§9).
+                Text(figure.alt)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            // Only where the figure cannot be pulled does the page say
+            // anything at all: a format Apple's frameworks do not read,
+            // or bytes missing from the package. Otherwise the picture
+            // speaks for itself and the facts travel with the model.
+            if !canPull {
+                Label(modelURL == nil
+                      ? "The model file is not in the unpacked book."
+                      : "\(figure.mediaType) cannot be shown in space — the poster stands.",
+                      systemImage: "cube.transparent")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The poster exactly as the package carries it — and the way the
+    /// model leaves the page: pinch it and pull. The picture leans
+    /// toward the hand as it comes, and past a real pull the model
+    /// stands in the room with its facts beside it; a pull that barely
+    /// moved is a look at the picture, and springs back.
+    ///
+    /// No buttons stand under the figure any more. They were there —
+    /// View in 3D, Open in a Volume, Extract, a byte count — and they
+    /// made a page of reading look like a control panel. Everything
+    /// they did now lives on the panel that appears beside the model in
+    /// space, where it is about the model rather than about the page.
+    @ViewBuilder private var posterImage: some View {
+        if let poster, let image = visionFigureImage(for: poster) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity)
+                .frame(maxHeight: Self.stageHeight)
+                // The description, never the file name (§9).
+                .accessibilityLabel(figure.alt.isEmpty ? "3D model" : figure.alt)
+                // The picture goes grey while its object is out of the
+                // page: the writer's framing is still there to be read,
+                // and the page says plainly that this one is standing
+                // in the room rather than on the paper.
+                .grayscale(isStanding ? 1 : 0)
+                .animation(.easeInOut(duration: 0.35), value: isStanding)
+                .offset(z: lift)
+                .animation(.spring(duration: 0.3), value: lift)
+                // Where this picture is on the page, in the page's own
+                // points. The room reads it at the moment of a pull, so
+                // the object comes out of THIS picture rather than a
+                // fixed spot near the top of the page.
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    proxy.frame(in: .named(FigureGeometry.pageSpace))
+                } action: { frame in
+                    model.figureGeometry.note(figure: paragraphID, frame: frame)
+                }
+                .gesture(pullGesture)
+                // The page scrolls, and a scroll view is entitled to
+                // claim a drag; a tap is the same act by another route,
+                // so the model is never unreachable. Neither is a
+                // button: the figure is the affordance. While the
+                // object is out, that same tap is how it comes home.
+                .onTapGesture(count: 2) { isStanding ? sendBack() : pull() }
+                .help(canPull
+                      ? (isStanding
+                         ? "Touch to bring the model back into the page"
+                         : "Pinch and pull the model into the room (or double-tap)")
+                      : "This model cannot be shown in space")
+                .accessibilityAction(named: isStanding
+                                     ? "Bring the model back into the page"
+                                     : "Stand the model in the room") {
+                    isStanding ? sendBack() : pull()
+                }
+        } else {
+            // No poster: the carrier was an <a>. What stands is an
+            // actionable figure naming the file — never an empty box
+            // — and the name here is a visible label, which is a
+            // different thing from claiming it as alt text (§9).
+            Button {
+                pull()
+            } label: {
+                Label(figure.filename ?? (figure.path as NSString).lastPathComponent,
+                      systemImage: "cube")
+                    .font(.callout)
+            }
+            .buttonStyle(.bordered)
+            .help("Stand this model in the room")
+        }
+    }
+
+    /// Whether this figure's object is standing in the room right now.
+    private var isStanding: Bool {
+        model.standingModels.contains(paragraphID)
+    }
+
+    /// The pull: a pinch that travels, **in three dimensions**. The
+    /// hand's own motion through the room is what carries the object, so
+    /// depth is real depth — how far you have actually drawn your hand
+    /// toward yourself — rather than screen distance reinterpreted as
+    /// depth, which is what it was before and never felt like drawing
+    /// anything out.
+    ///
+    /// Past the threshold the object comes through the paper and follows
+    /// the hand for the rest of the gesture, staying where it is let go.
+    /// The picture leans as the hand goes and settles back when the hand
+    /// lets go: the picture is the writer's chosen view and stays on the
+    /// page, as the spec asks.
+    /// The travel is the hand's across the page, in the page's own
+    /// points; the room turns it into metres by the page's **measured**
+    /// size, never an assumed points-per-metre.
+    ///
+    /// (A drag with real depth wants `DragGesture(coordinateSpace3D:)`,
+    /// whose space comes from a `GeometryReader3D` — which takes all the
+    /// space offered it and would have to be sized around the picture.
+    /// That is a layout change to the reading, and worth making only
+    /// once this is confirmed working. Until then depth comes from how
+    /// far the hand has drawn across the page, which is what a hand
+    /// pulling something off a page mostly does.)
+    private var pullGesture: some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                guard canPull, !isStanding else { return }
+                let travel = max(abs(value.translation.width),
+                                 abs(value.translation.height))
+                lift = min(travel / 3, 40)
+                guard pulled || travel > Self.pullThreshold else { return }
+                pulled = true
+                pull(travel: value.translation)
+            }
+            .onEnded { value in
+                pulled = false
+                withAnimation(.spring(duration: 0.4)) { lift = 0 }
+                // The hand has let go. The room keeps the object where
+                // it was left — or, if the pull never cleared the paper,
+                // puts it back into the picture.
+                model.modelPull = VisionModel.ModelPull(
+                    docID: doc.id, paragraphID: paragraphID,
+                    travel: value.translation, released: true)
+            }
+    }
+
+    /// The pull that means it: less is a glance at the picture.
+    private static let pullThreshold: CGFloat = 40
+
+    /// Asks the room for the object, and keeps asking as the hand moves.
+    /// The page keeps its picture — greyed while the object is out.
+    private func pull(travel: CGSize = .zero) {
+        guard canPull else { return }
+        model.modelPull = VisionModel.ModelPull(docID: doc.id,
+                                                paragraphID: paragraphID,
+                                                travel: travel)
+    }
+
+    /// Sends the object back the way it came: through the picture, which
+    /// takes its colour again as the object arrives.
+    private func sendBack() {
+        model.modelReturn = paragraphID
+    }
+
+}
+
+/// The panel that appears beside a model standing in the room: what the
+/// document states about it, and the two things a reader may want of it
+/// — the file itself, or the full-resolution original. This is where
+/// the figure's buttons went, and they read better here: beside the
+/// object they act on rather than under a picture in a page of prose.
+struct VisionModelFactsPanel: View {
+    let figure: LiquidDoc.SpatialFigure
+    let modelURL: URL
+    let onClose: () -> Void
+
+    @State private var extractURL: URL?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(figure.alt.isEmpty ? "3D model" : figure.alt)
+                    .font(.headline)
+                    .lineLimit(3)
+                Spacer(minLength: 12)
+                Button {
+                    onClose()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Send the model back to the page")
+            }
+            Divider()
+            // The file name stands as a label, which is a different
+            // thing from claiming it as the figure's description (§9).
+            fact("File", figure.filename
+                 ?? (figure.path as NSString).lastPathComponent)
+            if let bytes = figure.bytes {
+                fact("Size", Int64(bytes).formatted(.byteCount(style: .file)))
+            }
+            if figure.statesRealWorldSize, let extent = figure.extent {
+                fact("Real size", extent.map { String(format: "%g", $0 * 100) }
+                        .joined(separator: " × ") + " cm")
+            } else {
+                // Author does not know it and will not invent one, so
+                // neither does this (§4.2).
+                fact("Real size", "not stated")
+            }
+            fact("Up axis", figure.upAxis)
+            if let reduced = figure.reduced {
+                // A reduced model in a paper is like a downsampled
+                // photograph: expected, and something the record states
+                // rather than hides.
+                fact("Reduced", reduced)
+                if let was = figure.sourceBytes {
+                    fact("Was", Int64(was).formatted(.byteCount(style: .file)))
+                }
+            }
+            HStack(spacing: 10) {
+                if let extractURL {
+                    ShareLink(item: extractURL) {
+                        Label("Extract", systemImage: "square.and.arrow.up")
+                    }
+                    .help("The model file unchanged, under its own name")
+                }
+                if let source = figure.source, let url = URL(string: source) {
+                    Link(destination: url) {
+                        Label("Original", systemImage: "arrow.up.right")
+                    }
+                    .help("Where the full-resolution original lives")
+                }
+            }
+            .font(.caption)
+            .controlSize(.small)
+            .padding(.top, 2)
+        }
+        .frame(width: 300, alignment: .leading)
+        .padding(16)
+        .glassBackgroundEffect()
+        .task(id: figure.path) {
+            extractURL = OrigamiReading.extractURL(for: figure, modelURL: modelURL)
+        }
+    }
+
+    private func fact(_ name: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(name)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(width: 62, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+    }
+}
+
 /// A figure in a window of its own: the image as large as the window is
 /// made, its caption beneath, and the paper it came from named — so a
 /// figure stood on a wall an hour later still says what it belongs to.
@@ -330,6 +776,67 @@ struct OrigamiVisionApp: App {
 /// unpacked once under Application Support/EPUBs, remembered as
 /// EPUBRecords, and re-imported as structured documents into the index —
 /// so the reader, the volumes, and the journals all see them.
+/// Where each 3D figure's picture stands on its page, and how large the
+/// page is — measured by the reading itself, because only the reading
+/// knows where it has laid its pictures out.
+///
+/// Deliberately **not** observed. These are written during layout, and
+/// observing a value written during layout invites a redraw that writes
+/// it again; nothing draws from them either. They are read at one
+/// moment only: when a figure is pulled and the room needs to know
+/// which point of the page it is coming out of.
+@MainActor
+final class FigureGeometry {
+    /// Picture frames by paragraph id, in the reading's own points,
+    /// measured against the page's named coordinate space.
+    private var frames: [String: CGRect] = [:]
+    /// Page sizes by document id, in the same points.
+    private var pages: [String: CGSize] = [:]
+
+    /// The space the reading measures in — the whole page, so a
+    /// picture's frame means the same thing in every reading view.
+    static let pageSpace = "origamiReadingPage"
+
+    func note(figure paragraphID: String, frame: CGRect) {
+        frames[paragraphID] = frame
+    }
+
+    func note(page docID: String, size: CGSize) {
+        pages[docID] = size
+    }
+
+    func frame(ofFigure paragraphID: String) -> CGRect? { frames[paragraphID] }
+    func size(ofPage docID: String) -> CGSize? { pages[docID] }
+
+    /// A picture's centre in the page's own space — x across, y up, z on
+    /// the paper — given how many metres the page measures across.
+    ///
+    /// This is what lets a model come out of its *own* picture rather
+    /// than a fixed spot near the top of the page, and it works in every
+    /// reading view because it is measured rather than assumed: a
+    /// picture in Horizontal's third column reports the third column.
+    func figureCentreOnPage(figure paragraphID: String, page docID: String,
+                            pageMetres: Float) -> SIMD3<Float>? {
+        guard let frame = frames[paragraphID], let size = pages[docID] else {
+            return nil
+        }
+        return Self.centreOnPage(figure: frame, page: size, pageMetres: pageMetres)
+    }
+
+    /// The rule itself, with no state: a picture's frame and its page's
+    /// size, both in points, and the page's real width in metres.
+    nonisolated static func centreOnPage(figure frame: CGRect, page size: CGSize,
+                                         pageMetres: Float) -> SIMD3<Float>? {
+        guard size.width > 1, pageMetres > 0 else { return nil }
+        let metresPerPoint = pageMetres / Float(size.width)
+        return SIMD3<Float>(
+            Float(frame.midX - size.width / 2) * metresPerPoint,
+            // Points run down the page and the room's y runs up it.
+            Float(size.height / 2 - frame.midY) * metresPerPoint,
+            0)
+    }
+}
+
 @MainActor @Observable
 final class VisionModel {
     let index = LibraryIndex()
@@ -829,29 +1336,111 @@ final class VisionModel {
         UserDefaults.standard.set(data, forKey: Self.epubRecordsKey)
     }
 
+    /// The room the books that declare no journal stand in. It is a
+    /// bucket, not a venue — a book whose publication really were these
+    /// words would be indistinguishable from one that names none, which
+    /// is a small price for a room that every EPUB can reach.
+    static let noJournalVenue = "Not in a Journal"
+
     /// The venues the shelf's books declare, most-stocked first — the
-    /// opening window's journals.
-    var venues: [String] {
+    /// opening window's journals — and last, when any book names none,
+    /// the room those books share. A book without a journal used to
+    /// have no room at all: it could only open as a window standing
+    /// alone, while a journal's article opened into the Map with its
+    /// cards, topic magnets, spatial notes and saved arrangements. The
+    /// bucket is what makes reading one the same act as reading the
+    /// other.
+    var venues: [String] { Self.venues(in: epubRecords) }
+
+    /// The rule itself, as a function of the shelf — no model state, so
+    /// the ordering and the bucket can be checked without a shelf on
+    /// the device.
+    static func venues(in records: [EPUBRecord]) -> [String] {
         var counts: [String: Int] = [:]
         var order: [String] = []
-        for record in epubRecords {
+        for record in records {
             guard let venue = record.venue else { continue }
             if counts[venue] == nil { order.append(venue) }
             counts[venue, default: 0] += 1
         }
-        return order.sorted {
+        let declared = order.sorted {
             let a = counts[$0] ?? 0
             let b = counts[$1] ?? 0
             if a != b { return a > b }
             return $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
         }
+        guard records.contains(where: { $0.venue == nil }) else { return declared }
+        return declared + [noJournalVenue]
     }
 
     func records(inVenue venue: String) -> [EPUBRecord] {
-        epubRecords.filter {
+        guard venue != Self.noJournalVenue else {
+            return epubRecords.filter { $0.venue == nil }
+        }
+        return epubRecords.filter {
             $0.venue?.caseInsensitiveCompare(venue) == .orderedSame
         }
     }
+
+    /// Puts this book's room up: its journal's Map, or — where it
+    /// declares no journal — the Map the journal-less books share.
+    /// Reading is the same act either way, so the room is the same
+    /// room, with the same views and interactions around the page.
+    func standMap(for record: EPUBRecord) {
+        let venue = record.venue ?? Self.noJournalVenue
+        if openJournalVenue != venue { openJournalVenue = venue }
+    }
+
+    /// A reading asked for from outside the room — the shelf, a file
+    /// opened in Files, a link. The Map answers it by standing the
+    /// reading in front of the reader on the same panel a double-tapped
+    /// card opens, so a book opened by itself wears the same paper,
+    /// chrome and proportions as one opened from its journal. Opened by
+    /// itself used to mean the bare reader window instead, which is
+    /// where the difference in appearance came from. Cleared by the Map
+    /// once the panel stands.
+    var roomReadingRequest: String?
+
+    /// Opens a book the way the room opens one: its Map up, and the
+    /// reading standing in front of the reader.
+    func openInRoom(_ record: EPUBRecord) {
+        standMap(for: record)
+        roomReadingRequest = record.id
+    }
+
+    /// A 3D figure pinched and pulled out of a reading: which document,
+    /// and which paragraph's figure. The room answers by standing the
+    /// model in space beside the page, its facts on a panel — the
+    /// gesture the spec asks for, "the model leaves the page into a
+    /// volume at the size the document states, and stays where it is
+    /// put". Cleared by the room once the model stands.
+    struct ModelPull: Equatable {
+        let docID: String
+        let paragraphID: String
+        /// The hand's travel since the pinch, in the page's own points.
+        /// The room turns it into metres by the page's measured size, so
+        /// the object follows the hand out at the right rate whatever
+        /// the reading's width — and the pull is one continuous act
+        /// rather than a threshold that fires and then abandons the
+        /// object beside the page.
+        var travel: CGSize = .zero
+        /// Whether the hand has let go. The room keeps the object where
+        /// it was left — or, if it never cleared the paper, puts it
+        /// back where it came from.
+        var released = false
+    }
+    var modelPull: ModelPull?
+
+    /// The figures whose objects are standing in the room, by paragraph
+    /// id. Their pictures go grey while the object is out: the page says
+    /// plainly that this one is elsewhere, and the picture is the way to
+    /// call it back.
+    var standingModels: Set<String> = []
+
+    /// A picture touched to bring its object home again.
+    var modelReturn: String?
+
+    @ObservationIgnored let figureGeometry = FigureGeometry()
 
     /// Imports every EPUB in the community folder — new arrivals unpack
     /// and join the shelf; books already unpacked are left as they
@@ -1320,11 +1909,14 @@ final class VisionModel {
         }.value
         if let doc { index.upsertEPUBDocument(doc) }
         if changed { rebuildEPUBIndex() }
-        // A book opened as a file starts on Default — the EPUB's own
-        // page — and stands selected as the desk, on solid paper,
-        // whatever reading view was last in use.
-        UserDefaults.standard.set("faithful", forKey: "visionReaderMode")
-        readingDeskDocID = record.id
+        // Nothing about the reading is set from here. A book opened as
+        // a file used to be forced onto Default and made the Reading
+        // Desk — solid paper, every other panel swept from the room —
+        // so a book opened on its own looked nothing like the same book
+        // opened inside its journal, which keeps the reader's chosen
+        // view and the room's glass. Presentation must not depend on
+        // which door the book came through, and the desk is entered by
+        // the panel's own toggle.
         return record
     }
 
@@ -1673,7 +2265,13 @@ struct VisionOpeningView: View {
                 for url in urls {
                     if let record = await model.openEPUBFile(at: url) { lastRecord = record }
                 }
-                if let lastRecord { openWindow(id: "reader", value: lastRecord.id) }
+                if let lastRecord {
+                    // A book opened straight off the file system names
+                    // no journal more often than not; it opens in the
+                    // room, and looks it, exactly as one that does.
+                    model.openInRoom(lastRecord)
+                    dismissWindow(id: "library")
+                }
             }
         }
         // Files' Open In / a shared EPUB lands here (the Info.plist
@@ -1682,7 +2280,8 @@ struct VisionOpeningView: View {
             guard url.isFileURL, url.pathExtension.lowercased() == "epub" else { return }
             Task {
                 if let record = await model.openEPUBFile(at: url) {
-                    openWindow(id: "reader", value: record.id)
+                    model.openInRoom(record)
+                    dismissWindow(id: "library")
                 }
             }
         }
@@ -1731,31 +2330,27 @@ struct VisionOpeningView: View {
             ContentUnavailableView {
                 Label("No Journals Yet", systemImage: "newspaper")
             } description: {
-                // Which half of the pipeline is empty: no books at all
-                // (still importing, or none in the folder), or books
-                // that name no venue.
-                if model.epubRecords.isEmpty {
-                    VStack(spacing: 6) {
-                        Text("EPUBs in the community folder join the shelf on their own — iCloud may still be downloading them. Settings (on your right arm) shows the shelf and can rescan.")
-                        Text(model.shelfDiagnostic)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text("\(model.epubRecords.count) article\(model.epubRecords.count == 1 ? " is" : "s are") on the shelf, but none declares the journal or proceedings it is part of.")
+                // The list is empty only when the shelf is: books that
+                // name no journal now have a room of their own, so they
+                // are never the reason nothing stands here.
+                VStack(spacing: 6) {
+                    Text("EPUBs in the community folder join the shelf on their own — iCloud may still be downloading them. Settings (on your right arm) shows the shelf and can rescan.")
+                    Text(model.shelfDiagnostic)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         } else {
             List(venues, id: \.self) { venue in
+                let isBucket = venue == VisionModel.noJournalVenue
                 Button {
-                    // The journal's articles take the Map; the panel
-                    // steps aside — the right arm's Documents chip
-                    // brings it back.
+                    // The articles take the Map; the panel steps aside
+                    // — the right arm's Documents chip brings it back.
                     model.openJournalVenue = venue
                     dismissWindow(id: "library")
                 } label: {
                     HStack {
-                        Label(venue, systemImage: "newspaper")
+                        Label(venue, systemImage: isBucket ? "doc.text" : "newspaper")
                             .lineLimit(2)
                         Spacer()
                         Text("\(model.records(inVenue: venue).count)")
@@ -1763,7 +2358,9 @@ struct VisionOpeningView: View {
                             .monospacedDigit()
                     }
                 }
-                .help("Open this journal's articles on the Map")
+                .help(isBucket
+                      ? "Open these articles on the Map — the same room, and the same interactions, a journal's articles stand in"
+                      : "Open this journal's articles on the Map")
             }
         }
     }
@@ -1790,7 +2387,14 @@ struct VisionOpeningView: View {
         } else {
             List(records) { record in
                 VisionShelfRow(record: record) {
-                    openWindow(id: "reader", value: record.id)
+                    // Opened exactly as a journal's article is: its Map
+                    // up, and the reading standing in the room on the
+                    // same panel — the same paper, chrome and breadth
+                    // — rather than in a bare window of its own. The
+                    // panel steps aside as it does for a journal; the
+                    // right arm's Documents chip brings it back.
+                    model.openInRoom(record)
+                    dismissWindow(id: "library")
                 }
             }
         }
@@ -2301,8 +2905,22 @@ private struct FaithfulWebView: UIViewRepresentable {
 
 /// The full article, opened by double-tapping a card in the Knowledge
 /// Space (or a row in the library).
+extension EnvironmentValues {
+    /// Whether the reading's host grows to fit it. The Map's panel does
+    /// — in Horizontal it sets no width of its own and takes the
+    /// columns' whole breadth — while the reader window is a fixed
+    /// 660pt and cannot. The distinction matters because Horizontal
+    /// asks for the width of every column at once: inside a window
+    /// that cannot grow, SwiftUI centres the overflow, so the reader
+    /// gets the middle of the reading with its edges cut away, or a
+    /// column boundary and apparently nothing at all.
+    @Entry var visionReadingHostGrows = false
+}
+
 struct VisionReaderView: View {
     @Environment(VisionModel.self) private var model
+    /// Set by the Map's panel, which sizes itself to this reading.
+    @Environment(\.visionReadingHostGrows) private var hostGrows
     let docID: String
     /// The speaker whose statements are being browsed, sheet-presented.
     @State private var browsingSpeaker: SpeakerSelection?
@@ -2557,6 +3175,19 @@ struct VisionReaderView: View {
     /// — the document's whole breadth at once. (A very long reading is
     /// capped at a room-sized width and walks the rest by swipe; the
     /// attachment's render texture cannot be endless.)
+    /// How wide the reading may ask to be on the Map's panel: as wide
+    /// as its columns, up to the GPU's texture ceiling. The panel is
+    /// one view attachment — a single texture for the whole reading —
+    /// and past roughly 8192px a texture simply fails to draw, the body
+    /// going missing rather than clipping. 3900pt keeps a margin under
+    /// it; the rest of a very long reading walks by swipe.
+    ///
+    /// (This width is observed good: a reading opened straight into
+    /// Horizontal stands this wide in the room. What went wrong was
+    /// never the ceiling but the moment of measuring — see
+    /// `ReaderPanels.remeasure`.)
+    private static let panelWidthCeiling: CGFloat = 3900
+
     private func horizontalView(_ doc: LiquidDoc) -> some View {
         let pages = horizontalPages(of: doc)
         let pose = model.pose(of: docID)
@@ -2594,47 +3225,36 @@ struct VisionReaderView: View {
             .scrollTargetLayout()
         }
         .scrollTargetBehavior(.viewAligned)
-        // The reader takes the columns' whole width, so the hosting
-        // panel grows to show every one of them — capped under the
-        // GPU's texture ceiling: attachments render at 2x, and a
-        // texture past 8192px simply fails to draw (the body goes
-        // missing). 3900pt keeps a margin; the rest walks by swipe.
-        .frame(width: min(fullWidth, 3900))
+        // Where the host grows — the Map's panel, which sets no width
+        // of its own in Horizontal — the reader takes the columns'
+        // whole width, so every column that fits under the texture
+        // ceiling stands and the rest walks by swipe.
+        //
+        // In a window, which cannot grow, that same width is the bug:
+        // a wide child in a 660pt window overflows it and SwiftUI
+        // centres the overflow, so Horizontal came out blank, shifted
+        // or cut off. There the columns stay inside the width there is.
+        .frame(width: hostGrows ? min(fullWidth, Self.panelWidthCeiling) : nil)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             footBar(doc, proxy: nil)
         }
     }
 
-    /// The Mac's Horizontal rule: one SECTION per column — a heading
-    /// with no body of its own never breaks to a column alone; it
-    /// rides atop the section that follows. A long section scrolls
-    /// within its column.
+    /// Horizontal's columns, by the one shared rule
+    /// (`OrigamiReading.horizontalColumns`): a section per column, and
+    /// a section longer than a column carried on into the next. This
+    /// used to be a copy of the Mac's rule, and the copy was the thing
+    /// that had to be kept in step — so it is a copy no longer.
+    ///
+    /// The columns come back as sections and are flattened to the
+    /// paragraphs the flow draws, heading first.
     private func horizontalPages(of doc: LiquidDoc) -> [[LiquidDoc.Paragraph]] {
-        var pages: [[LiquidDoc.Paragraph]] = []
-        var current: [LiquidDoc.Paragraph] = []
-        var currentHasBody = false
-        for paragraph in readable(of: doc) {
-            if paragraph.effectiveHeading != nil {
-                if currentHasBody {
-                    pages.append(current)
-                    current = []
-                    currentHasBody = false
+        OrigamiReading.horizontalColumns(OrigamiSection.build(from: readable(of: doc)))
+            .map { column in
+                column.flatMap { section in
+                    (section.heading.map { [$0] } ?? []) + section.paragraphs
                 }
-                current.append(paragraph)
-            } else {
-                current.append(paragraph)
-                currentHasBody = true
             }
-        }
-        if !current.isEmpty {
-            // Bare headings at the very end stay with the last column.
-            if currentHasBody || pages.isEmpty {
-                pages.append(current)
-            } else {
-                pages[pages.count - 1] += current
-            }
-        }
-        return pages
     }
 
     // MARK: Focus — one paragraph at a time
@@ -2659,10 +3279,8 @@ struct VisionReaderView: View {
                     // Focus draws its one paragraph itself, so it needs
                     // the figure branch of its own: a figure alone and
                     // large is one of the better things this view does.
-                    if let reference = LiquidDoc.imageReference(in: paragraph.text) {
-                        VisionFigureView(
-                            asset: doc.assets.first { $0.id == reference.id },
-                            alt: reference.alt, docID: docID)
+                    if let block = block(of: paragraph, doc: doc) {
+                        blockView(block, paragraph: paragraph, doc: doc)
                     } else {
                         Text(inline(paragraph, doc: doc))
                             .font(paragraph.effectiveHeading != nil
@@ -3185,10 +3803,94 @@ struct VisionReaderView: View {
     }
 
     /// Whether a paragraph is running text — something an inline
-    /// stretch toggle can end. Images, tables, and rules are not.
+    /// stretch toggle can end. Images, tables, code and rules are not.
     private func isPlainText(_ paragraph: LiquidDoc.Paragraph) -> Bool {
         paragraph.tableID == nil && paragraph.text != "---"
             && LiquidDoc.imageReference(in: paragraph.text) == nil
+            && LiquidDoc.modelReference(in: paragraph.text) == nil
+            && OrigamiReading.fencedCode(in: paragraph.text) == nil
+    }
+
+    /// What a paragraph is when it is not running text. The Mac's
+    /// reading draws exactly these kinds, in exactly this order
+    /// (`OrigamiReadingView.standardParagraphView`); naming them once
+    /// here is what keeps every reading view in this file — Scrolling,
+    /// Horizontal, Focus, Outline, and an opened stretchtext — drawing
+    /// the same document the same way. Tables, code and rules used to
+    /// fall through to the inline text parser, which renders a table as
+    /// its pipe-text, a code block with its fences showing, and a rule
+    /// as the three literal characters.
+    private enum VisionBlock {
+        case model(LiquidDoc.SpatialFigure)
+        case image(id: String, alt: String)
+        case table(LiquidDoc.Table)
+        /// The pool lost this table; its pipe-text stands in.
+        case tableMissing
+        case code(String)
+        case rule
+    }
+
+    private func block(of paragraph: LiquidDoc.Paragraph,
+                       doc: LiquidDoc) -> VisionBlock? {
+        if let spatial = LiquidDoc.modelReference(in: paragraph.text) {
+            return .model(spatial)
+        }
+        if let image = LiquidDoc.imageReference(in: paragraph.text) {
+            return .image(id: image.id, alt: image.alt)
+        }
+        if let tableID = paragraph.tableID {
+            if let table = doc.tables.first(where: { $0.identifier == tableID }) {
+                return .table(table)
+            }
+            return .tableMissing
+        }
+        if let code = OrigamiReading.fencedCode(in: paragraph.text) {
+            return .code(code)
+        }
+        if paragraph.text.trimmingCharacters(in: .whitespaces) == "---" {
+            return .rule
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: VisionBlock,
+                           paragraph: LiquidDoc.Paragraph,
+                           doc: LiquidDoc) -> some View {
+        switch block {
+        case .model(let figure):
+            // The poster as the writer framed it; the model itself is
+            // pulled into the room by hand.
+            VisionSpatialFigureView(figure: figure, doc: doc,
+                                    paragraphID: paragraph.id)
+        case .image(let id, let alt):
+            // No caption is drawn here: in an Origami document a
+            // figure's caption is the paragraph that FOLLOWS it, which
+            // renders itself, exactly as on the Mac.
+            VisionFigureView(asset: doc.assets.first { $0.id == id },
+                             alt: alt, docID: docID)
+        case .table(let table):
+            VisionTableView(table: table)
+        case .tableMissing:
+            Text(paragraph.text)
+                .font(.system(.callout, design: .monospaced))
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.5),
+                            in: RoundedRectangle(cornerRadius: 8))
+        case .code(let code):
+            // A code block as the page prints it: monospace in a quiet
+            // box, whitespace exactly as written.
+            Text(code)
+                .font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.5),
+                            in: RoundedRectangle(cornerRadius: 8))
+        case .rule:
+            Divider()
+        }
     }
 
     /// One stretchtext block's detail, a callout under its host; the
@@ -3212,11 +3914,10 @@ struct VisionReaderView: View {
         if isOpen {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(run) { paragraph in
-                    // A figure can stand inside an opened stretch too.
-                    if let reference = LiquidDoc.imageReference(in: paragraph.text) {
-                        VisionFigureView(
-                            asset: doc.assets.first { $0.id == reference.id },
-                            alt: reference.alt, docID: docID)
+                    // A figure, table or code block can stand inside an
+                    // opened stretch too.
+                    if let block = block(of: paragraph, doc: doc) {
+                        blockView(block, paragraph: paragraph, doc: doc)
                     } else {
                         Text(OrigamiReading.stretchRevealed(
                                 inline(paragraph, doc: doc),
@@ -3322,19 +4023,10 @@ struct VisionReaderView: View {
                 .buttonStyle(.plain)
                 .help(expanded.contains(paragraph.id)
                       ? "Fold this section" : "Open this section")
-            } else if let reference = LiquidDoc.imageReference(in: paragraph.text) {
-                // A figure. This branch was missing entirely, so every
-                // image in every reading here came out as a blank line:
-                // the paragraph went to the inline markdown parser,
-                // which drops images on the floor (AttributedString has
-                // no way to carry one). The Mac's reading has had this
-                // branch all along. (18 Sep 2026.)
-                // No caption is drawn here: in an Origami document a
-                // figure's caption is the paragraph that FOLLOWS it,
-                // which renders itself, exactly as on the Mac.
-                VisionFigureView(
-                    asset: doc.assets.first { $0.id == reference.id },
-                    alt: reference.alt, docID: docID)
+            } else if let block = block(of: paragraph, doc: doc) {
+                // A figure, a live table, a code block, a rule — every
+                // kind the Mac's reading draws, drawn here the same way.
+                blockView(block, paragraph: paragraph, doc: doc)
             } else {
                 // Links wear the body's own ink, and the words select:
                 // the selection carries the reader's verbs — Copy, Copy

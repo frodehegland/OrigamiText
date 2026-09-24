@@ -237,6 +237,14 @@ struct EPUBMapView: View {
     /// timeline; an open book is in the hand, not on the shelf.
     @State private var readerPanels = ReaderPanels()
 
+    /// The reading view every open panel is showing — watched here, not
+    /// used here: a panel's attachment keeps the size it was made at,
+    /// so when Horizontal is chosen the panels must be measured again.
+    @AppStorage("visionReaderMode") private var readerModeRaw = "scroll"
+
+    /// 3D figures pinched out of their pages and standing in the room.
+    @State private var spatialModels = SpatialModels()
+
     /// Faint purple lines from each open panel to the hallway cards it
     /// cites — visible in hallway mode, hidden on the Reading Desk.
     @State private var citationLines = CitationLineManager()
@@ -1574,6 +1582,29 @@ struct EPUBMapView: View {
             .onChange(of: model.openDocIDs) {
                 reload()
             }
+            // A book opened from the shelf, from Files, or from a link:
+            // it stands in the room, not in a window of its own.
+            .onChange(of: model.roomReadingRequest) {
+                openRequestedReading()
+            }
+            // Horizontal chosen (or left) in a reading's foot bar: the
+            // panel must be allowed to become as wide as the reading
+            // now asks for.
+            .onChange(of: readerModeRaw) {
+                remeasureOpenReadings()
+            }
+            // A 3D figure pinched and pulled out of its page.
+            .onChange(of: model.modelPull) {
+                pullModel()
+            }
+            // A picture touched to bring its object home.
+            .onChange(of: model.modelReturn) {
+                guard let paragraphID = model.modelReturn else { return }
+                model.modelReturn = nil
+                for docID in model.openDocIDs {
+                    returnModel(paragraphID: paragraphID, docID: docID)
+                }
+            }
             // A passage floated (or put away) from a reading panel.
             .onChange(of: model.floatingTexts) {
                 reload()
@@ -1646,6 +1677,9 @@ struct EPUBMapView: View {
                     CitedSpace.depthRange.upperBound)
                 citedSpace.zMapping = citedSpaceFlat ? .flat : .date
                 reload()
+                // A book asked for before the room was up — the app
+                // launched by a file, say — is standing waiting.
+                openRequestedReading()
             }
             // The in-situ readers' handles: their own drag, beside the
             // engine's node drag — a panel goes anywhere, all three
@@ -1660,6 +1694,12 @@ struct EPUBMapView: View {
                             root.position = start + value.convert(
                                 value.gestureValue.translation3D, from: .local, to: .scene)
                         }
+                        // A model standing in the room needs nothing
+                        // here: RealityKit's ManipulationComponent
+                        // moves, turns and scales it, hands it between
+                        // hands, and sounds each moment — all of which
+                        // a translation-only drag of ours would only
+                        // fight.
                     }
                     .onEnded { value in
                         readerPanels.dragStart = [:]
@@ -2084,6 +2124,7 @@ struct EPUBMapView: View {
             floorBandRight.install(in: content)
             floorDecadeLines.install(in: content)
             readerPanels.install(in: content)
+            spatialModels.install(in: content)
             citationLines.install(in: content)
             selectedCitationLines.install(in: content)
             conceptConnectionLines.install(in: content)
@@ -3647,19 +3688,7 @@ struct EPUBMapView: View {
                 }
                 return
             }
-            let docID = item.id
-            let position = (item.position ?? SIMD3<Float>(0, 1.4, -1.0))
-                + SIMD3<Float>(0, 0, 0.06)
-            readerPanels.open(
-                docID: docID,
-                at: position,
-                view: AnyView(
-                    MapReaderPanel(docID: docID, title: item.title) {
-                        closeReader(docID)
-                    }
-                    .environment(model)),
-                onClose: { closeReader(docID) })
-            model.openDocIDs.insert(docID)
+            openReading(docID: item.id, title: item.title)
         default:
             break
         }
@@ -3938,18 +3967,281 @@ struct EPUBMapView: View {
             openWindow(id: "library")
             return
         }
-        let docID = record.id
-        guard !model.openDocIDs.contains(docID) else { return }
+        // Asked for, from an arm chip: it comes to the reader.
+        openReading(docID: record.id, title: record.title, toReader: true)
+    }
+
+    /// **The one way a reading is presented in this room**, whichever
+    /// door it came through: a card's double-tap inside a journal, the
+    /// shelf's list of individual EPUBs, a file handed to the app, or
+    /// the Introduction. All of them land here, so "opened inside a
+    /// journal" and "opened on its own" are the same act with the same
+    /// panel, paper, chrome, pose and placement.
+    ///
+    /// They were separate call sites before, free to drift — and they
+    /// had: a book opened from a file also made itself the Reading
+    /// Desk, which swapped the room's glass for solid paper and swept
+    /// every other panel away. That was the whole of the difference in
+    /// appearance. The desk is now entered only by the panel's own
+    /// toggle, which is what `VisionReaderView` already said it was.
+    /// - Parameter toReader: whether the reading comes *to* the reader,
+    ///   standing in front of them and facing them. A reading reached
+    ///   for — a card's double-tap — opens where the card stood, which
+    ///   is the point of reaching for it. A reading **asked for** comes
+    ///   to the reader instead: it was chosen from a list, and the
+    ///   reader has no idea where on the wall its card happens to be.
+    ///   (A journal-less book's card can stand high on the wall, which
+    ///   is how a single article opened above the reader's head.)
+    private func openReading(docID: String, title: String,
+                             toReader: Bool = false) {
+        let head = toReader ? faceTurner.headPose() : nil
         readerPanels.open(
             docID: docID,
-            at: SIMD3<Float>(0, 1.4, -1.0) + spaceShift,
-            view: AnyView(
-                MapReaderPanel(docID: docID, title: record.title) {
-                    closeReader(docID)
-                }
-                .environment(model)),
+            at: toReader ? inFrontOfReader(head) : readingPlace(for: docID),
+            facing: head.map { -$0.forward },
+            view: panelView(docID: docID, title: title),
             onClose: { closeReader(docID) })
         model.openDocIDs.insert(docID)
+    }
+
+    /// In front of the reader: a comfortable reading distance along
+    /// their own heading, and a little below their eyes — a page in the
+    /// hands is never at the exact height of the gaze.
+    ///
+    /// Where world tracking offers no pose (the simulator, or tracking
+    /// not yet running) the space's own front stands in, which is where
+    /// the reader was when the space opened.
+    private func inFrontOfReader(
+        _ head: (position: SIMD3<Float>, forward: SIMD3<Float>)?
+    ) -> SIMD3<Float> {
+        guard let head else { return SIMD3<Float>(0, 1.4, -1.0) + spaceShift }
+        return head.position + head.forward * 0.85 + SIMD3<Float>(0, -0.12, 0)
+    }
+
+    /// The panel a reading wears, built the one way.
+    private func panelView(docID: String, title: String) -> AnyView {
+        AnyView(
+            MapReaderPanel(docID: docID, title: title) {
+                closeReader(docID)
+            }
+            .environment(model))
+    }
+
+    /// The reading's name, from the shelf or from the index.
+    private func readingTitle(for docID: String) -> String {
+        model.epubRecords.first { $0.id == docID }?.title
+            ?? model.index.byID[docID]?.doc.title ?? ""
+    }
+
+    /// The reading view changed — Horizontal asked for, or left. Every
+    /// open panel is measured afresh, because an attachment keeps the
+    /// size it was made at: without this, choosing Horizontal in a
+    /// panel that opened on Scrolling squeezed the columns into one
+    /// page's width instead of standing them across the room.
+    private func remeasureOpenReadings() {
+        for docID in model.openDocIDs {
+            readerPanels.remeasure(
+                docID: docID,
+                view: panelView(docID: docID, title: readingTitle(for: docID)))
+        }
+    }
+
+    /// A 3D figure pinched out of a page: the model stands in the room
+    /// beside the reading it came from, at the size the document states,
+    /// with the document's facts on a panel at its right. The page keeps
+    /// its poster — the writer's chosen view of the object stays where
+    /// it was written, and the model is a second thing, in space.
+    /// The pull, as the hand makes it.
+    ///
+    /// The object waits behind its own picture — measured, not guessed:
+    /// the reading reports where it laid that picture out, and the page
+    /// reports how many metres wide it really is, so the two together
+    /// give the picture's place in the room. Then the hand's own travel
+    /// in three dimensions carries the object from there, and how far it
+    /// has come *along the page's normal* is how far through the paper
+    /// it is — which is what fades it up.
+    ///
+    /// The request is not cleared here: the hand goes on moving, and
+    /// each change draws the object further. Letting go settles it.
+    private func pullModel() {
+        guard let pull = model.modelPull else { return }
+        guard let doc = model.index.byID[pull.docID]?.doc,
+              let paragraph = doc.body?.first(where: { $0.id == pull.paragraphID }),
+              let figure = LiquidDoc.modelReference(in: paragraph.text),
+              figure.isNativelyRenderable else { return }
+        let url = doc.fileURL.appendingPathComponent(figure.path)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let id = Self.spatialModelID(pull.docID, pull.paragraphID)
+
+        // The picture's own place on the page, and the object waiting
+        // behind it.
+        let picture = pictureOnPage(pull) ?? SIMD3<Float>(0, Self.pullFromTop, 0)
+        spatialModels.open(
+            id: id, url: url, figure: figure,
+            behind: placeOnPage(pull.docID,
+                                picture - SIMD3<Float>(0, 0, Self.modelHidesBehind)),
+            facts: AnyView(
+                VisionModelFactsPanel(figure: figure, modelURL: url) {
+                    returnModel(paragraphID: pull.paragraphID, docID: pull.docID)
+                }))
+
+        // The hand's travel in metres, by the page's own measure — and
+        // every offset in the page's own space, so the pull is the same
+        // act whether the page stands, leans like a drafting board, or
+        // lies flat on the table.
+        let metresPerPoint = pageMetresPerPoint(pull.docID)
+        let across = SIMD2<Float>(Float(pull.travel.width),
+                                  Float(-pull.travel.height)) * metresPerPoint
+        // How far it has been drawn out: nothing at the pinch, through
+        // the paper as the hand goes, out to a comfortable reach.
+        let outward = min(simd_length(across) * 2.2,
+                          Self.modelReach + Self.modelHidesBehind)
+        let place = placeOnPage(pull.docID, SIMD3<Float>(
+            picture.x + across.x,
+            picture.y + across.y,
+            outward - Self.modelHidesBehind))
+        // 0 while it is still behind the picture, 1 as it reaches the
+        // paper's own plane.
+        let crossing = outward / Self.modelHidesBehind
+
+        if pull.released {
+            model.modelPull = nil
+            if crossing > 0.5 {
+                model.standingModels.insert(pull.paragraphID)
+            }
+            spatialModels.settle(id: id, at: place, crossing: crossing) { [self] in
+                model.standingModels.remove(pull.paragraphID)
+            }
+        } else {
+            spatialModels.draw(id: id, to: place, crossing: crossing)
+        }
+    }
+
+    /// How many metres one of the page's points is: the attachment's
+    /// real width divided by the width the reading laid out. Measured,
+    /// so a 640-point page and a 3900-point Horizontal spread each
+    /// answer for themselves — no assumed points-per-metre anywhere.
+    private func pageMetresPerPoint(_ docID: String) -> Float {
+        guard let metres = readerPanels.pageWidthInMetres(of: docID),
+              let size = model.figureGeometry.size(ofPage: docID),
+              size.width > 1 else { return 1 / Self.pagePointsPerMetre }
+        return metres / Float(size.width)
+    }
+
+    /// A picture touched to bring its object home.
+    private func returnModel(paragraphID: String, docID: String) {
+        spatialModels.retract(id: Self.spatialModelID(docID, paragraphID)) { [self] in
+            model.standingModels.remove(paragraphID)
+        }
+    }
+
+    private static func spatialModelID(_ docID: String, _ paragraphID: String) -> String {
+        "model:\(docID)#\(paragraphID)"
+    }
+
+    /// The picture's centre in the page's own space, measured. Nil when
+    /// the reading has not reported it — a figure scrolled off, a page
+    /// not yet laid out — and the caller then falls back to the place
+    /// every object used to come from.
+    private func pictureOnPage(_ pull: VisionModel.ModelPull) -> SIMD3<Float>? {
+        guard let metres = readerPanels.pageWidthInMetres(of: pull.docID) else { return nil }
+        return model.figureGeometry.figureCentreOnPage(
+            figure: pull.paragraphID, page: pull.docID, pageMetres: metres)
+    }
+
+    /// Where the model waits before the pull: at the picture that
+    /// stands for it, and *behind* the page, so the paper hides it
+    /// until the hand draws it through.
+    private func behindThePagePlace(for pull: VisionModel.ModelPull) -> SIMD3<Float> {
+        placeOnPage(pull.docID,
+                    SIMD3<Float>(0, Self.pullFromTop, -Self.modelHidesBehind))
+    }
+
+    /// Where a model being pulled out stands: **out of its page**,
+    /// toward the reader, and then wherever the hand has carried it.
+    ///
+    /// Every offset here is in the **page's own space**, not the room's.
+    /// That is the whole of it: "out of the page" is the page's own
+    /// normal, which only points at the reader while the page stands
+    /// upright. Posed as a drafting board it leans, and laid flat on the
+    /// table it points at the ceiling — so the old world-axis offsets
+    /// slid the model *along* a flat page and 22 cm *through* the table,
+    /// which is why a model lifted from a flat or tilted reading never
+    /// came off it.
+    ///
+    /// The hand's travel is page-space too, and rightly: the hand drags
+    /// across the page's surface. The page renders at roughly 1360
+    /// points to the metre (the figure `ReaderPanels` works in), so the
+    /// same measure turns the drag into room distance.
+    private func pulledModelPlace(for pull: VisionModel.ModelPull) -> SIMD3<Float> {
+        let across = SIMD2<Float>(Float(pull.travel.width),
+                                  Float(-pull.travel.height)) / Self.pagePointsPerMetre
+        // How far out of the page the hand has drawn it. This follows
+        // the pull's own length rather than jumping to arm's length the
+        // moment the threshold is crossed: the object is behind the
+        // picture, and the hand draws it out as far as the hand goes.
+        // A double-tap has no travel at all, so it takes the resting
+        // distance and the animation carries it there.
+        let drawn = simd_length(across)
+        let out = drawn < 0.005
+            ? Self.modelRestDistance
+            : min(max(drawn * 2.2, 0.03), Self.modelReach)
+        return placeOnPage(pull.docID, SIMD3<Float>(
+            across.x, Self.pullFromTop + across.y, out))
+    }
+
+    /// How far below the page's top edge a lifted figure sits, in the
+    /// page's own space — over the words rather than above them. The
+    /// panel is 800pt tall, so its top edge is about 0.30 m up.
+    private static let pullFromTop: Float = 0.30 - 0.22
+
+    /// An attachment renders at roughly this many points to the metre,
+    /// so it is what turns a drag across the page into room distance.
+    private static let pagePointsPerMetre: Float = 1360
+
+    /// Where a model rests when it was asked for rather than drawn out
+    /// by hand, and the furthest a hand draws one.
+    private static let modelRestDistance: Float = 0.3
+    private static let modelReach: Float = 0.45
+
+    /// How far behind the page the model waits before it is drawn out.
+    ///
+    /// **Behind**, so the page hides it: the object was always there,
+    /// behind the picture that stands for it, and the pull draws it
+    /// through. Starting it in front of the page instead is what made
+    /// it flash into existence.
+    private static let modelHidesBehind: Float = 0.14
+
+    /// A point in a reading's own space, in the room's terms — so the
+    /// page's pose (standing, tilted, flat) carries the figure with it.
+    /// With no panel to ask, the room's axes are all there is.
+    private func placeOnPage(_ docID: String,
+                             _ pageSpace: SIMD3<Float>) -> SIMD3<Float> {
+        readerPanels.worldPoint(of: docID, inPageSpace: pageSpace)
+            ?? SIMD3<Float>(0, 1.4, -1.0) + spaceShift + pageSpace
+    }
+
+    /// Where a reading stands: just in front of its own card when the
+    /// book has one on the wall — a journal's article, and now any book
+    /// on the shelf, since every book belongs to some room — and in
+    /// front of the reader when it has none.
+    private func readingPlace(for docID: String) -> SIMD3<Float> {
+        if let card = items.first(where: { $0.id == docID })?.position {
+            return card + SIMD3<Float>(0, 0, 0.06)
+        }
+        return SIMD3<Float>(0, 1.4, -1.0) + spaceShift
+    }
+
+    /// A reading asked for from outside the room — the shelf, a file,
+    /// a link — presented exactly as a card's double-tap presents one.
+    private func openRequestedReading() {
+        guard let docID = model.roomReadingRequest else { return }
+        model.roomReadingRequest = nil
+        let title = model.epubRecords.first { $0.id == docID }?.title
+            ?? model.index.byID[docID]?.doc.title ?? ""
+        // Chosen from the shelf, or handed to the app as a file: the
+        // reader never saw a card for it, so it comes to them.
+        openReading(docID: docID, title: title, toReader: true)
     }
 
     /// Every menu folded away — after a choice has acted.
@@ -5008,6 +5300,233 @@ private struct ReaderCloseGlyph: View {
     }
 }
 
+/// The 3D figures pulled out of readings and standing in the room: the
+/// model itself at the size the document states, lit by the room and
+/// turnable in the hands, with a panel of the document's facts beside
+/// it. Built on the same shape as `ReaderPanels` — install once, open
+/// by id, close by id.
+///
+/// Each figure is three entities, and the three exist for a reason:
+///
+/// - the **root** carries the figure's place in the room. The lift out
+///   of the page animates this, and while a hand is still pulling, the
+///   hand writes to it.
+/// - the **holder** carries the hands. `ManipulationComponent` writes
+///   directly to the transform of whatever entity it is on, so nothing
+///   of ours may live there — the documentation is explicit about
+///   putting your own transforms on a subentity instead.
+/// - the **model** carries what the document states: its up-axis and
+///   its real-world size, which must therefore be out of the system's
+///   way.
+@MainActor
+final class SpatialModels {
+    private var content: RealityViewContent?
+    private var roots: [String: Entity] = [:]
+    /// The model itself and its facts, by id, so the coming-through can
+    /// fade them; and where each one waits behind its picture, so it can
+    /// be sent back there.
+    private var models: [String: Entity] = [:]
+    private var panels: [String: Entity] = [:]
+    private var homes: [String: SIMD3<Float>] = [:]
+
+    func install(in content: RealityViewContent) {
+        self.content = content
+    }
+
+    /// No model stands larger than this in a reading room, on any axis.
+    ///
+    /// A figure is a figure: a turbine at its stated four metres would
+    /// fill the room and bury the page it came from, and a model whose
+    /// document states no size at all could be anything. The document's
+    /// stated extent is honoured wherever it is *smaller* than this, so
+    /// a 5 cm bolt is still 5 cm. (This is a deliberate departure from
+    /// the reading spec's §4.2 "place the model at that size": the spec
+    /// is written for a volume of its own, and this is a room with a
+    /// reading in it.)
+    static let maximumSide: Float = 0.3
+
+    /// How long the model's longest side should be: what the document
+    /// states, held under the room's ceiling.
+    private static func longestSide(for figure: LiquidDoc.SpatialFigure) -> Float {
+        guard let stated = figure.longestStatedSide, stated > 0 else {
+            return maximumSide
+        }
+        return min(Float(stated), maximumSide)
+    }
+
+    /// Stands a model in the room. The document's up-axis is applied as
+    /// stated rather than defaulted, and its extent in metres where it
+    /// states one — so a 20 cm object is 20 cm in the room — up to the
+    /// 30 cm ceiling above. Assuming metres for a model that never said
+    /// so would build a 100× object, so an unstated size takes the
+    /// ceiling rather than a guess.
+    /// - Parameters:
+    ///   - behind: where it waits before the pull — behind its own
+    ///     picture, on the page. It begins there, hidden, so it is never
+    ///     simply present in the room having never arrived.
+    func open(id: String, url: URL, figure: LiquidDoc.SpatialFigure,
+              behind: SIMD3<Float>, facts: AnyView) {
+        guard let content, roots[id] == nil else { return }
+        let root = Entity()
+        // It starts behind the picture it will come out of.
+        root.position = behind
+        content.add(root)
+        roots[id] = root
+        homes[id] = behind
+
+        // The facts, at the model's right hand — held back until the
+        // model is really through, so a panel never hangs in the room on
+        // its own while the bytes are still loading.
+        let panel = Entity()
+        panel.components.set(ViewAttachmentComponent(rootView: facts))
+        panel.position = SIMD3<Float>(0.34, 0, 0)
+        panel.isEnabled = false
+        root.addChild(panel)
+        panels[id] = panel
+
+        // What the hands hold. Nothing of ours writes to this entity's
+        // transform, because the manipulation system writes to it.
+        let holder = Entity()
+        root.addChild(holder)
+
+        Task { @MainActor in
+            guard let entity = try? await Entity(contentsOf: url) else { return }
+            if figure.upAxis == "Z" {
+                entity.transform.rotation =
+                    simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
+            }
+            // Into the scene FIRST. An entity measured before it is
+            // added has no world to be measured in and the answer comes
+            // back degenerate — and a near-zero measurement makes the
+            // scale factor enormous, which is how a 30 cm notebook
+            // arrived the size of a room.
+            entity.scale = .init(repeating: 1)
+            holder.addChild(entity)
+
+            // Then the size: measure, scale, and measure again to check
+            // the scaling took. A model whose bounds only settle once it
+            // is in the scene is corrected by the second pass; a model
+            // already right stops there.
+            let wanted = Self.longestSide(for: figure)
+            for _ in 0..<2 {
+                let extents = entity.visualBounds(relativeTo: holder).extents
+                let longest = max(extents.x, max(extents.y, extents.z))
+                // Nothing measurable: leave the model at its own scale
+                // rather than multiply by a number from nowhere. Most
+                // USDZ is authored around a metre, which is wrong-ish;
+                // a bad factor is wrong by orders of magnitude.
+                guard longest.isFinite, longest > 0.0001 else { break }
+                let factor = wanted / longest
+                guard factor.isFinite, factor > 0, abs(factor - 1) > 0.01 else { break }
+                entity.scale *= factor
+            }
+
+            // Lit by the room, and casting into it. The environment
+            // weight is the room's full contribution (it carries to
+            // descendants), and the grounding shadow is most of what
+            // makes an object read as *in* the room rather than pasted
+            // over it — in a mixed space ARKit's probe is the real
+            // surroundings, so this is the room's own light.
+            entity.components.set(EnvironmentLightingConfigurationComponent(
+                environmentLightingWeight: 1))
+            entity.components.set(GroundingShadowComponent(castsShadow: true))
+
+            // The hands: the system's own manipulation, which is a
+            // great deal more than a drag — one hand moves it, turning
+            // the hand turns it, two hands scale and rotate it, and it
+            // passes from hand to hand, with the system's own audio at
+            // each moment. `configureEntity` fits the collision and
+            // input to the model's real bounds, so it must run after
+            // the sizing above.
+            ManipulationComponent.configureEntity(holder)
+            if var manipulation = holder.components[ManipulationComponent.self] {
+                // A reader who puts an object down means to put it
+                // down; the default springs it back to where it began.
+                manipulation.releaseBehavior = .stay
+                holder.components.set(manipulation)
+            }
+
+            // It waits hidden behind the picture, at its own full size.
+            // It does not grow from nothing, because a thing that grows
+            // from nothing has appeared, and this one was always there,
+            // behind the picture that stands for it. `draw(id:to:)`
+            // brings it through as the hand goes.
+            models[id] = entity
+            entity.components.set(OpacityComponent(opacity: 0))
+
+            // The facts wait with it, and fade up once it is through.
+            panel.components.set(OpacityComponent(opacity: 0))
+            panel.isEnabled = true
+        }
+    }
+
+    /// Draws an object along with the hand: where it is going, and how
+    /// far through the paper it has come.
+    ///
+    /// - Parameter crossing: 0 while it is still behind the picture, 1
+    ///   once it is clear of it. The object fades up across that
+    ///   distance rather than over a span of time, so the reveal belongs
+    ///   to the hand: stop halfway and it sits halfway. Where the page
+    ///   occludes what is behind it this is barely visible; where it
+    ///   does not, this *is* the coming-through.
+    func draw(id: String, to position: SIMD3<Float>, crossing: Float) {
+        guard let root = roots[id] else { return }
+        root.position = position
+        let shown = min(max(crossing, 0), 1)
+        // Eased, so the first millimetres do not flash it into being.
+        let opacity = shown * shown * (3 - 2 * shown)
+        models[id]?.components.set(OpacityComponent(opacity: opacity))
+        if let panel = panels[id] {
+            panel.components.set(OpacityComponent(opacity: max(shown - 0.5, 0) * 2))
+        }
+    }
+
+    /// Lets an object stand where the hand left it, or — if it never
+    /// cleared the paper — sends it back into the picture.
+    func settle(id: String, at position: SIMD3<Float>, crossing: Float,
+                onReturned: @escaping () -> Void) {
+        guard crossing > 0.5 else {
+            retract(id: id, onReturned: onReturned)
+            return
+        }
+        draw(id: id, to: position, crossing: 1)
+    }
+
+    /// Sends an object back the way it came: through the picture, which
+    /// takes its colour again as the object arrives. The reverse of the
+    /// pull, because the picture and the object are one thing.
+    func retract(id: String, onReturned: @escaping () -> Void) {
+        guard let root = roots[id], let home = homes[id] else {
+            close(id: id)
+            onReturned()
+            return
+        }
+        var back = root.transform
+        back.translation = home
+        root.move(to: back, relativeTo: root.parent,
+                  duration: 0.4, timingFunction: .easeIn)
+        Entity.animate(.easeIn(duration: 0.4)) {
+            models[id]?.components.set(OpacityComponent(opacity: 0))
+            panels[id]?.components.set(OpacityComponent(opacity: 0))
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(420))
+            self?.close(id: id)
+            onReturned()
+        }
+    }
+
+    func close(id: String) {
+        roots[id]?.removeFromParent()
+        roots[id] = nil
+        models[id] = nil
+        panels[id] = nil
+        homes[id] = nil
+    }
+
+    var standingIDs: Set<String> { Set(roots.keys) }
+}
+
 /// The in-situ readers: each a full reading standing in the room where
 /// its card stood — hosted the arm-chip way, a live SwiftUI view on an
 /// entity — with a slim handle bar above the page for dragging it
@@ -5065,22 +5584,40 @@ final class ReaderPanels {
         }
     }
 
-    func open(docID: String, at position: SIMD3<Float>, view: AnyView,
+    /// - Parameter facing: the direction the page's face should look,
+    ///   flattened to the floor. Nil leaves it facing the space's own
+    ///   front, which is right for a panel that opened where its card
+    ///   stood on the wall — the wall faces that way too. A reading
+    ///   brought to the reader passes their heading, so the page meets
+    ///   them square however they are turned.
+    func open(docID: String, at position: SIMD3<Float>,
+              facing: SIMD3<Float>? = nil, view: AnyView,
               onClose: @escaping () -> Void) {
         guard let content else { return }
         // Already open: bring it to the asked place instead.
         if let standing = roots[docID] {
             standing.position = position
+            if let facing {
+                let turn = Self.yaw(facing: facing)
+                yaws[docID] = turn
+                standing.orientation = turn
+            }
             return
         }
         // Where the card stood — the close flies the reading home.
         origins[docID] = position
         let root = Entity()
         root.position = position
+        if let facing {
+            let turn = Self.yaw(facing: facing)
+            yaws[docID] = turn
+            root.orientation = turn
+        }
 
         let page = Entity()
         page.components.set(ViewAttachmentComponent(rootView: view))
         root.addChild(page)
+        pages[docID] = page
 
         // The handle: the system's own kind of grab bar — a small
         // white pill just under the page. Only it drags, so the page
@@ -5115,14 +5652,59 @@ final class ReaderPanels {
     func close(docID: String) {
         roots[docID]?.removeFromParent()
         roots[docID] = nil
+        pages[docID] = nil
+        yaws[docID] = nil
         dragStart[docID] = nil
         origins[docID] = nil
         closing.remove(docID)
     }
 
+    /// Hands an open reading a fresh attachment, so RealityKit measures
+    /// the view again.
+    ///
+    /// A view attachment takes its size when it is made and keeps it.
+    /// The panel that opened on Scrolling is one page wide, so choosing
+    /// Horizontal afterwards re-laid the columns inside a page's width
+    /// — squeezed, clipped, or gone — while the same book opened while
+    /// Horizontal already stood took its full breadth. That was the
+    /// difference between a book opened from its journal and a book
+    /// opened on its own: not the door it came through, but the moment
+    /// of measuring. Replacing the component asks for a new one.
+    ///
+    /// The reading's own view state (its scroll, its opened stretches)
+    /// begins again, which a change of reading view does anyway.
+    func remeasure(docID: String, view: AnyView) {
+        guard let page = pages[docID] else { return }
+        page.components.set(ViewAttachmentComponent(rootView: view))
+    }
+
     /// Where each reading opened — the card's place, and the close's
     /// destination.
     private var origins: [String: SIMD3<Float>] = [:]
+
+    /// The page entity of each open reading, so its attachment can be
+    /// replaced when the reading asks to be a different size.
+    private var pages: [String: Entity] = [:]
+
+    /// Each panel's own facing, kept so a change of pose composes with
+    /// it. Without this, tilting a panel that had been brought round to
+    /// the reader would snap it back to face the space's front.
+    private var yaws: [String: simd_quatf] = [:]
+
+    /// The turn that points a page's face along a direction, flattened
+    /// to the floor: a page leans by its pose, never by a reader's
+    /// glance up or down. An attachment's face looks down its own +Z,
+    /// so a direction of +Z is no turn at all.
+    nonisolated static func yaw(facing direction: SIMD3<Float>) -> simd_quatf {
+        let flat = SIMD3<Float>(direction.x, 0, direction.z)
+        let length = simd_length(flat)
+        guard length > 1e-4 else {
+            return simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+        }
+        let unit = flat / length
+        return simd_quatf(angle: atan2(unit.x, unit.z),
+                          axis: SIMD3<Float>(0, 1, 0))
+    }
     /// Panels mid-flight home, so a second ✕ doesn't double the close.
     private var closing: Set<String> = []
 
@@ -5202,17 +5784,29 @@ final class ReaderPanels {
             if appliedPoses[id] ?? .upright == .upright {
                 uprightY[id] = root.position.y
             }
+            // The panel's own facing is kept and the lean composed with
+            // it, so a reading brought round to the reader still faces
+            // them once it is a drafting board or lying flat. (The lean
+            // is about the panel's own x, which the yaw has turned —
+            // multiplying in this order is what makes that true.)
+            let facing = yaws[id]
+                ?? simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+            func leaning(_ angle: Float) -> simd_quatf {
+                // NOT `simd_quatf()` for "no lean": that is the zero
+                // quaternion, whose matrix has an all-zero basis, and a
+                // panel given it collapses to nothing.
+                simd_mul(facing, simd_quatf(angle: angle,
+                                            axis: SIMD3<Float>(1, 0, 0)))
+            }
             switch pose {
             case .upright:
-                root.orientation = simd_quatf()
+                root.orientation = leaning(0)
                 root.position.y = uprightY.removeValue(forKey: id) ?? 1.35
             case .tilted:
-                root.orientation = simd_quatf(angle: Self.tiltedAngle,
-                                              axis: SIMD3<Float>(1, 0, 0))
+                root.orientation = leaning(Self.tiltedAngle)
                 root.position.y = Self.tiltedHeight
             case .flat:
-                root.orientation = simd_quatf(angle: -.pi / 2,
-                                              axis: SIMD3<Float>(1, 0, 0))
+                root.orientation = leaning(-.pi / 2)
                 root.position.y = flatY
             }
             appliedPoses[id] = pose
@@ -5244,6 +5838,38 @@ final class ReaderPanels {
     func worldTopPosition(of docID: String) -> SIMD3<Float>? {
         guard let center = roots[docID]?.position(relativeTo: nil) else { return nil }
         return center + SIMD3<Float>(0, 0.30, 0)
+    }
+
+    /// How wide the page really is, in metres — the attachment's own
+    /// measure, and the only honest one. A reading rendered at 640
+    /// points and one rendered at 3900 both report their own width, so
+    /// nothing has to assume a points-per-metre figure.
+    func pageWidthInMetres(of docID: String) -> Float? {
+        guard let page = pages[docID] else { return nil }
+        let width = page.visualBounds(relativeTo: page).extents.x
+        return width.isFinite && width > 0.01 ? width : nil
+    }
+
+    /// Which way the page faces, in the room: its own +Z, turned by
+    /// whatever pose and facing it has. "Out of the page" is this.
+    func pageNormal(of docID: String) -> SIMD3<Float>? {
+        guard let root = roots[docID] else { return nil }
+        return root.orientation(relativeTo: nil).act(SIMD3<Float>(0, 0, 1))
+    }
+
+    /// A point given in the **page's own space** — x across the page, y
+    /// up it, z out of its face — in the room's terms.
+    ///
+    /// This is how anything lifted off a reading finds its place. A
+    /// panel may be standing, leaning like a drafting board, or lying
+    /// flat on the table, and its own axes go with it: only while it
+    /// stands does "out of the page" point at the reader. Asking the
+    /// entity to convert the point is the whole answer, and it costs
+    /// nothing.
+    func worldPoint(of docID: String,
+                    inPageSpace point: SIMD3<Float>) -> SIMD3<Float>? {
+        guard let root = roots[docID] else { return nil }
+        return root.convert(position: point, to: nil)
     }
 }
 
@@ -6186,8 +6812,24 @@ struct MapReaderPanel: View {
                 Divider()
             }
             VisionReaderView(docID: docID)
+                // This panel sizes itself to the reading in Horizontal
+                // (panelWidth is nil there), so the columns may ask for
+                // all the width they need. The reader window cannot,
+                // and does not.
+                .environment(\.visionReadingHostGrows, true)
         }
         .frame(width: panelWidth, height: 800)
+        // The space a 3D figure's picture measures itself against, and
+        // the page's own size in the same points. Together with the
+        // page's real width in metres — which only the attachment
+        // knows — these turn a picture's place on the page into a place
+        // in the room, so an object comes out of its own picture.
+        .coordinateSpace(name: FigureGeometry.pageSpace)
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { size in
+            model.figureGeometry.note(page: docID, size: size)
+        }
     }
 
     /// The title bar. In Horizontal it floats on a glass (or themed

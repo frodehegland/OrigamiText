@@ -343,23 +343,166 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         }
     }
 
-    /// The 3D model a body paragraph points at, when the paragraph is a
-    /// lone `![alt](model:<path>?poster=<assetID>)` marker — an EPUB's
-    /// embedded model, its path relative to the unpacked package (the
-    /// bytes stay on disk), the optional poster naming the asset that
-    /// stands in where no 3D can show.
-    static func modelReference(in text: String)
-        -> (path: String, alt: String, posterID: String?)? {
+    /// A spatial figure: the 3D model a body paragraph points at, with
+    /// every fact the Origami EPUB states about it (the reading spec,
+    /// `ORIGAMI-3D-MODEL-READ-SPEC.md`, 23 September 2026). The model's
+    /// bytes never ride in the document — `path` points into the
+    /// unpacked package and the published file stays where it is, so an
+    /// extracted copy can be the writer's own bytes.
+    struct SpatialFigure: Hashable, Sendable {
+        /// `data-model-src`, relative to the unpacked package.
+        var path: String
+        /// The figure's words: its `<figcaption>`, or the poster's `alt`
+        /// where there is no caption. Empty when the writer wrote no
+        /// description — and empty is then what a reader must show, for
+        /// a file name is not a description (spec §9).
+        var alt: String = ""
+        /// The poster asset standing as the figure's resting state.
+        var posterID: String?
+        /// `data-model-id` (`M-<uuid>`) — the model's own handle. The
+        /// addressable anchor is the figure paragraph's id, not this.
+        var modelID: String?
+        /// One of the three media types Author emits (spec §2).
+        var mediaType: String = "application/octet-stream"
+        /// `data-model-filename`: the writer's own name for the file,
+        /// and the name an extracted copy must carry (spec §10). The
+        /// name inside the package (`model1.usdz`) is not it.
+        var filename: String?
+        /// The size of the file as published.
+        var bytes: Int?
+        /// `Y` or `Z`, trusted as stated rather than defaulted (§4.1) —
+        /// a model arriving on its side is this area's commonest bug.
+        var upAxis: String = "Y"
+        /// Only ever `m`, and only ever alongside `extent` (§4.2).
+        var units: String?
+        /// The real-world bounding size in metres, `[x, y, z]`.
+        var extent: [Double]?
+        /// What the exporter reduced, in terms a reader can weigh.
+        var reduced: String?
+        /// The unreduced original's size in bytes.
+        var sourceBytes: Int?
+        /// Where the full-resolution original lives (a DOI or a URL).
+        var source: String?
+
+        /// Whether the document states a real-world size. Units and
+        /// extent travel together or not at all, so a reader must never
+        /// scale from one alone: telling a reader "metres" about a
+        /// centimetre model builds a 100× object, which is the one
+        /// failure worse than no scale at all.
+        var statesRealWorldSize: Bool { units == "m" && extent?.count == 3 }
+
+        /// The longest stated side, when the size is stated at all.
+        var longestStatedSide: Double? {
+            statesRealWorldSize ? extent?.max() : nil
+        }
+
+        /// Whether Apple's own 3D frameworks read these bytes. USD and
+        /// Reality, yes. glTF is a published format they do not read, so
+        /// it keeps its poster and says why, rather than standing an
+        /// empty stage in the page (§11.5).
+        var isNativelyRenderable: Bool {
+            mediaType == "model/vnd.usdz+zip" || mediaType == "application/x-reality"
+        }
+    }
+
+    /// The media type a model file's extension names — the three Author
+    /// emits (spec §2), and `application/octet-stream` for anything
+    /// else, which a reader treats as "cannot display" and keeps the
+    /// poster for. Used only where the file states no media type; where
+    /// it states one, that is what counts.
+    static func modelMediaType(forExtension ext: String) -> String {
+        switch ext.lowercased() {
+        case "usdz": return "model/vnd.usdz+zip"
+        case "reality": return "application/x-reality"
+        case "glb": return "model/gltf-binary"
+        default: return "application/octet-stream"
+        }
+    }
+
+    /// The one-line marker a spatial figure rides as in the body —
+    /// `![caption](model:<path>?poster=…&up=Y&…)` — written by the EPUB
+    /// importer and read back by `modelReference(in:)`. It degrades to
+    /// plain text in anything that knows neither, which is the rule
+    /// every marker in this format follows.
+    static func modelMarker(for figure: SpatialFigure) -> String {
+        var fields: [(String, String)] = []
+        if let posterID = figure.posterID { fields.append(("poster", posterID)) }
+        if let modelID = figure.modelID { fields.append(("id", modelID)) }
+        fields.append(("type", figure.mediaType))
+        if let filename = figure.filename { fields.append(("file", filename)) }
+        if let bytes = figure.bytes { fields.append(("bytes", String(bytes))) }
+        fields.append(("up", figure.upAxis))
+        // Units and extent are written together or not at all, exactly
+        // as the file states them.
+        if figure.statesRealWorldSize, let extent = figure.extent {
+            fields.append(("units", "m"))
+            fields.append(("extent", extent.map { String(format: "%g", $0) }
+                                           .joined(separator: " ")))
+        }
+        if let reduced = figure.reduced { fields.append(("reduced", reduced)) }
+        if let sourceBytes = figure.sourceBytes {
+            fields.append(("sourceBytes", String(sourceBytes)))
+        }
+        if let source = figure.source { fields.append(("source", source)) }
+        let query = fields
+            .map { "\($0.0)=\(markerEscaped($0.1))" }
+            .joined(separator: "&")
+        return "![\(figure.alt)](model:\(markerEscaped(figure.path, keeping: "/"))?\(query))"
+    }
+
+    /// Marker values are percent-escaped, so a file name carrying an
+    /// ampersand cannot break the line it rides on.
+    private static func markerEscaped(_ value: String, keeping extra: String = "") -> String {
+        let allowed = CharacterSet.alphanumerics
+            .union(CharacterSet(charactersIn: "-._~" + extra))
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    /// The spatial figure a body paragraph points at, when the paragraph
+    /// is a lone `![alt](model:…)` marker. Keys this reader does not
+    /// know are ignored rather than refused, so a later Author can state
+    /// more facts without breaking a reader already shipped (§12.1); a
+    /// marker written before those facts existed still reads, its media
+    /// type taken from the file's extension.
+    static func modelReference(in text: String) -> SpatialFigure? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let regex = try? NSRegularExpression(
-            pattern: "^!\\[(.*)\\]\\(model:([^)?]+)(?:\\?poster=([^)]+))?\\)$",
+            pattern: "^!\\[(.*)\\]\\(model:([^)?]+)(?:\\?([^)]*))?\\)$",
             options: [.dotMatchesLineSeparators]),
               let match = regex.firstMatch(
                 in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
               let altRange = Range(match.range(at: 1), in: trimmed),
               let pathRange = Range(match.range(at: 2), in: trimmed) else { return nil }
-        let poster = Range(match.range(at: 3), in: trimmed).map { String(trimmed[$0]) }
-        return (String(trimmed[pathRange]), String(trimmed[altRange]), poster)
+        var fields: [String: String] = [:]
+        if let queryRange = Range(match.range(at: 3), in: trimmed) {
+            for pair in trimmed[queryRange].split(separator: "&") {
+                let halves = pair.split(separator: "=", maxSplits: 1)
+                guard halves.count == 2 else { continue }
+                let value = String(halves[1])
+                fields[String(halves[0])] = value.removingPercentEncoding ?? value
+            }
+        }
+        let path = String(trimmed[pathRange])
+        let decodedPath = path.removingPercentEncoding ?? path
+        let extent = fields["extent"]?
+            .split(whereSeparator: \.isWhitespace)
+            .compactMap { Double($0) }
+        let statesSize = fields["units"] == "m" && extent?.count == 3
+        return SpatialFigure(
+            path: decodedPath,
+            alt: String(trimmed[altRange]),
+            posterID: fields["poster"],
+            modelID: fields["id"],
+            mediaType: fields["type"]
+                ?? modelMediaType(forExtension: (decodedPath as NSString).pathExtension),
+            filename: fields["file"],
+            bytes: fields["bytes"].flatMap { Int($0) },
+            upAxis: fields["up"] == "Z" ? "Z" : "Y",
+            units: statesSize ? "m" : nil,
+            extent: statesSize ? extent : nil,
+            reduced: fields["reduced"],
+            sourceBytes: fields["sourceBytes"].flatMap { Int($0) },
+            source: fields["source"])
     }
 
     /// The asset id a body paragraph's text points at, when the paragraph is

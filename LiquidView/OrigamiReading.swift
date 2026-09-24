@@ -433,7 +433,19 @@ nonisolated struct OrigamiSection: Identifiable, Hashable, Sendable {
     /// The body split at every heading. Content before the first heading
     /// becomes an untitled opening section; an empty body yields nothing.
     static func build(from doc: LiquidDoc) -> [OrigamiSection] {
-        guard let body = doc.body, !body.isEmpty else { return [] }
+        build(from: doc.body ?? [])
+    }
+
+    /// The same, over a list a reader has already chosen — the body
+    /// with the Visual-Meta appendix left out, say.
+    ///
+    /// The split is on `effectiveHeading`, so a document whose producer
+    /// wrote "# Heading" in the text rather than setting the structured
+    /// field still has sections. That is the same test the reader uses
+    /// to decide what *looks* like a heading, and sections that
+    /// disagreed with the page would be worse than none.
+    static func build(from paragraphs: [LiquidDoc.Paragraph]) -> [OrigamiSection] {
+        guard !paragraphs.isEmpty else { return [] }
         var sections: [OrigamiSection] = []
         var heading: LiquidDoc.Paragraph?
         var run: [LiquidDoc.Paragraph] = []
@@ -441,8 +453,8 @@ nonisolated struct OrigamiSection: Identifiable, Hashable, Sendable {
             guard heading != nil || !run.isEmpty else { return }
             sections.append(OrigamiSection(heading: heading, paragraphs: run))
         }
-        for paragraph in body {
-            if paragraph.heading != nil {
+        for paragraph in paragraphs {
+            if paragraph.effectiveHeading != nil {
                 flush()
                 heading = paragraph
                 run = []
@@ -453,6 +465,42 @@ nonisolated struct OrigamiSection: Identifiable, Hashable, Sendable {
         flush()
         return sections
     }
+
+    /// A section with something of its own to read — words, a figure, a
+    /// table. A bare heading has none, and never takes a column alone.
+    var hasBody: Bool {
+        paragraphs.contains { paragraph in
+            paragraph.tableID != nil
+                || LiquidDoc.imageReference(in: paragraph.text) != nil
+                || !paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// How much of a column this section asks for.
+    var columnWeight: Int {
+        paragraphs.reduce(0) { $0 + $1.columnWeight }
+    }
+}
+
+extension LiquidDoc.Paragraph {
+
+    /// How much of a column this paragraph asks for, in words.
+    ///
+    /// A figure, a table or a 3D figure is not words at all, but each
+    /// takes a good part of a column — and its marker text is a dozen
+    /// characters, so counting words would let five figures share one
+    /// column and overflow it.
+    nonisolated var columnWeight: Int {
+        if tableID != nil { return Self.figureColumnWeight }
+        if LiquidDoc.imageReference(in: text) != nil
+            || LiquidDoc.modelReference(in: text) != nil {
+            return Self.figureColumnWeight
+        }
+        return text.split(whereSeparator: \.isWhitespace).count
+    }
+
+    /// Roughly a third of a column.
+    nonisolated static var figureColumnWeight: Int { 100 }
 }
 
 /// Everything the reader has done to shape the view of a document: the
@@ -589,6 +637,169 @@ nonisolated enum OrigamiFlowItem: Identifiable, Hashable, Sendable {
 /// How a paragraph travels when copied as a citation, and which of the
 /// document's concepts a paragraph touches.
 nonisolated enum OrigamiReading {
+
+    // MARK: - Spatial figures
+
+    /// A 3D figure's published bytes under the writer's own name, ready
+    /// to hand out. Nothing is transcoded, recompressed or rewritten: a
+    /// hard link where the file system allows one, a plain copy
+    /// otherwise (the reading spec, §10). The name inside the package
+    /// (`model1.usdz`) is not the writer's name, and the writer's is the
+    /// one an extracted file must carry.
+    ///
+    /// Shared, because both readers offer the same act and an extraction
+    /// that differed by platform would be a bug waiting to happen.
+    static func extractURL(for figure: LiquidDoc.SpatialFigure,
+                           modelURL url: URL) -> URL? {
+        let manager = FileManager.default
+        let wanted = (figure.filename as NSString?)?.lastPathComponent
+            ?? url.lastPathComponent
+        guard !wanted.isEmpty, wanted != url.lastPathComponent else { return url }
+        // A folder of its own per figure, because two books may each
+        // carry a `brain.usdz` and handing out the other one's bytes
+        // under this one's name would be a quiet lie.
+        let key = (figure.modelID ?? figure.path)
+            .addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "model"
+        let folder = manager.temporaryDirectory
+            .appendingPathComponent("origami-models", isDirectory: true)
+            .appendingPathComponent(key, isDirectory: true)
+        try? manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let target = folder.appendingPathComponent(wanted)
+        // A book re-exported under the same id leaves a stale link
+        // behind; a size that no longer matches is enough to catch it.
+        let sourceSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+        let heldSize = (try? target.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+        if heldSize != nil, heldSize != sourceSize {
+            try? manager.removeItem(at: target)
+        }
+        if !manager.fileExists(atPath: target.path) {
+            do {
+                try manager.linkItem(at: url, to: target)
+            } catch {
+                try? manager.copyItem(at: url, to: target)
+            }
+        }
+        return manager.fileExists(atPath: target.path) ? target : url
+    }
+
+    /// What a document states about a 3D figure, as lines for a panel:
+    /// the file's own name, its published size, its real-world size
+    /// where the document states one, the up-axis, and any reduction
+    /// with what it was before. Shared, so both readers say the same
+    /// things in the same words.
+    static func facts(for figure: LiquidDoc.SpatialFigure) -> [(String, String)] {
+        var rows: [(String, String)] = []
+        // Shown as a label. That is a different thing from claiming the
+        // file name as the figure's description (§9).
+        rows.append(("File", figure.filename
+                     ?? (figure.path as NSString).lastPathComponent))
+        if let bytes = figure.bytes {
+            rows.append(("Size", Int64(bytes).formatted(.byteCount(style: .file))))
+        }
+        if figure.statesRealWorldSize, let extent = figure.extent {
+            rows.append(("Real size", extent.map { String(format: "%g", $0 * 100) }
+                            .joined(separator: " × ") + " cm"))
+        } else {
+            // Author does not know it and will not invent one, so
+            // neither does this (§4.2).
+            rows.append(("Real size", "not stated"))
+        }
+        rows.append(("Up axis", figure.upAxis))
+        if let reduced = figure.reduced {
+            rows.append(("Reduced", reduced))
+            if let was = figure.sourceBytes {
+                rows.append(("Was", Int64(was).formatted(.byteCount(style: .file))))
+            }
+        }
+        return rows
+    }
+
+    // MARK: - Horizontal's columns
+
+    /// A column's worth of reading, in words.
+    ///
+    /// A measure, not a promise: a column scrolls, and type size and
+    /// window width are the reader's. It is set to about what a page's
+    /// column holds at the reading's default size, which is the size at
+    /// which "one column" means anything.
+    static let wordsPerColumn = 300
+
+    /// **Horizontal's columns — the one rule, for every platform.**
+    ///
+    /// One section per column: a heading with no body of its own never
+    /// takes a column alone, it rides atop the section that follows, and
+    /// bare headings at the very end stay with the last column.
+    ///
+    /// And then the part that makes Horizontal mean something for
+    /// heading-poor reading — a transcript, a letter, a paper whose
+    /// producer never marked its sections: **a section longer than a
+    /// column carries on into the next one.** The break is by measure,
+    /// at a paragraph boundary, and the continuation carries no heading
+    /// because it is not a new section — it is the same one, still
+    /// going. Without this a heading-less document was a single column
+    /// the width of the page and the height of a scroll, which is
+    /// Horizontal doing nothing at all.
+    ///
+    /// A single paragraph longer than a column is never split: it takes
+    /// its own column and scrolls. Splitting inside a paragraph would
+    /// break selection, citation and annotation anchoring, all of which
+    /// are per-paragraph.
+    static func horizontalColumns(_ sections: [OrigamiSection],
+                                  wordsPerColumn: Int = wordsPerColumn) -> [[OrigamiSection]] {
+        var columns: [[OrigamiSection]] = []
+        // Headings waiting for a body to ride atop.
+        var pending: [OrigamiSection] = []
+        for section in sections {
+            guard section.hasBody else {
+                pending.append(section)
+                continue
+            }
+            for (index, part) in broken(section, wordsPerColumn: wordsPerColumn).enumerated() {
+                if index == 0 {
+                    columns.append(pending + [part])
+                    pending = []
+                } else {
+                    columns.append([part])
+                }
+            }
+        }
+        if !pending.isEmpty {
+            if columns.isEmpty {
+                columns.append(pending)
+            } else {
+                columns[columns.count - 1] += pending
+            }
+        }
+        return columns
+    }
+
+    /// One section as the column-fulls it needs: the first keeping the
+    /// heading, each continuation carrying none.
+    private static func broken(_ section: OrigamiSection,
+                               wordsPerColumn: Int) -> [OrigamiSection] {
+        guard wordsPerColumn > 0, section.columnWeight > wordsPerColumn else {
+            return [section]
+        }
+        var parts: [OrigamiSection] = []
+        var run: [LiquidDoc.Paragraph] = []
+        var weight = 0
+        func flush() {
+            guard !run.isEmpty else { return }
+            parts.append(OrigamiSection(heading: parts.isEmpty ? section.heading : nil,
+                                        paragraphs: run))
+            run = []
+            weight = 0
+        }
+        for paragraph in section.paragraphs {
+            if !run.isEmpty, weight + paragraph.columnWeight > wordsPerColumn {
+                flush()
+            }
+            run.append(paragraph)
+            weight += paragraph.columnWeight
+        }
+        flush()
+        return parts
+    }
 
     /// The quotation block: the words, the document's citation sentence,
     /// and its address — everything a paste needs to stay traceable.
