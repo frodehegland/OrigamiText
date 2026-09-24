@@ -449,7 +449,16 @@ nonisolated enum OrigamiEPUBImporter {
                 guard let text = (node["text"] as? String)?
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                       !text.isEmpty else { return nil }
-                return LiquidDoc.Paragraph(id: node["id"] as? String ?? "en-\(offset + 1)",
+                // The record's own href is the note's address, already
+                // path-qualified, and it is what the dagger in the body
+                // resolves to. Using the bare id instead left the two
+                // forms apart in a profile publication, so the reveal
+                // found nothing.
+                let noteID = (node["href"] as? String)
+                    .flatMap { $0.contains("#") ? $0 : nil }
+                    ?? node["id"] as? String
+                    ?? "en-\(offset + 1)"
+                return LiquidDoc.Paragraph(id: noteID,
                                            heading: nil, text: text)
             }
         var notedIDs = Set(notes.map(\.id))

@@ -1116,12 +1116,17 @@ nonisolated enum OrigamiReading {
     }
 
     /// The endnote a dagger reveals: the body paragraph carrying the
-    /// note's id (the import files endnotes under a Notes heading). A
-    /// chaptered book's import prefixes ids per chapter (s2-en-1) while
-    /// the dagger's href carries the document's own (en-1) — the suffix
-    /// match bridges the two.
+    /// note's id (the import files endnotes under a Notes heading).
+    ///
+    /// The dagger's href carries a bare fragment — `en-1` — because that
+    /// is what the content document wrote, while the note may be filed
+    /// under its canonical address, `content/paper.html#en-1`. Older
+    /// imports of chaptered books prefixed ids per chapter instead
+    /// (`s2-en-1`). All three forms resolve here, so a note opens
+    /// whichever era the publication comes from.
     static func endnote(withID id: String, in doc: LiquidDoc) -> LiquidDoc.Paragraph? {
         doc.body?.first { $0.id == id }
+            ?? doc.body?.first { $0.id.hasSuffix("#" + id) }
             ?? doc.body?.first { $0.id.hasSuffix("-" + id) }
     }
 
