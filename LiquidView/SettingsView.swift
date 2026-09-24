@@ -1456,15 +1456,15 @@ private struct HypermediaSettingsView: View {
         .sheet(isPresented: $showSignIn) {
             SignInToHypermediaAccountSheet()
         }
-        .task {
-            // An account made before the address was kept in plain
-            // preferences: fetch the key once, here, where the reader
-            // came looking for their account — and write the address
-            // down, so no later launch has to ask the Keychain at all.
-            if model.hypermedia.hasAccount, model.hypermedia.accountUID.isEmpty {
-                model.hypermedia.loadIdentity()
-            }
-        }
+        // NOTHING here reads the Keychain. This pane used to fetch the
+        // key on appearing, to back-fill the address for an account
+        // made before the address was kept in plain preferences — and
+        // because macOS reopens the windows it found open, that ran at
+        // launch and put the Keychain's password panel in front of a
+        // reader who had asked for nothing. The address is fetched when
+        // the reader asks to see or copy it, which is the only moment
+        // that justifies the panel; `loadIdentity()` writes it down
+        // then, so it is asked at most once ever.
     }
 
     // MARK: Account
@@ -1474,12 +1474,23 @@ private struct HypermediaSettingsView: View {
             LabeledContent("Account") {
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(model.hypermedia.accountName)
-                    Text(model.hypermedia.accountUID)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
+                    if model.hypermedia.accountUID.isEmpty {
+                        // An account made before the address was kept in
+                        // preferences. The address lives in the key and
+                        // the key lives in the Keychain, so it is asked
+                        // for here, at the press — never on the way in.
+                        Button("Show Address") { showAddress() }
+                            .buttonStyle(.link)
+                            .font(.caption)
+                            .help("Read the account's address from its key in your Keychain")
+                    } else {
+                        Text(model.hypermedia.accountUID)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
                 }
             }
             HStack {
@@ -1518,7 +1529,13 @@ private struct HypermediaSettingsView: View {
                         copyKey(what: "Signing seed") { HypermediaIdentity.hex($0.seed) }
                     }
                     Button("Account Address") {
-                        copyKey(model.hypermedia.accountUID, what: "Account address")
+                        // Known already from preferences, or read from
+                        // the key at this press — never before it.
+                        if model.hypermedia.accountUID.isEmpty {
+                            copyKey(what: "Account address") { $0.uid }
+                        } else {
+                            copyKey(model.hypermedia.accountUID, what: "Account address")
+                        }
                     }
                 }
                 .fixedSize()
@@ -1539,6 +1556,17 @@ private struct HypermediaSettingsView: View {
                 Button("Create an Account") { showCreateAccount = true }
                 Button("Sign In to an Existing Account") { showSignIn = true }
             }
+        }
+    }
+
+    /// The address of an account whose address was never written down:
+    /// read from its key, at the reader's ask. `loadIdentity()` records
+    /// it, so the Keychain is asked this once and never again.
+    private func showAddress() {
+        if let identity = model.hypermedia.loadIdentity() {
+            profileNote = "Account address: \(identity.uid)"
+        } else {
+            profileNote = "The signing key could not be read from your Keychain."
         }
     }
 

@@ -12,6 +12,7 @@ func decodedImage(for asset: LiquidDoc.Asset) -> NSImage? {
     return image
 }
 import AppKit
+import QuickLookUI
 import UniformTypeIdentifiers
 import WebKit
 
@@ -307,15 +308,30 @@ struct OrigamiReadingView: View {
     /// current layout, the anchor paragraph's drift followed; absolute
     /// when the anchor is gone; the pre-placement local position for
     /// notes from before placements travelled.
-    private func slipPosition(for annotation: WebAnnotation) -> CGPoint? {
+    /// - Parameter laidOut: the paragraphs on screen, where only some of
+    ///   the document is — Horizontal shows a spread of columns, not the
+    ///   whole reading. A note whose own paragraph is not in the spread
+    ///   has no place on it, and the frame it last had belongs to a page
+    ///   that has been turned; both mean the note stands aside until its
+    ///   paragraph comes back. Nil means the whole document is laid out.
+    private func slipPosition(for annotation: WebAnnotation,
+                              laidOut: Set<String>? = nil) -> CGPoint? {
         if let placement = annotation.placement {
-            if let near = placement.near, let frame = paragraphFrames[near] {
+            if let near = placement.near {
+                if let laidOut, !laidOut.contains(near) { return nil }
+                guard let frame = paragraphFrames[near] else { return nil }
                 return CGPoint(x: frame.minX + placement.dx,
                                y: frame.minY + placement.dy)
             }
-            return CGPoint(x: placement.dx, y: placement.dy)
+            // A note anchored to nothing — placed when no paragraph had
+            // been laid out yet. It has an absolute point on the
+            // flowing page and no column to belong to, so it keeps to
+            // the page it was placed on.
+            return laidOut == nil ? CGPoint(x: placement.dx, y: placement.dy) : nil
         }
-        return model.marginNotePosition(forAnnotationID: annotation.id)
+        return laidOut == nil
+            ? model.marginNotePosition(forAnnotationID: annotation.id)
+            : nil
     }
 
     /// Where a fresh slip first stands: in the gutter beside the
@@ -342,6 +358,7 @@ struct OrigamiReadingView: View {
     /// A jump link to a figure shows the figure in place, as a
     /// citation shows its card.
     @State private var figureTarget: FigureTarget?
+    @State private var modelSheetTarget: ModelSheetTarget?
     @State private var noteTarget: NoteTarget?
     @State private var showReferences = false
     /// The header pill's editor for the whole-document annotation.
@@ -532,7 +549,10 @@ struct OrigamiReadingView: View {
     /// free to sit anywhere, like little slips on the document. A click
     /// opens the whole note with Delete, Copy, and Save; click-and-hold
     /// drags one to a new spot, remembered on this Mac.
-    @ViewBuilder private var marginNotesLayer: some View {
+    /// - Parameter laidOut: which paragraphs are on screen, when only
+    ///   some are — see `slipPosition(for:laidOut:)`. The scrolling page
+    ///   lays out the whole reading and passes nothing.
+    @ViewBuilder private func marginNotesLayer(laidOut: Set<String>? = nil) -> some View {
         let noteSize = max((NSFont.preferredFont(forTextStyle: .body).pointSize
                             + CGFloat(fontDelta)) / 3, 8)
         // The page's own notes, plus the comments that landed on a
@@ -551,7 +571,7 @@ struct OrigamiReadingView: View {
                 gutterPosition(besideParagraph: paragraphID,
                                text: annotation.body?.value ?? "")
             }
-            if let position = slipPosition(for: annotation) ?? anchored {
+            if let position = slipPosition(for: annotation, laidOut: laidOut) ?? anchored {
                 MarginNoteView(
                     note: annotation,
                     fontSize: noteSize,
@@ -583,6 +603,13 @@ struct OrigamiReadingView: View {
     private struct FigureTarget: Identifiable {
         let paragraphID: String
         var id: String { paragraphID }
+    }
+
+    /// A 3D figure opened for a proper look: the model, and what the
+    /// document states about it.
+    struct ModelSheetTarget: Identifiable {
+        let figure: LiquidDoc.SpatialFigure
+        var id: String { figure.modelID ?? figure.path }
     }
 
     private var citationStyle: OrigamiCitationStyle {
@@ -964,6 +991,9 @@ struct OrigamiReadingView: View {
         }
         .sheet(item: $figureTarget) { target in
             FigureJumpSheet(doc: doc, paragraphID: target.paragraphID)
+        }
+        .sheet(item: $modelSheetTarget) { target in
+            OrigamiModelSheet(figure: target.figure, doc: doc)
         }
         .sheet(isPresented: $showReferences) {
             ReferencesSheet(doc: doc)
@@ -1837,7 +1867,7 @@ struct OrigamiReadingView: View {
                 .padding([.horizontal, .bottom], 32).padding(.top, 10)
                 .frame(maxWidth: readerMode == .scroll ? .infinity : measure, alignment: .leading)
                 .frame(maxWidth: .infinity)
-                marginNotesLayer
+                marginNotesLayer()
             }
             .coordinateSpace(name: "origamiPage")
         }
@@ -2353,25 +2383,46 @@ struct OrigamiReadingView: View {
         let shown = horizontalPageCount(width: horizontalViewWidth,
                                         sections: pages.count)
         let index = min(max(focusIndex, 0), max(pages.count - 1, 0))
+        // The paragraphs of the spread on screen, so a margin note can
+        // find its own — and so a note belonging to a page that has
+        // been turned stands aside rather than hanging over the columns
+        // at the place it had on the page it came from.
+        let onScreen = Set(
+            (index..<min(index + shown, pages.count))
+                .flatMap { pages[$0] }
+                .flatMap { section in
+                    (section.heading.map { [$0.id] } ?? []) + section.paragraphs.map(\.id)
+                })
         return VStack(spacing: 0) {
             if pages.isEmpty {
                 ContentUnavailableView("Nothing to Read", systemImage: "doc.text",
                                        description: Text("This document has no body."))
             } else {
-                HStack(spacing: 0) {
-                    ForEach(0..<shown, id: \.self) { offset in
-                        Group {
-                            if index + offset < pages.count {
-                                focusColumn(pages[index + offset],
-                                            annotations: annotations,
-                                            closesBook: index + offset == pages.count - 1)
-                            } else {
-                                Color.clear.frame(maxWidth: .infinity)
+                // The notes stand over the columns in the page's own
+                // coordinate space, exactly as they do on the flowing
+                // page: each beside the paragraph it was written on,
+                // wherever that paragraph is now. Both the layer and
+                // the space were missing here, so a note simply never
+                // appeared in Horizontal — the anchoring itself was
+                // right all along.
+                ZStack(alignment: .topLeading) {
+                    HStack(spacing: 0) {
+                        ForEach(0..<shown, id: \.self) { offset in
+                            Group {
+                                if index + offset < pages.count {
+                                    focusColumn(pages[index + offset],
+                                                annotations: annotations,
+                                                closesBook: index + offset == pages.count - 1)
+                                } else {
+                                    Color.clear.frame(maxWidth: .infinity)
+                                }
                             }
+                            if offset < shown - 1 { Divider() }
                         }
-                        if offset < shown - 1 { Divider() }
                     }
+                    marginNotesLayer(laidOut: onScreen)
                 }
+                .coordinateSpace(name: "origamiPage")
                 Divider()
                 HStack {
                     pageBarPileControls
@@ -2481,37 +2532,19 @@ struct OrigamiReadingView: View {
         return idx < pages.count ? pages[idx].flatMap { [$0] } : nil
     }
 
-    /// Focus mode pages — one semantic section per page (heading + all its paragraphs).
-    /// Used by Focus, RSVP, Sentence mode, and Paragraph mode.
+    /// The pages Horizontal lays side by side — and the pages Focus,
+    /// RSVP, Sentence and Paragraph modes walk: one semantic section
+    /// each (heading + its paragraphs).
+    ///
+    /// By the one shared rule (`OrigamiReading.horizontalColumns`),
+    /// which visionOS reads from too, so there is a single Horizontal
+    /// in the app rather than one per platform. New with the sharing: a
+    /// section longer than a page carries on into the next, which is
+    /// what makes these views mean anything for a transcript or a
+    /// letter — reading with few headings used to be one page as long
+    /// as the document.
     private var horizontalPages: [[OrigamiSection]] {
-        var pages: [[OrigamiSection]] = []
-        var pending: [OrigamiSection] = []
-        for section in sections {
-            if hasBody(section) {
-                pages.append(pending + [section])
-                pending = []
-            } else {
-                pending.append(section)
-            }
-        }
-        if !pending.isEmpty {
-            if pages.isEmpty {
-                pages.append(pending)
-            } else {
-                pages[pages.count - 1] += pending
-            }
-        }
-        return pages
-    }
-
-    /// A section with something of its own to read — words, a figure,
-    /// a table.
-    private func hasBody(_ section: OrigamiSection) -> Bool {
-        section.paragraphs.contains { paragraph in
-            paragraph.tableID != nil
-                || LiquidDoc.imageReference(in: paragraph.text) != nil
-                || !paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
+        OrigamiReading.horizontalColumns(sections)
     }
 
     /// Pages across the width: two at least, a page more for every 460
@@ -2908,11 +2941,15 @@ struct OrigamiReadingView: View {
         } ?? false
         let dim = stretchFocus && closeStretch == nil && !inlineOpenHost
         if let modelRef = LiquidDoc.modelReference(in: paragraph.text) {
-            // An embedded 3D model (the EPUB <model> element): an
-            // interactive orbit stage, the poster standing in when
-            // the model cannot show.
+            // A 3D figure: the poster the writer framed, and — on a
+            // double-click, as an image opens in its own window — the
+            // model itself with what the document states about it.
             OrigamiModelView(path: modelRef.path, alt: modelRef.alt,
                              posterID: modelRef.posterID, doc: doc)
+                .onTapGesture(count: 2) {
+                    modelSheetTarget = ModelSheetTarget(figure: modelRef)
+                }
+                .help("Double-click for the model, its name and its size")
                 .dimmedForStretch(dim)
         } else if let image = LiquidDoc.imageReference(in: paragraph.text),
            let asset = doc.assets.first(where: { $0.id == image.id }) {
@@ -6469,6 +6506,106 @@ struct OrigamiModelView: View {
             return .failure(.couldNotWrite(error.localizedDescription))
         }
         return .success(page)
+    }
+}
+
+/// A 3D figure opened for a proper look: the model turnable at size,
+/// and what the document states about it — its own file name, what it
+/// weighs, its real-world size, which way is up, and any reduction with
+/// what it was before. The reading's counterpart of the facts panel
+/// visionOS stands beside a model pulled into the room, and it says the
+/// same things in the same words (`OrigamiReading.facts`).
+///
+/// The viewer is **Quick Look**, not the WebGL stage the page uses.
+/// That stage is `model-viewer`, which reads glTF; almost every model
+/// in an Origami EPUB is USDZ, which Quick Look renders natively and
+/// lets the reader turn. A figure whose picture stood but whose model
+/// would not show was this difference, not a missing file.
+private struct OrigamiModelSheet: View {
+    let figure: LiquidDoc.SpatialFigure
+    let doc: LiquidDoc
+
+    @Environment(\.dismiss) private var dismiss
+
+    /// The model file inside the unpacked book, when it is really there.
+    private var modelURL: URL? {
+        let url = doc.fileURL.appendingPathComponent(figure.path)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(figure.alt.isEmpty ? "3D model" : figure.alt)
+                .font(.headline)
+                .lineLimit(2)
+
+            if let modelURL {
+                QuickLookModelView(url: modelURL)
+                    .frame(width: 560, height: 380)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(.quaternary, lineWidth: 1))
+            } else {
+                Label("The model file is not in the unpacked book.",
+                      systemImage: "cube.transparent")
+                    .frame(width: 560, height: 120)
+                    .foregroundStyle(.secondary)
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
+                ForEach(OrigamiReading.facts(for: figure), id: \.0) { name, value in
+                    GridRow {
+                        Text(name)
+                            .foregroundStyle(.secondary)
+                            .gridColumnAlignment(.trailing)
+                        Text(value)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .font(.callout)
+
+            HStack {
+                if let modelURL,
+                   let extractURL = OrigamiReading.extractURL(for: figure,
+                                                             modelURL: modelURL) {
+                    ShareLink(item: extractURL) {
+                        Label("Extract Model\u{2026}", systemImage: "square.and.arrow.up")
+                    }
+                    .help("The model file unchanged, under its own name")
+                }
+                if let source = figure.source, let url = URL(string: source) {
+                    Link(destination: url) {
+                        Label("Original", systemImage: "arrow.up.right")
+                    }
+                    .help("Where the full-resolution original lives")
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 600)
+    }
+}
+
+/// Quick Look, embedded: it reads USD, Reality and much else natively,
+/// and lets the reader turn what it shows.
+private struct QuickLookModelView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> QLPreviewView {
+        let view = QLPreviewView(frame: .zero, style: .normal) ?? QLPreviewView()
+        view.autostarts = true
+        view.previewItem = url as NSURL
+        return view
+    }
+
+    func updateNSView(_ view: QLPreviewView, context: Context) {
+        if (view.previewItem as? NSURL) as URL? != url {
+            view.previewItem = url as NSURL
+        }
     }
 }
 
