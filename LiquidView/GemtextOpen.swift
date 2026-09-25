@@ -353,6 +353,7 @@ extension AppModel {
         book.affiliations = result.affiliations
         book.acmReference = result.acmReference
         book.license = result.license
+        book.licenseURI = result.licenseURI
         return book
     }
 

@@ -76,9 +76,10 @@ something these forbid, these govern.
     describes.
 14. **Metadata is visible to people.** A publication MUST carry a
     human-readable statement of what machine-readable metadata it has
-    and where (§7.4). Metadata that exists only in a hidden payload does
-    not survive printing, copy-pasting, plain-text extraction, or a
-    reading system that has never heard of this profile.
+    and where, and of its rights (§7.4). Metadata that exists only in a
+    hidden payload does not survive printing, copy-pasting, plain-text
+    extraction, or a reading system that has never heard of this
+    profile.
 15. **Independent implementation is the test of openness.** A compatible
     implementation MUST be possible from this document and the
     conformance corpus alone.
@@ -142,13 +143,19 @@ Ordinary EPUB. `META-INF/container.xml` names the package document,
 which MUST declare `version="3.0"` — the package version retained by
 EPUB 3.x — and a `unique-identifier`.
 
-A publication using any `origami:` property MUST declare the prefix:
+A publication using any `origami:` property MUST declare the prefix, and
+likewise any other vocabulary it uses that EPUB does not predeclare —
+`cc:` for the Creative Commons attribution properties of §4.8:
 
 ```xml
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
          unique-identifier="pub-id" xml:lang="en"
-         prefix="origami: https://origamitext.org/vocab/">
+         prefix="origami: https://origamitext.org/vocab/
+                 cc: http://creativecommons.org/ns#">
 ```
+
+`dcterms:`, `schema:` and `a11y:` are predeclared by EPUB and need no
+`prefix` entry.
 
 ### 4.2 Profile declaration
 
@@ -401,6 +408,114 @@ OEBPS/references.bib           bibliography record
 OEBPS/images/…
 OEBPS/models/…
 ```
+
+---
+
+### 4.8 Rights
+
+A publication SHOULD state its rights, and where it does the statement
+MUST be machine-readable as well as human-readable. A scholarly document
+whose licence exists only as a paragraph of prose cannot be filtered,
+aggregated, or reused with confidence by anything but a person reading
+it.
+
+None of these properties is REQUIRED: a meeting note or a personal
+letter genuinely has no rights statement, and a writer MUST NOT be
+prevented from exporting one. Their absence is a warning, not an error
+(§17.2).
+
+#### 4.8.1 What to declare
+
+```xml
+<dc:rights>© 2026 Copyright held by the owner/author(s).</dc:rights>
+<meta property="dcterms:license">https://creativecommons.org/licenses/by/4.0/</meta>
+<meta property="dcterms:rightsHolder">Association for Computing Machinery</meta>
+<meta property="dcterms:accessRights">open access</meta>
+<meta property="cc:attributionName">Frode Alexander Hegland</meta>
+<meta property="cc:attributionURL">https://doi.org/10.1234/origami.2026.1</meta>
+```
+
+| Property | Use | Value |
+|---|---|---|
+| `dc:rights` | RECOMMENDED | The rights statement as a person would read it. Dublin Core: *"Information about rights held in and over the resource."* |
+| `dcterms:license` | RECOMMENDED | **A URI** identifying the licence. Dublin Core: *"A legal document giving official permission to do something with the resource. Recommended practice is to identify the license document with a URI."* |
+| `dcterms:rightsHolder` | OPTIONAL | Who owns or manages the rights — frequently a publisher rather than the author. |
+| `dcterms:accessRights` | OPTIONAL | Access or restriction status: `open access`, an embargo date, a security classification. |
+| `cc:attributionName` | OPTIONAL | The name attribution must credit. |
+| `cc:attributionURL` | OPTIONAL | The URL attribution should point at. |
+
+**`dcterms:license` MUST be a URI where one exists.** This is the
+property that makes rights actionable: `https://creativecommons.org/licenses/by/4.0/`
+can be compared, resolved and reasoned about, where "Creative Commons
+Attribution" can only be pattern-matched. A reader MUST NOT infer a
+licence by searching `dc:rights` for the name of one.
+
+`dcterms:license` is a sub-property of `dcterms:rights` in Dublin Core,
+so the two compose: the prose says what a person needs to know, the URI
+says what software needs to know, and neither replaces the other.
+
+The two `cc:` properties exist because Creative Commons licences
+**require** attribution, and a reader offering to copy a citation should
+use the attribution the publication asks for rather than inventing one.
+A writer SHOULD emit them when it declares a CC licence. A reader
+building an attribution string SHOULD prefer them, and otherwise fall
+back to `dc:creator`, `dc:title` and the licence URI.
+
+#### 4.8.2 In the records
+
+The semantic record MAY mirror the rights (§8.2), and this is a derived
+representation: the package governs (§11.4).
+
+```json
+"document": {
+  "rights": "© 2026 Copyright held by the owner/author(s).",
+  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "rightsHolder": "Association for Computing Machinery",
+  "accessRights": "open access"
+}
+```
+
+`rights` is prose; `license` is a URI.
+
+**Compatibility.** Pre-1.0 publications put the whole prose rights block
+in `document.license`. A reader MUST treat a `license` value that is not
+a URI as `rights`, and MUST NOT present it as a licence identifier.
+
+#### 4.8.3 Resources whose rights differ
+
+A publication frequently carries third-party material under its own
+terms — a 3D model from a repository, a figure reproduced by permission.
+Where a resource's rights differ from the publication's, the writer
+**MUST** state that in the publication's own text: in the figure's
+caption, or in the colophon.
+
+1.0 provides no machine-readable per-resource rights vocabulary. This is
+deliberate: rights per resource is a general problem — images, audio,
+video and datasets all have it — and a model-only answer would be the
+narrow version of it. A general mechanism is expected in a later minor
+version, which §15.4 already makes a compatible addition. Until then the
+obligation is discharged in prose, which is where the attribution
+requirement of a CC licence is satisfied anyway.
+
+#### 4.8.4 Encryption
+
+> **A conforming publication MUST NOT encrypt its content documents or
+> its metadata records. Font obfuscation is permitted.**
+
+This is a statement about what the format is for. §1.2 requires that an
+ordinary reader remain useful and §1.15 makes independent implementation
+the test of openness; neither survives a publication whose text cannot
+be read without permission. A format whose whole argument is that a
+document should explain itself cannot also permit its text to be locked.
+
+Font obfuscation is exempted because EPUB uses `META-INF/encryption.xml`
+for that as well as for digital rights management, and obfuscating an
+embedded font is a licensing formality of typography, not a restriction
+on reading.
+
+`META-INF/rights.xml` MAY be present. It MUST NOT be the only place the
+publication's rights are stated, and a reader MUST NOT be required to
+consult it in order to read the publication.
 
 ---
 
@@ -1039,7 +1154,8 @@ carries the semantics.
 
 A publication **MUST** contain a rendered Visual-Meta colophon, as a
 `<section epub:type="colophon">`, SHOULD place it in the end matter, and
-MUST include three components in this order. A conforming reader **MUST**
+MUST include three components in this order — four where the
+publication declares any rights (§7.4.4). A conforming reader **MUST**
 be able to display it — which for most readers means not suppressing it,
 since it is ordinary body text.
 
@@ -1100,7 +1216,35 @@ colophon: it is a confident instruction to look in the wrong place, and
 because it is prose nothing will ever report it as an error. §18
 therefore requires a validator to check it.
 
-#### 7.4.4 Complete example **[I]**
+#### 7.4.4 The rights statement
+
+Where the publication declares any of the rights properties of §4.8, the
+colophon **MUST** state them in human-readable form.
+
+```html
+<h3>Rights</h3>
+<p>© 2026 Copyright held by the owner/author(s). Licensed under
+  <a href="https://creativecommons.org/licenses/by/4.0/">Creative Commons
+  Attribution 4.0 International</a>. When reusing this work, credit
+  Frode Alexander Hegland.</p>
+```
+
+The values stated here **MUST** be generated from the same values as the
+package declarations, so the prose and the metadata cannot drift apart —
+the same constraint §7.4.3 puts on the record paths, and for the same
+reason: this is prose, so nothing else will ever notice when it goes
+stale.
+
+Rights is the clearest case in the whole profile for §1.14. It is
+precisely the metadata that has to survive being printed, pasted into an
+email, or read in a system that has never heard of this profile — and
+the one whose absence has consequences outside the software.
+
+Where a resource inside the publication carries different terms from the
+publication itself, this is one of the two places that MUST say so
+(§4.8.3).
+
+#### 7.4.5 Complete example **[I]**
 
 ```html
 <section epub:type="colophon" id="origami-publication-info">
@@ -1133,12 +1277,18 @@ therefore requires a validator to check it.
     Visual-Meta-aware reader, or change the <code>.epub</code> extension
     to <code>.zip</code> and unpack the archive.</p>
 
+  <h3>Rights</h3>
+  <p>© 2026 Copyright held by the owner/author(s). Licensed under
+    <a href="https://creativecommons.org/licenses/by/4.0/">Creative
+    Commons Attribution 4.0 International</a>. When reusing this work,
+    credit Frode Alexander Hegland.</p>
+
   <p>This publication conforms to the Origami Text 1.0 profile
     (https://origamitext.org/profile/1.0).</p>
 </section>
 ```
 
-#### 7.4.5 Reader obligations
+#### 7.4.6 Reader obligations
 
 1. A reader **MUST NOT** withhold the colophon. A reader that omits
    backmatter because its entries come from the records (§16.3) MUST
@@ -1155,7 +1305,7 @@ therefore requires a validator to check it.
    colophon and record sections does not make a publication
    multi-document for any purpose.
 
-#### 7.4.6 The three levels of discovery **[I]**
+#### 7.4.7 The three levels of discovery **[I]**
 
 ```
 OPF                           → authoritative machine discovery
@@ -1204,6 +1354,8 @@ identifiable.
   "modified": "2026-09-24T09:30:57Z",
   "title": "Origami Text (gloss)",
   "authors": ["Frode Alexander Hegland"],
+  "rights": "© 2026 Copyright held by the owner/author(s).",
+  "license": "https://creativecommons.org/licenses/by/4.0/",
   "defaultDocument": "content.xhtml"
 },
 
@@ -1224,6 +1376,10 @@ omits it MUST use full path-plus-fragment addresses everywhere.
 `structure.headings` is **derived** from the XHTML (§11.3) and exists for
 navigation without parsing the body. `address` is the positional label,
 informative only (§5.2).
+
+`rights`, `license`, `rightsHolder` and `accessRights` are derived from
+the package, which governs (§4.8.2, §11.4). `license` is a URI; a
+pre-1.0 `license` holding prose MUST be read as `rights`.
 
 A `document.digest` member MUST NOT be present (§12.2). A
 `document.hasVersion` member MUST NOT be present (§4.3).
@@ -1732,7 +1888,8 @@ it, which §15.4 makes a compatible addition.
 These MUST NOT break a 1.0 reader: additional `data-model-*` attributes;
 several model representations per figure (a reader SHOULD take the first
 it supports); an `@context` member added to either record; additional
-`<link rel="record">` records.
+`<link rel="record">` records; and a general **per-resource rights**
+mechanism, which 1.0 deliberately leaves to prose (§4.8.3).
 
 ---
 
@@ -1843,7 +2000,8 @@ inconsistent:
   in `META-INF/` (§4.4.1, §4.4.2);
 - there is no `epub:type="colophon"` section, or one whose stated record
   paths do not resolve, or whose BibTeX self-citation does not parse
-  (§7.4).
+  (§7.4);
+- a content document or a metadata record is encrypted (§4.8.4).
 
 ### 17.2 Warn, but export anyway
 
@@ -1854,7 +2012,10 @@ deterministic in every one of these cases:
 - `data-model-up` or `extent` differing from the `models` entry;
 - a glossary definition differing between XHTML and the semantic record;
 - a heading list differing from the content documents;
-- a 3D figure over a size budget whose `data-model-source` is absent.
+- a 3D figure over a size budget whose `data-model-source` is absent;
+- no rights statement at all, or a `dcterms:license` that is not a URI
+  (§4.8);
+- a colophon whose rights statement disagrees with the package.
 
 Refusing to export a finished publication over a metadata disagreement
 teaches a writer to fight the tool.
@@ -1920,6 +2081,13 @@ ones this profile exists to prevent regressing:
   to a declared record**. This is the reason the colophon is
   machine-validated at all: it is prose, so nothing else will ever
   notice when it goes stale. **Error.**
+- **Encryption (§4.8.4).** Where `META-INF/encryption.xml` is present,
+  assert that nothing it encrypts is a content document or a metadata
+  record. **Error.** An encrypted font is permitted.
+- **Rights (§4.8).** Where rights are declared, assert that
+  `dcterms:license` is a URI and that the colophon's rights statement
+  agrees with the package. **Warning**, since a publication may
+  legitimately have no rights statement at all.
 
 It MUST be runnable as a command-line tool independent of any reading
 application, and MUST exit non-zero on any error.
@@ -2003,7 +2171,8 @@ application/epub+zip
 <?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
          unique-identifier="pub-id" xml:lang="en"
-         prefix="origami: https://origamitext.org/vocab/">
+         prefix="origami: https://origamitext.org/vocab/
+                 cc: http://creativecommons.org/ns#">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="pub-id">urn:uuid:11111111-2222-3333-4444-555555555555</dc:identifier>
     <dc:title>A minimal Origami publication</dc:title>
@@ -2013,6 +2182,9 @@ application/epub+zip
     <meta property="dcterms:conformsTo">https://origamitext.org/profile/1.0</meta>
     <meta property="dcterms:isVersionOf">urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</meta>
     <meta property="schema:version">1</meta>
+    <dc:rights>© 2026 A. Writer.</dc:rights>
+    <meta property="dcterms:license">https://creativecommons.org/licenses/by/4.0/</meta>
+    <meta property="cc:attributionName">A. Writer</meta>
     <meta property="schema:accessMode">textual</meta>
     <meta property="schema:accessMode">visual</meta>
     <meta property="schema:accessModeSufficient">textual,visual</meta>
@@ -2127,6 +2299,11 @@ application/epub+zip
     <p>To inspect the raw records, open this publication in a
       Visual-Meta-aware reader, or change the <code>.epub</code>
       extension to <code>.zip</code> and unpack the archive.</p>
+    <h3>Rights</h3>
+    <p>© 2026 A. Writer. Licensed under
+      <a href="https://creativecommons.org/licenses/by/4.0/">Creative
+      Commons Attribution 4.0 International</a>. When reusing this work,
+      credit A. Writer.</p>
     <p>This publication conforms to the Origami Text 1.0 profile
       (https://origamitext.org/profile/1.0).</p>
   </section>
@@ -2169,6 +2346,8 @@ application/epub+zip
     "release": "1",
     "title": "A minimal Origami publication",
     "authors": ["A. Writer"],
+    "rights": "© 2026 A. Writer.",
+    "license": "https://creativecommons.org/licenses/by/4.0/",
     "defaultDocument": "content.xhtml"
   },
   "structure": {
@@ -2299,6 +2478,11 @@ compatible change; retrofitting citations is not.
 | `schema:version` | no | human-readable release label |
 | `dcterms:replaces` / `isReplacedBy` | no | supersession, retraction |
 | `schema:access*` | yes | accessibility (§4.6) |
+| `dc:rights` | recommended | the rights statement, as prose (§4.8) |
+| `dcterms:license` | recommended | the licence, **as a URI** (§4.8) |
+| `dcterms:rightsHolder` | no | who owns or manages the rights |
+| `dcterms:accessRights` | no | access or embargo status |
+| `cc:attributionName` / `cc:attributionURL` | no | the attribution a CC licence requires |
 
 ### `data-*` attributes
 
@@ -2334,6 +2518,8 @@ compatible change; retrofitting citations is not.
 | concepts, citations, structure index, endnotes, relationships, lineage, equation index | semantic record |
 | table formulas, authored layouts, model index, interaction declarations | interaction record |
 | bibliographic records | bibliography record |
+| rights and licence | the package, mirrored in the semantic record and stated in the colophon |
+| a resource's own differing rights | the publication's prose — a caption or the colophon (§4.8.3) |
 | the artifact digest | outside the publication |
 | reader annotations and state | outside the publication |
 
@@ -2351,6 +2537,7 @@ compatible change; retrofitting citations is not.
 - RFC 2119, requirement levels — https://www.rfc-editor.org/rfc/rfc2119.html
 - Dublin Core Metadata Terms — https://www.dublincore.org/specifications/dublin-core/dcmi-terms/
 - schema.org `version` — https://schema.org/version
+- Creative Commons Rights Expression Language — https://wiki.creativecommons.org/wiki/CC_REL
 - IANA Link Relations — https://www.iana.org/assignments/link-relations/
 - MathML — https://www.w3.org/TR/MathML3/
 - JSON Schema 2020-12 — https://json-schema.org/draft/2020-12/schema

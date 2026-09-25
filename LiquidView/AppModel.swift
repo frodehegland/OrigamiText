@@ -3264,6 +3264,7 @@ final class AppModel {
         doc.authorEmails = result.authorEmails
         doc.authorAffiliations = result.authorAffiliations
         doc.license = result.license
+        doc.licenseURI = result.licenseURI
         doc.concepts = result.concepts
         doc.layouts = result.layouts
         doc.mapConnections = result.mapConnections

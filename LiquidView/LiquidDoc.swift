@@ -123,6 +123,11 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// its last line. Carried through Visual-Meta; the export renders
     /// it under the front matter with the CC badge.
     var license: String? = nil
+    /// The licence as a URI — `dcterms:license` (profile §4.8). This is
+    /// the actionable half: it can be compared and resolved, where the
+    /// prose in `license` can only be read. Nil when the publication
+    /// states its terms in words only, which pre-1.0 files always do.
+    var licenseURI: String? = nil
     /// Defined Concepts — the document's glossary: a shared pool of
     /// nodes (id, name, definition) that spatial layouts arrange and
     /// citations attach to. Books and papers carry them; the EPUB

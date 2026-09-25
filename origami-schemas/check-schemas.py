@@ -123,6 +123,21 @@ CASES = [
     ("semantic: hasVersion as a revision label (§4.3.1)", SEMANTIC,
      semantic(document={"identifier": UUID, "hasVersion": "corrected version"}), False),
 
+    # ---- rights (§4.8) -------------------------------------------------
+    ("semantic: rights and a licence URI", SEMANTIC, semantic(
+        document={"identifier": UUID, "work": WORK,
+                  "rights": "© 2026 Copyright held by the owner/author(s).",
+                  "license": "https://creativecommons.org/licenses/by/4.0/",
+                  "rightsHolder": "Association for Computing Machinery",
+                  "accessRights": "open access"}), True),
+    ("semantic: a pre-1.0 prose licence still validates", SEMANTIC,
+     semantic(document={"identifier": UUID,
+                        "license": "© 2026 ACM. Creative Commons Attribution."}), True),
+    ("semantic: rights of the wrong type", SEMANTIC,
+     semantic(document={"identifier": UUID, "rights": ["©", "2026"]}), False),
+    ("semantic: rightsHolder of the wrong type", SEMANTIC,
+     semantic(document={"identifier": UUID, "rightsHolder": 2026}), False),
+
     # ---- draft 5: the equation index has a home ------------------------
     ("semantic: equation index (§6.7.1)", SEMANTIC, semantic(
         equations=[{"id": "E-71B2", "href": "content.xhtml#E-71B2",

@@ -39,6 +39,22 @@
         "keywords": { "type": "array", "items": { "type": "string" } },
         "isbn": { "type": "string" },
         "doi": { "type": "string" },
+        "rights": {
+          "description": "The rights statement as prose, mirroring dc:rights (§4.8). The package governs (§11.4).",
+          "type": "string"
+        },
+        "license": {
+          "description": "The licence, as a URI, mirroring dcterms:license (§4.8). A URI is what makes rights actionable: it can be compared and resolved, where a licence name can only be pattern-matched. A pre-1.0 record holding prose here MUST be read as `rights` instead — which is why this is not constrained to a URI pattern, so that legacy records still validate.",
+          "type": "string"
+        },
+        "rightsHolder": {
+          "description": "Who owns or manages the rights — frequently a publisher rather than the author (§4.8).",
+          "type": "string"
+        },
+        "accessRights": {
+          "description": "Access or restriction status: `open access`, an embargo date, a classification (§4.8).",
+          "type": "string"
+        },
         "release": {
           "description": "The human-meaningful release label, mirroring the package's schema:version (§4.3). A string or a number; never an identifier.",
           "type": ["string", "number"]

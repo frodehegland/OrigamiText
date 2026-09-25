@@ -56,8 +56,12 @@ nonisolated enum OrigamiEPUBImporter {
         var authorEmails: [String: String] = [:]
         /// Each author's affiliation line, keyed by name, from Visual-Meta.
         var authorAffiliations: [String: String] = [:]
-        /// The license/copyright block, from Visual-Meta.
+        /// The license/copyright block as a person reads it — `dc:rights`
+        /// in the package, `document.rights` in the record (profile §4.8).
         var license: String? = nil
+        /// The licence as a URI — `dcterms:license`. The actionable half:
+        /// comparable and resolvable, where the prose above is neither.
+        var licenseURI: String? = nil
         /// YYYY-MM-DD from the package metadata.
         let date: String?
         /// The publication identifier (urn:uuid:…), for provenance.
@@ -560,7 +564,8 @@ nonisolated enum OrigamiEPUBImporter {
             authorORCIDs: (document?["author-orcids"] as? [String: String]) ?? [:],
             authorEmails: (document?["author-emails"] as? [String: String]) ?? [:],
             authorAffiliations: (document?["author-affiliations"] as? [String: String]) ?? [:],
-            license: (document?["license"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            license: rightsStatement(in: document, opf: opf),
+            licenseURI: licenceURI(in: document, opf: opf),
             date: document?["date"] as? String ?? date,
             identifier: document?["identifier"] as? String ?? identifier,
             origamiID: document?["origami-id"] as? String,
@@ -835,6 +840,50 @@ nonisolated enum OrigamiEPUBImporter {
         return declared.split(separator: " ")
             // DPUB-ARIA spells the same semantics `doc-bibliography`.
             .map { String($0.hasPrefix("doc-") ? $0.dropFirst(4) : $0) }
+    }
+
+    /// The publication's rights as a person reads them (profile §4.8).
+    ///
+    /// `document.rights` is the profile's home for the prose. Pre-1.0
+    /// files put the whole block in `document.license` instead, so a
+    /// `license` value that is not a URI is read here rather than being
+    /// presented as a licence identifier. The package's `dc:rights` is
+    /// authoritative and answers first (§11.4).
+    private static func rightsStatement(in document: [String: Any]?,
+                                        opf: String) -> String? {
+        let candidates = [
+            firstTagText(in: opf, tag: "dc:rights"),
+            document?["rights"] as? String,
+            (document?["license"] as? String).flatMap { isLicenceURI($0) ? nil : $0 }
+        ]
+        return candidates
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+
+    /// The licence as a URI — the form that can be compared and resolved
+    /// rather than merely pattern-matched (profile §4.8). A licence
+    /// *name* is never returned here: a reader must not infer a licence
+    /// from prose, so prose stays prose.
+    private static func licenceURI(in document: [String: Any]?,
+                                   opf: String) -> String? {
+        let candidates = [
+            firstCapture(in: opf,
+                         pattern: "<meta[^>]*property=\"dcterms:license\"[^>]*>\\s*([^<]+)"),
+            document?["license"] as? String
+        ]
+        return candidates
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { isLicenceURI($0) }
+            .map(xmlUnescaped)
+    }
+
+    private static func isLicenceURI(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.contains(where: \.isNewline),
+              !trimmed.contains(" ") else { return false }
+        return trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://")
+            || trimmed.hasPrefix("urn:")
     }
 
     /// A package-declared metadata record's href. The profile declares each
