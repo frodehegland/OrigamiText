@@ -726,6 +726,27 @@ nonisolated enum ACMLaTeX {
         out.append("\\AtBeginDocument{%")
         out.append("  \\providecommand\\BibTeX{{Bib\\TeX}}}")
         out.append("")
+        // A rule closing the title block, spanning the full text width so
+        // it sits under *both* columns rather than inside one. acmart
+        // builds the title, authors and teasers into \mktitle@bx and
+        // emits it with \twocolumn[...], so the rule has to be appended
+        // to that box before it is printed — patching \@maketitle does
+        // nothing, because the class does not use it. This follows the
+        // class's own idiom in \@mkteasers.
+        let titleRule: [String] = [
+            "\\makeatletter",
+            "\\let\\origamiPrintTopMatter\\@printtopmatter",
+            "\\renewcommand{\\@printtopmatter}{%",
+            "  \\global\\setbox\\mktitle@bx=\\vbox{%",
+            "    \\noindent\\unvbox\\mktitle@bx",
+            "    \\par\\vspace{5pt}%",
+            "    \\noindent\\rule{\\textwidth}{0.5pt}%",
+            "    \\par}%",
+            "  \\origamiPrintTopMatter}",
+            "\\makeatother",
+            ""
+        ]
+        out.append(contentsOf: titleRule)
         // The licence drives \setcopyright, which is what puts the right
         // block on page one. A permissive licence is stated as such; a
         // publication that says nothing gets acmart's default rather than
@@ -969,7 +990,7 @@ nonisolated enum ACMLaTeX {
         }) else { return nil }
 
         return ["",
-                "\\begin{figure}[t]",
+                "\\begin{figure}[htbp]",
                 "  \\centering",
                 "  \\includegraphics[width=\\columnwidth]{images/\(imageFileName(for: asset))}",
                 caption.isEmpty ? "" : "  \\caption{\(inline(caption, in: doc))}",
@@ -982,7 +1003,7 @@ nonisolated enum ACMLaTeX {
                                    in doc: LiquidDoc) -> [String] {
         let columns = String(repeating: "l", count: max(table.columnCount, 1))
         var out = ["",
-                   "\\begin{table}[t]",
+                   "\\begin{table}[htbp]",
                    "  \\centering",
                    "  \\begin{tabular}{\(columns)}",
                    "    \\toprule"]
