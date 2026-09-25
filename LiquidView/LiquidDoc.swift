@@ -48,7 +48,9 @@ enum PersonName {
 nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     let format: String
     let id: String
-    let title: String
+    /// Settable so a rendering can correct it (the export sheet) without
+    /// touching the stored document.
+    var title: String
     let author: String
     let created: Date
     let body: [Paragraph]?

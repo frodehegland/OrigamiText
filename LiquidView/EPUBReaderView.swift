@@ -128,7 +128,7 @@ enum ReaderStyle {
         th:last-child, td:last-child { padding-right: 0; }
         pre { background: rgba(127, 127, 127, 0.12); padding: 0.8em 1em; border-radius: 4px; overflow-x: auto; }
         pre code { font-size: 0.85em; white-space: pre-wrap; }
-        .affiliation, .author-detail, .author-detail a, .byline, .license, .license a, .acm-reference { color: inherit !important; }
+        .affiliation, .author-detail, .author-detail a, .author-details, .author-details a, .byline, .license, .license a, .acm-reference { color: inherit !important; }
         \(theme.css)
         """
     }

@@ -76,6 +76,11 @@ files, but a new export must use only the objects above.
 <dc:date>2026-09-25</dc:date>
 ```
 
+- **`dc:date` (and `document.date`) must be the paper's own date** — the
+  date the writer sets for the document — not the moment of export.
+  Re-exporting a paper next week must not change its date. Export time
+  belongs only in `dcterms:modified`, which Author already writes.
+
 - One `dc:creator` per person, same order and spelling as
   `document.authors[].name`.
 - Affiliation, email and ORCID have **no** EPUB property — do not invent
@@ -100,7 +105,7 @@ entirely. Render them in the `<header>`, generated from the same values:
   <p class="author">Frode Hegland</p>
   <p class="author-detail">The Augmented Text Company, London, UK
     · <a href="mailto:frode@hegland.com">frode@hegland.com</a>
-    · <a class="orcid" href="https://orcid.org/0000-0001-5711-1279">0000-0001-5711-1279</a></p>
+    · <a class="orcid" href="https://orcid.org/0000-0001-5711-1279">https://orcid.org/0000-0001-5711-1279</a></p>
 
   <!-- repeat author + author-detail for each author, in order -->
 
@@ -108,13 +113,15 @@ entirely. Render them in the `<header>`, generated from the same values:
 </header>
 ```
 
-- The ORCID is **written out** as its id and linked to
-  `https://orcid.org/<id>` (no "iD" icon alone — the number itself must
-  be visible, per ORCID's own display guidance).
+- The ORCID is shown as its **full URL**, `https://orcid.org/<id>`, and
+  linked to it — ORCID's own display guidelines ask for the full https
+  form, not the bare number and not an "iD" icon alone. (Author's
+  export of 25 Sep 23:08 already does this; keep it.) The *record*
+  still stores the bare id (§2); only the page shows the URL.
 - Omit any piece an author does not have; do not leave a dangling `·`.
-- These class names (`author`, `author-detail`, `orcid`, `byline`) are
-  the ones Origami Text's own exporter uses and its stylesheet already
-  styles, so the two apps' EPUBs look alike.
+- Class names: `author`, `author-detail` (Author's `author-details` is
+  also accepted), `orcid`, `byline` — the ones Origami Text's exporter
+  uses and its stylesheet styles, so the two apps' EPUBs look alike.
 
 ---
 
@@ -173,10 +180,11 @@ copyright paragraph. Only record what the writer has actually chosen:
 | `document.authors[]` as objects with name/affiliation/email/orcid | ✅ correct — keep |
 | ORCID bare, not a URL | ✅ correct |
 | `dcterms:isPartOf` venue, `dc:subject` keywords | ✅ correct |
-| Author details visible on the page (§4) | ❌ **add** — only a byline today |
+| Author details visible on the page (§4) | ✅ done in the 25 Sep 23:08 export |
 | Affiliation always ends in a country (§2) | ✅ in this file — enforce it for every author |
-| Keywords trimmed (§3) | ❌ last keyword ends in "." |
+| Keywords trimmed (§3) | ✅ done in the 25 Sep 23:08 export |
 | Abstract / keywords / CCS as fields, not body text (§5) | ✅ abstract and keywords are fields; add `ccsConcepts` when the writer supplies them |
+| `dc:date` is the paper's date, not the export date (§3) | ❌ **fix** — the 23:08 export writes the day of export (2026-09-26) |
 | Rights: facts only, no boilerplate (§6) | ✅ nothing written today — add licence URI only when chosen |
 | No legacy `author-orcids` / `author-emails` / `author-affiliations` | ✅ none present — keep it that way |
 

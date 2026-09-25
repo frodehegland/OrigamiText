@@ -684,13 +684,158 @@ private struct WindowBackgroundSetter: NSViewRepresentable {
 
 
 
-/// Choosing the publisher's format a paper is rendered in.
+/// The front matter as the export sheet edits it — a working copy of
+/// what the EPUB states, corrected for this rendering only. The EPUB is
+/// never changed: a date that was the day of export, a venue the paper
+/// has since moved to, a DOI assigned after the file was written, all
+/// get fixed here.
+struct FrontMatterDraft: Equatable {
+    struct Author: Identifiable, Equatable {
+        let id = UUID()
+        var name = ""
+        var affiliation = ""
+        var email = ""
+        var orcid = ""
+    }
+
+    var title = ""
+    var subtitle = ""
+    var date = Date()
+    var authors: [Author] = []
+    var venue = ""
+    var eventShort = ""
+    var eventDates = ""
+    var eventPlace = ""
+    var doi = ""
+    var isbn = ""
+    var keywords = ""
+    var ccs = ""
+    var abstract = ""
+
+    init(_ doc: LiquidDoc) {
+        title = doc.title
+        subtitle = doc.subtitle ?? ""
+        date = doc.listedDate
+        let names = doc.authors.isEmpty
+            ? [doc.displayAuthor].filter { !$0.isEmpty } : doc.authors
+        authors = names.map { name in
+            Author(name: name,
+                   affiliation: doc.authorAffiliations[name]
+                       ?? (names.count == 1 ? doc.affiliations.first ?? "" : ""),
+                   email: doc.authorEmails[name] ?? "",
+                   orcid: doc.authorORCIDs[name] ?? "")
+        }
+        if authors.isEmpty { authors = [Author()] }
+        venue = doc.publication ?? ""
+        let front = ACMLaTeX.withFrontMatterFromBody(doc)
+        if let event = ACMLaTeX.conferenceFromReference(doc) {
+            if venue.isEmpty { venue = event.name }
+            eventShort = event.short
+            eventDates = event.date
+            eventPlace = event.place
+        }
+        doi = doc.doi ?? ""
+        isbn = doc.isbn ?? ACMLaTeX.isbnFromLicence(doc) ?? ""
+        keywords = front.keywords.joined(separator: ", ")
+        ccs = front.ccsConcepts.joined(separator: "\n")
+        abstract = front.abstract ?? ""
+    }
+
+    private static func trimmed(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The paper as it will be rendered: the EPUB's document with the
+    /// corrected front matter laid over it.
+    func applied(to source: LiquidDoc) -> LiquidDoc {
+        var doc = source
+        doc.title = Self.trimmed(title)
+        doc.subtitle = Self.trimmed(subtitle).isEmpty ? nil : Self.trimmed(subtitle)
+        doc.date = LiquidDate(isoString: date.formatted(.iso8601.year().month().day()))
+        let people = authors.filter { !Self.trimmed($0.name).isEmpty }
+        doc.authors = people.map { Self.trimmed($0.name) }
+        doc.authorAffiliations = [:]
+        doc.authorEmails = [:]
+        doc.authorORCIDs = [:]
+        doc.affiliations = []
+        for person in people {
+            let name = Self.trimmed(person.name)
+            if !Self.trimmed(person.affiliation).isEmpty {
+                doc.authorAffiliations[name] = Self.trimmed(person.affiliation)
+            }
+            if !Self.trimmed(person.email).isEmpty {
+                doc.authorEmails[name] = Self.trimmed(person.email)
+                    .replacingOccurrences(of: "mailto:", with: "")
+            }
+            let orcid = Self.bareORCID(person.orcid)
+            if !orcid.isEmpty { doc.authorORCIDs[name] = orcid }
+        }
+        doc.publication = Self.trimmed(venue).isEmpty ? nil : Self.trimmed(venue)
+        doc.doi = Self.trimmed(doi).isEmpty ? nil : Self.trimmed(doi)
+            .replacingOccurrences(of: "https://doi.org/", with: "")
+        doc.isbn = Self.trimmed(isbn).isEmpty ? nil : Self.trimmed(isbn)
+        doc.keywords = keywords.components(separatedBy: ",")
+            .map(Self.trimmed).filter { !$0.isEmpty }
+        doc.ccsConcepts = ccs.components(separatedBy: .newlines)
+            .map(Self.trimmed).filter { !$0.isEmpty }
+        doc.abstract = Self.trimmed(abstract).isEmpty ? nil : Self.trimmed(abstract)
+        return doc
+    }
+
+    /// The event for acmart, when any of its parts is stated.
+    var event: ACMLaTeX.Conference? {
+        let name = Self.trimmed(venue)
+        guard !name.isEmpty,
+              !(Self.trimmed(eventShort).isEmpty && Self.trimmed(eventDates).isEmpty
+                && Self.trimmed(eventPlace).isEmpty) else { return nil }
+        return ACMLaTeX.Conference(name: name, short: Self.trimmed(eventShort),
+                                   date: Self.trimmed(eventDates),
+                                   place: Self.trimmed(eventPlace))
+    }
+
+    static func bareORCID(_ text: String) -> String {
+        trimmed(text)
+            .replacingOccurrences(of: "https://orcid.org/", with: "")
+            .replacingOccurrences(of: "http://orcid.org/", with: "")
+    }
+
+    /// ORCID's own check (ISO 7064 mod 11-2): nil when the id is fine
+    /// or empty, a sentence when it is not.
+    static func orcidProblem(_ text: String) -> String? {
+        let id = bareORCID(text)
+        guard !id.isEmpty else { return nil }
+        let digits = id.replacingOccurrences(of: "-", with: "")
+        guard id.range(of: #"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$"#, options: .regularExpression) != nil
+        else { return "An ORCID has the form 0000-0000-0000-0000." }
+        var total = 0
+        for character in digits.dropLast() {
+            total = (total + Int(String(character))!) * 2
+        }
+        let result = (12 - total % 11) % 11
+        let check = result == 10 ? "X" : String(result)
+        return String(digits.last!) == check ? nil : "This ORCID's check digit does not match."
+    }
+
+    /// What the rendering will lack — shown so it is no surprise.
+    var missing: [String] {
+        var out: [String] = []
+        if authors.allSatisfy({ Self.trimmed($0.name).isEmpty }) { out.append("authors") }
+        if authors.contains(where: { !Self.trimmed($0.name).isEmpty
+            && Self.trimmed($0.affiliation).isEmpty }) { out.append("an affiliation") }
+        if Self.trimmed(abstract).isEmpty { out.append("an abstract") }
+        if Self.trimmed(ccs).isEmpty { out.append("CCS concepts") }
+        if Self.trimmed(keywords).isEmpty { out.append("keywords") }
+        if Self.trimmed(venue).isEmpty { out.append("a venue") }
+        return out
+    }
+}
+
+/// Choosing the publisher's format a paper is rendered in, and correcting
+/// its front matter for that rendering.
 ///
-/// The document has already been read by the time this appears, so the
-/// sheet can say which paper it is and — more usefully — which pieces of
-/// front matter it lacks. A renderer places what the document states and
-/// cannot invent the rest, so it is worth knowing before the LaTeX is
-/// written rather than after reading the PDF.
+/// Every field starts from what the EPUB states and may be changed —
+/// the date an export stamped, a venue, a DOI assigned since, an ORCID.
+/// The corrections shape this rendering only; the EPUB is untouched.
 struct FormatChoiceSheet: View {
     let conversion: AppModel.FormatConversion
     @Environment(AppModel.self) private var model
@@ -701,9 +846,15 @@ struct FormatChoiceSheet: View {
     /// paper states, else CC BY 4.0, ACM's open-access default.
     @State private var rights: ACMLaTeX.Rights = .ccBy
     @State private var compile = true
+    @State private var draft: FrontMatterDraft
     /// Re-read after the helper is installed, so the toggle wakes up
     /// without reopening the sheet.
     @State private var canCompile = ACMLaTeX.isTeXAvailable
+
+    init(conversion: AppModel.FormatConversion) {
+        self.conversion = conversion
+        _draft = State(initialValue: FrontMatterDraft(conversion.doc))
+    }
 
     /// TeX is on the machine but behind the sandbox, and the helper that
     /// reaches it is not yet in place — the one case a button can fix.
@@ -733,16 +884,68 @@ struct FormatChoiceSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Render in a publisher's format")
                     .font(.headline)
-                Text(conversion.title)
-                    .font(.subheadline)
+                Text("Every field starts from the EPUB and may be corrected. "
+                     + "Changes shape this rendering only; the EPUB is not altered.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .padding([.horizontal, .top], 20)
+            .padding(.bottom, 10)
 
+            Form {
+                formatSection
+                paperSection
+                authorsSection
+                venueSection
+                classificationSection
+                outputSection
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                if !draft.missing.isEmpty {
+                    Label("Absent: \(draft.missing.joined(separator: ", "))",
+                          systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(compile && canCompile ? "Render PDF\u{2026}" : "Write Bundle\u{2026}") {
+                    let makePDF = compile && canCompile
+                    let chosen = style
+                    let chosenRights = rights
+                    let edited = draft.applied(to: conversion.doc)
+                    let event = draft.event
+                    // The save panel follows the sheet rather than
+                    // stacking over it.
+                    dismiss()
+                    Task { @MainActor in
+                        model.writeFormat(chosen, of: conversion, rights: chosenRights,
+                                          edited: edited, event: event,
+                                          compile: makePDF)
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+        }
+        .frame(width: 600, height: 720)
+        .onAppear {
+            compile = canCompile
+            rights = ACMLaTeX.Rights.stated(by: conversion.doc) ?? .ccBy
+        }
+    }
+
+    private var formatSection: some View {
+        Section("Format") {
             Picker("Format", selection: $style) {
                 // The formats we have compiled and looked at come first
                 // and are the only ones offered without a caveat.
@@ -757,37 +960,119 @@ struct FormatChoiceSheet: View {
                     }
                 }
             }
-            .pickerStyle(.menu)
-
             Text(style.note)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 
-            if !conversion.missing.isEmpty {
-                // Not an error: a note is allowed to have no venue. But a
-                // renderer cannot place what the paper does not say, so
-                // say so now.
-                Label("This paper states no \(conversion.missing.joined(separator: ", ")). "
-                      + "Those parts of the front matter will be absent.",
-                      systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    private var paperSection: some View {
+        Section("Paper") {
+            TextField("Title", text: $draft.title)
+            TextField("Subtitle", text: $draft.subtitle, prompt: Text("None"))
+            DatePicker("Date", selection: $draft.date, displayedComponents: .date)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Abstract")
+                TextEditor(text: $draft.abstract)
+                    .font(.body)
+                    .frame(minHeight: 90)
             }
+        }
+    }
 
+    private var authorsSection: some View {
+        Section {
+            ForEach($draft.authors) { $author in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        TextField("Name", text: $author.name)
+                        Button {
+                            draft.authors.removeAll { $0.id == author.id }
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Remove this author")
+                        .disabled(draft.authors.count == 1)
+                    }
+                    TextField("Affiliation", text: $author.affiliation,
+                              prompt: Text("Institution, City, Country"))
+                    TextField("Email", text: $author.email)
+                    TextField("ORCID", text: $author.orcid,
+                              prompt: Text("0000-0000-0000-0000"))
+                    if let problem = FrontMatterDraft.orcidProblem(author.orcid) {
+                        Label(problem, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .onMove { draft.authors.move(fromOffsets: $0, toOffset: $1) }
+            Button("Add Author") { draft.authors.append(.init()) }
+        } header: {
+            Text("Authors")
+        } footer: {
+            Text("In printed order. The affiliation is read from the end — "
+                 + "country last — and ACM's class requires the country.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var venueSection: some View {
+        Section {
+            TextField("Venue", text: $draft.venue,
+                      prompt: Text("37th ACM Conference on Hypertext"))
+            TextField("Short name", text: $draft.eventShort, prompt: Text("HT ’26"))
+            TextField("Dates", text: $draft.eventDates,
+                      prompt: Text("September 14–18, 2026"))
+            TextField("Place", text: $draft.eventPlace,
+                      prompt: Text("London, United Kingdom"))
+            TextField("DOI", text: $draft.doi, prompt: Text("10.1145/…"))
+            TextField("ISBN", text: $draft.isbn, prompt: Text("None"))
+        } header: {
+            Text("Venue and identifiers")
+        } footer: {
+            Text("The short name, dates and place fill the running head and the "
+                 + "rights block. Leave them empty for a paper not yet placed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var classificationSection: some View {
+        Section {
+            TextField("Keywords", text: $draft.keywords,
+                      prompt: Text("Separated by commas"))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("CCS Concepts")
+                TextEditor(text: $draft.ccs)
+                    .font(.body)
+                    .frame(minHeight: 50)
+            }
+        } header: {
+            Text("Classification")
+        } footer: {
+            Text("One concept per line, levels joined with →, e.g. "
+                 + "“Human-centered computing → Hypertext / hypermedia”.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var outputSection: some View {
+        Section("Rights and output") {
             Picker("Rights", selection: $rights) {
                 ForEach(ACMLaTeX.Rights.allCases) { option in
                     Text(option.label).tag(option)
                 }
             }
-            .pickerStyle(.menu)
             Text(ACMLaTeX.Rights.stated(by: conversion.doc) == nil
                  ? "The paper states no rights, so they are set here."
                  : "Starting from the rights the paper states.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-
             Toggle("Also compile to PDF", isOn: $compile)
                 .disabled(!canCompile)
             if !canCompile {
@@ -804,31 +1089,6 @@ struct FormatChoiceSheet: View {
                     }
                 }
             }
-
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button(compile && canCompile ? "Render PDF\u{2026}" : "Write Bundle\u{2026}") {
-                    let makePDF = compile && canCompile
-                    let chosen = style
-                    let chosenRights = rights
-                    // The save panel follows the sheet rather than
-                    // stacking over it.
-                    dismiss()
-                    Task { @MainActor in
-                        model.writeFormat(chosen, of: conversion, rights: chosenRights,
-                                          compile: makePDF)
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(width: 430)
-        .onAppear {
-            compile = canCompile
-            rights = ACMLaTeX.Rights.stated(by: conversion.doc) ?? .ccBy
         }
     }
 }

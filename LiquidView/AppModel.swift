@@ -6001,8 +6001,13 @@ final class AppModel {
     /// the same step.
     @discardableResult
     func writeFormat(_ style: ACMLaTeX.Style, of conversion: FormatConversion,
-                     rights: ACMLaTeX.Rights? = nil, compile: Bool) -> URL? {
-        let bundle = ACMLaTeX.bundle(for: conversion.doc, style: style, rights: rights)
+                     rights: ACMLaTeX.Rights? = nil,
+                     edited: LiquidDoc? = nil, event: ACMLaTeX.Conference? = nil,
+                     compile: Bool) -> URL? {
+        // The sheet's corrections apply to this rendering only; the EPUB
+        // itself is never changed.
+        let bundle = ACMLaTeX.bundle(for: edited ?? conversion.doc, style: style,
+                                     rights: rights, event: event)
         // The sandbox granted the chosen EPUB, not the folder it sits in,
         // so writing a new folder beside it was refused ("no permission
         // to save"). A save panel grants the write; it opens beside the
