@@ -1,5 +1,11 @@
 # Making the Origami EPUB match what we say about it
 
+> **Superseded in part.** The format itself is now specified normatively in
+> [`ORIGAMI-EPUB-PROFILE-1.0.md`](ORIGAMI-EPUB-PROFILE-1.0.md). This document
+> remains the record of the September audit — what each codebase did and did
+> not do at the time — and is kept for that. Where the two disagree about
+> what the format requires, the profile governs.
+
 **Written 21 September 2026, from an audit of `Origami text Sept 26 (for
 Communications).epub` against the article's own claims and against the three
 codebases (Origami Text, Reader, Author).**

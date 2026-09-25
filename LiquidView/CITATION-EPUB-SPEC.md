@@ -1,5 +1,10 @@
 # Origami Text ↔ Author Citation Contract
 
+> **Read alongside** [`ORIGAMI-EPUB-PROFILE-1.0.md`](../ORIGAMI-EPUB-PROFILE-1.0.md),
+> which now specifies citations (§6.3), the citation record (§8.4) and the
+> bibliography record (§10) normatively. Where the two disagree, the profile
+> governs. This document remains the contract between the two apps.
+
 **Status:** Normative  
 **Applies to:** Author (implementer), Origami Text (source of truth for metadata)  
 **Principle:** Origami Text dictates the metadata shape. Author is responsible for preserving every field faithfully and embedding it into the exported EPUB. Origami Text reads it back and drives the citation panel UI.

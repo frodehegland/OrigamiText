@@ -13,6 +13,9 @@ Open `OrigamiText.xcodeproj` and build the **LiquidView** scheme — that is the
 - [ORIGAMI-TEXT-OVERVIEW.md](ORIGAMI-TEXT-OVERVIEW.md) — what the app is and how it thinks
 - [ORIGAMI-DOCUMENT-FORMAT.md](ORIGAMI-DOCUMENT-FORMAT.md) — the full format specification
 - [LIQUID-DOCUMENT-FORMAT.md](LIQUID-DOCUMENT-FORMAT.md) — the interoperable sibling format
+- [ORIGAMI-EPUB-PROFILE-1.0.md](ORIGAMI-EPUB-PROFILE-1.0.md) — the EPUB profile: how an Origami document travels as a conforming EPUB 3, normative
+- [origami-schemas/](origami-schemas/) — the profile's JSON schemas, their test suite, and a conforming sample publication
+- [origami-packaging-tests/](origami-packaging-tests/) — the first conformance corpus item, with its EPUBCheck results
 
 ## License
 

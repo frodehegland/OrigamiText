@@ -1,5 +1,11 @@
 # Spatial figures: 3D models in Origami Text
 
+> **Superseded as a specification.** 3D figures are now specified normatively
+> in [`ORIGAMI-EPUB-PROFILE-1.0.md`](ORIGAMI-EPUB-PROFILE-1.0.md) §6.9, which
+> is what an implementer should read. This document remains the reasoning
+> behind the design — why the poster is editorial, why units and extent travel
+> together — and is kept for that.
+
 **A format proposal and implementation plan, 22 September 2026.** Written
 from the format side, so it can be compared against the Author write-up of
 the same feature and the two reconciled before either is built.

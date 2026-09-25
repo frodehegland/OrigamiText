@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://origamitext.org/schema/1.0/origami-interaction-1.0.schema.json",
+  "title": "Origami EPUB Profile 1.0 — the interaction record",
+  "description": "Schema for the record declared with properties=\"origami:interaction\". Authoritative for table formulas, authored layouts, interaction declarations and the 3D model index. See profile §9.\n\nTwo things this schema exists to prevent. First, §9.0's separation: the semantic members are declared forbidden below, so a record carrying them is rejected by the schema itself rather than by a validator's own walk — deletion, not renaming, because a renamed member is a second copy waiting to diverge. Second, §14's boundary: this record holds what the WRITER authored, never reader state. Reading position, chosen view, personal layouts and highlights belong in external W3C Web Annotation documents, and the known reader-state member names are forbidden here too.",
+  "type": "object",
+  "required": ["origami"],
+
+  "properties": {
+    "origami": {
+      "description": "Self-identification (§9.1).",
+      "type": "object",
+      "required": ["format", "version", "describes"],
+      "properties": {
+        "format": { "const": "origami-text" },
+        "version": { "$ref": "#/$defs/recordVersion" },
+        "profile": { "$ref": "#/$defs/profileURI" },
+        "describes": { "$ref": "#/$defs/publicationIdentifier" },
+        "created": { "type": "string", "format": "date-time" },
+        "generator": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+
+    "document": {
+      "description": "A small identity block, permitted in both records so each is identifiable alone (§1.13, §11). The package governs (§11.3).",
+      "type": "object",
+      "properties": {
+        "identifier": { "$ref": "#/$defs/publicationIdentifier" },
+        "work": { "$ref": "#/$defs/publicationIdentifier" },
+        "title": { "type": "string" },
+        "authors": {
+          "description": "Strings, or {name} / {family, given} objects — both are read.",
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "object" }
+            ]
+          }
+        },
+        "digest": {
+          "description": "FORBIDDEN (§12.2).",
+          "not": {}
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "tables": {
+      "description": "Live tables (§9.2). The XHTML table is authoritative for presented values; this record is authoritative for formulas.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["identifier", "cells"],
+        "properties": {
+          "identifier": { "$ref": "#/$defs/nonEmptyString" },
+          "href": { "$ref": "#/$defs/address" },
+          "rowCount": { "type": "integer", "minimum": 0 },
+          "columnCount": { "type": "integer", "minimum": 0 },
+          "cells": {
+            "description": "Row-major. A cell's value is the computed value as published; a reader that cannot evaluate a formula falls back to it.",
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "value": { "type": "string" },
+                  "formula": { "$ref": "#/$defs/formula" }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+
+    "map": {
+      "description": "Authored layouts (§9.3). Coordinates are writer-defined and unitless; a reader MUST NOT read them as metres, and MUST NOT write reader-created positions here (§1.11, §14).",
+      "type": "object",
+      "properties": {
+        "views": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["nodes"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "space": { "type": "object" },
+              "nodes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["ref"],
+                  "properties": {
+                    "ref": { "$ref": "#/$defs/address" },
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "z": { "type": "number" }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "nodes": {
+          "description": "Optional node labels for the authored map.",
+          "type": "array",
+          "items": { "type": "object", "required": ["id"] }
+        },
+        "connections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to"],
+            "properties": {
+              "from": { "$ref": "#/$defs/address" },
+              "to": { "$ref": "#/$defs/address" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "models": {
+      "description": "Convenience index of 3D figures (§9.5). The [data-model-src] carrier in the content document governs (§11.3, §6.9).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "href", "media-type"],
+        "properties": {
+          "id": { "$ref": "#/$defs/nonEmptyString" },
+          "href": { "$ref": "#/$defs/nonEmptyString" },
+          "media-type": { "$ref": "#/$defs/modelMediaType" },
+          "filename": { "type": "string" },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "up": {
+            "description": "Exactly Y or Z. A reader trusts this rather than applying its own default (§6.9.4).",
+            "enum": ["Y", "Z"]
+          },
+          "units": { "const": "m" },
+          "extent": {
+            "description": "Real-world bounding size in metres, three numbers. MUST appear together with units: assuming metres for a model that never stated them can build a hundredfold object (§6.9.4).",
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "poster": { "type": "string" },
+          "description": { "type": "string" },
+          "reduced": { "type": "string" },
+          "source-bytes": { "type": "integer", "minimum": 0 },
+          "source": { "type": "string" }
+        },
+        "dependentRequired": {
+          "extent": ["units"],
+          "units": ["extent"]
+        },
+        "additionalProperties": true
+      }
+    },
+
+    "stretchtext": {
+      "description": "Optional index of contracted passages (§9.4). The body is authoritative (§6.10).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "$ref": "#/$defs/nonEmptyString" },
+          "anchor": { "$ref": "#/$defs/address" }
+        },
+        "additionalProperties": true
+      }
+    },
+
+    "views": {
+      "description": "Optional authored folding declarations (§9.4).",
+      "type": "array",
+      "items": { "type": "object" }
+    },
+
+    "custom": { "type": "object" },
+
+    "concepts": { "description": "FORBIDDEN. Belongs to the semantic record as `concepts` (§8.3, §9.0).", "not": {} },
+    "glossary": { "description": "FORBIDDEN. This is the semantic record's `concepts` under another name — the exact duplication §9.0 exists to end. Delete it; do not rename it.", "not": {} },
+    "citations": { "description": "FORBIDDEN. Belongs to the semantic record as `citations` (§8.4, §9.0).", "not": {} },
+    "references": { "description": "FORBIDDEN. This is the semantic record's `citations` under another name, and the bibliographic data itself belongs in references.bib (§10, §9.0).", "not": {} },
+    "headings": { "description": "FORBIDDEN. Belongs to the semantic record as `structure.headings` (§8.2, §9.0).", "not": {} },
+    "structure": { "description": "FORBIDDEN. Belongs to the semantic record (§8.2, §9.0).", "not": {} },
+    "endnotes": { "description": "FORBIDDEN. Belongs to the semantic record as `endnotes` (§8.7, §9.0).", "not": {} },
+    "footnotes": { "description": "FORBIDDEN. Belongs to the semantic record as `endnotes` (§8.7, §9.0).", "not": {} },
+    "links": { "description": "FORBIDDEN. Cross-document relationships belong to the semantic record as `links` (§8.5, §9.0).", "not": {} },
+    "lineage": { "description": "FORBIDDEN. Belongs to the semantic record as `lineage` (§8.6, §9.0).", "not": {} },
+    "equations": { "description": "FORBIDDEN. MathML in the body is authoritative; the index belongs to the semantic record (§6.7, §9.0).", "not": {} },
+    "bibliography": { "description": "FORBIDDEN. references.bib is canonical (§10).", "not": {} },
+
+    "readingPosition": { "description": "FORBIDDEN. Reader state never enters a publication (§1.11, §14).", "not": {} },
+    "readerState": { "description": "FORBIDDEN. Reader state never enters a publication (§1.11, §14).", "not": {} },
+    "runtimeState": { "description": "FORBIDDEN. Reader state never enters a publication (§1.11, §14). This record holds what the writer authored, not what a reader did.", "not": {} },
+    "annotations": { "description": "FORBIDDEN. Personal annotations belong in external W3C Web Annotation documents (§14).", "not": {} },
+    "highlights": { "description": "FORBIDDEN. See §14.", "not": {} },
+    "bookmarks": { "description": "FORBIDDEN. See §14.", "not": {} },
+    "lastRead": { "description": "FORBIDDEN. See §14.", "not": {} }
+  },
+
+  "additionalProperties": true,
+
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+
+    "recordVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+
+    "profileURI": {
+      "type": "string",
+      "pattern": "^https://origamitext\\.org/profile/[0-9]+\\.[0-9]+$"
+    },
+
+    "publicationIdentifier": {
+      "type": "string",
+      "pattern": "^(urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|urn:isbn:[0-9Xx-]+|https?://.+|doi:.+)$"
+    },
+
+    "address": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^([^#\\s]*#)?[^\\s#]+$"
+    },
+
+    "modelMediaType": {
+      "description": "§6.9.3. model/vnd.usdz+zip is not IANA-registered; match it exactly.",
+      "enum": ["model/vnd.usdz+zip", "application/x-reality", "model/gltf-binary"]
+    },
+
+    "formula": {
+      "description": "§9.2. A leading =, A1-style references within this table only, the operators + - * / ^, parentheses, and documented functions. A formula MUST NOT reference another table, another document, or any external resource — so no ! sheet qualifier and no [ ] external reference.",
+      "type": "string",
+      "pattern": "^=[^!\\[\\]]*$"
+    }
+  }
+}
