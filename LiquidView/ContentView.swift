@@ -697,8 +697,16 @@ struct FormatChoiceSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var style: ACMLaTeX.Style = .sigconf
     @State private var compile = true
+    /// Re-read after the helper is installed, so the toggle wakes up
+    /// without reopening the sheet.
+    @State private var canCompile = ACMLaTeX.isTeXAvailable
 
-    private var canCompile: Bool { ACMLaTeX.isTeXAvailable }
+    /// TeX is on the machine but behind the sandbox, and the helper that
+    /// reaches it is not yet in place — the one case a button can fix.
+    private var helperWouldHelp: Bool {
+        if case .unreachable = ACMLaTeX.tex { return !ACMLaTeX.isHelperInstalled }
+        return false
+    }
 
     /// Why the PDF cannot be produced here — which is not the same
     /// question as whether TeX is installed. Telling someone to install
@@ -708,9 +716,11 @@ struct FormatChoiceSheet: View {
         case .runnable:
             ""
         case .unreachable:
-            "TeX is installed, but this app cannot run it from inside its "
-            + "sandbox. The LaTeX bundle is written instead, and its "
-            + "README.txt holds the one command that turns it into the PDF."
+            "TeX is installed, but this app's sandbox keeps it from running "
+            + "it directly. Install the compile helper once — a small script "
+            + "macOS lets sandboxed apps run — and the PDF is made here. "
+            + "Without it, the LaTeX bundle is written and its README.txt "
+            + "holds the one command that builds the PDF."
         case .absent:
             "No TeX installation was found, so the LaTeX bundle is written "
             + "and its README.txt says how to compile it. TeX Live and "
@@ -769,15 +779,29 @@ struct FormatChoiceSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if helperWouldHelp {
+                    Button("Install Compile Helper\u{2026}") {
+                        if ACMLaTeX.installHelper() {
+                            canCompile = ACMLaTeX.isTeXAvailable
+                            compile = canCompile
+                        }
+                    }
+                }
             }
 
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button(compile && canCompile ? "Render PDF" : "Write Bundle") {
-                    model.writeFormat(style, of: conversion, compile: compile && canCompile)
+                Button(compile && canCompile ? "Render PDF\u{2026}" : "Write Bundle\u{2026}") {
+                    let makePDF = compile && canCompile
+                    let chosen = style
+                    // The save panel follows the sheet rather than
+                    // stacking over it.
                     dismiss()
+                    Task { @MainActor in
+                        model.writeFormat(chosen, of: conversion, compile: makePDF)
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
             }

@@ -1,5 +1,8 @@
 import Foundation
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 // Serialization and editing-text conversions for authoring.
 extension LiquidDoc {
@@ -717,11 +720,108 @@ nonisolated enum ACMLaTeX {
     }
 
     /// Whether the PDF can be produced here, rather than whether TeX
-    /// exists somewhere on the machine.
+    /// exists somewhere on the machine: TeX runnable directly, or
+    /// installed and reachable through the compile helper.
     static var isTeXAvailable: Bool {
-        if case .runnable = tex { return true }
-        return false
+        switch tex {
+        case .runnable: return true
+        case .unreachable:
+            #if os(macOS)
+            return isHelperInstalled
+            #else
+            return false
+            #endif
+        case .absent: return false
+        }
     }
+
+    #if os(macOS)
+    // MARK: The compile helper — TeX from inside the sandbox
+
+    /// The sandbox's one sanctioned way out: a script in the app's
+    /// Application Scripts folder runs *outside* the sandbox through
+    /// NSUserUnixTask. The app may not put it there itself — the person
+    /// places it once, through a save panel aimed at that folder — and
+    /// from then on the PDF is made in the same step as the bundle.
+    static let helperName = "compile-acm-paper.sh"
+
+    static var scriptsDirectory: URL? {
+        try? FileManager.default.url(for: .applicationScriptsDirectory,
+                                     in: .userDomainMask,
+                                     appropriateFor: nil, create: true)
+    }
+
+    static var isHelperInstalled: Bool {
+        guard let dir = scriptsDirectory else { return false }
+        return FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent(helperName).path)
+    }
+
+    /// Four passes, as `compile(in:)` runs them, with the usual TeX
+    /// locations on PATH since a GUI app's PATH carries none of them.
+    static let helperScript = """
+    #!/bin/sh
+    # Installed by Origami Text. Compiles an exported ACM LaTeX bundle
+    # (paper.tex, refs.bib) into paper.pdf. Runs outside the app's
+    # sandbox, which is why it lives here. Safe to delete; the app will
+    # offer to install it again.
+    cd "$1" || exit 1
+    PATH="/Library/TeX/texbin:/usr/local/texlive/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+    export PATH
+    pdflatex -interaction=nonstopmode paper >/dev/null 2>&1
+    bibtex paper >/dev/null 2>&1
+    pdflatex -interaction=nonstopmode paper >/dev/null 2>&1
+    pdflatex -interaction=nonstopmode paper >/dev/null 2>&1
+    test -f paper.pdf
+    """
+
+    /// Places the helper: a save panel opened on the Application Scripts
+    /// folder, which is what grants the write. Returns whether it landed.
+    @MainActor
+    static func installHelper() -> Bool {
+        guard let dir = scriptsDirectory else { return false }
+        let panel = NSSavePanel()
+        panel.directoryURL = dir
+        panel.nameFieldStringValue = helperName
+        panel.message = "Save the compile helper here, so Origami Text can "
+            + "make the PDF with your TeX installation. Keep the folder and "
+            + "name as they are."
+        panel.prompt = "Install"
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        do {
+            try helperScript.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                  ofItemAtPath: url.path)
+        } catch {
+            return false
+        }
+        return isHelperInstalled
+    }
+
+    /// Runs the helper on a bundle folder; the PDF where it succeeded.
+    static func compileWithHelper(in folder: URL) async -> URL? {
+        guard let dir = scriptsDirectory,
+              let task = try? NSUserUnixTask(
+                url: dir.appendingPathComponent(helperName)) else { return nil }
+        let ok: Bool = await withCheckedContinuation { continuation in
+            task.execute(withArguments: [folder.path]) { error in
+                continuation.resume(returning: error == nil)
+            }
+        }
+        let pdf = folder.appendingPathComponent("paper.pdf")
+        return ok && FileManager.default.fileExists(atPath: pdf.path) ? pdf : nil
+    }
+
+    /// The PDF by whichever route this machine allows.
+    static func makePDF(in folder: URL) async -> URL? {
+        if case .runnable = tex {
+            return await Task.detached(priority: .userInitiated) {
+                compile(in: folder)
+            }.value
+        }
+        return await compileWithHelper(in: folder)
+    }
+    #endif
 
     /// Compiles a bundle in place, returning the PDF where TeX is
     /// reachable and nil where it is not.
@@ -732,6 +832,7 @@ nonisolated enum ACMLaTeX {
     /// by hand. The usual locations are searched because a TeX install
     /// is rarely on a GUI application's PATH.
     static func compile(in folder: URL) -> URL? {
+        #if os(macOS)
         guard case .runnable(let latex) = tex else { return nil }
         let bin = (latex as NSString).deletingLastPathComponent
         let bibtex = "\(bin)/bibtex"
@@ -757,6 +858,9 @@ nonisolated enum ACMLaTeX {
 
         let pdf = folder.appendingPathComponent("paper.pdf")
         return FileManager.default.fileExists(atPath: pdf.path) ? pdf : nil
+        #else
+        return nil
+        #endif
     }
 
     static func bundle(for doc: LiquidDoc, style: Style = .sigconf) -> Bundle {

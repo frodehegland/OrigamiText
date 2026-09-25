@@ -5939,10 +5939,23 @@ final class AppModel {
     func writeFormat(_ style: ACMLaTeX.Style, of conversion: FormatConversion,
                      compile: Bool) -> URL? {
         let bundle = ACMLaTeX.bundle(for: conversion.doc, style: style)
-        let folder = conversion.url
-            .deletingPathExtension()
-            .appendingPathExtension(style.rawValue)
+        // The sandbox granted the chosen EPUB, not the folder it sits in,
+        // so writing a new folder beside it was refused ("no permission
+        // to save"). A save panel grants the write; it opens beside the
+        // EPUB with the bundle's usual name, so accepting it changes
+        // nothing but the permission.
+        let panel = NSSavePanel()
+        panel.directoryURL = conversion.url.deletingLastPathComponent()
+        panel.nameFieldStringValue = conversion.url
+            .deletingPathExtension().lastPathComponent + "." + style.rawValue
+        panel.message = "Where should the \(style.label) version be written?"
+        panel.prompt = compile ? "Render" : "Write"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let folder = panel.url else { return nil }
         do {
+            if FileManager.default.fileExists(atPath: folder.path) {
+                try FileManager.default.removeItem(at: folder)
+            }
             try FileManager.default.createDirectory(at: folder,
                                                     withIntermediateDirectories: true)
             try bundle.latex.write(to: folder.appendingPathComponent("paper.tex"),
@@ -5967,13 +5980,23 @@ final class AppModel {
             return nil
         }
 
-        if compile, let pdf = ACMLaTeX.compile(in: folder) {
-            showNote("Wrote \(pdf.lastPathComponent) in \(folder.lastPathComponent)")
-            NSWorkspace.shared.open(pdf)
-            return pdf
+        guard compile else {
+            showNote("Wrote \(folder.lastPathComponent) — see README.txt to compile")
+            NSWorkspace.shared.activateFileViewerSelecting([folder])
+            return folder
         }
-        showNote("Wrote \(folder.lastPathComponent) — see README.txt to compile")
-        NSWorkspace.shared.activateFileViewerSelecting([folder])
+        // Four TeX passes take seconds; the app stays live meanwhile.
+        showNote("Rendering the PDF\u{2026}")
+        Task { @MainActor in
+            if let pdf = await ACMLaTeX.makePDF(in: folder) {
+                showNote("Wrote \(pdf.lastPathComponent) in \(folder.lastPathComponent)")
+                NSWorkspace.shared.open(pdf)
+            } else {
+                showNote("TeX could not finish the PDF — the bundle is in "
+                         + "\(folder.lastPathComponent); paper.log says why")
+                NSWorkspace.shared.activateFileViewerSelecting([folder])
+            }
+        }
         return folder
     }
 
