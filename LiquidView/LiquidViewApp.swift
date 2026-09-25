@@ -116,8 +116,6 @@ struct LiquidViewApp: App {
             // The window toolbar is bare, as in Knowledge Space — these
             // menu items are where its former controls live on.
             CommandGroup(after: .windowArrangement) {
-                Button("Library") { model.showLibraryOrOpenWindow() }
-                    .keyboardShortcut("l", modifiers: .command)
                 Button(model.isListHidden ? "Show Documents" : "Hide Documents") {
                     model.toggleListColumn()
                 }
@@ -141,6 +139,7 @@ struct LiquidViewApp: App {
             // The Liquid verb, in this app's own menus: a phrase from
             // the clipboard (or typed) found in everything one has read.
             ReadingSearchCommands(model: model)
+            LibraryWindowCommands(model: model)
             CommandMenu("Go") {
                 Button("Back") { model.goBack() }
                     .keyboardShortcut("[", modifiers: .command)
@@ -270,6 +269,28 @@ private struct PageCaptureCommands: Commands {
 /// the verb works the moment a phrase is copied — and the same act is
 /// offered to every other app through the Services menu (see
 /// AppDelegate's service provider).
+/// Window ▸ Library (⌘L): the way back to the main window after it has
+/// been closed — App Review's case. The menu bar lives at the app level,
+/// so its `openWindow` works with no window open at all, whereas one
+/// captured inside the main window dies with it. The same action is
+/// handed to the model so the ⌘L key monitor and the Dock click reopen
+/// through it too.
+private struct LibraryWindowCommands: Commands {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(before: .windowArrangement) {
+            Button("Library") {
+                model.openMainWindow = { openWindow(id: "main") }
+                model.showLibraryOrOpenWindow()
+            }
+            .keyboardShortcut("l", modifiers: .command)
+            Divider()
+        }
+    }
+}
+
 private struct ReadingSearchCommands: Commands {
     let model: AppModel
     @Environment(\.openWindow) private var openWindow
@@ -424,7 +445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if modifiers == .command,
                let ch = event.charactersIgnoringModifiers?.lowercased(),
                ch == "l" || ch == "0" {
-                self?.model?.showLibraryOrOpenWindow()
+                self?.showLibrary()
                 return nil
             }
 
@@ -457,8 +478,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// for apps that don't implement this delegate method).
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { model?.showLibraryOrOpenWindow() }
+        if !flag { showLibrary() }
         return true
+    }
+
+    /// Runs Window ▸ Library itself rather than calling the model
+    /// directly: the menu item's `openWindow` is the app-level one, alive
+    /// with no window open, so a closed main window really comes back.
+    /// Falls back to the model if the item cannot be found.
+    private func showLibrary() {
+        if let (menu, index) = libraryMenuItem() {
+            menu.performActionForItem(at: index)
+        } else {
+            model?.showLibraryOrOpenWindow()
+        }
+    }
+
+    private func libraryMenuItem() -> (NSMenu, Int)? {
+        func search(_ menu: NSMenu) -> (NSMenu, Int)? {
+            for (index, item) in menu.items.enumerated() {
+                if item.keyEquivalent == "l",
+                   item.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask) == .command,
+                   item.title == "Library" {
+                    return (menu, index)
+                }
+                if let sub = item.submenu, let found = search(sub) { return found }
+            }
+            return nil
+        }
+        return NSApp.mainMenu.flatMap(search)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -240,7 +240,7 @@ final class AppModel {
         sidebarSelection = .allDocuments
         // Prefer the directly-tracked window (stays valid through title changes
         // and is nil only when the window has actually been closed).
-        if let main = mainNSWindow {
+        if let main = mainNSWindow, main.isVisible || main.isMiniaturized {
             if main.styleMask.contains(.fullScreen) { main.toggleFullScreen(nil) }
             if main.isMiniaturized { main.deminiaturize(nil) }
             main.makeKeyAndOrderFront(nil)
@@ -251,7 +251,8 @@ final class AppModel {
         // A titled, non-utility window with full-screen capability is the main
         // window (TabBarRemover sets .fullScreenPrimary; other windows don't).
         if let main = NSApp.windows.first(where: {
-            $0.styleMask.contains(.titled)
+            ($0.isVisible || $0.isMiniaturized)
+            && $0.styleMask.contains(.titled)
             && !$0.styleMask.contains(.utilityWindow)
             && ($0.collectionBehavior.contains(.fullScreenPrimary)
                 || $0.title == "Origami Text")
@@ -2544,7 +2545,24 @@ final class AppModel {
         mainNSWindow = window
         if launchFoldObserver != nil { mainNSWindow?.alphaValue = 0 }
         keepMainWindowInset(window)
+        // SwiftUI keeps a closed window object alive, so the weak
+        // reference alone never learns of the close — and ⌘L would then
+        // "bring back" a window that is gone. Forget it on close, so the
+        // next ask opens a fresh one.
+        if let mainWindowCloseObserver {
+            NotificationCenter.default.removeObserver(mainWindowCloseObserver)
+        }
+        mainWindowCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window,
+            queue: .main) { [weak self, weak window] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.mainNSWindow === window else { return }
+                self.mainNSWindow = nil
+            }
+        }
     }
+
+    @ObservationIgnored private var mainWindowCloseObserver: NSObjectProtocol?
 
     // MARK: - The main window's margin
 
