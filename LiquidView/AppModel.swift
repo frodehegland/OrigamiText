@@ -3336,6 +3336,9 @@ final class AppModel {
         doc.keywords = result.keywords
         doc.isbn = result.isbn
         doc.ccsConcepts = result.ccsConcepts
+        // The DOI travels too — the ACM rendering prints it (\\acmDOI),
+        // and without it the rights block and reference line lose it.
+        doc.doi = result.doi
         doc.concepts = result.concepts
         doc.layouts = result.layouts
         doc.mapConnections = result.mapConnections
