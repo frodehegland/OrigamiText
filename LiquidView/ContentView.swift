@@ -717,7 +717,7 @@ struct FormatChoiceSheet: View {
             ""
         case .unreachable:
             "TeX is installed, but this app's sandbox keeps it from running "
-            + "it directly. Install the compile helper once — a small script "
+            + "it directly. Save the compile helper once — a small script "
             + "macOS lets sandboxed apps run — and the PDF is made here. "
             + "Without it, the LaTeX bundle is written and its README.txt "
             + "holds the one command that builds the PDF."
@@ -780,7 +780,7 @@ struct FormatChoiceSheet: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if helperWouldHelp {
-                    Button("Install Compile Helper\u{2026}") {
+                    Button("Save Compile Helper\u{2026}") {
                         if ACMLaTeX.installHelper() {
                             canCompile = ACMLaTeX.isTeXAvailable
                             compile = canCompile

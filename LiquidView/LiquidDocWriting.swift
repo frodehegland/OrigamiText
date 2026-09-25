@@ -786,7 +786,7 @@ nonisolated enum ACMLaTeX {
         panel.message = "Save the compile helper here, so Origami Text can "
             + "make the PDF with your TeX installation. Keep the folder and "
             + "name as they are."
-        panel.prompt = "Install"
+        panel.prompt = "Save"
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         do {
             try helperScript.write(to: url, atomically: true, encoding: .utf8)
