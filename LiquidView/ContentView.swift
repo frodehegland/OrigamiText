@@ -696,6 +696,10 @@ struct FormatChoiceSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var style: ACMLaTeX.Style = .sigconf
+    /// The rights the rendered edition is published under. Origami Text
+    /// decides this, not the writing tool: it starts from whatever the
+    /// paper states, else CC BY 4.0, ACM's open-access default.
+    @State private var rights: ACMLaTeX.Rights = .ccBy
     @State private var compile = true
     /// Re-read after the helper is installed, so the toggle wakes up
     /// without reopening the sheet.
@@ -772,7 +776,19 @@ struct FormatChoiceSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Toggle("Compile to PDF", isOn: $compile)
+            Picker("Rights", selection: $rights) {
+                ForEach(ACMLaTeX.Rights.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+            Text(ACMLaTeX.Rights.stated(by: conversion.doc) == nil
+                 ? "The paper states no rights, so they are set here."
+                 : "Starting from the rights the paper states.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Toggle("Also compile to PDF", isOn: $compile)
                 .disabled(!canCompile)
             if !canCompile {
                 Text(unreachableNote)
@@ -796,11 +812,13 @@ struct FormatChoiceSheet: View {
                 Button(compile && canCompile ? "Render PDF\u{2026}" : "Write Bundle\u{2026}") {
                     let makePDF = compile && canCompile
                     let chosen = style
+                    let chosenRights = rights
                     // The save panel follows the sheet rather than
                     // stacking over it.
                     dismiss()
                     Task { @MainActor in
-                        model.writeFormat(chosen, of: conversion, compile: makePDF)
+                        model.writeFormat(chosen, of: conversion, rights: chosenRights,
+                                          compile: makePDF)
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -808,6 +826,9 @@ struct FormatChoiceSheet: View {
         }
         .padding(20)
         .frame(width: 430)
-        .onAppear { compile = canCompile }
+        .onAppear {
+            compile = canCompile
+            rights = ACMLaTeX.Rights.stated(by: conversion.doc) ?? .ccBy
+        }
     }
 }

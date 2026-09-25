@@ -2543,6 +2543,49 @@ final class AppModel {
         }
         mainNSWindow = window
         if launchFoldObserver != nil { mainNSWindow?.alphaValue = 0 }
+        keepMainWindowInset(window)
+    }
+
+    // MARK: - The main window's margin
+
+    @ObservationIgnored private var windowInsetObservers: [NSObjectProtocol] = []
+
+    /// The main window never grows past 80% of its display's width —
+    /// a tenth of the screen stays clear at each side, so the desktop
+    /// and its other windows remain in reach. Applied by clamping the
+    /// frame after a resize, zoom or screen change rather than through
+    /// `maxSize`, because AppKit applies `maxSize` to full screen too,
+    /// and full screen must still fill the display.
+    private func keepMainWindowInset(_ window: NSWindow) {
+        windowInsetObservers.forEach(NotificationCenter.default.removeObserver)
+        windowInsetObservers = [
+            NSWindow.didResizeNotification,
+            NSWindow.didChangeScreenNotification,
+            NSWindow.didExitFullScreenNotification
+        ].map { name in
+            NotificationCenter.default.addObserver(
+                forName: name, object: window, queue: .main) { [weak window] _ in
+                MainActor.assumeIsolated {
+                    if let window { Self.clampToInset(window) }
+                }
+            }
+        }
+        Self.clampToInset(window)
+    }
+
+    private static func clampToInset(_ window: NSWindow) {
+        guard !window.styleMask.contains(.fullScreen),
+              let screen = window.screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        let maxWidth = (visible.width * 0.8).rounded(.down)
+        guard window.frame.width > maxWidth + 0.5 else { return }
+        var frame = window.frame
+        frame.size.width = maxWidth
+        // Centred on where it was, then kept inside the inset band.
+        frame.origin.x = window.frame.midX - maxWidth / 2
+        frame.origin.x = min(max(frame.origin.x, visible.minX + visible.width * 0.1),
+                             visible.maxX - visible.width * 0.1 - maxWidth)
+        window.setFrame(frame, display: true, animate: false)
     }
 
     private func launchRaisedWindow(_ window: NSWindow?) {
@@ -5937,8 +5980,8 @@ final class AppModel {
     /// the same step.
     @discardableResult
     func writeFormat(_ style: ACMLaTeX.Style, of conversion: FormatConversion,
-                     compile: Bool) -> URL? {
-        let bundle = ACMLaTeX.bundle(for: conversion.doc, style: style)
+                     rights: ACMLaTeX.Rights? = nil, compile: Bool) -> URL? {
+        let bundle = ACMLaTeX.bundle(for: conversion.doc, style: style, rights: rights)
         // The sandbox granted the chosen EPUB, not the folder it sits in,
         // so writing a new folder beside it was refused ("no permission
         // to save"). A save panel grants the write; it opens beside the

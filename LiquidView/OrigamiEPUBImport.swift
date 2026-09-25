@@ -524,10 +524,12 @@ nonisolated enum OrigamiEPUBImporter {
         let origamiDoc = origamiJSON?["document"] as? [String: Any]
         // Visual-Meta authors are strings; origami.json authors are {name:} or
         // {family:, given:} objects (academic EPUB format).
+        let vmDetails = authorDetails(in: document?["authors"])
         let metaAuthors: [String] = {
             if let vmAuthors = (document?["authors"] as? [String])?
                 .map({ $0.trimmingCharacters(in: .whitespaces) })
                 .filter({ !$0.isEmpty }), !vmAuthors.isEmpty { return vmAuthors }
+            if !vmDetails.names.isEmpty { return vmDetails.names }
             if let ojAuthors = origamiDoc?["authors"] as? [[String: Any]] {
                 let names = ojAuthors.compactMap { author -> String? in
                     if let name = author["name"] as? String { return name }
@@ -568,9 +570,15 @@ nonisolated enum OrigamiEPUBImporter {
                 .filter { !$0.isEmpty } ?? [],
             acmReference: (document?["acm-reference"] as? String)
                 .flatMap { $0.isEmpty ? nil : $0 },
-            authorORCIDs: (document?["author-orcids"] as? [String: String]) ?? [:],
-            authorEmails: (document?["author-emails"] as? [String: String]) ?? [:],
-            authorAffiliations: (document?["author-affiliations"] as? [String: String]) ?? [:],
+            // Both shapes: the name-keyed tables older exports wrote, and
+            // the per-author objects Author writes now ({name,
+            // affiliation, email, orcid}). A table entry wins a tie.
+            authorORCIDs: vmDetails.orcids.merging(
+                (document?["author-orcids"] as? [String: String]) ?? [:]) { $1 },
+            authorEmails: vmDetails.emails.merging(
+                (document?["author-emails"] as? [String: String]) ?? [:]) { $1 },
+            authorAffiliations: vmDetails.affiliations.merging(
+                (document?["author-affiliations"] as? [String: String]) ?? [:]) { $1 },
             abstract: (document?["abstract"] as? String)
                 .flatMap { $0.isEmpty ? nil : $0 },
             keywords: (document?["keywords"] as? [String])?
@@ -653,6 +661,50 @@ nonisolated enum OrigamiEPUBImporter {
         var identifier: String? = nil
     }
 
+    /// The per-author objects a Visual-Meta `document.authors` may hold
+    /// — `{name, affiliation, email, orcid}`, as Author writes them —
+    /// unpacked into the name-keyed tables the document model keeps. A
+    /// plain list of names yields names alone. ORCIDs are kept bare (the
+    /// 16-digit id), whether written bare or as an orcid.org URL.
+    nonisolated struct AuthorDetails: Sendable {
+        var names: [String] = []
+        var orcids: [String: String] = [:]
+        var emails: [String: String] = [:]
+        var affiliations: [String: String] = [:]
+    }
+
+    nonisolated static func authorDetails(in raw: Any?) -> AuthorDetails {
+        var out = AuthorDetails()
+        guard let entries = raw as? [[String: Any]] else { return out }
+        func text(_ value: Any?) -> String? {
+            let trimmed = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed?.isEmpty ?? true) ? nil : trimmed
+        }
+        for entry in entries {
+            let name: String? = text(entry["name"]) ?? {
+                guard let family = text(entry["family"]) else { return nil }
+                return text(entry["given"]).map { "\($0) \(family)" } ?? family
+            }()
+            guard let name else { continue }
+            out.names.append(name)
+            if let orcid = text(entry["orcid"]) {
+                out.orcids[name] = orcid
+                    .replacingOccurrences(of: "https://orcid.org/", with: "")
+                    .replacingOccurrences(of: "http://orcid.org/", with: "")
+            }
+            if let email = text(entry["email"]) {
+                out.emails[name] = email.replacingOccurrences(of: "mailto:", with: "")
+            }
+            if let affiliation = text(entry["affiliation"]) {
+                out.affiliations[name] = affiliation
+            } else if let list = entry["affiliations"] as? [String],
+                      let first = list.first(where: { !$0.isEmpty }) {
+                out.affiliations[name] = first
+            }
+        }
+        return out
+    }
+
     static func importMetadata(inUnpackedFolder folder: URL) -> PackageMetadata {
         let containerURL = folder.appendingPathComponent("META-INF/container.xml")
         let opfSubpath = (try? String(contentsOf: containerURL, encoding: .utf8))
@@ -731,9 +783,11 @@ nonisolated enum OrigamiEPUBImporter {
         }
 
         let document = visualMeta?["document"] as? [String: Any]
-        let metaAuthors = (document?["authors"] as? [String])?
+        let stringAuthors = (document?["authors"] as? [String])?
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty } ?? []
+        let metaAuthors = stringAuthors.isEmpty
+            ? authorDetails(in: document?["authors"]).names : stringAuthors
         let metaVenue = ["journal", "proceedings", "publication", "booktitle"]
             .compactMap { document?[$0] as? String }
             .map { $0.trimmingCharacters(in: .whitespaces) }

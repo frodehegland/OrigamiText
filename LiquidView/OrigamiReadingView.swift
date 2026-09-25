@@ -2681,9 +2681,29 @@ struct OrigamiReadingView: View {
                                   size: max(NSFont.preferredFont(forTextStyle: .largeTitle).pointSize
                                             + fontDelta - 1, 8)))
                 .foregroundStyle(themeHeading.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
-            Text("\(doc.displayAuthor) \u{00B7} \(doc.listedDateText)")
-                .font(.headline)
-                .foregroundStyle(themeDimmed.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
+            if authorDetailsStated {
+                // The paper states who each author is — affiliation,
+                // email, ORCID — so each gets a line of their own, the
+                // ORCID written out and live, as a printed paper has it.
+                ForEach(doc.authors, id: \.self) { name in
+                    authorLine(name)
+                }
+                Text([doc.publication ?? "", doc.listedDateText]
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " \u{00B7} "))
+                    .font(.subheadline)
+                    .foregroundStyle(themeDimmed.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
+            } else {
+                Text("\(doc.displayAuthor) \u{00B7} \(doc.listedDateText)")
+                    .font(.headline)
+                    .foregroundStyle(themeDimmed.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
+            }
+            if let rights = doc.license, !rights.isEmpty {
+                Text(rights)
+                    .font(.caption)
+                    .foregroundStyle(themeDimmed.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 12) {
                 documentAnnotationPill
                 seedSharePill
@@ -2703,6 +2723,41 @@ struct OrigamiReadingView: View {
         }
         .greyedOut(selectionMode != nil) { selectionMode = nil }
         .dimmedForStretch(stretchFocus)
+    }
+
+    /// Whether the paper states anything about its authors beyond their
+    /// names — the header then gives each author a line of their own.
+    private var authorDetailsStated: Bool {
+        !doc.authors.isEmpty
+            && !(doc.authorORCIDs.isEmpty && doc.authorEmails.isEmpty
+                 && doc.authorAffiliations.isEmpty)
+    }
+
+    /// One author as the paper states them: the name, then affiliation,
+    /// email and ORCID — the last two live.
+    private func authorLine(_ name: String) -> some View {
+        let dim = themeDimmed.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 1) {
+            Text(name)
+                .font(.headline)
+                .foregroundStyle(dim)
+            HStack(spacing: 6) {
+                if let affiliation = doc.authorAffiliations[name]
+                    ?? (doc.authors.count == 1 ? doc.affiliations.first : nil) {
+                    Text(affiliation)
+                }
+                if let email = doc.authorEmails[name],
+                   let url = URL(string: "mailto:\(email)") {
+                    Link(email, destination: url)
+                }
+                if let orcid = doc.authorORCIDs[name],
+                   let url = URL(string: "https://orcid.org/\(orcid)") {
+                    Link("ORCID \(orcid)", destination: url)
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(dim)
+        }
     }
 
     /// Whether the whole-document note is written — the menu words
