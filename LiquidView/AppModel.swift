@@ -159,6 +159,11 @@ final class AppModel {
 
     var showLinksInspector = false
     var showXRExport = false
+    /// The EPUB a person has chosen to render into a publisher's format,
+    /// waiting on the choice of which format (§Appendix C of the
+    /// profile). Set by `importEPUBToFormat()`, cleared when the sheet
+    /// closes.
+    var formatConversion: FormatConversion?
 
     /// Where Have I Read This? — the phrase finder over one's own
     /// reading (ReadingSearch.swift). One search at a time, so the
@@ -5865,6 +5870,113 @@ final class AppModel {
     /// Author document. An EPUB joins the shelf as-is instead (never
     /// converted). Shared by the Import… panel, files opened from Finder
     /// or dropped on the app icon, and files dropped into the window.
+    // MARK: - Import an EPUB and render it in a publisher's format
+
+    /// One EPUB, chosen and read, waiting for a format to be picked.
+    struct FormatConversion: Identifiable {
+        let id = UUID()
+        let url: URL
+        let doc: LiquidDoc
+        /// What the publication itself says it is, so the sheet can show
+        /// the person which paper they are about to convert.
+        var title: String { doc.title }
+        /// Which of the front-matter fields the paper actually carries.
+        /// A renderer can only place what the document states, so this is
+        /// worth showing before anything is written rather than after.
+        var missing: [String] {
+            var out: [String] = []
+            if doc.authors.isEmpty && doc.displayAuthor.isEmpty { out.append("authors") }
+            if doc.authorAffiliations.isEmpty && doc.affiliations.isEmpty {
+                out.append("affiliations")
+            }
+            if doc.abstract?.isEmpty ?? true { out.append("abstract") }
+            if doc.ccsConcepts.isEmpty { out.append("subject classification") }
+            if doc.keywords.isEmpty { out.append("keywords") }
+            if doc.publication?.isEmpty ?? true { out.append("venue") }
+            if doc.references.isEmpty { out.append("references") }
+            return out
+        }
+    }
+
+    /// File ▸ Import EPUB to Format… — the second half of the workflow.
+    /// A paper is written in Author and exported as an Origami EPUB;
+    /// this reads that EPUB and renders it in a publisher's format. The
+    /// document says what it is; the format decides what it looks like.
+    func importEPUBToFormat() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.epub]
+        panel.message = "Choose an EPUB to render in a publisher's format."
+        panel.prompt = "Choose"
+        panel.setContentSize(NSSize(width: 450, height: 600))
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let result = try OrigamiEPUBImporter.importDocument(at: url)
+            // The same conversion the reader uses, so a paper renders
+            // from exactly what a person would have read.
+            let doc = Self.structuredDoc(from: result, record: nil,
+                                         fallbackID: url.deletingPathExtension()
+                                             .lastPathComponent,
+                                         base: url)
+            formatConversion = FormatConversion(url: url, doc: doc)
+        } catch {
+            showNote("Could not read \(url.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
+
+    /// Writes the chosen format beside the EPUB, as a folder holding the
+    /// LaTeX, the bibliography and the images — everything needed to
+    /// compile, and nothing outside it.
+    ///
+    /// The bundle is the deliverable rather than the PDF because a
+    /// sandboxed build cannot reliably run a TeX installation it does not
+    /// own. Where one is reachable, `compile` turns it into the PDF in
+    /// the same step.
+    @discardableResult
+    func writeFormat(_ style: ACMLaTeX.Style, of conversion: FormatConversion,
+                     compile: Bool) -> URL? {
+        let bundle = ACMLaTeX.bundle(for: conversion.doc, style: style)
+        let folder = conversion.url
+            .deletingPathExtension()
+            .appendingPathExtension(style.rawValue)
+        do {
+            try FileManager.default.createDirectory(at: folder,
+                                                    withIntermediateDirectories: true)
+            try bundle.latex.write(to: folder.appendingPathComponent("paper.tex"),
+                                   atomically: true, encoding: .utf8)
+            if !bundle.bibtex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try bundle.bibtex.write(to: folder.appendingPathComponent("refs.bib"),
+                                        atomically: true, encoding: .utf8)
+            }
+            if !bundle.images.isEmpty {
+                let images = folder.appendingPathComponent("images")
+                try FileManager.default.createDirectory(at: images,
+                                                        withIntermediateDirectories: true)
+                for (name, data) in bundle.images {
+                    try data.write(to: images.appendingPathComponent(name))
+                }
+            }
+            try ACMLaTeX.Bundle.readme(for: style)
+                .write(to: folder.appendingPathComponent("README.txt"),
+                       atomically: true, encoding: .utf8)
+        } catch {
+            showNote("Could not write the bundle: \(error.localizedDescription)")
+            return nil
+        }
+
+        if compile, let pdf = ACMLaTeX.compile(in: folder) {
+            showNote("Wrote \(pdf.lastPathComponent) in \(folder.lastPathComponent)")
+            NSWorkspace.shared.open(pdf)
+            return pdf
+        }
+        showNote("Wrote \(folder.lastPathComponent) — see README.txt to compile")
+        NSWorkspace.shared.activateFileViewerSelecting([folder])
+        return folder
+    }
+
     func importFile(at url: URL) {
         // Files arriving by Finder-open or drag carry their sandbox access
         // as a security-scoped resource; the Import… panel grants access a

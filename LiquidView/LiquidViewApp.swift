@@ -66,6 +66,10 @@ struct LiquidViewApp: App {
                 // document rather than as a page — see FetchOnline.
                 Button("Fetch by DOI or URL…") { model.fetchOnlineDocumentPrompt() }
                 Button("Import Reference Dataset…") { model.importReferenceDatasetPanel() }
+                // The second half of the workflow: a paper written in
+                // Author and exported as an Origami EPUB is rendered here
+                // in a publisher's format.
+                Button("Import EPUB to Format…") { model.importEPUBToFormat() }
                 // A capsule's page, read here: gemtext is another
                 // hypermedia protocol the reader speaks.
                 Button("Open Gemini URL…") { model.openGeminiURLPrompt() }

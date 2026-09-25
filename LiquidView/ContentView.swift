@@ -193,6 +193,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.showXRExport) {
             ExportToXRSheet()
         }
+        .sheet(item: $model.formatConversion) { conversion in
+            FormatChoiceSheet(conversion: conversion)
+        }
         .sheet(item: $model.newAuthor) { person in
             PersonFormView(person: person, heading: "New Author") { saved in
                 model.people.upsert(saved)
@@ -679,3 +682,108 @@ private struct WindowBackgroundSetter: NSViewRepresentable {
     }
 }
 
+
+
+/// Choosing the publisher's format a paper is rendered in.
+///
+/// The document has already been read by the time this appears, so the
+/// sheet can say which paper it is and — more usefully — which pieces of
+/// front matter it lacks. A renderer places what the document states and
+/// cannot invent the rest, so it is worth knowing before the LaTeX is
+/// written rather than after reading the PDF.
+struct FormatChoiceSheet: View {
+    let conversion: AppModel.FormatConversion
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var style: ACMLaTeX.Style = .sigconf
+    @State private var compile = true
+
+    private var canCompile: Bool { ACMLaTeX.isTeXAvailable }
+
+    /// Why the PDF cannot be produced here — which is not the same
+    /// question as whether TeX is installed. Telling someone to install
+    /// TeX when they already have it is the one message worth avoiding.
+    private var unreachableNote: String {
+        switch ACMLaTeX.tex {
+        case .runnable:
+            ""
+        case .unreachable:
+            "TeX is installed, but this app cannot run it from inside its "
+            + "sandbox. The LaTeX bundle is written instead, and its "
+            + "README.txt holds the one command that turns it into the PDF."
+        case .absent:
+            "No TeX installation was found, so the LaTeX bundle is written "
+            + "and its README.txt says how to compile it. TeX Live and "
+            + "MacTeX both include the ACM class."
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Render in a publisher's format")
+                    .font(.headline)
+                Text(conversion.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Picker("Format", selection: $style) {
+                // The formats we have compiled and looked at come first
+                // and are the only ones offered without a caveat.
+                Section("Verified") {
+                    ForEach(ACMLaTeX.Style.allCases.filter(\.supported)) { option in
+                        Text("\(option.label) — \(option.columns)").tag(option)
+                    }
+                }
+                Section("Offered on acmart's word, not yet checked here") {
+                    ForEach(ACMLaTeX.Style.allCases.filter { !$0.supported }) { option in
+                        Text("\(option.label) — \(option.columns)").tag(option)
+                    }
+                }
+            }
+            .pickerStyle(.menu)
+
+            Text(style.note)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !conversion.missing.isEmpty {
+                // Not an error: a note is allowed to have no venue. But a
+                // renderer cannot place what the paper does not say, so
+                // say so now.
+                Label("This paper states no \(conversion.missing.joined(separator: ", ")). "
+                      + "Those parts of the front matter will be absent.",
+                      systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Toggle("Compile to PDF", isOn: $compile)
+                .disabled(!canCompile)
+            if !canCompile {
+                Text(unreachableNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(compile && canCompile ? "Render PDF" : "Write Bundle") {
+                    model.writeFormat(style, of: conversion, compile: compile && canCompile)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 430)
+        .onAppear { compile = canCompile }
+    }
+}
