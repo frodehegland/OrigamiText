@@ -2,27 +2,27 @@
 
 **Profile identifier:** `https://origamitext.org/profile/1.0`
 **Vocabulary:** `https://origamitext.org/vocab/`
-**Date:** 24 September 2026
+**Revised:** 25 September 2026
 **Status:** normative text frozen. Changes from here are errata.
 
 ---
 
 ## About this document
 
-This is the definitive statement of the format. It is intended to be
+This is the definitive statement of the format. It is written to be
 sufficient on its own: a developer with this document and the
 conformance corpus should be able to write a conforming reader or writer
-without access to the source of any existing implementation. Any point
-at which a reader of this document must ask a question is a defect in
-this document.
+without reading the source of any existing implementation. Any point at
+which a reader of this document must ask a question is a defect in this
+document.
 
 Keywords **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**,
-**SHOULD NOT**, **MAY** are used as in RFC 2119. Sections marked
-**[I]** are informative; everything else is normative.
+**SHOULD NOT**, **MAY** are used as in RFC 2119. Sections marked **[I]**
+are informative; everything else is normative.
 
 Out of scope: reader annotations, highlights, notes, reading position
 and reader-created spatial layouts. Those never appear inside a
-publication (§14) and are governed by the W3C Web Annotation Data Model.
+publication (§15) and are governed by the W3C Web Annotation Data Model.
 
 Appendix B states what the reference implementations currently do, which
 is not the same as what this document requires.
@@ -57,9 +57,9 @@ something these forbid, these govern.
    MUST NOT depend on filenames.
 6. **Controlled redundancy.** Metadata MAY be duplicated for
    resilience, discovery or degradation, but every duplication MUST have
-   a declared authority and a stated equivalence rule (§11).
+   a declared authority and a stated equivalence rule (§12).
 7. **Each fact has an authoritative representation.** Where a fact may
-   appear in more than one place, precedence MUST be documented (§11.4).
+   appear in more than one place, precedence MUST be documented (§12.4).
 8. **Metadata is versioned and validatable.** Every Origami JSON
    structure MUST be described by a published, versioned schema.
 9. **Unknown optional metadata is safe.** A reader MUST ignore Origami
@@ -76,11 +76,16 @@ something these forbid, these govern.
     describes.
 14. **Metadata is visible to people.** A publication MUST carry a
     human-readable statement of what machine-readable metadata it has
-    and where, and of its rights (§7.4). Metadata that exists only in a
+    and where, and of its rights (§8.4). Metadata that exists only in a
     hidden payload does not survive printing, copy-pasting, plain-text
     extraction, or a reading system that has never heard of this
     profile.
-15. **Independent implementation is the test of openness.** A compatible
+15. **Structure is separate from presentation.** A publication states
+    what it *is* — its elements, its front matter, its relationships —
+    and never how it must look. A renderer decides that, which is what
+    lets one document be issued as a reflowable EPUB, a two-column
+    paper, or a form no writer anticipated (Appendix C).
+16. **Independent implementation is the test of openness.** A compatible
     implementation MUST be possible from this document and the
     conformance corpus alone.
 
@@ -92,7 +97,7 @@ something these forbid, these govern.
 
 A publication conforms when it is a conforming EPUB 3.3 publication
 **and** satisfies every MUST in this specification that applies to
-publications. Both are validated separately (§18) and both MUST pass.
+publications. Both are validated separately (§19) and both MUST pass.
 
 ### 2.2 Conforming reader
 
@@ -100,9 +105,9 @@ A reader conforms when it:
 
 1. reads a conforming publication as an ordinary EPUB even if it
    implements no Origami feature;
-2. discovers Origami metadata as in §16;
-3. honours the precedence rules of §11.4;
-4. ignores what it does not understand (§15.3);
+2. discovers Origami metadata as in §17;
+3. honours the precedence rules of §12.4;
+4. ignores what it does not understand (§16.3);
 5. never writes to the publication.
 
 A conforming reader need not implement every feature. It MUST NOT
@@ -112,7 +117,7 @@ figure's file name as its description.
 ### 2.3 Conforming writer
 
 A writer conforms when it emits only conforming publications and applies
-the export-time checks of §17.
+the export-time checks of §18.
 
 ---
 
@@ -127,11 +132,11 @@ the export-time checks of §17.
 | **Publication** | One EPUB file: one release of one edition. |
 | **Element** | An addressable thing in a content document: paragraph, heading, figure, table, equation, note, glossary entry, bibliography entry. |
 | **Content document** | An XHTML document in the spine. |
-| **Semantic record** | The Visual-Meta JSON record (§8). |
-| **Interaction record** | The Origami JSON record (§9). |
-| **Bibliography record** | The BibTeX record set (§10). |
-| **Carrier** | The element bearing a 3D figure's `data-model-*` attributes (§6.9). |
-| **Address** | A content-resource path plus a fragment identifier (§5.1). |
+| **Semantic record** | The Visual-Meta JSON record (§9). |
+| **Interaction record** | The Origami JSON record (§10). |
+| **Bibliography record** | The BibTeX record set (§11). |
+| **Carrier** | The element bearing a 3D figure's `data-model-*` attributes (§7.9). |
+| **Address** | A content-resource path plus a fragment identifier (§6.1). |
 
 ---
 
@@ -143,9 +148,8 @@ Ordinary EPUB. `META-INF/container.xml` names the package document,
 which MUST declare `version="3.0"` — the package version retained by
 EPUB 3.x — and a `unique-identifier`.
 
-A publication using any `origami:` property MUST declare the prefix, and
-likewise any other vocabulary it uses that EPUB does not predeclare —
-`cc:` for the Creative Commons attribution properties of §4.8:
+A publication MUST declare a `prefix` for any vocabulary it uses that
+EPUB does not predeclare:
 
 ```xml
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
@@ -155,7 +159,7 @@ likewise any other vocabulary it uses that EPUB does not predeclare —
 ```
 
 `dcterms:`, `schema:` and `a11y:` are predeclared by EPUB and need no
-`prefix` entry.
+entry. A publication SHOULD NOT declare a prefix it does not use.
 
 ### 4.2 Profile declaration
 
@@ -182,14 +186,13 @@ Work  ──────────────►  urn:uuid, named by dcterms:
   │     │     │
   │     │     └── Artifact ►  SHA-256 over the .epub bytes (external)
   │     │
-  └── Element ──────►  XHTML id (§5)
+  └── Element ──────►  XHTML id (§6)
 ```
 
 ```xml
 <dc:identifier id="pub-id">urn:uuid:97d7808d-d373-4ba7-a350-f6a7895c8811</dc:identifier>
 <dc:title>Origami Text (gloss)</dc:title>
 <dc:language>en</dc:language>
-<dc:creator>Frode Alexander Hegland</dc:creator>
 <meta property="dcterms:modified">2026-09-24T09:30:57Z</meta>
 <meta property="dcterms:isVersionOf">urn:uuid:0f2c6a51-…</meta>
 <meta property="schema:version">author revision 3</meta>
@@ -220,9 +223,9 @@ version of the work embodied by the resource.
 
 **Artifact** — a SHA-256 over the `.epub` bytes, which **MUST NOT
 appear inside the publication**: a file cannot contain its own hash
-(§12).
+(§13).
 
-**Element** — the XHTML `id` (§5).
+**Element** — the XHTML `id` (§6).
 
 `dcterms:replaces` / `dcterms:isReplacedBy` — OPTIONAL, naming another
 **edition's** `dc:identifier`, for supersession and retraction.
@@ -245,11 +248,11 @@ A publication MUST NOT define `origami:work`, `origami:supersedes` or
 | Is this a newer state of that publication? | `dcterms:modified` |
 | Which revision, in human terms? | `schema:version` |
 | Are these the same bytes? | the artifact digest (external) |
-| Is this the same passage? | the element address plus a quote selector (§5.4) |
+| Is this the same passage? | the element address plus a quote selector (§6.4) |
 
 An annotation made against one release of an edition applies to another
 release of the **same** edition without inference, because the edition
-is the same publication. Across editions it is an inference, and §5.4
+is the same publication. Across editions it is an inference, and §6.4
 governs.
 
 ### 4.4 Metadata discovery
@@ -272,9 +275,9 @@ using the EPUB `record` link relation, and the `properties` attribute is
 
 | `properties` value | Record |
 |---|---|
-| `origami:visual-meta` | the semantic record (§8) |
-| `origami:interaction` | the interaction record (§9) |
-| `origami:bibliography` | the bibliography record (§10) |
+| `origami:visual-meta` | the semantic record (§9) |
+| `origami:interaction` | the interaction record (§10) |
+| `origami:bibliography` | the bibliography record (§11) |
 
 A record's kind MUST be determined from `properties`.
 
@@ -285,7 +288,7 @@ MUST NOT determine a record's kind from its filename.
 
 Where a reader cannot determine a kind — a pre-1.0 file, or an
 unrecognised `properties` value — it MAY read the record's mandatory
-self-identification block (§8.1, §9.1) and take the `format` value it
+self-identification block (§9.1, §10.1) and take the `format` value it
 finds there. A record stating its own kind is a legitimate fallback;
 guessing from the media type is not.
 
@@ -313,19 +316,19 @@ An Origami metadata record contributes nothing to rendering. It is
 therefore a linked resource:
 
 1. A record declared by `<link rel="record">` **MUST NOT** also appear
-   as a manifest `<item>`. EPUBCheck reports this as
-   **`OPF-067`**: *"The resource … must not be listed both as a `link`
-   element in the package metadata and as a manifest item."*
+   as a manifest `<item>`. EPUBCheck reports this as **`OPF-067`**:
+   *"The resource … must not be listed both as a `link` element in the
+   package metadata and as a manifest item."*
 2. A record **MUST NOT** be referenced from any content document, since
    that would make it contribute to the rendering and so cease to be a
    linked resource. This forbids `<link rel="describedby">` in a content
-   document's `<head>` (§6.12).
+   document's `<head>` (§7.12).
 3. Linked resources do not require fallbacks (§3.1.1), so a record needs
    none despite `application/json` and `application/x-bibtex` not being
    core media types.
 
 Rules 2 and 3 are not tool-enforced: a publication can violate them and
-still pass EPUBCheck. They rest on the normative text, and §18's
+still pass EPUBCheck. They rest on the normative text, and §19's
 validator exists partly for this reason.
 
 #### 4.4.2 Records MUST NOT live in `META-INF/`
@@ -343,7 +346,7 @@ such a reference. Records therefore **MUST NOT** be placed in
 
 This is stated explicitly because `META-INF` is an inviting place for
 container-level metadata, because EPUBCheck does not catch it, and
-because the colophon (§7.4) states these paths in human-readable text —
+because the colophon (§8.4) states these paths in human-readable text —
 so getting them wrong tells every reader of the publication to look
 somewhere the files are not.
 
@@ -363,8 +366,8 @@ For 3D models:
 
 | How the model is carried | Fallback |
 |---|---|
-| `<img>` poster bearing `data-model-src` (§6.9) | the poster is a core-media-type image and is what renders; a `fallback` to it is RECOMMENDED |
-| a carrier with no poster (§6.9.5) | the model is an exempt data file: **no fallback required** |
+| `<img>` poster bearing `data-model-src` (§7.9) | the poster is a core-media-type image and is what renders; a `fallback` to it is RECOMMENDED |
+| a carrier with no poster (§7.9.5) | the model is an exempt data file: **no fallback required** |
 
 ```xml
 <item id="img1"   href="images/model1-poster.png" media-type="image/png"/>
@@ -375,7 +378,15 @@ For 3D models:
 A writer MUST NOT be prevented from exporting a posterless figure for
 want of a fallback, and a validator MUST NOT report one.
 
-A content document containing MathML MUST declare it (§6.7).
+**A content document containing MathML MUST declare it:**
+
+```xml
+<item id="paper" href="content/paper.html"
+      media-type="application/xhtml+xml" properties="mathml"/>
+```
+
+Omitting this is EPUBCheck `OPF-014`. A content document containing a
+script MUST likewise declare `properties="scripted"` (§14).
 
 ### 4.6 Accessibility metadata
 
@@ -386,10 +397,117 @@ REQUIRED: `schema:accessMode`, `schema:accessModeSufficient`,
 A publication MUST NOT claim `alternativeText`, or a textual-only
 `accessModeSufficient`, if any image lacks an accessible description. A
 writer MUST withdraw the claim rather than weaken the definition, so
-that the claim is trustworthy to a reader. See §6.9.6 for what counts as
+that the claim is trustworthy to a reader. See §7.9.6 for what counts as
 a description when a caption is adjacent.
 
-### 4.7 Reference file layout **[I]**
+### 4.7 Rights
+
+A publication SHOULD state its rights, and where it does the statement
+MUST be machine-readable as well as human-readable. A scholarly document
+whose licence exists only as a paragraph of prose cannot be filtered,
+aggregated or reused with confidence by anything but a person reading
+it.
+
+None of these properties is REQUIRED: a meeting note or a personal
+letter genuinely has no rights statement, and a writer MUST NOT be
+prevented from exporting one. Their absence is a warning, not an error
+(§18.2).
+
+#### 4.7.1 What to declare
+
+```xml
+<dc:rights>© 2026 Copyright held by the owner/author(s).</dc:rights>
+<meta property="dcterms:license">https://creativecommons.org/licenses/by/4.0/</meta>
+<meta property="dcterms:rightsHolder">Association for Computing Machinery</meta>
+<meta property="dcterms:accessRights">open access</meta>
+<meta property="cc:attributionName">Frode Alexander Hegland</meta>
+<meta property="cc:attributionURL">https://doi.org/10.1234/origami.2026.1</meta>
+```
+
+| Property | Use | Value |
+|---|---|---|
+| `dc:rights` | RECOMMENDED | The rights statement as a person would read it. Dublin Core: *"Information about rights held in and over the resource."* |
+| `dcterms:license` | RECOMMENDED | **A URI** identifying the licence. Dublin Core: *"Recommended practice is to identify the license document with a URI."* |
+| `dcterms:rightsHolder` | OPTIONAL | Who owns or manages the rights — frequently a publisher rather than the author. |
+| `dcterms:accessRights` | OPTIONAL | Access or restriction status: `open access`, an embargo date, a classification. |
+| `cc:attributionName` | OPTIONAL | The name attribution must credit. |
+| `cc:attributionURL` | OPTIONAL | The URL attribution should point at. |
+
+**`dcterms:license` MUST be a URI where one exists.** This is the
+property that makes rights actionable:
+`https://creativecommons.org/licenses/by/4.0/` can be compared, resolved
+and reasoned about, where "Creative Commons Attribution" can only be
+pattern-matched. **A reader MUST NOT infer a licence by searching
+`dc:rights` for the name of one.**
+
+`dcterms:license` is a sub-property of `dcterms:rights` in Dublin Core,
+so the two compose: the prose says what a person needs to know, the URI
+says what software needs to know, and neither replaces the other.
+
+The two `cc:` properties exist because Creative Commons licences
+**require** attribution, and a reader offering to copy a citation should
+use the attribution the publication asks for rather than inventing one.
+A writer SHOULD emit them when it declares a CC licence. A reader
+building an attribution string SHOULD prefer them, and otherwise fall
+back to `dc:creator`, `dc:title` and the licence URI.
+
+#### 4.7.2 In the records
+
+The semantic record MAY mirror the rights (§9.2); the package governs
+(§12.4).
+
+```json
+"document": {
+  "rights": "© 2026 Copyright held by the owner/author(s).",
+  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "rightsHolder": "Association for Computing Machinery",
+  "accessRights": "open access"
+}
+```
+
+`rights` is prose; `license` is a URI.
+
+**Compatibility.** Pre-1.0 publications put the whole prose rights block
+in `document.license`. A reader MUST treat a `license` value that is not
+a URI as `rights`, and MUST NOT present it as a licence identifier.
+
+#### 4.7.3 Resources whose rights differ
+
+A publication frequently carries third-party material under its own
+terms — a 3D model from a repository, a figure reproduced by permission.
+Where a resource's rights differ from the publication's, the writer
+**MUST** state that in the publication's own text: in the figure's
+caption, or in the colophon.
+
+1.0 provides no machine-readable per-resource rights vocabulary. This is
+deliberate: rights per resource is a general problem — images, audio,
+video and datasets all have it — and a model-only answer would be the
+narrow version of it. A general mechanism is expected in a later minor
+version, which §16.4 already makes a compatible addition. Until then the
+obligation is discharged in prose, which is where the attribution
+requirement of a CC licence is satisfied anyway.
+
+#### 4.7.4 Encryption
+
+> **A conforming publication MUST NOT encrypt its content documents or
+> its metadata records. Font obfuscation is permitted.**
+
+This is a statement about what the format is for. §1.2 requires that an
+ordinary reader remain useful and §1.16 makes independent implementation
+the test of openness; neither survives a publication whose text cannot
+be read without permission. A format whose whole argument is that a
+document should explain itself cannot also permit its text to be locked.
+
+Font obfuscation is exempted because EPUB uses `META-INF/encryption.xml`
+for that as well as for digital rights management, and obfuscating an
+embedded font is a licensing formality of typography, not a restriction
+on reading.
+
+`META-INF/rights.xml` MAY be present. It MUST NOT be the only place the
+publication's rights are stated, and a reader MUST NOT be required to
+consult it in order to read the publication.
+
+### 4.8 Reference file layout **[I]**
 
 Not normative. A writer MAY use any paths; a reader MUST follow the
 manifest and the package links.
@@ -411,117 +529,124 @@ OEBPS/models/…
 
 ---
 
-### 4.8 Rights
+## 5. Scholarly front matter
 
-A publication SHOULD state its rights, and where it does the statement
-MUST be machine-readable as well as human-readable. A scholarly document
-whose licence exists only as a paragraph of prose cannot be filtered,
-aggregated, or reused with confidence by anything but a person reading
-it.
+A scholarly publication carries apparatus a general EPUB does not: who
+wrote it and where they work, what venue it appeared in, how it asks to
+be cited, what it is about in a controlled vocabulary. This section
+exists so that apparatus is **metadata a renderer can place**, not text
+a renderer has to recognise.
 
-None of these properties is REQUIRED: a meeting note or a personal
-letter genuinely has no rights statement, and a writer MUST NOT be
-prevented from exporting one. Their absence is a warning, not an error
-(§17.2).
+That distinction is the whole of §1.15. A renderer producing a
+two-column paper must put the subject classification at the foot of
+column one and the abstract above both columns. It can do that with
+fields. It cannot do it with a paragraph that happens to begin
+"CCS Concepts:".
 
-#### 4.8.1 What to declare
+### 5.1 Where each part lives
+
+| Part | Package | Semantic record |
+|---|---|---|
+| Author names | `dc:creator`, one each | `document.authors[].name` |
+| Affiliation, email, ORCID | — | `document.authors[]` |
+| Subtitle | — | `document.subtitle` |
+| Abstract | — | `document.abstract` |
+| Venue | `dcterms:isPartOf` | `document.publication` |
+| DOI | a second `dc:identifier` | `document.doi` |
+| ISBN | — | `document.isbn` |
+| Keywords | `dc:subject`, one each | `document.keywords` |
+| Subject classification | — | `document.ccsConcepts` |
+| Publisher's self-citation | — | `document.acmReference` |
+
+Per-author affiliation, email and ORCID have no EPUB property. They live
+in the record rather than being invented in the package.
 
 ```xml
-<dc:rights>© 2026 Copyright held by the owner/author(s).</dc:rights>
-<meta property="dcterms:license">https://creativecommons.org/licenses/by/4.0/</meta>
-<meta property="dcterms:rightsHolder">Association for Computing Machinery</meta>
-<meta property="dcterms:accessRights">open access</meta>
-<meta property="cc:attributionName">Frode Alexander Hegland</meta>
-<meta property="cc:attributionURL">https://doi.org/10.1234/origami.2026.1</meta>
+<dc:creator>Bob Rimington</dc:creator>
+<dc:creator>Charlie Hargood</dc:creator>
+<meta property="dcterms:isPartOf">37th ACM Conference on Hypertext and Social Media</meta>
+<dc:identifier>10.1145/3800935.3830844</dc:identifier>
+<dc:subject>Locative Hypertext</dc:subject>
 ```
 
-| Property | Use | Value |
-|---|---|---|
-| `dc:rights` | RECOMMENDED | The rights statement as a person would read it. Dublin Core: *"Information about rights held in and over the resource."* |
-| `dcterms:license` | RECOMMENDED | **A URI** identifying the licence. Dublin Core: *"A legal document giving official permission to do something with the resource. Recommended practice is to identify the license document with a URI."* |
-| `dcterms:rightsHolder` | OPTIONAL | Who owns or manages the rights — frequently a publisher rather than the author. |
-| `dcterms:accessRights` | OPTIONAL | Access or restriction status: `open access`, an embargo date, a security classification. |
-| `cc:attributionName` | OPTIONAL | The name attribution must credit. |
-| `cc:attributionURL` | OPTIONAL | The URL attribution should point at. |
+`dcterms:isPartOf` is "a related resource in which the described
+resource is … included", which is what a proceedings is. The DOI is a
+second `dc:identifier`, which EPUB permits — only one identifier is the
+`unique-identifier` — and which catalogues already read.
 
-**`dcterms:license` MUST be a URI where one exists.** This is the
-property that makes rights actionable: `https://creativecommons.org/licenses/by/4.0/`
-can be compared, resolved and reasoned about, where "Creative Commons
-Attribution" can only be pattern-matched. A reader MUST NOT infer a
-licence by searching `dc:rights` for the name of one.
-
-`dcterms:license` is a sub-property of `dcterms:rights` in Dublin Core,
-so the two compose: the prose says what a person needs to know, the URI
-says what software needs to know, and neither replaces the other.
-
-The two `cc:` properties exist because Creative Commons licences
-**require** attribution, and a reader offering to copy a citation should
-use the attribution the publication asks for rather than inventing one.
-A writer SHOULD emit them when it declares a CC licence. A reader
-building an attribution string SHOULD prefer them, and otherwise fall
-back to `dc:creator`, `dc:title` and the licence URI.
-
-#### 4.8.2 In the records
-
-The semantic record MAY mirror the rights (§8.2), and this is a derived
-representation: the package governs (§11.4).
+### 5.2 Authors
 
 ```json
-"document": {
-  "rights": "© 2026 Copyright held by the owner/author(s).",
-  "license": "https://creativecommons.org/licenses/by/4.0/",
-  "rightsHolder": "Association for Computing Machinery",
-  "accessRights": "open access"
-}
+"authors": [
+  { "name": "Bob Rimington",
+    "affiliation": "University of Southampton, Southampton, UK",
+    "email": "e.m.rimington@soton.ac.uk",
+    "orcid": "0000-0002-1825-0097" },
+  { "name": "Charlie Hargood",
+    "affiliation": "Bournemouth University, Poole, UK" }
+]
 ```
 
-`rights` is prose; `license` is a URI.
+**One entry per person, in the order the publication prints them.** A
+writer MUST NOT join several names into one entry. It renders acceptably
+and is useless for everything else: an affiliation cannot be attributed,
+a citation cannot be built, authors cannot be counted, an ORCID cannot
+be matched.
 
-**Compatibility.** Pre-1.0 publications put the whole prose rights block
-in `document.license`. A reader MUST treat a `license` value that is not
-a URI as `rights`, and MUST NOT present it as a licence identifier.
+`orcid` is the bare identifier — `0000-0002-1825-0097` — not a URL. A
+renderer builds the URL when it wants a link.
 
-#### 4.8.3 Resources whose rights differ
+`affiliation` is the line as printed. A renderer that needs it broken
+into institution, city and country reads it from the end, which is the
+only part whose position is reliable.
 
-A publication frequently carries third-party material under its own
-terms — a 3D model from a repository, a figure reproduced by permission.
-Where a resource's rights differ from the publication's, the writer
-**MUST** state that in the publication's own text: in the figure's
-caption, or in the colophon.
+**Compatibility.** Pre-1.0 publications carry `authors` as an array of
+strings, sometimes with several names in one string, alongside three
+parallel dictionaries keyed by display name: `author-affiliations`,
+`author-emails`, `author-orcids`, plus an unattributed `affiliations`
+array. A reader MUST accept those forms. A writer MUST NOT emit them:
+keying by display name breaks when two authors share a name, when a name
+is spelled differently in two places, and when a name contains a comma.
 
-1.0 provides no machine-readable per-resource rights vocabulary. This is
-deliberate: rights per resource is a general problem — images, audio,
-video and datasets all have it — and a model-only answer would be the
-narrow version of it. A general mechanism is expected in a later minor
-version, which §15.4 already makes a compatible addition. Until then the
-obligation is discharged in prose, which is where the attribution
-requirement of a CC licence is satisfied anyway.
+### 5.3 Subject classification
 
-#### 4.8.4 Encryption
+```json
+"ccsConcepts": [
+  "Human-centered computing → User studies",
+  "Human-centered computing → Mixed / augmented reality"
+]
+```
 
-> **A conforming publication MUST NOT encrypt its content documents or
-> its metadata records. Font obfuscation is permitted.**
+One concept per entry, as printed, with `→` between the levels of the
+path. The member is named for ACM's Computing Classification System
+because that is the vocabulary in use; a publication using another
+controlled vocabulary MAY use the same member, and a reader MUST NOT
+assume the terms are ACM's.
 
-This is a statement about what the format is for. §1.2 requires that an
-ordinary reader remain useful and §1.15 makes independent implementation
-the test of openness; neither survives a publication whose text cannot
-be read without permission. A format whose whole argument is that a
-document should explain itself cannot also permit its text to be locked.
+A publication **MUST NOT** also carry these as body text. Where a
+pre-1.0 publication does — a paragraph beginning "CCS Concepts:" — a
+reader MAY recognise it, and a writer converting such a file SHOULD move
+it into this member and remove the paragraph.
 
-Font obfuscation is exempted because EPUB uses `META-INF/encryption.xml`
-for that as well as for digital rights management, and obfuscating an
-embedded font is a licensing formality of typography, not a restriction
-on reading.
+### 5.4 The publisher's self-citation
 
-`META-INF/rights.xml` MAY be present. It MUST NOT be the only place the
-publication's rights are stated, and a reader MUST NOT be required to
-consult it in order to read the publication.
+```json
+"acmReference": "Bob Rimington, Jack Brett, and Charlie Hargood. 2026. Linked Locative Ludonarrative and Heritage Hypertext Harmonies. In Proceedings of the 37th ACM Conference on Hypertext and Social Media (HT ’26). ACM, New York, NY, USA, 10 pages. https://doi.org/10.1145/3800935.3830844"
+```
+
+**Verbatim.** This is the reference the publisher asks the publication to
+be cited by. A writer MUST NOT rebuild it from the title and authors,
+MUST NOT normalise its punctuation, and MUST NOT correct its
+capitalisation. A publication that does not have one MUST omit the
+member: a renderer can construct a citation, and a constructed one is
+honestly a construction, where a silently-reformatted one misrepresents
+the publisher.
 
 ---
 
-## 5. Addressing
+## 6. Addressing
 
-### 5.1 The canonical address
+### 6.1 The canonical address
 
 The canonical address of an element is the **content-resource path
 relative to the package document, plus a fragment identifier**:
@@ -547,7 +672,7 @@ everything already published.
 A bare fragment identifier MUST NOT be assumed unique across the
 publication and MUST NOT be used as a canonical address. It remains a
 legitimate **compact representation inside a metadata record** whose
-`document.defaultDocument` declares what it resolves against (§8.2):
+`document.defaultDocument` declares what it resolves against (§9.2):
 that is a serialisation convenience within one file, not an identity.
 
 A publication MAY contain any number of content documents. A writer MUST
@@ -559,7 +684,7 @@ not the id the publication published, so every citation, annotation and
 metadata reference to it silently fails to resolve. Uniqueness across
 documents is what the path is for.
 
-### 5.2 Identifier syntax
+### 6.2 Identifier syntax
 
 Every element that may be cited, annotated, linked to, or referred to
 from Origami metadata MUST carry an XHTML `id`.
@@ -568,10 +693,10 @@ from Origami metadata MUST carry an XHTML `id`.
 id ::= prefix "-" UUID | any other NCName
 ```
 
-An `id` MUST be a valid XML NCName, which in particular means it MUST
-NOT begin with a digit — a bare UUID frequently does, which is what the
-prefixes below are for. UUIDs are RFC 4122. Comparison of ids MUST be
-case-sensitive and exact.
+An `id` MUST be a valid XML NCName, which in particular means it **MUST
+NOT begin with a digit** — a bare UUID frequently does, which is what
+the prefixes below are for. UUIDs are RFC 4122. Comparison of ids MUST
+be case-sensitive and exact.
 
 Registered prefixes:
 
@@ -602,15 +727,15 @@ meaning the second element of section 2 — but MUST NOT use it as an
 identity, and MUST NOT put it in `id`. It renumbers whenever an element
 is inserted above it, so every citation and annotation pointing at one
 would silently move to a different element. Carry it as
-`data-origami-address`, and in `structure.headings[].address` (§8.2).
+`data-origami-address`, and in `structure.headings[].address` (§9.3).
 
-### 5.3 Uniqueness
+### 6.3 Uniqueness
 
 Ids MUST be unique within a content document, as XHTML requires. Ids
 SHOULD be unique across the publication; a writer that reuses an id in
 two documents MUST NOT rely on bare-fragment addressing anywhere.
 
-### 5.4 Element identity across editions
+### 6.4 Element identity across editions
 
 **Keep the id** when the element remains the same logical element and
 receives only typographical corrections, punctuation changes, formatting
@@ -622,7 +747,7 @@ its semantic role changes.
 
 **Lineage is not identity.** A new element that replaces an old one does
 not become it. A writer MAY record lineage in the semantic record
-(§8.6). A reader MUST treat lineage as a claim rather than a fact.
+(§9.7). A reader MUST treat lineage as a claim rather than a fact.
 
 **Annotation consequence.** An external annotation is attached exactly
 to its original target in its original edition. Applying it to a later
@@ -634,15 +759,15 @@ Annotation Data Model provides — rather than relying on lineage alone.
 
 ---
 
-## 6. Content documents
+## 7. Content documents
 
-### 6.1 General
+### 7.1 General
 
 Content documents are ordinary XHTML. Everything necessary to read the
 publication MUST be present in them. Origami metadata adds meaning; it
 never carries the text.
 
-### 6.2 Body structure
+### 7.2 Body structure
 
 ```html
 <h2 id="H-0979114B-5BB1-45B8-8E3B-736373BC80C5">Why EPUB Now?</h2>
@@ -658,7 +783,7 @@ never carries the text.
 - Lists are `<ul>`/`<ol>` with `<li>`; a writer MAY give each `<li>` an
   id.
 
-### 6.3 Citations
+### 7.3 Citations
 
 ```html
 <a epub:type="biblioref" role="doc-biblioref"
@@ -666,15 +791,15 @@ never carries the text.
 ```
 
 REQUIRED: `epub:type="biblioref"`, `role="doc-biblioref"`, and an `href`
-resolving to a bibliography entry (§7.2). The href fragment's identifier
+resolving to a bibliography entry (§8.2). The href fragment's identifier
 is the citation's key, and is the same key used in the bibliography
-record (§10) and in `citations[].id` (§8.4).
+record (§11) and in `citations[].id` (§9.5).
 
 `data-citation-key` and `data-citation-number` MAY be present; both
 duplicate information available elsewhere and a reader MUST NOT require
 either.
 
-### 6.4 Glossary references
+### 7.4 Glossary references
 
 ```html
 <a epub:type="glossref" role="doc-glossref"
@@ -683,14 +808,14 @@ either.
 
 REQUIRED: `epub:type="glossref"`, `role="doc-glossref"`, resolving href.
 
-### 6.5 Notes
+### 7.5 Notes
 
 ```html
 <a epub:type="noteref" role="doc-noteref"
    href="backmatter.xhtml#en-D16AD8DE-23E7-4FD1-9553-E8441AF49942">†</a>
 ```
 
-### 6.6 Tables
+### 7.6 Tables
 
 The table stands in the flow as an ordinary `<table>`. It carries its own
 address, points at its record, and MUST contain a complete static
@@ -708,14 +833,14 @@ loses nothing.
 ```
 
 `data-table-id` names an entry in the interaction record's `tables`
-(§9.2). Where it is absent, the element's `id` MAY be used as the key.
+(§10.2). Where it is absent, the element's `id` MAY be used as the key.
 
 The XHTML is authoritative for the table's **presented values**. The
 interaction record is authoritative for its **formulas**. A reader that
 recomputes MUST show that values are computed and MUST be able to return
 to the document's own numbers.
 
-### 6.7 Equations
+### 7.7 Equations
 
 MathML in the body is authoritative:
 
@@ -727,23 +852,16 @@ MathML in the body is authoritative:
 ```
 
 A writer MAY additionally carry `data-latex` on the element; it is
-**derived** and MUST agree with the MathML.
+**derived** and MUST agree with the MathML. The containing document MUST
+declare `properties="mathml"` (§4.5).
 
-**A content document containing MathML MUST declare it in the
-manifest.** Omitting this is EPUBCheck `OPF-014`:
-
-```xml
-<item id="paper" href="content/paper.html"
-      media-type="application/xhtml+xml" properties="mathml"/>
-```
-
-#### 6.7.1 The equation index
+#### 7.7.1 The equation index
 
 An index of the publication's equations is OPTIONAL and exists for one
 purpose: citing and copying an equation as text, which MathML alone
 makes awkward.
 
-**Its home is the semantic record, as `equations[]`** (§8.8), discovered
+**Its home is the semantic record, as `equations[]`** (§9.8), discovered
 like every other record (§4.4).
 
 ```json
@@ -764,8 +882,8 @@ like every other record (§4.4).
 
 `display` is `block` or `inline`; `format` is `mathml` or `latex`. The
 checksums let a reader detect a damaged `tex` round trip; where a
-checksum fails, **the MathML in the body governs** (§11.4). `tex` is a
-derived representation (§11.3), not an authority.
+checksum fails, **the MathML in the body governs** (§12.4). `tex` is a
+derived representation (§12.3), not an authority.
 
 A reader that finds no index MUST be able to proceed: scanning the
 content documents for `math` elements carrying an `id` yields the same
@@ -776,9 +894,9 @@ prefix such as `eq-`.
 A conforming publication MUST NOT carry the index as delimited text
 inside a content document. Text delimiters are discoverable by no
 package mechanism; a reader MAY accept that form for publications that
-do not declare the profile (§16.2).
+do not declare the profile (§17.2).
 
-### 6.8 Figures
+### 7.8 Figures
 
 ```html
 <figure id="P-7AAA…">
@@ -790,7 +908,7 @@ do not declare the profile (§16.2).
 Where the writer supplied no description, `alt` MUST be the empty string
 and `<figcaption>` MUST be absent.
 
-### 6.9 3D spatial figures
+### 7.9 3D spatial figures
 
 A 3D figure is a `<figure>` containing a **carrier** element that bears
 every fact about the model in `data-model-*` attributes. The model file
@@ -837,11 +955,11 @@ selector in any case.
 The trade is worth stating: a reading system that knows nothing of this
 profile cannot offer the file for download from the page. The model is
 still a manifested resource, still in the package, and still
-extractable — by a conforming reader (§6.9.7) or by unzipping, which the
-colophon tells a person how to do (§7.4.3). An invalid publication would
+extractable — by a conforming reader (§7.9.7) or by unzipping, which the
+colophon tells a person how to do (§8.4.3). An invalid publication would
 be the worse bargain.
 
-#### 6.9.1 Finding figures
+#### 7.9.1 Finding figures
 
 **The single normative selector is `[data-model-src]`.** A reader MUST
 locate 3D figures by that attribute, and MUST NOT rely on the element
@@ -849,13 +967,13 @@ being an `<img>`, on the file-name pattern, on the `<figure>` wrapper, or
 on the presence of any `<model>` element. Attribute order is not
 significant.
 
-#### 6.9.2 Attributes
+#### 7.9.2 Attributes
 
 | Attribute | Required | Value |
 |---|---|---|
 | `data-model-src` | **yes** | path to the model, relative to the containing document |
 | `data-model-id` | **yes** | the model's handle, `M-<UUID>`; not an address |
-| `data-model-media-type` | **yes** | one of §6.9.3 |
+| `data-model-media-type` | **yes** | one of §7.9.3 |
 | `data-model-filename` | **yes** | the writer's own file name, XML-escaped |
 | `data-model-bytes` | **yes** | decimal integer, the size as published |
 | `data-model-up` | **yes** | exactly `Y` or `Z` |
@@ -869,7 +987,7 @@ The `<figure>`'s `id` is `P-<UUID>` and `data-model-id` is `M-<UUID>`
 with the same UUID. The **`P-` address** is what citations and links
 resolve to; `M-` is the model's internal handle.
 
-#### 6.9.3 Media types
+#### 7.9.3 Media types
 
 | Extension | `media-type` |
 |---|---|
@@ -881,7 +999,7 @@ A reader MUST treat an unrecognised media type as "cannot display" and
 fall back to the poster. `model/vnd.usdz+zip` is not IANA-registered;
 match it exactly.
 
-#### 6.9.4 Up-axis, units and extent
+#### 7.9.4 Up-axis, units and extent
 
 `data-model-up` is always emitted and a reader MUST trust it rather than
 applying its own default. `Y` is USD's documented fallback where a layer
@@ -901,7 +1019,7 @@ let the person adjust it. **Assuming metres for a model that never
 stated them can build a hundredfold object; this is the one failure
 worse than having no scale at all.**
 
-#### 6.9.5 The poster
+#### 7.9.5 The poster
 
 The poster is **editorial, not a thumbnail**: the writer opened the
 model, turned it to the side worth showing, and captured that view.
@@ -920,7 +1038,7 @@ render it as an actionable figure, MUST NOT render an empty box, and
 SHOULD NOT substitute a generated thumbnail without saying it is
 generated.
 
-#### 6.9.6 Description and accessibility
+#### 7.9.6 Description and accessibility
 
 The `<figcaption>` is the primary description, and a reader SHOULD
 prefer it.
@@ -950,35 +1068,34 @@ label, which is a different act.
 A publication MUST NOT claim `alternativeText` (§4.6) on the strength of
 an empty `alt` unless every such image has an adjacent caption.
 
-#### 6.9.7 Extraction
+#### 7.9.7 Extraction
 
 A reader MUST NOT transcode, recompress or rewrite a model when
 extracting or exporting it. It MUST offer the bytes unchanged, under the
 name in `data-model-filename` — which is **not** the name inside the
 package.
 
-#### 6.9.8 Reader algorithm for one figure
+#### 7.9.8 Reader algorithm for one figure
 
 1. Select the elements matching `[data-model-src]`.
-2. Read the attributes of §6.9.2. Optionally join to the interaction
+2. Read the attributes of §7.9.2. Optionally join to the interaction
    record's `models` entry by `data-model-id`; the carrier governs
-   (§11.4).
+   (§12.4).
 3. Resolve `data-model-src` against the containing document and confirm
    the resource exists.
 4. Check `data-model-media-type` against what can be rendered. If it
    cannot, stop and keep the poster.
-5. Render the poster as the resting state (§6.9.5).
-6. Show `<figcaption>`, else nothing (§6.9.6).
+5. Render the poster as the resting state (§7.9.5).
+6. Show `<figcaption>`, else nothing (§7.9.6).
 7. On deliberate activation, present the model: apply `data-model-up`
    always; apply `data-model-extent` in metres only with
    `data-model-units="m"` beside it, otherwise an adjustable neutral
    default.
-8. Offer `data-model-source` where present; warn on
-   `data-model-bytes` before a large transfer on a metered connection.
-9. Offer extraction of the unmodified file under
-   `data-model-filename`.
+8. Offer `data-model-source` where present; warn on `data-model-bytes`
+   before a large transfer on a metered connection.
+9. Offer extraction of the unmodified file under `data-model-filename`.
 
-### 6.10 Stretchtext
+### 7.10 Stretchtext
 
 Contracted text: a marker in the running text, and the hidden content in
 an `<aside>` immediately after the enclosing block.
@@ -993,23 +1110,23 @@ an `<aside>` immediately after the enclosing block.
 </aside>
 ```
 
-- The **presence** of the `hidden` attribute is the state; XHTML-style
-  `hidden="hidden"` is the serialisation.
+- The **presence** of the `hidden` attribute is the state;
+  XHTML-style `hidden="hidden"` is the serialisation.
 - A reader that toggles it MUST keep `aria-expanded` in sync and MUST
   NOT navigate.
 - The aside's content is part of the publication: it MUST be included in
   full-text search and in extraction.
 - Stretchtext MUST NOT nest.
-- The interaction record MAY carry a `stretchtext` index (§9.4).
+- The interaction record MAY carry a `stretchtext` index (§10.4).
 
 An unaware reader shows the visible text and, because the aside is
 `hidden`, does not show the contracted passage — acceptable degradation
 under §1.2, because the passage is by authorial intent secondary.
 
-### 6.11 Cross-document quote links
+### 7.11 Cross-document quote links
 
 A passage that quotes or transcludes another publication MUST carry the
-relationship in the **semantic record** (§8.5), naming the target's
+relationship in the **semantic record** (§9.6), naming the target's
 **edition identifier** and the target's **address**:
 
 ```json
@@ -1032,7 +1149,7 @@ Instead:
 
 - where the target has a **public Web URL**, link to that;
 - otherwise link the visible citation to its **own bibliography entry**,
-  exactly as any other citation (§6.3) — which is what a reader without
+  exactly as any other citation (§7.3) — which is what a reader without
   the target publication can act on anyway;
 - either way, the writer MAY mark the relationship with
   `data-origami-rel="cites"` or `"transcludes"`.
@@ -1046,9 +1163,9 @@ Instead:
 `origamitext://open/<edition-id>#<element-id>` MAY be carried as a
 convenience action, in `data-origami-action` or in the semantic record.
 It MUST NOT be the only representation: a reader that does not know the
-scheme MUST still be able to determine the target from §8.5.
+scheme MUST still be able to determine the target from §9.6.
 
-### 6.12 Discovery hints
+### 7.12 Discovery hints
 
 A content document MAY declare the profile in its `<head>`. The href is
 an external identifier rather than a package resource, so this is safe:
@@ -1085,17 +1202,17 @@ does not make the record contribute to the rendering, so this does not
 breach §4.4.1. Both hints are **supplementary**: the package (§4.4)
 remains authoritative, because many HTML-to-text pipelines discard
 `<head>` and `<script>`. A writer that wants no argument about it may
-omit the block; §7.4's colophon already tells a human reader that the
+omit the block; §8.4's colophon already tells a human reader that the
 metadata exists.
 
 ---
 
-## 7. Backmatter
+## 8. Backmatter
 
 Sections carry standard semantics. A publication MAY place them in any
 content document.
 
-### 7.1 Glossary
+### 8.1 Glossary
 
 ```html
 <section epub:type="glossary" role="doc-glossary">
@@ -1109,9 +1226,9 @@ content document.
 
 The `<dt>` carries the address and the term; the `<dd>` carries the
 definition. This is what an ordinary reader shows, and it is
-authoritative for display (§11.4).
+authoritative for display (§12.4).
 
-### 7.2 Bibliography
+### 8.2 Bibliography
 
 ```html
 <section epub:type="bibliography" role="doc-bibliography">
@@ -1125,9 +1242,9 @@ authoritative for display (§11.4).
 ```
 
 The list item carries the address and a human-readable rendering,
-**derived** from the bibliography record (§10).
+**derived** from the bibliography record (§11).
 
-### 7.3 Endnotes
+### 8.3 Endnotes
 
 ```html
 <section epub:type="endnotes" role="doc-endnotes">
@@ -1138,12 +1255,12 @@ The list item carries the address and a human-readable rendering,
 </section>
 ```
 
-The note's `role` is **`note`**. `doc-endnote` MUST NOT be used: DPUB-ARIA
-deprecated it, and it is not among the roles `aside` accepts, so
-EPUBCheck reports `RSC-005` and warns `RSC-017`. `epub:type="endnote"`
+The note's `role` is **`note`**. `doc-endnote` MUST NOT be used:
+DPUB-ARIA deprecated it, and it is not among the roles `aside` accepts,
+so EPUBCheck reports `RSC-005` and warns `RSC-017`. `epub:type="endnote"`
 carries the semantics.
 
-### 7.4 The rendered Visual-Meta colophon
+### 8.4 The rendered Visual-Meta colophon
 
 > Metadata that exists only in a hidden JSON payload does not survive
 > the things documents actually go through. It does not survive
@@ -1154,12 +1271,12 @@ carries the semantics.
 
 A publication **MUST** contain a rendered Visual-Meta colophon, as a
 `<section epub:type="colophon">`, SHOULD place it in the end matter, and
-MUST include three components in this order — four where the
-publication declares any rights (§7.4.4). A conforming reader **MUST**
-be able to display it — which for most readers means not suppressing it,
-since it is ordinary body text.
+MUST include three components in this order — four where the publication
+declares any rights. A conforming reader **MUST** be able to display it,
+which for most readers means not suppressing it, since it is ordinary
+body text.
 
-#### 7.4.1 The explanatory header
+#### 8.4.1 The explanatory header
 
 A short statement of what Visual-Meta is and why it is there, addressed
 to a person who has never heard of it. A writer MAY use its own wording;
@@ -1170,7 +1287,7 @@ SHOULD use it verbatim:
 > self-citation, metadata preservation, and seamless reference
 > management across digital, Web, and printed formats."
 
-#### 7.4.2 The visual BibTeX self-citation
+#### 8.4.2 The visual BibTeX self-citation
 
 The publication's own canonical citation, as **plain-text BibTeX**, in a
 monospaced block, so a person can select and paste it into a reference
@@ -1196,11 +1313,11 @@ Unknown fields MUST be omitted rather than emitted empty.
 ```
 
 This is a **self**-citation and is not part of the bibliography record
-(§10), which holds works this publication cites. A writer MAY also emit
-it there; where it does, both MUST agree and this block governs what a
-person sees.
+(§11), which holds works this publication cites. Where the publication
+carries a publisher's self-citation (§5.4), the colophon SHOULD state
+that too, verbatim, since it is what the publisher asks to be cited by.
 
-#### 7.4.3 The machine metadata access map
+#### 8.4.3 The machine metadata access map
 
 Plain text naming where the machine-readable records are inside the
 container and how software or a person can get at them.
@@ -1213,12 +1330,12 @@ prose cannot drift from the packaging.
 
 A colophon that states a path the records are not at is worse than no
 colophon: it is a confident instruction to look in the wrong place, and
-because it is prose nothing will ever report it as an error. §18
+because it is prose nothing will ever report it as an error. §19
 therefore requires a validator to check it.
 
-#### 7.4.4 The rights statement
+#### 8.4.4 The rights statement
 
-Where the publication declares any of the rights properties of §4.8, the
+Where the publication declares any of the rights properties of §4.7, the
 colophon **MUST** state them in human-readable form.
 
 ```html
@@ -1231,9 +1348,8 @@ colophon **MUST** state them in human-readable form.
 
 The values stated here **MUST** be generated from the same values as the
 package declarations, so the prose and the metadata cannot drift apart —
-the same constraint §7.4.3 puts on the record paths, and for the same
-reason: this is prose, so nothing else will ever notice when it goes
-stale.
+the same constraint §8.4.3 puts on the record paths, and for the same
+reason.
 
 Rights is the clearest case in the whole profile for §1.14. It is
 precisely the metadata that has to survive being printed, pasted into an
@@ -1242,9 +1358,9 @@ the one whose absence has consequences outside the software.
 
 Where a resource inside the publication carries different terms from the
 publication itself, this is one of the two places that MUST say so
-(§4.8.3).
+(§4.7.3).
 
-#### 7.4.5 Complete example **[I]**
+#### 8.4.5 Complete example **[I]**
 
 ```html
 <section epub:type="colophon" id="origami-publication-info">
@@ -1257,12 +1373,10 @@ publication itself, this is one of the two places that MUST say so
   <h3>Self-citation record</h3>
   <pre>@book{hegland2026origami,
   author    = {Hegland, Frode and Reader, Alice},
-  title     = {The Origami EPUB Profile: Extended Structural Specification},
+  title     = {The Origami EPUB Profile},
   publisher = {Future Text Publishing},
   year      = {2026},
-  isbn      = {978-1-234567-89-0},
-  doi       = {10.1234/origami.2026.1},
-  url       = {https://example.org/spec/origami-epub}
+  doi       = {10.1234/origami.2026.1}
 }</pre>
 
   <h3>Embedded machine-readable metadata</h3>
@@ -1280,18 +1394,17 @@ publication itself, this is one of the two places that MUST say so
   <h3>Rights</h3>
   <p>© 2026 Copyright held by the owner/author(s). Licensed under
     <a href="https://creativecommons.org/licenses/by/4.0/">Creative
-    Commons Attribution 4.0 International</a>. When reusing this work,
-    credit Frode Alexander Hegland.</p>
+    Commons Attribution 4.0 International</a>.</p>
 
   <p>This publication conforms to the Origami Text 1.0 profile
     (https://origamitext.org/profile/1.0).</p>
 </section>
 ```
 
-#### 7.4.6 Reader obligations
+#### 8.4.6 Reader obligations
 
 1. A reader **MUST NOT** withhold the colophon. A reader that omits
-   backmatter because its entries come from the records (§16.3) MUST
+   backmatter because its entries come from the records (§17.3) MUST
    exempt the colophon: the glossary, bibliography and endnotes are
    withheld because they are duplicated, and the colophon is not
    duplicated anywhere.
@@ -1299,13 +1412,13 @@ publication itself, this is one of the two places that MUST say so
    and SHOULD make the BibTeX block selectable and copyable as text.
 3. A reader **MUST NOT** treat the colophon as authoritative metadata.
    It is a rendering for people. Where it disagrees with the package or
-   the records, §11.4 governs and the disagreement SHOULD be reported.
+   the records, §12.4 governs and the disagreement SHOULD be reported.
 4. The colophon **MUST NOT** affect element addressing. It is about the
    publication rather than part of it, so a document containing only a
    colophon and record sections does not make a publication
    multi-document for any purpose.
 
-#### 7.4.7 The three levels of discovery **[I]**
+#### 8.4.7 The three levels of discovery **[I]**
 
 ```
 OPF                           → authoritative machine discovery
@@ -1315,17 +1428,18 @@ Rendered Visual-Meta colophon → human, print, copy-paste and LLM discovery
 
 ---
 
-## 8. The semantic record
+## 9. The semantic record
 
 Media type `application/json`, declared `properties="origami:visual-meta"`.
 
 **Authoritative for:** concepts, citations and their relationships,
-document-level semantic metadata, the structure index, endnote records,
-cross-document relationships, lineage, the equation index.
+document-level semantic metadata, the scholarly front matter, the
+structure index, endnote records, cross-document relationships, lineage,
+the equation index.
 
-It MUST NOT contain `tables`, `map` or `models` (§9.0).
+It MUST NOT contain `tables`, `map` or `models` (§10.0).
 
-### 8.1 Self-identification
+### 9.1 Self-identification
 
 REQUIRED. A record extracted from its publication MUST still be
 identifiable.
@@ -1344,7 +1458,7 @@ identifiable.
 
 `describes` MUST equal the publication's `dc:identifier`.
 
-### 8.2 Document and structure
+### 9.2 Document
 
 ```json
 "document": {
@@ -1352,13 +1466,43 @@ identifiable.
   "work": "urn:uuid:0f2c6a51-…",
   "release": "author revision 3",
   "modified": "2026-09-24T09:30:57Z",
-  "title": "Origami Text (gloss)",
-  "authors": ["Frode Alexander Hegland"],
+  "title": "Linked Locative Ludonarrative",
+  "subtitle": "A study in locative hypertext",
+  "authors": [
+    { "name": "Bob Rimington",
+      "affiliation": "University of Southampton, Southampton, UK",
+      "email": "e.m.rimington@soton.ac.uk",
+      "orcid": "0000-0002-1825-0097" }
+  ],
+  "abstract": "Hypertext narrative has found itself in new ludic domains…",
+  "publication": "37th ACM Conference on Hypertext and Social Media",
+  "doi": "10.1145/3800935.3830844",
+  "isbn": "979-8-4007-0000-0",
+  "keywords": ["Locative Hypertext", "Ludonarrative"],
+  "ccsConcepts": ["Human-centered computing → User studies"],
+  "acmReference": "Bob Rimington, Jack Brett, and Charlie Hargood. 2026. …",
   "rights": "© 2026 Copyright held by the owner/author(s).",
   "license": "https://creativecommons.org/licenses/by/4.0/",
+  "rightsHolder": "Association for Computing Machinery",
+  "accessRights": "open access",
   "defaultDocument": "content.xhtml"
-},
+}
+```
 
+The identity members are derived from the package, which governs
+(§12.4). The scholarly front matter is specified in §5; the rights
+members in §4.7.
+
+`defaultDocument` is OPTIONAL and declares the content document against
+which bare-fragment references in this record resolve. A record that
+omits it MUST use full path-plus-fragment addresses everywhere.
+
+A `document.digest` member MUST NOT be present (§13.2). A
+`document.hasVersion` member MUST NOT be present (§4.3).
+
+### 9.3 Structure
+
+```json
 "structure": {
   "headings": [
     { "id": "H-0979114B-…", "level": 2,
@@ -1369,22 +1513,11 @@ identifiable.
 }
 ```
 
-`defaultDocument` is OPTIONAL and declares the content document against
-which bare-fragment references in this record resolve. A record that
-omits it MUST use full path-plus-fragment addresses everywhere.
+**Derived** from the XHTML (§12.3), and exists for navigation without
+parsing the body. `address` is the positional label, informative only
+(§6.2).
 
-`structure.headings` is **derived** from the XHTML (§11.3) and exists for
-navigation without parsing the body. `address` is the positional label,
-informative only (§5.2).
-
-`rights`, `license`, `rightsHolder` and `accessRights` are derived from
-the package, which governs (§4.8.2, §11.4). `license` is a URI; a
-pre-1.0 `license` holding prose MUST be read as `rights`.
-
-A `document.digest` member MUST NOT be present (§12.2). A
-`document.hasVersion` member MUST NOT be present (§4.3).
-
-### 8.3 Concepts
+### 9.4 Concepts
 
 ```json
 "concepts": [
@@ -1402,9 +1535,9 @@ A `document.digest` member MUST NOT be present (§12.2). A
 
 `id` MUST be the identifier used in the glossary entry's address. `name`
 and `description` MUST agree with the XHTML glossary, which governs
-display (§11.4). `tag` is an open vocabulary.
+display (§12.4). `tag` is an open vocabulary.
 
-### 8.4 Citations
+### 9.5 Citations
 
 ```json
 "citations": [
@@ -1415,11 +1548,11 @@ display (§11.4). `tag` is an open vocabulary.
 ]
 ```
 
-`id` is the BibTeX key in the bibliography record (§10). A citation entry
+`id` is the BibTeX key in the bibliography record (§11). A citation entry
 **MUST NOT** carry a `bibtex` or `csl` member: the bibliography record
-is canonical (§11.4).
+is canonical (§12.4).
 
-### 8.5 Relationships
+### 9.6 Relationships
 
 ```json
 "links": [
@@ -1434,9 +1567,9 @@ is canonical (§11.4).
 
 `rel` is `cites` or `transcludes`. `toEdition` and `toAddress` are
 REQUIRED; `action` is OPTIONAL and MUST NOT be the only representation
-(§6.11).
+(§7.11).
 
-### 8.6 Lineage
+### 9.7 Lineage
 
 ```json
 "lineage": [
@@ -1445,9 +1578,9 @@ REQUIRED; `action` is OPTIONAL and MUST NOT be the only representation
 ]
 ```
 
-A claim, not a fact (§5.4).
+A claim, not a fact (§6.4).
 
-### 8.7 Endnotes
+### 9.8 Endnotes and equations
 
 ```json
 "endnotes": [
@@ -1455,29 +1588,28 @@ A claim, not a fact (§5.4).
     "href": "content.xhtml#en-D16AD8DE-…",
     "anchor": "content.xhtml#P-F9868FD4-…",
     "text": "https://www.acm.org/publications/taps/taps-instructions" }
-]
-```
-
-`href` is the note's own address; `anchor` is where its reference sits.
-
-### 8.8 Equations
-
-The equation index (§6.7.1). OPTIONAL; MathML in the body is
-authoritative.
-
-```json
+],
 "equations": [
   { "id": "E-71B2…", "href": "content.xhtml#E-71B2…",
     "display": "block", "label": "1", "format": "mathml",
-    "tex": "E = mc^2", "tex-sha256": "…", "mathml-sha256": "…",
-    "converter": "latexml", "section": "content.xhtml#H-0979…",
-    "heading": "Why EPUB Now?" }
+    "tex": "E = mc^2", "tex-sha256": "…", "mathml-sha256": "…" }
 ]
 ```
 
+An endnote's `href` is its own address; `anchor` is where its reference
+sits. A reader resolving a `noteref` MUST accept the note filed under
+either form (§17.3). The equation index is specified in §7.7.1.
+
+### 9.9 Other members
+
+`footnotes` has the same shape as `endnotes`, for inline notes.
+`comments` carries the **writer's** published annotations, never a
+reader's (§15). `custom` carries implementation-specific extras, which a
+reader MUST ignore where it does not understand them (§16.3).
+
 ---
 
-## 9. The interaction record
+## 10. The interaction record
 
 Media type `application/json`, declared `properties="origami:interaction"`.
 
@@ -1486,14 +1618,14 @@ declarations, and the 3D model convenience index.
 
 > **This record holds authored interaction, not reader state.** The
 > distinction is easy to lose, because "interaction" and "runtime" sound
-> adjacent, and losing it would undo §1.11 and §14. **No reader state of
+> adjacent, and losing it would undo §1.11 and §15. **No reader state of
 > any kind may be written into a publication** — not reading position,
 > not the chosen view, not where a person left a 3D model in their room,
 > not a highlight. What lives here is what the *writer* authored: the
 > formulas behind a table, the arrangement the writer composed, the
 > figures' declared facts.
 
-### 9.0 The separation, and how it is enforced
+### 10.0 The separation, and how it is enforced
 
 Carrying the same semantic content in both records under different field
 names is the defect this section exists to prevent: two copies, no
@@ -1504,14 +1636,14 @@ top level or nested at any depth:**
 
 | Forbidden member | Its only home |
 |---|---|
-| `concepts`, `glossary` | semantic record `concepts` (§8.3) |
-| `citations`, `references` | semantic record `citations` (§8.4) + bibliography record (§10) |
-| `headings`, `structure` | semantic record `structure.headings` (§8.2) |
-| `endnotes`, `footnotes` | semantic record `endnotes` (§8.7) |
-| `links` | semantic record `links` (§8.5) |
-| `lineage` | semantic record `lineage` (§8.6) |
-| `equations` | semantic record `equations` (§8.8) |
-| `bibliography`, or any BibTeX string under any name | bibliography record (§10) |
+| `concepts`, `glossary` | semantic record `concepts` (§9.4) |
+| `citations`, `references` | semantic record `citations` (§9.5) + bibliography record (§11) |
+| `headings`, `structure` | semantic record `structure.headings` (§9.3) |
+| `endnotes`, `footnotes` | semantic record `endnotes` (§9.8) |
+| `links` | semantic record `links` (§9.6) |
+| `lineage` | semantic record `lineage` (§9.7) |
+| `equations` | semantic record `equations` (§9.8) |
+| `bibliography`, or any BibTeX string under any name | bibliography record (§11) |
 
 Symmetrically, the semantic record MUST NOT contain `tables`, `map` or
 `models`.
@@ -1522,7 +1654,7 @@ Reader-state members are likewise forbidden here: `readingPosition`,
 
 `document` appears in both records — as `describes` plus a small
 identity block — and that is deliberate and permitted: each record must
-be identifiable on its own (§1.13). It is governed by §11.
+be identifiable on its own (§1.13). It is governed by §12.
 
 **Four enforcements:**
 
@@ -1531,18 +1663,18 @@ be identifiable on its own (§1.13). It is governed by §11.
    copy waiting to diverge; a deleted one cannot.
 2. **Export-blocking error.** A writer MUST refuse to export a
    publication whose interaction record contains a forbidden member
-   (§17.1). Unlike the value disagreements of §17.2, a duplicated
+   (§18.1). Unlike the value disagreements of §18.2, a duplicated
    semantic member is not a fact two sources disagree about; it is a
    fact with no owner.
 3. **Schema rejection.** The published schemas declare every forbidden
    member, so a record carrying one is rejected by the schema itself
-   (§18).
-4. **A deterministic rule for files that already have them.** §16.3
+   (§19).
+4. **A deterministic rule for files that already have them.** §17.3
    tells readers exactly what to do — single-source with fallback, never
    merge — so no reader has to invent a policy and no two readers invent
    different ones.
 
-### 9.1 Self-identification
+### 10.1 Self-identification
 
 ```json
 {
@@ -1557,7 +1689,7 @@ be identifiable on its own (§1.13). It is governed by §11.
 }
 ```
 
-### 9.2 Tables
+### 10.2 Tables
 
 ```json
 "tables": [
@@ -1588,10 +1720,7 @@ formula **MUST NOT** reference another table, another document, or any
 external resource. A reader that cannot evaluate a formula MUST fall
 back to `value`.
 
-### 9.3 Authored layouts
-
-An authored arrangement of elements in a normalised space, and declared
-relationships between them.
+### 10.3 Authored layouts
 
 ```json
 "map": {
@@ -1607,14 +1736,14 @@ relationships between them.
 }
 ```
 
-`ref`, `from` and `to` are element addresses (§5.1). Coordinates are
+`ref`, `from` and `to` are element addresses (§6.1). Coordinates are
 writer-defined and unitless unless `space.units` says otherwise; a
 reader MUST NOT interpret them as metres by default.
 
 **A reader MUST NOT write reader-created positions into this
-structure** (§1.11, §14).
+structure** (§1.11, §15).
 
-### 9.4 Interaction declarations
+### 10.4 Interaction declarations
 
 ```json
 "stretchtext": [ { "id": "st-ABC123", "anchor": "content.xhtml#P-…" } ],
@@ -1624,7 +1753,7 @@ structure** (§1.11, §14).
 Both OPTIONAL and both derived conveniences: the body is authoritative
 for stretchtext, and a reader MAY offer any folding it likes.
 
-### 9.5 3D models
+### 10.5 3D models
 
 ```json
 "models": [
@@ -1640,15 +1769,15 @@ for stretchtext, and a reader MAY offer any folding it likes.
 ]
 ```
 
-A **convenience copy** of §6.9's carrier attributes, joined by
+A **convenience copy** of §7.9's carrier attributes, joined by
 `id` ↔ `data-model-id`. `extent` is an array of three numbers here and a
 space-separated string in the attribute; the two MUST agree, and the
-carrier governs (§11.4). `units` and `extent` MUST appear together or
+carrier governs (§12.4). `units` and `extent` MUST appear together or
 not at all.
 
 ---
 
-## 10. The bibliography record
+## 11. The bibliography record
 
 Media type `application/x-bibtex`, declared
 `properties="origami:bibliography"`. **Canonical for bibliographic
@@ -1665,7 +1794,7 @@ data.**
 ```
 
 The BibTeX key MUST be the identifier used in the bibliography entry's
-address and in `citations[].id` (§8.4).
+address and in `citations[].id` (§9.5).
 
 BibTeX strings MUST NOT be duplicated into the semantic or interaction
 records, nor into `data-bibtex` or `data-csl-json` attributes in the
@@ -1673,16 +1802,21 @@ body. A writer MAY emit CSL JSON as an additional, clearly-marked
 derived record (`properties="origami:bibliography-csl"`); where it does,
 the BibTeX remains canonical.
 
+**Why this is the canonical form.** A publication whose references
+travel as BibTeX can be re-typeset by any bibliography style — including
+the publisher's own — without the text being re-edited. That is what
+makes §1.15 more than an aspiration for scholarly work.
+
 ---
 
-## 11. Controlled redundancy
+## 12. Controlled redundancy
 
 Redundancy is permitted and sometimes desirable — for graceful
 degradation, human inspection, machine discovery, standalone export, and
 recovery if one representation is lost. It is not permitted as an
 accident of two implementations wanting different shapes.
 
-### 11.1 Two kinds of redundancy
+### 12.1 Two kinds of redundancy
 
 | | **Exact duplicate** | **Derived representation** |
 |---|---|---|
@@ -1698,12 +1832,12 @@ be compared by hash at all.
 
 Both kinds share three requirements:
 
-1. One representation MUST be declared **authoritative** (§11.4).
+1. One representation MUST be declared **authoritative** (§12.4).
 2. The redundancy MUST have a stated reason.
 3. A reader MUST NOT silently **merge** two representations of the same
    fact. It takes one, by precedence.
 
-### 11.2 Exact duplicates
+### 12.2 Exact duplicates
 
 Where a publication serialises the same record twice, both copies MUST
 use the same model and MUST be **canonically equivalent**. Byte equality
@@ -1726,21 +1860,21 @@ Both copies MUST declare the same `visual-meta.version`, MUST describe
 the same publication, and MUST produce the same canonical hash. Where
 they differ: the record declared in the package is authoritative, a
 validator MUST report an **error**, a writer MUST refuse to export
-(§17.1), and a reader MUST NOT merge them.
+(§18.1), and a reader MUST NOT merge them.
 
 `data-origami-derived-from` names the record the copy was made from, so
 the relationship is stated rather than inferred from the element's id.
 
-### 11.3 Derived representations
+### 12.3 Derived representations
 
 Where the same fact is expressed in two representations that cannot
 share a serialisation:
 
 1. They **SHOULD** agree semantically.
-2. Where they disagree, **precedence decides** (§11.4) — deterministically,
-   with no reference to which looks more plausible.
+2. Where they disagree, **precedence decides** (§12.4) —
+   deterministically, with no reference to which looks more plausible.
 3. A disagreement is a **warning**: a validator MUST report it, and a
-   writer MUST NOT refuse to export for it (§17.2).
+   writer MUST NOT refuse to export for it (§18.2).
 4. A reader MUST use the authoritative representation and MUST NOT blend
    the two. Where it surfaces the disagreement at all, it does so to a
    log, not to the person reading.
@@ -1751,7 +1885,7 @@ attribute were worded differently teaches its user to fight it. The
 publication remains unambiguous regardless, because precedence is
 declared in advance.
 
-### 11.4 Precedence
+### 12.4 Precedence
 
 | Information | Authoritative | Derived copies permitted in |
 |---|---|---|
@@ -1760,6 +1894,11 @@ declared in advance.
 | Edition identity | OPF `dc:identifier` | both records' `describes` |
 | Work identity | OPF `dcterms:isVersionOf` | semantic record `document.work` |
 | Release | OPF `dcterms:modified` | semantic record `document.modified` |
+| Rights and licence | OPF `dc:rights`, `dcterms:license` | semantic record; the colophon |
+| Author names | OPF `dc:creator` | semantic record `document.authors[].name` |
+| Author affiliation, email, ORCID | semantic record | — |
+| Venue, DOI, keywords | OPF | semantic record |
+| Abstract, subject classification, self-citation | semantic record | — |
 | Resources and media types | OPF manifest | carrier attributes |
 | Heading list | content documents | semantic record `structure.headings` |
 | Glossary term and definition | content document glossary | semantic record `concepts` |
@@ -1776,15 +1915,15 @@ declared in advance.
 
 ---
 
-## 12. Digests
+## 13. Digests
 
-### 12.1 Artifact digest
+### 13.1 Artifact digest
 
 The integrity of a publication is a SHA-256 over the **exact `.epub`
 bytes**. It MUST NOT appear inside the publication. It belongs in a
 catalogue, a signature, or a distribution manifest.
 
-### 12.2 No text fingerprint
+### 13.2 No text fingerprint
 
 1.0 defines **no** text fingerprint. A publication MUST NOT carry a
 `digest` member; a validator MUST report one as an error; a reader MUST
@@ -1797,7 +1936,7 @@ same?", and a document-level hash answers none of the questions the
 format has:
 
 - **"Have these bytes been tampered with?"** — the artifact digest
-  (§12.1), which covers text, models, records and package together. A
+  (§13.1), which covers text, models, records and package together. A
   text-only hash is strictly weaker.
 - **"Is this the same edition?"** — `dc:identifier`, which is cheaper,
   stable, and does not change when a typo is fixed.
@@ -1809,14 +1948,14 @@ format has:
   unusable across formats.
 
 That last question is per-element, and the format answers it
-per-element: the address (§5.1) plus textual evidence in the annotation
-itself (§5.4). That mechanism degrades usefully where a hash cannot, by
+per-element: the address (§6.1) plus textual evidence in the annotation
+itself (§6.4). That mechanism degrades usefully where a hash cannot, by
 finding the passage when it has moved and reporting a near-match when it
 has been edited.
 
 ---
 
-## 13. Scripting
+## 14. Scripting
 
 > **No Origami-defined semantics or required Origami-reader behaviour may
 > depend on scripting. Removing scripts MUST NOT remove information that
@@ -1835,7 +1974,7 @@ not in EPUB's content model and EPUBCheck rejects it (`RSC-005`).
 
 ---
 
-## 14. Authored intent and reader activity
+## 15. Authored intent and reader activity
 
 > The publication carries assertions and authored presentations.
 > External state carries reader activity and reader-created
@@ -1854,21 +1993,21 @@ application storage. A conforming reader MUST NOT modify a publication.
 
 ---
 
-## 15. Versioning and forward compatibility
+## 16. Versioning and forward compatibility
 
-### 15.1 Declaring the profile
+### 16.1 Declaring the profile
 
 `dcterms:conformsTo` (§4.2). The last path segment is `MAJOR.MINOR`.
 
-### 15.2 Reader behaviour
+### 16.2 Reader behaviour
 
 - Unknown **MINOR**: a reader MUST read the publication.
 - Unknown **MAJOR**: a reader MUST fall back to reading it as an
   ordinary EPUB rather than refusing it, and SHOULD say plainly that it
   is reading a newer profile.
-- Absent: the publication is pre-1.0; §16.2 applies.
+- Absent: the publication is pre-1.0; §17.2 applies.
 
-### 15.3 Unknown properties
+### 16.3 Unknown properties
 
 A reader MUST ignore, without error:
 
@@ -1881,24 +2020,24 @@ A publication MUST NOT declare that a feature is required. §2.2 already
 covers the case: a reader MUST NOT misrepresent a feature it does not
 implement, and a publication is always presentable (§1.2). A future
 minor version MAY introduce such a property once a real feature needs
-it, which §15.4 makes a compatible addition.
+it, which §16.4 makes a compatible addition.
 
-### 15.4 Anticipated additions
+### 16.4 Anticipated additions
 
 These MUST NOT break a 1.0 reader: additional `data-model-*` attributes;
 several model representations per figure (a reader SHOULD take the first
 it supports); an `@context` member added to either record; additional
 `<link rel="record">` records; and a general **per-resource rights**
-mechanism, which 1.0 deliberately leaves to prose (§4.8.3).
+mechanism, which 1.0 deliberately leaves to prose (§4.7.3).
 
 ---
 
-## 16. Reader algorithm
+## 17. Reader algorithm
 
-### 16.1 Current-profile publication
+### 17.1 Current-profile publication
 
 1. Read `META-INF/container.xml`; locate the package document.
-2. Read `dcterms:conformsTo`. Apply §15.2.
+2. Read `dcterms:conformsTo`. Apply §16.2.
 3. Read `dc:identifier`, `dcterms:isVersionOf`, `dcterms:modified`, any
    `schema:version`, and any `dcterms:replaces` / `isReplacedBy`.
 4. Enumerate `<link rel="record">`; classify each by `properties`;
@@ -1909,13 +2048,13 @@ mechanism, which 1.0 deliberately leaves to prose (§4.8.3).
 7. Read the bibliography record.
 8. Parse **every** content document in spine order. Keep each element's
    `id` **unchanged**, and form addresses as `<document path>#<id>`
-   (§5.1).
+   (§6.1).
 9. Resolve every metadata reference against those addresses. Report
    unresolved references; do not repair them silently.
-10. Apply precedence (§11.4) wherever a fact appears twice.
-11. Ignore what is not understood (§15.3).
+10. Apply precedence (§12.4) wherever a fact appears twice.
+11. Ignore what is not understood (§16.3).
 
-### 16.2 Pre-1.0 publication (compatibility) **[I]**
+### 17.2 Pre-1.0 publication (compatibility) **[I]**
 
 Where `dcterms:conformsTo` is absent, a reader MAY:
 
@@ -1924,21 +2063,26 @@ Where `dcterms:conformsTo` is absent, a reader MAY:
 2. look for `origami.json` the same way;
 3. accept `data-id` as an address where `id` is absent;
 4. accept the delimited equation block inside a content document
-   (§6.7.1);
-5. ignore `document.digest`;
-6. preserve whatever address form existing annotations were written
+   (§7.7.1);
+5. accept `authors` as strings and the name-keyed author dictionaries
+   (§5.2);
+6. treat a non-URI `document.license` as the rights statement (§4.7.2);
+7. recognise a body paragraph beginning "CCS Concepts:" or "Keywords:"
+   as the corresponding metadata (§5.3);
+8. ignore `document.digest`;
+9. preserve whatever address form existing annotations were written
    against, including bare ids for a single-document publication.
 
-Item 6 is a property of the implementation's migration, not of the
+Item 9 is a property of the implementation's migration, not of the
 format. Filename discovery MUST NOT be used in a publication that
 declares the profile.
 
 Reading **both** records where both exist is a MUST, not a MAY, and
-§16.3 governs it.
+§17.3 governs it.
 
-### 16.3 Reading a publication whose records overlap
+### 17.3 Reading a publication whose records overlap
 
-Pre-1.0 files carry the semantic members in both records (§9.0). This
+Pre-1.0 files carry the semantic members in both records (§10.0). This
 rule is normative because two readers inventing their own policies is
 how one document comes to mean two things.
 
@@ -1974,39 +2118,48 @@ Where both sources are present and **disagree**, a reader SHOULD report
 it — to a log, not to the person reading — and MUST NOT let the
 disagreement change which source it used.
 
+A reader resolving a reference to a note, a glossary entry or a
+bibliography entry MUST accept the target filed under a bare fragment
+(`en-1`) as well as under a full address (`content.xhtml#en-1`), because
+the content document writes the former and the record may carry the
+latter.
+
 ---
 
-## 17. Writer requirements
+## 18. Writer requirements
 
-### 17.1 Refuse to export
+### 18.1 Refuse to export
 
 Referential integrity. These publications are broken, not merely
 inconsistent:
 
 - metadata references an element address that does not exist;
 - two elements in one document share an `id`;
+- an `id` is not a valid XML NCName;
 - a `<link rel="record">` names a resource that is not in the package;
 - a citation references a BibTeX key with no record;
 - a `glossref` or `noteref` href names a missing entry;
 - a `[data-model-src]` names a missing resource;
 - a foreign resource that EPUB 3.3 requires a fallback for has none
   (§4.5 — **not** a posterless 3D figure, whose model is exempt);
-- a `<model>` element is present (§13);
-- an embedded record's canonical hash differs from its sidecar (§11.2);
-- the interaction record contains a member §9.0 forbids, or the semantic
-  record contains `tables`, `map` or `models`;
+- a content document contains MathML and does not declare it (§4.5);
+- a `<model>` element is present (§14);
+- an embedded record's canonical hash differs from its sidecar (§12.2);
+- the interaction record contains a member §10.0 forbids, or the
+  semantic record contains `tables`, `map` or `models`;
 - a record appears both as a manifest `<item>` and as a
   `<link rel="record">`, is referenced from a content document, or sits
   in `META-INF/` (§4.4.1, §4.4.2);
+- a content document or a metadata record is encrypted (§4.7.4);
 - there is no `epub:type="colophon"` section, or one whose stated record
   paths do not resolve, or whose BibTeX self-citation does not parse
-  (§7.4);
-- a content document or a metadata record is encrypted (§4.8.4).
+  (§8.4);
+- an author entry has no name (§5.2).
 
-### 17.2 Warn, but export anyway
+### 18.2 Warn, but export anyway
 
-Value disagreements. Precedence (§11.4) keeps the publication
-deterministic in every one of these cases:
+Value disagreements and editorial judgement. Precedence (§12.4) keeps
+the publication deterministic in every one of these cases:
 
 - a DOI, title or author differing between the OPF and a record;
 - `data-model-up` or `extent` differing from the `models` entry;
@@ -2014,15 +2167,18 @@ deterministic in every one of these cases:
 - a heading list differing from the content documents;
 - a 3D figure over a size budget whose `data-model-source` is absent;
 - no rights statement at all, or a `dcterms:license` that is not a URI
-  (§4.8);
-- a colophon whose rights statement disagrees with the package.
+  (§4.7);
+- a colophon whose rights statement disagrees with the package;
+- several author names joined into one entry (§5.2);
+- subject classification or keywords present as body text rather than
+  metadata (§5.3).
 
 Refusing to export a finished publication over a metadata disagreement
 teaches a writer to fight the tool.
 
 ---
 
-## 18. Validation
+## 19. Validation
 
 Two independent levels; both MUST pass.
 
@@ -2030,31 +2186,32 @@ Two independent levels; both MUST pass.
 EPUB validation (EPUBCheck, 3.3)   +   Origami profile validation
 ```
 
-### 18.1 The published schemas
+### 19.1 The published schemas
 
 Every Origami JSON structure MUST be described by a published, versioned
 JSON Schema (§1.8):
 
 | Schema | Describes |
 |---|---|
-| `visual-meta-1.1.schema.json` | the semantic record (§8) |
-| `origami-interaction-1.0.schema.json` | the interaction record (§9) |
+| `visual-meta-1.1.schema.json` | the semantic record (§9) |
+| `origami-interaction-1.0.schema.json` | the interaction record (§10) |
 
-Both are JSON Schema 2020-12. §9.0's separation and §14's reader-state
+Both are JSON Schema 2020-12. §10.0's separation and §15's reader-state
 boundary are expressed **structurally**: every forbidden member is
 declared so that a record carrying one is rejected by the schema itself,
 not by a validator remembering to look. The schemas also enforce: no
 `document.digest`; no `document.hasVersion`; no BibTeX or CSL inside a
-citation; `extent` and `units` required together; an up-axis of exactly
-`Y` or `Z`; only the registered model media types; no formula reaching
-outside its table; no `links` entry without a target edition; no address
+citation; an author entry with a name; a bare ORCID rather than a URL;
+`extent` and `units` required together; an up-axis of exactly `Y` or
+`Z`; only the registered model media types; no formula reaching outside
+its table; no `links` entry without a target edition; no address
 containing whitespace.
 
-Unknown members are accepted throughout, because §15.3 requires a reader
+Unknown members are accepted throughout, because §16.3 requires a reader
 to ignore what it does not understand and a schema that rejected them
 would make every forward-compatible addition a breaking change.
 
-### 18.2 The profile validator
+### 19.2 The profile validator
 
 The validator MUST check: the profile declaration is present and its
 MAJOR understood; work, edition and release identifiers are present and
@@ -2062,44 +2219,40 @@ well-formed; every declared record resolves; every record
 self-identifies and `describes` the publication; every record validates
 against its schema; `id` uniqueness per document; `id` is a valid
 NCName; every metadata reference resolves to an existing address; no
-`data-id`; no `<model>`; every §17.1 error; every §17.2 warning; 3D
-integrity (§6.9); citation and glossary integrity; canonical-hash
+`data-id`; no `<model>`; every §18.1 error; every §18.2 warning; 3D
+integrity (§7.9); citation and glossary integrity; canonical-hash
 equality of any embedded duplicate; accessibility claims consistent with
 the content.
 
-Three checks are called out because they are cheap, unambiguous, and the
+Four checks are called out because they are cheap, unambiguous, and the
 ones this profile exists to prevent regressing:
 
-- **Record separation (§9.0).** Walk each record to any depth for the
+- **Record separation (§10.0).** Walk each record to any depth for the
   forbidden member names. **Error.**
 - **Record packaging (§4.4.1, §4.4.2).** For each `<link rel="record">`,
   assert the href is not a manifest item, is not under `META-INF/`, and
   is not referenced from any content document. **Error.**
-- **Colophon (§7.4).** Assert the section exists; that it carries an
+- **Colophon (§8.4).** Assert the section exists; that it carries an
   explanatory statement, a `<pre>` BibTeX block that parses, and at
   least one stated record path; and that **every path it states resolves
   to a declared record**. This is the reason the colophon is
   machine-validated at all: it is prose, so nothing else will ever
   notice when it goes stale. **Error.**
-- **Encryption (§4.8.4).** Where `META-INF/encryption.xml` is present,
+- **Encryption (§4.7.4).** Where `META-INF/encryption.xml` is present,
   assert that nothing it encrypts is a content document or a metadata
   record. **Error.** An encrypted font is permitted.
-- **Rights (§4.8).** Where rights are declared, assert that
-  `dcterms:license` is a URI and that the colophon's rights statement
-  agrees with the package. **Warning**, since a publication may
-  legitimately have no rights statement at all.
 
 It MUST be runnable as a command-line tool independent of any reading
 application, and MUST exit non-zero on any error.
 
 ---
 
-## 19. Conformance corpus
+## 20. Conformance corpus
 
-Published with this specification: thirteen minimal publications, each
+Published with this specification: fourteen minimal publications, each
 demonstrating one feature, each accompanied by its **expected extraction
-as JSON** — or, for `11` and `13`, its expected validator verdicts — so
-an implementer can diff rather than guess.
+as JSON** — or, for `11`, `13` and `14`, its expected validator
+verdicts — so an implementer can diff rather than guess.
 
 ```
 01-basic-addressing    08-combined
@@ -2108,7 +2261,7 @@ an implementer can diff rather than guess.
 04-live-table          11-packaging
 05-equations           12-legacy-overlapping-records
 06-spatial-layout      13-colophon
-07-3d-model
+07-3d-model            14-scholarly-front-matter
 ```
 
 - `01` MUST include more than one content document, including the same
@@ -2129,16 +2282,22 @@ an implementer can diff rather than guess.
   a record, and a record under `META-INF/`.
 - `12` MUST be a pre-1.0 publication with no `dcterms:conformsTo`, both
   records carrying the same concepts, citations and headings under both
-  sets of field names, one present-but-empty member, and a
-  `document.digest`. Its expected extraction fixes §16.3's outcome.
+  sets of field names, one present-but-empty member, a prose
+  `document.license`, string authors with the name-keyed dictionaries,
+  "CCS Concepts:" as a body paragraph, and a `document.digest`. Its
+  expected extraction fixes §17.2 and §17.3's outcome.
 - `13` MUST test the colophon: one conforming publication, and three
   non-conforming — no colophon, a colophon naming a path that does not
   resolve, and a colophon whose records sit in `META-INF/`.
+- `14` MUST carry the full scholarly front matter of §5 — structured
+  authors with affiliation, email and ORCID, venue, DOI, subject
+  classification, keywords and a publisher's self-citation — with none
+  of it present as body text.
 
 **Every publication in the corpus MUST additionally pass EPUBCheck, and
 the corpus build MUST run it.** The corpus is where these rules stop
 being prose: a reader that merges duplicated records passes every prose
-reading of §11.1 and fails `12`.
+reading of §12.1 and fails `12`.
 
 ---
 
@@ -2185,6 +2344,7 @@ application/epub+zip
     <dc:rights>© 2026 A. Writer.</dc:rights>
     <meta property="dcterms:license">https://creativecommons.org/licenses/by/4.0/</meta>
     <meta property="cc:attributionName">A. Writer</meta>
+    <dc:subject>hypertext</dc:subject>
     <meta property="schema:accessMode">textual</meta>
     <meta property="schema:accessMode">visual</meta>
     <meta property="schema:accessModeSufficient">textual,visual</meta>
@@ -2345,7 +2505,8 @@ application/epub+zip
     "work": "urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
     "release": "1",
     "title": "A minimal Origami publication",
-    "authors": ["A. Writer"],
+    "authors": [{ "name": "A. Writer" }],
+    "keywords": ["hypertext"],
     "rights": "© 2026 A. Writer.",
     "license": "https://creativecommons.org/licenses/by/4.0/",
     "defaultDocument": "content.xhtml"
@@ -2409,59 +2570,113 @@ application/epub+zip
 
 ## Appendix B — implementation status **[I]**
 
-As of 24 September 2026. This specification describes the format; the
+As of 25 September 2026. This specification describes the format; the
 implementations are catching up to it, and this appendix says where they
 are so nobody mistakes the two.
 
 **AuthorKit** is the shared writer used by every Author app. It
-**conforms**: 28 tests, EPUBCheck 5.2.1 reporting 0 errors and 0
+**conforms**: 40 tests, EPUBCheck 5.2.1 reporting 0 errors and 0
 warnings on a publication carrying one of every feature in this
-document, both records validating against the schemas of §18.1.
+document, both records validating against the schemas of §19.1.
 
 **Author for macOS** has its own legacy exporter which does not conform
 — duplicated semantic members across both records, BibTeX in four
 places, a `document.digest`, no profile or work declaration, no
-colophon. Its path forward is adopting AuthorKit.
+colophon, no rights metadata, and author names joined into single
+strings. Its path forward is adopting AuthorKit.
 
-**Origami Text** is the reference reader. It implements §4.4 discovery,
-§5.1 addressing across every spine document, §16.3 precedence, the
-colophon, live tables, MathML, stretchtext and 3D figures. It does not
-yet read the work identifier or the equation index, and it writes
-equation hrefs container-relative where §5.1 wants them
-package-relative — a coordinated writer-and-reader fix, since that value
-round-trips.
+**Origami Text** is the reference reader, and also a renderer: it
+produces the single-column ACM EPUB that the HT ’26 proceedings were
+published in, and emits `acmart` LaTeX for the two-column PDF
+(Appendix C). It implements §4.4 discovery, §6.1 addressing across every
+spine document, §17.3 precedence, the colophon, rights, live tables,
+MathML, stretchtext and 3D figures. It does not yet read the work
+identifier or the equation index, and it writes equation hrefs
+container-relative where §6.1 wants them package-relative — a
+coordinated writer-and-reader fix, since that value round-trips.
 
-**Owed:** the §18.2 validator beyond the schemas, and twelve of the
-thirteen corpus publications with their expected extractions.
+**Owed:** the §19.2 validator beyond the schemas, and thirteen of the
+fourteen corpus publications with their expected extractions.
 
-### B.1 Three errata this specification has already absorbed **[I]**
+### B.1 Errata this specification has absorbed **[I]**
 
 Implementing the profile's own features and running EPUBCheck over the
-result found three places where earlier drafts described an **invalid**
+result found four places where earlier drafts described an **invalid**
 EPUB. They are corrected in the text above, and recorded here because
 none was findable by reading — which is the argument for finishing the
 corpus.
 
 | Earlier drafts said | Error | Correct |
 |---|---|---|
-| `<aside epub:type="endnote" role="doc-endnote">` | `RSC-005`, `RSC-017` | `role="note"` (§7.3) |
-| A posterless 3D carrier as `<a href="…usdz">` | `RSC-010`; a manifest fallback does **not** clear it | any element bearing `data-model-src`, no `href` (§6.9) |
-| Nothing about declaring MathML | `OPF-014` | `properties="mathml"` (§6.7) |
+| `<aside epub:type="endnote" role="doc-endnote">` | `RSC-005`, `RSC-017` | `role="note"` (§8.3) |
+| A posterless 3D carrier as `<a href="…usdz">` | `RSC-010`; a manifest fallback does **not** clear it | any element bearing `data-model-src`, no `href` (§7.9) |
+| Nothing about declaring MathML | `OPF-014` | `properties="mathml"` (§4.5) |
+| An affiliation as a single opaque line | `acmart` requires a country and errors without one | read the line from the end: institution, city, country (§C.2) |
 
 ---
 
-## Appendix C — one open question **[I]**
+## Appendix C — rendering **[I]**
 
-**Citing a specific release.** §4.3 makes the edition the citable unit.
-If someone needs to cite *a specific release* of an edition — not the
-edition, and not the exact bytes — then `dcterms:modified` is the only
-machine-stable handle on it, and a timestamp is a weak identifier for
-citation.
+The profile says nothing about how a publication must look (§1.15). This
+appendix records what the reference renderer does, because it is the
+evidence that the separation works.
 
-1.0 takes the position that this is rare enough to leave alone: the
-edition is what is cited, and the artifact digest identifies exact bytes
-when that is what matters. Adding a release identifier later is a
-compatible change; retrofitting citations is not.
+### C.1 The reflowable EPUB
+
+One column, scholarly front matter, Libertinus fonts. This is the form
+the HT ’26 proceedings were published in — 61 publications, all
+generated from documents carrying the metadata of §5.
+
+Two-column layout is deliberately **not** attempted in a reflowable
+EPUB. Reading systems override column CSS, and two narrow columns on a
+phone are worse than one. Columns belong to paged media, which is what
+§C.2 is for.
+
+### C.2 The two-column PDF
+
+Emitted as LaTeX for ACM's own `acmart` class, then compiled:
+
+```
+pdflatex paper && bibtex paper && pdflatex paper && pdflatex paper
+```
+
+Emitting LaTeX rather than typesetting directly is a deliberate choice.
+Matching `acmart` by hand — its column widths, its float placement, its
+reference format, the copyright block on page one — is work without end,
+and the result would always be nearly right. Emitting LaTeX makes the
+output exact by construction, and costs a translator rather than a
+typesetter.
+
+The bibliography is what makes this cheap: every reference already
+travels as BibTeX (§11), so `refs.bib` is nearly a copy and
+`ACM-Reference-Format.bst` does the formatting.
+
+What the translator must get right:
+
+- **Escaping.** LaTeX's ten special characters, over every piece of text
+  that is not already LaTeX. Missed escaping is the commonest way a
+  generated document fails to compile.
+- **The front matter is fields, not text.** `\title`, `\author`,
+  `\affiliation`, `\email`, `\orcid`, `\abstract`, `\ccsdesc`,
+  `\keywords`, `\acmDOI`, `\acmISBN`, `\acmConference`. This is what §5
+  exists for, and a publication carrying its subject classification as a
+  body paragraph cannot be typeset this way at all.
+- **`\affiliation` requires a `\country`.** `acmart` errors without one.
+  Affiliation lines are written "University of Southampton,
+  Southampton, UK", so they are read from the end — the only part whose
+  position is reliable.
+- **A subject-classification path uses a literal `~`** between levels,
+  so the separator must not be escaped even though the segments must be.
+- **Notes become footnotes where they are referred to**, and must not
+  also appear as a "Notes" section at the end. A reader files endnotes
+  into the body for the screen; a printed page does not want them twice.
+
+### C.3 What this buys **[I]**
+
+A document written once, in Author, can be issued as a reflowable EPUB,
+as a two-column ACM paper, or in a venue's template that nobody has seen
+yet — because the publication states what it is and the renderer decides
+what it looks like. That is §1.15 in practice rather than in principle.
 
 ---
 
@@ -2478,24 +2693,27 @@ compatible change; retrofitting citations is not.
 | `schema:version` | no | human-readable release label |
 | `dcterms:replaces` / `isReplacedBy` | no | supersession, retraction |
 | `schema:access*` | yes | accessibility (§4.6) |
-| `dc:rights` | recommended | the rights statement, as prose (§4.8) |
-| `dcterms:license` | recommended | the licence, **as a URI** (§4.8) |
+| `dc:rights` | recommended | the rights statement, as prose (§4.7) |
+| `dcterms:license` | recommended | the licence, **as a URI** (§4.7) |
 | `dcterms:rightsHolder` | no | who owns or manages the rights |
 | `dcterms:accessRights` | no | access or embargo status |
 | `cc:attributionName` / `cc:attributionURL` | no | the attribution a CC licence requires |
+| `dc:creator` | yes | one per author (§5.1) |
+| `dcterms:isPartOf` | no | the venue |
+| `dc:subject` | no | one per keyword |
 
 ### `data-*` attributes
 
-| Attribute | On | §|
+| Attribute | On | § |
 |---|---|---|
-| `data-model-src` and the other `data-model-*` | a 3D figure's carrier | 6.9.2 |
-| `data-table-id` | `<table>` | 6.6 |
-| `data-origami-address` | any block | 5.2 |
-| `data-origami-rel` | a citation anchor | 6.11 |
-| `data-origami-action` | a citation anchor | 6.11 |
-| `data-origami-derived-from` | an embedded duplicate | 11.2 |
-| `data-latex` | `<math>` | 6.7 |
-| `data-id` | **forbidden** | 5.2 |
+| `data-model-src` and the other `data-model-*` | a 3D figure's carrier | 7.9.2 |
+| `data-table-id` | `<table>` | 7.6 |
+| `data-origami-address` | any block | 6.2 |
+| `data-origami-rel` | a citation anchor | 7.11 |
+| `data-origami-action` | a citation anchor | 7.11 |
+| `data-origami-derived-from` | an embedded duplicate | 12.2 |
+| `data-latex` | `<math>` | 7.7 |
+| `data-id` | **forbidden** | 6.2 |
 
 ### EPUB semantics used
 
@@ -2516,10 +2734,11 @@ compatible change; retrofitting citations is not.
 |---|---|
 | text, structure, reading order | content documents |
 | concepts, citations, structure index, endnotes, relationships, lineage, equation index | semantic record |
+| scholarly front matter (§5) | the package where EPUB has a property, else the semantic record |
 | table formulas, authored layouts, model index, interaction declarations | interaction record |
 | bibliographic records | bibliography record |
-| rights and licence | the package, mirrored in the semantic record and stated in the colophon |
-| a resource's own differing rights | the publication's prose — a caption or the colophon (§4.8.3) |
+| rights and licence | the package, mirrored in the record, stated in the colophon |
+| a resource's own differing rights | the publication's prose (§4.7.3) |
 | the artifact digest | outside the publication |
 | reader annotations and state | outside the publication |
 
@@ -2541,3 +2760,4 @@ compatible change; retrofitting citations is not.
 - IANA Link Relations — https://www.iana.org/assignments/link-relations/
 - MathML — https://www.w3.org/TR/MathML3/
 - JSON Schema 2020-12 — https://json-schema.org/draft/2020-12/schema
+- ACM `acmart` class — https://ctan.org/pkg/acmart

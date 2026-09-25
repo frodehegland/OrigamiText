@@ -56,6 +56,13 @@ nonisolated enum OrigamiEPUBImporter {
         var authorEmails: [String: String] = [:]
         /// Each author's affiliation line, keyed by name, from Visual-Meta.
         var authorAffiliations: [String: String] = [:]
+        /// The abstract, the keywords, the ISBN and the CCS concepts —
+        /// front matter a renderer places, rather than body text it has
+        /// to recognise.
+        var abstract: String? = nil
+        var keywords: [String] = []
+        var isbn: String? = nil
+        var ccsConcepts: [String] = []
         /// The license/copyright block as a person reads it — `dc:rights`
         /// in the package, `document.rights` in the record (profile §4.8).
         var license: String? = nil
@@ -564,6 +571,16 @@ nonisolated enum OrigamiEPUBImporter {
             authorORCIDs: (document?["author-orcids"] as? [String: String]) ?? [:],
             authorEmails: (document?["author-emails"] as? [String: String]) ?? [:],
             authorAffiliations: (document?["author-affiliations"] as? [String: String]) ?? [:],
+            abstract: (document?["abstract"] as? String)
+                .flatMap { $0.isEmpty ? nil : $0 },
+            keywords: (document?["keywords"] as? [String])?
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                ?? subjects(in: opf),
+            isbn: (document?["isbn"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            ccsConcepts: (document?["ccsConcepts"] as? [String])?
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty } ?? [],
             license: rightsStatement(in: document, opf: opf),
             licenseURI: licenceURI(in: document, opf: opf),
             date: document?["date"] as? String ?? date,
@@ -884,6 +901,14 @@ nonisolated enum OrigamiEPUBImporter {
               !trimmed.contains(" ") else { return false }
         return trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://")
             || trimmed.hasPrefix("urn:")
+    }
+
+    /// Keywords from the package's `dc:subject` elements, which is where
+    /// EPUB puts them — the fallback when the record names none.
+    private static func subjects(in opf: String) -> [String] {
+        captures(in: opf, pattern: "<dc:subject[^>]*>([^<]+)</dc:subject>")
+            .map { xmlUnescaped($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     /// A package-declared metadata record's href. The profile declares each

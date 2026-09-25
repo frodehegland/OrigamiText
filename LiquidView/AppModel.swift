@@ -3265,6 +3265,11 @@ final class AppModel {
         doc.authorAffiliations = result.authorAffiliations
         doc.license = result.license
         doc.licenseURI = result.licenseURI
+        doc.authors = result.authors
+        doc.abstract = result.abstract
+        doc.keywords = result.keywords
+        doc.isbn = result.isbn
+        doc.ccsConcepts = result.ccsConcepts
         doc.concepts = result.concepts
         doc.layouts = result.layouts
         doc.mapConnections = result.mapConnections

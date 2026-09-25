@@ -123,6 +123,34 @@ CASES = [
     ("semantic: hasVersion as a revision label (§4.3.1)", SEMANTIC,
      semantic(document={"identifier": UUID, "hasVersion": "corrected version"}), False),
 
+    # ---- scholarly front matter (§8.2) ---------------------------------
+    ("semantic: structured authors", SEMANTIC, semantic(
+        document={"identifier": UUID,
+                  "authors": [{"name": "Bob Rimington",
+                               "affiliation": "University of Southampton, UK",
+                               "email": "e.m.rimington@soton.ac.uk",
+                               "orcid": "0000-0002-1825-0097"},
+                              {"name": "Charlie Hargood"}],
+                  "publication": "37th ACM Conference on Hypertext",
+                  "doi": "10.1145/3800935.3830844",
+                  "acmReference": "Bob Rimington, Jack Brett, and Charlie Hargood. 2026. …",
+                  "ccsConcepts": ["Human-centered computing → User studies"]}), True),
+    ("semantic: legacy string authors still valid", SEMANTIC,
+     semantic(document={"identifier": UUID, "authors": ["Bob Rimington"]}), True),
+    ("semantic: legacy keyed affiliations still valid", SEMANTIC,
+     semantic(document={"identifier": UUID,
+                        "author-affiliations": {"Bob Rimington": "Southampton"},
+                        "affiliations": ["Southampton"]}), True),
+    ("semantic: an author with no name", SEMANTIC,
+     semantic(document={"identifier": UUID,
+                        "authors": [{"affiliation": "Southampton"}]}), False),
+    ("semantic: an ORCID given as a URL", SEMANTIC,
+     semantic(document={"identifier": UUID,
+                        "authors": [{"name": "A. Writer",
+                                     "orcid": "https://orcid.org/0000-0002-1825-0097"}]}), False),
+    ("semantic: ccsConcepts as a single string", SEMANTIC,
+     semantic(document={"identifier": UUID, "ccsConcepts": "User studies"}), False),
+
     # ---- rights (§4.8) -------------------------------------------------
     ("semantic: rights and a licence URI", SEMANTIC, semantic(
         document={"identifier": UUID, "work": WORK,

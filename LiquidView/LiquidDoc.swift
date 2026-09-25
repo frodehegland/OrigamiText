@@ -118,6 +118,20 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// exported front matter group name, affiliation and contact as the
     /// paper prints them.
     var authorAffiliations: [String: String] = [:]
+    /// Every author of record, in printed order. `author` stays the
+    /// single display string a list shows; this is what a front matter
+    /// needs in order to place an affiliation against a person.
+    var authors: [String] = []
+    /// The abstract, as its own text rather than a body paragraph — so a
+    /// renderer can place it where its template wants it.
+    var abstract: String? = nil
+    var keywords: [String] = []
+    var isbn: String? = nil
+    /// ACM CCS concepts, one per entry, as printed. Metadata for the
+    /// same reason the abstract is: a two-column renderer has to *place*
+    /// this block, and it cannot place a paragraph it can only find by
+    /// looking for text that begins "CCS Concepts:".
+    var ccsConcepts: [String] = []
     /// The paper's license and copyright block, as page 1 prints it
     /// lower left — the CC BY boilerplate with the paper's own DOI on
     /// its last line. Carried through Visual-Meta; the export renders

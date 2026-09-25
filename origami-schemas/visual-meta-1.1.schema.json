@@ -33,7 +33,54 @@
         "work": { "$ref": "#/$defs/publicationIdentifier" },
         "title": { "type": "string" },
         "subtitle": { "type": "string" },
-        "authors": { "type": "array", "items": { "type": "string" } },
+        "authors": {
+          "description": "One entry per author, in the order the publication prints them. An object carries the detail a scholarly front matter needs; a bare string is the legacy form and remains valid. Never several names joined into one string — that is what makes an author list unusable for anything but display.",
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "$ref": "#/$defs/nonEmptyString" },
+                  "affiliation": { "type": "string" },
+                  "email": { "type": "string" },
+                  "orcid": {
+                    "description": "The bare identifier, not a URL.",
+                    "type": "string",
+                    "pattern": "^[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9Xx]$"
+                  }
+                },
+                "additionalProperties": true
+              }
+            ]
+          }
+        },
+        "publication": {
+          "description": "The venue the work is part of, mirroring dcterms:isPartOf.",
+          "type": "string"
+        },
+        "acmReference": {
+          "description": "The publisher's own self-citation, verbatim as the publication prints it. Derived from nothing and reformatted by no one: it is the reference the publisher asks the work to be cited by.",
+          "type": "string"
+        },
+        "ccsConcepts": {
+          "description": "ACM CCS concepts, one per entry, as printed. Metadata rather than body text, so a renderer can place them rather than finding them in a paragraph that happens to begin \"CCS Concepts:\".",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "affiliations": {
+          "description": "Legacy: the printed affiliation lines, unattributed. Superseded by `authors[].affiliation`; still read.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "author-affiliations": {
+          "description": "Legacy: affiliations keyed by author name. Superseded by `authors[].affiliation` — keying by a display name breaks on two authors who share one.",
+          "type": "object"
+        },
+        "author-emails": { "description": "Legacy; see author-affiliations.", "type": "object" },
+        "author-orcids": { "description": "Legacy; see author-affiliations.", "type": "object" },
         "date": { "$ref": "#/$defs/dateOrEmpty" },
         "abstract": { "type": "string" },
         "keywords": { "type": "array", "items": { "type": "string" } },
