@@ -6001,13 +6001,18 @@ final class AppModel {
     /// the same step.
     @discardableResult
     func writeFormat(_ style: ACMLaTeX.Style, of conversion: FormatConversion,
+                     publisher: ACMLaTeX.Publisher = .acm,
                      rights: ACMLaTeX.Rights? = nil,
                      edited: LiquidDoc? = nil, event: ACMLaTeX.Conference? = nil,
+                     alsoEPUB: Bool = false,
                      compile: Bool) -> URL? {
         // The sheet's corrections apply to this rendering only; the EPUB
-        // itself is never changed.
-        let bundle = ACMLaTeX.bundle(for: edited ?? conversion.doc, style: style,
+        // the paper came from is never changed.
+        let doc = edited ?? conversion.doc
+        let bundle = ACMLaTeX.bundle(for: doc, publisher: publisher, style: style,
                                      rights: rights, event: event)
+        let suffix = publisher == .acm ? style.rawValue : publisher.fileSuffix
+        let label = publisher == .acm ? style.label : publisher.label
         // The sandbox granted the chosen EPUB, not the folder it sits in,
         // so writing a new folder beside it was refused ("no permission
         // to save"). A save panel grants the write; it opens beside the
@@ -6016,8 +6021,8 @@ final class AppModel {
         let panel = NSSavePanel()
         panel.directoryURL = conversion.url.deletingLastPathComponent()
         panel.nameFieldStringValue = conversion.url
-            .deletingPathExtension().lastPathComponent + "." + style.rawValue
-        panel.message = "Where should the \(style.label) version be written?"
+            .deletingPathExtension().lastPathComponent + "." + suffix
+        panel.message = "Where should the \(label) version be written?"
         panel.prompt = compile ? "Render" : "Write"
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let folder = panel.url else { return nil }
@@ -6041,9 +6046,27 @@ final class AppModel {
                     try data.write(to: images.appendingPathComponent(name))
                 }
             }
-            try ACMLaTeX.Bundle.readme(for: style)
+            try (publisher == .acm ? ACMLaTeX.Bundle.readme(for: style)
+                                   : ACMLaTeX.readme(for: publisher))
                 .write(to: folder.appendingPathComponent("README.txt"),
                        atomically: true, encoding: .utf8)
+            if alsoEPUB {
+                // The same corrected paper as an Origami EPUB in the
+                // publisher's house style — its references set their way,
+                // its rights the ones chosen here.
+                var epubDoc = ACMLaTeX.movingFrontMatterOutOfBody(doc)
+                let chosen = rights ?? ACMLaTeX.Rights.stated(by: doc) ?? .ccBy
+                epubDoc.license = ACMLaTeX.rightsStatement(
+                    chosen, doc: epubDoc, event: event ?? ACMLaTeX.conferenceFromReference(epubDoc))
+                epubDoc.licenseURI = chosen.ccType.map {
+                    "https://creativecommons.org/licenses/\($0)/4.0/"
+                }
+                let name = conversion.url.deletingPathExtension().lastPathComponent
+                    + " (\(label)).epub"
+                try OrigamiEPUBExporter.write(doc: epubDoc, resolve: { _ in nil },
+                                              to: folder.appendingPathComponent(name),
+                                              houseStyle: publisher.houseStyle)
+            }
         } catch {
             showNote("Could not write the bundle: \(error.localizedDescription)")
             return nil

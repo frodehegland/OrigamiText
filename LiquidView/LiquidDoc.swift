@@ -53,7 +53,9 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     var title: String
     let author: String
     let created: Date
-    let body: [Paragraph]?
+    /// Settable so a conversion can move front matter out of the body
+    /// into its fields (Profile 1.0 §5.3).
+    var body: [Paragraph]?
     let links: [Link]
     let wraps: Wrapped?
     /// People this document is addressed to — "for the attention of".

@@ -841,6 +841,12 @@ struct FormatChoiceSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var style: ACMLaTeX.Style = .sigconf
+    /// Whose format: ACM (with its own format choice below), IEEE,
+    /// Springer LNCS, Elsevier, or a plain preprint.
+    @State private var publisher: ACMLaTeX.Publisher = .acm
+    /// The same corrected paper as an Origami EPUB in the publisher's
+    /// house style, written into the bundle beside the LaTeX.
+    @State private var alsoEPUB = true
     /// The rights the rendered edition is published under. Origami Text
     /// decides this, not the writing tool: it starts from whatever the
     /// paper states, else CC BY 4.0, ACM's open-access default.
@@ -921,6 +927,8 @@ struct FormatChoiceSheet: View {
                 Button(compile && canCompile ? "Render PDF\u{2026}" : "Write Bundle\u{2026}") {
                     let makePDF = compile && canCompile
                     let chosen = style
+                    let chosenPublisher = publisher
+                    let writeEPUB = alsoEPUB
                     let chosenRights = rights
                     let edited = draft.applied(to: conversion.doc)
                     let event = draft.event
@@ -928,8 +936,10 @@ struct FormatChoiceSheet: View {
                     // stacking over it.
                     dismiss()
                     Task { @MainActor in
-                        model.writeFormat(chosen, of: conversion, rights: chosenRights,
+                        model.writeFormat(chosen, of: conversion, publisher: chosenPublisher,
+                                          rights: chosenRights,
                                           edited: edited, event: event,
+                                          alsoEPUB: writeEPUB,
                                           compile: makePDF)
                     }
                 }
@@ -946,7 +956,23 @@ struct FormatChoiceSheet: View {
 
     private var formatSection: some View {
         Section("Format") {
-            Picker("Format", selection: $style) {
+            Picker("Publisher", selection: $publisher) {
+                ForEach(ACMLaTeX.Publisher.allCases) { option in
+                    Text(option.columns.isEmpty ? option.label
+                         : "\(option.label) — \(option.columns)").tag(option)
+                }
+            }
+            Text(publisher.note)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if publisher == .acm {
+                acmFormatPicker
+            }
+        }
+    }
+
+    @ViewBuilder private var acmFormatPicker: some View {
+            Picker("ACM format", selection: $style) {
                 // The formats we have compiled and looked at come first
                 // and are the only ones offered without a caveat.
                 Section("Verified") {
@@ -963,7 +989,6 @@ struct FormatChoiceSheet: View {
             Text(style.note)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        }
     }
 
     private var paperSection: some View {
@@ -1071,6 +1096,11 @@ struct FormatChoiceSheet: View {
             Text(ACMLaTeX.Rights.stated(by: conversion.doc) == nil
                  ? "The paper states no rights, so they are set here."
                  : "Starting from the rights the paper states.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle("Also write an EPUB in this style", isOn: $alsoEPUB)
+            Text("An Origami EPUB with the corrected front matter, its "
+                 + "references set in \(publisher == .acm ? "ACM" : publisher.label)'s style.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Toggle("Also compile to PDF", isOn: $compile)

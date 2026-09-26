@@ -173,6 +173,38 @@ copyright paragraph. Only record what the writer has actually chosen:
 
 ---
 
+## 6a. References — `references.bib` (Profile 1.0 §9.5, §11)
+
+Checked against the 25 Sep 23:08 export. Origami Text now reads
+`references.bib` (it matches entries to citations by their visible text
+when the keys disagree), but the file should follow the profile so that
+nothing has to be guessed:
+
+- **Each BibTeX key MUST be the citation's id** — the same UUID as
+  `citations[].id` in `visual-meta.json` and the `bib-<id>` anchor:
+  ```bibtex
+  @article{232A9EED-512F-40C7-AB46-AB086D49733B,
+    author = {Halevi, Gali and Moed, Henk and Bar-Ilan, Judit},
+    …
+  }
+  ```
+  Today the keys are Author's own (`frodeHeglandVintonCerf…/OrigamiTex`).
+- **Every entry needs a type.** One entry is written `@{arXiv/MajorChang,`
+  — no type — which BibTeX cannot read. Use `@misc` when unsure.
+- **One entry per cited work, and one citation per entry.** The Halevi
+  2015 paper appears three times in `references.bib` and twice in the
+  visible list.
+- **No empty references.** Four `<li id="bib-…">` items are empty — a
+  citation with no record behind it. Either write its record or do not
+  emit the citation.
+- **Protect capitals in titles** with braces — `{LaTeX}`, `{LLMs}`,
+  `{PDFs}`, `{ACM}` — or IEEE and Elsevier styles print "Latex", "llms".
+- **Fill the fields a style needs:** `booktitle` for `@inproceedings`,
+  `journal` for `@article`, `pages` where known. Two entries have no
+  booktitle today.
+- The in-text citation anchors are already correct
+  (`<a epub:type="biblioref" role="doc-biblioref" href="#bib-…">`) — keep them.
+
 ## 7. Checklist against the current Author export
 
 | | Status |
@@ -187,6 +219,7 @@ copyright paragraph. Only record what the writer has actually chosen:
 | `dc:date` is the paper's date, not the export date (§3) | ❌ **fix** — the 23:08 export writes the day of export (2026-09-26) |
 | Rights: facts only, no boilerplate (§6) | ✅ nothing written today — add licence URI only when chosen |
 | No legacy `author-orcids` / `author-emails` / `author-affiliations` | ✅ none present — keep it that way |
+| `references.bib` keys = citation ids; typed, unique, no empty entries (§6a) | ❌ **fix** |
 
 With §4 and the keyword trim done, the same export reads correctly in
 any EPUB reader, in Origami Text, and in the ACM two-column conversion.

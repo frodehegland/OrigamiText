@@ -1253,6 +1253,12 @@ nonisolated enum ACMLaTeX {
             listOpen = nil
         }
 
+        // The first heading sets the section level — not the lowest
+        // number anywhere, since an appended colophon may be an h1 below
+        // a paper whose sections are h2s.
+        let levelOffset = ((doc.body ?? [])
+            .first { $0.heading != nil && !isFrontMatter($0, in: doc) }?
+            .heading ?? 1) - 1
         var acksOpen = false
         func closeAcks() {
             if acksOpen { out.append("\\end{acks}") }
@@ -1286,8 +1292,11 @@ nonisolated enum ACMLaTeX {
                     acksOpen = true
                     continue
                 }
+                // The paper's highest heading level is its section level,
+                // whatever number it wears: Author's EPUBs start sections
+                // at h2 (h1 is the title), converted papers at level 1.
                 let command = ["section", "section", "subsection", "subsubsection"][
-                    min(max(level, 1), 3)]
+                    min(max(level - levelOffset, 1), 3)]
                 out.append("")
                 out.append("\\\(command){\(inline(title, in: doc))}")
                 out.append("\\label{\(label(for: paragraph.id))}")
@@ -1315,21 +1324,29 @@ nonisolated enum ACMLaTeX {
                 continue
             }
 
-            // "• item" and "1. item" are the format's list conventions.
-            if let (kind, item) = listItem(in: text) {
-                if listOpen != kind {
-                    closeList()
-                    out.append("\\begin{\(kind)}")
-                    listOpen = kind
+            // "• item" and "1. item" are the format's list conventions. A
+            // paragraph may hold several lines — Author writes a list as
+            // one paragraph, an item per line — so each line is read on
+            // its own: prose stays prose, items become the list.
+            let lines = text.components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            let segments = lines.contains(where: { listItem(in: $0) != nil }) ? lines : [text]
+            for segment in segments {
+                if let (kind, item) = listItem(in: segment) {
+                    if listOpen != kind {
+                        closeList()
+                        out.append("\\begin{\(kind)}")
+                        listOpen = kind
+                    }
+                    out.append("  \\item \(inline(item, in: doc))")
+                    continue
                 }
-                out.append("  \\item \(inline(item, in: doc))")
-                continue
+                closeList()
+                guard !segment.isEmpty else { continue }
+                out.append("")
+                out.append(inline(segment, in: doc))
             }
-            closeList()
-
-            guard !text.isEmpty else { continue }
-            out.append("")
-            out.append(inline(text, in: doc))
         }
         closeList()
         closeAcks()
@@ -1443,7 +1460,17 @@ nonisolated enum ACMLaTeX {
         // [text](origami-jump:target) → a cross-reference where the
         // target is a labelled element, and the words alone otherwise.
         out = replacing(#"\[([^\]]*)\]\(origami-jump:([^)]+)\)"#, in: out) { groups in
-            "\(groups[0])~\\ref{\(label(for: groups[1]))}"
+            // Only headings, figures and tables carry a \label. A jump
+            // to anything else — a glossary term, a plain paragraph —
+            // prints its words alone, or LaTeX prints "??".
+            let target = groups[1]
+            let labelled = (doc.body ?? []).contains { paragraph in
+                (paragraph.id == target || paragraph.id.hasSuffix("#" + target))
+                    && (paragraph.heading != nil || paragraph.tableID != nil
+                        || paragraph.text.range(of: #"!\[[^\]]*\]\((asset|model):"#,
+                                                options: .regularExpression) != nil)
+            }
+            return labelled ? "\(groups[0])~\\ref{\(label(for: target))}" : groups[0]
         }
         out = replacing(#"\[([^\]]*)\]\((https?://[^)]+)\)"#, in: out) { groups in
             "\\href{\(groups[1])}{\(groups[0])}"
@@ -1605,6 +1632,16 @@ nonisolated enum ACMLaTeX {
         return doc
     }
 
+    /// The front matter moved, not copied: the fields filled from the
+    /// body as `withFrontMatterFromBody` does, and the body paragraphs
+    /// they came from removed — what Profile 1.0 §5.3 asks of a writer
+    /// converting a file that carries them as body text.
+    static func movingFrontMatterOutOfBody(_ source: LiquidDoc) -> LiquidDoc {
+        var doc = withFrontMatterFromBody(source)
+        doc.body = (doc.body ?? []).filter { !isFrontMatter($0, in: doc) }
+        return doc
+    }
+
     /// The event as the paper's own ACM Reference Format names it:
     /// "… In 37th ACM Conference on Hypertext (HT ’26), September 14–18,
     /// 2026, London, United Kingdom. ACM, New York, NY, USA, …".
@@ -1670,5 +1707,476 @@ nonisolated enum ACMLaTeX {
         if uri.contains("/by-nc-sa/") { return "CC BY-NC-SA" }
         if uri.contains("/zero/") { return "CC0" }
         return "Creative Commons"
+    }
+}
+
+// MARK: - Other publishers' formats
+
+/// The same translation into other publishers' LaTeX classes. The body —
+/// sections, figures, tables, footnotes, citations — is shared; what
+/// differs is the class, the author block, where the abstract and
+/// keywords go, and the bibliography style that formats the references.
+/// Every class used here ships with TeX Live, so "installed" is the same
+/// as "available" for anyone with a TeX installation.
+extension ACMLaTeX {
+
+    enum Publisher: String, Sendable, CaseIterable, Identifiable {
+        case acm, ieee, lncs, elsevier, elsevierTwoColumn, preprint
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .acm: "ACM"
+            case .ieee: "IEEE conference"
+            case .lncs: "Springer LNCS"
+            case .elsevier: "Elsevier journal — preprint"
+            case .elsevierTwoColumn: "Elsevier journal — two column"
+            case .preprint: "Preprint (arXiv style)"
+            }
+        }
+
+        var note: String {
+            switch self {
+            case .acm: "ACM's acmart class, in the format chosen below."
+            case .ieee: "IEEEtran in conference mode: two columns, IEEE reference style."
+            case .lncs: "Lecture Notes in Computer Science: one column, splncs04 references."
+            case .elsevier: "elsarticle for submission: one column, numbered references."
+            case .elsevierTwoColumn: "elsarticle's final layout: two columns, Times, numbered references."
+            case .preprint: "A plain article for arXiv or a repository: one column, numbered references."
+            }
+        }
+
+        var columns: String {
+            switch self {
+            case .ieee, .elsevierTwoColumn: "two column"
+            case .lncs, .elsevier, .preprint: "one column"
+            case .acm: ""
+            }
+        }
+
+        var documentClass: String {
+            switch self {
+            case .acm: "acmart"
+            case .ieee: "\\documentclass[conference]{IEEEtran}"
+            case .lncs: "\\documentclass[runningheads]{llncs}"
+            case .elsevier: "\\documentclass[preprint,12pt]{elsarticle}"
+            case .elsevierTwoColumn: "\\documentclass[final,5p,times,twocolumn]{elsarticle}"
+            case .preprint: "\\documentclass[11pt]{article}"
+            }
+        }
+
+        var bibliographyStyle: String {
+            switch self {
+            case .acm: "ACM-Reference-Format"
+            case .ieee: "IEEEtran"
+            case .lncs: "splncs04"
+            case .elsevier, .elsevierTwoColumn: "elsarticle-num"
+            case .preprint: "unsrt"
+            }
+        }
+
+        /// How the matching EPUB sets its references.
+        var houseStyle: OrigamiEPUBExporter.HouseStyle {
+            switch self {
+            case .acm: .acm
+            case .ieee: .ieee
+            case .lncs: .lncs
+            case .elsevier, .elsevierTwoColumn: .elsevier
+            case .preprint: .preprint
+            }
+        }
+
+        /// The folder suffix a bundle is written under.
+        var fileSuffix: String { rawValue }
+    }
+
+    /// The bundle for any publisher. ACM keeps its own path (and its
+    /// eleven acmart formats); the others share `publisherLaTeX`.
+    static func bundle(for doc: LiquidDoc, publisher: Publisher, style: Style = .sigconf,
+                       rights: Rights? = nil, event: Conference? = nil) -> Bundle {
+        guard publisher != .acm else {
+            return bundle(for: doc, style: style, rights: rights, event: event)
+        }
+        var images: [String: Data] = [:]
+        for asset in doc.assets {
+            images[imageFileName(for: asset)] = asset.data
+        }
+        // biblatex's entry types (@online, @software, @dataset) are not
+        // known to these classic .bst styles, which then drop the entry's
+        // formatting; @misc is the type every one of them understands.
+        let bibtex = bibliography(for: doc).replacingOccurrences(
+            of: #"@(online|webpage|software|dataset|electronic)\s*\{"#, with: "@misc{",
+            options: [.regularExpression, .caseInsensitive])
+        return Bundle(latex: publisherLaTeX(for: doc, publisher: publisher,
+                                            rights: rights ?? Rights.stated(by: doc) ?? .ccBy,
+                                            event: event),
+                      bibtex: bibtex,
+                      images: images)
+    }
+
+    static func publisherLaTeX(for source: LiquidDoc, publisher: Publisher,
+                               rights: Rights, event given: Conference?) -> String {
+        let doc = withFrontMatterFromBody(source)
+        let event = given ?? conferenceFromReference(doc)
+        var out: [String] = [
+            "% Generated by Origami Text from \(doc.title).",
+            "% Compile: \(Bundle.recipe)",
+            publisher.documentClass,
+            ""
+        ]
+        out.append(contentsOf: commonPreamble(for: publisher))
+        out.append("\\begin{document}")
+        out.append("")
+        switch publisher {
+        case .ieee: out.append(contentsOf: ieeeFrontMatter(doc))
+        case .lncs: out.append(contentsOf: lncsFrontMatter(doc))
+        case .elsevier, .elsevierTwoColumn: out.append(contentsOf: elsevierFrontMatter(doc, event: event))
+        case .preprint, .acm: out.append(contentsOf: preprintFrontMatter(doc, event: event))
+        }
+        if let statement = rightsStatement(rights, doc: doc, event: event) {
+            // An unmarked first-page footnote: where every one of these
+            // classes lets a rights line sit without a class of its own.
+            out.append("{\\renewcommand\\thefootnote{}\\footnotetext{\(escaped(statement))}}")
+            out.append("")
+        }
+        out.append(contentsOf: body(of: doc))
+        if !doc.references.isEmpty {
+            out.append("")
+            out.append("\\bibliographystyle{\(publisher.bibliographyStyle)}")
+            out.append("\\bibliography{refs}")
+        }
+        out.append("")
+        out.append("\\end{document}")
+        return out.joined(separator: "\n") + "\n"
+    }
+
+    /// The packages acmart would have loaded for itself, and shims for
+    /// the two acmart-only constructs the shared body emits
+    /// (`\Description` on figures, the `acks` environment).
+    private static func commonPreamble(for publisher: Publisher) -> [String] {
+        var out = [
+            "\\usepackage[T1]{fontenc}",
+            "\\usepackage[utf8]{inputenc}"
+        ]
+        if publisher == .lncs || publisher == .preprint { out.append("\\usepackage{lmodern}") }
+        if publisher == .preprint { out.append("\\usepackage[margin=1in]{geometry}") }
+        out += [
+            "\\usepackage{graphicx}",
+            "\\usepackage{booktabs}",
+            "\\usepackage{amsmath,amssymb}",
+            "\\usepackage{url}",
+            "\\usepackage{newunicodechar}",
+            "\\newunicodechar{→}{\\ensuremath{\\rightarrow}}",
+            "\\newunicodechar{←}{\\ensuremath{\\leftarrow}}",
+            "\\newunicodechar{≈}{\\ensuremath{\\approx}}",
+            "\\newunicodechar{≤}{\\ensuremath{\\leq}}",
+            "\\newunicodechar{≥}{\\ensuremath{\\geq}}",
+            "\\newunicodechar{×}{\\ensuremath{\\times}}",
+            "\\newunicodechar{−}{\\ensuremath{-}}",
+            "\\newunicodechar{•}{\\textbullet}",
+        ]
+        if publisher == .elsevier || publisher == .elsevierTwoColumn {
+            // elsarticle and orcidlink both load hyperref already; asking
+            // for it again with options is an option clash.
+            out.append("\\usepackage{orcidlink}")
+            out.append("\\hypersetup{hidelinks}")
+        } else {
+            out.append("\\usepackage[hidelinks]{hyperref}")
+        }
+        out += [
+            "\\providecommand\\BibTeX{{Bib\\TeX}}",
+            "\\providecommand\\Description[2][]{}",
+            "\\newenvironment{acks}{\\section*{Acknowledgments}}{}",
+            ""
+        ]
+        return out
+    }
+
+    // MARK: Authors, shared
+
+    struct PersonLine {
+        let name: String
+        let institution: String?
+        let city: String?
+        let country: String?
+        let email: String?
+        let orcid: String?
+
+        /// "Institution, City, Country" without the gaps.
+        var place: String {
+            [institution, city, country].compactMap { $0 }.filter { !$0.isEmpty }
+                .joined(separator: ", ")
+        }
+    }
+
+    static func people(of doc: LiquidDoc) -> [PersonLine] {
+        let names = doc.authors.isEmpty
+            ? doc.displayAuthor.components(separatedBy: ",")
+                .flatMap { $0.components(separatedBy: " and ") }
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            : doc.authors
+        return names.map { name in
+            let affiliation = doc.authorAffiliations[name]
+                ?? (names.count == 1 ? doc.affiliations.first : nil)
+            let parts = affiliationParts(affiliation ?? "")
+            return PersonLine(name: name, institution: parts.institution,
+                              city: parts.city, country: parts.country,
+                              email: doc.authorEmails[name].flatMap { $0.isEmpty ? nil : $0 },
+                              orcid: doc.authorORCIDs[name].flatMap { $0.isEmpty ? nil : $0 })
+        }
+    }
+
+    /// The affiliation read from the end, as `affiliationLines` does.
+    static func affiliationParts(_ affiliation: String)
+        -> (institution: String?, city: String?, country: String?) {
+        let parts = affiliation.components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        switch parts.count {
+        case 0: return (nil, nil, nil)
+        case 1: return (parts[0], nil, nil)
+        case 2: return (parts[0], nil, parts[1])
+        default:
+            return (parts[0..<(parts.count - 2)].joined(separator: ", "),
+                    parts[parts.count - 2], parts[parts.count - 1])
+        }
+    }
+
+    private static func titleLine(_ doc: LiquidDoc, subtitleCommand: Bool) -> [String] {
+        var out = ["\\title{\(inline(doc.title, in: doc))}"]
+        if let subtitle = doc.subtitle, !subtitle.isEmpty {
+            if subtitleCommand {
+                out.append("\\subtitle{\(inline(subtitle, in: doc))}")
+            } else {
+                out[0] = "\\title{\(inline(doc.title, in: doc))\\\\[0.3em]"
+                    + "{\\large \(inline(subtitle, in: doc))}}"
+            }
+        }
+        return out
+    }
+
+    private static func orcidLink(_ id: String) -> String {
+        "\\href{https://orcid.org/\(id)}{\\url{https://orcid.org/\(id)}}"
+    }
+
+    // MARK: IEEE
+
+    private static func ieeeFrontMatter(_ doc: LiquidDoc) -> [String] {
+        var out = titleLine(doc, subtitleCommand: false)
+        let blocks = people(of: doc).map { person -> String in
+            var lines: [String] = []
+            if let institution = person.institution { lines.append("\\textit{\(escaped(institution))}") }
+            let town = [person.city, person.country].compactMap { $0 }.joined(separator: ", ")
+            if !town.isEmpty { lines.append(escaped(town)) }
+            if let email = person.email { lines.append("\\href{mailto:\(email)}{\(escaped(email))}") }
+            if let orcid = person.orcid { lines.append(orcidLink(orcid)) }
+            return "\\IEEEauthorblockN{\(escaped(person.name))}\n"
+                + "\\IEEEauthorblockA{\(lines.joined(separator: "\\\\\n"))}"
+        }
+        out.append("\\author{\(blocks.joined(separator: "\n\\and\n"))}")
+        out.append("")
+        out.append("\\maketitle")
+        out.append("")
+        if let abstract = doc.abstract, !abstract.isEmpty {
+            out += ["\\begin{abstract}", inline(abstract, in: doc), "\\end{abstract}", ""]
+        }
+        if !doc.keywords.isEmpty {
+            out += ["\\begin{IEEEkeywords}", doc.keywords.map(escaped).joined(separator: ", "),
+                    "\\end{IEEEkeywords}", ""]
+        }
+        return out
+    }
+
+    // MARK: Springer LNCS
+
+    private static func lncsFrontMatter(_ doc: LiquidDoc) -> [String] {
+        var out = titleLine(doc, subtitleCommand: true)
+        let persons = people(of: doc)
+        // Institutes numbered in first-appearance order; each author
+        // points at theirs, and the institute carries their emails.
+        var institutes: [String] = []
+        var emails: [String: [String]] = [:]
+        var marks: [String] = []
+        for person in persons {
+            var name = escaped(person.name)
+            let place = person.place
+            if !place.isEmpty {
+                if !institutes.contains(place) { institutes.append(place) }
+                name += "\\inst{\(institutes.firstIndex(of: place)! + 1)}"
+                if let email = person.email { emails[place, default: []].append(email) }
+            }
+            if let orcid = person.orcid { name += "\\orcidID{\(escaped(orcid))}" }
+            marks.append(name)
+        }
+        out.append("\\author{\(marks.joined(separator: " \\and "))}")
+        let running = persons.map { person -> String in
+            let words = person.name.split(separator: " ")
+            guard words.count > 1, let initial = words.first?.first else { return person.name }
+            return "\(initial). \(words.dropFirst().joined(separator: " "))"
+        }
+        out.append("\\authorrunning{\(escaped(running.count > 2 ? running[0] + " et al." : running.joined(separator: " and ")))}")
+        if !institutes.isEmpty {
+            let lines = institutes.map { place -> String in
+                var line = escaped(place)
+                if let list = emails[place], !list.isEmpty {
+                    line += "\\\\\n\\email{\(list.map(escaped).joined(separator: ", "))}"
+                }
+                return line
+            }
+            out.append("\\institute{\(lines.joined(separator: " \\and\n"))}")
+        }
+        out.append("")
+        out.append("\\maketitle")
+        out.append("")
+        if (doc.abstract?.isEmpty ?? true) == false || !doc.keywords.isEmpty {
+            out.append("\\begin{abstract}")
+            if let abstract = doc.abstract, !abstract.isEmpty { out.append(inline(abstract, in: doc)) }
+            if !doc.keywords.isEmpty {
+                out.append("\\keywords{\(doc.keywords.map(escaped).joined(separator: " \\and "))}")
+            }
+            out.append("\\end{abstract}")
+            out.append("")
+        }
+        return out
+    }
+
+    // MARK: Elsevier
+
+    private static func elsevierFrontMatter(_ doc: LiquidDoc, event: Conference?) -> [String] {
+        var out: [String] = []
+        let venue = event?.name ?? doc.publication ?? ""
+        if !venue.isEmpty { out.append("\\journal{\(escaped(venue))}") }
+        out.append("")
+        out.append("\\begin{frontmatter}")
+        var title = inline(doc.title, in: doc)
+        if let subtitle = doc.subtitle, !subtitle.isEmpty { title += ": " + inline(subtitle, in: doc) }
+        out.append("\\title{\(title)}")
+        let persons = people(of: doc)
+        var places: [String] = []
+        for person in persons {
+            let place = person.place
+            var key = ""
+            if !place.isEmpty {
+                if !places.contains(place) { places.append(place) }
+                key = "[aff\(places.firstIndex(of: place)! + 1)]"
+            }
+            var name = escaped(person.name)
+            if let orcid = person.orcid { name += "\\,\\orcidlink{\(escaped(orcid))}" }
+            out.append("\\author\(key){\(name)}")
+            if let email = person.email { out.append("\\ead{\(escaped(email))}") }
+        }
+        for (index, place) in places.enumerated() {
+            let parts = affiliationParts(place)
+            var fields: [String] = []
+            if let institution = parts.institution { fields.append("organization={\(escaped(institution))}") }
+            if let city = parts.city { fields.append("city={\(escaped(city))}") }
+            if let country = parts.country { fields.append("country={\(escaped(country))}") }
+            out.append("\\affiliation[aff\(index + 1)]{\(fields.joined(separator: ", "))}")
+        }
+        if let abstract = doc.abstract, !abstract.isEmpty {
+            out += ["\\begin{abstract}", inline(abstract, in: doc), "\\end{abstract}"]
+        }
+        if !doc.keywords.isEmpty {
+            out += ["\\begin{keyword}", doc.keywords.map(escaped).joined(separator: " \\sep "),
+                    "\\end{keyword}"]
+        }
+        out.append("\\end{frontmatter}")
+        out.append("")
+        return out
+    }
+
+    // MARK: Preprint
+
+    private static func preprintFrontMatter(_ doc: LiquidDoc, event: Conference?) -> [String] {
+        var out = titleLine(doc, subtitleCommand: false)
+        let blocks = people(of: doc).map { person -> String in
+            var lines = [escaped(person.name)]
+            if !person.place.isEmpty { lines.append("{\\small \(escaped(person.place))}") }
+            if let email = person.email {
+                lines.append("{\\small \\href{mailto:\(email)}{\\texttt{\(escaped(email))}}}")
+            }
+            if let orcid = person.orcid { lines.append("{\\small \(orcidLink(orcid))}") }
+            return lines.joined(separator: "\\\\\n")
+        }
+        out.append("\\author{\(blocks.joined(separator: "\n\\and\n"))}")
+        let dateText = doc.listedDate.formatted(.dateTime.day().month(.wide).year())
+        let venue = event.map { $0.booktitle } ?? doc.publication ?? ""
+        out.append("\\date{" + (venue.isEmpty ? "" : "\(escaped(venue))\\\\ ") + escaped(dateText) + "}")
+        out.append("")
+        out.append("\\maketitle")
+        out.append("")
+        if let abstract = doc.abstract, !abstract.isEmpty {
+            out += ["\\begin{abstract}", inline(abstract, in: doc), "\\end{abstract}", ""]
+        }
+        if !doc.keywords.isEmpty {
+            out += ["\\noindent\\textbf{Keywords:} \(doc.keywords.map(escaped).joined(separator: ", "))",
+                    "\\medskip", ""]
+        }
+        return out
+    }
+
+    // MARK: Rights, in words
+
+    /// The rights as a sentence, for classes that have no rights block of
+    /// their own. Built from the same choice acmart receives.
+    static func rightsStatement(_ rights: Rights, doc: LiquidDoc,
+                                event: Conference?) -> String? {
+        let year = Calendar.current.component(.year, from: doc.listedDate)
+        var lines: [String]
+        switch rights {
+        case .none:
+            return nil
+        case .ccBy, .ccBySA, .ccByNC, .ccByND:
+            let (name, path): (String, String) = switch rights {
+            case .ccBySA: ("Attribution-ShareAlike", "by-sa")
+            case .ccByNC: ("Attribution-NonCommercial", "by-nc")
+            case .ccByND: ("Attribution-NoDerivatives", "by-nd")
+            default: ("Attribution", "by")
+            }
+            lines = ["This work is licensed under a Creative Commons \(name) 4.0 International "
+                     + "License, https://creativecommons.org/licenses/\(path)/4.0/.",
+                     "© \(year) Copyright held by the owner/author(s)."]
+        case .rightsRetained:
+            lines = ["© \(year) Copyright held by the owner/author(s)."]
+        case .acmLicensed:
+            lines = ["© \(year) Copyright held by the owner/author(s). Publication rights licensed to ACM."]
+        case .acmCopyright:
+            lines = ["© \(year) Association for Computing Machinery."]
+        }
+        if let event, !event.short.isEmpty {
+            lines.append([event.short, event.place].filter { !$0.isEmpty }.joined(separator: ", "))
+        }
+        if let doi = doc.doi, !doi.isEmpty { lines.append("https://doi.org/\(doi)") }
+        // One statement per line: the EPUB's rights box sets them so and
+        // links the DOI line; LaTeX reads a newline as a space.
+        return lines.joined(separator: "\n")
+    }
+
+    /// The README for a non-ACM bundle.
+    static func readme(for publisher: Publisher) -> String {
+        """
+        \(publisher.label)\(publisher.columns.isEmpty ? "" : " — " + publisher.columns)
+
+        Generated by Origami Text from an Origami EPUB. This folder is
+        everything needed to typeset the paper and nothing else:
+
+          paper.tex    the paper
+          refs.bib     the works it cites, as BibTeX
+          images/      the figures, unmodified
+
+        To compile:
+
+          \(Bundle.recipe)
+
+        The class and the bibliography style (\(publisher.bibliographyStyle))
+        both ship with TeX Live and MacTeX. The references are formatted by
+        that style, as the publisher intends.
+
+        Editing paper.tex by hand is fine, but it is generated: a later
+        export will overwrite it. Anything worth keeping belongs in the
+        document this came from.
+        """
     }
 }

@@ -79,33 +79,34 @@ nonisolated enum OrigamiEPUBExporter {
             enum CodingKeys: String, CodingKey {
                 case title, subtitle, authors, date, identifier
                 case origamiID = "origami-id"
-                case abstract, keywords, isbn, doi, publication
-                case affiliations
+                case abstract, keywords, ccsConcepts, isbn, doi, publication
                 case acmReference = "acm-reference"
-                case authorORCIDs = "author-orcids"
-                case authorEmails = "author-emails"
-                case authorAffiliations = "author-affiliations"
-                case license
+                case rights, license
+            }
+
+            /// One person, as Profile 1.0 §5.2 has it. Keys without a
+            /// value are omitted rather than written empty.
+            struct Author: Encodable {
+                let name: String
+                var affiliation: String? = nil
+                var email: String? = nil
+                var orcid: String? = nil
             }
 
             let title: String
             /// The paper's subtitle, apart from the title.
             var subtitle: String? = nil
-            let authors: [String]
+            /// One entry per person, in printed order (§5.2) — never
+            /// several names joined into one, and never the pre-1.0
+            /// name-keyed dictionaries.
+            let authors: [Author]
             let date: String
             let identifier: String
-            /// The printed affiliations, for the front matter a
-            /// receiving reader may rebuild.
-            var affiliations: [String] = []
             /// The paper's ACM Reference Format, verbatim.
             var acmReference: String? = nil
-            /// Each author's ORCID, keyed by name.
-            var authorORCIDs: [String: String] = [:]
-            /// Each author's email, keyed by name.
-            var authorEmails: [String: String] = [:]
-            /// Each author's affiliation line, keyed by name.
-            var authorAffiliations: [String: String] = [:]
-            /// The license/copyright block, verbatim.
+            /// The rights as a person reads them (§4.7.2)…
+            var rights: String? = nil
+            /// …and the licence as a URI.
             var license: String? = nil
             /// The journal or proceedings the document is part of, when
             /// it declares one — the reader's Journals view groups by it.
@@ -114,9 +115,10 @@ nonisolated enum OrigamiEPUBExporter {
             /// receiving Origami Text can keep the book's identity —
             /// citations to it then resolve wherever it arrives.
             let origamiID: String
-            let abstract = ""
-            let keywords: [String] = []
-            let isbn = ""
+            var abstract: String? = nil
+            var keywords: [String]? = nil
+            var ccsConcepts: [String]? = nil
+            var isbn: String? = nil
             var doi = ""
         }
 
@@ -378,6 +380,62 @@ nonisolated enum OrigamiEPUBExporter {
     /// Writes `doc` as a `.epub` at `url`. `resolve` answers an origami
     /// address with the library's document, so internal citations gain
     /// their titles and authors.
+    /// A publisher's house style for the EPUB itself: how the references
+    /// read, and a stylesheet layer over the Origami one. The document,
+    /// its addresses and its records are identical in every style — only
+    /// what a person sees changes. ACM is the default, as before.
+    enum HouseStyle: String, Sendable, CaseIterable {
+        case acm, ieee, lncs, elsevier, preprint
+
+        /// Read while writing; set by `write(doc:resolve:to:houseStyle:)`.
+        @TaskLocal static var current: HouseStyle = .acm
+
+        var css: String {
+            switch self {
+            case .acm: ""
+            case .ieee: """
+
+                /* IEEE house style */
+                body { font-family: "Times New Roman", Times, "Nimbus Roman", serif; }
+                header, header h1 { text-align: center; }
+                h2 { font-variant: small-caps; font-size: 1.05em; letter-spacing: 0.02em; text-align: center; }
+                h3 { font-style: italic; font-weight: normal; }
+                #references ol { font-size: 0.9em; }
+                """
+            case .lncs: """
+
+                /* Springer LNCS house style */
+                body { font-family: "Latin Modern Roman", "Computer Modern", "CMU Serif", Georgia, serif; }
+                header, header h1 { text-align: center; }
+                h2, h3 { font-weight: bold; }
+                #references ol { font-size: 0.9em; }
+                """
+            case .elsevier: """
+
+                /* Elsevier house style */
+                body { font-family: Charter, "Bitstream Charter", Georgia, serif; }
+                header h1 { font-weight: normal; }
+                h2, h3 { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+                #references ol { font-size: 0.9em; }
+                """
+            case .preprint: """
+
+                /* Preprint house style */
+                body { font-family: "Latin Modern Roman", "CMU Serif", Georgia, serif; }
+                header, header h1 { text-align: center; }
+                """
+            }
+        }
+    }
+
+    /// Writes the EPUB in a publisher's house style.
+    static func write(doc: LiquidDoc, resolve: (String) -> LiquidDoc?, to url: URL,
+                      houseStyle: HouseStyle) throws {
+        try HouseStyle.$current.withValue(houseStyle) {
+            try write(doc: doc, resolve: resolve, to: url)
+        }
+    }
+
     static func write(doc: LiquidDoc, resolve: (String) -> LiquidDoc?, to url: URL) throws {
         let citations = gatherCitations(from: doc, resolve: resolve)
         let body = addressedBody(of: doc)
@@ -421,17 +479,18 @@ nonisolated enum OrigamiEPUBExporter {
             document: VisualMetaDocument.DocumentInfo(
                 title: doc.title,
                 subtitle: doc.subtitle,
-                authors: [doc.displayAuthor],
+                authors: authorEntries(of: doc),
                 date: documentDate(of: doc),
                 identifier: identifier(of: doc),
-                affiliations: doc.affiliations,
                 acmReference: doc.acmReference,
-                authorORCIDs: doc.authorORCIDs,
-                authorEmails: doc.authorEmails,
-                authorAffiliations: doc.authorAffiliations,
-                license: doc.license,
+                rights: doc.license.flatMap { $0.isEmpty ? nil : $0 },
+                license: doc.licenseURI.flatMap { $0.isEmpty ? nil : $0 },
                 publication: doc.publication,
                 origamiID: doc.id,
+                abstract: doc.abstract.flatMap { $0.isEmpty ? nil : $0 },
+                keywords: doc.keywords.isEmpty ? nil : doc.keywords,
+                ccsConcepts: doc.ccsConcepts.isEmpty ? nil : doc.ccsConcepts,
+                isbn: doc.isbn.flatMap { $0.isEmpty ? nil : $0 },
                 doi: doc.doi ?? ""),
             structure: VisualMetaDocument.Structure(headings: headings),
             concepts: doc.concepts.map { concept in
@@ -531,7 +590,8 @@ nonisolated enum OrigamiEPUBExporter {
         zip.add("content/paper.html", Data(html.utf8))
         zip.add("content/nav.html", Data(nav.utf8))
         var css = styleCSS
-        if !embeddedFonts.isEmpty {
+        let embedsFaces = HouseStyle.current == .acm
+        if embedsFaces, !embeddedFonts.isEmpty {
             css += "\n"
             for font in embeddedFonts {
                 zip.add("content/fonts/\(font.file)", font.data)
@@ -541,6 +601,8 @@ nonisolated enum OrigamiEPUBExporter {
             }
             css += fontFamilyCSS
         }
+        // The house layer last, so its faces and headings win.
+        css += HouseStyle.current.css
         zip.add("content/style.css", Data(css.utf8))
         for asset in referencedAssets {
             if let data = asset.data { zip.add("content/images/\(asset.filename)", data) }
@@ -773,7 +835,8 @@ nonisolated enum OrigamiEPUBExporter {
         // end before the body.
         let frontMatterTail = [acmReferenceHTML(for: doc), licenseHTML(for: doc)]
             .compactMap { $0 }.joined(separator: "\n")
-        var pendingACMReference: String? = frontMatterTail.isEmpty ? nil : frontMatterTail
+        var pendingACMReference: String? = frontMatterTail.isEmpty || headerCarriesFrontMatter(doc)
+            ? nil : frontMatterTail
         // Stretchtext ships as Author writes it: the contracted detail —
         // consecutive paragraphs sharing a stretchID — wrapped in a
         // hidden <aside class="ot-stretchtext-content">, with the »»
@@ -956,8 +1019,8 @@ nonisolated enum OrigamiEPUBExporter {
             lines.append("<p class=\"subtitle\">\(escaped(subtitle))</p>")
         }
         let display = doc.displayAuthor
-        var authors = [display]
-        if !display.contains(" on behalf of ") {
+        var authors = doc.authors.isEmpty ? [display] : doc.authors
+        if doc.authors.isEmpty, !display.contains(" on behalf of ") {
             let chunks = display.split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
@@ -990,7 +1053,10 @@ nonisolated enum OrigamiEPUBExporter {
                 details.append("<a href=\"mailto:\(attributeEscaped(email))\">\(escaped(email))</a>")
             }
             if let orcid = doc.authorORCIDs[author], !orcid.isEmpty {
-                details.append("<a class=\"orcid\" href=\"https://orcid.org/\(attributeEscaped(orcid))\">\(escaped(orcid))</a>")
+                // ORCID's display guidelines: the full https URL, shown
+                // and linked — the record keeps the bare id.
+                let link = "https://orcid.org/" + orcid
+                details.append("<a class=\"orcid\" href=\"\(attributeEscaped(link))\">\(escaped(link))</a>")
             }
             if !details.isEmpty {
                 lines.append("<p class=\"author-detail\">\(details.joined(separator: " \u{00B7} "))</p>")
@@ -1017,8 +1083,60 @@ nonisolated enum OrigamiEPUBExporter {
                 lines.append("<p class=\"byline\">\(escaped(parts.joined(separator: " · ")))</p>")
             }
         }
+        // The abstract and keywords, generated from their fields, for a
+        // paper that carries them as metadata (§5). A paper converted
+        // from print that still holds them as body text shows them there
+        // instead, so this only appears when the body has no Abstract.
+        if headerCarriesFrontMatter(doc), let abstract = doc.abstract {
+            lines.append("<section class=\"abstract\" epub:type=\"abstract\" role=\"doc-abstract\">")
+            lines.append("<h2>Abstract</h2>")
+            for paragraph in abstract.components(separatedBy: "\n\n") where !paragraph.isEmpty {
+                lines.append("<p>\(escaped(paragraph))</p>")
+            }
+            lines.append("</section>")
+            if !doc.ccsConcepts.isEmpty {
+                lines.append("<p class=\"ccs\"><strong>CCS Concepts:</strong> "
+                    + escaped(doc.ccsConcepts.map { "\u{2022} " + $0 }.joined(separator: "; ")) + ".</p>")
+            }
+            if !doc.keywords.isEmpty {
+                lines.append("<p class=\"keywords\"><strong>Keywords:</strong> "
+                    + escaped(doc.keywords.joined(separator: ", ")) + "</p>")
+            }
+            // The ACM Reference Format and the rights box follow the
+            // keywords here, as they would in the body's front matter.
+            lines.append(contentsOf: [acmReferenceHTML(for: doc), licenseHTML(for: doc)]
+                .compactMap { $0 })
+        }
         lines.append("</header>")
         return lines.joined(separator: "\n")
+    }
+
+    /// Whether the header sets the abstract (and keywords, and the
+    /// front-matter tail) from their fields — true when the paper states
+    /// an abstract and its body has no Abstract section of its own.
+    private static func headerCarriesFrontMatter(_ doc: LiquidDoc) -> Bool {
+        guard let abstract = doc.abstract, !abstract.isEmpty else { return false }
+        return !(doc.body ?? []).contains {
+            $0.heading != nil && $0.text.trimmingCharacters(in: .whitespaces)
+                .caseInsensitiveCompare("Abstract") == .orderedSame
+        }
+    }
+
+    /// The record's author entries: one per person, fields only where
+    /// the document states them.
+    private static func authorEntries(of doc: LiquidDoc) -> [VisualMetaDocument.DocumentInfo.Author] {
+        let names = doc.authors.isEmpty ? [doc.displayAuthor] : doc.authors
+        return names.map { name in
+            func stated(_ value: String?) -> String? {
+                guard let value, !value.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+                return value
+            }
+            return .init(name: name,
+                         affiliation: stated(doc.authorAffiliations[name]
+                             ?? (names.count == 1 ? doc.affiliations.first : nil)),
+                         email: stated(doc.authorEmails[name]),
+                         orcid: stated(doc.authorORCIDs[name]))
+        }
     }
 
     /// The license and copyright box — the CC badge, the boilerplate
@@ -1528,7 +1646,101 @@ nonisolated enum OrigamiEPUBExporter {
         }
     }
 
+    /// "Family, Given Middle" → "G. M. Family" (spaced) or "G.M. Family".
+    private static func initialed(_ name: String, spaced: Bool, familyFirst: Bool = false) -> String {
+        let pieces = name.components(separatedBy: ",")
+        guard pieces.count >= 2 else { return name.trimmingCharacters(in: .whitespaces) }
+        let family = pieces[0].trimmingCharacters(in: .whitespaces)
+        let given = pieces[1...].joined(separator: " ")
+        let initials = given.split(separator: " ").map { word -> String in
+            word.split(separator: "-").compactMap { part in
+                part.first.map { String($0) + "." }
+            }.joined(separator: "-")
+        }.joined(separator: spaced ? " " : "")
+        guard !initials.isEmpty else { return family }
+        return familyFirst ? "\(family), \(initials)" : "\(initials) \(family)"
+    }
+
+    private static func doiLink(_ citation: Citation) -> String? {
+        if !citation.doi.isEmpty {
+            let link = citation.doi.hasPrefix("10.5555/")
+                ? "https://dl.acm.org/doi/\(citation.doi)"
+                : "https://doi.org/\(citation.doi)"
+            return "<a href=\"\(attributeEscaped(link))\">\(escaped(link))</a>"
+        }
+        if let url = citation.url, !url.isEmpty {
+            return "<a href=\"\(attributeEscaped(url))\">\(escaped(url))</a>"
+        }
+        if let address = citation.address { return escaped("[\(address)]") }
+        return nil
+    }
+
+    /// One reference in the publisher's own cadence. The fields are the
+    /// same everywhere; only their order and punctuation differ.
+    private static func houseReferenceHTML(for citation: Citation, style: HouseStyle) -> String {
+        let title = escaped(citation.title)
+        let venue = escaped(citation.publication)
+        let year = escaped(citation.year)
+        let link = doiLink(citation)
+        switch style {
+        case .ieee:
+            // A. B. Family, C. Family, and D. Family, “Title,” Venue, Year.
+            var names = citation.authors.map { initialed($0, spaced: true) }
+            if names.count > 6 { names = [names[0] + " et al."] }
+            let who = names.count <= 2 ? names.joined(separator: " and ")
+                : names.dropLast().joined(separator: ", ") + ", and " + names.last!
+            var out = who.isEmpty ? "" : escaped(who) + ", "
+            if !title.isEmpty { out += "\u{201C}\(title),\u{201D} " }
+            if !venue.isEmpty { out += "<em>\(venue)</em>, " }
+            if !year.isEmpty { out += year + "." } else if out.hasSuffix(", ") { out = String(out.dropLast(2)) + "." }
+            if let link { out += " " + link }
+            return out
+        case .lncs:
+            // Family, G.M., Family, C.: Title. Venue (Year). link
+            let who = citation.authors.map { initialed($0, spaced: false, familyFirst: true) }
+                .joined(separator: ", ")
+            var out = who.isEmpty ? "" : escaped(who) + ": "
+            if !title.isEmpty { out += title + ". " }
+            if !venue.isEmpty { out += venue + " " }
+            if !year.isEmpty { out += "(\(year))" }
+            out = out.trimmingCharacters(in: .whitespaces)
+            if !out.hasSuffix(".") { out += "." }
+            if let link { out += " " + link }
+            return out
+        case .elsevier:
+            // G.M. Family, C. Family, Title, Venue (Year). link
+            let who = citation.authors.map { initialed($0, spaced: false) }.joined(separator: ", ")
+            var fields: [String] = []
+            if !who.isEmpty { fields.append(escaped(who)) }
+            if !title.isEmpty { fields.append(title) }
+            var tail = venue
+            if !year.isEmpty { tail += tail.isEmpty ? "(\(year))" : " (\(year))" }
+            if !tail.isEmpty { fields.append(tail) }
+            var out = fields.joined(separator: ", ") + "."
+            if let link { out += " " + link }
+            return out
+        case .preprint:
+            // G. M. Family and C. Family. Title. Venue, Year. link
+            let names = citation.authors.map { initialed($0, spaced: true) }
+            let who = names.count <= 2 ? names.joined(separator: " and ")
+                : names.dropLast().joined(separator: ", ") + ", and " + names.last!
+            var parts: [String] = []
+            if !who.isEmpty { parts.append(escaped(who) + ".") }
+            if !title.isEmpty { parts.append(title + ".") }
+            let venueYear = [venue.isEmpty ? nil : "<em>\(venue)</em>", year.isEmpty ? nil : year]
+                .compactMap { $0 }.joined(separator: ", ")
+            if !venueYear.isEmpty { parts.append(venueYear + ".") }
+            if let link { parts.append(link) }
+            return parts.joined(separator: " ")
+        case .acm:
+            return ""
+        }
+    }
+
     private static func referenceHTML(for citation: Citation) -> String {
+        if HouseStyle.current != .acm {
+            return houseReferenceHTML(for: citation, style: HouseStyle.current)
+        }
         var parts: [String] = []
         if !citation.authors.isEmpty {
             // ACM's cadence: "Authors. Year. Title." — never a double
@@ -1717,6 +1929,33 @@ nonisolated enum OrigamiEPUBExporter {
         return lines.map { "    " + $0 }.joined(separator: "\n")
     }
 
+    /// The package's share of the front matter (Profile 1.0 §4.7, §5.1):
+    /// one dc:creator per person, the venue, the DOI as a second
+    /// identifier, one dc:subject per keyword, and the rights — prose in
+    /// dc:rights, the licence as a URI in dcterms:license.
+    private static func packageFrontMatterXML(_ doc: LiquidDoc) -> String {
+        var lines: [String] = []
+        for name in doc.authors.isEmpty ? [doc.displayAuthor] : doc.authors {
+            lines.append("    <dc:creator>\(escaped(name))</dc:creator>")
+        }
+        if let venue = doc.publication, !venue.isEmpty {
+            lines.append("    <meta property=\"dcterms:isPartOf\">\(escaped(venue))</meta>")
+        }
+        if let doi = doc.doi, !doi.isEmpty {
+            lines.append("    <dc:identifier>\(escaped(doi))</dc:identifier>")
+        }
+        for keyword in doc.keywords where !keyword.isEmpty {
+            lines.append("    <dc:subject>\(escaped(keyword))</dc:subject>")
+        }
+        if let rights = doc.license, !rights.isEmpty {
+            lines.append("    <dc:rights>\(escaped(rights.replacingOccurrences(of: "\n", with: " ")))</dc:rights>")
+        }
+        if let uri = doc.licenseURI, !uri.isEmpty {
+            lines.append("    <meta property=\"dcterms:license\">\(escaped(uri))</meta>")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     private static func packageOPF(doc: LiquidDoc, images: [LiquidDoc.Asset],
                                    facts: AccessibilityFacts) -> String {
         let formatter = ISO8601DateFormatter()
@@ -1729,7 +1968,7 @@ nonisolated enum OrigamiEPUBExporter {
             imageItems += (imageItems.isEmpty ? "" : "\n")
                 + "        <item id=\"ccby\" href=\"content/images/cc-by.png\" media-type=\"image/png\"/>"
         }
-        for (index, font) in embeddedFonts.enumerated() {
+        for (index, font) in (HouseStyle.current == .acm ? embeddedFonts : []).enumerated() {
             imageItems += (imageItems.isEmpty ? "" : "\n")
                 + "        <item id=\"font\(index + 1)\" href=\"content/fonts/\(font.file)\" media-type=\"font/woff2\"/>"
         }
@@ -1739,7 +1978,7 @@ nonisolated enum OrigamiEPUBExporter {
           <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
             <dc:identifier id="pub-id">\(escaped(identifier(of: doc)))</dc:identifier>
             <dc:title>\(escaped(doc.title))</dc:title>
-            <dc:creator>\(escaped(doc.displayAuthor))</dc:creator>
+        \(packageFrontMatterXML(doc))
             <dc:language>en</dc:language>
             <dc:date>\(documentDate(of: doc))</dc:date>
             <meta property="dcterms:modified">\(modified)</meta>

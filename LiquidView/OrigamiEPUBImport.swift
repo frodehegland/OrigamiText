@@ -217,6 +217,22 @@ nonisolated enum OrigamiEPUBImporter {
         let addressByCitationID = pool.addressByCitationID
         let bibtexByAddress = pool.bibtexByAddress
         var references = pool.references
+        // Profile 1.0 §11: the bibliography record is canonical, and the
+        // citations carry no BibTeX of their own. Read it when the
+        // metadata's citations brought none — Author's EPUBs, and any
+        // conforming 1.0 publication.
+        if references.isEmpty {
+            let recordPath = bibliographyHref(in: opf)
+            let data = recordPath.flatMap {
+                source.entry(joinedPath(opfDirectory, $0)) ?? source.entry($0)
+            } ?? source.entry("references.bib") ?? source.entryWithSuffix("references.bib")
+            if let data {
+                references = referencesFromBibliography(
+                    String(decoding: data, as: UTF8.self),
+                    citations: dictionaries(visualMeta?["citations"]),
+                    listText: bibliographyListText(in: html))
+            }
+        }
 
         let concepts: [LiquidDoc.Concept] = dictionaries(visualMeta?["concepts"]).compactMap { node in
             guard let conceptID = node["id"] as? String,
@@ -1698,6 +1714,126 @@ nonisolated enum OrigamiEPUBImporter {
         return (references, addressByCitationID, bibtexByAddress)
     }
 
+    /// The citation a biblioref anchor names: our own exports' explicit
+    /// `data-citation-key`, or — as Profile 1.0 §7 requires of every
+    /// writer — the target of an `epub:type="biblioref"` link,
+    /// `#bib-<id>`, whose id is the citation's.
+    static func citationKey(of attributes: [String: String]) -> String? {
+        if let key = attributes["data-citation-key"], !key.isEmpty { return key }
+        let type = (attributes["epub:type"] ?? "") + " " + (attributes["role"] ?? "")
+        guard type.contains("biblioref"),
+              let href = attributes["href"], let hash = href.firstIndex(of: "#") else { return nil }
+        var target = String(href[href.index(after: hash)...])
+        if target.hasPrefix("bib-") { target.removeFirst(4) }
+        else if target.hasPrefix("ref-") { return nil }  // numbered lists resolve by number
+        return target.isEmpty ? nil : target
+    }
+
+    /// The visible reference lines, by citation id: `<li id="bib-…">`.
+    static func bibliographyListText(in xhtml: String) -> [String: String] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<li[^>]*\bid="bib-([^"]+)"[^>]*>(.*?)</li>"#,
+            options: [.dotMatchesLineSeparators]) else { return [:] }
+        var out: [String: String] = [:]
+        for match in regex.matches(in: xhtml, range: NSRange(xhtml.startIndex..., in: xhtml)) {
+            guard let idRange = Range(match.range(at: 1), in: xhtml),
+                  let textRange = Range(match.range(at: 2), in: xhtml) else { continue }
+            out[String(xhtml[idRange])] = String(xhtml[textRange])
+                .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        }
+        return out
+    }
+
+    /// The href of the package's bibliography record — the `<link
+    /// rel="record">` whose properties name `origami:bibliography`.
+    static func bibliographyHref(in opf: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: #"<link\b[^>]*>"#) else { return nil }
+        let range = NSRange(opf.startIndex..., in: opf)
+        for match in regex.matches(in: opf, range: range) {
+            guard let tagRange = Range(match.range, in: opf) else { continue }
+            let tag = String(opf[tagRange])
+            guard tag.range(of: #"properties="[^"]*\borigami:bibliography\b(?!-)"#,
+                            options: .regularExpression) != nil else { continue }
+            return firstCapture(in: tag, pattern: #"href="([^"]+)""#)
+        }
+        return nil
+    }
+
+    /// References from the bibliography record, matched to the
+    /// metadata's citations. Profile 1.0 makes each BibTeX key the
+    /// citation's id; a record written before that rule (keys of its
+    /// own, as Author's are) is matched by order instead — the record
+    /// lists the entries in citation-number order. Each entry's key is
+    /// set to the citation's id, so the body's anchors and \cite keys
+    /// agree with it.
+    static func referencesFromBibliography(_ text: String,
+                                           citations: [[String: Any]],
+                                           listText: [String: String] = [:]) -> [LiquidDoc.Reference] {
+        // "@{key," — an entry written without its type — is read as
+        // @misc rather than dropped.
+        let repaired = text.replacingOccurrences(of: #"@\s*\{"#, with: "@misc{",
+                                                 options: .regularExpression)
+        let entries = BibTeXParser.parse(repaired)
+        guard !entries.isEmpty else { return [] }
+        let cited = citations
+            .compactMap { citation -> (id: String, number: Int)? in
+                guard let id = citation["id"] as? String else { return nil }
+                return (id, (citation["number"] as? NSNumber)?.intValue ?? Int.max)
+            }
+            .sorted { $0.number < $1.number }
+        let byKey = Dictionary(entries.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        let keyed = cited.contains { byKey[$0.id] != nil }
+        func rekeyed(_ entry: BibTeXEntry, as id: String) -> String {
+            // Whatever stands between the entry's "{" and its first comma
+            // is the key — replaced whole, and any doubled comma a
+            // writer left after it collapsed, so no field is misread.
+            guard let open = entry.raw.firstIndex(of: "{") else { return entry.raw }
+            let rest = entry.raw[entry.raw.index(after: open)...]
+            guard let comma = rest.firstIndex(of: ",") else { return entry.raw }
+            let tail = String(rest[rest.index(after: comma)...])
+                .replacingOccurrences(of: #"^[\s,]*,"#, with: "\n ", options: .regularExpression)
+            return String(entry.raw[...open]) + id + "," + tail
+        }
+        if cited.isEmpty {
+            return entries.enumerated().map { index, entry in
+                LiquidDoc.Reference(id: entry.key, bibtex: entry.raw, number: index + 1)
+            }
+        }
+        // Without matching keys, each citation is matched by what its
+        // visible reference line says — the entry whose title (or, for
+        // a title-less one, first author) that line contains. Never by
+        // position: a record that skips an empty entry would shift every
+        // reference after it onto the wrong citation.
+        func normalised(_ text: String) -> String {
+            BibTeXParser.displayText(text).lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty }.joined(separator: " ")
+        }
+        var unclaimed = entries
+        func claim(for id: String) -> BibTeXEntry? {
+            guard let line = listText[id].map(normalised), !line.isEmpty else { return nil }
+            let match = unclaimed.firstIndex { entry in
+                if let title = entry.fields["title"].map(normalised), title.count >= 8 {
+                    return line.contains(title)
+                }
+                if let author = entry.fields["author"].map(normalised), !author.isEmpty {
+                    return line.contains(author.components(separatedBy: " ").first ?? author)
+                }
+                return false
+            }
+            return match.map { unclaimed.remove(at: $0) }
+        }
+        return cited.enumerated().compactMap { index, citation in
+            let entry = keyed ? byKey[citation.id]
+                : (listText.isEmpty ? (index < entries.count ? entries[index] : nil)
+                                    : claim(for: citation.id))
+            guard let entry else { return nil }
+            return LiquidDoc.Reference(
+                id: citation.id, bibtex: rekeyed(entry, as: citation.id),
+                number: citation.number == Int.max ? index + 1 : citation.number)
+        }
+    }
+
     /// Citation pool from the Author EPUB `origami.json` format.
     /// Two layouts are handled:
     /// - `"references"` dict (UUID-keyed): the Author export format.
@@ -1829,7 +1965,7 @@ nonisolated enum OrigamiEPUBImporter {
                         // their own toggle from the aside's stretchID.
                         break
                     }
-                    if let key = inner.attributes["data-citation-key"], !key.isEmpty {
+                    if let key = citationKey(of: inner.attributes) {
                         // Author's biblioref anchors. Older exports split
                         // one citation across adjacent anchors (the
                         // parenthesis, then the label), all carrying the
