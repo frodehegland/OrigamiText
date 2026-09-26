@@ -1,12 +1,12 @@
 # EPUB Quick Look extension — target setup (one-time, in Xcode)
 
 The two Swift files in this folder are the whole extension. They are
-self-contained (own zip reader, no app code) and sit outside LiquidView
+self-contained (own zip reader, no app code) and sit outside Origami Text macOS
 on purpose, so they never join the app target. What remains is creating
 the extension target, which only Xcode should do:
 
 1. **File ▸ New ▸ Target… ▸ macOS ▸ Quick Look Preview Extension.**
-   Name it `EPUBQuickLook`. Embed in the LiquidView (macOS) app target.
+   Name it `EPUBQuickLook`. Embed in the Origami Text macOS (macOS) app target.
    Activate the scheme if Xcode offers.
 
 2. **Delete the template's generated source** (`PreviewViewController.swift`

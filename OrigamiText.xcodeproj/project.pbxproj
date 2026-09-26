@@ -30,14 +30,14 @@
 			containerPortal = 000000000000000000000000 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 5FA61252300CE184002F8851;
-			remoteInfo = "Origami Text";
+			remoteInfo = "Origami Text iOS";
 		};
 		5FA6126A300CE184002F8851 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 000000000000000000000000 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 5FA61252300CE184002F8851;
-			remoteInfo = "Origami Text";
+			remoteInfo = "Origami Text iOS";
 		};
 /* End PBXContainerItemProxy section */
 
@@ -72,14 +72,14 @@
 			);
 			target = 5F1962D23053FF1A00922704 /* EPUBQuickLook */;
 		};
-		5F2D74FE2FFFE3A1000E9DEC /* Exceptions for "LiquidView" folder in "LiquidView" target */ = {
+		5F2D74FE2FFFE3A1000E9DEC /* Exceptions for "Origami Text macOS" folder in "Origami Text macOS" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = 000000000000000100000000 /* LiquidView */;
+			target = 000000000000000100000000 /* Origami Text macOS */;
 		};
-		5FB2A9F3300CE66F00FF680B /* Exceptions for "LiquidView" folder in "Origami Text" target */ = {
+		5FB2A9F3300CE66F00FF680B /* Exceptions for "Origami Text macOS" folder in "Origami Text iOS" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				AnnotationStore.swift,
@@ -103,14 +103,14 @@
 				VisualMeta.swift,
 				WebAnnotation.swift,
 			);
-			target = 5FA61252300CE184002F8851 /* Origami Text */;
+			target = 5FA61252300CE184002F8851 /* Origami Text iOS */;
 		};
-		5FB2AA0B300D22EE00FF680B /* Exceptions for "Origami Text" folder in "Origami Text" target */ = {
+		5FB2AA0B300D22EE00FF680B /* Exceptions for "Origami Text" folder in "Origami Text iOS" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				"Origami-Text-Info.plist",
 			);
-			target = 5FA61252300CE184002F8851 /* Origami Text */;
+			target = 5FA61252300CE184002F8851 /* Origami Text iOS */;
 		};
 		5FD0138D3005785700F5A4F0 /* Exceptions for "Origami Text Vision" folder in "Origami Text Vision" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -119,7 +119,7 @@
 			);
 			target = 5FD0137E3005785700F5A4F0 /* Origami Text Vision */;
 		};
-		5FD0139B30057D5B00F5A4F0 /* Exceptions for "LiquidView" folder in "Origami Text Vision" target */ = {
+		5FD0139B30057D5B00F5A4F0 /* Exceptions for "Origami Text macOS" folder in "Origami Text Vision" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				AnnotationStore.swift,
@@ -167,14 +167,14 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		000000000000000000000010 /* LiquidView */ = {
+		000000000000000000000010 /* Origami Text macOS */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				5F2D74FE2FFFE3A1000E9DEC /* Exceptions for "LiquidView" folder in "LiquidView" target */,
-				5FD0139B30057D5B00F5A4F0 /* Exceptions for "LiquidView" folder in "Origami Text Vision" target */,
-				5FB2A9F3300CE66F00FF680B /* Exceptions for "LiquidView" folder in "Origami Text" target */,
+				5F2D74FE2FFFE3A1000E9DEC /* Exceptions for "Origami Text macOS" folder in "Origami Text macOS" target */,
+				5FD0139B30057D5B00F5A4F0 /* Exceptions for "Origami Text macOS" folder in "Origami Text Vision" target */,
+				5FB2A9F3300CE66F00FF680B /* Exceptions for "Origami Text macOS" folder in "Origami Text iOS" target */,
 			);
-			path = LiquidView;
+			path = "Origami Text macOS";
 			sourceTree = "<group>";
 		};
 		5F1962D63053FF1A00922704 /* EPUBQuickLook */ = {
@@ -188,7 +188,7 @@
 		5FA61254300CE184002F8851 /* Origami Text */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				5FB2AA0B300D22EE00FF680B /* Exceptions for "Origami Text" folder in "Origami Text" target */,
+				5FB2AA0B300D22EE00FF680B /* Exceptions for "Origami Text" folder in "Origami Text iOS" target */,
 			);
 			path = "Origami Text";
 			sourceTree = "<group>";
@@ -257,7 +257,7 @@
 		000000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000010 /* LiquidView */,
+				000000000000000000000010 /* Origami Text macOS */,
 				5FD013803005785700F5A4F0 /* Origami Text Vision */,
 				5FA61254300CE184002F8851 /* Origami Text */,
 				5FA61262300CE184002F8851 /* Origami TextTests */,
@@ -293,9 +293,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		000000000000000100000000 /* LiquidView */ = {
+		000000000000000100000000 /* Origami Text macOS */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "LiquidView" */;
+			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "Origami Text macOS" */;
 			buildPhases = (
 				000000000000000120000000 /* Sources */,
 				000000000000000130000000 /* Frameworks */,
@@ -308,9 +308,9 @@
 				5F1962E03053FF1A00922704 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				000000000000000000000010 /* LiquidView */,
+				000000000000000000000010 /* Origami Text macOS */,
 			);
-			name = LiquidView;
+			name = "Origami Text macOS";
 			packageProductDependencies = (
 				5F72863C304376EC000585CD /* AudioCommon */,
 				5FC2206A304391F6001E8E0C /* Qwen3TTS */,
@@ -337,9 +337,9 @@
 			productReference = 5F1962D33053FF1A00922704 /* EPUBQuickLook.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
-		5FA61252300CE184002F8851 /* Origami Text */ = {
+		5FA61252300CE184002F8851 /* Origami Text iOS */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 5FA6126F300CE184002F8851 /* Build configuration list for PBXNativeTarget "Origami Text" */;
+			buildConfigurationList = 5FA6126F300CE184002F8851 /* Build configuration list for PBXNativeTarget "Origami Text iOS" */;
 			buildPhases = (
 				5FA6124F300CE184002F8851 /* Sources */,
 				5FA61250300CE184002F8851 /* Frameworks */,
@@ -350,7 +350,7 @@
 			fileSystemSynchronizedGroups = (
 				5FA61254300CE184002F8851 /* Origami Text */,
 			);
-			name = "Origami Text";
+			name = "Origami Text iOS";
 			packageProductDependencies = (
 				5FC2206830438F25001E8E0C /* Qwen3TTS */,
 			);
@@ -467,9 +467,9 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				000000000000000100000000 /* LiquidView */,
+				000000000000000100000000 /* Origami Text macOS */,
 				5FD0137E3005785700F5A4F0 /* Origami Text Vision */,
-				5FA61252300CE184002F8851 /* Origami Text */,
+				5FA61252300CE184002F8851 /* Origami Text iOS */,
 				5FA6125E300CE184002F8851 /* Origami TextTests */,
 				5FA61268300CE184002F8851 /* Origami TextUITests */,
 				5F1962D23053FF1A00922704 /* EPUBQuickLook */,
@@ -554,12 +554,12 @@
 		};
 		5FA61261300CE184002F8851 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 5FA61252300CE184002F8851 /* Origami Text */;
+			target = 5FA61252300CE184002F8851 /* Origami Text iOS */;
 			targetProxy = 5FA61260300CE184002F8851 /* PBXContainerItemProxy */;
 		};
 		5FA6126B300CE184002F8851 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 5FA61252300CE184002F8851 /* Origami Text */;
+			target = 5FA61252300CE184002F8851 /* Origami Text iOS */;
 			targetProxy = 5FA6126A300CE184002F8851 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -697,13 +697,13 @@
 			};
 			name = Release;
 		};
-		000000000000000111000000 /* Debug configuration for PBXNativeTarget "LiquidView" */ = {
+		000000000000000111000000 /* Debug configuration for PBXNativeTarget "Origami Text macOS" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo-2";
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				AUTOMATION_APPLE_EVENTS = YES;
-				CODE_SIGN_ENTITLEMENTS = LiquidView/OrigamiText.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "Origami Text macOS/OrigamiText.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 9Q5N4A727S;
@@ -723,7 +723,7 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = LiquidView/Info.plist;
+				INFOPLIST_FILE = "Origami Text macOS/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Origami Text";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
@@ -770,13 +770,13 @@
 			};
 			name = Debug;
 		};
-		000000000000000112000000 /* Release configuration for PBXNativeTarget "LiquidView" */ = {
+		000000000000000112000000 /* Release configuration for PBXNativeTarget "Origami Text macOS" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo-2";
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				AUTOMATION_APPLE_EVENTS = YES;
-				CODE_SIGN_ENTITLEMENTS = LiquidView/OrigamiText.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "Origami Text macOS/OrigamiText.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 9Q5N4A727S;
@@ -796,7 +796,7 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = LiquidView/Info.plist;
+				INFOPLIST_FILE = "Origami Text macOS/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Origami Text";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
@@ -907,7 +907,7 @@
 			};
 			name = Release;
 		};
-		5FA61270300CE184002F8851 /* Debug configuration for PBXNativeTarget "Origami Text" */ = {
+		5FA61270300CE184002F8851 /* Debug configuration for PBXNativeTarget "Origami Text iOS" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo-2";
@@ -936,7 +936,7 @@
 				);
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = info.futuretextlab.origamitext;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Origami Text";
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -949,7 +949,7 @@
 			};
 			name = Debug;
 		};
-		5FA61271300CE184002F8851 /* Release configuration for PBXNativeTarget "Origami Text" */ = {
+		5FA61271300CE184002F8851 /* Release configuration for PBXNativeTarget "Origami Text iOS" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "Ori-logo-2";
@@ -978,7 +978,7 @@
 				);
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = info.futuretextlab.origamitext;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Origami Text";
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1056,7 +1056,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = "Origami Text";
+				TEST_TARGET_NAME = "Origami Text iOS";
 			};
 			name = Debug;
 		};
@@ -1077,7 +1077,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = "Origami Text";
+				TEST_TARGET_NAME = "Origami Text iOS";
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
@@ -1162,11 +1162,11 @@
 			);
 			defaultConfigurationName = Release;
 		};
-		000000000000000110000000 /* Build configuration list for PBXNativeTarget "LiquidView" */ = {
+		000000000000000110000000 /* Build configuration list for PBXNativeTarget "Origami Text macOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000111000000 /* Debug configuration for PBXNativeTarget "LiquidView" */,
-				000000000000000112000000 /* Release configuration for PBXNativeTarget "LiquidView" */,
+				000000000000000111000000 /* Debug configuration for PBXNativeTarget "Origami Text macOS" */,
+				000000000000000112000000 /* Release configuration for PBXNativeTarget "Origami Text macOS" */,
 			);
 			defaultConfigurationName = Release;
 		};
@@ -1178,11 +1178,11 @@
 			);
 			defaultConfigurationName = Release;
 		};
-		5FA6126F300CE184002F8851 /* Build configuration list for PBXNativeTarget "Origami Text" */ = {
+		5FA6126F300CE184002F8851 /* Build configuration list for PBXNativeTarget "Origami Text iOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				5FA61270300CE184002F8851 /* Debug configuration for PBXNativeTarget "Origami Text" */,
-				5FA61271300CE184002F8851 /* Release configuration for PBXNativeTarget "Origami Text" */,
+				5FA61270300CE184002F8851 /* Debug configuration for PBXNativeTarget "Origami Text iOS" */,
+				5FA61271300CE184002F8851 /* Release configuration for PBXNativeTarget "Origami Text iOS" */,
 			);
 			defaultConfigurationName = Release;
 		};

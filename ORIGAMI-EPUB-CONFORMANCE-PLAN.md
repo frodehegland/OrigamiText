@@ -57,8 +57,8 @@ to keep the structure; the reader's job is presentation.
 
 ## Origami Text (this repo)
 
-Export lives in `LiquidView/OrigamiEPUB.swift`; import in
-`LiquidView/OrigamiEPUBImport.swift`.
+Export lives in `Origami Text macOS/OrigamiEPUB.swift`; import in
+`Origami Text macOS/OrigamiEPUBImport.swift`.
 
 **OT-1 — Lists become lists. ✅ done.** `element(for:…)` has cases for figures,
 tables, rules, fenced code, headings, endnotes, speakers and paragraphs, but
@@ -112,11 +112,11 @@ bullet count rises once paragraphs are split, because bullets currently
 buried mid-paragraph become paragraph-initial — that is the rule working,
 not a regression.
 
-**OT-5 — The test target cannot see `LiquidView`.** Profile tests were
+**OT-5 — The test target cannot see `Origami Text macOS`.** Profile tests were
 written and then withdrawn: `Origami TextTests` does not link the framework,
 and its existing `CitationClipboardTests.swift` **already fails to compile**
 for the same reason ("cannot find 'CitationClipboard' in scope" — the type
-lives in `LiquidView/ReaderQuote.swift`). This predates the present work. Fix
+lives in `Origami Text macOS/ReaderQuote.swift`). This predates the present work. Fix
 the target membership, then add the tests, which are parked in this repo as
 `OrigamiEPUBProfileTests.swift.pending` (8 cases covering the warnings above and
 the list-marker reader; change the import to whatever module ends up

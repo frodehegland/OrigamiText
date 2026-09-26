@@ -474,7 +474,7 @@ nonisolated enum OrigamiEPUBExporter {
 
         let visualMeta = VisualMetaDocument(
             info: VisualMetaDocument.Info(
-                generator: "Origami Text (LiquidView)",
+                generator: "Origami Text for macOS",
                 introduction: "This is Visual-Meta: the document's intellectual structure — its concepts, its citations, and any spatial layouts — carried with the document itself, readable by people and machines alike. See https://visual-meta.info."),
             document: VisualMetaDocument.DocumentInfo(
                 title: doc.title,

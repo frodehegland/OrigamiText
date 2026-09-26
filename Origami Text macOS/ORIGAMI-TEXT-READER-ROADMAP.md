@@ -1,6 +1,6 @@
 # Origami Text Reader — Feature Roadmap
 
-**Status:** planning · **Scope:** the macOS reader (`LiquidView` target) · **Date:** 2026‑07‑30
+**Status:** planning · **Scope:** the macOS reader (`Origami Text macOS` target) · **Date:** 2026‑07‑30
 
 This orders the candidate reading interactions by leverage, grounded in what the
 Origami Text format carries and what the codebase already has. The test applied to

@@ -6,7 +6,7 @@ Learn more, or join one of our open lab sessions on Mondays: https://futuretextl
 
 ## Building
 
-Open `OrigamiText.xcodeproj` and build the **LiquidView** scheme — that is the macOS app (the folder and target keep their historical name). It requires macOS 26 or newer. The iOS and visionOS targets are experiments and are not currently supported; the macOS scheme is the one that builds and runs.
+Open `OrigamiText.xcodeproj` and build the **Origami Text macOS** scheme — that is the macOS app. It requires macOS 26 or newer. The iOS and visionOS targets are experiments and are not currently supported; the macOS scheme is the one that builds and runs.
 
 ## Documentation
 

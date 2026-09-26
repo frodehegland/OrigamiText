@@ -2,14 +2,14 @@
 # Applies the OrigamiFormat migration to Origami Text's source.
 #
 # Run this AFTER the Xcode step in README.md (adding the package and
-# linking it to LiquidView), because the edits below need the package's
+# linking it to Origami Text macOS), because the edits below need the package's
 # types to exist. Idempotent: running it twice is harmless.
 #
 #   bash "OrigamiFormat-migration/apply.sh"
 
 set -e
 cd "$(dirname "$0")/.."
-LV="LiquidView"
+LV="Origami Text macOS"
 MIG="OrigamiFormat-migration"
 
 echo "→ adding the re-export and the LiquidDoc adapter"
@@ -43,7 +43,7 @@ def patch(path, old, new, why):
 
 # 1. The Selector enum gained `.page` (a PDF fragment, RFC 8118). This is
 #    the one switch in Origami Text that is exhaustive over it.
-patch("LiquidView/EPUBReaderView.swift",
+patch("Origami Text macOS/EPUBReaderView.swift",
       "                case .position, .progression: break",
       "                case .position, .progression, .page: break",
       "handle the new .page selector")
@@ -80,7 +80,7 @@ new_palette = '''    var builtinPalette: (lightBackground: String, lightText: St
         return (colours.lightPaper, colours.lightInk,
                 colours.darkPaper, colours.darkInk)
     }'''
-patch("LiquidView/ReaderTheme.swift", old_palette, new_palette,
+patch("Origami Text macOS/ReaderTheme.swift", old_palette, new_palette,
       "read the palettes from the shared table")
 PY
 
@@ -88,4 +88,4 @@ echo
 echo "Done. In Xcode: the two removed files will show red in the navigator —"
 echo "delete those references (Remove Reference, not Move to Trash; the"
 echo "originals are kept in $MIG/*.removed), add the two new files to the"
-echo "LiquidView target, then build."
+echo "Origami Text macOS target, then build."

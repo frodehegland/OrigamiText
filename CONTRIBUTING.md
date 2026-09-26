@@ -6,7 +6,7 @@ author, and the reading belongs to you. Everything a reader does
 (highlights, notes, judgments, AI readings, spatial arrangements) lives
 *beside* the books in open formats, never inside them. MIT licensed.
 
-The two documents that define the project live in `LiquidView/`:
+The two documents that define the project live in `Origami Text macOS/`:
 
 - **ORIGAMI-DOCUMENT-FORMAT.md** — the complete `.origamitext` / Origami
   EPUB specification, self-contained.
@@ -28,16 +28,16 @@ time. Match newer types by reflection instead (see
 
 ## Targets and schemes (the first confusion)
 
-One Xcode project, three app targets, all sharing the `LiquidView`
+One Xcode project, three app targets, all sharing the `Origami Text macOS`
 source folder:
 
 | Scheme | Platform | What it is |
 | --- | --- | --- |
-| **LiquidView** | macOS | The macOS app — the main reader. Yes, the macOS app is the scheme named LiquidView. |
+| **Origami Text macOS** | macOS | The macOS app — the main reader. |
 | **Origami Text Vision** | visionOS | The Vision Pro app (`OrigamiVision.swift` is its `@main`). |
-| **Origami Text** | iOS | The iOS target. Dormant — not currently supported. |
+| **Origami Text iOS** | iOS | The iPad/iPhone app. |
 
-`LiquidView/` is a *synchronized* folder (Xcode 16+ buildable folder):
+`Origami Text macOS/` is a *synchronized* folder (Xcode 16+ buildable folder):
 
 - A **new file automatically joins the macOS target** and nothing else.
 - The **iOS and visionOS targets opt in per-file** via membership
@@ -118,7 +118,7 @@ same commit.
 
 ## Working rules
 
-1. **Build both platforms before pushing** — scheme LiquidView (My Mac)
+1. **Build both platforms before pushing** — scheme Origami Text macOS (My Mac)
    and Origami Text Vision. Shared files break the other platform more
    often than you'd think.
 2. **Never replace a working interaction with a rewrite; layer beside

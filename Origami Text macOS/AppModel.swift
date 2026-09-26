@@ -219,7 +219,7 @@ final class AppModel {
     /// window the reader had open from one the launch itself created.
     private let launchedAt = Date()
     /// Weak reference to the main window's NSWindow, set by MainNSWindowCapture
-    /// in LiquidViewApp. Becomes nil automatically when the window is closed.
+    /// in OrigamiTextMacApp. Becomes nil automatically when the window is closed.
     weak var mainNSWindow: NSWindow?
 
     /// The escape hatch when every column is hidden: restore the full

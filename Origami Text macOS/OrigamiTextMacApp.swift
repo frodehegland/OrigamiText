@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 @main
-struct LiquidViewApp: App {
+struct OrigamiTextMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 

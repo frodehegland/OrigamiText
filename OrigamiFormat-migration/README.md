@@ -61,9 +61,9 @@ not block this one.
 1. **File ▸ Add Package Dependencies…**
 2. **Add Local…**, choose `~/Documents/OrigamiFormat`, **Add Package**.
 3. In the sheet that asks which target to add the `OrigamiFormat` library
-   to, choose **LiquidView** (the framework, not the app targets — the app
+   to, choose **Origami Text macOS** (the framework, not the app targets — the app
    targets get it transitively).
-4. If the sheet does not appear: select the project ▸ **LiquidView** target
+4. If the sheet does not appear: select the project ▸ **Origami Text macOS** target
    ▸ **General** ▸ **Frameworks and Libraries** ▸ **+** ▸ `OrigamiFormat`.
 
 Deployment targets are compatible: the package declares macOS 26 / iOS 26 /
@@ -80,7 +80,7 @@ dry-run against your current source and match exactly once; the script
 refuses rather than guesses if that ever stops being true, and running it
 twice is harmless.
 
-**Added to `LiquidView/`**
+**Added to `Origami Text macOS/`**
 
 - `OrigamiFormatExports.swift` — `@_exported import OrigamiFormat`, so none
   of the seven files using `WebAnnotation` need an import added.
@@ -91,8 +91,8 @@ twice is harmless.
 
 **Retired** (moved to `*.removed` here, not deleted)
 
-- `LiquidView/WebAnnotation.swift`
-- `LiquidView/AnnotationStore.swift`
+- `Origami Text macOS/WebAnnotation.swift`
+- `Origami Text macOS/AnnotationStore.swift`
 
 **Edited**
 
@@ -108,7 +108,7 @@ twice is harmless.
 
 The two retired files show red in the navigator. **Remove Reference**
 (not Move to Trash — the originals are kept here). Add the two new files to
-the **LiquidView** target. Build.
+the **Origami Text macOS** target. Build.
 
 ---
 
@@ -128,7 +128,7 @@ the **LiquidView** target. Build.
 
 ## OT-5, while you are in there
 
-`Origami TextTests` does not link `LiquidView`, so its existing
+`Origami TextTests` does not link `Origami Text macOS`, so its existing
 `CitationClipboardTests.swift` already fails to compile ("cannot find
 'CitationClipboard' in scope"). This migration quietly improves the
 position: everything that moved into `OrigamiFormat` is now tested by that
