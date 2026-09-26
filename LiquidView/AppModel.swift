@@ -5352,8 +5352,13 @@ final class AppModel {
     /// Never runs while sharing is off, and only shows the system's
     /// permission dialog when the caller is a deliberate act.
     func refreshPlace(promptIfNeeded: Bool = true) {
-        guard sharesGeneralLocation else { return }
-        placeFinder.begin(promptIfNeeded: promptIfNeeded)
+        // Retired on the Mac (26 Sep 2026, App Review): the letter's
+        // general place had no visible switch once the Dialog settings
+        // pane was folded away, yet exporting still asked for location.
+        // The Location capability is removed; nothing here asks for it.
+        // PlaceFinder stays for the day the setting has a home again.
+        _ = placeFinder
+        return
     }
     var draftEditor: DraftEditor?
     var selectedDraftID: String?
