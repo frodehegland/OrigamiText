@@ -1063,6 +1063,7 @@ nonisolated enum ACMLaTeX {
         out.append(contentsOf: body(of: doc))
         if !doc.references.isEmpty {
             out.append("")
+            if doc.documentType == referenceListType { out.append("\\nocite{*}") }
             out.append("\\bibliographystyle{ACM-Reference-Format}")
             out.append("\\bibliography{refs}")
         }
@@ -1376,8 +1377,10 @@ nonisolated enum ACMLaTeX {
     }
 
     private static func listItem(in text: String) -> (kind: String, item: String)? {
-        if text.hasPrefix("• ") {
-            return ("itemize", String(text.dropFirst(2)))
+        // "• " is the format's bullet; "- " and "* " are Markdown's, and
+        // what the Word, OpenDocument and HTML readers write.
+        for bullet in ["• ", "- ", "* "] where text.hasPrefix(bullet) {
+            return ("itemize", String(text.dropFirst(bullet.count)))
         }
         guard let match = text.range(of: #"^\d+\.\s"#, options: .regularExpression)
         else { return nil }
@@ -1800,6 +1803,10 @@ nonisolated enum ACMLaTeX {
 /// as "available" for anyone with a TeX installation.
 extension ACMLaTeX {
 
+    /// A document that is only a reference list (a .bib or CSL-JSON
+    /// file): its entries are printed whether or not the text cites them.
+    static let referenceListType = "bibliography"
+
     enum Publisher: String, Sendable, CaseIterable, Identifiable {
         case acm, ieee, lncs, elsevier, elsevierTwoColumn, preprint
 
@@ -1927,6 +1934,7 @@ extension ACMLaTeX {
         out.append(contentsOf: body(of: doc))
         if !doc.references.isEmpty {
             out.append("")
+            if doc.documentType == referenceListType { out.append("\\nocite{*}") }
             out.append("\\bibliographystyle{\(publisher.bibliographyStyle)}")
             out.append("\\bibliography{refs}")
         }

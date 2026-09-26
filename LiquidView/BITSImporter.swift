@@ -285,7 +285,10 @@ nonisolated enum BITSImporter {
         // The bibliography: every <ref> a reference on its own id — the
         // id the body's `[cite:rid]` tokens carry — its BibTeX
         // synthesised from the mixed-citation fields.
-        let references = (back?.descendant("ref-list")?.children(named: "ref") ?? [])
+        // Usually in <back>, but ACM's BITS for some papers sets the
+        // ref-list before it, in the body's tail — look anywhere.
+        let refList = back?.descendant("ref-list") ?? root.descendant("ref-list")
+        let references = (refList?.children(named: "ref") ?? [])
             .enumerated()
             .compactMap { index, ref -> LiquidDoc.Reference? in
                 guard let citation = ref.child("mixed-citation")

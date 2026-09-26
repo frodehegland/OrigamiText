@@ -71,7 +71,19 @@ nonisolated enum LaTeXImporter {
     /// .tex inside. `main.tex` is preferred; else the file that declares
     /// `\documentclass` and `\begin{document}`; else the largest .tex.
     static func importArchive(at url: URL) throws -> Result {
-        let zip = try ZipReader(url: url)
+        try importArchive(from: ZipReader(url: url),
+                          fallbackTitle: url.deletingPathExtension().lastPathComponent)
+    }
+
+    /// A LaTeX project already unpacked into a folder — what an arXiv
+    /// source tarball becomes — read exactly as a zipped one is.
+    static func importFolder(at url: URL) throws -> Result {
+        try importArchive(from: FolderArchive(root: url),
+                          fallbackTitle: url.lastPathComponent)
+    }
+
+    static func importArchive(from zip: some LaTeXSourceArchive,
+                              fallbackTitle: String) throws -> Result {
         // Sorted: every selection rule below must pick the same file
         // on every run, whatever order the archive lists them.
         let texNames = zip.entryNames.filter {
@@ -154,7 +166,7 @@ nonisolated enum LaTeXImporter {
         var result = importTeX(tex, bibliography: bibliography,
                                printedBibliography: printedBibliography,
                                resources: resources,
-                               fallbackTitle: url.deletingPathExtension().lastPathComponent)
+                               fallbackTitle: fallbackTitle)
         result.acmReference = acmReference(inArchive: zip, title: result.title,
                                            knownDOI: result.doi)
         return result
@@ -165,7 +177,7 @@ nonisolated enum LaTeXImporter {
     /// speaks this paper's own title (a template PDF or style guide
     /// does neither). Largest PDF first: the camera-ready outweighs
     /// a stray one-page sample.
-    private static func acmReference(inArchive zip: ZipReader, title: String,
+    private static func acmReference(inArchive zip: some LaTeXSourceArchive, title: String,
                                      knownDOI: String?) -> String? {
         func normalized(_ text: some StringProtocol) -> String {
             // Compatibility-folded first: the title's ReSB² must match
@@ -2550,5 +2562,40 @@ nonisolated enum LaTeXImporter {
             let index = match.numberOfRanges > 1 ? 1 : 0
             return ns.substring(with: match.range(at: index))
         }
+    }
+}
+
+
+/// The two things the LaTeX importer asks of a project's container:
+/// its file names, and a file's bytes. A zip answers both; so does a
+/// folder.
+protocol LaTeXSourceArchive {
+    var entryNames: [String] { get }
+    func entry(_ name: String) -> Data?
+}
+
+extension ZipReader: LaTeXSourceArchive {}
+
+/// A folder as a LaTeX source archive: paths relative to its root.
+nonisolated struct FolderArchive: LaTeXSourceArchive {
+    let root: URL
+    let entryNames: [String]
+
+    init(root: URL) {
+        self.root = root
+        var names: [String] = []
+        let base = root.standardizedFileURL.path
+        if let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) {
+            for case let file as URL in walker
+            where (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+                let path = file.standardizedFileURL.path
+                if path.hasPrefix(base + "/") { names.append(String(path.dropFirst(base.count + 1))) }
+            }
+        }
+        entryNames = names.sorted()
+    }
+
+    func entry(_ name: String) -> Data? {
+        try? Data(contentsOf: root.appendingPathComponent(name))
     }
 }

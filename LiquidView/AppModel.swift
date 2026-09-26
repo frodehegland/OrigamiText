@@ -846,6 +846,8 @@ final class AppModel {
             importLaTeX(at: url)
         case "xml":
             importBITS(at: url)
+        case "html", "htm", "odt", "tgz", "tar", "gz", "bib":
+            importConverted(at: url)
         case "gmi", "gemini":
             // A gemtext page double-clicked or dropped: the app declares
             // itself a viewer for the type, so it must read it rather
@@ -1142,6 +1144,9 @@ final class AppModel {
                 case "gmi", "gemini":
                     outcome = self.importGemtext(at: file, andOpen: false)
                     await Task.yield()
+                case "html", "htm", "odt", "tgz", "tar", "gz", "bib":
+                    outcome = self.importConverted(at: file, andOpen: false)
+                    await Task.yield()
                 default:
                     outcome = self.importBITS(at: file, andOpen: false)
                     await Task.yield()
@@ -1226,6 +1231,47 @@ final class AppModel {
             if andOpen {
                 NSSound.beep()
                 showNote("Could not import LaTeX: \(error.localizedDescription)")
+            }
+            return .failed
+        }
+    }
+
+    /// A file Import to Format can read, filed into the library as an
+    /// EPUB: read by `FormatSources`, written through the exporter, and
+    /// imported back — the LaTeX path's shape, for the kinds that have no
+    /// importer of their own.
+    @discardableResult
+    func importConverted(at url: URL, andOpen: Bool = true) -> LibraryImportOutcome {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let loaded = try FormatSources.load(url, fallbackAuthor: authorName)
+            var doc = loaded.doc
+            if let existing = existingConversion(title: doc.title, author: doc.displayAuthor) {
+                if andOpen {
+                    openStoredEPUB(existing)
+                    showNote("Already in the library: \u{201C}\(existing.title)\u{201D}")
+                }
+                return .duplicate
+            }
+            doc.documentType = doc.documentType ?? LiquidDoc.DocumentType.book.rawValue
+            let epubURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(doc.id.replacingOccurrences(of: "/", with: "_") + ".epub")
+            try OrigamiEPUBExporter.write(doc: ACMLaTeX.movingFrontMatterOutOfBody(doc),
+                                          resolve: { _ in nil }, to: epubURL)
+            defer { try? FileManager.default.removeItem(at: epubURL) }
+            guard let record = importEPUB(at: epubURL) else { return .failed }
+            if andOpen {
+                openStoredEPUB(record)
+                let notice = loaded.notices.first.map { " · \($0)" } ?? ""
+                showNote("Imported \u{201C}\(doc.title)\u{201D}\(notice)")
+                mirrorShelfToCommunityFolder()
+            }
+            return .imported
+        } catch {
+            if andOpen {
+                NSSound.beep()
+                showNote("Could not import \(url.lastPathComponent): \(error.localizedDescription)")
             }
             return .failed
         }
@@ -1359,7 +1405,7 @@ final class AppModel {
 
     /// The TAPS HTML rendering beside the manuscript, when one is
     /// there — the same name with .html or .htm.
-    nonisolated private static func tapsHTMLBeside(_ url: URL) -> URL? {
+    nonisolated static func tapsHTMLBeside(_ url: URL) -> URL? {
         for ext in ["html", "htm"] {
             let candidate = url.deletingPathExtension().appendingPathExtension(ext)
             if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
@@ -3305,7 +3351,7 @@ final class AppModel {
     /// package's import result joined with the shelf record's metadata.
     /// Shared by the reader (`readingDoc`) and by the view modules'
     /// index (`rebuildEPUBIndex`).
-    nonisolated private static func structuredDoc(
+    nonisolated static func structuredDoc(
         from result: OrigamiEPUBImporter.ImportResult,
         record: EPUBRecord?, fallbackID: String, base: URL) -> LiquidDoc {
         let address = record?.id ?? result.origamiID ?? fallbackID
@@ -5926,7 +5972,8 @@ final class AppModel {
     /// is treated as a native Origami Document and decoded (see `openFile`).
     static let importableExtensions: Set<String> = [
         "epub", "pdf", "doc", "docx", "md", "markdown", "txt", "rtf", "rtfd", "liquid",
-        "zip", "tex", "xml", "gmi", "gemini"
+        "zip", "tex", "xml", "gmi", "gemini",
+        "html", "htm", "odt", "tgz", "tar", "gz", "bib"
     ]
 
     /// Imports one file into a new draft — a PDF with a text layer, a Word
@@ -5962,7 +6009,7 @@ final class AppModel {
         }
     }
 
-    /// File ▸ Import EPUB to Format… — the second half of the workflow.
+    /// File ▸ Import to Format… — the second half of the workflow.
     /// A paper is written in Author and exported as an Origami EPUB;
     /// this reads that EPUB and renders it in a publisher's format. The
     /// document says what it is; the format decides what it looks like.
@@ -5971,21 +6018,23 @@ final class AppModel {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.epub]
-        panel.message = "Choose an EPUB to render in a publisher's format."
+        panel.allowedContentTypes = FormatSources.contentTypes
+        panel.message = "Choose a paper to render in a publisher's format — an EPUB, "
+            + "Word, OpenDocument, LaTeX (a .tex, a project zip or an arXiv source "
+            + "tarball), Markdown, HTML, JATS XML, PDF, or a .bib / CSL-JSON reference list."
         panel.prompt = "Choose"
         panel.setContentSize(NSSize(width: 450, height: 600))
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
-            let result = try OrigamiEPUBImporter.importDocument(at: url)
-            // The same conversion the reader uses, so a paper renders
-            // from exactly what a person would have read.
-            let doc = Self.structuredDoc(from: result, record: nil,
-                                         fallbackID: url.deletingPathExtension()
-                                             .lastPathComponent,
-                                         base: url)
-            formatConversion = FormatConversion(url: url, doc: doc)
+            // Each kind through the richest reader the app has; an EPUB
+            // through the same conversion the reader uses, so a paper
+            // renders from exactly what a person would have read.
+            let loaded = try FormatSources.load(url, fallbackAuthor: authorName)
+            formatConversion = FormatConversion(url: url, doc: loaded.doc)
+            if let first = loaded.notices.first { showNote(first) }
         } catch {
             showNote("Could not read \(url.lastPathComponent): \(error.localizedDescription)")
         }
@@ -6145,24 +6194,26 @@ final class AppModel {
             defer { if scoped { community.stopAccessingSecurityScopedResource() } }
             let inputs = ((try? FileManager.default.contentsOfDirectory(
                 at: check, includingPropertiesForKeys: nil)) ?? [])
-                .filter { $0.pathExtension.lowercased() == "epub" }
+                .filter { FormatSources.extensions.contains($0.pathExtension.lowercased())
+                    || $0.lastPathComponent.lowercased().hasSuffix(".tar.gz") }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
             var report: [String] = []
             for input in inputs {
-                guard let result = try? OrigamiEPUBImporter.importDocument(at: input) else {
-                    report.append("\(input.lastPathComponent): IMPORT FAILED")
+                let doc: LiquidDoc
+                do {
+                    doc = try FormatSources.load(input, fallbackAuthor: authorName).doc
+                } catch {
+                    report.append("\(input.lastPathComponent): IMPORT FAILED \(error.localizedDescription)")
                     continue
                 }
-                let doc = Self.structuredDoc(from: result, record: nil,
-                                             fallbackID: input.deletingPathExtension().lastPathComponent,
-                                             base: input)
                 report.append("\(input.lastPathComponent): refs=\(doc.references.count) "
                               + "authors=\(doc.authors) colophon=\(ACMLaTeX.hasColophon(doc))")
                 for publisher in ACMLaTeX.Publisher.allCases {
                     let options = FormatOptions(publisher: publisher, colophon: true)
+                    // The extension stays in the name: Article.docx and
+                    // Article.html must not write over each other.
                     let folder = check.appendingPathComponent("out")
-                        .appendingPathComponent(input.deletingPathExtension().lastPathComponent
-                                                + "." + options.suffix)
+                        .appendingPathComponent(input.lastPathComponent + "." + options.suffix)
                     do {
                         let outcome = try await writeFormatBundle(
                             doc, sourceName: input.deletingPathExtension().lastPathComponent,
@@ -6241,6 +6292,12 @@ final class AppModel {
             case "xml":
                 // Likewise an ACM Digital Library paper (BITS/JATS XML).
                 importBITS(at: url)
+                return
+            case "html", "htm", "odt", "tgz", "tar", "gz", "bib":
+                // Kinds Import to Format reads — a web page, OpenDocument,
+                // an arXiv source tarball, a .bib reference list — filed
+                // into the library as EPUBs, the way LaTeX is.
+                importConverted(at: url)
                 return
             case "gmi", "gemini":
                 // A gemtext page: parsed, filed on the shelf, and read —
