@@ -847,6 +847,9 @@ struct FormatChoiceSheet: View {
     /// The same corrected paper as an Origami EPUB in the publisher's
     /// house style, written into the bundle beside the LaTeX.
     @State private var alsoEPUB = true
+    /// The Visual-Meta colophon at the paper's end: the paper's own, or
+    /// one written from its metadata when it has none.
+    @State private var colophon = true
     /// The rights the rendered edition is published under. Origami Text
     /// decides this, not the writing tool: it starts from whatever the
     /// paper states, else CC BY 4.0, ACM's open-access default.
@@ -929,6 +932,7 @@ struct FormatChoiceSheet: View {
                     let chosen = style
                     let chosenPublisher = publisher
                     let writeEPUB = alsoEPUB
+                    let writeColophon = colophon
                     let chosenRights = rights
                     let edited = draft.applied(to: conversion.doc)
                     let event = draft.event
@@ -939,7 +943,7 @@ struct FormatChoiceSheet: View {
                         model.writeFormat(chosen, of: conversion, publisher: chosenPublisher,
                                           rights: chosenRights,
                                           edited: edited, event: event,
-                                          alsoEPUB: writeEPUB,
+                                          alsoEPUB: writeEPUB, colophon: writeColophon,
                                           compile: makePDF)
                     }
                 }
@@ -1101,6 +1105,12 @@ struct FormatChoiceSheet: View {
             Toggle("Also write an EPUB in this style", isOn: $alsoEPUB)
             Text("An Origami EPUB with the corrected front matter, its "
                  + "references set in \(publisher == .acm ? "ACM" : publisher.label)'s style.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle("Include the Visual-Meta colophon", isOn: $colophon)
+            Text(ACMLaTeX.hasColophon(conversion.doc)
+                 ? "The paper's own colophon, at the end."
+                 : "The paper has none; one is written from its metadata — its citation as BibTeX.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Toggle("Also compile to PDF", isOn: $compile)

@@ -39,6 +39,9 @@ struct LiquidViewApp: App {
                 appDelegate.model = model
                 model.restoreFolderAccess()
                 model.restoreReaderLibrary()
+                #if DEBUG
+                model.runFormatSelfTestIfRequested()
+                #endif
             }
             .background(TabBarRemover())
         }

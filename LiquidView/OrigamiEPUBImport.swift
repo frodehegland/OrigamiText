@@ -515,11 +515,27 @@ nonisolated enum OrigamiEPUBImporter {
         // the reference list on the next export (32 came back as 63).
         // Our own exports' notes come back as body paragraphs (fn1…),
         // so the body's stable ids count as internal too.
-        let internalIDs = Set(references.map(\.id))
+        // Compared lowercased: the address scan lowercases what it finds,
+        // and a paper's own UUID keys are upper-case — compared as they
+        // stand, every citation key, concept id and the paper's own
+        // identifier came back as a "cited document" of its own.
+        var ownIDs = Set(references.map(\.id))
             .union(notes.map(\.id))
             .union(body.map(\.id))
+            .union(concepts.map(\.id))
+        for paragraph in body {
+            for match in paragraph.text.matches(of: /\[(?:i?note|cites?):([^\]]+)\]/) {
+                ownIDs.insert(String(match.1))
+            }
+        }
+        let record = visualMeta?["document"] as? [String: Any]
+        for own in [identifier, record?["identifier"] as? String,
+                    record?["work"] as? String, record?["origami-id"] as? String] {
+            if let own { ownIDs.insert(own.replacingOccurrences(of: "urn:uuid:", with: "")) }
+        }
+        let internalIDs = Set(ownIDs.map { $0.lowercased() })
         var links = LiquidDoc.detectedLinks(in: body)
-            .filter { !internalIDs.contains($0.to) }
+            .filter { !internalIDs.contains($0.to.lowercased()) }
             .map { link -> LiquidDoc.Link in
                 guard link.bibtex == nil, let bibtex = bibtexByAddress[link.to] else { return link }
                 var enriched = link
@@ -527,11 +543,11 @@ nonisolated enum OrigamiEPUBImporter {
                 return enriched
             }
         for (address, bibtex) in bibtexByAddress.sorted(by: { $0.key < $1.key })
-        where !internalIDs.contains(address) && !links.contains(where: { $0.to == address }) {
+        where !internalIDs.contains(address.lowercased()) && !links.contains(where: { $0.to == address }) {
             links.append(LiquidDoc.Link(to: address, fragment: nil, rel: "cites", bibtex: bibtex))
         }
         for address in addressByCitationID.values.sorted()
-        where bibtexByAddress[address] == nil && !internalIDs.contains(address)
+        where bibtexByAddress[address] == nil && !internalIDs.contains(address.lowercased())
             && !links.contains(where: { $0.to == address }) {
             links.append(LiquidDoc.Link(to: address, fragment: nil, rel: "cites", bibtex: nil))
         }

@@ -5999,20 +5999,40 @@ final class AppModel {
     /// sandboxed build cannot reliably run a TeX installation it does not
     /// own. Where one is reachable, `compile` turns it into the PDF in
     /// the same step.
+    /// What a Format run is asked to produce.
+    struct FormatOptions {
+        var style: ACMLaTeX.Style = .sigconf
+        var publisher: ACMLaTeX.Publisher = .acm
+        var rights: ACMLaTeX.Rights? = nil
+        var event: ACMLaTeX.Conference? = nil
+        var alsoEPUB = true
+        var colophon = true
+        var compile = true
+
+        var suffix: String { publisher == .acm ? style.rawValue : publisher.fileSuffix }
+        var label: String { publisher == .acm ? style.label : publisher.label }
+    }
+
+    /// What a Format run produced — each output on its own, so a failing
+    /// EPUB never costs the PDF and every failure says which output it was.
+    struct FormatOutcome {
+        var folder: URL
+        var epub: URL?
+        var epubError: String?
+        var pdf: URL?
+        var pdfError: String?
+    }
+
     @discardableResult
     func writeFormat(_ style: ACMLaTeX.Style, of conversion: FormatConversion,
                      publisher: ACMLaTeX.Publisher = .acm,
                      rights: ACMLaTeX.Rights? = nil,
                      edited: LiquidDoc? = nil, event: ACMLaTeX.Conference? = nil,
-                     alsoEPUB: Bool = false,
+                     alsoEPUB: Bool = false, colophon: Bool = true,
                      compile: Bool) -> URL? {
-        // The sheet's corrections apply to this rendering only; the EPUB
-        // the paper came from is never changed.
-        let doc = edited ?? conversion.doc
-        let bundle = ACMLaTeX.bundle(for: doc, publisher: publisher, style: style,
-                                     rights: rights, event: event)
-        let suffix = publisher == .acm ? style.rawValue : publisher.fileSuffix
-        let label = publisher == .acm ? style.label : publisher.label
+        let options = FormatOptions(style: style, publisher: publisher, rights: rights,
+                                    event: event, alsoEPUB: alsoEPUB, colophon: colophon,
+                                    compile: compile)
         // The sandbox granted the chosen EPUB, not the folder it sits in,
         // so writing a new folder beside it was refused ("no permission
         // to save"). A save panel grants the write; it opens beside the
@@ -6021,75 +6041,160 @@ final class AppModel {
         let panel = NSSavePanel()
         panel.directoryURL = conversion.url.deletingLastPathComponent()
         panel.nameFieldStringValue = conversion.url
-            .deletingPathExtension().lastPathComponent + "." + suffix
-        panel.message = "Where should the \(label) version be written?"
+            .deletingPathExtension().lastPathComponent + "." + options.suffix
+        panel.message = "Where should the \(options.label) version be written?"
         panel.prompt = compile ? "Render" : "Write"
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let folder = panel.url else { return nil }
-        do {
-            if FileManager.default.fileExists(atPath: folder.path) {
-                try FileManager.default.removeItem(at: folder)
-            }
-            try FileManager.default.createDirectory(at: folder,
-                                                    withIntermediateDirectories: true)
-            try bundle.latex.write(to: folder.appendingPathComponent("paper.tex"),
-                                   atomically: true, encoding: .utf8)
-            if !bundle.bibtex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                try bundle.bibtex.write(to: folder.appendingPathComponent("refs.bib"),
-                                        atomically: true, encoding: .utf8)
-            }
-            if !bundle.images.isEmpty {
-                let images = folder.appendingPathComponent("images")
-                try FileManager.default.createDirectory(at: images,
-                                                        withIntermediateDirectories: true)
-                for (name, data) in bundle.images {
-                    try data.write(to: images.appendingPathComponent(name))
-                }
-            }
-            try (publisher == .acm ? ACMLaTeX.Bundle.readme(for: style)
-                                   : ACMLaTeX.readme(for: publisher))
-                .write(to: folder.appendingPathComponent("README.txt"),
-                       atomically: true, encoding: .utf8)
-            if alsoEPUB {
-                // The same corrected paper as an Origami EPUB in the
-                // publisher's house style — its references set their way,
-                // its rights the ones chosen here.
-                var epubDoc = ACMLaTeX.movingFrontMatterOutOfBody(doc)
-                let chosen = rights ?? ACMLaTeX.Rights.stated(by: doc) ?? .ccBy
-                epubDoc.license = ACMLaTeX.rightsStatement(
-                    chosen, doc: epubDoc, event: event ?? ACMLaTeX.conferenceFromReference(epubDoc))
-                epubDoc.licenseURI = chosen.ccType.map {
-                    "https://creativecommons.org/licenses/\($0)/4.0/"
-                }
-                let name = conversion.url.deletingPathExtension().lastPathComponent
-                    + " (\(label)).epub"
-                try OrigamiEPUBExporter.write(doc: epubDoc, resolve: { _ in nil },
-                                              to: folder.appendingPathComponent(name),
-                                              houseStyle: publisher.houseStyle)
-            }
-        } catch {
-            showNote("Could not write the bundle: \(error.localizedDescription)")
-            return nil
-        }
-
-        guard compile else {
-            showNote("Wrote \(folder.lastPathComponent) — see README.txt to compile")
-            NSWorkspace.shared.activateFileViewerSelecting([folder])
-            return folder
-        }
-        // Four TeX passes take seconds; the app stays live meanwhile.
-        showNote("Rendering the PDF\u{2026}")
+        let doc = edited ?? conversion.doc
+        let sourceName = conversion.url.deletingPathExtension().lastPathComponent
+        showNote(compile ? "Rendering\u{2026}" : "Writing\u{2026}")
         Task { @MainActor in
-            if let pdf = await ACMLaTeX.makePDF(in: folder) {
-                showNote("Wrote \(pdf.lastPathComponent) in \(folder.lastPathComponent)")
-                NSWorkspace.shared.open(pdf)
-            } else {
-                showNote("TeX could not finish the PDF — the bundle is in "
-                         + "\(folder.lastPathComponent); paper.log says why")
-                NSWorkspace.shared.activateFileViewerSelecting([folder])
+            do {
+                let outcome = try await writeFormatBundle(doc, sourceName: sourceName,
+                                                          options: options, to: folder)
+                reportFormat(outcome, options: options)
+            } catch {
+                showNote("Could not write the LaTeX bundle: \(error.localizedDescription)")
             }
         }
         return folder
+    }
+
+    /// The whole Format run without any panel: the LaTeX bundle, then —
+    /// independently — the EPUB and the PDF. Callable from a test or the
+    /// debugger with a folder the app may write.
+    func writeFormatBundle(_ doc: LiquidDoc, sourceName: String, options: FormatOptions,
+                           to folder: URL) async throws -> FormatOutcome {
+        let bundle = ACMLaTeX.bundle(for: doc, publisher: options.publisher,
+                                     style: options.style, rights: options.rights,
+                                     event: options.event, colophon: options.colophon)
+        if FileManager.default.fileExists(atPath: folder.path) {
+            try FileManager.default.removeItem(at: folder)
+        }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try bundle.latex.write(to: folder.appendingPathComponent("paper.tex"),
+                               atomically: true, encoding: .utf8)
+        if !bundle.bibtex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            try bundle.bibtex.write(to: folder.appendingPathComponent("refs.bib"),
+                                    atomically: true, encoding: .utf8)
+        }
+        if !bundle.images.isEmpty {
+            let images = folder.appendingPathComponent("images")
+            try FileManager.default.createDirectory(at: images, withIntermediateDirectories: true)
+            for (name, data) in bundle.images {
+                try data.write(to: images.appendingPathComponent(name))
+            }
+        }
+        try (options.publisher == .acm ? ACMLaTeX.Bundle.readme(for: options.style)
+                                       : ACMLaTeX.readme(for: options.publisher))
+            .write(to: folder.appendingPathComponent("README.txt"),
+                   atomically: true, encoding: .utf8)
+
+        var outcome = FormatOutcome(folder: folder)
+        if options.alsoEPUB {
+            // The same corrected paper as an Origami EPUB in the
+            // publisher's house style — its references set their way,
+            // its rights the ones chosen here.
+            var epubDoc = ACMLaTeX.movingFrontMatterOutOfBody(doc)
+            if !options.colophon { epubDoc = ACMLaTeX.withoutColophon(epubDoc) }
+            let chosen = options.rights ?? ACMLaTeX.Rights.stated(by: doc) ?? .ccBy
+            epubDoc.license = ACMLaTeX.rightsStatement(
+                chosen, doc: epubDoc,
+                event: options.event ?? ACMLaTeX.conferenceFromReference(epubDoc))
+            epubDoc.licenseURI = chosen.ccType.map {
+                "https://creativecommons.org/licenses/\($0)/4.0/"
+            }
+            let url = folder.appendingPathComponent("\(sourceName) (\(options.label)).epub")
+            do {
+                try OrigamiEPUBExporter.write(doc: epubDoc, resolve: { _ in nil }, to: url,
+                                              houseStyle: options.publisher.houseStyle)
+                outcome.epub = url
+            } catch {
+                outcome.epubError = String(describing: error)
+            }
+        }
+        if options.compile {
+            if let pdf = await ACMLaTeX.makePDF(in: folder) {
+                outcome.pdf = pdf
+            } else {
+                outcome.pdfError = "TeX could not finish the PDF; paper.log says why"
+            }
+        }
+        return outcome
+    }
+
+    #if DEBUG
+    /// The Format self-test, run at launch when asked — a file named
+    /// `RUN-FORMAT-SELFTEST` in the community folder's `.check` folder:
+    /// every EPUB in the community folder's `.check` folder, through
+    /// every publisher, by the exact path the Format sheet takes — the
+    /// app's own import, EPUB writer and PDF step — with a report written
+    /// beside them. Debug builds only; the trigger file is removed as it starts.
+    func runFormatSelfTestIfRequested() {
+        guard let community = index.folderURL else { return }
+        let scoped = community.startAccessingSecurityScopedResource()
+        let check = community.appendingPathComponent(".check")
+        let trigger = check.appendingPathComponent("RUN-FORMAT-SELFTEST")
+        guard FileManager.default.fileExists(atPath: trigger.path) else {
+            if scoped { community.stopAccessingSecurityScopedResource() }
+            return
+        }
+        try? FileManager.default.removeItem(at: trigger)
+        Task { @MainActor in
+            defer { if scoped { community.stopAccessingSecurityScopedResource() } }
+            let inputs = ((try? FileManager.default.contentsOfDirectory(
+                at: check, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension.lowercased() == "epub" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            var report: [String] = []
+            for input in inputs {
+                guard let result = try? OrigamiEPUBImporter.importDocument(at: input) else {
+                    report.append("\(input.lastPathComponent): IMPORT FAILED")
+                    continue
+                }
+                let doc = Self.structuredDoc(from: result, record: nil,
+                                             fallbackID: input.deletingPathExtension().lastPathComponent,
+                                             base: input)
+                report.append("\(input.lastPathComponent): refs=\(doc.references.count) "
+                              + "authors=\(doc.authors) colophon=\(ACMLaTeX.hasColophon(doc))")
+                for publisher in ACMLaTeX.Publisher.allCases {
+                    let options = FormatOptions(publisher: publisher, colophon: true)
+                    let folder = check.appendingPathComponent("out")
+                        .appendingPathComponent(input.deletingPathExtension().lastPathComponent
+                                                + "." + options.suffix)
+                    do {
+                        let outcome = try await writeFormatBundle(
+                            doc, sourceName: input.deletingPathExtension().lastPathComponent,
+                            options: options, to: folder)
+                        report.append("  \(options.suffix): pdf=\(outcome.pdf != nil) "
+                            + "epub=\(outcome.epub != nil)"
+                            + (outcome.epubError.map { " EPUB-ERROR: \($0)" } ?? "")
+                            + (outcome.pdfError.map { " PDF-ERROR: \($0)" } ?? ""))
+                    } catch {
+                        report.append("  \(options.suffix): BUNDLE FAILED \(error)")
+                    }
+                }
+            }
+            try? report.joined(separator: "\n")
+                .write(to: check.appendingPathComponent("report.txt"), atomically: true, encoding: .utf8)
+        }
+    }
+    #endif
+
+    private func reportFormat(_ outcome: FormatOutcome, options: FormatOptions) {
+        var parts: [String] = ["Wrote \(outcome.folder.lastPathComponent)"]
+        if outcome.pdf != nil { parts.append("PDF") }
+        if outcome.epub != nil { parts.append("EPUB") }
+        var note = parts.joined(separator: " · ")
+        if let error = outcome.epubError { note += " — the EPUB failed: \(error)" }
+        if let error = outcome.pdfError { note += " — \(error)" }
+        showNote(note)
+        if let pdf = outcome.pdf, outcome.epubError == nil {
+            NSWorkspace.shared.open(pdf)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([outcome.folder])
+        }
     }
 
     func importFile(at url: URL) {
