@@ -291,7 +291,7 @@ func epubListSelection(_ model: AppModel) -> Binding<Set<String>> {
                 // reader — even for a book already open behind it, which
                 // the re-open guard above would otherwise leave hidden.
                 switch model.sidebarSelection {
-                case .epubPublication, .epubPublicationAuthor, .epubPublicationTopic:
+                case .epubPublication, .epubPublicationAuthor, .epubPublicationTopic, .epubsTopOfPile:
                     if model.venueViewMode != .documents {
                         model.venueViewMode = .documents
                     }
@@ -1749,5 +1749,71 @@ struct HypermediaDocsListView: View {
                 }
             }
         }
+    }
+}
+
+/// Pinned, with the same two faces a journal has: its list, and a Map of
+/// the pinned books. Each card stands where it stands in its own journal's
+/// Map — one place per book, shared with the iPad and the headset — so
+/// moving it here moves it there too.
+struct PinnedFacesView: View {
+    @Environment(AppModel.self) private var model
+    /// The full-screen peek's narrow column: the list, with the tabs.
+    var listOnly = false
+
+    var body: some View {
+        @Bindable var model = model
+        VStack(spacing: 0) {
+            // The Map fills the room alone; its way back rides on the map.
+            if listOnly || model.venueViewMode != .map {
+                Picker("View", selection: $model.venueViewMode) {
+                    ForEach(VenueViewMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            if listOnly || model.venueViewMode != .map {
+                EPUBLibraryListView(mode: .topOfPile)
+            } else {
+                pinnedMap
+            }
+        }
+    }
+
+    private var pinnedMap: some View {
+        let pinned = model.epubRecords(inFolder: nil).filter { model.isTopOfPile($0) }
+        let items = pinned.map { record -> ProceedingsMapView.Item in
+            let extraction = model.documentExtractions[record.id]
+            let titleTopics = model.publicationAnalyses[record.venue ?? ""]?.paperTopics[record.id] ?? []
+            let standing = model.seriesStanding(forAuthors: record.author)
+            return .init(
+                id: record.id, key: record.folder, title: record.title,
+                author: record.author, isPinned: true, isSetAside: false,
+                topics: (extraction?.concepts ?? []) + (extraction?.keywords ?? []) + titleTopics,
+                people: extraction?.people ?? [],
+                entities: (extraction?.technologies ?? []) + (extraction?.places ?? []),
+                seriesName: standing?.name,
+                seriesCount: standing?.count ?? 0)
+        }
+        return ProceedingsMapView(
+            items: items,
+            folder: model.index.folderURL,
+            // Saved views and topic names for this map keep their own shelf.
+            venue: "Pinned",
+            open: { id in
+                model.venueViewMode = .documents
+                model.openEPUB(address: id, fragment: nil)
+            },
+            togglePin: { model.toggleTopOfPile(id: $0) },
+            toggleSetAside: { id in
+                guard let record = pinned.first(where: { $0.id == id }) else { return }
+                model.setAside(record)
+            },
+            back: { model.venueViewMode = .documents },
+            tick: { model.adoptStanding() })
     }
 }

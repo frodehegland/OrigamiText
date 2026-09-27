@@ -76,6 +76,7 @@ struct OrigamiTextMacApp: App {
                 // A capsule's page, read here: gemtext is another
                 // hypermedia protocol the reader speaks.
                 Button("Open Gemini URL…") { model.openGeminiURLPrompt() }
+                Divider()
                 Button("Export to XR (Author Map)…") { model.showXRExport = true }
                 Button("Export Library Manifest…") { model.exportLibraryManifest() }
                 Divider()

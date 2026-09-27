@@ -3151,11 +3151,26 @@ struct OrigamiReadingView: View {
                 onLink: handleLink)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // Cited here: a mark in the margin when other documents in the
+        // library cite or quote this passage — a click lists them.
+        .overlay(alignment: .topTrailing) {
+            let bare = paragraph.id.split(separator: "#").last.map(String.init) ?? paragraph.id
+            if let cited = citedHereMap[bare], !cited.isEmpty {
+                CitedHereMarker(citations: cited)
+                    .offset(x: 48)
+            }
+        }
         .onGeometryChange(for: CGRect.self) { proxy in
             proxy.frame(in: .named("origamiPage"))
         } action: { frame in
             paragraphFrames[paragraph.id] = frame
         }
+    }
+
+    /// Which of this book's passages the library cites, by bare id.
+    private var citedHereMap: [String: [CitedHere]] {
+        guard let record = model.epubRecord(forAddress: doc.id) else { return [:] }
+        return model.citedHere(inBook: record)
     }
 
     /// The reading context menu as data — exactly the verbs (and order)

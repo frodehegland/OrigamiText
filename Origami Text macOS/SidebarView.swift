@@ -20,7 +20,7 @@ enum SidebarCatalog {
     /// The full-screen peek still needs a way back to the library, so it
     /// lists Chronological — every book, newest first.
     static let received: [SidebarPlace] = [
-        SidebarPlace(name: "Time", systemImage: "clock", item: .epubsTimeline),
+        SidebarPlace(name: "Chronological", systemImage: "clock", item: .epubsTimeline),
     ]
 
     /// The conversation itself: every letter to and from the user, the
@@ -99,8 +99,20 @@ struct SidebarView: View {
     @Environment(\.openSettings) private var openSettings
     /// Sections the user has folded shut, by title — remembered across
     /// launches, the way Finder remembers its sidebar.
-    @State private var collapsed: Set<String> =
-        Set(UserDefaults.standard.stringArray(forKey: "collapsedSidebarSections") ?? [])
+    @State private var collapsed: Set<String> = SidebarView.initialCollapsed()
+
+    /// XR and Views start folded. Applied once (existing installs too);
+    /// after that, whatever the reader folds or opens is what stays.
+    private static func initialCollapsed() -> Set<String> {
+        let defaults = UserDefaults.standard
+        var collapsed = Set(defaults.stringArray(forKey: "collapsedSidebarSections") ?? [])
+        if !defaults.bool(forKey: "sidebarFoldsXRAndViews") {
+            collapsed.formUnion(["XR", "Views"])
+            defaults.set(Array(collapsed), forKey: "collapsedSidebarSections")
+            defaults.set(true, forKey: "sidebarFoldsXRAndViews")
+        }
+        return collapsed
+    }
     /// What the venues shelf is called — Journals or Proceedings,
     /// chosen in Settings ▸ Layout.
     @AppStorage(AppSettings.venueLabelKey) private var venueLabel = "Journals"
@@ -254,7 +266,7 @@ struct SidebarView: View {
         // dependent spec on top, and a column whose min/max CHANGES
         // makes SplitViewChildController push new sizes mid
         // constraints-flush — a macOS 27 hard crash.
-        .navigationSplitViewColumnWidth(min: 300, ideal: 330, max: 560)
+        .navigationSplitViewColumnWidth(min: 340, ideal: 360, max: 560)
     }
 
     /// Ways into the opened EPUBs by who and what they hold: Authors (the
@@ -351,14 +363,14 @@ struct SidebarView: View {
             Label("Pinned", systemImage: "pin")
                 .badge(shown.filter { model.isTopOfPile($0) }.count)
                 .tag(SidebarItem.epubsTopOfPile)
-            Label("Time", systemImage: "clock")
+            Label("Chronological", systemImage: "clock")
                 .badge(timelineUnreadOnly
                        ? shown.filter { model.isUnread($0) }.count : shown.count)
                 .tag(SidebarItem.epubsTimeline)
                 .contextMenu {
                     Toggle("Unread", isOn: $timelineUnreadOnly)
                 }
-            Label("Alpha", systemImage: "textformat.abc")
+            Label("Alphabetical", systemImage: "textformat.abc")
                 .badge(alphabeticalUnreadOnly
                        ? shown.filter { model.isUnread($0) }.count : shown.count)
                 .tag(SidebarItem.epubsAlphabetical)
@@ -372,15 +384,7 @@ struct SidebarView: View {
             Label(myLastName, systemImage: "person.fill")
                 .badge(myCount > 0 ? myCount : 0)
                 .tag(SidebarItem.myEPUBs)
-            // A row that acts rather than selects: the Import panel —
-            // the one door into the library (a double-clicked EPUB only
-            // opens a look). Always visible, never conditional.
-            Button {
-                model.importDocumentFile()
-            } label: {
-                Label("Import", systemImage: "square.and.arrow.down")
-            }
-            .buttonStyle(.plain)
+            // Import lives in the File menu (and drag-and-drop), not here.
             if !model.acquisitions.isEmpty {
                 Label("To Acquire", systemImage: "arrow.down.circle")
                     .badge(model.acquisitions.count)
@@ -730,8 +734,8 @@ struct SidebarView: View {
                 model.settingsTab = .hypermedia
                 openSettings()
             } label: {
-                Label(model.hypermedia.spaces.isEmpty ? "Add Space" : "Edit Spaces",
-                      systemImage: model.hypermedia.spaces.isEmpty ? "plus.circle" : "slider.horizontal.3")
+                Label(model.hypermedia.spaces.isEmpty ? "Add Space" : "Edit",
+                      systemImage: "plus")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)

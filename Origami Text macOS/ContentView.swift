@@ -41,6 +41,13 @@ struct ContentView: View {
         }
     }
 
+    /// A place with a Map face (a journal, or Pinned) showing it: the
+    /// Map takes the whole window.
+    private var mapFaceWantsWidth: Bool {
+        (venueIsSelected || model.sidebarSelection == .epubsTopOfPile)
+            && model.venueRelationsWantWidth
+    }
+
     var body: some View {
         @Bindable var model = model
         Group {
@@ -51,7 +58,7 @@ struct ContentView: View {
                     // A venue's wide face (the Map, a relation view) IS
                     // what the reader is looking at — full screen keeps
                     // it, rather than swapping to the reading pane.
-                    if venueIsSelected && model.venueRelationsWantWidth {
+                    if mapFaceWantsWidth {
                         listPane
                             .scrollContentBackground(.hidden)
                     } else {
@@ -83,7 +90,7 @@ struct ContentView: View {
                         .background(themeBG)
                         .foregroundStyle(themeFG)
                 }
-            } else if wideListMode || (venueIsSelected && model.venueRelationsWantWidth) {
+            } else if wideListMode || mapFaceWantsWidth {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .toolbar(removing: .sidebarToggle)
@@ -103,7 +110,9 @@ struct ContentView: View {
                             // as a second Find.
                             if !(venueIsSelected
                                  && (model.venueViewMode == .map
-                                     || model.venueViewMode == .documents)) {
+                                     || model.venueViewMode == .documents))
+                                && !(model.sidebarSelection == .epubsTopOfPile
+                                     && model.venueViewMode == .map) {
                                 findBar
                             }
                         }
@@ -126,7 +135,12 @@ struct ContentView: View {
                         .scrollContentBackground(.hidden)
                         .background(themeBG)
                         .foregroundStyle(themeFG)
-                        .navigationSplitViewColumnWidth(min: 260, ideal: 380, max: 900)
+                        // To Acquire's rows carry whole references: its
+                        // list opens at twice the usual width.
+                        .navigationSplitViewColumnWidth(
+                            min: model.sidebarSelection == .acquisitions ? 760 : 260,
+                            ideal: model.sidebarSelection == .acquisitions ? 760 : 380,
+                            max: model.sidebarSelection == .acquisitions ? 1200 : 900)
                         .safeAreaInset(edge: .bottom, spacing: 0) {
                             // The venue's papers carry their own foot
                             // Find — the one that also rides the
@@ -291,7 +305,7 @@ struct ContentView: View {
                         .scrollContentBackground(.hidden)
                         .background(themeBG)
                         .foregroundStyle(themeFG)
-                        .frame(width: 220)
+                        .frame(width: 300)
                     if (showsPeekList || peekIsPinned) && peekSelectionHasList {
                         Divider()
                         listPane(papersOnly: true)
@@ -300,7 +314,7 @@ struct ContentView: View {
                             // detail — title, byline, the doors to the
                             // copy — a list's strip cuts them off.
                             .frame(width: model.sidebarSelection == .acquisitions
-                                   ? 420 : 240)
+                                   ? 840 : 240)
                     }
                 }
                 .frame(maxHeight: .infinity)
@@ -436,7 +450,7 @@ struct ContentView: View {
         } else if model.sidebarSelection == .myEPUBs {
             EPUBLibraryListView(mode: .myEPUBs)
         } else if model.sidebarSelection == .epubsTopOfPile {
-            EPUBLibraryListView(mode: .topOfPile)
+            PinnedFacesView(listOnly: papersOnly)
         } else if model.sidebarSelection == .epubsTimeline {
             EPUBLibraryListView(mode: .timeline)
         } else if model.sidebarSelection == .epubsAlphabetical {

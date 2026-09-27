@@ -129,7 +129,7 @@ options, including reading aloud.
 
 ### 2.1 The sidebar
 
-- **Library** — every book, with **Time** (newest first), **Alpha** (by
+- **Library** — every book, with **Chronological** (newest first), **Alphabetical** (by
   title), **Pinned** and **To Acquire**.
 - **Journals** — books grouped by the journal or proceedings they belong
   to (Settings can rename this group). Inside a journal you also find its

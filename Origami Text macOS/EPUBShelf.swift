@@ -983,6 +983,9 @@ struct ProceedingsMapView: View {
     /// another takes its place. Views are only layouts: switching one
     /// never touches this, so the selection survives the crossing.
     @State private var liftedID: String?
+    /// The card in hand and where it is this frame — read only by the
+    /// threads, so a drag redraws the lines, not the whole plane.
+    @State private var liveDrag = MapLiveDrag()
 
     /// ⌘A's whole-plane selection: dragging any member moves them all
     /// together. A click on empty plane lets go. Survives view switches
@@ -1098,7 +1101,11 @@ struct ProceedingsMapView: View {
                         groupDragged: { translation in
                             groupDragged(item, translation: translation)
                         },
-                        moved: { nodeMoved(item) })
+                        moved: { nodeMoved(item) },
+                        liveMoved: { point in
+                            liveDrag.id = point == nil ? nil : item.id
+                            if let point { liveDrag.point = point }
+                        })
                     // While threads stand, the cards they touch are the
                     // subject — everything unthreaded steps back.
                     .opacity(connected == nil || connected!.contains(item.id)
@@ -1616,7 +1623,7 @@ struct ProceedingsMapView: View {
     /// and foot bar draw over this, so a line vanishes cleanly under
     /// them rather than crossing.
     private var threadOverlay: some View {
-        Canvas { context, size in
+        MapLiveThreads(liveDrag: liveDrag) { context, size, live in
             func stroke(_ from: CGPoint, _ to: CGPoint, share: CGFloat) {
                 var path = Path()
                 path.move(to: from)
@@ -1634,7 +1641,7 @@ struct ProceedingsMapView: View {
                     .compactMap { item in
                         let strength = magnetPull(item, pole)
                         guard strength > 0 else { return nil }
-                        let at = overlayPositions[item.id] ?? positions[item.id]
+                        let at = live(item.id) ?? overlayPositions[item.id] ?? positions[item.id]
                             ?? seedCache[item.id] ?? Self.canvasCenter
                         return (at, strength)
                     }
@@ -1646,7 +1653,7 @@ struct ProceedingsMapView: View {
             }
             if let lifted = liftedID,
                let item = items.first(where: { $0.id == lifted && !$0.isSetAside }) {
-                let at = overlayPositions[item.id] ?? positions[item.id]
+                let at = live(item.id) ?? overlayPositions[item.id] ?? positions[item.id]
                     ?? seedCache[item.id] ?? Self.canvasCenter
                 let pulls: [(slot: Int, strength: Int)] = magnetNames.indices
                     .compactMap { slot in
@@ -2109,10 +2116,17 @@ private struct ProceedingsMapNode: View {
     let toggleSetAside: () -> Void
     var groupDragged: ((CGSize) -> Void)? = nil
     let moved: () -> Void
+    /// The card's place while in hand, each frame; nil on release.
+    var liveMoved: (CGPoint?) -> Void = { _ in }
 
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var dragStart: CGPoint?
+    /// When the card was last dragged: a press that moved the card is a
+    /// move, never the second click of an open.
+    @State private var lastDragged: Date?
+    /// The previous click, for telling a double-click from two singles.
+    @State private var lastTap: Date?
     /// The card's place while in hand. Local to the node so a drag
     /// re-renders this card alone; the map's dictionary — whose every
     /// write re-renders the whole plane — learns the place on release.
@@ -2172,9 +2186,9 @@ private struct ProceedingsMapNode: View {
     /// abstract, so the fine print reads as a paragraph, not a ribbon.
     private func cardWidth(abstract: String) -> CGFloat {
         #if os(macOS)
-        lifted ? (abstract.isEmpty ? 168 : 260) : 122
+        lifted ? (abstract.isEmpty ? 168 : 260) : 159
         #else
-        lifted ? (abstract.isEmpty ? 168 : 260) : 150
+        lifted ? (abstract.isEmpty ? 168 : 260) : 195
         #endif
     }
 
@@ -2273,6 +2287,7 @@ private struct ProceedingsMapNode: View {
                                bounds.width - 90),
                         y: min(max(start.y + value.translation.height, 40),
                                bounds.height - 40))
+                    liveMoved(livePosition)
                     // A grouped card carries the rest of the selection.
                     if isGrouped { groupDragged?(value.translation) }
                 }
@@ -2280,14 +2295,38 @@ private struct ProceedingsMapNode: View {
                     if let end = livePosition { position = end }
                     livePosition = nil
                     dragStart = nil
+                    lastDragged = .now
+                    liveMoved(nil)
                     moved()
                 })
         // Stacked taps: double to open, single to lift. Safe now that
         // the context menu is the Mac's alone — with a menu present,
         // this stack starved the iPad's touch delivery; without one,
         // the composed `exclusively` form starved the single tap.
-        .onTapGesture(count: 2, perform: open)
-        .onTapGesture(perform: select)
+        // One tap recogniser, counting clicks itself: a tap fires only on
+        // a release that did not move the card, so pressing, holding and
+        // dragging can never open it — the double-tap recogniser fired on
+        // the second press going down, before any drag could begin.
+        .onTapGesture {
+            let now = Date.now
+            let recentlyDragged = lastDragged.map { now.timeIntervalSince($0) < 0.5 } ?? false
+            if let last = lastTap, now.timeIntervalSince(last) < Self.doubleClickInterval,
+               dragStart == nil, !recentlyDragged {
+                lastTap = nil
+                open()
+            } else {
+                lastTap = now
+                select()
+            }
+        }
+    }
+
+    private static var doubleClickInterval: TimeInterval {
+        #if os(macOS)
+        NSEvent.doubleClickInterval
+        #else
+        0.35
+        #endif
     }
 
     #if !os(macOS)
@@ -2306,4 +2345,26 @@ private struct ProceedingsMapNode: View {
         .buttonStyle(.plain)
     }
     #endif
+}
+
+/// The card in hand on the proceedings map and its place this frame.
+@Observable
+final class MapLiveDrag {
+    var id: String?
+    var point: CGPoint = .zero
+}
+
+/// The map's threads as their own view: it alone reads the card in
+/// hand, so a drag redraws the lines each frame and nothing else.
+struct MapLiveThreads: View {
+    let liveDrag: MapLiveDrag
+    let draw: (inout GraphicsContext, CGSize, (String) -> CGPoint?) -> Void
+
+    var body: some View {
+        let id = liveDrag.id
+        let point = liveDrag.point
+        Canvas { context, size in
+            draw(&context, size) { $0 == id ? point : nil }
+        }
+    }
 }

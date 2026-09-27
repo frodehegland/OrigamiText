@@ -3084,6 +3084,12 @@ final class AppModel {
         return list
     }
     @ObservationIgnored private var quoteLinksCache: [String: [[String: String]]] = [:]
+    /// Where a library book is unpacked.
+    func unpackedFolder(for record: EPUBRecord) -> URL {
+        Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+    }
+    /// "Cited here" for the open book, by library revision (CitedHere.swift).
+    @ObservationIgnored var citedHereCache: (key: String, map: [String: [CitedHere]])?
 
     /// The transcluded source of a quote link: the plain text of the named
     /// paragraph in the target book, read from its unpacked content document.

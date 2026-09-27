@@ -480,6 +480,15 @@ struct EPUBReaderScreen: View {
     @State private var commentSelection: ReaderSelection?
     /// The author's own map of the book (§10.3), in a sheet.
     @State private var showsAuthoredMap = false
+    /// The passage whose citing places are listed.
+    @State private var citedHereTarget: CitedHereTarget?
+    private struct CitedHereTarget: Identifiable { let id: String }
+
+    /// Which of this book's passages the library cites, by bare id.
+    private var citedHereMap: [String: [CitedHere]] {
+        guard let record = model.epubRecords.first(where: { $0.folder == book.id }) else { return [:] }
+        return model.citedHere(inBook: record)
+    }
     /// The book's equations (§7.7.1), in a sheet — opened on the one
     /// clicked, when a click opened it.
     @State private var showsEquations = false
@@ -729,6 +738,17 @@ struct EPUBReaderScreen: View {
                 fragmentStamp += 1
             }
         }
+        .sheet(item: $citedHereTarget) { target in
+            VStack(spacing: 0) {
+                CitedHereList(citations: citedHereMap[target.id] ?? []) { citedHereTarget = nil }
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("Done") { citedHereTarget = nil }.keyboardShortcut(.cancelAction)
+                }
+                .padding(10)
+            }
+        }
         .sheet(isPresented: $showsEquations) {
             EquationsSheet(base: book.base,
                            bookAddress: model.epubRecords.first { $0.folder == book.id }?.id ?? book.id,
@@ -788,6 +808,8 @@ struct EPUBReaderScreen: View {
             onChapterStep: { delta in step(by: delta) },
             annotations: paintedAnnotations,
             quoteLinks: model.quoteLinks(forBook: book),
+            citedHereCounts: citedHereMap.mapValues(\.count),
+            onCitedHere: { id in citedHereTarget = CitedHereTarget(id: id) },
             annotationsStamp: model.annotationsStamp,
             onHighlight: { selection in model.addHighlight(on: selection) },
             onAnnotate: { kind, selection in model.addTag(kind, on: selection) },
@@ -1154,6 +1176,10 @@ struct EPUBReaderView: NSViewRepresentable {
     /// The book's durable quote links: linking element, quoted words, and
     /// the origamitext:// link to the target passage.
     var quoteLinks: [[String: String]] = []
+    /// How many places in the library cite each passage, by bare id.
+    var citedHereCounts: [String: Int] = [:]
+    /// A cited-here mark was clicked, with its passage's id.
+    var onCitedHere: (String) -> Void = { _ in }
     /// Bumped when annotations change, so the painting re-runs.
     var annotationsStamp: Int = 0
     /// "Highlight" was chosen from the context menu, on this selection.
@@ -1427,6 +1453,8 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onFigureJump = onFigureJump
         coordinator.annotations = annotations
         coordinator.quoteLinks = quoteLinks
+        coordinator.citedHereCounts = citedHereCounts
+        coordinator.onCitedHere = onCitedHere
         coordinator.chapterIndex = chapterIndex
         coordinator.chapterCount = chapterCount
         // The paragraphs carrying comments, by their stable ids — the
@@ -1518,6 +1546,8 @@ struct EPUBReaderView: NSViewRepresentable {
         context.coordinator.onSelect = onSelect
         context.coordinator.annotations = annotations
         context.coordinator.quoteLinks = quoteLinks
+        context.coordinator.citedHereCounts = citedHereCounts
+        context.coordinator.onCitedHere = onCitedHere
         context.coordinator.paintedStamp = annotationsStamp
         context.coordinator.chapterIndex = chapterIndex
         context.coordinator.chapterCount = chapterCount
@@ -1592,6 +1622,8 @@ struct EPUBReaderView: NSViewRepresentable {
                     kind: body["kind"] as? String ?? "element",
                     id: body["id"] as? String ?? "",
                     text: body["text"] as? String ?? ""))
+            case "citedHere":
+                if let id = body["id"] as? String, !id.isEmpty { onCitedHere(id) }
             case "selection":
                 let text = body["text"] as? String ?? ""
                 // The subclass reads this when the page's menu opens, to
@@ -1772,6 +1804,7 @@ struct EPUBReaderView: NSViewRepresentable {
                     "if (window.origamiScrollToFraction) window.origamiScrollToFraction(\(fraction));")
             }
             applyQuoteLinks(in: webView)
+            markCitedHere(in: webView)
             paintAnnotations(in: webView)
             injectChapterFooter(in: webView)
             webView.evaluateJavaScript(
@@ -1813,6 +1846,17 @@ struct EPUBReaderView: NSViewRepresentable {
         /// unpainted — no chapter bookkeeping needed.
         /// The book's durable quote links (§9.6), made live on each page.
         var quoteLinks: [[String: String]] = []
+        /// How many places in the library cite each passage, by bare id.
+        var citedHereCounts: [String: Int] = [:]
+        var onCitedHere: (String) -> Void = { _ in }
+
+        func markCitedHere(in webView: WKWebView) {
+            guard !citedHereCounts.isEmpty,
+                  let data = try? JSONSerialization.data(withJSONObject: citedHereCounts),
+                  let json = String(data: data, encoding: .utf8) else { return }
+            webView.evaluateJavaScript(
+                "if (window.origamiMarkCitedHere) window.origamiMarkCitedHere(\(json));")
+        }
 
         func applyQuoteLinks(in webView: WKWebView) {
             guard !quoteLinks.isEmpty,
@@ -2682,6 +2726,34 @@ struct EPUBReaderView: NSViewRepresentable {
             el.appendChild(a);
           }
           decorate(a);
+        });
+      };
+
+      // Cited here: a quiet mark in the right margin of each passage the
+      // library cites — a click asks Swift for the list.
+      window.origamiMarkCitedHere = function(counts){
+        var css = document.getElementById('origami-cited-style');
+        if (!css) {
+          css = document.createElement('style');
+          css.id = 'origami-cited-style';
+          css.textContent = '.origami-cited{float:right;margin-right:-3.6em;margin-left:0.6em;'
+            + 'font:600 0.72em -apple-system,sans-serif;opacity:0.55;cursor:pointer;'
+            + 'user-select:none;-webkit-user-select:none;}'
+            + '.origami-cited:hover{opacity:1;}';
+          (document.head || document.documentElement).appendChild(css);
+        }
+        Object.keys(counts || {}).forEach(function(id){
+          var el = document.getElementById(id);
+          if (!el || el.querySelector(':scope > .origami-cited')) return;
+          var mark = document.createElement('span');
+          mark.className = 'origami-cited';
+          mark.textContent = '\\u275D ' + counts[id];
+          mark.title = 'Cited in your library';
+          mark.addEventListener('click', function(e){
+            e.preventDefault(); e.stopPropagation();
+            if (bridge) bridge.postMessage({event:'citedHere', id:id});
+          });
+          el.insertBefore(mark, el.firstChild);
         });
       };
 
