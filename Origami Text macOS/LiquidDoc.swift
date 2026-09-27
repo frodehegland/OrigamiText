@@ -245,7 +245,7 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     struct Paragraph: Identifiable, Hashable, Sendable {
         let id: String
         let heading: Int?
-        let text: String
+        var text: String
         /// Who said this — transcript attribution. The name also leads the
         /// text ("Name: …"), so a plain-text reader loses nothing; a reader
         /// with this field styles the name and hides the prefix, exactly as
@@ -577,6 +577,12 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         /// ids or origami addresses.
         var citationIdentifiers: [String] = []
         var urls: [String] = []
+        /// The words the author's glossary links mark for this concept
+        /// when they differ from its name ("accessible" for
+        /// "Cognitive Accessibility") — found by following each link to
+        /// the glossary entry, so the definition attaches where the
+        /// author put it, not only where the name recurs.
+        var markedForms: [String] = []
     }
 
     /// One named spatial arrangement of the shared node pool:

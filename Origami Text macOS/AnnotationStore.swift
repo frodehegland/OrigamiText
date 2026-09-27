@@ -142,6 +142,26 @@ public nonisolated enum AnnotationAnchor {
         public let method: Method
     }
 
+    /// The paragraph an address names when the address and the document
+    /// disagree only in form: Scrolling mode files a bare id (`P-1`), the
+    /// native modes a profile book's `content.xhtml#P-1`. Taken only when
+    /// exactly one paragraph carries that id, so a bare id repeated in two
+    /// documents falls through to the words instead of guessing.
+    static func sameElement(_ address: String,
+                            in paragraphs: [LiquidDoc.Paragraph]) -> LiquidDoc.Paragraph? {
+        func fragment(_ value: String) -> Substring {
+            value.split(separator: "#", omittingEmptySubsequences: false).last ?? Substring(value)
+        }
+        let wanted = fragment(address)
+        guard !wanted.isEmpty else { return nil }
+        // Two path#id forms that differ name different documents.
+        let addressHasPath = address.contains("#")
+        let matches = paragraphs.filter {
+            fragment($0.id) == wanted && !(addressHasPath && $0.id.contains("#"))
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
     /// Where an annotation lands in this document, or nil when nothing in
     /// it still matches (an orphan — kept and shown, never lost). The
     /// cascade, Hypothesis's way: the stable id and exact words; the
@@ -163,7 +183,9 @@ public nonisolated enum AnnotationAnchor {
             }
         }
         let paragraphs = doc.body ?? []
-        let anchored = fragmentID.flatMap { id in paragraphs.first { $0.id == id } }
+        let anchored = fragmentID.flatMap { id in
+            paragraphs.first { $0.id == id } ?? sameElement(id, in: paragraphs)
+        }
 
         if let paragraph = anchored {
             if let quote {

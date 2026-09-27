@@ -285,7 +285,10 @@ nonisolated enum MathMLBodyScanner {
             guard let id = attribute("id", in: attributes), !id.isEmpty else { continue }
             let display = attribute("display", in: attributes)
                 .flatMap(EquationDisplay.init) ?? .inline
+            // The TeX annotation, else the derived `data-latex` a writer
+            // MAY carry on the element (§7.7).
             let tex = texAnnotation(in: inner)
+                ?? attribute("data-latex", in: attributes).map(xmlDecoded)
             entries.append(EquationEntry(
                 id: id,
                 display: display,
@@ -300,6 +303,17 @@ nonisolated enum MathMLBodyScanner {
                 heading: nil))
         }
         return entries
+    }
+
+    /// The `<math>` element carrying `id`, as written — what Copy MathML
+    /// puts on the clipboard.
+    static func mathMLSource(id: String, inXHTML html: String) -> String? {
+        guard let expr = try? NSRegularExpression(
+            pattern: "<math\\b[^>]*\\bid\\s*=\\s*\"\(NSRegularExpression.escapedPattern(for: id))\"[^>]*>.*?</math>",
+            options: [.dotMatchesLineSeparators, .caseInsensitive]),
+              let match = expr.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let range = Range(match.range, in: html) else { return nil }
+        return String(html[range])
     }
 
     private static func attribute(_ name: String, in attributes: String) -> String? {

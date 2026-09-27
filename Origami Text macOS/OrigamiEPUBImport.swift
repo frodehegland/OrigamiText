@@ -184,7 +184,12 @@ nonisolated enum OrigamiEPUBImporter {
                 source.entry(joinedPath(opfDirectory, href)) ?? source.entry(href)
             }
         }
-        let visualMetaData = declaredRecord("origami:visual-meta")
+        // A newer MAJOR profile than this reader knows is read as an
+        // ordinary EPUB (§16.2): its records may mean what 1.0 does not.
+        // The reader says so in the book's notice strip.
+        let newerProfile = (profileMajor(in: opf) ?? 1) > 1
+        let visualMetaData = newerProfile ? nil
+            : declaredRecord("origami:visual-meta")
             ?? source.entry("visual-meta.json")
             ?? source.entryWithSuffix("visual-meta.json")
             ?? embeddedVisualMeta(in: html)
@@ -199,7 +204,8 @@ nonisolated enum OrigamiEPUBImporter {
         // fact has one home and one fallback rather than being merged:
         // merging two copies of a reference list turned 32 references
         // into 63.
-        let origamiJSON: [String: Any]? = (declaredRecord("origami:interaction")
+        let origamiJSON: [String: Any]? = (newerProfile ? nil
+            : declaredRecord("origami:interaction")
             ?? source.entry("origami.json")
             ?? source.entryWithSuffix("origami.json"))
             .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
@@ -214,14 +220,14 @@ nonisolated enum OrigamiEPUBImporter {
            let origamiJSON {
             pool = citationPool(fromOrigamiJSON: origamiJSON)
         }
-        let addressByCitationID = pool.addressByCitationID
-        let bibtexByAddress = pool.bibtexByAddress
+        var addressByCitationID = pool.addressByCitationID
+        var bibtexByAddress = pool.bibtexByAddress
         var references = pool.references
         // Profile 1.0 §11: the bibliography record is canonical, and the
         // citations carry no BibTeX of their own. Read it when the
         // metadata's citations brought none — Author's EPUBs, and any
         // conforming 1.0 publication.
-        if references.isEmpty {
+        if references.isEmpty, !newerProfile {
             let recordPath = bibliographyHref(in: opf)
             let data = recordPath.flatMap {
                 source.entry(joinedPath(opfDirectory, $0)) ?? source.entry($0)
@@ -231,10 +237,21 @@ nonisolated enum OrigamiEPUBImporter {
                     String(decoding: data, as: UTF8.self),
                     citations: dictionaries(visualMeta?["citations"]),
                     listText: bibliographyListText(in: html))
+
+                // Internal citations, found in the record itself. Under 1.0
+                // the Visual-Meta citations carry no URLs, so the route above
+                // that turns an origamitext:// address back into a live link
+                // never sees one: a citation copied with Copy to Cite, pasted
+                // into Author and exported came back as a plain reference.
+                // The address is in the BibTeX, so it is read from there.
+                let split = internalCitations(in: references)
+                references = split.references
+                addressByCitationID.merge(split.addressByCitationID) { existing, _ in existing }
+                bibtexByAddress.merge(split.bibtexByAddress) { existing, _ in existing }
             }
         }
 
-        let concepts: [LiquidDoc.Concept] = dictionaries(visualMeta?["concepts"]).compactMap { node in
+        var concepts: [LiquidDoc.Concept] = dictionaries(visualMeta?["concepts"]).compactMap { node in
             guard let conceptID = node["id"] as? String,
                   let name = node["name"] as? String else { return nil }
             return LiquidDoc.Concept(
@@ -335,6 +352,7 @@ nonisolated enum OrigamiEPUBImporter {
             pattern: "<meta[^>]*property=\"dcterms:conformsTo\"[^>]*>\\s*([^<]+)")?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .hasPrefix("https://origamitext.org/profile/") ?? false
+            && !newerProfile
         let readable: [(href: String, xhtml: String)] = spineContentHrefs(in: opf)
             .compactMap { href in
                 guard let data = source.entry(joinedPath(opfDirectory, href))
@@ -363,6 +381,7 @@ nonisolated enum OrigamiEPUBImporter {
                 contentDir: documentDir,
                 documentPath: qualifying ? href : "",
                 skippingRecordSections: hasRecords,
+                preferringID: declaresProfile,
                 ordinalOffset: offset,
                 capture: capture)
         }
@@ -405,6 +424,11 @@ nonisolated enum OrigamiEPUBImporter {
             capturedFootnotes += part.read.footnotes
         }
         guard !body.isEmpty else { throw OrigamiEPUBImportError.missingContent }
+        body = applyingQuoteLinks(dictionaries(visualMeta?["links"]), to: body)
+        concepts = conceptsFollowingGlossaryLinks(
+            concepts,
+            glossary: readable.flatMap { glossaryEntries(inXHTML: $0.xhtml) },
+            uses: capture.glossaryUses)
 
         // Mathematics: prefer a Visual-Meta equations block, fall back to a
         // scan of the `math[id]` elements. MathML in the body renders
@@ -600,7 +624,10 @@ nonisolated enum OrigamiEPUBImporter {
             affiliations: (document?["affiliations"] as? [String])?
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty } ?? [],
-            acmReference: (document?["acm-reference"] as? String)
+            // Profile 1.0 §5.4 names it acmReference; earlier exports wrote
+            // acm-reference.
+            acmReference: (document?["acmReference"] as? String
+                ?? document?["acm-reference"] as? String)
                 .flatMap { $0.isEmpty ? nil : $0 },
             // Both shapes: the name-keyed tables older exports wrote, and
             // the per-author objects Author writes now ({name,
@@ -691,6 +718,57 @@ nonisolated enum OrigamiEPUBImporter {
         let publication: String?
         var doi: String? = nil
         var identifier: String? = nil
+        /// The work this edition belongs to (`dcterms:isVersionOf`, §4.3).
+        var work: String? = nil
+    }
+
+    /// Where a publication stands among the editions of its work (§4.3):
+    /// the work it is a version of, its own edition identifier, this
+    /// release's date and label, and the editions it names as replaced
+    /// or replacing it.
+    struct EditionInfo: Sendable, Hashable {
+        var work: String?
+        var identifier: String?
+        var modified: String?
+        var versionLabel: String?
+        var replaces: [String] = []
+        var isReplacedBy: [String] = []
+    }
+
+    static func editionInfo(inOPF opf: String) -> EditionInfo {
+        func meta(_ property: String) -> String? {
+            firstCapture(in: opf, pattern: "<meta[^>]*property=\"\(property)\"[^>]*>([^<]*)</meta>")
+                .map(xmlUnescaped)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 }
+        }
+        // A relation may be a <link rel href> (the profile's form) or a
+        // <meta property> (EPUB 2 habits); both are read.
+        func relation(_ name: String) -> [String] {
+            let links = captures(in: opf, pattern: "<link\\s[^>]*>").compactMap { link -> String? in
+                guard let rel = firstCapture(in: link, pattern: "\\srel=\"([^\"]+)\""),
+                      rel.split(separator: " ").contains(Substring(name)) else { return nil }
+                return firstCapture(in: link, pattern: "\\shref=\"([^\"]+)\"").map(xmlUnescaped)
+            }
+            return links + (meta(name).map { [$0] } ?? [])
+        }
+        return EditionInfo(work: meta("dcterms:isVersionOf"),
+                           identifier: firstTagText(in: opf, tag: "dc:identifier"),
+                           modified: meta("dcterms:modified"),
+                           versionLabel: meta("schema:version"),
+                           replaces: relation("dcterms:replaces"),
+                           isReplacedBy: relation("dcterms:isReplacedBy"))
+    }
+
+    static func editionInfo(inUnpackedFolder folder: URL) -> EditionInfo? {
+        let opfSubpath = (try? String(
+            contentsOf: folder.appendingPathComponent("META-INF/container.xml"),
+            encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") }
+            ?? "package.opf"
+        guard let opf = try? String(contentsOf: folder.appendingPathComponent(opfSubpath),
+                                    encoding: .utf8) else { return nil }
+        return editionInfo(inOPF: opf)
     }
 
     /// The per-author objects a Visual-Meta `document.authors` may hold
@@ -737,6 +815,34 @@ nonisolated enum OrigamiEPUBImporter {
         return out
     }
 
+    /// A metadata record in an unpacked book, found the way `import` finds
+    /// it: the package's `<link rel="record">` declaration first, then the
+    /// pre-1.0 well-known name at the root or beside the package document.
+    /// A 1.0 book keeps its records beside the package (§4.8), so looking
+    /// only at the root missed them.
+    static func recordData(inUnpackedFolder folder: URL, properties: String,
+                           fileName: String) -> Data? {
+        let opfSubpath = (try? String(
+            contentsOf: folder.appendingPathComponent("META-INF/container.xml"),
+            encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") }
+            ?? "package.opf"
+        let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
+        var candidates: [String] = []
+        if let opf = try? String(contentsOf: folder.appendingPathComponent(opfSubpath),
+                                 encoding: .utf8),
+           let href = recordHref(in: opf, properties: properties) {
+            candidates.append(joinedPath(opfDirectory, href.removingPercentEncoding ?? href))
+        }
+        candidates += [fileName, joinedPath(opfDirectory, fileName)]
+        for path in candidates {
+            if let data = try? Data(contentsOf: folder.appendingPathComponent(path)) {
+                return data
+            }
+        }
+        return nil
+    }
+
     static func importMetadata(inUnpackedFolder folder: URL) -> PackageMetadata {
         let containerURL = folder.appendingPathComponent("META-INF/container.xml")
         let opfSubpath = (try? String(contentsOf: containerURL, encoding: .utf8))
@@ -762,8 +868,9 @@ nonisolated enum OrigamiEPUBImporter {
 
         // Visual-Meta: package file first, then the first spine document.
         // Only the metadata block is needed — body parsing is intentionally skipped.
-        let packageVMURL = folder.appendingPathComponent("visual-meta.json")
-        var visualMetaData: Data? = (try? Data(contentsOf: packageVMURL))
+        var visualMetaData = recordData(inUnpackedFolder: folder,
+                                        properties: "origami:visual-meta",
+                                        fileName: "visual-meta.json")
         if visualMetaData == nil, let href = spineContentHref(in: opf),
            let html = try? String(
                contentsOf: folder.appendingPathComponent(joinedPath(opfDirectory, href)),
@@ -776,8 +883,9 @@ nonisolated enum OrigamiEPUBImporter {
         // Author EPUB format: origami.json carries document metadata when
         // Visual-Meta is absent. Its authors are {name:} objects, not strings.
         if visualMeta == nil {
-            let origamiURL = folder.appendingPathComponent(joinedPath(opfDirectory, "origami.json"))
-            if let data = (try? Data(contentsOf: origamiURL)),
+            if let data = recordData(inUnpackedFolder: folder,
+                                     properties: "origami:interaction",
+                                     fileName: "origami.json"),
                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                let doc = json["document"] as? [String: Any] {
                 // Authors may be {name:} objects (Author format) or
@@ -810,7 +918,8 @@ nonisolated enum OrigamiEPUBImporter {
                     date: doc["date"] as? String ?? date,
                     publication: ojVenue ?? opfVenue,
                     doi: doi,
-                    identifier: packageID)
+                    identifier: packageID,
+                    work: editionInfo(inOPF: opf).work)
             }
         }
 
@@ -832,7 +941,8 @@ nonisolated enum OrigamiEPUBImporter {
             date: document?["date"] as? String ?? date,
             publication: metaVenue ?? opfVenue,
             doi: doiFromMeta ?? extractDOI(from: opf),
-            identifier: packageID)
+            identifier: packageID,
+            work: editionInfo(inOPF: opf).work)
     }
 
     // MARK: Package plumbing
@@ -1156,6 +1266,336 @@ nonisolated enum OrigamiEPUBImporter {
         return nil
     }
 
+    /// The publication's equations, for citing and copying (§7.7.1): the
+    /// semantic record's `equations[]` first; for a book that does not
+    /// declare the profile, the older delimited block in its content
+    /// document; failing both, a scan of every content document's
+    /// `math[id]`. Where an entry's TeX fails its checksum, the MathML in
+    /// the body governs (§12.4) and the TeX comes from the body instead.
+    static func equationIndex(inUnpackedFolder folder: URL) -> [EquationEntry] {
+        let opfSubpath = (try? String(
+            contentsOf: folder.appendingPathComponent("META-INF/container.xml"),
+            encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") }
+            ?? "package.opf"
+        guard let opf = try? String(contentsOf: folder.appendingPathComponent(opfSubpath),
+                                    encoding: .utf8) else { return [] }
+        let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
+        let declaresProfile = firstCapture(
+            in: opf, pattern: "<meta[^>]*property=\"dcterms:conformsTo\"[^>]*>([^<]*)</meta>")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .hasPrefix("https://origamitext.org/profile/") ?? false
+        let documents: [(href: String, xhtml: String)] = spineContentHrefs(in: opf).compactMap { href in
+            let path = joinedPath(opfDirectory, href.removingPercentEncoding ?? href)
+            guard let xhtml = try? String(contentsOf: folder.appendingPathComponent(path),
+                                          encoding: .utf8) else { return nil }
+            return (path, xhtml)
+        }
+        let scanned = documents.flatMap { document in
+            MathMLBodyScanner.equations(inXHTML: document.xhtml, contentHref: document.href)
+        }
+        let record = recordData(inUnpackedFolder: folder, properties: "origami:visual-meta",
+                                fileName: "visual-meta.json")
+            .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+        let fromRecord: [EquationEntry] = dictionaries(record?["equations"]).compactMap { node in
+            guard let id = node["id"] as? String, !id.isEmpty else { return nil }
+            let body = scanned.first { $0.id == id }
+            var entry = EquationEntry(
+                id: id,
+                display: (node["display"] as? String).flatMap(EquationDisplay.init) ?? .block,
+                format: (node["format"] as? String).flatMap(EquationSourceFormat.init) ?? .mathml,
+                label: node["label"] as? String,
+                tex: node["tex"] as? String,
+                texSHA256: node["tex-sha256"] as? String,
+                mathmlSHA256: node["mathml-sha256"] as? String,
+                converter: node["converter"] as? String,
+                href: (node["href"] as? String) ?? body?.href,
+                section: node["section"] as? String,
+                heading: node["heading"] as? String)
+            if entry.texChecksumOK == false || entry.tex == nil {
+                entry.tex = body?.tex
+                entry.texSHA256 = body?.texSHA256
+            }
+            return entry
+        }
+        if !fromRecord.isEmpty { return fromRecord }
+        if !declaresProfile, let first = documents.first {
+            let block = EquationIndex.build(visualMetaText: first.xhtml, contentHTML: first.xhtml,
+                                            contentHref: first.href)
+            if block.fromVisualMeta { return block.entries }
+        }
+        return scanned
+    }
+
+    /// The `<math>` markup an equation entry points at, read from its
+    /// content document.
+    static func mathMLSource(for entry: EquationEntry, inUnpackedFolder folder: URL) -> String? {
+        let opfSubpath = (try? String(
+            contentsOf: folder.appendingPathComponent("META-INF/container.xml"),
+            encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") }
+            ?? "package.opf"
+        let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
+        let path = entry.href.flatMap { $0.split(separator: "#").first.map(String.init) }
+        let candidates = [path, path.map { joinedPath(opfDirectory, $0) }].compactMap { $0 }
+        for candidate in candidates {
+            if let xhtml = try? String(contentsOf: folder.appendingPathComponent(candidate),
+                                       encoding: .utf8),
+               let source = MathMLBodyScanner.mathMLSource(id: entry.id, inXHTML: xhtml) {
+                return source
+            }
+        }
+        return nil
+    }
+
+    /// What the rendered Visual-Meta colophon says of the publication,
+    /// set against what its package and records say (§8.4.6): the
+    /// colophon is for people and never authoritative, so a
+    /// disagreement is reported, not believed.
+    struct ColophonCheck: Sendable, Hashable {
+        /// The colophon's self-citation, as printed.
+        var bibtex: String
+        /// What disagrees: "title", "DOI", "year", "authors", "record paths".
+        var disagreements: [String]
+        var verified: Bool { disagreements.isEmpty }
+    }
+
+    /// Nil when the publication has no colophon with a BibTeX block.
+    static func colophonCheck(inUnpackedFolder folder: URL) -> ColophonCheck? {
+        let opfSubpath = (try? String(
+            contentsOf: folder.appendingPathComponent("META-INF/container.xml"),
+            encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") }
+            ?? "package.opf"
+        guard let opf = try? String(contentsOf: folder.appendingPathComponent(opfSubpath),
+                                    encoding: .utf8) else { return nil }
+        let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
+        // The colophon section, in whichever content document holds it.
+        var colophon: String?
+        for href in spineContentHrefs(in: opf) {
+            let path = joinedPath(opfDirectory, href.removingPercentEncoding ?? href)
+            guard let xhtml = try? String(contentsOf: folder.appendingPathComponent(path),
+                                          encoding: .utf8) else { continue }
+            if let section = firstCapture(
+                in: xhtml,
+                pattern: "(?s)<section[^>]*epub:type=\"[^\"]*colophon[^\"]*\"[^>]*>(.*?)</section>") {
+                colophon = section
+                break
+            }
+        }
+        guard let colophon,
+              let pre = firstCapture(in: colophon, pattern: "(?s)<pre[^>]*>(.*?)</pre>")
+        else { return nil }
+        let bibtex = xmlUnescaped(pre.replacingOccurrences(
+            of: "<[^>]+>", with: "", options: .regularExpression))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let entry = BibTeXParser.first(bibtex) else { return nil }
+
+        let document = recordData(inUnpackedFolder: folder, properties: "origami:visual-meta",
+                                  fileName: "visual-meta.json")
+            .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }?["document"]
+            as? [String: Any]
+        func squeezed(_ text: String) -> String {
+            BibTeXParser.displayText(text).lowercased()
+                .filter { $0.isLetter || $0.isNumber }
+        }
+        var disagreements: [String] = []
+        if let title = entry.fields["title"],
+           let packageTitle = firstTagText(in: opf, tag: "dc:title").map(xmlUnescaped),
+           squeezed(title) != squeezed(packageTitle) {
+            disagreements.append("title")
+        }
+        let packageDOI = (document?["doi"] as? String).flatMap(normalizedDOI) ?? extractDOI(from: opf)
+        if let doi = entry.fields["doi"].flatMap(normalizedDOI), let packageDOI,
+           doi.lowercased() != packageDOI.lowercased() {
+            disagreements.append("DOI")
+        }
+        let packageYear = ((document?["date"] as? String) ?? firstTagText(in: opf, tag: "dc:date"))
+            .map { String($0.prefix(4)) }
+        if let year = entry.fields["year"].map(BibTeXParser.displayText), let packageYear,
+           year != packageYear {
+            disagreements.append("year")
+        }
+        // Authors by surname: the printed "Last, First and …" against the
+        // package's creators, order aside.
+        func surname(_ name: String) -> String {
+            let name = BibTeXParser.displayText(name).trimmingCharacters(in: .whitespaces)
+            let last = name.contains(",")
+                ? String(name.split(separator: ",").first ?? "")
+                : String(name.split(separator: " ").last ?? "")
+            return last.lowercased().filter(\.isLetter)
+        }
+        let creators = allTagTexts(in: opf, tag: "dc:creator").map(xmlUnescaped)
+        if let authors = entry.fields["author"], !creators.isEmpty {
+            let printed = Set(authors.components(separatedBy: " and ").map(surname))
+            if printed != Set(creators.map(surname)) { disagreements.append("authors") }
+        }
+        // The access map's paths must be where the records are (§8.4.3).
+        let declared = Set(["origami:visual-meta", "origami:interaction", "origami:bibliography"]
+            .compactMap { recordHref(in: opf, properties: $0) })
+        let stated = captures(in: colophon, pattern: "<code>([^<]+\\.(?:json|bib))</code>")
+            .map(xmlUnescaped)
+        if !declared.isEmpty, stated.contains(where: { !declared.contains($0) }) {
+            disagreements.append("record paths")
+        }
+        return ColophonCheck(bibtex: bibtex, disagreements: disagreements)
+    }
+
+    /// The glossary's entries as the book prints them (§8.1, EPUB 3's
+    /// `glossary`): each `<dt id>` term with the `<dd>` after it.
+    static func glossaryEntries(inXHTML html: String) -> [(id: String, term: String, definition: String)] {
+        guard let expr = try? NSRegularExpression(
+            pattern: "<dt\\b[^>]*\\bid=\"([^\"]+)\"[^>]*>(.*?)</dt>\\s*<dd\\b[^>]*>(.*?)</dd>",
+            options: [.dotMatchesLineSeparators, .caseInsensitive]) else { return [] }
+        func text(_ markup: String) -> String {
+            xmlUnescaped(markup.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression))
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return expr.matches(in: html, range: NSRange(html.startIndex..., in: html)).compactMap { match in
+            guard let id = Range(match.range(at: 1), in: html),
+                  let term = Range(match.range(at: 2), in: html),
+                  let definition = Range(match.range(at: 3), in: html) else { return nil }
+            let entry = (id: String(html[id]), term: text(String(html[term])),
+                         definition: text(String(html[definition])))
+            return entry.term.isEmpty ? nil : entry
+        }
+    }
+
+    /// The concepts, with each glossary link followed to the entry it
+    /// names (§7.4): the link's words join that concept's marked forms.
+    /// A plain EPUB 3 whose records carry no concepts gets its own
+    /// printed glossary as its definitions.
+    static func conceptsFollowingGlossaryLinks(
+        _ concepts: [LiquidDoc.Concept],
+        glossary: [(id: String, term: String, definition: String)],
+        uses: [(target: String, words: String)]) -> [LiquidDoc.Concept] {
+        var concepts = concepts
+        if concepts.isEmpty {
+            concepts = glossary.filter { !$0.definition.isEmpty }.map {
+                LiquidDoc.Concept(id: $0.id, name: $0.term, description: $0.definition, tag: "concept")
+            }
+        }
+        let terms = Dictionary(glossary.map { ($0.id, $0.term) }, uniquingKeysWith: { first, _ in first })
+        func same(_ a: String, _ b: String) -> Bool {
+            a.compare(b, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        for use in uses {
+            let words = collapsedLineBreaks(use.words).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !words.isEmpty else { continue }
+            let term = terms[use.target]
+            guard let index = concepts.firstIndex(where: { $0.id == use.target })
+                    ?? term.flatMap({ term in concepts.firstIndex { same($0.name, term) } })
+            else { continue }
+            if !same(words, concepts[index].name),
+               !concepts[index].markedForms.contains(where: { same($0, words) }) {
+                concepts[index].markedForms.append(words)
+            }
+        }
+        return concepts
+    }
+
+    /// The profile version a package declares (`dcterms:conformsTo`, whose
+    /// last path segment is MAJOR.MINOR — §16.1), as written.
+    static func declaredProfileVersion(in opf: String) -> String? {
+        guard let value = firstCapture(
+            in: opf, pattern: "<meta[^>]*property=\"dcterms:conformsTo\"[^>]*>\\s*([^<]+)")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              value.hasPrefix("https://origamitext.org/profile/") else { return nil }
+        return value.split(separator: "/").last.map(String.init)
+    }
+
+    static func profileMajor(in opf: String) -> Int? {
+        declaredProfileVersion(in: opf)?.split(separator: ".").first.flatMap { Int($0) }
+    }
+
+    /// What a book's declarations say about how far it can be trusted
+    /// (§16.2, §17.1): a profile newer than this reader, and records
+    /// whose `describes` names another publication.
+    struct ProfileCheck: Sendable, Hashable {
+        var declaredVersion: String?
+        var newerThanReader: Bool
+        /// "semantic record", "interaction record".
+        var untrustedRecords: [String]
+    }
+
+    static func profileCheck(inUnpackedFolder folder: URL) -> ProfileCheck? {
+        let opfSubpath = (try? String(
+            contentsOf: folder.appendingPathComponent("META-INF/container.xml"),
+            encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") }
+            ?? "package.opf"
+        guard let opf = try? String(contentsOf: folder.appendingPathComponent(opfSubpath),
+                                    encoding: .utf8) else { return nil }
+        let identifier = firstTagText(in: opf, tag: "dc:identifier")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var untrusted: [String] = []
+        for (properties, name, key, label) in [
+            ("origami:visual-meta", "visual-meta.json", "visual-meta", "semantic record"),
+            ("origami:interaction", "origami.json", "origami", "interaction record")] {
+            guard let identifier,
+                  let object = recordData(inUnpackedFolder: folder, properties: properties,
+                                          fileName: name)
+                      .flatMap({ (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }),
+                  let describes = ((object[key] as? [String: Any])?["describes"] as? String)?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !describes.isEmpty else { continue }
+            if describes != identifier { untrusted.append(label) }
+        }
+        return ProfileCheck(declaredVersion: declaredProfileVersion(in: opf),
+                            newerThanReader: (profileMajor(in: opf) ?? 1) > 1,
+                            untrustedRecords: untrusted)
+    }
+
+    /// A quote link's origamitext:// action, when the anchor carries one.
+    private static func quoteLinkAction(of attributes: [String: String]) -> String? {
+        [attributes["data-origami-action"], attributes["href"]]
+            .compactMap { $0 }
+            .first { $0.lowercased().hasPrefix("origamitext://") }
+    }
+
+    /// The semantic record's `links` (§9.6), the durable form of a quote
+    /// link, made readable: each one's quoted words, where they stand in
+    /// the linking paragraph outside any other link, become a link to
+    /// `toEdition` at `toAddress`; a link whose words cannot be found
+    /// closes its paragraph with an arrow instead. The link opens the
+    /// passage when the edition is in the library — the record names it by
+    /// identity, never by location.
+    static func applyingQuoteLinks(_ links: [[String: Any]],
+                                   to body: [LiquidDoc.Paragraph]) -> [LiquidDoc.Paragraph] {
+        guard !links.isEmpty else { return body }
+        func fragment(_ value: String) -> Substring {
+            value.split(separator: "#", omittingEmptySubsequences: false).last ?? Substring(value)
+        }
+        var body = body
+        for link in links {
+            guard let from = link["fromAddress"] as? String, !from.isEmpty,
+                  let edition = link["toEdition"] as? String,
+                  let target = link["toAddress"] as? String,
+                  let url = OrigamiCitation.openURL(edition: edition, address: target)
+            else { continue }
+            // The linking paragraph: its address exactly, else the one
+            // paragraph carrying the same id in the other form.
+            let index = body.firstIndex { $0.id == from } ?? {
+                let matches = body.indices.filter { fragment(body[$0].id) == fragment(from) }
+                return matches.count == 1 ? matches[0] : nil
+            }()
+            guard let index else { continue }
+            let text = body[index].text
+            let quoted = ((link["quotedText"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !quoted.isEmpty, !quoted.contains("]"),
+               let range = text.range(of: quoted),
+               text[..<range.lowerBound].filter({ $0 == "[" }).count
+                   == text[..<range.lowerBound].filter({ $0 == "]" }).count {
+                body[index].text = text.replacingCharacters(in: range, with: "[\(quoted)](\(url))")
+            } else {
+                body[index].text = text + " [\u{2197}](\(url))"
+            }
+        }
+        return body
+    }
+
     private static func dictionaries(_ value: Any?) -> [[String: Any]] {
         value as? [[String: Any]] ?? []
     }
@@ -1212,6 +1652,7 @@ nonisolated enum OrigamiEPUBImporter {
                                        contentDir: String = "",
                                        documentPath: String = "",
                                        skippingRecordSections: Bool = false,
+                                       preferringID: Bool = false,
                                        ordinalOffset: Int = 0,
                                        capture: CitationCapture? = nil)
         throws -> (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset],
@@ -1287,10 +1728,14 @@ nonisolated enum OrigamiEPUBImporter {
             // chapter titles read at the same rank, its deeper ranks
             // one step finer each.
             let headingLevels = ["h1": 1, "h2": 1, "h3": 2, "h4": 3, "h5": 3, "h6": 3]
+            // §6.2: a profile publication is addressed by `id`, which wins
+            // where both exist. `data-id` stays first for pre-1.0 books —
+            // this app's own exports put the positional number in `id` and
+            // the stable id in `data-id`, and annotations already use it.
             let stableID: () -> String = {
                 fallbackOrdinal += 1
-                return address(element.attributes["data-id"]
-                    ?? element.attributes["id"]
+                let id = element.attributes["id"], dataID = element.attributes["data-id"]
+                return address((preferringID ? id ?? dataID : dataID ?? id)
                     ?? "p\(fallbackOrdinal)")
             }
             switch element.name {
@@ -1350,6 +1795,19 @@ nonisolated enum OrigamiEPUBImporter {
                         pendingAnchors.append(id)
                     }
                     for child in element.elements { visit(child, stretchID: stretchID) }
+                }
+            case "math":
+                // A display equation standing on its own (§7.7): its
+                // alttext — the words the book gives every reader — kept
+                // under the equation's id, so the Equations sheet's Go
+                // lands on it. It used to vanish from the native readings.
+                let words = (element.attributes["alttext"] ?? element.attributes["data-latex"]
+                    ?? element.plainText).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !words.isEmpty {
+                    var paragraph = LiquidDoc.Paragraph(id: stableID(), heading: nil,
+                                                        text: "`\(words)`")
+                    paragraph.stretchID = stretchID
+                    appendParagraph(paragraph, anchors: element)
                 }
             case "hr":
                 appendParagraph(LiquidDoc.Paragraph(id: stableID(), heading: nil, text: "---"))
@@ -1681,6 +2139,8 @@ nonisolated enum OrigamiEPUBImporter {
     private nonisolated final class CitationCapture {
         var citedAs: [String: String] = [:]
         var numbers: [String: Int] = [:]
+        /// Each glossary link met: the entry it leads to, and its words.
+        var glossaryUses: [(target: String, words: String)] = []
         /// The key whose first occurrence is still accumulating
         /// fragments — nil once anything else interrupts.
         var openKey: String?
@@ -1728,6 +2188,48 @@ nonisolated enum OrigamiEPUBImporter {
             }
         }
         return (references, addressByCitationID, bibtexByAddress)
+    }
+
+    /// References from the bibliography record that point at an Origami
+    /// document, split out as internal citations — which the reader shows as
+    /// live links — the same way `citationPool(fromVisualMeta:)` splits them
+    /// when the address travels in the Visual-Meta URLs.
+    ///
+    /// The address is taken, in order, from the entry's `url` or `weburl`
+    /// when either is an Origami address, from `origami-source-id`, and from
+    /// `vm-id` — but only a vm-id that is an address: older Visual-Meta put
+    /// a creation date there, which names no document. Everything else stays
+    /// a reference.
+    static func internalCitations(in references: [LiquidDoc.Reference])
+        -> (references: [LiquidDoc.Reference],
+            addressByCitationID: [String: String],
+            bibtexByAddress: [String: String]) {
+        var remaining: [LiquidDoc.Reference] = []
+        var addressByCitationID: [String: String] = [:]
+        var bibtexByAddress: [String: String] = [:]
+
+        func field(_ name: String, in fields: [String: String]) -> String? {
+            let value = fields[name]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return value.isEmpty ? nil : value
+        }
+
+        for reference in references {
+            let fields = BibTeXParser.first(reference.bibtex)?.fields ?? [:]
+            let fromURL = ["url", "weburl"]
+                .compactMap { field($0, in: fields) }
+                .lazy.compactMap(originalAddress(fromOpenURL:)).first
+            let fromVMID = field("vm-id", in: fields)
+                .flatMap { LiquidDoc.parseISO8601($0) == nil ? $0 : nil }
+            let address = fromURL ?? field("origami-source-id", in: fields) ?? fromVMID
+
+            if let address {
+                addressByCitationID[reference.id] = address
+                bibtexByAddress[address] = reference.bibtex
+            } else {
+                remaining.append(reference)
+            }
+        }
+        return (remaining, addressByCitationID, bibtexByAddress)
     }
 
     /// The citation a biblioref anchor names: our own exports' explicit
@@ -1957,6 +2459,10 @@ nonisolated enum OrigamiEPUBImporter {
             case .element(let inner):
                 let content = inlineText(of: inner, addressByCitationID: addressByCitationID, capture: capture)
                 switch inner.name {
+                case "math":
+                    // Inline MathML reads as its alttext; its pieces run
+                    // together ("E=mc2") lose the superscript.
+                    out += inner.attributes["alttext"] ?? inner.attributes["data-latex"] ?? content
                 case "strong", "b":
                     out += inner.attributes["class"] == "speaker"
                         ? content
@@ -2068,6 +2574,25 @@ nonisolated enum OrigamiEPUBImporter {
                         // An in-document jump comes back as its token,
                         // the stable id intact.
                         out += "[\(content)](origami-jump:\(target))"
+                    } else if (inner.attributes["epub:type"] ?? "").contains("glossref")
+                                || (inner.attributes["role"] ?? "").contains("doc-glossref") {
+                        // A glossary link: its words stay plain text (terms
+                        // are not links in this reader); where it leads is
+                        // noted, so the definition attaches to the words
+                        // the author marked, not only to the term's name.
+                        if let href = inner.attributes["href"],
+                           let hash = href.lastIndex(of: "#") {
+                            capture?.glossaryUses.append(
+                                (String(href[href.index(after: hash)...]), content))
+                        }
+                        out += content
+                    } else if let action = quoteLinkAction(of: inner.attributes),
+                              !content.isEmpty {
+                        // A cross-document quote link (§7.11): the
+                        // origamitext:// action, in data-origami-action or
+                        // the href itself, which the readers follow into
+                        // the library.
+                        out += "[\(content)](\(action))"
                     } else if let href = inner.attributes["href"],
                               OrigamiEPUBLinks.isAnchored(href: href) {
                         out += "[\(content)](\(href))"

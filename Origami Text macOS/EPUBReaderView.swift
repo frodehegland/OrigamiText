@@ -75,6 +75,8 @@ struct ReaderSelection: Identifiable, Hashable, Sendable {
     let fragment: String?
     let prefix: String?
     let suffix: String?
+    /// The glossary entry the selected words' glossary link leads to.
+    var glossaryTarget: String? = nil
     var id: String { (fragment ?? "") + "·" + text }
 }
 
@@ -476,6 +478,12 @@ struct EPUBReaderScreen: View {
     @State private var tocEntries: [OrigamiEPUBImporter.TOCEntry] = []
     /// The selection a comment is being written for; non-nil shows the sheet.
     @State private var commentSelection: ReaderSelection?
+    /// The author's own map of the book (§10.3), in a sheet.
+    @State private var showsAuthoredMap = false
+    /// The book's equations (§7.7.1), in a sheet — opened on the one
+    /// clicked, when a click opened it.
+    @State private var showsEquations = false
+    @State private var equationFocus: String?
     /// The citation whose card is up — the same card the native styles
     /// show, over the faithful page.
     @State private var citationCard: FaithfulCitation?
@@ -616,6 +624,9 @@ struct EPUBReaderScreen: View {
             if showsFind {
                 findBar
             }
+            // Other editions of this work: a newer one, and notes made on
+            // another (§4.3, §6.4).
+            BookNotices(book: book)
             if let kind = model.readingAnalysisKind {
                 // An AI reading takes the whole page; the foot stays,
                 // so the way back is one click on any word.
@@ -702,6 +713,35 @@ struct EPUBReaderScreen: View {
                 findStamp += 1
             }
         }
+        .sheet(isPresented: $showsAuthoredMap) {
+            let doc = model.readingDoc(forBook: book)
+                ?? LiquidDoc(format: LiquidDoc.knownFormat, id: book.id, title: book.title,
+                             author: "", created: .now, body: [], links: [], wraps: nil,
+                             fileURL: book.base)
+            AuthoredMapView(doc: doc, extras: model.authoredMapExtras(for: doc)) { paragraphID in
+                // A page holds bare ids; a profile book's address is path#id.
+                let bare = paragraphID.split(separator: "#").last.map(String.init) ?? paragraphID
+                if chapters.count > 1, let index = chapterIndex(containing: bare) {
+                    chapterIndex = index
+                }
+                initialFraction = nil
+                requestedFragment = paragraphID
+                fragmentStamp += 1
+            }
+        }
+        .sheet(isPresented: $showsEquations) {
+            EquationsSheet(base: book.base,
+                           bookAddress: model.epubRecords.first { $0.folder == book.id }?.id ?? book.id,
+                           focus: equationFocus) { href in
+                let bare = href.split(separator: "#").last.map(String.init) ?? href
+                if chapters.count > 1, let index = chapterIndex(containing: bare) {
+                    chapterIndex = index
+                }
+                initialFraction = nil
+                requestedFragment = bare
+                fragmentStamp += 1
+            }
+        }
         .sheet(item: $commentSelection) { selection in
             ReaderCommentSheet(selection: selection) { note in
                 model.addComment(note, on: selection)
@@ -747,6 +787,7 @@ struct EPUBReaderScreen: View {
             chapterCount: chapters.count,
             onChapterStep: { delta in step(by: delta) },
             annotations: paintedAnnotations,
+            quoteLinks: model.quoteLinks(forBook: book),
             annotationsStamp: model.annotationsStamp,
             onHighlight: { selection in model.addHighlight(on: selection) },
             onAnnotate: { kind, selection in model.addTag(kind, on: selection) },
@@ -765,13 +806,34 @@ struct EPUBReaderScreen: View {
             // names it and selecting text records the selection. Real
             // behaviours (furl/unfurl, select-and-act) plug in here next.
             onActivate: { ref in
+                // An equation opens the equations sheet on itself: its
+                // TeX, MathML and link, ready to copy.
+                if ref.kind == "equation" {
+                    equationFocus = ref.id
+                    showsEquations = true
+                    return
+                }
                 model.showNote("\(ref.kind.capitalized)\(ref.id.isEmpty ? "" : " · \(ref.id)")")
             },
             onSelect: { text in
                 model.lastEPUBSelection = text
             },
             onCopyQuote: { text in copyAsQuote(text) },
+            onCopyBookCitation: {
+                if let record = model.epubRecords.first(where: { $0.folder == book.id }) {
+                    model.copyCitation(book: record)
+                }
+            },
+            onCopyParagraphLink: { fragment in
+                model.copyParagraphLink(book: book, fragment: fragment)
+            },
+            onShowAuthoredMap: { showsAuthoredMap = true },
+            onShowEquations: {
+                equationFocus = nil
+                showsEquations = true
+            },
             glossaryDefinition: { text in model.glossaryDefinition(matching: text) },
+            glossaryTargetDefinition: { target in model.glossaryDefinition(target: target) },
             onFollowLink: { address, fragment in
                 model.openEPUB(address: address, fragment: fragment)
             },
@@ -1089,6 +1151,9 @@ struct EPUBReaderView: NSViewRepresentable {
     /// The book's annotations, painted over the words with the CSS Custom
     /// Highlight API — the page's DOM is never modified.
     var annotations: [PaintedAnnotation] = []
+    /// The book's durable quote links: linking element, quoted words, and
+    /// the origamitext:// link to the target passage.
+    var quoteLinks: [[String: String]] = []
     /// Bumped when annotations change, so the painting re-runs.
     var annotationsStamp: Int = 0
     /// "Highlight" was chosen from the context menu, on this selection.
@@ -1110,9 +1175,20 @@ struct EPUBReaderView: NSViewRepresentable {
     /// "Copy as Quote" was chosen from the page's context menu, carrying the
     /// selected text. The screen builds the citation from the book's metadata.
     var onCopyQuote: (String) -> Void = { _ in }
+    /// "Copy to Cite" with nothing selected: a citation to the whole book,
+    /// as the list's own command makes.
+    var onCopyBookCitation: () -> Void = {}
+    /// "Copy Link to Paragraph", carrying the stable id under the click.
+    var onCopyParagraphLink: (String) -> Void = { _ in }
+    /// "Show Author's Map": the book's authored layout (§10.3).
+    var onShowAuthoredMap: () -> Void = {}
+    /// "Equations…": the book's equation index (§7.7.1).
+    var onShowEquations: () -> Void = {}
     /// Resolves selected text to the open book's glossary entry (name and
     /// description), for the context menu's "Show Definition".
     var glossaryDefinition: (String) -> (name: String, description: String)? = { _ in nil }
+    /// Resolves a glossary link's target to its entry.
+    var glossaryTargetDefinition: (String) -> (name: String, description: String)? = { _ in nil }
     /// A cross-document quote link was clicked — its target address and the
     /// paragraph fragment, if any. The "live" half of a quote link.
     var onFollowLink: (_ address: String, _ fragment: String?) -> Void = { _, _ in }
@@ -1279,8 +1355,23 @@ struct EPUBReaderView: NSViewRepresentable {
         webView.onCopyQuote = { [weak coordinator = context.coordinator] text in
             coordinator?.onCopyQuote(text)
         }
+        webView.onCopyBookCitation = { [weak coordinator = context.coordinator] in
+            coordinator?.onCopyBookCitation()
+        }
+        webView.onCopyParagraphLink = { [weak coordinator = context.coordinator] fragment in
+            coordinator?.onCopyParagraphLink(fragment)
+        }
+        webView.onShowAuthoredMap = { [weak coordinator = context.coordinator] in
+            coordinator?.onShowAuthoredMap()
+        }
+        webView.onShowEquations = { [weak coordinator = context.coordinator] in
+            coordinator?.onShowEquations()
+        }
         webView.resolveDefinition = { [weak coordinator = context.coordinator] text in
             coordinator?.glossaryDefinition(text)
+        }
+        webView.resolveGlossaryTarget = { [weak coordinator = context.coordinator] target in
+            coordinator?.glossaryTargetDefinition(target)
         }
         webView.onHighlight = { [weak coordinator = context.coordinator] selection in
             coordinator?.onHighlight(selection)
@@ -1313,7 +1404,12 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onActivate = onActivate
         coordinator.onSelect = onSelect
         coordinator.onCopyQuote = onCopyQuote
+        coordinator.onCopyBookCitation = onCopyBookCitation
+        coordinator.onCopyParagraphLink = onCopyParagraphLink
+        coordinator.onShowAuthoredMap = onShowAuthoredMap
+        coordinator.onShowEquations = onShowEquations
         coordinator.glossaryDefinition = glossaryDefinition
+        coordinator.glossaryTargetDefinition = glossaryTargetDefinition
         coordinator.onFollowLink = onFollowLink
         coordinator.onExternalLink = onExternalLink
         coordinator.resolveTransclusion = resolveTransclusion
@@ -1330,6 +1426,7 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onCitationAnchors = onCitationAnchors
         coordinator.onFigureJump = onFigureJump
         coordinator.annotations = annotations
+        coordinator.quoteLinks = quoteLinks
         coordinator.chapterIndex = chapterIndex
         coordinator.chapterCount = chapterCount
         // The paragraphs carrying comments, by their stable ids — the
@@ -1420,6 +1517,7 @@ struct EPUBReaderView: NSViewRepresentable {
         context.coordinator.onActivate = onActivate
         context.coordinator.onSelect = onSelect
         context.coordinator.annotations = annotations
+        context.coordinator.quoteLinks = quoteLinks
         context.coordinator.paintedStamp = annotationsStamp
         context.coordinator.chapterIndex = chapterIndex
         context.coordinator.chapterCount = chapterCount
@@ -1443,7 +1541,12 @@ struct EPUBReaderView: NSViewRepresentable {
         var onActivate: (EPUBElementRef) -> Void = { _ in }
         var onSelect: (String) -> Void = { _ in }
         var onCopyQuote: (String) -> Void = { _ in }
+        var onCopyBookCitation: () -> Void = {}
+        var onCopyParagraphLink: (String) -> Void = { _ in }
+        var onShowAuthoredMap: () -> Void = {}
+        var onShowEquations: () -> Void = {}
         var glossaryDefinition: (String) -> (name: String, description: String)? = { _ in nil }
+        var glossaryTargetDefinition: (String) -> (name: String, description: String)? = { _ in nil }
         var onFollowLink: (_ address: String, _ fragment: String?) -> Void = { _, _ in }
         var onExternalLink: (URL) -> Bool = { _ in false }
         var resolveTransclusion: (_ address: String, _ fragment: String?) -> String? = { _, _ in nil }
@@ -1501,7 +1604,8 @@ struct EPUBReaderView: NSViewRepresentable {
                     text: text,
                     fragment: (body["fragment"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                     prefix: (body["prefix"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-                    suffix: (body["suffix"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                    suffix: (body["suffix"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                    glossaryTarget: (body["glossary"] as? String).flatMap { $0.isEmpty ? nil : $0 })
                 onSelect(text)
             case "annotation":
                 // A click on a painted highlight: show its popover (the
@@ -1667,6 +1771,7 @@ struct EPUBReaderView: NSViewRepresentable {
                 webView.evaluateJavaScript(
                     "if (window.origamiScrollToFraction) window.origamiScrollToFraction(\(fraction));")
             }
+            applyQuoteLinks(in: webView)
             paintAnnotations(in: webView)
             injectChapterFooter(in: webView)
             webView.evaluateJavaScript(
@@ -1679,6 +1784,9 @@ struct EPUBReaderView: NSViewRepresentable {
             webView.evaluateJavaScript("""
             (function(){
               var key = \(id);
+              // The page holds bare ids; an address from the native modes
+              // is path#id.
+              key = key.slice(key.lastIndexOf('#') + 1);
               // A target inside a collapsed stretchtext region: unfold it
               // first, or the scroll would land on a display:none element.
               if (window.origamiRevealStretchtext) { window.origamiRevealStretchtext(key); }
@@ -1703,6 +1811,19 @@ struct EPUBReaderView: NSViewRepresentable {
         /// Paints the book's annotations over the loaded page. Anchors that
         /// belong to other chapters simply find nothing here and stay
         /// unpainted — no chapter bookkeeping needed.
+        /// The book's durable quote links (§9.6), made live on each page.
+        var quoteLinks: [[String: String]] = []
+
+        func applyQuoteLinks(in webView: WKWebView) {
+            guard !quoteLinks.isEmpty,
+                  let data = try? JSONSerialization.data(withJSONObject: quoteLinks),
+                  var json = String(data: data, encoding: .utf8) else { return }
+            json = json.replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+                .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+            webView.evaluateJavaScript(
+                "if (window.origamiApplyQuoteLinks) window.origamiApplyQuoteLinks(\(json));")
+        }
+
         func paintAnnotations(in webView: WKWebView) {
             let list = annotations.map { annotation -> [String: Any] in
                 var item: [String: Any] = ["id": annotation.id,
@@ -2295,6 +2416,14 @@ struct EPUBReaderView: NSViewRepresentable {
           var el = node ? (node.nodeType === 1 ? node : node.parentElement) : null;
           var host = el && el.closest ? el.closest('[data-id], [id]') : null;
           if (host) info.fragment = host.getAttribute('data-id') || host.id || '';
+          // Words inside a glossary link: where the link leads, so Show
+          // Definition follows the author's link, not the words alone.
+          var gloss = el && el.closest ? el.closest('a[href*="#"]') : null;
+          if (gloss && ((gloss.getAttribute('role') || '').indexOf('doc-glossref') >= 0
+                        || (gloss.getAttribute('epub:type') || '').indexOf('glossref') >= 0)) {
+            var href = gloss.getAttribute('href');
+            info.glossary = href.slice(href.lastIndexOf('#') + 1);
+          }
           var context = (host || document.body || {textContent:''}).textContent || '';
           var at = context.indexOf(raw);
           if (at >= 0) {
@@ -2360,9 +2489,19 @@ struct EPUBReaderView: NSViewRepresentable {
         // strikethrough), styled as it arrives from Settings.
         var groups = {}, rules = '';
         (list || []).forEach(function(a){
-          var host = a.fragment
-            ? (document.getElementById(a.fragment)
-               || document.querySelector('[data-id="' + a.fragment + '"]'))
+          // A native-mode address is path#id: take the id, and only when
+          // the path names the page on show — another document's element
+          // may share the id.
+          var frag = a.fragment || '', cut = frag.lastIndexOf('#');
+          if (cut >= 0) {
+            var file = frag.slice(0, cut).split('/').pop();
+            var shown = decodeURIComponent(location.pathname.split('/').pop());
+            frag = (!file || shown === decodeURIComponent(file))
+              ? frag.slice(cut + 1) : '';
+          }
+          var host = frag
+            ? (document.getElementById(frag)
+               || document.querySelector('[data-id="' + frag + '"]'))
             : null;
           // The ladder: words in their element, words anywhere, whole
           // element when the words are gone — degrade, never break.
@@ -2472,8 +2611,10 @@ struct EPUBReaderView: NSViewRepresentable {
         + '.origami-stretch.expanded{opacity:1;font-style:italic;}';
       (document.head || document.documentElement).appendChild(style);
 
-      var links = document.querySelectorAll('a[href^="origamitext://"]');
-      Array.prototype.forEach.call(links, function(a, i){
+      var decorated = 0;
+      // One quote link made live: the class, and its [] control.
+      function decorate(a){
+        var i = decorated++;
         a.classList.add('origami-quote');
         a.setAttribute('data-oq', i);
         // The stretchtext control: renders as "[]" collapsed, "[source]" open.
@@ -2498,7 +2639,51 @@ struct EPUBReaderView: NSViewRepresentable {
           }
         });
         a.insertAdjacentElement('afterend', stretch);
-      });
+      }
+      Array.prototype.forEach.call(
+        document.querySelectorAll('a[href^="origamitext://"]'), decorate);
+
+      // The semantic record's links (§9.6) — a 1.0 book's durable quote
+      // links, which its pages show only as citations. Each one's quoted
+      // words in the linking element become the link; words that cannot
+      // be found get an arrow at the element's end. An address naming
+      // another document of the book finds nothing on this page.
+      window.origamiApplyQuoteLinks = function(list){
+        (list || []).forEach(function(q){
+          var frag = q.from || '', cut = frag.lastIndexOf('#');
+          if (cut >= 0) {
+            var file = frag.slice(0, cut).split('/').pop();
+            var shown = decodeURIComponent(location.pathname.split('/').pop());
+            frag = (!file || shown === decodeURIComponent(file)) ? frag.slice(cut + 1) : '';
+          }
+          var el = frag ? document.getElementById(frag) : null;
+          if (!el) return;
+          var already = false;
+          el.querySelectorAll('a[href]').forEach(function(x){
+            if (x.getAttribute('href') === q.url) already = true;
+          });
+          if (already) return;
+          var a = document.createElement('a');
+          a.setAttribute('href', q.url);
+          var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+          var node, at = -1;
+          while (q.quoted && (node = walker.nextNode())) {
+            if (node.parentElement && node.parentElement.closest('a')) continue;
+            at = node.nodeValue.indexOf(q.quoted);
+            if (at >= 0) break;
+          }
+          if (node && at >= 0) {
+            var range = document.createRange();
+            range.setStart(node, at);
+            range.setEnd(node, at + q.quoted.length);
+            range.surroundContents(a);
+          } else {
+            a.textContent = ' \\u2197';
+            el.appendChild(a);
+          }
+          decorate(a);
+        });
+      };
 
       window.origamiInsertTransclusion = function(reqId, text){
         var i = reqId.replace('oq', '');
@@ -2527,6 +2712,14 @@ final class ReaderWebView: WKWebView {
     var currentSelection: ReaderSelection?
     /// Invoked with the selected text when "Copy as Quote" is chosen.
     var onCopyQuote: (String) -> Void = { _ in }
+    /// Invoked when "Copy to Cite" is chosen with nothing selected.
+    var onCopyBookCitation: () -> Void = {}
+    /// Invoked with the paragraph's stable id for "Copy Link to Paragraph".
+    var onCopyParagraphLink: (String) -> Void = { _ in }
+    /// Invoked when "Show Author's Map" is chosen.
+    var onShowAuthoredMap: () -> Void = {}
+    /// Invoked when "Equations…" is chosen.
+    var onShowEquations: () -> Void = {}
     /// Invoked when "Highlight" is chosen on the current selection.
     var onHighlight: (ReaderSelection) -> Void = { _ in }
     /// Invoked when an Annotate kind is chosen on the current selection.
@@ -2566,6 +2759,9 @@ final class ReaderWebView: WKWebView {
     /// Resolves selected text to the open book's glossary entry, when the
     /// words are a defined concept — what puts "Show Definition" on the menu.
     var resolveDefinition: (String) -> (name: String, description: String)? = { _ in nil }
+    /// Resolves a glossary link's target to its entry — the author's own
+    /// link, asked before the words are matched by name.
+    var resolveGlossaryTarget: (String) -> (name: String, description: String)? = { _ in nil }
     /// The entry and click point held between building the menu and the
     /// "Show Definition" item firing.
     private var pendingDefinition: (name: String, description: String)?
@@ -2589,7 +2785,8 @@ final class ReaderWebView: WKWebView {
             // Selected words the book's glossary defines: the definition
             // leads the menu and pops up in place (glossary terms are
             // deliberately not links — this is the way to a definition).
-            if let entry = resolveDefinition(text) {
+            if let entry = currentSelection?.glossaryTarget.flatMap(resolveGlossaryTarget)
+                ?? resolveDefinition(text) {
                 pendingDefinition = entry
                 addItem(to: menu, title: "Show Definition", action: #selector(showDefinition(_:)))
             }
@@ -2621,8 +2818,19 @@ final class ReaderWebView: WKWebView {
             addItem(to: menu, title: "Copy", action: #selector(copySelection(_:)))
         }
         if text.isEmpty {
-            // Nothing selected: a comment can still land — anchored to
-            // the paragraph under the ctrl-click, found by its stable id.
+            // Nothing selected: the book itself is what gets cited, as
+            // from the list — and the paragraph under the click can be
+            // linked to.
+            addItem(to: menu, title: "Copy to Cite", action: #selector(copyBookCitation(_:)))
+            addItem(to: menu, title: "Copy Link to Paragraph",
+                    action: #selector(copyParagraphLinkAtPoint(_:)))
+            // Always offered: a book without a map says so in the sheet.
+            addItem(to: menu, title: "Show Author\u{2019}s Map",
+                    action: #selector(showAuthoredMap(_:)))
+            addItem(to: menu, title: "Equations\u{2026}", action: #selector(showEquations(_:)))
+            menu.addItem(.separator())
+            // A comment can still land — anchored to the paragraph under
+            // the ctrl-click, found by its stable id.
             addItem(to: menu, title: "Add Comment\u{2026}",
                     action: #selector(commentAtPoint(_:)))
             // And where one already stands, it can leave the same way.
@@ -2645,7 +2853,8 @@ final class ReaderWebView: WKWebView {
           }
           if (!el || el === document.body || el === document.documentElement) {
             var best = null, bestD = 1e9;
-            document.querySelectorAll('[data-id]').forEach(function(c){
+            // A 1.0 book's blocks carry id alone; older exports data-id.
+            document.querySelectorAll('[data-id], main p[id], main li[id], main h1[id], main h2[id], main h3[id], main h4[id], main figure[id], main blockquote[id]').forEach(function(c){
               var r = c.getBoundingClientRect();
               var d = Math.abs((r.top + r.bottom) / 2 - \(menuLocation.y));
               if (d < bestD) { bestD = d; best = c; }
@@ -2703,6 +2912,28 @@ final class ReaderWebView: WKWebView {
 
     @objc private func copyAsQuote(_ sender: Any?) {
         onCopyQuote(selectedText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    @objc private func copyBookCitation(_ sender: Any?) {
+        onCopyBookCitation()
+    }
+
+    @objc private func showAuthoredMap(_ sender: Any?) {
+        onShowAuthoredMap()
+    }
+
+    @objc private func showEquations(_ sender: Any?) {
+        onShowEquations()
+    }
+
+    /// The paragraph under the ctrl-click, through the same climb as Add
+    /// Comment, linked by its stable id.
+    @objc private func copyParagraphLinkAtPoint(_ sender: Any?) {
+        evaluateJavaScript(fragmentAtPointJS) { [weak self] result, _ in
+            guard let self,
+                  let fragment = result as? String, !fragment.isEmpty else { return }
+            self.onCopyParagraphLink(fragment)
+        }
     }
 
     @objc private func highlightSelection(_ sender: Any?) {

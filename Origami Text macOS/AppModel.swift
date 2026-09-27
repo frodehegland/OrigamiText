@@ -808,7 +808,14 @@ final class AppModel {
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.host?.lowercased() == "open"
         else { return }
-        let id = LiquidAddress.canonical(String(components.path.trimmingPrefix("/")))
+        // A library book first: its address may be a DOI or URN, which
+        // the Liquid id rules below would refuse.
+        let raw = String(components.path.trimmingPrefix("/"))
+        if epubRecord(forAddress: raw) != nil {
+            openEPUB(address: raw, fragment: components.fragment)
+            return
+        }
+        let id = LiquidAddress.canonical(raw)
         guard LiquidAddress.isValid(id) else { return }
         if resolve(target: id, rel: nil) == nil {
             showNote("That document is not in the community folder yet.")
@@ -2007,6 +2014,12 @@ final class AppModel {
         meta: OrigamiEPUBImporter.PackageMetadata) -> Bool {
         if let identifier = meta.identifier, !identifier.isEmpty,
            record.packageIdentifier == identifier { return true }
+        // A book that names its work and carries another edition
+        // identifier is a different edition (§4.3) — a new version of the
+        // paper, never a duplicate, however alike title and authors are.
+        if meta.work != nil, let identifier = meta.identifier, !identifier.isEmpty,
+           let standing = record.packageIdentifier, !standing.isEmpty,
+           standing != identifier { return false }
         if let doi = meta.doi, !doi.isEmpty,
            record.doi?.lowercased() == doi.lowercased() { return true }
         let incoming = title.trimmingCharacters(in: .whitespaces).lowercased()
@@ -2913,6 +2926,165 @@ final class AppModel {
         pendingReaderFragment = (fragment?.isEmpty == false) ? fragment : nil
     }
 
+    /// What a book's records add to its authored map: the map's own node
+    /// labels, and the views that declare a y-up space. Empty for a
+    /// document that is not a library book.
+    func authoredMapExtras(for doc: LiquidDoc) -> AuthoredMapExtras {
+        guard let record = epubRecord(forAddress: doc.id) else { return AuthoredMapExtras() }
+        let base = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+        // The interaction record owns the map; pre-1.0 books kept it in
+        // Visual-Meta — the same order the importer reads.
+        let map = [("origami:interaction", "origami.json"), ("origami:visual-meta", "visual-meta.json")]
+            .lazy
+            .compactMap { properties, name in
+                OrigamiEPUBImporter.recordData(inUnpackedFolder: base, properties: properties,
+                                               fileName: name)
+            }
+            .compactMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+            .compactMap { $0["map"] as? [String: Any] }
+            .first
+        var extras = AuthoredMapExtras()
+        for node in (map?["nodes"] as? [[String: Any]]) ?? [] {
+            if let id = node["id"] as? String, let label = node["label"] as? String, !label.isEmpty {
+                extras.labels[id] = label
+            }
+        }
+        for (index, view) in ((map?["views"] as? [[String: Any]]) ?? []).enumerated() {
+            let convention = (view["space"] as? [String: Any])?["convention"] as? String ?? ""
+            if convention.lowercased().contains("y-up") {
+                extras.yUpViews.insert(view["id"] as? String
+                                       ?? view["name"] as? String ?? "View \(index + 1)")
+            }
+        }
+        return extras
+    }
+
+    // MARK: The profile's own declarations (§16.2, §17.1)
+
+    /// A book's declared profile, set against this reader and against its
+    /// records' `describes` — read once and kept.
+    func profileCheck(for record: EPUBRecord) -> OrigamiEPUBImporter.ProfileCheck? {
+        if let cached = profileCheckCache[record.folder] { return cached }
+        let check = OrigamiEPUBImporter.profileCheck(
+            inUnpackedFolder: Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true))
+        profileCheckCache[record.folder] = check
+        return check
+    }
+    @ObservationIgnored private var profileCheckCache: [String: OrigamiEPUBImporter.ProfileCheck?] = [:]
+
+    // MARK: The colophon's self-citation (§8.4)
+
+    /// A book's colophon, set against its metadata — read once and kept.
+    func colophonCheck(for record: EPUBRecord) -> OrigamiEPUBImporter.ColophonCheck? {
+        if let cached = colophonCheckCache[record.folder] { return cached }
+        let check = OrigamiEPUBImporter.colophonCheck(
+            inUnpackedFolder: Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true))
+        colophonCheckCache[record.folder] = check
+        return check
+    }
+    @ObservationIgnored private var colophonCheckCache: [String: OrigamiEPUBImporter.ColophonCheck?] = [:]
+
+    /// The citation Copy to Cite writes, completed from the book's own
+    /// printed self-citation when that agrees with its metadata: the
+    /// publisher's bibliographic fields (venue, pages, publisher, ISBN…)
+    /// win; the entry's key and Origami's own linking fields stay, so a
+    /// paste into Author still finds its way back.
+    nonisolated static func bibTeX(_ entry: String, completedFrom colophon: String) -> String {
+        guard let mine = BibTeXParser.first(entry),
+              let printed = BibTeXParser.first(colophon) else { return entry }
+        let bibliographic: Set<String> = ["title", "author", "editor", "year", "month", "journal",
+                                          "booktitle", "publisher", "address", "volume", "number",
+                                          "pages", "doi", "isbn", "issn", "series", "url", "edition"]
+        var fields = mine.fields
+        for (name, value) in printed.fields where bibliographic.contains(name.lowercased()) {
+            fields[name.lowercased()] = value
+        }
+        let order = ["title", "author", "year", "booktitle", "journal", "publisher", "pages", "doi"]
+        let names = order.filter { fields[$0] != nil } + fields.keys.filter { !order.contains($0) }.sorted()
+        let lines = names.map { "  \($0) = {\(fields[$0] ?? "")}" }
+        return "@\(printed.type.isEmpty ? mine.type : printed.type){\(mine.key),\n\(lines.joined(separator: ",\n"))\n}"
+    }
+
+    // MARK: Editions of a work (§4.3, §6.4)
+
+    /// A book's place among the editions of its work, read from its
+    /// package once and kept.
+    func editionInfo(for record: EPUBRecord) -> OrigamiEPUBImporter.EditionInfo? {
+        if let cached = editionInfoCache[record.folder] { return cached }
+        let info = OrigamiEPUBImporter.editionInfo(
+            inUnpackedFolder: Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true))
+        editionInfoCache[record.folder] = info
+        return info
+    }
+    @ObservationIgnored private var editionInfoCache: [String: OrigamiEPUBImporter.EditionInfo?] = [:]
+
+    /// The library's other editions of this book's work — the same
+    /// `dcterms:isVersionOf`, another `dc:identifier` — newest release
+    /// first. Empty for a book that names no work.
+    func otherEditions(of record: EPUBRecord) -> [EPUBRecord] {
+        guard let info = editionInfo(for: record), let work = info.work else { return [] }
+        return epubRecords
+            .filter { other in
+                guard other.folder != record.folder,
+                      let otherInfo = editionInfo(for: other), otherInfo.work == work
+                else { return false }
+                return otherInfo.identifier != info.identifier
+            }
+            .sorted { (editionInfo(for: $0)?.modified ?? "") > (editionInfo(for: $1)?.modified ?? "") }
+    }
+
+    /// A newer edition of this book in the library: one that says it
+    /// replaces this edition, one this edition says replaces it, or the
+    /// same work released later.
+    func newerEdition(of record: EPUBRecord) -> EPUBRecord? {
+        guard let info = editionInfo(for: record) else { return nil }
+        let mine = info.identifier ?? ""
+        let others = otherEditions(of: record)
+        if let named = others.first(where: { other in
+            let otherInfo = editionInfo(for: other)
+            return otherInfo?.replaces.contains(mine) == true
+                || info.isReplacedBy.contains(otherInfo?.identifier ?? "\u{0}")
+        }) { return named }
+        guard let modified = info.modified else { return nil }
+        return others.first { (editionInfo(for: $0)?.modified ?? "") > modified }
+    }
+
+    /// The reader's annotations on the library's other editions of this
+    /// book's work. They attach exactly to those editions; applying them
+    /// here is an inference (§6.4), so they are shown apart and labelled,
+    /// never mixed with this edition's own.
+    func earlierEditionAnnotations(for record: EPUBRecord) -> [(edition: EPUBRecord, annotation: WebAnnotation)] {
+        otherEditions(of: record).flatMap { edition in
+            AnnotationStore.load(for: edition.id, in: Self.annotationsRoot)
+                .map { (edition: edition, annotation: $0) }
+        }
+    }
+
+    /// A book's durable quote links (§9.6), for its pages: the linking
+    /// element, the quoted words, and the link to the target passage.
+    /// Read once per book from its semantic record.
+    func quoteLinks(forBook book: OpenEPUB) -> [[String: String]] {
+        if let cached = quoteLinksCache[book.id] { return cached }
+        let links = OrigamiEPUBImporter.recordData(
+                inUnpackedFolder: book.base, properties: "origami:visual-meta",
+                fileName: "visual-meta.json")
+            .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+            .flatMap { $0["links"] as? [[String: Any]] } ?? []
+        let list = links.compactMap { link -> [String: String]? in
+            guard let from = link["fromAddress"] as? String, !from.isEmpty,
+                  let edition = link["toEdition"] as? String,
+                  let target = link["toAddress"] as? String,
+                  let url = OrigamiCitation.openURL(edition: edition, address: target)
+            else { return nil }
+            return ["from": from, "url": url,
+                    "quoted": ((link["quotedText"] as? String) ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)]
+        }
+        quoteLinksCache[book.id] = list
+        return list
+    }
+    @ObservationIgnored private var quoteLinksCache: [String: [[String: String]]] = [:]
+
     /// The transcluded source of a quote link: the plain text of the named
     /// paragraph in the target book, read from its unpacked content document.
     /// The inline-expansion half of a quote link. Nil when the target is not
@@ -2993,6 +3165,30 @@ final class AppModel {
     /// one: the selection is trimmed of whitespace and surrounding
     /// quotes/punctuation and matched case-insensitively against the
     /// concepts' names. Nil when no book is open or the term is not defined.
+    /// The definition a glossary link leads to (§7.4): the entry the
+    /// link names, told in the concept's own description where the book
+    /// has one, else in the printed glossary's words.
+    func glossaryDefinition(target: String) -> (name: String, description: String)? {
+        guard let book = openEPUB, !target.isEmpty else { return nil }
+        if glossaryTargetCache?.bookID != book.id {
+            var entries: [String: (name: String, description: String)] = [:]
+            let base = book.base
+            for chapter in OrigamiEPUBImporter.spine(inUnpackedFolder: base)?.chapters ?? [] {
+                guard let xhtml = try? String(contentsOf: base.appendingPathComponent(chapter),
+                                              encoding: .utf8) else { continue }
+                for entry in OrigamiEPUBImporter.glossaryEntries(inXHTML: xhtml) {
+                    entries[entry.id] = (entry.term, entry.definition)
+                }
+            }
+            glossaryTargetCache = (book.id, entries)
+        }
+        guard let entry = glossaryTargetCache?.byTarget[target] else { return nil }
+        return glossaryDefinition(matching: entry.name)
+            ?? (entry.description.isEmpty ? nil : entry)
+    }
+    @ObservationIgnored private var glossaryTargetCache:
+        (bookID: String, byTarget: [String: (name: String, description: String)])?
+
     func glossaryDefinition(matching text: String) -> (name: String, description: String)? {
         guard let book = openEPUB else { return nil }
         let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3020,7 +3216,9 @@ final class AppModel {
             else { return }
             byName[name.lowercased()] = (name, description)
         }
-        let visualMeta = (try? Data(contentsOf: base.appendingPathComponent("visual-meta.json")))
+        let visualMeta = OrigamiEPUBImporter.recordData(
+                inUnpackedFolder: base, properties: "origami:visual-meta",
+                fileName: "visual-meta.json")
             ?? (try? String(contentsOf: content, encoding: .utf8))
                 .flatMap(OrigamiEPUBImporter.embeddedVisualMeta(in:))
         if let visualMeta,
@@ -3032,7 +3230,10 @@ final class AppModel {
         }
         let origamiURL = content.deletingLastPathComponent()
             .appendingPathComponent("origami.json")
-        if let data = try? Data(contentsOf: origamiURL),
+        if let data = OrigamiEPUBImporter.recordData(
+                inUnpackedFolder: base, properties: "origami:interaction",
+                fileName: "origami.json")
+            ?? (try? Data(contentsOf: origamiURL)),
            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
            let glossary = object["glossary"] as? [String: [String: Any]] {
             for node in glossary.values {
@@ -3500,8 +3701,9 @@ final class AppModel {
     /// citation pool alone, abstracts folded in.
     func citationCardDoc(forBook book: OpenEPUB) -> LiquidDoc? {
         if let doc = readingDoc(forBook: book) { return doc }
-        let visualMetaData = (try? Data(contentsOf:
-                book.base.appendingPathComponent("visual-meta.json")))
+        let visualMetaData = OrigamiEPUBImporter.recordData(
+                inUnpackedFolder: book.base, properties: "origami:visual-meta",
+                fileName: "visual-meta.json")
             ?? (try? String(contentsOf: book.content, encoding: .utf8))
                 .flatMap(OrigamiEPUBImporter.embeddedVisualMeta(in:))
         guard let visualMetaData,
@@ -7092,12 +7294,17 @@ final class AppModel {
         let year = doc.date?.yearText ?? String(calendar.component(.year, from: doc.created))
         let annotation = documentAnnotation(forAddress: doc.id)?.body?.value
         let record = epubRecord(forAddress: doc.id)
+        var bibtex = OrigamiReading.bibTeXEntry(for: doc, fragment: paragraphID,
+                                                annotation: annotation, doi: record?.doi)
+        // A colophon that agrees with the metadata is the publisher's own
+        // word on how to cite the book.
+        if let record, let check = colophonCheck(for: record), check.verified {
+            bibtex = Self.bibTeX(bibtex, completedFrom: check.bibtex)
+        }
         CitationClipboard.write(OrigamiCitation(
             to: doc.id, fragment: paragraphID, rel: "cites",
             quotedText: doc.title, author: doc.displayAuthor, year: year,
-            bibtex: OrigamiReading.bibTeXEntry(for: doc, fragment: paragraphID,
-                                               annotation: annotation,
-                                               doi: record?.doi),
+            bibtex: bibtex,
             documentTitle: doc.title,
             documentFilename: record?.originalFilename,
             annotation: annotation))
@@ -7112,6 +7319,38 @@ final class AppModel {
         doc.publication = record.publication
         doc.doi = record.doi
         copyCitation(doc: doc)
+    }
+
+    /// Copy Link to Paragraph for a library book: an
+    /// `origamitext://open/<book>#<paragraph>` link, which opens that
+    /// paragraph in Origami Text from anywhere it is pasted — Mail, Notes,
+    /// a browser, another book. The rich flavour names the book, so a
+    /// paste into a word processor reads as a link, not a URL.
+    func copyParagraphLink(book: OpenEPUB, fragment: String) {
+        let record = epubRecords.first { $0.folder == book.id }
+        copyParagraphLink(bookAddress: record?.id ?? book.id,
+                          title: record?.title ?? book.title, fragment: fragment)
+    }
+
+    /// The link itself, shared by the page and the native readings.
+    func copyParagraphLink(bookAddress: String, title: String, fragment: String) {
+        guard let url = Self.paragraphLink(bookAddress: bookAddress, fragment: fragment)
+        else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let label = title.isEmpty ? url : "\(title) \u{00B6}"
+        let escaped = label.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+        pasteboard.setString("<a href=\"\(url)\">\(escaped)</a>", forType: .html)
+        pasteboard.setString(url, forType: .string)
+        showNote("Link to paragraph copied")
+    }
+
+    /// `origamitext://open/<book>#<paragraph>`. The fragment may itself be
+    /// a canonical `path#id`, so its `#` is escaped; `handleURL` decodes it.
+    nonisolated static func paragraphLink(bookAddress: String, fragment: String) -> String? {
+        guard !fragment.isEmpty else { return nil }
+        return OrigamiCitation.openURL(edition: bookAddress, address: fragment)
     }
 
     func copyParagraphLink(doc: LiquidDoc, paragraphID: String) {

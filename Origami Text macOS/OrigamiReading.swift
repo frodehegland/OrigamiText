@@ -971,9 +971,11 @@ nonisolated enum OrigamiReading {
         let words = Set(normalize(paragraph.text)
             .split(separator: " ").map(String.init))
         return doc.concepts.filter { concept in
-            let name = normalize(concept.name)
-                .split(separator: " ").map(String.init)
-            return !name.isEmpty && name.allSatisfy { words.contains($0) }
+            ([concept.name] + concept.markedForms).contains { form in
+                let name = normalize(form)
+                    .split(separator: " ").map(String.init)
+                return !name.isEmpty && name.allSatisfy { words.contains($0) }
+            }
         }
     }
 
@@ -1410,20 +1412,24 @@ nonisolated enum OrigamiReading {
         // whole-word occurrence of its name, as a character offset.
         var insertions: [(offset: Int, piece: AttributedString)] = []
         for concept in doc.concepts where !concept.description.isEmpty && !concept.name.isEmpty {
-            var searchStart = plain.startIndex
             var found: Range<String.Index>?
-            while let range = plain.range(of: concept.name,
-                                          options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-                                          range: searchStart..<plain.endIndex) {
-                let openOK = range.lowerBound == plain.startIndex
-                    || !isWordCharacter(plain[plain.index(before: range.lowerBound)])
-                let closeOK = range.upperBound == plain.endIndex
-                    || !isWordCharacter(plain[range.upperBound])
-                if openOK && closeOK {
-                    found = range
-                    break
+            // The name, and the words the author's glossary links marked
+            // for it — whichever comes first in the paragraph.
+            for form in [concept.name] + concept.markedForms where !form.isEmpty {
+                var searchStart = plain.startIndex
+                while let range = plain.range(of: form,
+                                              options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                                              range: searchStart..<plain.endIndex) {
+                    let openOK = range.lowerBound == plain.startIndex
+                        || !isWordCharacter(plain[plain.index(before: range.lowerBound)])
+                    let closeOK = range.upperBound == plain.endIndex
+                        || !isWordCharacter(plain[range.upperBound])
+                    if openOK && closeOK {
+                        if found.map({ range.lowerBound < $0.lowerBound }) ?? true { found = range }
+                        break
+                    }
+                    searchStart = range.upperBound
                 }
-                searchStart = range.upperBound
             }
             guard let found else { continue }
 
@@ -1494,9 +1500,11 @@ nonisolated enum OrigamiReading {
             let link = URL(string: glossaryScheme + ":"
                 + (concept.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
                    ?? concept.id))
-            var searchStart = plain.startIndex
             var isFirst = true
-            while let range = plain.range(of: concept.name,
+            // The name, and the words the author's glossary links marked.
+            for form in [concept.name] + concept.markedForms where !form.isEmpty {
+            var searchStart = plain.startIndex
+            while let range = plain.range(of: form,
                                           options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
                                           range: searchStart..<plain.endIndex) {
                 searchStart = range.upperBound
@@ -1516,6 +1524,7 @@ nonisolated enum OrigamiReading {
                                                       to: range.upperBound), definition))
                 }
                 isFirst = false
+            }
             }
         }
         guard !insertions.isEmpty else { return work }
@@ -1738,6 +1747,24 @@ nonisolated struct OrigamiCitation: Codable, Sendable {
     /// Cross-app contract: Author writes and parses this prefix; EPUBReaderView
     /// intercepts it as a back-link. Change it in both apps together.
     static let webCarrierPrefix = "https://origamitext.app/o/"
+
+    /// `origamitext://open/<edition>#<address>` — the link that opens a
+    /// passage in whatever library has the edition. The address may itself
+    /// be a canonical `path#id`, so its `#` is escaped (URLComponents
+    /// decodes it again).
+    static func openURL(edition: String, address: String?) -> String? {
+        var pathAllowed = CharacterSet.urlPathAllowed
+        pathAllowed.remove(charactersIn: "#?")
+        var fragmentAllowed = CharacterSet.urlFragmentAllowed
+        fragmentAllowed.remove(charactersIn: "#")
+        guard !edition.isEmpty,
+              let path = edition.addingPercentEncoding(withAllowedCharacters: pathAllowed)
+        else { return nil }
+        guard let address, !address.isEmpty else { return "origamitext://open/\(path)" }
+        guard let tail = address.addingPercentEncoding(withAllowedCharacters: fragmentAllowed)
+        else { return nil }
+        return "origamitext://open/\(path)#\(tail)"
+    }
 
     /// The address as written in the body: `to` or `to#fragment`.
     var address: String { to + (fragment.map { "#\($0)" } ?? "") }

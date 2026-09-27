@@ -80,7 +80,7 @@ nonisolated enum OrigamiEPUBExporter {
                 case title, subtitle, authors, date, identifier
                 case origamiID = "origami-id"
                 case abstract, keywords, ccsConcepts, isbn, doi, publication
-                case acmReference = "acm-reference"
+                case acmReference  // Profile 1.0 §5.4; exports before it wrote "acm-reference"
                 case rights, license
             }
 

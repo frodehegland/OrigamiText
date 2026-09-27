@@ -363,6 +363,10 @@ struct OrigamiReadingView: View {
     @State private var showReferences = false
     /// The header pill's editor for the whole-document annotation.
     @State private var showsDocumentAnnotation = false
+    /// The author's own map of the document (§10.3), in a sheet.
+    @State private var showsAuthoredMap = false
+    /// The document's equations (§7.7.1), in a sheet.
+    @State private var showsEquations = false
     /// A selection being viewed differently — Flow lines or an AI
     /// rewrite. While set, everything unselected reads grey and any
     /// click on the grey returns to normal.
@@ -944,6 +948,17 @@ struct OrigamiReadingView: View {
         // reading's context menu. The sheet stands here, on the reading
         // itself — in Horizontal and Focus the header (and its pill)
         // may be off-page, and a sheet on an absent view never shows.
+        .sheet(isPresented: $showsEquations) {
+            // A book's structured document keeps its unpacked folder here.
+            EquationsSheet(base: doc.fileURL, bookAddress: doc.id) { href in
+                model.pendingReaderFragment = href
+            }
+        }
+        .sheet(isPresented: $showsAuthoredMap) {
+            AuthoredMapView(doc: doc, extras: model.authoredMapExtras(for: doc)) { paragraphID in
+                model.pendingReaderFragment = paragraphID
+            }
+        }
         .sheet(isPresented: $showsDocumentAnnotation) {
             DocumentAnnotationComposer(
                 title: doc.title,
@@ -1046,7 +1061,12 @@ struct OrigamiReadingView: View {
     /// document. Scroll flows to the paragraph; Horizontal and Focus
     /// turn to its page first.
     @discardableResult
-    private func land(_ fragment: String, with proxy: ScrollViewProxy) -> Bool {
+    private func land(_ arriving: String, with proxy: ScrollViewProxy) -> Bool {
+        // A link made in Scrolling mode names a bare id; a profile book
+        // reads here as path#id — the same element, told apart only in form.
+        let body = doc.body ?? []
+        let fragment = body.contains { $0.id == arriving } ? arriving
+            : AnnotationAnchor.sameElement(arriving, in: body)?.id ?? arriving
         let mine = (doc.body ?? []).contains { $0.id == fragment }
             || sections.contains { $0.heading?.id == fragment }
         guard mine else { return false }
@@ -2704,6 +2724,15 @@ struct OrigamiReadingView: View {
                     .foregroundStyle(themeDimmed.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // The printed colophon's self-citation agrees with the
+            // metadata (§8.4): the citation is the publisher's own. A
+            // disagreement is reported in the notice strip above.
+            if let record = model.epubRecord(forAddress: doc.id),
+               model.colophonCheck(for: record)?.verified == true {
+                Label("Citation verified against the colophon", systemImage: "checkmark.seal")
+                    .font(.caption)
+                    .foregroundStyle(themeDimmed.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
+            }
             HStack(spacing: 12) {
                 documentAnnotationPill
                 seedSharePill
@@ -2771,6 +2800,22 @@ struct OrigamiReadingView: View {
     /// Share to Seed when the document came from a space and a note
     /// stands to share.
     @ViewBuilder private var documentNoteMenuItems: some View {
+        // The whole document cited, as the list's own Copy to Cite does.
+        Button("Copy to Cite", systemImage: "quote.opening") {
+            if let record = model.epubRecord(forAddress: doc.id) {
+                model.copyCitation(book: record)
+            } else {
+                model.copyCitation(doc: doc)
+            }
+        }
+        // Always offered: a book without a map says so in the sheet.
+        Button("Show Author\u{2019}s Map", systemImage: "map") {
+            showsAuthoredMap = true
+        }
+        Button("Equations\u{2026}", systemImage: "function") {
+            showsEquations = true
+        }
+        Divider()
         Button(documentNoteWritten ? "Edit Note…" : "Add Note…",
                systemImage: "square.and.pencil") {
             showsDocumentAnnotation = true
@@ -3135,6 +3180,11 @@ struct OrigamiReadingView: View {
             case .copyCitation:
                 entries.append(.action(title: "Copy as Citation", symbol: "quote.opening") {
                     copyCitation(for: paragraph)
+                })
+                // The paragraph's durable address, openable from anywhere.
+                entries.append(.action(title: "Copy Link to Paragraph", symbol: "link") {
+                    model.copyParagraphLink(bookAddress: doc.id, title: doc.title,
+                                            fragment: paragraph.id)
                 })
             case .copyViewSpec:
                 entries.append(.action(title: "Copy View Specification",
