@@ -2,7 +2,9 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import ImagePlayground
+#if ORIGAMI_CONTACTS
 import Contacts
+#endif
 
 /// A person's contact record: name parts and affiliation, with ORCID
 /// search to anchor the record to a canonical academic identity. Every
@@ -93,12 +95,16 @@ struct PersonFormView: View {
                     TextField("Middle name", text: $person.middleName)
                     TextField("Last name", text: $person.familyName)
                     TextField("Affiliation", text: $person.affiliation)
+                    // Contacts is off for this release (no Contacts
+                    // permission); the flag ORIGAMI_CONTACTS brings it back.
+                    #if ORIGAMI_CONTACTS
                     Button {
                         showsContactsSearch = true
                     } label: {
                         Label("Find in Contacts…", systemImage: "person.text.rectangle")
                     }
                     .help("Fill this record from your Contacts — name, email, affiliation, and photo. Contacts is only read, never changed.")
+                    #endif
                 }
 
                 Section {
@@ -229,6 +235,7 @@ struct PersonFormView: View {
                 pickedFoundPhoto = photo
             }
         }
+        #if ORIGAMI_CONTACTS
         .sheet(isPresented: $showsContactsSearch, onDismiss: {
             // Apply after the search sheet is gone: adopting the photo may
             // need to present the Image Playground sheet in its place.
@@ -241,6 +248,7 @@ struct PersonFormView: View {
                 pickedContact = pick
             }
         }
+        #endif
         .imagePlaygroundSheet(isPresented: $showsPlaygroundSheet,
                               concepts: [.text(PortraitStyle.concept)],
                               sourceImage: sheetSourceImage) { url in
@@ -474,6 +482,7 @@ private nonisolated struct ContactPick: Sendable {
     var imageData: Data?
 }
 
+#if ORIGAMI_CONTACTS
 /// The user's Contacts, searched by name — read-only: choosing a card
 /// copies its details into the record; nothing is ever written back.
 /// The first use asks macOS for permission to read Contacts.
@@ -659,6 +668,8 @@ private struct ContactsSearchSheet: View {
         }
     }
 }
+
+#endif
 
 /// Photographs found online for the person — up to five, from the lead
 /// images of Wikipedia pages matching the name (resolved from the ORCID

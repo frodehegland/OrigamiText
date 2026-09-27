@@ -43,6 +43,8 @@ enum AppSettings {
     static let listTitleFontKey = "listTitleFont"
     static let readerLayoutStyleKey = "readerLayoutStyle"
     static let venueLabelKey = "venueShelfLabel"
+    /// What the whole-library list is called: "Papers" (default) or "Articles".
+    static let papersLabelKey = "papersListLabel"
     static let tripleClickSelectsSentenceKey = "tripleClickSelectsSentence"
     static let readerHeaderColumnWidthKey = "readerHeaderColumnWidth"
     static let connectionPortraitsKey = "connectionPortraits"
@@ -134,6 +136,8 @@ private struct LayoutSettingsView: View {
     private var connectionPortraits = true
     @AppStorage(AppSettings.venueLabelKey)
     private var venueLabel = "Journals"
+    @AppStorage(AppSettings.papersLabelKey)
+    private var papersLabel = "Papers"
     @AppStorage(AppSettings.listTitleFontKey) private var listTitleFamily = ""
     private let listFamilies = NSFontManager.shared.availableFontFamilies.sorted()
 
@@ -169,10 +173,15 @@ private struct LayoutSettingsView: View {
                     Text("Proceedings").tag("Proceedings")
                 }
                 .pickerStyle(.segmented)
+                Picker("Call the library list", selection: $papersLabel) {
+                    Text("Papers").tag("Papers")
+                    Text("Articles").tag("Articles")
+                }
+                .pickerStyle(.segmented)
             } header: {
                 Text("Library")
             } footer: {
-                Text("The sidebar shelf that groups books by the journal or proceedings they are part of — call it whichever fits your library.")
+                Text("The sidebar shelf that groups books by the journal or proceedings they are part of, and the list of every book in the library — call them whichever fits your library.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -437,6 +446,8 @@ private struct ReadingSettingsView: View {
     /// with citations: a raised number must mean exactly one thing.
     @AppStorage(ReaderNoteStyle.defaultsKey)
     private var noteStyleRaw = ReaderNoteStyle.superscript.rawValue
+    @AppStorage(ReaderNoteStyle.popupKey) private var notesAsPopup = true
+    @AppStorage("reopenWhereLeftOff") private var reopenWhereLeftOff = false
     /// Whether citation cards may ask the scholarly services for what
     /// the package left out — see CitationLookup.swift.
     @AppStorage(CitationLookup.enabledKey) private var lookupCitedWorks = true
@@ -477,10 +488,16 @@ private struct ReadingSettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                Picker("Notes open", selection: $notesAsPopup) {
+                    Text("As a popup").tag(true)
+                    Text("In place").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .disabled(noteStyleRaw == ReaderNoteStyle.fold.rawValue)
             } header: {
                 Text("Citations & Notes")
             } footer: {
-                Text("How citations and note marks read: citations as (Hegland 2025), [3], or the number raised; notes as the raised number the paper prints (the default), bracketed, a quiet ‡, or the [] fold — stretchtext's offer, which in the Faithful view opens the note's words in place. A raised number must mean exactly one thing, so choosing Superscript for one moves the other off it. The click is the same in every style — the source's card, or the note.")
+                Text("How citations and note marks read: citations as (Hegland 2025), [3], or the number raised; notes as the raised number the paper prints (the default), bracketed, a quiet ‡, or the [] fold — stretchtext's offer, which in the Faithful view opens the note's words in place. Other marks open their note in a popup over the page, or in place, as chosen; with popups the book's own footnote boxes are hidden from the text. A raised number must mean exactly one thing, so choosing Superscript for one moves the other off it. The click is the same in every style — the source's card, or the note.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -495,6 +512,13 @@ private struct ReadingSettingsView: View {
                    citationStyleRaw == OrigamiCitationStyle.superscript.rawValue {
                     citationStyleRaw = OrigamiCitationStyle.numeric.rawValue
                 }
+            }
+            Section {
+                Toggle("Reopen books where I left off", isOn: $reopenWhereLeftOff)
+            } footer: {
+                Text("Off, a book always opens at its beginning. On, it opens in Scrolling at the chapter and place you were last reading.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section {
                 Toggle("Triple-click selects the sentence", isOn: $tripleClickSelectsSentence)
@@ -792,7 +816,7 @@ private struct AISettingsView: View {
         ReadingAnalysisKind.issues.defaultPrompt
     @AppStorage(AppSettings.aiPersonProfilePromptKey) private var personProfilePrompt = AuthorProfiles.defaultPrompt
     @AppStorage(AppSettings.aiPersonProfilesEnabledKey) private var personProfilesEnabled = true
-    @AppStorage(AppSettings.aiRelevanceTopicKey) private var relevanceTopic = "Hypertext"
+    @AppStorage(AppSettings.aiRelevanceTopicKey) private var relevanceTopic = ""
     @State private var selection = "Summary"
 
     private var prompt: Binding<String> {
@@ -847,7 +871,7 @@ private struct AISettingsView: View {
                 Text("AI Prompts")
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Runs on this Mac only — no text leaves it. \(note)")
+                    Text("\(AIPrivacy.statement) \(note)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("Reset to Default") { prompt.wrappedValue = defaultValue }
@@ -1161,7 +1185,7 @@ private struct LibrarySettingsView: View {
                         .disabled(model.index.folderURL == nil)
                 }
             } footer: {
-                Text("The shared folder your community publishes EPUBs into — typically an iCloud folder. EPUBs found here appear in the Files list (unread ones in bold). New exports and iCloud downloads are picked up automatically; use Rescan if one has not appeared yet.")
+                Text("The shared folder your community publishes EPUBs into — typically an iCloud folder. EPUBs found here appear under Papers (unread ones in bold). New exports and iCloud downloads are picked up automatically; use Rescan if one has not appeared yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1192,8 +1216,8 @@ private struct LibrarySettingsView: View {
                 Text("Where Have I Read This?")
             } footer: {
                 Text(model.readerLibraryURL == nil
-                     ? "Select a phrase in any app and choose Where Have I Read This? from its Services menu (or ⌃⌘F here) to find where you read it. Name a Reader Library above and your PDFs can be searched as well."
-                     : "Select a phrase in any app and choose Where Have I Read This? from its Services menu (or ⌃⌘F here). Your documents and shelf EPUBs are searched from the index; Reader's PDFs are read from the library folder above, which takes a moment longer. A PDF answer opens in Reader at the page it names.")
+                     ? "Select a phrase in any app and choose Where Have I Read This? from its Services menu (or ⌥⌘F here) to find where you read it. Name a Reader Library above and your PDFs can be searched as well."
+                     : "Select a phrase in any app and choose Where Have I Read This? from its Services menu (or ⌥⌘F here). Your documents and shelf EPUBs are searched from the index; Reader's PDFs are read from the library folder above, which takes a moment longer. A PDF answer opens in Reader at the page it names.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1242,6 +1266,9 @@ private struct LibrarySettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            #if DEBUG
+            // A developer's scaffolding: writes fictional letters into the
+            // shared folder, so it never ships.
             Section {
                 HStack {
                     Button("Create Sample Community") { model.createSampleCommunity() }
@@ -1256,6 +1283,7 @@ private struct LibrarySettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            #endif
         }
         .formStyle(.grouped)
     }
@@ -1925,4 +1953,19 @@ private struct CreateHypermediaAccountSheet: View {
 #Preview("Sign in to a Hypermedia account") {
     SignInToHypermediaAccountSheet()
         .environment(AppModel())
+}
+
+/// Where AI text goes, said truthfully: a model on this Mac (Apple's, or
+/// one served on localhost) keeps it here; any other server receives it.
+enum AIPrivacy {
+    @MainActor static var statement: String {
+        guard let (endpoint, _) = OrigamiLLM.shared.selectedEndpointModel() else {
+            return "Runs on this Mac only \u{2014} no text leaves it."
+        }
+        let base = endpoint.base.lowercased()
+        if base.contains("localhost") || base.contains("127.0.0.1") || base.contains("[::1]") {
+            return "Runs on this Mac only \u{2014} no text leaves it."
+        }
+        return "Text is sent to \(endpoint.hostLabel) to be answered."
+    }
 }

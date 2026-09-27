@@ -201,6 +201,16 @@ struct AnnotationsListView: View {
                         Button("Export Annotations…") {
                             exportAnnotations(for: group)
                         }
+                        // The W3C EPUB Annotations exchange format.
+                        Button("Export as EPUB Annotations…") {
+                            model.exportEPUBAnnotations(forAddress: group.address, title: group.title)
+                        }
+                        Button("Export as Markdown…") {
+                            model.exportAnnotations(forAddress: group.address, title: group.title, as: .markdown)
+                        }
+                        Button("Export for Readwise…") {
+                            model.exportAnnotations(forAddress: group.address, title: group.title, as: .readwise)
+                        }
                         Divider()
                         if model.seedLinks[group.address] != nil {
                             Button("Share Annotations to Seed") {

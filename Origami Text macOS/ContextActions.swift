@@ -19,8 +19,6 @@ enum ContextTarget {
     case paragraph(LiquidDoc.Paragraph, in: LiquidDoc)
     /// A whole document.
     case document(LiquidDoc)
-    /// No text at all: the place itself.
-    case background
 }
 
 /// Whether the click happened while reading or while writing — the same
@@ -240,17 +238,6 @@ enum ContextActionBuilder {
             }
             return actions
 
-        case .background:
-            return [
-                ContextAction(id: "new-doc", title: "New Document",
-                              systemImage: "square.and.pencil") {
-                    model.newDraft()
-                },
-                ContextAction(id: "import", title: "Import…",
-                              systemImage: "square.and.arrow.down") {
-                    model.importDocumentFile()
-                },
-            ]
         }
     }
 

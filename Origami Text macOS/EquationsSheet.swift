@@ -52,7 +52,10 @@ struct EquationsSheet: View {
         }
         .frame(minWidth: 620, minHeight: 440)
         .task {
-            entries = OrigamiEPUBImporter.equationIndex(inUnpackedFolder: base)
+            let folder = base
+            entries = await Task.detached(priority: .userInitiated) {
+                OrigamiEPUBImporter.equationIndex(inUnpackedFolder: folder)
+            }.value
             loaded = true
         }
     }

@@ -23,7 +23,12 @@ struct BookNotices: View {
     }
 
     var body: some View {
-        if let record {
+        // Nothing is read on the main thread: until the background checks
+        // land, the strip waits, then appears.
+        if let record, !model.bookChecksReady(for: record) {
+            Color.clear.frame(height: 0)
+                .task(id: record.folder) { model.prefetchBookChecks(for: record) }
+        } else if let record {
             let newer = model.newerEdition(of: record)
             let notes = model.earlierEditionAnnotations(for: record)
             let colophon = model.colophonCheck(for: record)
@@ -31,10 +36,20 @@ struct BookNotices: View {
             let profile = model.profileCheck(for: record)
             let newerProfile = profile?.newerThanReader == true
             let untrusted = profile?.untrustedRecords ?? []
-            if newer != nil || !notes.isEmpty || disagreement != nil || newerProfile || !untrusted.isEmpty {
+            let unreadable = model.unreadableChapters[book.id] ?? 0
+            if newer != nil || !notes.isEmpty || disagreement != nil || newerProfile
+                || !untrusted.isEmpty || unreadable > 0 {
                 HStack(spacing: 14) {
                     Image(systemName: "square.stack.3d.up")
                         .foregroundStyle(.secondary)
+                    if unreadable > 0 {
+                        // Never a silently shorter book.
+                        Label(unreadable == 1
+                              ? "One chapter could not be laid out for the reading styles; Scrolling shows the whole book."
+                              : "\(unreadable) chapters could not be laid out for the reading styles; Scrolling shows the whole book.",
+                              systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
                     if newerProfile {
                         // §16.2: said plainly, and read as an ordinary EPUB.
                         Label("This book follows Origami profile \(profile?.declaredVersion ?? "?"), newer than this version of Origami Text knows. It is read as an ordinary EPUB.",
@@ -56,6 +71,10 @@ struct BookNotices: View {
                         Text("A newer edition of this work is in your library\(label(for: newer)).")
                         Button("Open Newer Edition") { model.openStoredEPUB(newer) }
                             .buttonStyle(.link)
+                        Button("Compare Side by Side") {
+                            model.sideBySide = SideBySideRequest(left: record.folder, right: newer.folder)
+                        }
+                        .buttonStyle(.link)
                     }
                     if !notes.isEmpty {
                         Text(notes.count == 1 ? "1 of your notes is on another edition."

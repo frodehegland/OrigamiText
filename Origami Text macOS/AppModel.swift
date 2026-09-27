@@ -133,6 +133,28 @@ final class AppModel {
             if oldValue != sidebarSelection { previousSidebarSelection = oldValue }
         }
     }
+    /// The journal or proceedings in focus, when one is: the sidebar then
+    /// shows only that venue's own section.
+    var venueInFocus: String? {
+        switch sidebarSelection {
+        case .epubPublication(let name): name
+        case .epubPublicationAuthor(let venue, _): venue
+        case .epubPublicationTopic(let venue, _): venue
+        default: nil
+        }
+    }
+
+    /// Back from a venue's focus to the whole sidebar — the title's click
+    /// and Esc. Lands on the venues shelf, the place the venue was chosen
+    /// from. False when no venue was in focus.
+    @discardableResult
+    func leaveVenueFocus() -> Bool {
+        guard venueInFocus != nil else { return false }
+        venueViewMode = .documents
+        sidebarSelection = .epubJournals
+        return true
+    }
+
     /// The selection before the current one — where ⌘W returns to when
     /// it closes a just-opened editor instead of the window.
     private var previousSidebarSelection: SidebarItem?
@@ -159,6 +181,10 @@ final class AppModel {
 
     var showLinksInspector = false
     var showXRExport = false
+    /// File ▸ Browse Catalogues… (OPDS).
+    var showOPDS = false
+    /// Two books side by side (SideBySideView).
+    var sideBySide: SideBySideRequest?
     /// The EPUB a person has chosen to render into a publisher's format,
     /// waiting on the choice of which format (§Appendix C of the
     /// profile). Set by `importEPUBToFormat()`, cleared when the sheet
@@ -450,7 +476,7 @@ final class AppModel {
         if hidden {
             hiddenViewIDs.insert(id)
             // The view being read leaves the sidebar: land somewhere real.
-            if sidebarSelection == .view(id) { sidebarSelection = .timeline }
+            if sidebarSelection == .view(id) { sidebarSelection = .epubsTimeline }
         } else {
             hiddenViewIDs.remove(id)
         }
@@ -784,7 +810,12 @@ final class AppModel {
         }
     }
 
+    /// The open book's own Back — after following a link inside it. Asked
+    /// first by Go ▸ Back (⌘[); returns whether it went back.
+    @ObservationIgnored var readerBackHandler: (() -> Bool)?
+
     func goBack() {
+        if readerBackHandler?() == true { return }
         guard canGoBack else { return }
         historyPosition -= 1
         commitPendingRead(except: current?.doc)
@@ -2185,6 +2216,7 @@ final class AppModel {
         }
         // A fresh unpack means a new spine — drop the cached one.
         spineCache.removeValue(forKey: prepared.folder)
+        forgetBookChecks(folder: prepared.folder)
         // The reading cache and any prior failure record must both go:
         // a re-imported book deserves a fresh import attempt.
         clearReadingDocFailure(for: prepared.folder)
@@ -2959,6 +2991,90 @@ final class AppModel {
         return extras
     }
 
+    // MARK: Series order
+
+    /// A book's place in its series or collection, when the package says:
+    /// EPUB 3's `group-position` refining its `belongs-to-collection`, or
+    /// Calibre's `series_index`. Read once per book.
+    func seriesPosition(for record: EPUBRecord) -> Double? {
+        if let cached = seriesPositionCache[record.folder] { return cached }
+        var position: Double?
+        let folder = unpackedFolder(for: record)
+        let container = (try? String(contentsOf: folder.appendingPathComponent("META-INF/container.xml"),
+                                     encoding: .utf8)) ?? ""
+        let opfPath = container.range(of: #"full-path="[^"]+""#, options: .regularExpression)
+            .map { String(container[$0]).dropFirst(11).dropLast() }.map(String.init) ?? "package.opf"
+        if let opf = try? String(contentsOf: folder.appendingPathComponent(opfPath), encoding: .utf8) {
+            func first(_ pattern: String) -> String? {
+                guard let e = try? NSRegularExpression(pattern: pattern),
+                      let m = e.firstMatch(in: opf, range: NSRange(opf.startIndex..., in: opf)),
+                      let r = Range(m.range(at: 1), in: opf) else { return nil }
+                return String(opf[r]).trimmingCharacters(in: .whitespaces)
+            }
+            position = first(#"property=["']group-position["'][^>]*>([^<]+)<"#).flatMap(Double.init)
+                ?? first(#"name=["']calibre:series_index["'][^>]*content=["']([^"']+)"#).flatMap(Double.init)
+        }
+        seriesPositionCache[record.folder] = position
+        return position
+    }
+    @ObservationIgnored private var seriesPositionCache: [String: Double?] = [:]
+
+    /// A venue's books in series order when they carry one; otherwise as
+    /// they were. Books without a number follow the numbered ones.
+    func inSeriesOrder(_ records: [EPUBRecord]) -> [EPUBRecord] {
+        let positions = records.map { seriesPosition(for: $0) }
+        guard positions.contains(where: { $0 != nil }) else { return records }
+        return zip(records, positions).enumerated()
+            .sorted { lhs, rhs in
+                switch (lhs.element.1, rhs.element.1) {
+                case let (a?, b?): return a == b ? lhs.offset < rhs.offset : a < b
+                case (.some, nil): return true
+                case (nil, .some): return false
+                default: return lhs.offset < rhs.offset
+                }
+            }
+            .map { $0.element.0 }
+    }
+
+    // MARK: Rendition
+
+    /// How a book asks to be laid out, read once per unpacked folder.
+    func rendition(inUnpackedFolder folder: URL) -> OrigamiEPUBImporter.Rendition {
+        if let cached = renditionCache[folder.path] { return cached }
+        let rendition = OrigamiEPUBImporter.rendition(inUnpackedFolder: folder)
+        renditionCache[folder.path] = rendition
+        return rendition
+    }
+    @ObservationIgnored private var renditionCache: [String: OrigamiEPUBImporter.Rendition] = [:]
+
+    /// Clears every per-book fact read from a package — edition,
+    /// colophon, profile, cover, layout, series, quote links — so a
+    /// re-imported book is read again rather than remembered.
+    func forgetBookChecks(folder: String) {
+        editionInfoCache.removeValue(forKey: folder)
+        colophonCheckCache.removeValue(forKey: folder)
+        profileCheckCache.removeValue(forKey: folder)
+        seriesPositionCache.removeValue(forKey: folder)
+        quoteLinksCache.removeValue(forKey: folder)
+        let path = Self.epubsRoot.appendingPathComponent(folder, isDirectory: true).path
+        coverCache = coverCache.filter { !$0.key.hasPrefix(path) }
+        renditionCache = renditionCache.filter { !$0.key.hasPrefix(path) }
+        citedHereCache = nil
+    }
+
+    // MARK: Covers
+
+    /// A book's declared cover image, read once per unpacked folder.
+    func declaredCover(inUnpackedFolder folder: URL) -> NSImage? {
+        let key = folder.path
+        if let cached = coverCache[key] { return cached }
+        let image = OrigamiEPUBImporter.coverImagePath(inUnpackedFolder: folder)
+            .flatMap { NSImage(contentsOf: folder.appendingPathComponent($0)) }
+        coverCache[key] = image
+        return image
+    }
+    @ObservationIgnored private var coverCache: [String: NSImage?] = [:]
+
     // MARK: The profile's own declarations (§16.2, §17.1)
 
     /// A book's declared profile, set against this reader and against its
@@ -2971,6 +3087,59 @@ final class AppModel {
         return check
     }
     @ObservationIgnored private var profileCheckCache: [String: OrigamiEPUBImporter.ProfileCheck?] = [:]
+
+    // MARK: Per-book checks, read off the main thread
+
+    /// Reads a book's edition, colophon and profile facts — and every
+    /// other book's edition, which "a newer edition" needs — in the
+    /// background, so opening a book never waits on a library of package
+    /// reads. The notice strip redraws when they land.
+    func prefetchBookChecks(for record: EPUBRecord) {
+        guard !prefetchingChecks.contains(record.folder), !bookChecksReady(for: record) else { return }
+        prefetchingChecks.insert(record.folder)
+        let root = Self.epubsRoot
+        let folders = epubRecords.map(\.folder).filter { editionInfoCache[$0] == nil }
+        let folder = record.folder
+        Task.detached(priority: .utility) {
+            var editions: [String: OrigamiEPUBImporter.EditionInfo?] = [:]
+            for other in folders {
+                editions[other] = OrigamiEPUBImporter.editionInfo(
+                    inUnpackedFolder: root.appendingPathComponent(other, isDirectory: true))
+            }
+            let base = root.appendingPathComponent(folder, isDirectory: true)
+            let colophon = OrigamiEPUBImporter.colophonCheck(inUnpackedFolder: base)
+            let profile = OrigamiEPUBImporter.profileCheck(inUnpackedFolder: base)
+            await MainActor.run {
+                for (key, value) in editions where self.editionInfoCache[key] == nil {
+                    self.editionInfoCache[key] = value
+                }
+                self.colophonCheckCache[folder] = colophon
+                self.profileCheckCache[folder] = profile
+                self.prefetchingChecks.remove(folder)
+                self.bookChecksStamp += 1
+            }
+        }
+    }
+    /// Bumped when background book checks land.
+    var bookChecksStamp = 0
+    @ObservationIgnored private var prefetchingChecks: Set<String> = []
+
+    /// The colophon check when already read — never touching disk.
+    func cachedColophonCheck(for record: EPUBRecord) -> OrigamiEPUBImporter.ColophonCheck? {
+        _ = bookChecksStamp
+        return colophonCheckCache[record.folder] ?? nil
+    }
+
+    // "Cited here" is scanned in the background (CitedHere.swift).
+    @ObservationIgnored var citedHerePending: String?
+    var citedHereStamp = 0
+
+    /// Whether a book's checks are ready to read without touching disk.
+    func bookChecksReady(for record: EPUBRecord) -> Bool {
+        _ = bookChecksStamp
+        return colophonCheckCache[record.folder] != nil && profileCheckCache[record.folder] != nil
+            && epubRecords.allSatisfy { editionInfoCache[$0.folder] != nil }
+    }
 
     // MARK: The colophon's self-citation (§8.4)
 
@@ -3281,15 +3450,80 @@ final class AppModel {
     /// Where the reader left a book: the chapter subpath and the scroll
     /// fraction within it. Nil until the book has been read.
     func readingPosition(forFolder folder: String) -> (chapter: String?, fraction: Double)? {
-        guard let stored = UserDefaults.standard.dictionary(forKey: "readingPosition:" + folder)
-        else { return nil }
+        let stored = UserDefaults.standard.dictionary(forKey: "readingPosition:" + folder)
+        let localTime = (stored?["t"] as? Double).map(Date.init(timeIntervalSince1970:)) ?? .distantPast
+        // Another device's newer place wins (the community file).
+        if let shared = sharedReadingPositions[folder], shared.t > localTime {
+            return (shared.chapter, shared.fraction)
+        }
+        guard let stored else { return nil }
         return (stored["chapter"] as? String, stored["fraction"] as? Double ?? 0)
     }
 
-    func saveReadingPosition(forFolder folder: String, chapter: String, fraction: Double) {
-        UserDefaults.standard.set(["chapter": chapter, "fraction": fraction],
-                                  forKey: "readingPosition:" + folder)
+    /// This Mac's saved places, for the community file.
+    func localReadingPositions() -> [String: AnnotationSync.Position] {
+        var out: [String: AnnotationSync.Position] = [:]
+        for (key, value) in UserDefaults.standard.dictionaryRepresentation()
+        where key.hasPrefix("readingPosition:") {
+            guard let stored = value as? [String: Any], let t = stored["t"] as? Double else { continue }
+            out[String(key.dropFirst("readingPosition:".count))] = .init(
+                chapter: stored["chapter"] as? String,
+                fraction: stored["fraction"] as? Double ?? 0,
+                t: Date(timeIntervalSince1970: t))
+        }
+        return out
     }
+
+    /// A place in a book the reader marked: chapter, scroll fraction, a
+    /// label to know it by, and when.
+    struct ReaderBookmark: Codable, Hashable, Identifiable {
+        var id = UUID()
+        var chapter: String
+        var fraction: Double
+        var label: String
+        var created = Date()
+    }
+
+    func bookmarks(forFolder folder: String) -> [ReaderBookmark] {
+        _ = bookmarksStamp
+        guard let data = UserDefaults.standard.data(forKey: "bookmarks:" + folder),
+              let list = try? JSONDecoder().decode([ReaderBookmark].self, from: data) else { return [] }
+        return list
+    }
+
+    func addBookmark(_ bookmark: ReaderBookmark, forFolder folder: String) {
+        var list = bookmarks(forFolder: folder)
+        list.append(bookmark)
+        saveBookmarks(list, forFolder: folder)
+        showNote("Bookmark added")
+    }
+
+    func removeBookmark(_ id: UUID, forFolder folder: String) {
+        saveBookmarks(bookmarks(forFolder: folder).filter { $0.id != id }, forFolder: folder)
+    }
+
+    private func saveBookmarks(_ list: [ReaderBookmark], forFolder folder: String) {
+        if let data = try? JSONEncoder().encode(list) {
+            UserDefaults.standard.set(data, forKey: "bookmarks:" + folder)
+        }
+        bookmarksStamp += 1
+    }
+    /// Bumped on every bookmark change, so the menus re-read.
+    var bookmarksStamp = 0
+
+    func saveReadingPosition(forFolder folder: String, chapter: String, fraction: Double) {
+        UserDefaults.standard.set(["chapter": chapter, "fraction": fraction,
+                                   "t": Date().timeIntervalSince1970],
+                                  forKey: "readingPosition:" + folder)
+        scheduleSharedPositionWrite()
+    }
+
+    // Sync state (AnnotationSync.swift).
+    @ObservationIgnored var syncedAnnotationDates: [String: Date] = [:]
+    @ObservationIgnored var sharedReadingPositions: [String: AnnotationSync.Position] = [:]
+    @ObservationIgnored var positionWriteTask: Task<Void, Never>?
+    static var annotationsRootURL: URL { annotationsRoot }
+    func bumpAnnotationsStamp() { annotationsStamp += 1 }
 
     // MARK: - Annotations (the reader's highlights and comments)
 
@@ -3320,10 +3554,14 @@ final class AppModel {
     /// the sidecar did not reach the disk — and the reader hears it,
     /// rather than losing notes in silence.
     private func persistAnnotations(_ all: [WebAnnotation], for address: String) {
+        let previous = AnnotationStore.load(for: address, in: Self.annotationsRoot)
         if !AnnotationStore.save(all, for: address, in: Self.annotationsRoot) {
             NSSound.beep()
             showNote("The annotation could not be saved to its sidecar.")
+            return
         }
+        // To the community folder, merged, for the other devices.
+        shareAnnotations(all, previous: previous, for: address)
     }
 
     /// Highlights the selection in the open book.
@@ -3533,6 +3771,7 @@ final class AppModel {
                 if let result {
                     let doc = Self.structuredDoc(from: result, record: record,
                                                  fallbackID: bookID, base: base)
+                    self.unreadableChapters[bookID] = result.unreadableDocuments.count
                     self.cacheReadingDoc(doc, for: bookID)
                     // The index build reuses this import too.
                     self.memoizeIndexEntry(EPUBIndexEntry(stamp: stamp, doc: doc), for: bookID)
@@ -3543,6 +3782,10 @@ final class AppModel {
         }
         return nil
     }
+
+    /// Chapters of a book the reading styles could not read, by book id —
+    /// reported above the reading rather than dropped silently.
+    var unreadableChapters: [String: Int] = [:]
 
     /// Clears any cached failure for `bookID` so the next `readingDoc` call
     /// can make a fresh import attempt. Call when the EPUB file is re-opened
@@ -4029,6 +4272,63 @@ final class AppModel {
     func documentAnnotationNote(forRecordID id: String) -> String? {
         let text = documentAnnotation(forAddress: id)?.body?.value
         return text?.isEmpty == false ? text : nil
+    }
+
+    // MARK: EPUB Annotations exchange (W3C EPUB Annotations 1.0)
+
+    /// Saves one library book's annotations as a `.annotations` package.
+    func exportEPUBAnnotations(forAddress address: String, title: String) {
+        guard let record = epubRecord(forAddress: address) else {
+            showNote("Only books in the library can be exported as EPUB Annotations.")
+            return
+        }
+        let annotations = AnnotationStore.load(for: record.id, in: Self.annotationsRoot)
+        let folder = unpackedFolder(for: record)
+        let info = BookInformation.read(inUnpackedFolder: folder)
+        guard let data = EPUBAnnotationExchange.export(
+            annotations, bookFolder: folder, title: info.title.isEmpty ? title : info.title,
+            creators: info.creators, date: info.date, identifier: info.identifier) else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = title + ".annotations"
+        panel.canCreateDirectories = true
+        panel.message = "Export this book's annotations in the W3C EPUB Annotations format, which other reading systems read."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url, options: .atomic)
+            showNote("Exported the annotations of \u{201C}\(title)\u{201D}")
+        } catch {
+            showNote("Could not save the annotations: \(error.localizedDescription)")
+        }
+    }
+
+    /// Reads a `.annotations` package (or its annotations.json) into the
+    /// matching library book's sidecar: by the set's identifier, else its
+    /// title, else the open book. Annotations already there are kept once.
+    func importEPUBAnnotations() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose an EPUB Annotations file (.annotations or annotations.json)."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let set = try EPUBAnnotationExchange.read(url)
+            let byTitle = set.title.flatMap { title in
+                epubRecords.first { $0.title.compare(title, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }
+            }
+            let open = openEPUB.flatMap { book in epubRecords.first { $0.folder == book.id } }
+            guard let record = set.identifier.flatMap(libraryRecord(forIdentity:)) ?? byTitle ?? open else {
+                showNote("No book in the library matches these annotations \u{2014} open the book, then import again.")
+                return
+            }
+            var all = AnnotationStore.load(for: record.id, in: Self.annotationsRoot)
+            let known = Set(all.map(\.id))
+            let fresh = set.annotations.filter { !known.contains($0.id) }
+            all.append(contentsOf: fresh)
+            persistAnnotations(all, for: record.id)
+            annotationsStamp += 1
+            showNote("Imported \(fresh.count) annotation\(fresh.count == 1 ? "" : "s") into \u{201C}\(record.title)\u{201D}")
+        } catch {
+            showNote("Could not read the annotations: \(error.localizedDescription)")
+        }
     }
 
     private func appendAnnotation(_ annotation: WebAnnotation, for doc: LiquidDoc) {
@@ -4683,6 +4983,7 @@ final class AppModel {
         analysesRevision += 1
         globalPinnedAuthors = analysesFile.pinnedAuthors
         globalPinnedTopics = analysesFile.pinnedTopics
+        globalSetAsideAuthors = analysesFile.setAsideAuthors ?? []
         // Document extractions share the folder the same way.
         documentExtractions = ExtractionsFile.read(from: folder).extractions
         // The books' Seed connections travel with the folder too.
@@ -4755,6 +5056,10 @@ final class AppModel {
         var analyses: [String: PublicationAnalysis] = [:]
         var pinnedAuthors: [String] = []    // global — floats to top in every venue
         var pinnedTopics: [String] = []     // global — floats to top in every venue
+        /// Authors set aside library-wide. Optional so files written
+        /// before it still decode (a failed decode would read as empty,
+        /// and the next save would wipe everyone's analyses).
+        var setAsideAuthors: [String]? = nil
         static let filename = "_publication-analyses.json"
 
         static func read(from folder: URL) -> AnalysesFile {
@@ -4828,6 +5133,9 @@ final class AppModel {
 
     private(set) var globalPinnedAuthors: [String] = []
     private(set) var globalPinnedTopics: [String] = []
+    /// Authors set aside from the library's Authors list — kept, not lost:
+    /// they wait under the list's Set Aside until brought back.
+    private(set) var globalSetAsideAuthors: [String] = []
 
     /// Publications currently being analysed — drives the spinner in the sidebar.
     private(set) var analysisInProgress: Set<String> = []
@@ -4840,6 +5148,7 @@ final class AppModel {
         file.analyses = publicationAnalyses
         file.pinnedAuthors = globalPinnedAuthors
         file.pinnedTopics = globalPinnedTopics
+        file.setAsideAuthors = globalSetAsideAuthors
         file.write(to: folder)
     }
 
@@ -4849,6 +5158,7 @@ final class AppModel {
         guard !analysisInProgress.contains(name) else { return }
         analysisInProgress.insert(name)
         defer { analysisInProgress.remove(name) }
+        var analysisFailures = 0
 
         let records = epubRecords(inPublication: name)
         guard !records.isEmpty else { return }
@@ -4865,7 +5175,7 @@ final class AppModel {
             guard let (text, _) = try? await OrigamiLLM.shared.respond(
                 instructions: "Extract topic keywords from academic paper titles. Be concise and specific.",
                 to: prompt)
-            else { continue }
+            else { analysisFailures += 1; continue }
 
             let topics = text
                 .components(separatedBy: ",")
@@ -4874,6 +5184,12 @@ final class AppModel {
             paperTopics[record.id] = topics
         }
 
+        // Every paper refused: say so, rather than a spinner that stops
+        // with nothing to show.
+        if paperTopics.isEmpty, analysisFailures > 0 {
+            showNote("The analysis could not run \u{2014} no AI model answered. Choose or install one in Settings \u{25B8} AI.")
+            return
+        }
         var updated = publicationAnalyses[name] ?? PublicationAnalysis()
         updated.paperTopics = paperTopics
         updated.topicCategories = await categoriseTopics(
@@ -5175,6 +5491,35 @@ final class AppModel {
         saveAnalysesFile()
     }
 
+    /// Sets an author aside from the Authors list (unpinning them: a
+    /// person is either kept at hand or out of the way, not both).
+    func setAsideGlobalAuthor(_ name: String) {
+        guard !globalSetAsideAuthors.contains(name) else { return }
+        globalPinnedAuthors.removeAll { $0 == name }
+        globalSetAsideAuthors.append(name)
+        saveAnalysesFile()
+    }
+
+    func bringBackGlobalAuthor(_ name: String) {
+        globalSetAsideAuthors.removeAll { $0 == name }
+        saveAnalysesFile()
+    }
+
+    /// Each author's oldest paper in the library — the Authors list's Date
+    /// order — by lowercased name: the book's own date, else its arrival.
+    var epubAuthorFirstDates: [String: Date] {
+        var dates: [String: Date] = [:]
+        for record in shownEPUBRecords {
+            let date = record.dateISO.flatMap(LiquidDoc.parseISO8601) ?? record.openedAt
+            for author in Set(record.authorList.map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
+            where !author.isEmpty {
+                if let known = dates[author], known <= date { continue }
+                dates[author] = date
+            }
+        }
+        return dates
+    }
+
     func pinGlobalTopic(_ name: String) {
         guard !globalPinnedTopics.contains(name) else { return }
         globalPinnedTopics.append(name)
@@ -5221,8 +5566,11 @@ final class AppModel {
     }
 
     func addAcquisition(key: String, title: String, author: String, year: Int?, doi: String?) {
-        guard !acquisitions.contains(where: { $0.id == key }),
-              let folder = index.folderURL else { return }
+        guard !acquisitions.contains(where: { $0.id == key }) else { return }
+        guard let folder = index.folderURL else {
+            showNote("To Acquire lives in the community folder \u{2014} choose one (File \u{25B8} Choose Community Folder\u{2026}) to keep a list of works to get.")
+            return
+        }
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
         let item = EPUBAcquisitions.Wanted(id: key, title: title, author: author,
@@ -5384,7 +5732,7 @@ final class AppModel {
         }
         people.attach(folder: folder)
         if people.communityWriteFailed {
-            showNote("Contact information could not be written to the community folder — choose the folder again (File ▸ Choose Folder…) to renew write access.")
+            showNote("Contact information could not be written to the community folder — choose the folder again (File ▸ Choose Community Folder…) to renew write access.")
         }
     }
 
@@ -6067,8 +6415,7 @@ final class AppModel {
     /// folder itself remains the sole authority on what the library is.
     func exportLibraryManifest() {
         guard let folderURL = index.folderURL else {
-            NSSound.beep()
-            showNote("Choose a community folder first — the manifest describes it")
+            showNote("Choose a community folder first (File \u{25B8} Choose Community Folder\u{2026}) \u{2014} the manifest describes it.")
             return
         }
         let author = authorName

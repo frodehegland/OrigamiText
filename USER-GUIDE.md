@@ -129,12 +129,20 @@ options, including reading aloud.
 
 ### 2.1 The sidebar
 
-- **Library** — every book, with **Chronological** (newest first), **Alphabetical** (by
-  title), **Pinned** and **To Acquire**.
+- **Library** — **Pinned**; **Authors** (below); **Papers**, every book (Settings ▸ Layout can
+  call it Articles), sorted by the **Title** or **Date** tab above the list —
+  click the chosen tab again to reverse the order; your own papers under
+  your name, with the same tabs; and **To Acquire**.
 - **Journals** — books grouped by the journal or proceedings they belong
-  to (Settings can rename this group). Inside a journal you also find its
-  **Authors** and **Concepts**.
-- **Authors** and **People** — everyone who wrote what you read.
+  to (Settings can rename this group). Choosing a journal focuses the
+  sidebar on it alone — its name, **Authors** and **Concepts**; click
+  **Origami Text** at the top, or press **Esc**, to see every place again.
+- **Authors** — everyone who wrote what you read, sorted by the **Name**,
+  **Papers** or **Date** tab (Date is each author's oldest paper; click the
+  chosen tab again to reverse). Right-click an author to **Pin** them to the
+  top or **Set Aside**; set-aside authors wait under *Set Aside* at the foot
+  of the list until you **Bring Back** them. **People** (under Views) holds
+  the people you add yourself.
 - **Folders** — your own groupings. Use **Add Folder**, then right-click a
   book to file it.
 - **Annotations** — everything you have highlighted or commented on.

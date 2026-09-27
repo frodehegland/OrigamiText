@@ -61,6 +61,12 @@ struct EPUBPileMenu: View {
         // where a reader reaches for its citation — the same verb, in the
         // same first place, as on a document row.
         Button("Copy to Cite") { model.copyCitation(book: record) }
+        // Beside the book being read — two editions, a paper and its reply.
+        if let open = model.openEPUB, open.id != record.folder {
+            Button("Read Beside \u{201C}\(open.title)\u{201D}") {
+                model.sideBySide = SideBySideRequest(left: open.id, right: record.folder)
+            }
+        }
         Divider()
         Toggle("Pin", isOn: Binding(
             get: { model.isTopOfPile(record) },
@@ -117,6 +123,35 @@ struct EPUBLibraryListView: View {
     @AppStorage("libraryTimelineUnreadOnly") private var timelineUnreadOnly = false
     @AppStorage("libraryAlphabeticalUnreadOnly") private var alphabeticalUnreadOnly = false
     @AppStorage(AppSettings.listTitleFontKey) private var listTitleFamily = ""
+    /// The sort each sortable list keeps: "title" or "date", and its
+    /// direction — Papers and the reader's own books each remember theirs.
+    @AppStorage("papersSortKey") private var papersSortKey = "date"
+    @AppStorage("papersSortAscending") private var papersSortAscending = false
+    @AppStorage("mineSortKey") private var mineSortKey = "date"
+    @AppStorage("mineSortAscending") private var mineSortAscending = false
+
+    /// Whether this list offers the Title | Date tabs.
+    private var isSortable: Bool {
+        switch mode {
+        case .timeline, .myEPUBs: true
+        default: false
+        }
+    }
+
+    /// Records in the order the tabs ask for: by title A–Z, or by date
+    /// newest first — each reversed by a second click on its tab.
+    private func sortedByChoice(_ records: [EPUBRecord], key: String,
+                                ascending: Bool) -> [EPUBRecord] {
+        let sorted: [EPUBRecord]
+        if key == "title" {
+            sorted = records.sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+            return ascending ? sorted : sorted.reversed()
+        }
+        sorted = records.sorted { publicationDate($0) < publicationDate($1) }
+        return ascending ? sorted : sorted.reversed()
+    }
 
     private var records: [EPUBRecord] {
         // Find at the foot of the list narrows every mode the same way.
@@ -135,9 +170,9 @@ struct EPUBLibraryListView: View {
         case .topOfPile:
             return model.epubRecords(inFolder: nil).filter { model.isTopOfPile($0) }
         case .timeline:
-            return model.pinnedFirst(model.epubRecords(inFolder: nil)
-                .filter { !timelineUnreadOnly || model.isUnread($0) }
-                .sorted { publicationDate($0) > publicationDate($1) })
+            return model.pinnedFirst(sortedByChoice(
+                model.epubRecords(inFolder: nil).filter { !timelineUnreadOnly || model.isUnread($0) },
+                key: papersSortKey, ascending: papersSortAscending))
         case .alphabetical:
             return model.pinnedFirst(model.epubRecords(inFolder: nil)
                 .filter { !alphabeticalUnreadOnly || model.isUnread($0) }
@@ -145,7 +180,9 @@ struct EPUBLibraryListView: View {
         case .setAside:
             return model.epubSetAsideRecords
         case .myEPUBs:
-            return model.pinnedFirst(model.epubRecords(byAuthor: model.authorName))
+            return model.pinnedFirst(sortedByChoice(
+                model.epubRecords(byAuthor: model.authorName),
+                key: mineSortKey, ascending: mineSortAscending))
         }
     }
 
@@ -160,10 +197,21 @@ struct EPUBLibraryListView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            if case .timeline = mode {
+                ListSortTabs(key: $papersSortKey, ascending: $papersSortAscending)
+            } else if case .myEPUBs = mode {
+                ListSortTabs(key: $mineSortKey, ascending: $mineSortAscending)
+            }
+            bookList
+        }
+    }
+
+    private var bookList: some View {
         let records = records
         // Selection IS the open book: the row highlights natively, and
         // selecting a row opens it in the reader.
-        List(selection: epubListSelection(model)) {
+        return List(selection: epubListSelection(model)) {
             ForEach(records) { record in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
@@ -254,7 +302,7 @@ struct EPUBLibraryListView: View {
     private var emptyDescription: String {
         switch mode {
         case .folder(let name):
-            "File EPUBs into \u{201C}\(name)\u{201D} from the All list's context menu."
+            "File EPUBs into \u{201C}\(name)\u{201D} from any book's context menu (File Under)."
         case .inbox:
             "Every opened EPUB has been read. New arrivals gather here until they are opened."
         case .topOfPile:
@@ -375,38 +423,155 @@ struct EPUBRecordRow: View {
 /// Automatic — nothing the user curates.
 struct AuthorsListView: View {
     @Environment(AppModel.self) private var model
+    /// Name, Papers or Date (their oldest paper), and its direction —
+    /// a second click on the chosen tab reverses it.
+    @AppStorage("authorsSortKey") private var sortKey = "name"
+    @AppStorage("authorsSortAscending") private var ascending = true
+    @State private var showsSetAside = false
+
+    /// The surname as a sort key: the last word, diacritics folded.
+    private func surname(_ name: String) -> String {
+        (name.components(separatedBy: .whitespaces).last ?? name)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+    }
 
     var body: some View {
-        let authors = model.epubAuthors
-        // One pass over the shelf for every badge, not one per row.
         let counts = model.epubAuthorCounts
-        List {
-            ForEach(authors, id: \.self) { author in
-                Button {
-                    model.sidebarSelection = .epubAuthor(author)
-                } label: {
-                    HStack {
-                        Label(author, systemImage: "person")
-                        Spacer()
-                        Text("\(counts[author.lowercased()] ?? 0)")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
+        let firstDates = model.epubAuthorFirstDates
+        let pinned = Set(model.globalPinnedAuthors)
+        let setAside = Set(model.globalSetAsideAuthors)
+        let everyone = model.epubAuthors
+        let sorted = everyone.filter { !setAside.contains($0) }.sorted { a, b in
+            // Pinned people float first, whatever the order.
+            let ap = pinned.contains(a), bp = pinned.contains(b)
+            if ap != bp { return ap }
+            let ordered: Bool
+            switch sortKey {
+            case "papers":
+                let ca = counts[a.lowercased()] ?? 0, cb = counts[b.lowercased()] ?? 0
+                ordered = ca == cb ? surname(a) < surname(b) : ca < cb
+            case "date":
+                let da = firstDates[a.lowercased()] ?? .distantFuture
+                let db = firstDates[b.lowercased()] ?? .distantFuture
+                ordered = da == db ? surname(a) < surname(b) : da < db
+            default:
+                let sa = surname(a), sb = surname(b)
+                ordered = sa == sb ? a.localizedCaseInsensitiveCompare(b) == .orderedAscending : sa < sb
+            }
+            return ascending ? ordered : !ordered
+        }
+        let asideNames = everyone.filter { setAside.contains($0) }
+        VStack(spacing: 0) {
+            AuthorSortTabs(key: $sortKey, ascending: $ascending)
+            List {
+                ForEach(sorted, id: \.self) { author in
+                    row(author, count: counts[author.lowercased()] ?? 0,
+                        isPinned: pinned.contains(author), isAside: false)
+                }
+                if !asideNames.isEmpty {
+                    Section {
+                        if showsSetAside {
+                            ForEach(asideNames, id: \.self) { author in
+                                row(author, count: counts[author.lowercased()] ?? 0,
+                                    isPinned: false, isAside: true)
+                            }
+                        }
+                    } header: {
+                        Button(showsSetAside ? "Hide Set Aside (\(asideNames.count))"
+                                             : "Set Aside (\(asideNames.count))") {
+                            showsSetAside.toggle()
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
                     }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .listRowBackground(Color.clear)
             }
-        }
-        .overlay {
-            if authors.isEmpty {
-                ContentUnavailableView {
-                    Label("No Authors Yet", systemImage: "person.2")
-                } description: {
-                    Text("Open an EPUB and its author appears here.")
+            .overlay {
+                if everyone.isEmpty {
+                    ContentUnavailableView {
+                        Label("No Authors Yet", systemImage: "person.2")
+                    } description: {
+                        Text("Open an EPUB and its author appears here.")
+                    }
                 }
             }
         }
+    }
+
+    private func row(_ author: String, count: Int, isPinned: Bool, isAside: Bool) -> some View {
+        Button {
+            model.sidebarSelection = .epubAuthor(author)
+        } label: {
+            HStack {
+                Image(systemName: "pin.fill")
+                    .font(.caption)
+                    .foregroundStyle(EmberIconLabelStyle.ember)
+                    .opacity(isPinned ? 1 : 0)
+                Label(author, systemImage: "person")
+                Spacer()
+                Text("\(count)")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .opacity(isAside ? 0.55 : 1)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Color.clear)
+        .contextMenu {
+            if isAside {
+                Button("Bring Back") { model.bringBackGlobalAuthor(author) }
+            } else {
+                Button(isPinned ? "Unpin" : "Pin") {
+                    isPinned ? model.unpinGlobalAuthor(author) : model.pinGlobalAuthor(author)
+                }
+                Button("Set Aside") { model.setAsideGlobalAuthor(author) }
+            }
+        }
+    }
+}
+
+/// Name | Papers | Date above the Authors list — the Title | Date tabs'
+/// behaviour: a click chooses, a second click on the chosen tab reverses.
+/// Name starts A–Z by surname, Papers most first, Date oldest paper first.
+struct AuthorSortTabs: View {
+    @Binding var key: String
+    @Binding var ascending: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            tab("Name", value: "name", startsAscending: true)
+            tab("Papers", value: "papers", startsAscending: false)
+            tab("Date", value: "date", startsAscending: true)
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color.secondary.opacity(0.12)))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func tab(_ title: String, value: String, startsAscending: Bool) -> some View {
+        let chosen = key == value
+        return Button {
+            if chosen { ascending.toggle() } else { key = value; ascending = startsAscending }
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                if chosen {
+                    Image(systemName: ascending ? "chevron.up" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                }
+            }
+            .font(.callout)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 5)
+                .fill(chosen ? Color(nsColor: .controlBackgroundColor) : .clear)
+                .shadow(color: .black.opacity(chosen ? 0.12 : 0), radius: 1, y: 0.5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(chosen ? "Click again to reverse" : "Sort by \(title.lowercased())")
     }
 }
 
@@ -763,8 +928,9 @@ struct JournalBooksListView: View {
         // The foot Find alone cuts this list: the model-wide find bar
         // never stands over the papers now, and applying its text here
         // would empty the list with no visible cause.
+        // A series reads in its own order (group-position), pinned first.
         let shown = findFiltered(
-            model.pinnedFirst(model.epubRecords(inPublication: name)))
+            model.pinnedFirst(model.inSeriesOrder(model.epubRecords(inPublication: name))))
         let aside = findFiltered(model.epubSetAsideRecords(inPublication: name))
         return List(selection: epubListSelection(model)) {
             Section {
@@ -1815,5 +1981,53 @@ struct PinnedFacesView: View {
             },
             back: { model.venueViewMode = .documents },
             tick: { model.adoptStanding() })
+    }
+}
+
+/// Title | Date above a book list: a click chooses the sort, a second
+/// click on the chosen tab reverses it. Title starts A–Z, Date newest
+/// first; the chosen tab shows its direction.
+struct ListSortTabs: View {
+    @Binding var key: String
+    @Binding var ascending: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            tab("Title", value: "title", startsAscending: true)
+            tab("Date", value: "date", startsAscending: false)
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color.secondary.opacity(0.12)))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func tab(_ title: String, value: String, startsAscending: Bool) -> some View {
+        let chosen = key == value
+        return Button {
+            if chosen {
+                ascending.toggle()
+            } else {
+                key = value
+                ascending = startsAscending
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                if chosen {
+                    Image(systemName: ascending ? "chevron.up" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                }
+            }
+            .font(.callout)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 5)
+                .fill(chosen ? Color(nsColor: .controlBackgroundColor) : .clear)
+                .shadow(color: .black.opacity(chosen ? 0.12 : 0), radius: 1, y: 0.5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(chosen ? "Click again to reverse" : "Sort by \(title.lowercased())")
     }
 }

@@ -1,129 +1,52 @@
 import SwiftUI
-import FoundationModels
 
-// Ask the Library: a question answered on this Mac, grounded in the
-// community's documents. The on-device model is given two tools over
-// the library index — search, and read a document — and instructions
-// that answers must cite addresses. Addresses in the answer are then
-// verified against the index: one that resolves becomes a live link,
-// one that does not is stripped of its brackets — the model may
-// misremember; the web of documents may not. Nothing leaves the Mac.
+// Ask the Library: a question answered from the library's own passages.
+// The app finds the passages that best match the question — across every
+// book and document — and hands them, numbered, to the model chosen in
+// Settings ▸ AI (Apple's on-device model when none is chosen or it cannot
+// answer). The answer must cite passages by number; each citation becomes
+// a link to its exact paragraph, and a number the model invents (one no
+// passage carries) is dropped, never shown as a source.
 
-// MARK: - The library tools
+/// One passage offered to the model, with where it lives.
+private struct LibraryPassage: Identifiable {
+    let id: Int
+    let docID: String
+    let paragraphID: String
+    let title: String
+    let author: String
+    let text: String
 
-/// Searches the library's words and titles; the model's way in.
-private struct SearchLibraryTool: Tool {
-    let name = "searchLibrary"
-    let description = "Searches every document in the community library by words in the title, author, or body. Returns each match's address in [brackets], its title, author, and a snippet."
-
-    let state: AppModel
-
-    @Generable
-    struct Arguments {
-        @Guide(description: "Words to search for")
-        var query: String
-        @Guide(description: "How many matches to return", .range(1...8))
-        var limit: Int
-    }
-
-    func call(arguments: Arguments) async throws -> [String] {
-        let query = arguments.query
-        let limit = arguments.limit
-        return await MainActor.run {
-            let terms = query.lowercased()
-                .split(whereSeparator: \.isWhitespace).map(String.init)
-            guard !terms.isEmpty else { return ["Nothing to search for."] }
-            var results: [String] = []
-            for entry in state.index.byID.values {
-                let doc = entry.doc
-                let haystack = (doc.title + " " + doc.author + " "
-                    + doc.bodyEditingText).lowercased()
-                guard terms.allSatisfy({ haystack.contains($0) }) else { continue }
-                let snippetSource = doc.bodyEditingText
-                let snippet = String(snippetSource.prefix(160))
-                    .replacingOccurrences(of: "\n", with: " ")
-                results.append("[\(doc.id)] “\(doc.title)” by \(doc.displayAuthor), \(doc.listedDateText): \(snippet)")
-                if results.count >= limit { break }
-            }
-            return results.isEmpty
-                ? ["No documents match “\(query)”."]
-                : results
-        }
+    var link: String? {
+        AppModel.paragraphLink(bookAddress: docID, fragment: paragraphID)
     }
 }
 
-/// Reads one document whole, by its address.
-private struct ReadDocumentTool: Tool {
-    let name = "readDocument"
-    let description = "Reads a document by the address searchLibrary returned (without brackets). Returns its full words."
-
-    let state: AppModel
-
-    @Generable
-    struct Arguments {
-        @Guide(description: "The document's address, e.g. f.hegla.093252x")
-        var address: String
-    }
-
-    func call(arguments: Arguments) async throws -> String {
-        let address = arguments.address
-        return await MainActor.run {
-            let id = LiquidAddress.canonical(address)
-            guard let doc = state.index.byID[id]?.doc
-                ?? state.index.allByID[id]?.doc else {
-                return "No document answers to \(address)."
-            }
-            // OT: Knowledge Space also unions doc.analysisParagraphIDs —
-            // its notes' AI-analysis blocks, which Origami Text documents
-            // never carry.
-            let appendix = doc.visualMetaParagraphIDs
-            let words = (doc.body ?? [])
-                .filter { !appendix.contains($0.id) }
-                .map(\.displayText)
-                .joined(separator: "\n")
-            return """
-            “\(doc.title)” by \(doc.displayAuthor), \(doc.listedDateText) [\(doc.id)]:
-            \(String(words.prefix(2500)))
-            """
-        }
-    }
-}
-
-// MARK: - The view
-
-/// Ask the Library: grounded question-answering over the community's
-/// documents, on this Mac's own model, every citation verified.
+/// Ask the Library: grounded question-answering over the library, every
+/// citation a link to the passage it rests on.
 struct AskLibraryView: View {
     @Environment(AppModel.self) private var state
 
     @State private var question = ""
-    @State private var answer: [LiquidDoc.Paragraph] = []
+    @State private var answer = ""
+    @State private var sources: [LibraryPassage] = []
     @State private var isAsking = false
     @State private var errorText: String?
-
-    private var modelAvailable: Bool {
-        SystemLanguageModel.default.availability == .available
-    }
+    @State private var modelName: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Ask the Library")
                 .font(.system(size: 26, weight: .bold, design: .serif))
-            Text("A question answered from the community's documents, on this Mac — the model must search the library, and every address it cites is verified against the index before it stands. Nothing leaves the machine.")
+            Text("A question answered from the passages in your library. The best-matching passages go to the model chosen in Settings \u{25B8} AI, and every source it cites is a link to the paragraph it came from.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             HStack {
-                TextField("What does the community say about…", text: $question)
+                TextField("What does my library say about\u{2026}", text: $question)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { ask() }
-                Button(isAsking ? "Asking…" : "Ask") { ask() }
-                    .disabled(isAsking || !modelAvailable
-                              || question.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            if !modelAvailable {
-                Text("The on-device model is not available on this Mac — Apple Intelligence is required.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                Button(isAsking ? "Asking\u{2026}" : "Ask") { ask() }
+                    .disabled(isAsking || question.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             if let errorText {
                 Text(errorText)
@@ -131,18 +54,35 @@ struct AskLibraryView: View {
                     .foregroundStyle(.orange)
             }
             ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(answer) { paragraph in
-                        Text(paragraph.renderedText)
+                VStack(alignment: .leading, spacing: 12) {
+                    if !answer.isEmpty {
+                        Text(renderedAnswer)
                             .font(.system(size: 15, design: .serif))
                             .lineSpacing(5)
                             .textSelection(.enabled)
                     }
-                    if !answer.isEmpty {
+                    if !sources.isEmpty && !answer.isEmpty {
                         Divider()
-                        Text("Answered by the on-device model, grounded by library search; addresses verified against the index.")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
+                        Text("Sources").font(.headline)
+                        ForEach(sources) { passage in
+                            Button {
+                                openPassage(passage)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("[\(passage.id)] \(passage.title)").font(.callout.bold())
+                                    Text(passage.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Open this passage")
+                        }
+                        if let modelName {
+                            Text("Answered by \(modelName), from your library's passages.")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                 }
                 .frame(maxWidth: 640, alignment: .leading)
@@ -152,31 +92,73 @@ struct AskLibraryView: View {
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(AppGreys.page)
+        // Citation links open their passage here, not in a browser.
+        .environment(\.openURL, OpenURLAction { url in
+            state.handleURL(url)
+            return .handled
+        })
+    }
+
+    /// The answer with each valid [n] a link to its passage; numbers no
+    /// passage carries are removed.
+    private var renderedAnswer: AttributedString {
+        var text = answer
+        if let expression = try? NSRegularExpression(pattern: #"\[(\d+(?:\s*,\s*\d+)*)\]"#) {
+            let ns = text as NSString
+            for match in expression.matches(in: text, range: NSRange(location: 0, length: ns.length)).reversed() {
+                let numbers = ns.substring(with: match.range(at: 1))
+                    .split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+                let links = numbers.compactMap { n -> String? in
+                    guard let passage = sources.first(where: { $0.id == n }), let link = passage.link else { return nil }
+                    return "[\(n)](\(link))"
+                }
+                text = (text as NSString).replacingCharacters(
+                    in: match.range, with: links.isEmpty ? "" : "[" + links.joined(separator: ", ") + "]")
+            }
+        }
+        return (try? AttributedString(markdown: text,
+                                      options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
+    }
+
+    private func openPassage(_ passage: LibraryPassage) {
+        if state.epubRecord(forAddress: passage.docID) != nil {
+            state.openEPUB(address: passage.docID, fragment: passage.paragraphID)
+        } else {
+            state.follow(to: passage.docID, fragment: passage.paragraphID, rel: nil)
+        }
     }
 
     private func ask() {
         let asked = question.trimmingCharacters(in: .whitespaces)
-        guard !asked.isEmpty, !isAsking, modelAvailable else { return }
+        guard !asked.isEmpty, !isAsking else { return }
+        let passages = Self.passages(for: asked, in: state.index)
+        guard !passages.isEmpty else {
+            answer = ""
+            sources = []
+            errorText = "Nothing in the library matches those words."
+            return
+        }
         isAsking = true
         errorText = nil
-        answer = []
-        let session = LanguageModelSession(
-            tools: [SearchLibraryTool(state: state), ReadDocumentTool(state: state)],
-            instructions: """
-            You are the librarian of a small community's shared library of \
-            documents. Answer questions only from what the library holds: \
-            always search first, read documents when the snippets are not \
-            enough, and keep answers short and grounded. Every claim must \
-            cite the document it came from by putting its address in square \
-            brackets, like [f.hegla.093252x], at the end of the sentence it \
-            supports. If the library holds nothing on the question, say so \
-            plainly.
-            """)
+        answer = ""
+        sources = passages
+        let context = passages.map { "[\($0.id)] \u{201C}\($0.title)\u{201D} (\($0.author)): \($0.text)" }
+            .joined(separator: "\n\n")
+        let instructions = """
+            You are the librarian of a personal research library. Answer only from the \
+            numbered passages given. Keep the answer short and plain. After every claim, \
+            cite the passage it came from by its number in square brackets, like [3]. \
+            If the passages do not answer the question, say so plainly.
+            """
+        let prompt = "Passages:\n\n\(context)\n\nQuestion: \(asked)"
         Task {
             do {
-                let response = try await session.respond(to: asked)
-                answer = Self.verifiedParagraphs(from: response.content,
-                                                 index: state.index)
+                let result = try await OrigamiLLM.shared.respond(instructions: instructions, to: prompt) { partial in
+                    answer = partial
+                }
+                answer = result.text
+                modelName = result.modelName
             } catch {
                 errorText = "The model could not answer: \(error.localizedDescription)"
             }
@@ -184,24 +166,40 @@ struct AskLibraryView: View {
         }
     }
 
-    /// The answer as paragraphs, its citations verified: an address the
-    /// index knows becomes a live link (via renderedText); one it does
-    /// not loses its brackets and stands as plain words.
+    /// The passages that best match the question: paragraphs scored by
+    /// how many of its words they hold, at most three per document.
     @MainActor
-    private static func verifiedParagraphs(from text: String,
-                                           index: LibraryIndex) -> [LiquidDoc.Paragraph] {
-        var verified = text
-        // Walk matches back to front so ranges stay valid while editing.
-        let nsText = verified as NSString
-        for match in LiquidAddress.matches(in: verified).reversed() {
-            guard index.allByID[match.id] == nil else { continue }
-            let cited = nsText.substring(with: match.range)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-            verified = (verified as NSString).replacingCharacters(
-                in: match.range, with: cited)
+    private static func passages(for question: String, in index: LibraryIndex) -> [LibraryPassage] {
+        let stopwords: Set<String> = ["the", "and", "for", "with", "what", "does", "about", "that", "this",
+                                      "from", "have", "how", "why", "who", "are", "was", "were", "which",
+                                      "into", "their", "there", "they", "say", "says", "library", "my"]
+        let terms = Set(question.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count > 2 && !stopwords.contains($0) })
+        guard !terms.isEmpty else { return [] }
+        var scored: [(score: Int, doc: LiquidDoc, paragraph: LiquidDoc.Paragraph)] = []
+        for entry in index.allByID.values {
+            var perDoc: [(Int, LiquidDoc.Paragraph)] = []
+            for paragraph in entry.doc.body ?? [] where paragraph.heading == nil && paragraph.text.count > 60 {
+                let words = paragraph.text.lowercased()
+                let score = terms.reduce(0) { $0 + (words.contains($1) ? 1 : 0) }
+                if score > 0 { perDoc.append((score, paragraph)) }
+            }
+            for (score, paragraph) in perDoc.sorted(by: { $0.0 > $1.0 }).prefix(3) {
+                scored.append((score, entry.doc, paragraph))
+            }
         }
-        return LiquidDoc.parseBody(from: verified)
+        return scored.sorted { $0.score > $1.score }.prefix(12).enumerated().map { offset, hit in
+            LibraryPassage(id: offset + 1, docID: hit.doc.id, paragraphID: hit.paragraph.id,
+                           title: hit.doc.title, author: hit.doc.displayAuthor,
+                           text: String(CitedHereText.readable(hit.paragraph.text).prefix(700)))
+        }
     }
+}
+
+/// A paragraph's words for the model: the reader's text, tokens dropped.
+private enum CitedHereText {
+    static func readable(_ text: String) -> String { AppModel.readableWords(text) }
 }
 
 extension AskLibraryView {

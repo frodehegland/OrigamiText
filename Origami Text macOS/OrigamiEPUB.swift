@@ -2114,7 +2114,7 @@ extension OrigamiEPUBExporter {
 /// more. Store-only is legal EPUB, keeps the writer verifiable, and the
 /// profile's contents are small text files. The mimetype entry must be
 /// added first.
-private struct ZipWriter {
+struct ZipWriter {
 
     private struct Entry {
         let name: Data

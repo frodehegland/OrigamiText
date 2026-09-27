@@ -173,12 +173,6 @@ struct ContentView: View {
                 }
             }
         }
-        // The catch-all: a ctrl-click on no text at all still answers.
-        // Inner menus (paragraphs, names, rows) win where they exist, and
-        // AppKit-backed text views keep their own richer menus.
-        .contextMenu {
-            ContextActionItems(target: .background)
-        }
         // Continual profile building: every index change (a new letter,
         // an import, a rescan) offers the undigested documents to the
         // on-device model. See PersonProfiles.swift.
@@ -199,6 +193,8 @@ struct ContentView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))
                 model.adoptStanding()
+                // Annotations and reading places from the other devices.
+                model.adoptSyncedAnnotations()
             }
         }
         .inspector(isPresented: $model.showLinksInspector) {
@@ -206,6 +202,23 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.showXRExport) {
             ExportToXRSheet()
+        }
+        // A first launch opens the built-in guide, once. A book the
+        // launch itself opened (double-clicked in Finder) keeps the page;
+        // the guide then waits for the next launch.
+        .task {
+            guard !UserDefaults.standard.bool(forKey: "introShownOnce") else { return }
+            try? await Task.sleep(for: .seconds(1))
+            guard model.openEPUB == nil,
+                  !UserDefaults.standard.bool(forKey: "introShownOnce") else { return }
+            UserDefaults.standard.set(true, forKey: "introShownOnce")
+            model.openIntroGuide()
+        }
+        .sheet(isPresented: $model.showOPDS) {
+            OPDSBrowser()
+        }
+        .sheet(item: $model.sideBySide) { request in
+            SideBySideView(request: request)
         }
         .sheet(item: $model.formatConversion) { conversion in
             FormatChoiceSheet(conversion: conversion)

@@ -129,7 +129,8 @@ enum LibraryViewRegistry {
         WeaveView.module,
         AuthorsCircleView.module,
         PlacesView.module,
-        CalendarEventsView.module,
+        // CalendarEventsView.module — off for this release (no Calendar
+        // permission); restore with the ORIGAMI_CALENDAR flag.
         AttentionsView.module,
         StrangerView.module,
         TrailsView.module,
@@ -156,14 +157,12 @@ enum LibraryViewRegistry {
     /// by the sidebar's own places. Everything else waits behind Edit
     /// Views until asked for.
     static let defaultShownIDs: Set<String> = [
+        // The dependable three for a new library; the experiments (The
+        // Weave, Trails, Hot Paragraphs, Health, The Deal) are one click
+        // away in Edit Views.
         AskLibraryView.module.id,
-        WeaveView.module.id,
-        TrailsView.module.id,
-        HotParagraphsView.module.id,
         GlossaryView.module.id,
         LineageModuleView.module.id,
-        HealthDashboardView.module.id,
-        TheDealView.module.id,
     ]
 
     static func module(id: String) -> LibraryViewModule? {

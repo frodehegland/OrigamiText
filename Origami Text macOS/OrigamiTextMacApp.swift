@@ -73,6 +73,11 @@ struct OrigamiTextMacApp: App {
                 // Author and exported as an Origami EPUB is rendered here
                 // in a publisher's format.
                 Button("Import to Format…") { model.importEPUBToFormat() }
+                // Highlights and notes from another reading system, in the
+                // W3C EPUB Annotations format.
+                Button("Import Annotations…") { model.importEPUBAnnotations() }
+                // Library and open-access catalogues (OPDS).
+                Button("Browse Catalogues…") { model.showOPDS = true }
                 // A capsule's page, read here: gemtext is another
                 // hypermedia protocol the reader speaks.
                 Button("Open Gemini URL…") { model.openGeminiURLPrompt() }
@@ -144,10 +149,19 @@ struct OrigamiTextMacApp: App {
             // the clipboard (or typed) found in everything one has read.
             ReadingSearchCommands(model: model)
             LibraryWindowCommands(model: model)
+            // Help leads somewhere: the built-in guide (an Origami EPUB,
+            // opened like any book) and the lab's site.
+            CommandGroup(replacing: .help) {
+                Button("Origami Text Guide") { model.openIntroGuide() }
+                Button("Future Text Lab Website") {
+                    if let url = URL(string: "https://futuretextlab.info") { NSWorkspace.shared.open(url) }
+                }
+            }
             CommandMenu("Go") {
                 Button("Back") { model.goBack() }
                     .keyboardShortcut("[", modifiers: .command)
-                    .disabled(!model.canGoBack)
+                    // An open book may have a followed link to go back to.
+                    .disabled(!model.canGoBack && model.openEPUB == nil)
                 Button("Forward") { model.goForward() }
                     .keyboardShortcut("]", modifiers: .command)
                     .disabled(!model.canGoForward)
@@ -212,6 +226,8 @@ struct OrigamiTextMacApp: App {
             PageCaptureView()
                 .environment(model)
         }
+        // Never reopened at launch: the camera starts only when asked.
+        .restorationBehavior(.disabled)
 
         Settings {
             SettingsView()
@@ -467,6 +483,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   window.collectionBehavior.contains(.fullScreenPrimary)
                       || window.styleMask.contains(.fullScreen)
             else { return event }
+            // A journal in focus in the sidebar: Esc steps back out to
+            // every place first; full screen is the next Esc.
+            if !window.styleMask.contains(.fullScreen),
+               self?.model?.leaveVenueFocus() == true {
+                return nil
+            }
             window.toggleFullScreen(nil)
             return nil
         }

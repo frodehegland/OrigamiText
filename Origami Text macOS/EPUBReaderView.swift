@@ -77,6 +77,9 @@ struct ReaderSelection: Identifiable, Hashable, Sendable {
     let suffix: String?
     /// The glossary entry the selected words' glossary link leads to.
     var glossaryTarget: String? = nil
+    /// The print page the selection stands on, when the page carries
+    /// page-break markers.
+    var page: String? = nil
     var id: String { (fragment ?? "") + "·" + text }
 }
 
@@ -112,10 +115,42 @@ enum ReaderStyle {
     /// values ("readingFontDelta"/"readingLineSpacing", points on an
     /// 18-point body): one setting, every mode — the faithful pages
     /// scale with the same steppers as Horizontal.
+    /// The reader's page choices beyond font and size: the publisher's
+    /// own styles, justification, hyphenation, and the text column.
+    struct PageOptions: Equatable {
+        var publisherStyles = false
+        var justify = false
+        var hyphenate = false
+        /// The column's measure in ems; 0 is the full width.
+        var measure: Double = 0
+    }
+
     static func css(bodyFont: String, headingFont: String, theme: ReaderTheme,
-                    fontDelta: Double = 3, lineSpacing: Double = 3) -> String {
+                    fontDelta: Double = 3, lineSpacing: Double = 3,
+                    options: PageOptions = PageOptions()) -> String {
         let size = max(50, Int(((18 + fontDelta) / 18 * 100).rounded()))
         let lineHeight = max(1.2, 1.2 + lineSpacing / (18 + max(fontDelta, -8)))
+        var extra = ""
+        if options.justify {
+            extra += "p, li, blockquote { text-align: justify !important; }\n"
+        }
+        if options.hyphenate {
+            extra += "p, li, blockquote { -webkit-hyphens: auto !important; hyphens: auto !important; }\n"
+        }
+        if options.measure > 0 {
+            extra += "body { max-width: \(Int(options.measure))em !important; margin-left: auto !important; margin-right: auto !important; padding-left: 1.5em; padding-right: 1.5em; }\n"
+        }
+        // The publisher's styles: the book's own type, size and spacing
+        // stand; only the theme's colours, image fitting and the reader's
+        // column choices are laid over them.
+        if options.publisherStyles {
+            return """
+            a, a:link, a:visited { color: inherit; }
+            img { max-width: 100%; height: auto; }
+            \(extra)
+            \(theme.css)
+            """
+        }
         return """
         a, a:link, a:visited { color: inherit; }
         body { font-family: \(family(bodyFont, fallback: "'Times New Roman', Times, serif")); font-size: \(size)%; line-height: \(String(format: "%.2f", lineHeight)); }
@@ -131,6 +166,7 @@ enum ReaderStyle {
         pre { background: rgba(127, 127, 127, 0.12); padding: 0.8em 1em; border-radius: 4px; overflow-x: auto; }
         pre code { font-size: 0.85em; white-space: pre-wrap; }
         .affiliation, .author-detail, .author-detail a, .author-details, .author-details a, .byline, .license, .license a, .acm-reference { color: inherit !important; }
+        \(extra)
         \(theme.css)
         """
     }
@@ -354,12 +390,33 @@ struct EPUBReaderScreen: View {
     // faithful pages' CSS scales with the same steppers as Horizontal.
     @AppStorage("readingFontDelta") private var fontDelta = 3.0
     @AppStorage("readingLineSpacing") private var lineSpacing = 3.0
+    @AppStorage("faithfulPublisherStyles") private var publisherStyles = false
+    @AppStorage("faithfulJustify") private var justify = false
+    @AppStorage("faithfulHyphenate") private var hyphenate = false
+    @AppStorage("faithfulMeasure") private var measure = 0.0
+    @AppStorage("reopenWhereLeftOff") private var reopenWhereLeftOff = false
+    /// Read aloud on the book's own pages: the shared controller (the
+    /// chosen voice), fed the page's sentences; the stamp asks the page
+    /// for them.
+    @State private var pageReader = ReadAloudController()
+    /// The book's own narration (EPUB media overlays), when the chapter
+    /// carries one — preferred over the synthetic voice.
+    @State private var overlayPlayer = MediaOverlayPlayer()
+    /// Reading aloud carries on into the next chapter until stopped.
+    @State private var readingOn = false
+    @State private var advancingForReading = false
+    @State private var readAloudStamp = 0
+    /// Words per chapter, counted once per book in the background — the
+    /// progress and time-left readout's weights.
+    @State private var chapterWords: [Int] = []
     @State private var showsFaithfulPalette = false
     @State private var showsFaithfulType = false
 
     private var readerCSS: String {
         ReaderStyle.css(bodyFont: bodyFont, headingFont: headingFont, theme: theme,
-                        fontDelta: fontDelta, lineSpacing: lineSpacing)
+                        fontDelta: fontDelta, lineSpacing: lineSpacing,
+                        options: .init(publisherStyles: publisherStyles, justify: justify,
+                                       hyphenate: hyphenate, measure: measure))
     }
 
     /// The palette and type marks on the faithful (Scrolling) foot bar —
@@ -376,16 +433,18 @@ struct EPUBReaderScreen: View {
                 }
                 .buttonStyle(.plain)
                 .help(model.isTopOfPile(record) ? "Unpin" : "Pin — first in the pile")
+                .accessibilityLabel(model.isTopOfPile(record) ? "Unpin" : "Pin — first in the pile")
 
                 Button {
                     if model.isSetAside(record) { model.bringBack(record) }
                     else { model.setAside(record) }
                 } label: {
-                    Image(systemName: "tray.and.arrow.down")
+                    Image(systemName: "arrow.down")
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
                 .help(model.isSetAside(record) ? "Bring Back" : "Set Aside")
+                .accessibilityLabel(model.isSetAside(record) ? "Bring Back" : "Set Aside")
             }
         } else if book.sourceFile != nil {
             // No record AND a file of its own to import: the book is
@@ -401,14 +460,116 @@ struct EPUBReaderScreen: View {
         }
     }
 
+    /// Through the whole book, by words: the chapters before, and this
+    /// chapter's scrolled share.
+    private var bookProgress: (fraction: Double, minutesLeft: Int)? {
+        guard chapterWords.count == chapters.count, chapterIndex < chapterWords.count else { return nil }
+        let total = chapterWords.reduce(0, +)
+        guard total > 0 else { return nil }
+        let before = chapterWords.prefix(chapterIndex).reduce(0, +)
+        let read = Double(before) + lastFraction * Double(chapterWords[chapterIndex])
+        let fraction = min(1, read / Double(total))
+        // 238 words a minute, the average adult silent reading rate.
+        return (fraction, Int((Double(total) - read) / 238.0 + 0.5))
+    }
+
+    /// A readable name for where the reader is.
+    private var placeLabel: String {
+        let chapter = tocEntries.first { $0.subpath == subpath(of: currentContent) && $0.fragment == nil }?.label
+            ?? (chapters.count > 1 ? "Chapter \(chapterIndex + 1)" : book.title)
+        return "\(chapter) \u{00B7} \(Int(lastFraction * 100))%"
+    }
+
+    /// Speaks the page from the first sentence in view (or the selected
+    /// one), each highlighted as it is read.
+    private func startPageReading(sentences: [String], from start: Int) {
+        let units = sentences.enumerated().dropFirst(max(0, min(start, sentences.count)))
+            .map { index, text in SpeechUnit(blockID: "s\(index)", text: text, kind: .paragraph) }
+        pageReader.startReading(Array(units))
+    }
+
+    /// The sentence being spoken, as its index in the page's list.
+    private var speakingSentence: Int? {
+        guard let id = pageReader.activeBlockID, id.hasPrefix("s") else { return nil }
+        return Int(id.dropFirst())
+    }
+
     @ViewBuilder private var faithfulTypeControls: some View {
         HStack(spacing: 8) {
+            // Read aloud: the book's own narration when the chapter has
+            // one, else the chosen voice; start, pause and resume; stop.
+            let speaking = pageReader.isPlaying || overlayPlayer.isPlaying
+            let active = pageReader.isPlaying || pageReader.isPaused || overlayPlayer.isActive
+            Button {
+                if overlayPlayer.isActive {
+                    overlayPlayer.togglePause()
+                } else if pageReader.isPlaying || pageReader.isPaused {
+                    pageReader.togglePlayPause()
+                } else {
+                    let clips = MediaOverlay.clips(inUnpackedFolder: book.base,
+                                                   chapter: subpath(of: currentContent))
+                    readingOn = true
+                    if clips.isEmpty { readAloudStamp += 1 } else { overlayPlayer.play(clips) }
+                }
+            } label: {
+                Image(systemName: speaking ? "pause.circle" : "speaker.wave.2")
+                    .foregroundStyle(active ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(speaking ? "Pause reading aloud"
+                  : active ? "Resume reading aloud" : "Read aloud from here — the book\u{2019}s own narration when it has one")
+            if active {
+                Button { readingOn = false; pageReader.stopReading(); overlayPlayer.stop() } label: {
+                    Image(systemName: "stop.circle").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Stop reading aloud")
+                .accessibilityLabel("Stop reading aloud")
+            }
+            if let progress = bookProgress {
+                Text(progress.minutesLeft > 0
+                     ? "\(Int(progress.fraction * 100))% \u{00B7} \(progress.minutesLeft) min left"
+                     : "\(Int(progress.fraction * 100))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .help("Through the book, and reading time left at an average pace")
+                    .accessibilityLabel("Through the book, and reading time left at an average pace")
+            }
+            Menu {
+                Button("Add Bookmark Here") {
+                    model.addBookmark(.init(chapter: subpath(of: currentContent),
+                                            fraction: lastFraction, label: placeLabel),
+                                      forFolder: book.id)
+                }
+                let marks = model.bookmarks(forFolder: book.id)
+                if !marks.isEmpty {
+                    Divider()
+                    ForEach(marks) { mark in
+                        Button(mark.label) { goToBookmark(mark) }
+                    }
+                    Divider()
+                    Menu("Remove Bookmark") {
+                        ForEach(marks) { mark in
+                            Button(mark.label) { model.removeBookmark(mark.id, forFolder: book.id) }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "bookmark")
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Bookmarks")
+            .accessibilityLabel("Bookmarks")
             Button { showsFaithfulPalette.toggle() } label: {
                 Image(systemName: "paintpalette")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help("Colour — reading theme")
+            .accessibilityLabel("Colour — reading theme")
             .popover(isPresented: $showsFaithfulPalette) { ReaderThemePalette() }
 
             Button { showsFaithfulType.toggle() } label: {
@@ -417,6 +578,7 @@ struct EPUBReaderScreen: View {
             }
             .buttonStyle(.plain)
             .help("Type — text size and line spacing")
+            .accessibilityLabel("Type — text size and line spacing")
             .popover(isPresented: $showsFaithfulType) { faithfulTypePanel }
         }
     }
@@ -442,6 +604,7 @@ struct EPUBReaderScreen: View {
                 }
                 .buttonStyle(.plain)
             }
+            .disabled(publisherStyles)
             HStack(spacing: 0) {
                 Text("Spacing")
                     .foregroundStyle(.secondary)
@@ -459,9 +622,25 @@ struct EPUBReaderScreen: View {
                 }
                 .buttonStyle(.plain)
             }
+            .disabled(publisherStyles)
+            Divider()
+            Picker("Width", selection: $measure) {
+                Text("Full").tag(0.0)
+                Text("Wide").tag(46.0)
+                Text("Medium").tag(38.0)
+                Text("Narrow").tag(32.0)
+            }
+            .pickerStyle(.segmented)
+            Toggle("Justify", isOn: $justify)
+            Toggle("Hyphenate", isOn: $hyphenate)
+            Divider()
+            // The book's own typography, with only colour and the choices
+            // above laid over it.
+            Toggle("Publisher\u{2019}s Styles", isOn: $publisherStyles)
+                .help("Use the book\u{2019}s own fonts, size and spacing")
         }
         .padding(12)
-        .frame(minWidth: 200)
+        .frame(minWidth: 260)
     }
 
     // MARK: Chapters (the whole spine, for plain chaptered books)
@@ -471,15 +650,26 @@ struct EPUBReaderScreen: View {
     /// revisited; the view scrolls when the stamp changes.
     @State private var requestedFragment: String?
     @State private var fragmentStamp = 0
+    /// Where following a link inside the book left from — Back returns.
+    @State private var linkHistory: [(chapter: Int, fraction: Double)] = []
+    /// The scroll fraction a Back asks for, applied with fragmentStamp.
+    @State private var requestedFraction: Double?
+    /// The page's scroll position as last reported.
+    @State private var lastFraction: Double = 0
     /// The scroll fraction to restore once, when reopening where the
     /// reader left off.
     @State private var initialFraction: Double?
     @State private var showsContents = false
     @State private var tocEntries: [OrigamiEPUBImporter.TOCEntry] = []
+    /// The book's print pages, for Go to Page and cited page numbers.
+    @State private var pageTargets: [OrigamiEPUBImporter.PageTarget] = []
+    @State private var pageField = ""
     /// The selection a comment is being written for; non-nil shows the sheet.
     @State private var commentSelection: ReaderSelection?
     /// The author's own map of the book (§10.3), in a sheet.
     @State private var showsAuthoredMap = false
+    /// The book's details and accessibility, in a sheet.
+    @State private var showsBookInfo = false
     /// The passage whose citing places are listed.
     @State private var citedHereTarget: CitedHereTarget?
     private struct CitedHereTarget: Identifiable { let id: String }
@@ -515,6 +705,20 @@ struct EPUBReaderScreen: View {
     @State private var findStamp = 0
     @State private var findForward = true
     @FocusState private var findFocused: Bool
+    /// The whole book's matches, listed from the find bar.
+    @State private var bookHits: [BookSearchHit] = []
+    @State private var showsBookHits = false
+    @State private var searchingBook = false
+    /// A find to run once a newly chosen chapter has loaded.
+    @State private var findOnLoad: String?
+    @State private var findOnLoadStamp = 0
+
+    struct BookSearchHit: Identifiable, Hashable {
+        let id = UUID()
+        let chapter: Int
+        let chapterLabel: String
+        let snippet: String
+    }
     /// Arrow-key navigation in Scrolling: ↑/↓ step the headings (the
     /// stamp carries each press to the WebView), ←/→ walk the list.
     @State private var headingStep = 0
@@ -534,6 +738,96 @@ struct EPUBReaderScreen: View {
               ordered.indices.contains(index + step)
         else { NSSound.beep(); return }
         model.openStoredEPUB(ordered[index + step])
+    }
+
+    /// Searches every chapter's words for the find text, off the main
+    /// thread, and lists each match with its surroundings.
+    private func searchWholeBook() {
+        let term = findText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return }
+        let files = chapters
+        let labels = files.map { url in
+            tocEntries.first { $0.subpath == subpath(of: url) && $0.fragment == nil }?.label
+                ?? url.deletingPathExtension().lastPathComponent
+        }
+        searchingBook = true
+        Task.detached(priority: .userInitiated) {
+            var hits: [BookSearchHit] = []
+            for (index, url) in files.enumerated() where hits.count < 300 {
+                guard let data = try? Data(contentsOf: url) else { continue }
+                var text = OrigamiEPUBImporter.decodedText(data)
+                if let body = text.range(of: "<body", options: .caseInsensitive) {
+                    text = String(text[body.lowerBound...])
+                }
+                text = text.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+                    .replacingOccurrences(of: "&nbsp;", with: " ")
+                    .replacingOccurrences(of: "&amp;", with: "&")
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                var from = text.startIndex
+                while hits.count < 300,
+                      let range = text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive],
+                                             range: from..<text.endIndex) {
+                    let start = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
+                    let end = text.index(range.upperBound, offsetBy: 80, limitedBy: text.endIndex) ?? text.endIndex
+                    let snippet = (start > text.startIndex ? "\u{2026}" : "")
+                        + text[start..<end].trimmingCharacters(in: .whitespaces)
+                        + (end < text.endIndex ? "\u{2026}" : "")
+                    hits.append(BookSearchHit(chapter: index, chapterLabel: labels[index], snippet: snippet))
+                    from = range.upperBound
+                }
+            }
+            await MainActor.run {
+                bookHits = hits
+                searchingBook = false
+                showsBookHits = true
+            }
+        }
+    }
+
+    /// The whole book's matches: chapter and surroundings; a click opens
+    /// the chapter and finds the words there.
+    private var bookHitsList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(bookHits.isEmpty ? "No matches in this book"
+                 : bookHits.count >= 300 ? "The first 300 matches"
+                 : bookHits.count == 1 ? "1 match" : "\(bookHits.count) matches")
+                .font(.headline)
+                .padding(12)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(bookHits) { hit in
+                        Button {
+                            showsBookHits = false
+                            // The native styles already search the whole
+                            // book: there a hit is simply the next match.
+                            if readerMode == .faithful, hit.chapter != chapterIndex {
+                                chapterIndex = hit.chapter
+                                initialFraction = nil
+                                requestedFraction = nil
+                                requestedFragment = nil
+                                findOnLoad = findText
+                                findOnLoadStamp += 1
+                            } else {
+                                findForward = true
+                                findStamp += 1
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(hit.chapterLabel).font(.caption).foregroundStyle(.secondary)
+                                Text(hit.snippet).font(.callout).lineLimit(3)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(12)
+            }
+        }
+        .frame(width: 420)
+        .frame(maxHeight: 460)
     }
 
     private var findBar: some View {
@@ -560,6 +854,17 @@ struct EPUBReaderScreen: View {
             .buttonStyle(.plain)
             .disabled(findText.isEmpty)
             .help("Next match (⌘G)")
+            // Every chapter, not only the one on the page.
+            Button {
+                searchWholeBook()
+            } label: {
+                if searchingBook { ProgressView().controlSize(.small) }
+                else { Text("All Chapters") }
+            }
+            .buttonStyle(.link)
+            .disabled(findText.isEmpty)
+            .help("List the matches in every chapter of the book")
+            .popover(isPresented: $showsBookHits, arrowEdge: .bottom) { bookHitsList }
             Button {
                 closeFind()
             } label: {
@@ -658,6 +963,58 @@ struct EPUBReaderScreen: View {
                 faithfulReader
                     .overlay(alignment: .topLeading) { liftSlipsLayer }
                     .overlay(alignment: .topLeading) { commentSlipsLayer }
+                    // After following a link inside the book: the way back.
+                    .overlay(alignment: .topLeading) {
+                        if !linkHistory.isEmpty {
+                            Button {
+                                goBackInBook()
+                            } label: {
+                                Label("Back", systemImage: "chevron.backward")
+                                    .font(.callout)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(.regularMaterial, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Back to where the link was clicked (⌘[)")
+                            .padding(12)
+                        }
+                    }
+                    .onAppear { model.readerBackHandler = { goBackInBook() } }
+                    .onDisappear {
+                        model.readerBackHandler = nil
+                        pageReader.stopReading()
+                        overlayPlayer.stop()
+                    }
+                    // Another chapter's page is not the sentences being read.
+                    .onChange(of: chapterIndex) {
+                        pageReader.stopReading()
+                        overlayPlayer.stop()
+                        if advancingForReading {
+                            // The chapter reading finished into: start again
+                            // at its top once the page has loaded.
+                            advancingForReading = false
+                            Task {
+                                try? await Task.sleep(for: .milliseconds(1200))
+                                guard readingOn else { return }
+                                let clips = MediaOverlay.clips(inUnpackedFolder: book.base,
+                                                               chapter: subpath(of: currentContent))
+                                if clips.isEmpty { readAloudStamp += 1 } else { overlayPlayer.play(clips) }
+                            }
+                        } else {
+                            readingOn = false
+                        }
+                    }
+                    // A chapter read to its end runs on into the next.
+                    .onChange(of: pageReader.isPlaying || pageReader.isPaused || overlayPlayer.isActive) { _, active in
+                        guard !active, readingOn else { return }
+                        if chapterIndex < chapters.count - 1 {
+                            advancingForReading = true
+                            chapterIndex += 1
+                        } else {
+                            readingOn = false
+                        }
+                    }
             } else if let doc = model.readingDoc(forBook: book) {
                 // A native reading style over the book's structured
                 // body — the OrigamiReadingView carries the foot bar,
@@ -749,6 +1106,9 @@ struct EPUBReaderScreen: View {
                 .padding(10)
             }
         }
+        .sheet(isPresented: $showsBookInfo) {
+            BookInformationSheet(info: BookInformation.read(inUnpackedFolder: book.base))
+        }
         .sheet(isPresented: $showsEquations) {
             EquationsSheet(base: book.base,
                            bookAddress: model.epubRecords.first { $0.folder == book.id }?.id ?? book.id,
@@ -786,13 +1146,38 @@ struct EPUBReaderScreen: View {
             // still saved, should restoring ever return.)
             chapterIndex = 0
             requestedFragment = nil
+            requestedFraction = nil
+            linkHistory = []
             initialFraction = nil
             tocEntries = []
+            chapterWords = []
+            pageReader.stopReading()
+            // Reopening where the reader left off, when asked for — never
+            // over a quote link's own destination.
+            if reopenWhereLeftOff, model.pendingReaderFragment == nil,
+               let position = model.readingPosition(forFolder: book.id),
+               let chapter = position.chapter,
+               let index = chapters.firstIndex(where: { subpath(of: $0) == chapter }) {
+                chapterIndex = index
+                requestedFraction = position.fraction
+                fragmentStamp += 1
+            }
             if let fragment = model.pendingReaderFragment, !fragment.isEmpty {
                 if chapters.count > 1, let index = chapterIndex(containing: fragment) {
                     chapterIndex = index
                 }
             }
+            // The chapters' words, counted off the main thread.
+            let files = chapters
+            let counts = await Task.detached(priority: .utility) {
+                files.map { url -> Int in
+                    guard let data = try? Data(contentsOf: url) else { return 0 }
+                    let text = OrigamiEPUBImporter.decodedText(data)
+                        .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+                    return text.split(whereSeparator: { $0.isWhitespace }).count
+                }
+            }.value
+            chapterWords = counts
         }
     }
 
@@ -801,10 +1186,13 @@ struct EPUBReaderScreen: View {
     private var faithfulReader: some View {
         EPUBReaderView(
             book: book,
-            css: readerCSS,
+            // A fixed-layout page is a designed page: the theme's type and
+            // image rules would distort it, so it is drawn as published.
+            css: model.rendition(inUnpackedFolder: book.base).fixedLayout ? "" : readerCSS,
             content: currentContent,
             chapterIndex: chapterIndex,
             chapterCount: chapters.count,
+            rendition: model.rendition(inUnpackedFolder: book.base),
             onChapterStep: { delta in step(by: delta) },
             annotations: paintedAnnotations,
             quoteLinks: model.quoteLinks(forBook: book),
@@ -840,7 +1228,7 @@ struct EPUBReaderScreen: View {
             onSelect: { text in
                 model.lastEPUBSelection = text
             },
-            onCopyQuote: { text in copyAsQuote(text) },
+            onCopyQuote: { text, page in copyAsQuote(text, page: page) },
             onCopyBookCitation: {
                 if let record = model.epubRecords.first(where: { $0.folder == book.id }) {
                     model.copyCitation(book: record)
@@ -850,6 +1238,7 @@ struct EPUBReaderScreen: View {
                 model.copyParagraphLink(book: book, fragment: fragment)
             },
             onShowAuthoredMap: { showsAuthoredMap = true },
+            onShowBookInfo: { showsBookInfo = true },
             onShowEquations: {
                 equationFocus = nil
                 showsEquations = true
@@ -890,8 +1279,17 @@ struct EPUBReaderScreen: View {
             initialFragment: model.pendingReaderFragment,
             requestedFragment: requestedFragment,
             fragmentStamp: fragmentStamp,
+            requestedFraction: requestedFraction,
+            findOnLoad: findOnLoad,
+            findOnLoadStamp: findOnLoadStamp,
+            readAloudStamp: readAloudStamp,
+            speakingSentence: speakingSentence,
+            narratedFragment: overlayPlayer.activeFragment,
+            onReadAloudUnits: { sentences, start in startPageReading(sentences: sentences, from: start) },
+            onBookLink: { index, fragment in followBookLink(to: index, fragment: fragment) },
             initialScrollFraction: initialFraction,
             onProgress: { fraction in
+                lastFraction = fraction
                 model.saveReadingPosition(forFolder: book.id,
                                           chapter: subpath(of: currentContent),
                                           fraction: fraction)
@@ -956,6 +1354,21 @@ struct EPUBReaderScreen: View {
     /// that the top strip is gone.
     private var faithfulContents: some View {
         VStack(spacing: 0) {
+            // The printed edition's pages, when the book records them.
+            if !pageTargets.isEmpty {
+                HStack(spacing: 8) {
+                    Text("Go to page").foregroundStyle(.secondary)
+                    TextField(pageTargets.first.map { "\($0.label)\u{2013}\(pageTargets.last?.label ?? "")" } ?? "",
+                              text: $pageField)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 110)
+                        .onSubmit { goToPage(pageField) }
+                    Button("Go") { goToPage(pageField) }
+                        .disabled(pageField.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                .padding(10)
+                Divider()
+            }
             if chapters.count > 1 {
                 HStack(spacing: 10) {
                     Button {
@@ -1066,6 +1479,7 @@ struct EPUBReaderScreen: View {
             chapters: chapters.map { subpath(of: $0) },
             nav: book.nav.map { subpath(of: $0) })
         tocEntries = OrigamiEPUBImporter.tocEntries(inUnpackedFolder: book.base, spine: spine)
+        pageTargets = OrigamiEPUBImporter.pageList(inUnpackedFolder: book.base, spine: spine)
     }
 
     private func open(_ entry: OrigamiEPUBImporter.TOCEntry) {
@@ -1073,8 +1487,46 @@ struct EPUBReaderScreen: View {
             chapterIndex = index
         }
         initialFraction = nil
+        requestedFraction = nil
         requestedFragment = entry.fragment
         fragmentStamp += 1
+    }
+
+    /// A link inside the book, followed: the chapter it names (the page
+    /// alone used to change, leaving the chapter counter and saved place
+    /// behind), and where it left from kept for Back.
+    private func followBookLink(to index: Int, fragment: String?) {
+        linkHistory.append((chapterIndex, lastFraction))
+        if linkHistory.count > 50 { linkHistory.removeFirst() }
+        chapterIndex = max(0, min(index, chapters.count - 1))
+        initialFraction = nil
+        requestedFraction = fragment == nil ? 0 : nil
+        requestedFragment = fragment
+        fragmentStamp += 1
+    }
+
+    /// To a bookmarked place: its chapter, then its scroll position.
+    private func goToBookmark(_ mark: AppModel.ReaderBookmark) {
+        guard let index = chapters.firstIndex(where: { subpath(of: $0) == mark.chapter }) else { return }
+        linkHistory.append((chapterIndex, lastFraction))
+        chapterIndex = index
+        initialFraction = nil
+        requestedFragment = nil
+        requestedFraction = mark.fraction
+        fragmentStamp += 1
+    }
+
+    /// Back to where the last followed link was clicked. True when there
+    /// was somewhere to go back to.
+    @discardableResult
+    private func goBackInBook() -> Bool {
+        guard let last = linkHistory.popLast() else { return false }
+        chapterIndex = last.chapter
+        initialFraction = nil
+        requestedFragment = nil
+        requestedFraction = last.fraction
+        fragmentStamp += 1
+        return true
     }
 
     /// The chapter whose content document carries the element — how a quote
@@ -1091,7 +1543,7 @@ struct EPUBReaderScreen: View {
     /// same "Copy as Quote" that the document reader offers, reachable
     /// in the EPUB's own context menu. The address is the book's Origami
     /// id; paragraph-scoped fragments are a later step.
-    private func copyAsQuote(_ text: String) {
+    private func copyAsQuote(_ text: String, page: String? = nil) {
         guard !text.isEmpty else { return }
         let record = model.epubRecords.first { $0.folder == book.id }
         let address = record?.id ?? book.id
@@ -1112,11 +1564,39 @@ struct EPUBReaderScreen: View {
                 address: address,
                 sourceFile: record?.originalFilename,
                 doi: record?.doi,
-                renditions: [("epub", address)]),
+                renditions: [("epub", address)],
+                printPage: page ?? pageBeforeThisChapter),
             documentTitle: record?.title ?? book.title,
-            documentFilename: record?.originalFilename)
+            documentFilename: record?.originalFilename,
+            page: page ?? pageBeforeThisChapter)
         CitationClipboard.write(citation)
         model.showNote("Copied citation to clipboard")
+    }
+
+    /// When the words stand before any page break in their chapter, the
+    /// page they are on is the last one the earlier chapters began.
+    private var pageBeforeThisChapter: String? {
+        let earlier = Set(chapters.prefix(chapterIndex).map { subpath(of: $0) })
+        return pageTargets.last { earlier.contains($0.subpath) }?.label
+    }
+
+    /// Go to a print page by its label, as the book prints it.
+    private func goToPage(_ label: String) {
+        let wanted = label.trimmingCharacters(in: .whitespaces)
+        guard let page = pageTargets.first(where: {
+            $0.label.compare(wanted, options: [.caseInsensitive]) == .orderedSame
+        }) else {
+            model.showNote("This book has no page \u{201C}\(wanted)\u{201D}")
+            return
+        }
+        guard let index = chapters.firstIndex(where: { subpath(of: $0) == page.subpath }) else { return }
+        linkHistory.append((chapterIndex, lastFraction))
+        chapterIndex = index
+        initialFraction = nil
+        requestedFraction = page.fragment == nil ? 0 : nil
+        requestedFragment = page.fragment
+        fragmentStamp += 1
+        showsContents = false
     }
 
     /// Copy, from a comment slip: a citation to this book carrying the
@@ -1168,6 +1648,8 @@ struct EPUBReaderView: NSViewRepresentable {
     /// Previous/Next buttons a chaptered book gets at the page's end.
     var chapterIndex: Int = 0
     var chapterCount: Int = 1
+    /// Fixed layout and page direction, as the package declares them.
+    var rendition = OrigamiEPUBImporter.Rendition()
     /// The reader stepped chapters from within the page (±1).
     var onChapterStep: (Int) -> Void = { _ in }
     /// The book's annotations, painted over the words with the CSS Custom
@@ -1200,7 +1682,7 @@ struct EPUBReaderView: NSViewRepresentable {
     var onSelect: (String) -> Void = { _ in }
     /// "Copy as Quote" was chosen from the page's context menu, carrying the
     /// selected text. The screen builds the citation from the book's metadata.
-    var onCopyQuote: (String) -> Void = { _ in }
+    var onCopyQuote: (String, String?) -> Void = { _, _ in }
     /// "Copy to Cite" with nothing selected: a citation to the whole book,
     /// as the list's own command makes.
     var onCopyBookCitation: () -> Void = {}
@@ -1208,6 +1690,8 @@ struct EPUBReaderView: NSViewRepresentable {
     var onCopyParagraphLink: (String) -> Void = { _ in }
     /// "Show Author's Map": the book's authored layout (§10.3).
     var onShowAuthoredMap: () -> Void = {}
+    /// "Book Information…": details and accessibility.
+    var onShowBookInfo: () -> Void = {}
     /// "Equations…": the book's equation index (§7.7.1).
     var onShowEquations: () -> Void = {}
     /// Resolves selected text to the open book's glossary entry (name and
@@ -1238,6 +1722,22 @@ struct EPUBReaderView: NSViewRepresentable {
     /// stamp distinguishes repeated jumps to the same fragment.
     var requestedFragment: String? = nil
     var fragmentStamp: Int = 0
+    /// A scroll fraction to go to with the stamp (Back), when no fragment.
+    var requestedFraction: Double? = nil
+    /// Words to find once the next chapter has loaded (whole-book search).
+    var findOnLoad: String? = nil
+    var findOnLoadStamp = 0
+    /// Bumped to ask the page for its sentences to read aloud.
+    var readAloudStamp = 0
+    /// The sentence being read aloud, highlighted on the page.
+    var speakingSentence: Int? = nil
+    /// The element the book's narration is reading, marked on the page.
+    var narratedFragment: String? = nil
+    /// The page's sentences and the one to start from.
+    var onReadAloudUnits: ([String], Int) -> Void = { _, _ in }
+    /// A link to one of the book's own chapters (or a place on this page)
+    /// was clicked: its chapter index and fragment.
+    var onBookLink: (Int, String?) -> Void = { _, _ in }
     /// The scroll fraction to restore once the first page finishes loading —
     /// reopening where the reader left off.
     var initialScrollFraction: Double? = nil
@@ -1303,7 +1803,11 @@ struct EPUBReaderView: NSViewRepresentable {
     /// bridge, so a marker click never doubles as a Step 0 activation), the
     /// Step 0 semantic bridge, and the quote-link enhancer.
     private static func installUserScripts(into controller: WKUserContentController, themeCSS: String,
-                                           noteFolds: Bool) {
+                                           noteFolds: Bool, fixedLayout: Bool = false) {
+        if fixedLayout {
+            controller.addUserScript(WKUserScript(source: fixedLayoutScript,
+                                                  injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
         controller.addUserScript(WKUserScript(source: themeScript(css: themeCSS),
                                               injectionTime: .atDocumentStart, forMainFrameOnly: true))
         // And again once the document is parsed. At document start there
@@ -1350,16 +1854,136 @@ struct EPUBReaderView: NSViewRepresentable {
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: progressScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        // After the theme's style stands: a book's unreadable greys —
-        // author lines, copyright blocks — take the body ink.
-        controller.addUserScript(WKUserScript(source: greyContrastScript,
+        controller.addUserScript(WKUserScript(source: readAloudScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        // After the theme's style stands: a book's unreadable greys —
+        // author lines, copyright blocks — take the body ink. Never on a
+        // designed fixed-layout page.
+        if !fixedLayout {
+            controller.addUserScript(WKUserScript(source: greyContrastScript,
+                                                  injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
     }
+
+    /// Read aloud on the page: its readable blocks split into sentences
+    /// (the browser's own sentence segmenter), starting at the selection or
+    /// the first sentence in view; and the spoken one marked with the CSS
+    /// Highlight API and kept in view.
+    private static let readAloudScript = """
+    (function(){
+      var units = [];
+      window.origamiReadAloudUnits = function(){
+        units = [];
+        var blocks = document.body ? document.body.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,blockquote,dd,dt,figcaption,td,th') : [];
+        var segmenter = (typeof Intl !== 'undefined' && Intl.Segmenter)
+          ? new Intl.Segmenter(document.documentElement.lang || undefined, {granularity: 'sentence'}) : null;
+        var sel = window.getSelection ? window.getSelection() : null;
+        var anchor = sel && !sel.isCollapsed ? sel.anchorNode : null;
+        var start = -1;
+        Array.prototype.forEach.call(blocks, function(block){
+          // A block inside another counted block is read with it.
+          if (block.parentElement && block.parentElement.closest('p,li,blockquote,dd,td,th')) return;
+          if (block.offsetParent === null && getComputedStyle(block).position !== 'fixed') return;
+          var text = block.textContent || '';
+          if (!text.trim()) return;
+          var pieces = segmenter ? Array.from(segmenter.segment(text), function(s){ return {text: s.segment, index: s.index}; })
+                                 : [{text: text, index: 0}];
+          pieces.forEach(function(piece){
+            if (!piece.text.trim()) return;
+            units.push({block: block, start: piece.index, end: piece.index + piece.text.length, text: piece.text.trim()});
+            if (start < 0) {
+              if (anchor && block.contains(anchor)) start = units.length - 1;
+              else if (!anchor && block.getBoundingClientRect().bottom > 0) start = units.length - 1;
+            }
+          });
+        });
+        return {sentences: units.map(function(u){ return u.text; }), start: Math.max(0, start)};
+      };
+      // The narrated element (media overlays), marked whole and kept in view.
+      window.origamiOverlayMark = function(id){
+        if (typeof Highlight === 'undefined' || !CSS.highlights) return;
+        CSS.highlights.delete('origami-speaking');
+        var el = id ? document.getElementById(id) : null;
+        if (!el) return;
+        var style = document.getElementById('origami-speaking-style');
+        if (!style) {
+          style = document.createElement('style');
+          style.id = 'origami-speaking-style';
+          style.textContent = '::highlight(origami-speaking){background-color:rgba(255,196,0,0.35);}';
+          (document.head || document.documentElement).appendChild(style);
+        }
+        var range = document.createRange();
+        range.selectNodeContents(el);
+        CSS.highlights.set('origami-speaking', new Highlight(range));
+        var rect = el.getBoundingClientRect();
+        if (rect.top < 60 || rect.bottom > window.innerHeight - 60) {
+          window.scrollBy({top: rect.top - window.innerHeight / 3, behavior: 'smooth'});
+        }
+      };
+      window.origamiReadAloudMark = function(index){
+        if (typeof Highlight === 'undefined' || !CSS.highlights) return;
+        CSS.highlights.delete('origami-speaking');
+        var unit = units[index];
+        if (!unit) return;
+        var style = document.getElementById('origami-speaking-style');
+        if (!style) {
+          style = document.createElement('style');
+          style.id = 'origami-speaking-style';
+          style.textContent = '::highlight(origami-speaking){background-color:rgba(255,196,0,0.35);}';
+          (document.head || document.documentElement).appendChild(style);
+        }
+        var walker = document.createTreeWalker(unit.block, NodeFilter.SHOW_TEXT);
+        var node, offset = 0, range = document.createRange(), begun = false;
+        while ((node = walker.nextNode())) {
+          var length = node.nodeValue.length;
+          if (!begun && offset + length > unit.start) { range.setStart(node, unit.start - offset); begun = true; }
+          if (begun && offset + length >= unit.end) { range.setEnd(node, unit.end - offset); break; }
+          offset += length;
+        }
+        if (!begun) return;
+        CSS.highlights.set('origami-speaking', new Highlight(range));
+        var rect = range.getBoundingClientRect();
+        if (rect.top < 60 || rect.bottom > window.innerHeight - 60) {
+          window.scrollBy({top: rect.top - window.innerHeight / 3, behavior: 'smooth'});
+        }
+      };
+    })();
+    """
+
+    /// A fixed-layout page scaled whole into the window, centred, at the
+    /// size its viewport declares (`<meta name="viewport" content="width=…,
+    /// height=…">`) — re-fitted when the window changes. Pages without a
+    /// declared size are left alone.
+    private static let fixedLayoutScript = """
+    (function(){
+      var meta = document.querySelector('meta[name="viewport"]');
+      var content = meta ? (meta.getAttribute('content') || '') : '';
+      var mw = /width\\s*=\\s*([0-9.]+)/.exec(content);
+      var mh = /height\\s*=\\s*([0-9.]+)/.exec(content);
+      if (!mw || !mh) return;
+      var w = parseFloat(mw[1]), h = parseFloat(mh[1]);
+      if (!(w > 0 && h > 0)) return;
+      var root = document.documentElement;
+      function fit(){
+        var s = Math.min(window.innerWidth / w, window.innerHeight / h);
+        root.style.width = w + 'px';
+        root.style.height = h + 'px';
+        root.style.overflow = 'hidden';
+        root.style.transformOrigin = '0 0';
+        root.style.transform = 'translate(' + Math.max(0, (window.innerWidth - w * s) / 2) + 'px,'
+          + Math.max(0, (window.innerHeight - h * s) / 2) + 'px) scale(' + s + ')';
+        if (document.body) document.body.style.margin = '0';
+      }
+      fit();
+      window.addEventListener('resize', fit);
+    })();
+    """
 
     func makeNSView(context: Context) -> WKWebView {
         let controller = WKUserContentController()
         let noteFolds = ReaderNoteStyle.current == .fold
-        Self.installUserScripts(into: controller, themeCSS: css, noteFolds: noteFolds)
+        Self.installUserScripts(into: controller, themeCSS: css, noteFolds: noteFolds,
+                                    fixedLayout: rendition.fixedLayout)
         controller.add(context.coordinator, name: Self.bridgeName)
         context.coordinator.themeCSS = css
         context.coordinator.noteFolds = noteFolds
@@ -1378,8 +2002,8 @@ struct EPUBReaderView: NSViewRepresentable {
         webView.navigationDelegate = context.coordinator
         // The subclass owns the page's context menu; it calls back through
         // the coordinator so the latest closure (and book) is always used.
-        webView.onCopyQuote = { [weak coordinator = context.coordinator] text in
-            coordinator?.onCopyQuote(text)
+        webView.onCopyQuote = { [weak coordinator = context.coordinator, weak webView] text in
+            coordinator?.onCopyQuote(text, webView?.quotePage)
         }
         webView.onCopyBookCitation = { [weak coordinator = context.coordinator] in
             coordinator?.onCopyBookCitation()
@@ -1389,6 +2013,9 @@ struct EPUBReaderView: NSViewRepresentable {
         }
         webView.onShowAuthoredMap = { [weak coordinator = context.coordinator] in
             coordinator?.onShowAuthoredMap()
+        }
+        webView.onShowBookInfo = { [weak coordinator = context.coordinator] in
+            coordinator?.onShowBookInfo()
         }
         webView.onShowEquations = { [weak coordinator = context.coordinator] in
             coordinator?.onShowEquations()
@@ -1416,6 +2043,12 @@ struct EPUBReaderView: NSViewRepresentable {
             else if total > 0.15 { coordinator?.onPinchOut() }
         }
         context.coordinator.webView = webView
+        // Known before the first page loads: the book's folder and its
+        // scripted pages.
+        context.coordinator.bookBasePath = book.base.standardizedFileURL.path
+        context.coordinator.scriptedPaths = Set(rendition.scriptedDocuments.map {
+            book.base.appendingPathComponent($0).standardizedFileURL.path
+        })
         context.coordinator.pendingFragment = initialFragment
         context.coordinator.pendingScrollFraction = initialScrollFraction
         if initialScrollFraction != nil { context.coordinator.restoredBookID = book.id }
@@ -1433,6 +2066,7 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onCopyBookCitation = onCopyBookCitation
         coordinator.onCopyParagraphLink = onCopyParagraphLink
         coordinator.onShowAuthoredMap = onShowAuthoredMap
+        coordinator.onShowBookInfo = onShowBookInfo
         coordinator.onShowEquations = onShowEquations
         coordinator.glossaryDefinition = glossaryDefinition
         coordinator.glossaryTargetDefinition = glossaryTargetDefinition
@@ -1449,6 +2083,13 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onPinchOut = onPinchOut
         coordinator.onChapterStep = onChapterStep
         coordinator.onProgress = onProgress
+        coordinator.onBookLink = onBookLink
+        coordinator.chapterPaths = (book.chapters.isEmpty ? [book.content] : book.chapters)
+            .map { $0.standardizedFileURL.path }
+        coordinator.bookBasePath = book.base.standardizedFileURL.path
+        coordinator.scriptedPaths = Set(rendition.scriptedDocuments.map {
+            book.base.appendingPathComponent($0).standardizedFileURL.path
+        })
         coordinator.onCitationAnchors = onCitationAnchors
         coordinator.onFigureJump = onFigureJump
         coordinator.annotations = annotations
@@ -1457,6 +2098,7 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onCitedHere = onCitedHere
         coordinator.chapterIndex = chapterIndex
         coordinator.chapterCount = chapterCount
+        coordinator.rightToLeft = rendition.rightToLeft
         // The paragraphs carrying comments, by their stable ids — the
         // bare ctrl-click's Remove Comment resolves against this.
         if let readerView = webView as? ReaderWebView {
@@ -1466,14 +2108,37 @@ struct EPUBReaderView: NSViewRepresentable {
                 }, by: { $0.fragment ?? "" }
             ).mapValues { $0.map(\.id) }
         }
+        coordinator.onReadAloudUnits = onReadAloudUnits
+        if readAloudStamp != coordinator.handledReadAloudStamp {
+            coordinator.handledReadAloudStamp = readAloudStamp
+            webView.evaluateJavaScript("window.origamiReadAloudUnits ? JSON.stringify(window.origamiReadAloudUnits()) : ''") { [weak coordinator] result, _ in
+                guard let json = result as? String, let data = json.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let sentences = object["sentences"] as? [String], !sentences.isEmpty
+                else { return }
+                coordinator?.onReadAloudUnits(sentences, (object["start"] as? NSNumber)?.intValue ?? 0)
+            }
+        }
+        if narratedFragment != coordinator.markedNarration {
+            coordinator.markedNarration = narratedFragment
+            webView.evaluateJavaScript("if (window.origamiOverlayMark) window.origamiOverlayMark(\(Self.Coordinator.jsStringLiteral(narratedFragment ?? "")));")
+        }
+        if speakingSentence != coordinator.markedSentence {
+            coordinator.markedSentence = speakingSentence
+            webView.evaluateJavaScript("if (window.origamiReadAloudMark) window.origamiReadAloudMark(\(speakingSentence ?? -1));")
+        }
+        if findOnLoadStamp != coordinator.handledFindOnLoadStamp {
+            coordinator.handledFindOnLoadStamp = findOnLoadStamp
+            coordinator.pendingFind = findOnLoad
+        }
         if coordinator.loadedID != (content ?? book.content).path {
             coordinator.themeCSS = css
             // A chapter change scrolls to the TOC's fragment; a book change
             // to the quote link's. A restored position applies once, to the
             // first page of a freshly opened book.
             coordinator.pendingFragment = requestedFragment ?? initialFragment
-            coordinator.pendingScrollFraction =
-                coordinator.openedBookID == book.id ? nil : initialScrollFraction
+            coordinator.pendingScrollFraction = requestedFraction
+                ?? (coordinator.openedBookID == book.id ? nil : initialScrollFraction)
             coordinator.handledFragmentStamp = fragmentStamp
             coordinator.handledHeadingStamp = headingStamp
             load(into: webView, context: context)
@@ -1496,6 +2161,9 @@ struct EPUBReaderView: NSViewRepresentable {
             coordinator.handledFragmentStamp = fragmentStamp
             if let fragment = requestedFragment, !fragment.isEmpty {
                 coordinator.scrollToFragment(fragment, in: webView)
+            } else if let fraction = requestedFraction {
+                webView.evaluateJavaScript(
+                    "if (window.origamiScrollToFraction) window.origamiScrollToFraction(\(fraction));")
             }
         }
         // Find: each stamp is one step through the matches.
@@ -1525,12 +2193,16 @@ struct EPUBReaderView: NSViewRepresentable {
         // A theme or font change: re-inject the style live, no reload, so the
         // reader's scroll position holds.
         let noteFolds = ReaderNoteStyle.current == .fold
-        if coordinator.themeCSS != css || coordinator.noteFolds != noteFolds {
+        let notePopups = ReaderNoteStyle.opensAsPopup
+        if coordinator.themeCSS != css || coordinator.noteFolds != noteFolds
+            || coordinator.notePopups != notePopups {
             coordinator.themeCSS = css
             coordinator.noteFolds = noteFolds
+            coordinator.notePopups = notePopups
             let controller = webView.configuration.userContentController
             controller.removeAllUserScripts()
-            Self.installUserScripts(into: controller, themeCSS: css, noteFolds: noteFolds)
+            Self.installUserScripts(into: controller, themeCSS: css, noteFolds: noteFolds,
+                                    fixedLayout: rendition.fixedLayout)
             webView.evaluateJavaScript(Self.themeScript(css: css))
             // The marks swap live too — the guard at the script's top
             // makes a re-run a re-application, never a second listener.
@@ -1551,6 +2223,7 @@ struct EPUBReaderView: NSViewRepresentable {
         context.coordinator.paintedStamp = annotationsStamp
         context.coordinator.chapterIndex = chapterIndex
         context.coordinator.chapterCount = chapterCount
+        context.coordinator.rightToLeft = rendition.rightToLeft
         context.coordinator.openedBookID = book.id
         context.coordinator.loadedID = (content ?? book.content).path
         webView.loadFileURL(content ?? book.content, allowingReadAccessTo: book.base)
@@ -1566,14 +2239,16 @@ struct EPUBReaderView: NSViewRepresentable {
         var themeCSS: String = ""
         /// Whether the endnote marks read as [] folds (Notes style).
         var noteFolds = false
+        var notePopups = ReaderNoteStyle.opensAsPopup
         /// A jump link to a figure asked for its image (stable id).
         var onFigureJump: (String) -> Void = { _ in }
         var onActivate: (EPUBElementRef) -> Void = { _ in }
         var onSelect: (String) -> Void = { _ in }
-        var onCopyQuote: (String) -> Void = { _ in }
+        var onCopyQuote: (String, String?) -> Void = { _, _ in }
         var onCopyBookCitation: () -> Void = {}
         var onCopyParagraphLink: (String) -> Void = { _ in }
         var onShowAuthoredMap: () -> Void = {}
+        var onShowBookInfo: () -> Void = {}
         var onShowEquations: () -> Void = {}
         var glossaryDefinition: (String) -> (name: String, description: String)? = { _ in nil }
         var glossaryTargetDefinition: (String) -> (name: String, description: String)? = { _ in nil }
@@ -1590,6 +2265,14 @@ struct EPUBReaderView: NSViewRepresentable {
         var onPinchOut: () -> Void = {}
         var onChapterStep: (Int) -> Void = { _ in }
         var onProgress: (Double) -> Void = { _ in }
+        var onBookLink: (Int, String?) -> Void = { _, _ in }
+        /// The book's chapters as file paths, for telling a link into the
+        /// book from one out of it.
+        var chapterPaths: [String] = []
+        /// The book's folder, as a path: no page outside it is opened.
+        var bookBasePath = ""
+        /// Pages whose own scripts may run (the package's `scripted`).
+        var scriptedPaths: Set<String> = []
         var onCitationAnchors: ([InlineCitationAnchor]) -> Void = { _ in }
         /// A paragraph to scroll to after the current load finishes, consumed
         /// once. Set when this book was opened by following a quote link.
@@ -1611,6 +2294,8 @@ struct EPUBReaderView: NSViewRepresentable {
         var paintedStamp = 0
         var chapterIndex = 0
         var chapterCount = 1
+        /// The book turns right to left: Next stands on the left.
+        var rightToLeft = false
         weak var webView: ReaderWebView?
 
         func userContentController(_ controller: WKUserContentController,
@@ -1637,7 +2322,8 @@ struct EPUBReaderView: NSViewRepresentable {
                     fragment: (body["fragment"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                     prefix: (body["prefix"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                     suffix: (body["suffix"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-                    glossaryTarget: (body["glossary"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                    glossaryTarget: (body["glossary"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                    page: (body["page"] as? String).flatMap { $0.isEmpty ? nil : $0 })
                 onSelect(text)
             case "annotation":
                 // A click on a painted highlight: show its popover (the
@@ -1675,13 +2361,20 @@ struct EPUBReaderView: NSViewRepresentable {
                 onCitationAnchors(anchors)
             case "endnote":
                 // A dagger asked for its note's words: resolve the id
-                // its href carries and unfold them in place.
-                guard let reqID = body["reqId"] as? String,
-                      let webView else { return }
+                // its href carries — then a popup beside the mark, or the
+                // words unfolded in place.
+                guard let webView else { return }
                 let href = body["href"] as? String ?? ""
                 let id = href.firstIndex(of: "#")
                     .map { String(href[href.index(after: $0)...]) } ?? href
                 let text = resolveEndnote(id) ?? "The note could not be found."
+                if body["popup"] as? Bool == true {
+                    let x = (body["x"] as? NSNumber)?.doubleValue ?? 0
+                    let y = (body["y"] as? NSNumber)?.doubleValue ?? 0
+                    webView.showNotePopup(text, at: NSPoint(x: x, y: y))
+                    return
+                }
+                guard let reqID = body["reqId"] as? String else { return }
                 webView.evaluateJavaScript(
                     "window.origamiInsertEndnote(\(Self.jsStringLiteral(reqID)), \(Self.jsStringLiteral(text)));")
             case "transclude":
@@ -1705,15 +2398,31 @@ struct EPUBReaderView: NSViewRepresentable {
         // MARK: Navigation: quote links live, external links to the browser
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                     preferences: WKWebpagePreferences,
+                     decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
             guard let url = navigationAction.request.url else {
-                decisionHandler(.allow); return
+                decisionHandler(.allow, preferences); return
             }
             let scheme = url.scheme?.lowercased()
+            // EPUB 3.3 reading-system rules: no page outside the book, and
+            // no top-level data: page.
+            if navigationAction.targetFrame?.isMainFrame != false {
+                if scheme == "data" { decisionHandler(.cancel, preferences); return }
+                if scheme == "file", !bookBasePath.isEmpty,
+                   !url.standardizedFileURL.path.hasPrefix(bookBasePath) {
+                    decisionHandler(.cancel, preferences); return
+                }
+            }
+            // A page's own JavaScript runs only where the package says it is
+            // scripted; the reader's own scripts run everywhere regardless.
+            if scheme == "file" {
+                preferences.allowsContentJavaScript =
+                    scriptedPaths.contains(url.standardizedFileURL.path)
+            }
             if scheme == "origamitext" {
                 let link = Self.parseOrigamiURL(url.absoluteString)
                 if !link.address.isEmpty { onFollowLink(link.address, link.fragment) }
-                decisionHandler(.cancel); return
+                decisionHandler(.cancel, preferences); return
             }
             // The https://origamitext.app/o/ carrier URL is our own
             // identity link — intercepted just like origamitext://.
@@ -1722,20 +2431,20 @@ struct EPUBReaderView: NSViewRepresentable {
                let parsed = CitationClipboard.parse(href: url.absoluteString),
                !parsed.to.isEmpty {
                 onFollowLink(parsed.to, parsed.fragment)
-                decisionHandler(.cancel); return
+                decisionHandler(.cancel, preferences); return
             }
             // Anything Origami Text opens itself — a book behind a link,
             // a DOI that leads to one, a capsule page, a Seed document —
             // is claimed before the browser is offered anything.
             if onExternalLink(url) {
-                decisionHandler(.cancel); return
+                decisionHandler(.cancel, preferences); return
             }
             // Any other clicked web link opens in the user's browser,
             // not in the reader.
             if (scheme == "http" || scheme == "https"),
                navigationAction.navigationType == .linkActivated {
                 NSWorkspace.shared.open(url)
-                decisionHandler(.cancel); return
+                decisionHandler(.cancel, preferences); return
             }
             // Any other external scheme a link carries — mailto above
             // all (the author lines' addresses) — goes to the system;
@@ -1744,7 +2453,15 @@ struct EPUBReaderView: NSViewRepresentable {
             if navigationAction.navigationType == .linkActivated,
                let scheme, scheme != "file" {
                 NSWorkspace.shared.open(url)
-                decisionHandler(.cancel); return
+                decisionHandler(.cancel, preferences); return
+            }
+            // A link into the book's own text — another chapter, or a
+            // place on this page — goes through the screen, so the chapter
+            // state follows and Back can return.
+            if navigationAction.navigationType == .linkActivated, scheme == "file",
+               let index = chapterPaths.firstIndex(of: url.standardizedFileURL.path) {
+                onBookLink(index, url.fragment.flatMap { $0.isEmpty ? nil : $0 })
+                decisionHandler(.cancel, preferences); return
             }
             // A link straight to one of the book's images would replace
             // the page with the bare file, blown up to the window — far
@@ -1756,9 +2473,9 @@ struct EPUBReaderView: NSViewRepresentable {
                 "avif", "heic", "tif", "tiff", "bmp"]
                    .contains(url.pathExtension.lowercased()) {
                 showImageLightbox(url, in: webView)
-                decisionHandler(.cancel); return
+                decisionHandler(.cancel, preferences); return
             }
-            decisionHandler(.allow)
+            decisionHandler(.allow, preferences)
         }
 
         /// The clicked image as a lightbox over the page: dimmed text
@@ -1805,6 +2522,13 @@ struct EPUBReaderView: NSViewRepresentable {
             }
             applyQuoteLinks(in: webView)
             markCitedHere(in: webView)
+            if let find = pendingFind, !find.isEmpty {
+                pendingFind = nil
+                let configuration = WKFindConfiguration()
+                configuration.caseSensitive = false
+                configuration.wraps = true
+                webView.find(find, configuration: configuration) { _ in }
+            }
             paintAnnotations(in: webView)
             injectChapterFooter(in: webView)
             webView.evaluateJavaScript(
@@ -1846,6 +2570,13 @@ struct EPUBReaderView: NSViewRepresentable {
         /// unpainted — no chapter bookkeeping needed.
         /// The book's durable quote links (§9.6), made live on each page.
         var quoteLinks: [[String: String]] = []
+        /// A find waiting for the next page to finish loading.
+        var pendingFind: String?
+        var handledReadAloudStamp = 0
+        var markedSentence: Int?
+        var markedNarration: String?
+        var onReadAloudUnits: ([String], Int) -> Void = { _, _ in }
+        var handledFindOnLoadStamp = 0
         /// How many places in the library cite each passage, by bare id.
         var citedHereCounts: [String: Int] = [:]
         var onCitedHere: (String) -> Void = { _ in }
@@ -1916,8 +2647,14 @@ struct EPUBReaderView: NSViewRepresentable {
                 });
                 return b;
               }
-              if (\(hasPrevious)) nav.appendChild(button('\u{2039} Previous Chapter', -1));
-              if (\(hasNext)) nav.appendChild(button('Next Chapter \u{203A}', 1));
+              if (\(rightToLeft)) {
+                // Pages turn right to left: the next chapter lies left.
+                if (\(hasNext)) nav.appendChild(button('\u{2039} Next Chapter', 1));
+                if (\(hasPrevious)) nav.appendChild(button('Previous Chapter \u{203A}', -1));
+              } else {
+                if (\(hasPrevious)) nav.appendChild(button('\u{2039} Previous Chapter', -1));
+                if (\(hasNext)) nav.appendChild(button('Next Chapter \u{203A}', 1));
+              }
               document.body.appendChild(nav);
             })();
             """)
@@ -2204,10 +2941,11 @@ struct EPUBReaderView: NSViewRepresentable {
     /// which finds the note by its id in any of the book's chapters.
     /// Re-running the script only re-applies the marks
     /// (`origamiSetNoteFolds`) — the click listener registers once.
-    private static func endnoteScript(foldMarks: Bool) -> String {
+    private static func endnoteScript(foldMarks: Bool,
+                                      popups: Bool = ReaderNoteStyle.opensAsPopup) -> String {
     """
     (function(){
-      if (window.origamiSetNoteFolds) { window.origamiSetNoteFolds(\(foldMarks)); return; }
+      if (window.origamiSetNoteFolds) { window.origamiSetNoteFolds(\(foldMarks), \(popups)); return; }
       var bridge = window.webkit && window.webkit.messageHandlers
         && window.webkit.messageHandlers.origami;
 
@@ -2231,6 +2969,17 @@ struct EPUBReaderView: NSViewRepresentable {
       }
 
       var foldMarks = \(foldMarks);
+      var popups = \(popups);
+      // With popups, the book's own footnote boxes leave the flow: the
+      // note is read where its mark is.
+      function hideFootnoteAsides(){
+        Array.prototype.forEach.call(document.querySelectorAll('aside'), function(aside){
+          var kind = (aside.getAttribute('epub:type') || '') + ' ' + (aside.getAttribute('role') || '');
+          if (/(^|\\s)(footnote|doc-footnote)(\\s|$)/.test(kind)) {
+            aside.style.display = popups ? 'none' : '';
+          }
+        });
+      }
       // Closed marks in the chosen style: the fold's [] — the note as
       // an offer to stretch the text — or the page's own printed mark.
       function applyMarks(){
@@ -2245,8 +2994,14 @@ struct EPUBReaderView: NSViewRepresentable {
           }
         });
       }
-      window.origamiSetNoteFolds = function(f){ foldMarks = f; applyMarks(); };
+      window.origamiSetNoteFolds = function(f, p){
+        foldMarks = f;
+        if (p !== undefined) popups = p;
+        applyMarks();
+        hideFootnoteAsides();
+      };
       applyMarks();
+      hideFootnoteAsides();
 
       function fold(a){
         var open = a.nextElementSibling;
@@ -2279,6 +3034,13 @@ struct EPUBReaderView: NSViewRepresentable {
           return;
         }
         if (!bridge) return;
+        if (popups && !foldMarks) {
+          // A popup over the page, beside the mark.
+          var r = a.getBoundingClientRect();
+          bridge.postMessage({event:'endnote', href: a.getAttribute('href') || '',
+                              popup: true, x: r.left + r.width / 2, y: r.bottom});
+          return;
+        }
         counter += 1;
         var reqId = 'note' + counter;
         pending[reqId] = a;
@@ -2460,6 +3222,20 @@ struct EPUBReaderView: NSViewRepresentable {
           var el = node ? (node.nodeType === 1 ? node : node.parentElement) : null;
           var host = el && el.closest ? el.closest('[data-id], [id]') : null;
           if (host) info.fragment = host.getAttribute('data-id') || host.id || '';
+          // The print page: the last page-break marker before the words.
+          var anchorNode = sel.anchorNode;
+          var breaks = Array.prototype.filter.call(document.getElementsByTagName('*'), function(e){
+            return /(^|\\s)pagebreak(\\s|$)/.test(e.getAttribute('epub:type') || '')
+              || e.getAttribute('role') === 'doc-pagebreak';
+          });
+          for (var b = breaks.length - 1; b >= 0; b--) {
+            if (breaks[b].compareDocumentPosition(anchorNode) & Node.DOCUMENT_POSITION_FOLLOWING) {
+              var pb = breaks[b];
+              info.page = pb.getAttribute('title') || pb.getAttribute('aria-label')
+                || (pb.textContent || '').trim() || '';
+              break;
+            }
+          }
           // Words inside a glossary link: where the link leads, so Show
           // Definition follows the author's link, not the words alone.
           var gloss = el && el.closest ? el.closest('a[href*="#"]') : null;
@@ -2790,6 +3566,8 @@ final class ReaderWebView: WKWebView {
     var onCopyParagraphLink: (String) -> Void = { _ in }
     /// Invoked when "Show Author's Map" is chosen.
     var onShowAuthoredMap: () -> Void = {}
+    /// Invoked when "Book Information…" is chosen.
+    var onShowBookInfo: () -> Void = {}
     /// Invoked when "Equations…" is chosen.
     var onShowEquations: () -> Void = {}
     /// Invoked when "Highlight" is chosen on the current selection.
@@ -2888,6 +3666,12 @@ final class ReaderWebView: WKWebView {
             }
             addItem(to: menu, title: "Copy to Cite", action: #selector(copyAsQuote(_:)))
             addItem(to: menu, title: "Copy", action: #selector(copySelection(_:)))
+            menu.addItem(.separator())
+            // The system's dictionary and translation, as the reader's own
+            // items (the system's are dropped with the rest of its menu).
+            let shown = text.count > 24 ? String(text.prefix(24)) + "\u{2026}" : text
+            addItem(to: menu, title: "Look Up \u{201C}\(shown)\u{201D}", action: #selector(lookUpSelection(_:)))
+            addItem(to: menu, title: "Translate \u{201C}\(shown)\u{201D}", action: #selector(translateSelection(_:)))
         }
         if text.isEmpty {
             // Nothing selected: the book itself is what gets cited, as
@@ -2900,6 +3684,7 @@ final class ReaderWebView: WKWebView {
             addItem(to: menu, title: "Show Author\u{2019}s Map",
                     action: #selector(showAuthoredMap(_:)))
             addItem(to: menu, title: "Equations\u{2026}", action: #selector(showEquations(_:)))
+            addItem(to: menu, title: "Book Information\u{2026}", action: #selector(showBookInfo(_:)))
             menu.addItem(.separator())
             // A comment can still land — anchored to the paragraph under
             // the ctrl-click, found by its stable id.
@@ -2983,7 +3768,19 @@ final class ReaderWebView: WKWebView {
     }
 
     @objc private func copyAsQuote(_ sender: Any?) {
+        quotePage = currentSelection?.page
         onCopyQuote(selectedText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    /// The print page of the words being cited, read by the screen's
+    /// Copy to Cite as it builds the citation.
+    var quotePage: String?
+
+    @objc private func lookUpSelection(_ sender: Any?) {
+        ReaderLookup.lookUp(selectedText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    @objc private func translateSelection(_ sender: Any?) {
+        ReaderLookup.translate(selectedText.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     @objc private func copyBookCitation(_ sender: Any?) {
@@ -2996,6 +3793,10 @@ final class ReaderWebView: WKWebView {
 
     @objc private func showEquations(_ sender: Any?) {
         onShowEquations()
+    }
+
+    @objc private func showBookInfo(_ sender: Any?) {
+        onShowBookInfo()
     }
 
     /// The paragraph under the ctrl-click, through the same climb as Add
@@ -3023,6 +3824,17 @@ final class ReaderWebView: WKWebView {
     @objc private func commentOnSelection(_ sender: Any?) {
         guard let selection = currentSelection else { return }
         onAddComment(selection)
+    }
+
+    /// A note's words in a popover beside its mark.
+    func showNotePopup(_ text: String, at pagePoint: NSPoint) {
+        definitionPopover?.close()
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: NotePopup(text: text))
+        definitionPopover = popover
+        let anchor = NSRect(x: pagePoint.x - 2, y: pagePoint.y - 2, width: 4, height: 4)
+        popover.show(relativeTo: anchor, of: self, preferredEdge: .maxY)
     }
 
     /// Shows a clicked annotation's popover at the page point the click
@@ -3083,6 +3895,9 @@ struct ReaderContentsList: View {
                             .buttonStyle(.plain)
                             .padding(.vertical, 4)
                             .padding(.horizontal, 8)
+                            // Nested entries step in, as the book nests them.
+                            .padding(.leading, CGFloat(min(entry.level, 4)) * 14)
+                            .font(entry.level == 0 ? .body : .callout)
                         }
                     }
                     .padding(8)
@@ -3181,5 +3996,22 @@ private struct GlossaryDefinitionPopup: View {
         }
         .padding(14)
         .frame(width: 320, alignment: .leading)
+    }
+}
+
+/// A footnote or endnote, read in a popover beside its mark.
+private struct NotePopup: View {
+    let text: String
+
+    var body: some View {
+        ScrollView {
+            Text(text)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+        }
+        .frame(width: 360)
+        .frame(maxHeight: 320)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }

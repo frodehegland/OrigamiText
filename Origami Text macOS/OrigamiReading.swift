@@ -396,6 +396,13 @@ nonisolated enum ReaderNoteStyle: String, CaseIterable, Identifiable, Sendable {
     case fold
 
     static let defaultsKey = "origamiNoteStyle"
+    /// Whether a note opens in a popup over the page (the default) or in
+    /// place in the text. The [] fold always opens in place — that is
+    /// what the fold is.
+    static let popupKey = "notesOpenAsPopup"
+    static var opensAsPopup: Bool {
+        current != .fold && (UserDefaults.standard.object(forKey: popupKey) as? Bool ?? true)
+    }
 
     /// The reader's choice, read where rendering has no view state.
     static var current: ReaderNoteStyle {
@@ -865,13 +872,18 @@ nonisolated enum OrigamiReading {
                             annotation: String? = nil, address: String,
                             sourceFile: String? = nil,
                             doi: String? = nil,
-                            renditions: [(kind: String, address: String)] = []) -> String {
+                            renditions: [(kind: String, address: String)] = [],
+                            printPage: String? = nil) -> String {
         var fields: [(String, String)] = []
         if !author.isEmpty { fields.append(("author", author)) }
         fields.append(("title", title))
         if let year, !year.isEmpty { fields.append(("year", year)) }
         if let publication, !publication.isEmpty { fields.append(("journal", publication)) }
         if let quote, !quote.isEmpty { fields.append(("quote", quote)) }
+        // The print page the quoted words stand on. `pages` carries the
+        // paragraph address (the Origami and Author convention), so the
+        // printed page has its own field.
+        if let printPage, !printPage.isEmpty { fields.append(("printpage", printPage)) }
         if let annotation, !annotation.isEmpty { fields.append(("annotation", annotation)) }
         // Split address into document ID and optional paragraph fragment.
         let addressParts = address.components(separatedBy: "#")
@@ -1739,6 +1751,9 @@ nonisolated struct OrigamiCitation: Codable, Sendable {
     /// Margin note or reader annotation attached to this citation — travels
     /// in Author's Annotation field and as a BibTeX `annotation` field.
     var annotation: String? = nil
+    /// The print page the quoted words stand on, when the book records
+    /// its pages — shown as "p. 12" in the visible citation.
+    var page: String? = nil
 
     /// The identity carrier host. The link's *path* is the document id — never
     /// a filesystem location — so a citation resolves by identity inside the
@@ -1797,7 +1812,7 @@ nonisolated struct OrigamiCitation: Codable, Sendable {
     /// are never shown — they live in the link — so the citation reads as one
     /// tidy package the user is unlikely to edit apart.
     var marker: String {
-        let inside = [author, year]
+        let inside = [author, year, page.map { "p. \($0)" } ?? ""]
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
             .joined(separator: ", ")
@@ -1806,7 +1821,9 @@ nonisolated struct OrigamiCitation: Codable, Sendable {
 
     /// The clean, visible sentence — “Quoted” (Author, Year) — kept for the
     /// native Origami/Author draft editors, which show the quote in full.
-    var displaySentence: String { "“\(quotedText)” (\(author), \(year))" }
+    var displaySentence: String {
+        "“\(quotedText)” (\(author), \(year)\(page.map { ", p. \($0)" } ?? ""))"
+    }
 
     /// The form inserted into an Origami/Author draft: the sentence plus the
     /// bracketed address, so the editor makes a span-scoped `cites` link on

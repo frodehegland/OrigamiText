@@ -19,9 +19,10 @@ enum SidebarCatalog {
     /// gone; new views will be built fresh against the EPUB + Visual-Meta.
     /// The full-screen peek still needs a way back to the library, so it
     /// lists Chronological — every book, newest first.
-    static let received: [SidebarPlace] = [
-        SidebarPlace(name: "Chronological", systemImage: "clock", item: .epubsTimeline),
-    ]
+    static var received: [SidebarPlace] { [
+        SidebarPlace(name: UserDefaults.standard.string(forKey: AppSettings.papersLabelKey) ?? "Papers",
+                     systemImage: "doc.text", item: .epubsTimeline),
+    ] }
 
     /// The conversation itself: every letter to and from the user, the
     /// meetings, what was lifted from them, and everything filed.
@@ -116,13 +117,13 @@ struct SidebarView: View {
     /// What the venues shelf is called — Journals or Proceedings,
     /// chosen in Settings ▸ Layout.
     @AppStorage(AppSettings.venueLabelKey) private var venueLabel = "Journals"
+    @AppStorage(AppSettings.papersLabelKey) private var papersLabel = "Papers"
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
     private var theme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
     /// The Unread narrowing for Timeline and Alphabetical, toggled from
     /// their context menus; the lists read the same keys.
     @AppStorage("libraryTimelineUnreadOnly") private var timelineUnreadOnly = false
-    @AppStorage("libraryAlphabeticalUnreadOnly") private var alphabeticalUnreadOnly = false
     /// How a proceedings' author list is ordered: "first" or "last"
     /// (alphabetical, by first or last name) or "rank" (most papers
     /// across the whole series, per the imported reference dataset).
@@ -158,7 +159,7 @@ struct SidebarView: View {
     /// Whether the sidebar shows a row for this place.
     private func hasRow(for item: SidebarItem) -> Bool {
         switch item {
-        case .epubsTopOfPile, .epubsTimeline, .epubsAlphabetical,
+        case .epubsTopOfPile, .epubsTimeline,
              .epubJournals, .myEPUBs, .authors, .annotations,
              .people, .concepts, .conceptSpace,
              .timeFlows, .timelines:
@@ -192,29 +193,54 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             // The app's name stands over the list — as Knowledge
             // Space's sidebar carries its own.
-            Text("Origami Text")
-                .font(.headline)
-                .fontWeight(.regular)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 18)
-            List(selection: selection) {
-                // The Library shelf of opened EPUBs (the ways through
-                // them, the user's folders, and a "+"), then the Views.
-                Group {
-                    librarySection
-                    hypermediaSection
-                    foldersSection
-                    xrSection
-                    viewsSection
+            // With a journal in focus it is also the way back to every
+            // place (as Esc is).
+            Button {
+                model.leaveVenueFocus()
+            } label: {
+                HStack(spacing: 5) {
+                    if currentVenueName != nil {
+                        Image(systemName: "chevron.left")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Origami Text")
+                        .font(.headline)
+                        .fontWeight(.regular)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
                 }
-                // The icon rows stand flush with their section
-                // headers — the sidebar style's default steps every
-                // child in a level, spending the column on air.
-                .listRowInsets([.leading], 0)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(currentVenueName != nil ? "Show every place (Esc)" : "")
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 18)
+            List(selection: selection) {
+                if currentVenueName != nil {
+                    // A journal in focus: its own section alone — its
+                    // name, Authors, Concepts — and nothing else.
+                    Section {
+                        publicationSubmenus
+                    }
+                    .listRowInsets([.leading], 0)
+                } else {
+                    // The Library shelf of opened EPUBs (the ways through
+                    // them, the user's folders), then the Views.
+                    Group {
+                        librarySection
+                        hypermediaSection
+                        foldersSection
+                        xrSection
+                        viewsSection
+                    }
+                    // The icon rows stand flush with their section
+                    // headers — the sidebar style's default steps every
+                    // child in a level, spending the column on air.
+                    .listRowInsets([.leading], 0)
+                }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
@@ -277,17 +303,10 @@ struct SidebarView: View {
     @ViewBuilder
     private var viewsSection: some View {
         Section(isExpanded: isExpanded("Views")) {
-            // Badges inside the tags here too — see the Library shelf.
-            Label("Authors", systemImage: "person.2")
-                .badge(model.epubAuthors.count)
-                .tag(SidebarItem.authors)
-
             Label("Annotations", systemImage: "highlighter")
-                .badge(model.allAnnotations.count)
                 .tag(SidebarItem.annotations)
 
             Label("People", systemImage: "person.crop.circle")
-                .badge(model.viewPeople.count)
                 .tag(SidebarItem.people)
             ForEach(model.viewPeople, id: \.self) { name in
                 Label(name, systemImage: "person")
@@ -308,7 +327,6 @@ struct SidebarView: View {
                 .tag(SidebarItem.conceptSpace)
 
             Label("Tracked Concepts", systemImage: "lightbulb")
-                .badge(model.viewConcepts.count)
                 .tag(SidebarItem.concepts)
             ForEach(model.viewConcepts, id: \.self) { name in
                 Label(name, systemImage: "tag")
@@ -354,40 +372,28 @@ struct SidebarView: View {
     /// can narrow to unread from their context menus.
     @ViewBuilder
     private var librarySection: some View {
-        let shown = model.epubRecords(inFolder: nil)
         let myLastName = model.authorName.components(separatedBy: " ").last ?? model.authorName
-        let myCount = model.epubRecords(byAuthor: model.authorName).count
+        // No counts beside the rows: the left column names places only.
         Section(isExpanded: isExpanded("Library")) {
-            // The badge sits INSIDE the tag: a badge applied over the
-            // tag hides it from the List, and the row stops selecting.
             Label("Pinned", systemImage: "pin")
-                .badge(shown.filter { model.isTopOfPile($0) }.count)
                 .tag(SidebarItem.epubsTopOfPile)
-            Label("Chronological", systemImage: "clock")
-                .badge(timelineUnreadOnly
-                       ? shown.filter { model.isUnread($0) }.count : shown.count)
+            // Everyone who wrote what is in the library.
+            Label("Authors", systemImage: "person.2")
+                .tag(SidebarItem.authors)
+            // Every book in the library, sorted by Title or Date from the
+            // tabs above the list.
+            Label(papersLabel, systemImage: "doc.text")
                 .tag(SidebarItem.epubsTimeline)
                 .contextMenu {
                     Toggle("Unread", isOn: $timelineUnreadOnly)
                 }
-            Label("Alphabetical", systemImage: "textformat.abc")
-                .badge(alphabeticalUnreadOnly
-                       ? shown.filter { model.isUnread($0) }.count : shown.count)
-                .tag(SidebarItem.epubsAlphabetical)
-                .contextMenu {
-                    Toggle("Unread", isOn: $alphabeticalUnreadOnly)
-                }
             Label(venueLabel, systemImage: "newspaper")
-                .badge(model.epubPublications.count)
                 .tag(SidebarItem.epubJournals)
-            publicationSubmenus
             Label(myLastName, systemImage: "person.fill")
-                .badge(myCount > 0 ? myCount : 0)
                 .tag(SidebarItem.myEPUBs)
             // Import lives in the File menu (and drag-and-drop), not here.
             if !model.acquisitions.isEmpty {
                 Label("To Acquire", systemImage: "arrow.down.circle")
-                    .badge(model.acquisitions.count)
                     .tag(SidebarItem.acquisitions)
             }
         } header: {
@@ -692,7 +698,6 @@ struct SidebarView: View {
         Section(isExpanded: isExpanded("Folders")) {
             ForEach(model.epubFolders, id: \.self) { folder in
                 Label(folder, systemImage: "folder")
-                    .badge(model.epubRecords(inFolder: folder).count)
                     .tag(SidebarItem.epubFolder(folder))
             }
             Button {
@@ -716,18 +721,13 @@ struct SidebarView: View {
         Section(isExpanded: isExpanded("Hypermedia")) {
             ForEach(model.hypermedia.spaces) { space in
                 Label(space.title, systemImage: "globe")
-                    .badge(model.hypermedia.documents(for: space.domain)?.count ?? 0)
                     .tag(SidebarItem.hypermediaSpace(space.domain))
                     .help(space.domain)
             }
             if !model.hypermediaDocs.isEmpty {
                 Label("Timeline", systemImage: "clock")
-                    .badge(model.hypermediaDocs.count)
                     .tag(SidebarItem.hypermediaTimeline)
                 Label("Pinned", systemImage: "pin")
-                    .badge(model.hypermediaDocs.filter {
-                        model.epubTopOfPile.contains($0.id)
-                    }.count)
                     .tag(SidebarItem.hypermediaPinned)
             }
             Button {

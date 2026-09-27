@@ -1,4 +1,5 @@
 import Compression
+import CryptoKit
 import Foundation
 
 nonisolated enum OrigamiEPUBImportError: LocalizedError {
@@ -6,6 +7,8 @@ nonisolated enum OrigamiEPUBImportError: LocalizedError {
     case unsupportedCompression(Int)
     case corruptContainer
     case missingContent
+    /// The book is locked by a DRM scheme, named when it can be told.
+    case protected(String)
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +20,8 @@ nonisolated enum OrigamiEPUBImportError: LocalizedError {
             "The EPUB's container is damaged."
         case .missingContent:
             "No content document was found inside the EPUB."
+        case .protected(let scheme):
+            "This book is copy-protected (\(scheme)). Origami Text can open only books without DRM — open it in the app it was bought for, or ask the publisher for a DRM-free copy."
         }
     }
 }
@@ -33,6 +38,8 @@ nonisolated enum OrigamiEPUBImportError: LocalizedError {
 nonisolated enum OrigamiEPUBImporter {
 
     struct ImportResult: Sendable {
+        /// Content documents the reading styles could not read.
+        var unreadableDocuments: [String] = []
         let title: String
         /// The paper's subtitle from Visual-Meta, apart from the title.
         var subtitle: String? = nil
@@ -172,7 +179,7 @@ nonisolated enum OrigamiEPUBImporter {
               let contentData = source.entry(joinedPath(opfDirectory, contentHref))
                   ?? source.entry(contentHref)
         else { throw OrigamiEPUBImportError.missingContent }
-        let html = String(decoding: contentData, as: UTF8.self)
+        let html = decodedText(contentData)
 
         // Both records are declared in the package as <link rel="record">
         // carrying a `properties` value that says which record it is. The
@@ -291,7 +298,7 @@ nonisolated enum OrigamiEPUBImporter {
         // (their data-table-id links here). The interaction record owns it
         // in the profile, Visual-Meta held it before that.
         let tableSource = origamiJSON?["tables"] ?? visualMeta?["tables"]
-        let tables: [LiquidDoc.Table] = dictionaries(tableSource).compactMap { raw in
+        var tables: [LiquidDoc.Table] = dictionaries(tableSource).compactMap { raw in
             guard let identifier = raw["identifier"] as? String, !identifier.isEmpty else { return nil }
             let cellRows = raw["cells"] as? [[[String: Any]]] ?? []
             let cells: [[LiquidDoc.Table.Cell]] = cellRows.map { row in
@@ -357,8 +364,11 @@ nonisolated enum OrigamiEPUBImporter {
             .compactMap { href in
                 guard let data = source.entry(joinedPath(opfDirectory, href))
                         ?? source.entry(href) else { return nil }
-                return (href, String(decoding: data, as: UTF8.self))
+                return (href, decodedText(data))
             }
+        // Chapters the reading styles could not read at all — reported,
+        // never dropped silently (the Scrolling page still shows them).
+        var unreadable: [String] = []
         var imageBudget = readable.count > 1 ? 12_000_000 : Int.max
         typealias Read = (paragraphs: [LiquidDoc.Paragraph], assets: [LiquidDoc.Asset],
                           footnotes: [(id: String, text: String)], bodyBearing: Int)
@@ -374,16 +384,21 @@ nonisolated enum OrigamiEPUBImporter {
                 imageBudget -= bytes.count
                 return bytes
             }
-            return try? bodyParagraphs(
-                fromXHTML: xhtml,
-                addressByCitationID: addressByCitationID,
-                resolveImage: resolve,
-                contentDir: documentDir,
-                documentPath: qualifying ? href : "",
-                skippingRecordSections: hasRecords,
-                preferringID: declaresProfile,
-                ordinalOffset: offset,
-                capture: capture)
+            do {
+                return try bodyParagraphs(
+                    fromXHTML: xhtml,
+                    addressByCitationID: addressByCitationID,
+                    resolveImage: resolve,
+                    contentDir: documentDir,
+                    documentPath: qualifying ? href : "",
+                    skippingRecordSections: hasRecords,
+                    preferringID: declaresProfile,
+                    ordinalOffset: offset,
+                    capture: capture)
+            } catch {
+                if !unreadable.contains(href) { unreadable.append(href) }
+                return nil
+            }
         }
 
         // A first pass answers one question: how many documents carry the
@@ -425,6 +440,11 @@ nonisolated enum OrigamiEPUBImporter {
         }
         guard !body.isEmpty else { throw OrigamiEPUBImportError.missingContent }
         body = applyingQuoteLinks(dictionaries(visualMeta?["links"]), to: body)
+        // A plain book's tables, drawn as grids rather than pipe text —
+        // wherever the records did not already describe the table.
+        for table in capture.staticTables where !tables.contains(where: { $0.identifier == table.identifier }) {
+            tables.append(table)
+        }
         concepts = conceptsFollowingGlossaryLinks(
             concepts,
             glossary: readable.flatMap { glossaryEntries(inXHTML: $0.xhtml) },
@@ -615,7 +635,7 @@ nonisolated enum OrigamiEPUBImporter {
         }()
         let doiFromMeta = (document?["doi"] as? String).flatMap(normalizedDOI)
             ?? (origamiDoc?["doi"] as? String).flatMap(normalizedDOI)
-        return ImportResult(
+        return ImportResult(unreadableDocuments: unreadable,
             title: document?["title"] as? String ?? origamiDoc?["title"] as? String ?? title ?? "Untitled",
             subtitle: (document?["subtitle"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             author: metaAuthors.first ?? creator,
@@ -679,11 +699,23 @@ nonisolated enum OrigamiEPUBImporter {
     static func unpack(at url: URL, into directory: URL) throws -> Unpacked {
         let zip = try ZipReader(url: url)
         let fileManager = FileManager.default
+
+        // A locked book is said to be locked, before anything is written:
+        // unpacked, its pages would read as garbage with no explanation.
+        let opfPathEarly = containerRootFile(in: zip) ?? "package.opf"
+        let opfEarly = zip.entry(opfPathEarly).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        let obfuscated = try obfuscatedFonts(in: zip, opf: opfEarly)
+
         try? fileManager.removeItem(at: directory)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
         for name in zip.entryNames {
-            guard let data = zip.entry(name) else { continue }
+            guard var data = zip.entry(name) else { continue }
+            // An obfuscated font (EPUB 3 §4.4, or Adobe's older scheme)
+            // is written back as the font it is.
+            if let method = obfuscated[name] {
+                data = deobfuscated(data, method: method)
+            }
             // Directory placeholders carry no bytes; refuse any name that
             // would escape the unpack directory.
             guard !name.isEmpty, !name.hasSuffix("/"),
@@ -704,6 +736,183 @@ nonisolated enum OrigamiEPUBImporter {
         let title = firstTagText(in: opf, tag: "dc:title")
             ?? url.deletingPathExtension().lastPathComponent
         return Unpacked(content: content, base: directory, title: title)
+    }
+
+    // MARK: Text encoding and entities
+
+    /// A content document's text in the encoding it declares: a byte-order
+    /// mark, else the XML declaration's encoding, else UTF-8. Forcing UTF-8
+    /// garbled Latin-1 and UTF-16 chapters.
+    static func decodedText(_ data: Data) -> String {
+        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) {
+            return String(data: data, encoding: .utf16) ?? String(decoding: data, as: UTF8.self)
+        }
+        if data.starts(with: [0xEF, 0xBB, 0xBF]) {
+            return String(decoding: data.dropFirst(3), as: UTF8.self)
+        }
+        let head = String(decoding: data.prefix(200), as: UTF8.self)
+        if let name = firstCapture(in: head, pattern: "<\\?xml[^>]*encoding=[\"']([^\"']+)"),
+           name.lowercased() != "utf-8" {
+            let cf = CFStringConvertIANACharSetNameToEncoding(name as CFString)
+            if cf != kCFStringEncodingInvalidId {
+                let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(cf))
+                if let text = String(data: data, encoding: encoding) { return text }
+            }
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// HTML's named entities rewritten as numeric references, which an XML
+    /// parser reads without a DTD; a bare `&` becomes `&amp;`.
+    static func xmlSafeEntities(_ text: String) -> String {
+        guard text.contains("&") else { return text }
+        guard let expression = try? NSRegularExpression(pattern: "&([A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+)?;?")
+        else { return text }
+        let ns = text as NSString
+        var out = ""
+        var last = 0
+        for match in expression.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            out += ns.substring(with: NSRange(location: last, length: match.range.location - last))
+            let whole = ns.substring(with: match.range)
+            let name = match.range(at: 1).location == NSNotFound ? "" : ns.substring(with: match.range(at: 1))
+            let closed = whole.hasSuffix(";")
+            if closed, ["amp", "lt", "gt", "quot", "apos"].contains(name) || name.hasPrefix("#") {
+                out += whole
+            } else if closed, let code = htmlEntities[name] {
+                out += "&#\(code);"
+            } else {
+                // A bare ampersand, or an entity no table knows.
+                out += "&amp;" + whole.dropFirst()
+            }
+            last = match.range.location + match.range.length
+        }
+        out += ns.substring(from: last)
+        return out
+    }
+
+    /// HTML's named character entities (HTML 4's set), which an XML parser
+    /// without the XHTML DTD refuses — `&nbsp;` stopped whole chapters.
+    static let htmlEntities: [String: UInt32] = [
+        "AElig": 198, "Aacute": 193, "Acirc": 194, "Agrave": 192, "Alpha": 913, "Aring": 197,
+        "Atilde": 195, "Auml": 196, "Beta": 914, "Ccedil": 199, "Chi": 935, "Dagger": 8225,
+        "Delta": 916, "ETH": 208, "Eacute": 201, "Ecirc": 202, "Egrave": 200, "Epsilon": 917,
+        "Eta": 919, "Euml": 203, "Gamma": 915, "Iacute": 205, "Icirc": 206, "Igrave": 204,
+        "Iota": 921, "Iuml": 207, "Kappa": 922, "Lambda": 923, "Mu": 924, "Ntilde": 209,
+        "Nu": 925, "OElig": 338, "Oacute": 211, "Ocirc": 212, "Ograve": 210, "Omega": 937,
+        "Omicron": 927, "Oslash": 216, "Otilde": 213, "Ouml": 214, "Phi": 934, "Pi": 928,
+        "Prime": 8243, "Psi": 936, "Rho": 929, "Scaron": 352, "Sigma": 931, "THORN": 222,
+        "Tau": 932, "Theta": 920, "Uacute": 218, "Ucirc": 219, "Ugrave": 217, "Upsilon": 933,
+        "Uuml": 220, "Xi": 926, "Yacute": 221, "Yuml": 376, "Zeta": 918, "aacute": 225,
+        "acirc": 226, "acute": 180, "aelig": 230, "agrave": 224, "alefsym": 8501, "alpha": 945,
+        "and": 8743, "ang": 8736, "aring": 229, "asymp": 8776, "atilde": 227, "auml": 228,
+        "bdquo": 8222, "beta": 946, "brvbar": 166, "bull": 8226, "cap": 8745, "ccedil": 231,
+        "cedil": 184, "cent": 162, "chi": 967, "circ": 710, "clubs": 9827, "cong": 8773,
+        "copy": 169, "crarr": 8629, "cup": 8746, "curren": 164, "dArr": 8659, "dagger": 8224,
+        "darr": 8595, "deg": 176, "delta": 948, "diams": 9830, "divide": 247, "eacute": 233,
+        "ecirc": 234, "egrave": 232, "empty": 8709, "emsp": 8195, "ensp": 8194, "epsilon": 949,
+        "equiv": 8801, "eta": 951, "eth": 240, "euml": 235, "euro": 8364, "exist": 8707,
+        "fnof": 402, "forall": 8704, "frac12": 189, "frac14": 188, "frac34": 190, "frasl": 8260,
+        "gamma": 947, "ge": 8805, "hArr": 8660, "harr": 8596, "hearts": 9829, "hellip": 8230,
+        "iacute": 237, "icirc": 238, "iexcl": 161, "igrave": 236, "image": 8465, "infin": 8734,
+        "int": 8747, "iota": 953, "iquest": 191, "isin": 8712, "iuml": 239, "kappa": 954,
+        "lArr": 8656, "lambda": 955, "lang": 9001, "laquo": 171, "larr": 8592, "lceil": 8968,
+        "ldquo": 8220, "le": 8804, "lfloor": 8970, "lowast": 8727, "loz": 9674, "lrm": 8206,
+        "lsaquo": 8249, "lsquo": 8216, "macr": 175, "mdash": 8212, "micro": 181, "middot": 183,
+        "minus": 8722, "mu": 956, "nabla": 8711, "nbsp": 160, "ndash": 8211, "ne": 8800,
+        "ni": 8715, "not": 172, "notin": 8713, "nsub": 8836, "ntilde": 241, "nu": 957,
+        "oacute": 243, "ocirc": 244, "oelig": 339, "ograve": 242, "oline": 8254, "omega": 969,
+        "omicron": 959, "oplus": 8853, "or": 8744, "ordf": 170, "ordm": 186, "oslash": 248,
+        "otilde": 245, "otimes": 8855, "ouml": 246, "para": 182, "part": 8706, "permil": 8240,
+        "perp": 8869, "phi": 966, "pi": 960, "piv": 982, "plusmn": 177, "pound": 163,
+        "prime": 8242, "prod": 8719, "prop": 8733, "psi": 968, "rArr": 8658, "radic": 8730,
+        "rang": 9002, "raquo": 187, "rarr": 8594, "rceil": 8969, "rdquo": 8221, "real": 8476,
+        "reg": 174, "rfloor": 8971, "rho": 961, "rlm": 8207, "rsaquo": 8250, "rsquo": 8217,
+        "sbquo": 8218, "scaron": 353, "sdot": 8901, "sect": 167, "shy": 173, "sigma": 963,
+        "sigmaf": 962, "sim": 8764, "spades": 9824, "sub": 8834, "sube": 8838, "sum": 8721,
+        "sup": 8835, "sup1": 185, "sup2": 178, "sup3": 179, "supe": 8839, "szlig": 223,
+        "tau": 964, "there4": 8756, "theta": 952, "thetasym": 977, "thinsp": 8201, "thorn": 254,
+        "tilde": 732, "times": 215, "trade": 8482, "uArr": 8657, "uacute": 250, "uarr": 8593,
+        "ucirc": 251, "ugrave": 249, "uml": 168, "upsih": 978, "upsilon": 965, "uuml": 252,
+        "weierp": 8472, "xi": 958, "yacute": 253, "yen": 165, "yuml": 255, "zeta": 950,
+        "zwj": 8205, "zwnj": 8204,
+    ]
+
+    // MARK: Font obfuscation and DRM
+
+    enum FontObfuscation { case idpf(key: [UInt8]), adobe(key: [UInt8]) }
+
+    /// The fonts META-INF/encryption.xml says are obfuscated, by their path
+    /// in the container, with the key each needs. Throws `.protected` when
+    /// the book is locked: an Adobe ADEPT rights file, a Readium LCP
+    /// licence, Apple FairPlay, or any resource encrypted by something
+    /// other than the two font-obfuscation algorithms.
+    static func obfuscatedFonts(in zip: ZipReader, opf: String) throws -> [String: FontObfuscation] {
+        if zip.entry("META-INF/license.lcpl") != nil { throw OrigamiEPUBImportError.protected("Readium LCP") }
+        if zip.entry("META-INF/sinf.xml") != nil { throw OrigamiEPUBImportError.protected("Apple FairPlay") }
+        if zip.entry("META-INF/rights.xml") != nil { throw OrigamiEPUBImportError.protected("Adobe DRM") }
+        guard let encryption = zip.entry("META-INF/encryption.xml")
+            .map({ String(decoding: $0, as: UTF8.self) }) else { return [:] }
+
+        let identifier = uniqueIdentifier(in: opf)
+        var fonts: [String: FontObfuscation] = [:]
+        for block in captures(in: encryption, pattern: "(?s)<(?:enc:)?EncryptedData\\b.*?</(?:enc:)?EncryptedData>") {
+            guard let algorithm = firstCapture(in: block, pattern: "EncryptionMethod[^>]*Algorithm=[\"']([^\"']+)"),
+                  let uri = firstCapture(in: block, pattern: "CipherReference[^>]*URI=[\"']([^\"']+)")
+            else { continue }
+            let path = xmlUnescaped(uri).removingPercentEncoding ?? xmlUnescaped(uri)
+            switch algorithm {
+            case "http://www.idpf.org/2008/embedding":
+                // SHA-1 of the unique identifier, whitespace removed.
+                let cleaned = identifier.filter { !" \t\r\n".contains($0) }
+                fonts[path] = .idpf(key: Array(Insecure.SHA1.hash(data: Data(cleaned.utf8))))
+            case "http://ns.adobe.com/pdf/enc#RC":
+                // The 16 bytes of the book's UUID.
+                let hex = (identifier.lowercased().hasPrefix("urn:uuid:") ? identifier
+                           : uuidIdentifier(in: opf) ?? identifier)
+                    .lowercased().replacingOccurrences(of: "urn:uuid:", with: "")
+                    .filter(\.isHexDigit)
+                var key: [UInt8] = []
+                var index = hex.startIndex
+                while index < hex.endIndex, let next = hex.index(index, offsetBy: 2, limitedBy: hex.endIndex) {
+                    if let byte = UInt8(hex[index..<next], radix: 16) { key.append(byte) }
+                    index = next
+                }
+                if key.count == 16 { fonts[path] = .adobe(key: key) }
+            default:
+                throw OrigamiEPUBImportError.protected("encrypted content")
+            }
+        }
+        return fonts
+    }
+
+    /// The first 1040 (IDPF) or 1024 (Adobe) bytes, XORed with the key.
+    static func deobfuscated(_ data: Data, method: FontObfuscation) -> Data {
+        var bytes = [UInt8](data)
+        let (key, length): ([UInt8], Int) = switch method {
+        case .idpf(let key): (key, 1040)
+        case .adobe(let key): (key, 1024)
+        }
+        guard !key.isEmpty else { return data }
+        for i in 0..<min(length, bytes.count) { bytes[i] ^= key[i % key.count] }
+        return Data(bytes)
+    }
+
+    /// The package's unique identifier: the dc:identifier the package
+    /// element's unique-identifier attribute names.
+    static func uniqueIdentifier(in opf: String) -> String {
+        if let id = firstCapture(in: opf, pattern: "<package[^>]*unique-identifier=[\"']([^\"']+)"),
+           let value = firstCapture(
+            in: opf,
+            pattern: "<dc:identifier[^>]*id=[\"']\(NSRegularExpression.escapedPattern(for: id))[\"'][^>]*>([^<]+)<") {
+            return xmlUnescaped(value).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return firstTagText(in: opf, tag: "dc:identifier")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    /// Any urn:uuid identifier — Adobe's key when the unique one is not.
+    private static func uuidIdentifier(in opf: String) -> String? {
+        firstCapture(in: opf, pattern: "<dc:identifier[^>]*>\\s*(urn:uuid:[0-9A-Fa-f-]+)")
     }
 
     /// Lightweight metadata extracted from an already-unpacked package —
@@ -1007,8 +1216,20 @@ nonisolated enum OrigamiEPUBImporter {
             else { continue }
             hrefByID[id] = href
         }
-        return captures(in: opf, pattern: "<itemref[^>]*idref=\"([^\"]+)\"")
-            .compactMap { hrefByID[$0] }
+        // linear="no" items (a pop-up answer page, a notes file) stand
+        // after the reading order — still reachable by links — so the
+        // book reads through without them (EPUB 3.3 §3.4.8).
+        var linear: [String] = [], auxiliary: [String] = []
+        for itemref in captures(in: opf, pattern: "<itemref\\b[^>]*>") {
+            guard let idref = firstCapture(in: itemref, pattern: "idref=[\"']([^\"']+)"),
+                  let href = hrefByID[idref] else { continue }
+            if firstCapture(in: itemref, pattern: "linear=[\"']([^\"']+)") == "no" {
+                auxiliary.append(href)
+            } else {
+                linear.append(href)
+            }
+        }
+        return linear + auxiliary
     }
 
     /// The EPUB 3 navigation document's href, when the manifest names one
@@ -1167,6 +1388,8 @@ nonisolated enum OrigamiEPUBImporter {
         let label: String
         let subpath: String
         let fragment: String?
+        /// Nesting depth in the book's own contents: 0 for a top entry.
+        var level: Int = 0
         var id: String { subpath + "#" + (fragment ?? "") + "·" + label }
     }
 
@@ -1183,7 +1406,13 @@ nonisolated enum OrigamiEPUBImporter {
                 in: html,
                 pattern: "(?s)<nav[^>]*epub:type=\"toc\"[^>]*>(.*?)</nav>") ?? html
             var entries: [TOCEntry] = []
-            for anchor in captures(in: scope, pattern: "(?s)<a\\s[^>]*href=\"[^\"]+\"[^>]*>.*?</a>") {
+            // Walked in document order, so each entry knows how many lists
+            // it stands inside — the contents keep their nesting.
+            var depth = 0
+            for token in captures(in: scope, pattern: "(?s)(<ol\\b[^>]*>|</ol>|<a\\s[^>]*href=\"[^\"]+\"[^>]*>.*?</a>)") {
+                if token.hasPrefix("</ol") { depth = max(0, depth - 1); continue }
+                if token.hasPrefix("<ol") { depth += 1; continue }
+                let anchor = token
                 guard let href = firstCapture(in: anchor, pattern: "href=\"([^\"]+)\""),
                       let inner = firstCapture(in: anchor, pattern: "(?s)<a[^>]*>(.*?)</a>")
                 else { continue }
@@ -1197,10 +1426,14 @@ nonisolated enum OrigamiEPUBImporter {
                 let subpath = file.isEmpty
                     ? (spine.chapters.first ?? "")
                     : joinedPath(navDirectory, file.removingPercentEncoding ?? file)
-                entries.append(TOCEntry(label: label, subpath: subpath, fragment: fragment))
+                entries.append(TOCEntry(label: label, subpath: subpath, fragment: fragment,
+                                        level: max(0, depth - 1)))
             }
             if !entries.isEmpty { return entries }
         }
+        // An EPUB 2 book (or one whose nav is missing): its NCX.
+        let fromNCX = ncxEntries(inUnpackedFolder: folder, spine: spine)
+        if !fromNCX.isEmpty { return fromNCX }
         // No navigation document: build the contents from the words.
         if spine.chapters.count == 1, let only = spine.chapters.first {
             guard let html = try? String(contentsOf: folder.appendingPathComponent(only),
@@ -1228,6 +1461,258 @@ nonisolated enum OrigamiEPUBImporter {
             }
             return TOCEntry(label: label ?? "Chapter \(index + 1)", subpath: subpath, fragment: nil)
         }
+    }
+
+    /// How a book asks to be laid out (EPUB 3.3 §4.2): fixed-layout pages
+    /// (`rendition:layout` pre-paginated, for the whole book or any spine
+    /// item) and right-to-left page progression.
+    struct Rendition: Sendable, Hashable {
+        var fixedLayout = false
+        var rightToLeft = false
+        /// Content documents the package marks `properties="scripted"`,
+        /// folder-relative — the only pages whose own JavaScript runs.
+        var scriptedDocuments: Set<String> = []
+    }
+
+    static func rendition(inUnpackedFolder folder: URL) -> Rendition {
+        let opfSubpath = (try? String(
+            contentsOf: folder.appendingPathComponent("META-INF/container.xml"), encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") } ?? "package.opf"
+        guard let opf = try? String(contentsOf: folder.appendingPathComponent(opfSubpath),
+                                    encoding: .utf8) else { return Rendition() }
+        let global = firstCapture(in: opf, pattern: "<meta[^>]*property=[\"']rendition:layout[\"'][^>]*>\\s*([^<]+)")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let anyItem = opf.contains("rendition:layout-pre-paginated")
+        // Apple's older display-options file said the same for iBooks.
+        let apple = (try? String(contentsOf: folder.appendingPathComponent(
+            "META-INF/com.apple.ibooks.display-options.xml"), encoding: .utf8))?
+            .contains("fixed-layout\">true") ?? false
+        let direction = firstCapture(in: opf, pattern: "<spine[^>]*page-progression-direction=[\"']([^\"']+)")
+        let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
+        let scripted = Set(captures(in: opf, pattern: "<item\\s[^>]*>").compactMap { tag -> String? in
+            guard let properties = firstCapture(in: tag, pattern: "properties=[\"']([^\"']+)"),
+                  properties.split(separator: " ").contains("scripted"),
+                  let href = firstCapture(in: tag, pattern: "href=[\"']([^\"']+)") else { return nil }
+            let decoded = xmlUnescaped(href)
+            return joinedPath(opfDirectory, decoded.removingPercentEncoding ?? decoded)
+        })
+        return Rendition(fixedLayout: global == "pre-paginated" || anyItem || apple,
+                         rightToLeft: direction == "rtl", scriptedDocuments: scripted)
+    }
+
+    /// The cover image the package declares, folder-relative: EPUB 3's
+    /// `properties="cover-image"`, else EPUB 2's `<meta name="cover">`,
+    /// else an image item named for a cover.
+    static func coverImagePath(inUnpackedFolder folder: URL) -> String? {
+        let opfSubpath = (try? String(
+            contentsOf: folder.appendingPathComponent("META-INF/container.xml"), encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") } ?? "package.opf"
+        guard let opf = try? String(contentsOf: folder.appendingPathComponent(opfSubpath),
+                                    encoding: .utf8) else { return nil }
+        let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
+        struct Item { let id: String; let href: String; let type: String; let properties: String }
+        let items: [Item] = captures(in: opf, pattern: "<item\\s[^>]*>").compactMap { tag in
+            guard let href = firstCapture(in: tag, pattern: "href=[\"']([^\"']+)") else { return nil }
+            return Item(id: firstCapture(in: tag, pattern: "\\sid=[\"']([^\"']+)") ?? "",
+                        href: xmlUnescaped(href),
+                        type: firstCapture(in: tag, pattern: "media-type=[\"']([^\"']+)") ?? "",
+                        properties: firstCapture(in: tag, pattern: "properties=[\"']([^\"']+)") ?? "")
+        }
+        let images = items.filter { $0.type.hasPrefix("image/") }
+        let metaID = firstCapture(in: opf, pattern: "<meta[^>]*name=[\"']cover[\"'][^>]*content=[\"']([^\"']+)")
+            ?? firstCapture(in: opf, pattern: "<meta[^>]*content=[\"']([^\"']+)[\"'][^>]*name=[\"']cover[\"']")
+        let chosen = images.first { $0.properties.split(separator: " ").contains("cover-image") }
+            ?? metaID.flatMap { id in images.first { $0.id == id } }
+            ?? images.first { $0.id.localizedCaseInsensitiveContains("cover")
+                || $0.href.localizedCaseInsensitiveContains("cover") }
+        guard let chosen else { return nil }
+        return joinedPath(opfDirectory, chosen.href.removingPercentEncoding ?? chosen.href)
+    }
+
+    /// A print page the book records: its label (as printed — "12",
+    /// "xiv") and where it begins.
+    struct PageTarget: Hashable, Sendable {
+        let label: String
+        let subpath: String
+        let fragment: String?
+    }
+
+    /// The book's print pages (EPUB 3.3 page-list): the navigation
+    /// document's `page-list`, else the NCX `pageList`, else the page-break
+    /// markers in the text itself.
+    static func pageList(inUnpackedFolder folder: URL, spine: BookSpine) -> [PageTarget] {
+        func target(_ href: String, relativeTo directory: String, label: String) -> PageTarget {
+            let parts = href.split(separator: "#", maxSplits: 1)
+            let file = parts.first.map(String.init) ?? ""
+            return PageTarget(label: label,
+                              subpath: file.isEmpty ? (spine.chapters.first ?? "")
+                                  : joinedPath(directory, file.removingPercentEncoding ?? file),
+                              fragment: parts.count > 1 ? String(parts[1]) : nil)
+        }
+        func text(_ markup: String) -> String {
+            xmlUnescaped(markup.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let nav = spine.nav,
+           let html = try? String(contentsOf: folder.appendingPathComponent(nav), encoding: .utf8),
+           let scope = firstCapture(in: html, pattern: "(?s)<nav[^>]*epub:type=[\"'][^\"']*page-list[^\"']*[\"'][^>]*>(.*?)</nav>") {
+            let directory = (nav as NSString).deletingLastPathComponent
+            let pages = captures(in: scope, pattern: "(?s)<a\\s[^>]*href=[\"'][^\"']+[\"'][^>]*>.*?</a>").compactMap { anchor -> PageTarget? in
+                guard let href = firstCapture(in: anchor, pattern: "href=[\"']([^\"']+)"),
+                      let inner = firstCapture(in: anchor, pattern: "(?s)<a[^>]*>(.*?)</a>") else { return nil }
+                let label = text(inner)
+                return label.isEmpty ? nil : target(href, relativeTo: directory, label: label)
+            }
+            if !pages.isEmpty { return pages }
+        }
+        // The NCX pageList.
+        let opfSubpath = (try? String(
+            contentsOf: folder.appendingPathComponent("META-INF/container.xml"), encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") } ?? "package.opf"
+        if let opf = try? String(contentsOf: folder.appendingPathComponent(opfSubpath), encoding: .utf8),
+           let ncxHref = captures(in: opf, pattern: "<item\\s[^>]*>")
+            .first(where: { $0.contains("application/x-dtbncx+xml") })
+            .flatMap({ firstCapture(in: $0, pattern: "href=[\"']([^\"']+)") }) {
+            let ncxPath = joinedPath((opfSubpath as NSString).deletingLastPathComponent, ncxHref)
+            if let data = try? Data(contentsOf: folder.appendingPathComponent(ncxPath)),
+               let list = firstCapture(in: decodedText(data), pattern: "(?s)<pageList\\b.*?</pageList>") {
+                let directory = (ncxPath as NSString).deletingLastPathComponent
+                let pages = captures(in: list, pattern: "(?s)<pageTarget\\b.*?</pageTarget>").compactMap { entry -> PageTarget? in
+                    guard let label = firstCapture(in: entry, pattern: "(?s)<text>(.*?)</text>").map(text),
+                          !label.isEmpty,
+                          let src = firstCapture(in: entry, pattern: "src=[\"']([^\"']+)") else { return nil }
+                    return target(src, relativeTo: directory, label: label)
+                }
+                if !pages.isEmpty { return pages }
+            }
+        }
+        // The page breaks marked in the text.
+        var pages: [PageTarget] = []
+        for chapter in spine.chapters {
+            guard let data = try? Data(contentsOf: folder.appendingPathComponent(chapter)) else { continue }
+            let html = decodedText(data)
+            for tag in captures(in: html, pattern: "<[a-zA-Z]+\\b[^>]*(?:epub:type=[\"'][^\"']*pagebreak|role=[\"']doc-pagebreak)[^>]*>") {
+                guard let id = firstCapture(in: tag, pattern: "\\sid=[\"']([^\"']+)") else { continue }
+                let label = firstCapture(in: tag, pattern: "(?:title|aria-label)=[\"']([^\"']+)").map(xmlUnescaped) ?? id
+                pages.append(PageTarget(label: label, subpath: chapter, fragment: id))
+            }
+        }
+        return pages
+    }
+
+    /// Finds the print page each paragraph stands on: the last page-break
+    /// marker before it in its chapter, else the last page an earlier
+    /// chapter began. Built once per export.
+    final class PrintPageLocator {
+        private let chapters: [(path: String, html: String)]
+        private let hasPages: Bool
+
+        init(folder: URL) {
+            let spine = OrigamiEPUBImporter.spine(inUnpackedFolder: folder)
+            chapters = (spine?.chapters ?? []).compactMap { path in
+                (try? Data(contentsOf: folder.appendingPathComponent(path)))
+                    .map { (path, OrigamiEPUBImporter.decodedText($0)) }
+            }
+            hasPages = chapters.contains { $0.html.contains("pagebreak") }
+        }
+
+        private static let marker = try? NSRegularExpression(
+            pattern: "<[a-zA-Z]+\\b[^>]*(?:epub:type=[\"'][^\"']*pagebreak|role=[\"']doc-pagebreak)[^>]*>")
+
+        private static func label(of tag: String) -> String? {
+            for attribute in ["title", "aria-label"] {
+                if let range = tag.range(of: attribute + "=[\"']([^\"']+)", options: .regularExpression) {
+                    return String(tag[range].dropFirst(attribute.count + 2))
+                }
+            }
+            if let range = tag.range(of: "\\sid=[\"']([^\"']+)", options: .regularExpression) {
+                return String(tag[range]).components(separatedBy: CharacterSet(charactersIn: "\"'")).dropFirst().first
+            }
+            return nil
+        }
+
+        /// The print page of an element address (`path#id` or a bare id).
+        func page(for address: String) -> String? {
+            guard hasPages, let marker = Self.marker else { return nil }
+            let id = address.split(separator: "#").last.map(String.init) ?? address
+            // A path#id address looks only in its own chapter.
+            let path = address.contains("#") ? String(address[..<address.lastIndex(of: "#")!]) : nil
+            var lastBefore: String?
+            for chapter in chapters {
+                let html = chapter.html
+                if let path, !chapter.path.hasSuffix(path) {
+                    let range = NSRange(html.startIndex..., in: html)
+                    if let last = marker.matches(in: html, range: range).last,
+                       let r = Range(last.range, in: html), let label = Self.label(of: String(html[r])) {
+                        lastBefore = label
+                    }
+                    continue
+                }
+                let range = NSRange(html.startIndex..., in: html)
+                let markers = marker.matches(in: html, range: range).compactMap { match -> (Int, String)? in
+                    guard let r = Range(match.range, in: html), let label = Self.label(of: String(html[r])) else { return nil }
+                    return (match.range.location, label)
+                }
+                if let target = html.range(of: "id=\"\(id)\"") ?? html.range(of: "id='\(id)'") {
+                    let offset = NSRange(target, in: html).location
+                    return markers.last(where: { $0.0 < offset })?.1 ?? lastBefore
+                }
+                if let last = markers.last?.1 { lastBefore = last }
+            }
+            return nil
+        }
+    }
+
+    /// The EPUB 2 contents, from toc.ncx: each navPoint's label and
+    /// target, nested as the NCX nests them.
+    static func ncxEntries(inUnpackedFolder folder: URL, spine: BookSpine) -> [TOCEntry] {
+        let opfSubpath = (try? String(
+            contentsOf: folder.appendingPathComponent("META-INF/container.xml"), encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") } ?? "package.opf"
+        guard let opf = try? String(contentsOf: folder.appendingPathComponent(opfSubpath),
+                                    encoding: .utf8) else { return [] }
+        let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
+        // The spine's toc attribute names it; else any NCX in the manifest.
+        let tocID = firstCapture(in: opf, pattern: "<spine[^>]*\\btoc=[\"']([^\"']+)")
+        var ncxHref: String?
+        for item in captures(in: opf, pattern: "<item\\s[^>]*>") {
+            let id = firstCapture(in: item, pattern: "\\sid=[\"']([^\"']+)")
+            let type = firstCapture(in: item, pattern: "media-type=[\"']([^\"']+)")
+            if id == tocID || type == "application/x-dtbncx+xml" {
+                ncxHref = firstCapture(in: item, pattern: "href=[\"']([^\"']+)")
+                if id == tocID { break }
+            }
+        }
+        guard let ncxHref else { return [] }
+        let ncxPath = joinedPath(opfDirectory, ncxHref.removingPercentEncoding ?? ncxHref)
+        guard let data = try? Data(contentsOf: folder.appendingPathComponent(ncxPath)) else { return [] }
+        let ncx = decodedText(data)
+        let ncxDirectory = (ncxPath as NSString).deletingLastPathComponent
+        var entries: [TOCEntry] = []
+        var depth = 0
+        var label: String?
+        for token in captures(in: ncx, pattern: "(?s)(<navPoint\\b[^>]*>|</navPoint>|<text>.*?</text>|<content\\s[^>]*>)") {
+            if token.hasPrefix("<navPoint") { depth += 1; label = nil; continue }
+            if token.hasPrefix("</navPoint") { depth = max(0, depth - 1); continue }
+            if token.hasPrefix("<text") {
+                if label == nil, let inner = firstCapture(in: token, pattern: "(?s)<text>(.*?)</text>") {
+                    label = xmlUnescaped(inner).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                continue
+            }
+            guard let src = firstCapture(in: token, pattern: "src=[\"']([^\"']+)"),
+                  let name = label, !name.isEmpty else { continue }
+            let parts = src.split(separator: "#", maxSplits: 1)
+            let file = parts.first.map(String.init) ?? ""
+            entries.append(TOCEntry(
+                label: name,
+                subpath: file.isEmpty ? (spine.chapters.first ?? "")
+                    : joinedPath(ncxDirectory, file.removingPercentEncoding ?? file),
+                fragment: parts.count > 1 ? String(parts[1]) : nil,
+                level: max(0, depth - 1)))
+            label = nil
+        }
+        return entries
     }
 
     /// The embedded Visual-Meta copy, when the package file is gone: the
@@ -1667,7 +2152,26 @@ nonisolated enum OrigamiEPUBImporter {
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
-        let root = try XMLTree.parse(Data(sanitized.utf8))
+        // The text is already decoded (decodedText) and goes to the parser
+        // as UTF-8, so the XML declaration — which may name another
+        // encoding — is dropped; kept, a Latin-1 chapter read as mojibake.
+        let prepared = xmlSafeEntities(sanitized).replacingOccurrences(
+            of: #"^\s*<\?xml[^>]*\?>"#, with: "", options: .regularExpression)
+        let root: XMLTree.Element
+        do {
+            root = try XMLTree.parse(Data(prepared.utf8))
+        } catch {
+            // Tag soup (unclosed <p>, stray <br>) — the kind of chapter
+            // browsers forgive — is tidied into XHTML and read again.
+            #if os(macOS)
+            guard let tidied = try? XMLDocument(data: Data(prepared.utf8),
+                                                options: [.documentTidyHTML]).xmlData
+            else { throw error }
+            root = try XMLTree.parse(tidied)
+            #else
+            throw error
+            #endif
+        }
         // The Origami profile wraps the flow in <main>; a plain EPUB's
         // chapters write their content straight into <body>.
         let documentBody = root.firstDescendant(named: "body")
@@ -1723,11 +2227,14 @@ nonisolated enum OrigamiEPUBImporter {
             if colophonDepth == 0 { bodyBearing += 1 }
             paragraphs.append(paragraph)
         }
+        // A flow with its own <h1> (a plain book's chapter title) ranks
+        // h1, h2, h3 as levels 1, 2, 3; without one, <h2> is the top rank —
+        // the profile's shape, whose <h1> title stands in the header.
+        let flowHasH1 = main.firstDescendant(named: "h1") != nil
+        let headingLevels = flowHasH1
+            ? ["h1": 1, "h2": 2, "h3": 3, "h4": 3, "h5": 3, "h6": 3]
+            : ["h1": 1, "h2": 1, "h3": 2, "h4": 3, "h5": 3, "h6": 3]
         func visit(_ element: XMLTree.Element, stretchID: String? = nil) {
-            // <h2> is the profile's top rank; a plain book's <h1>
-            // chapter titles read at the same rank, its deeper ranks
-            // one step finer each.
-            let headingLevels = ["h1": 1, "h2": 1, "h3": 2, "h4": 3, "h5": 3, "h6": 3]
             // §6.2: a profile publication is addressed by `id`, which wins
             // where both exist. `data-id` stays first for pre-1.0 books —
             // this app's own exports put the positional number in `id` and
@@ -1968,9 +2475,74 @@ nonisolated enum OrigamiEPUBImporter {
                 var paragraph = LiquidDoc.Paragraph(
                     id: stableID(), heading: nil,
                     text: tableFallbackText(of: element))
-                paragraph.tableID = element.attributes["data-table-id"]
-                    ?? element.attributes["id"]
+                let tableID = element.attributes["data-table-id"]
+                    ?? element.attributes["id"] ?? "table-\(fallbackOrdinal)"
+                paragraph.tableID = tableID
+                // A table the records do not describe (a plain book's)
+                // still reads as a grid: its cells, as printed.
+                if element.attributes["data-table-id"] == nil {
+                    var rows: [[LiquidDoc.Table.Cell]] = []
+                    func collectRows(_ node: XMLTree.Element) {
+                        for child in node.elements {
+                            if child.name == "tr" {
+                                rows.append(child.elements
+                                    .filter { $0.name == "td" || $0.name == "th" }
+                                    .map { .init(value: $0.plainText
+                                        .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                                        .trimmingCharacters(in: .whitespacesAndNewlines)) })
+                            } else if child.name != "table" {
+                                collectRows(child)
+                            }
+                        }
+                    }
+                    collectRows(element)
+                    let columns = rows.map(\.count).max() ?? 0
+                    if !rows.isEmpty, columns > 0 {
+                        let padded = rows.map { $0 + Array(repeating: LiquidDoc.Table.Cell(value: ""),
+                                                           count: columns - $0.count) }
+                        capture?.staticTables.append(LiquidDoc.Table(
+                            identifier: tableID, rowCount: padded.count,
+                            columnCount: columns, cells: padded))
+                    }
+                }
                 appendParagraph(paragraph, anchors: element)
+            case "audio", "video":
+                // Sound and film: a Play link that opens the file, with
+                // the element's fallback words when it has any.
+                let src = element.attributes["src"]
+                    ?? element.firstDescendant(named: "source")?.attributes["src"]
+                let label = element.plainText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let src, !src.isEmpty {
+                    let kind = element.name == "audio" ? "audio" : "video"
+                    let path = joinedPath(contentDir, src)
+                        .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? src
+                    appendParagraph(LiquidDoc.Paragraph(
+                        id: stableID(), heading: nil,
+                        text: "[\u{25B6} Play \(kind)\(label.isEmpty ? "" : ": " + label)](origami-media:\(path))"),
+                        anchors: element)
+                }
+            case "svg":
+                // An SVG wrapping one picture — the usual cover — shows
+                // that picture; drawn artwork keeps its words.
+                if let picture = element.firstDescendant(named: "image"),
+                   let href = picture.attributes["xlink:href"] ?? picture.attributes["href"],
+                   let data = resolveImage(href), !data.isEmpty {
+                    assetOrdinal += 1
+                    let assetID = address("img\(assetOrdinal)")
+                    let name = (href as NSString).lastPathComponent
+                    assets.append(LiquidDoc.Asset(
+                        id: assetID, filename: name.isEmpty ? "\(assetID).png" : name,
+                        mediaType: LiquidDoc.mediaType(forExtension: (name as NSString).pathExtension.lowercased()),
+                        dataBase64: data.base64EncodedString(), alt: nil))
+                    appendParagraph(LiquidDoc.Paragraph(
+                        id: stableID(), heading: nil, text: "![](asset:\(assetID))"), anchors: element)
+                } else {
+                    let words = element.plainText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !words.isEmpty {
+                        appendParagraph(LiquidDoc.Paragraph(id: stableID(), heading: nil, text: words),
+                                        anchors: element)
+                    }
+                }
             case "h1", "h2", "h3", "h4", "h5", "h6":
                 let text = inlineText(of: element, addressByCitationID: addressByCitationID, capture: capture)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2030,16 +2602,6 @@ nonisolated enum OrigamiEPUBImporter {
                     if offset == 0 { paragraph.speaker = speaker }
                     appendParagraph(paragraph, anchors: offset == 0 ? element : nil)
                 }
-            case "li":
-                // A plain book's list items read as bulleted paragraphs —
-                // never dropped with their container.
-                let text = inlineText(of: element, addressByCitationID: addressByCitationID, capture: capture)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return }
-                var paragraph = LiquidDoc.Paragraph(id: stableID(), heading: nil,
-                                                    text: "\u{2022} " + text)
-                paragraph.stretchID = stretchID
-                appendParagraph(paragraph, anchors: element)
             default:
                 for child in element.elements { visit(child, stretchID: stretchID) }
             }
@@ -2141,6 +2703,8 @@ nonisolated enum OrigamiEPUBImporter {
         var numbers: [String: Int] = [:]
         /// Each glossary link met: the entry it leads to, and its words.
         var glossaryUses: [(target: String, words: String)] = []
+        /// Plain HTML tables, as grids the native styles can draw.
+        var staticTables: [LiquidDoc.Table] = []
         /// The key whose first occurrence is still accumulating
         /// fragments — nil once anything else interrupts.
         var openKey: String?
@@ -2459,6 +3023,10 @@ nonisolated enum OrigamiEPUBImporter {
             case .element(let inner):
                 let content = inlineText(of: inner, addressByCitationID: addressByCitationID, capture: capture)
                 switch inner.name {
+                case "br":
+                    // A line break inside a paragraph — verse, addresses —
+                    // stays a break, never words run together.
+                    out += "\n"
                 case "math":
                     // Inline MathML reads as its alttext; its pieces run
                     // together ("E=mc2") lose the superscript.
@@ -2474,9 +3042,20 @@ nonisolated enum OrigamiEPUBImporter {
                 case "dfn":
                     out += content
                 case "rt", "rp":
-                    // Ruby readings (furigana): annotation on the base
-                    // text, never the words themselves.
+                    // Readings are gathered by their <ruby> (below).
                     break
+                case "ruby":
+                    // Ruby (furigana): the base text, its reading after it
+                    // in brackets — kept, where it used to be dropped.
+                    let reading = inner.elements.filter { $0.name == "rt" }
+                        .map { $0.plainText.trimmingCharacters(in: .whitespaces) }
+                        .joined()
+                    if reading.isEmpty {
+                        out += content
+                    } else {
+                        let wide = reading.unicodeScalars.contains { $0.value >= 0x3000 }
+                        out += content + (wide ? "\u{FF08}\(reading)\u{FF09}" : " (\(reading))")
+                    }
                 case "script", "style":
                     // Data scripts and stylesheets are never paragraph text.
                     break

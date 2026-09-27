@@ -89,6 +89,7 @@ extension FocusedValues {
 struct ReadingCommands: Commands {
     let model: AppModel
     @AppStorage("textColoringMode") private var coloringModeRaw = TextColoringMode.off.rawValue
+    @AppStorage("paragraphNumbers") private var paragraphNumbers = false
     @FocusedValue(\.outlineFold) private var outlineFold
     @FocusedValue(\.readingTypography) private var typography
 
@@ -103,6 +104,9 @@ struct ReadingCommands: Commands {
                 get: { model.flowReading },
                 set: { model.flowReading = $0 }))
                 .keyboardShortcut("f", modifiers: [.command, .shift])
+            // Reference mode: every paragraph numbered in the margin, a
+            // number anyone can cite; a click copies its link.
+            Toggle("Paragraph Numbers", isOn: $paragraphNumbers)
             Divider()
             // Find in the open book — both presentations answer.
             Button("Find in Book") { model.readerFindShow += 1 }
@@ -365,8 +369,14 @@ struct OrigamiReadingView: View {
     @State private var showsDocumentAnnotation = false
     /// The author's own map of the document (§10.3), in a sheet.
     @State private var showsAuthoredMap = false
+    /// Reference mode: paragraph numbers in the margin (View menu).
+    @AppStorage("paragraphNumbers") private var showsParagraphNumbers = false
+    /// Each body paragraph's number through the whole document.
+    @State private var paragraphOrdinals: [String: Int] = [:]
     /// The document's equations (§7.7.1), in a sheet.
     @State private var showsEquations = false
+    /// The book's details and accessibility, in a sheet.
+    @State private var showsBookInfo = false
     /// A selection being viewed differently — Flow lines or an AI
     /// rewrite. While set, everything unselected reads grey and any
     /// click on the grey returns to normal.
@@ -716,6 +726,19 @@ struct OrigamiReadingView: View {
                 stepFind(with: proxy)
             }
             .onAppear { landOnArrival(proxy) }
+            // The document's paragraphs numbered once: headings aside,
+            // counted straight through, the same numbers every time.
+            .task(id: doc.id) {
+                var numbers: [String: Int] = [:]
+                var count = 0
+                for paragraph in doc.body ?? [] where paragraph.heading == nil
+                    && !paragraph.text.trimmingCharacters(in: .whitespaces).isEmpty
+                    && paragraph.text != "---" {
+                    count += 1
+                    numbers[paragraph.id] = count
+                }
+                paragraphOrdinals = numbers
+            }
         }
         // Author's foot — the mode words at the bottom of the page,
         // with the contents, the fold, and the type at the trailing
@@ -825,6 +848,11 @@ struct OrigamiReadingView: View {
                     return event
                 }
                 if event.keyCode == 53 {   // Esc
+                    // A journal in focus in the sidebar steps back out
+                    // first, as everywhere; full screen is the next Esc.
+                    if !window.styleMask.contains(.fullScreen), self.model.leaveVenueFocus() {
+                        return nil
+                    }
                     window.toggleFullScreen(nil)
                     return nil
                 }
@@ -948,6 +976,9 @@ struct OrigamiReadingView: View {
         // reading's context menu. The sheet stands here, on the reading
         // itself — in Horizontal and Focus the header (and its pill)
         // may be off-page, and a sheet on an absent view never shows.
+        .sheet(isPresented: $showsBookInfo) {
+            BookInformationSheet(info: BookInformation.read(inUnpackedFolder: doc.fileURL))
+        }
         .sheet(isPresented: $showsEquations) {
             // A book's structured document keeps its unpacked folder here.
             EquationsSheet(base: doc.fileURL, bookAddress: doc.id) { href in
@@ -1252,16 +1283,18 @@ struct OrigamiReadingView: View {
             }
             .buttonStyle(.plain)
             .help(model.isTopOfPile(record) ? "Unpin" : "Pin — first in the pile")
+            .accessibilityLabel(model.isTopOfPile(record) ? "Unpin" : "Pin")
 
             Button {
                 if model.isSetAside(record) { model.bringBack(record) }
                 else { model.setAside(record) }
             } label: {
-                Image(systemName: "tray.and.arrow.down")
+                Image(systemName: "arrow.down")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help(model.isSetAside(record) ? "Bring Back" : "Set Aside")
+            .accessibilityLabel(model.isSetAside(record) ? "Bring Back" : "Set Aside")
 
             Divider().frame(height: 14)
         }
@@ -1514,6 +1547,7 @@ struct OrigamiReadingView: View {
             }
             .buttonStyle(.plain)
             .help("Focus — one section alone to settle into — arrows move through")
+            .accessibilityLabel("Focus")
         } else {
             HStack(spacing: 8) {
                 Text("[")
@@ -2728,7 +2762,7 @@ struct OrigamiReadingView: View {
             // metadata (§8.4): the citation is the publisher's own. A
             // disagreement is reported in the notice strip above.
             if let record = model.epubRecord(forAddress: doc.id),
-               model.colophonCheck(for: record)?.verified == true {
+               model.cachedColophonCheck(for: record)?.verified == true {
                 Label("Citation verified against the colophon", systemImage: "checkmark.seal")
                     .font(.caption)
                     .foregroundStyle(themeDimmed.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
@@ -2815,6 +2849,9 @@ struct OrigamiReadingView: View {
         Button("Equations\u{2026}", systemImage: "function") {
             showsEquations = true
         }
+        Button("Book Information\u{2026}", systemImage: "info.circle") {
+            showsBookInfo = true
+        }
         Divider()
         Button(documentNoteWritten ? "Edit Note…" : "Add Note…",
                systemImage: "square.and.pencil") {
@@ -2898,9 +2935,10 @@ struct OrigamiReadingView: View {
         }
     }
 
-    /// The EPUB's cover, when the import carried one — an asset whose
-    /// id, file name, or alt says "cover".
+    /// The EPUB's cover: the one its package declares, else an imported
+    /// asset whose id, file name, or alt says "cover".
     private var coverImage: NSImage? {
+        if let declared = model.declaredCover(inUnpackedFolder: doc.fileURL) { return declared }
         let asset = doc.assets.first { asset in
             asset.id.localizedCaseInsensitiveContains("cover")
                 || asset.filename.localizedCaseInsensitiveContains("cover")
@@ -3151,6 +3189,24 @@ struct OrigamiReadingView: View {
                 onLink: handleLink)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // Reference mode: the paragraph's number in the left margin; a
+        // click copies a link to it.
+        .overlay(alignment: .topLeading) {
+            if showsParagraphNumbers, let number = paragraphOrdinals[paragraph.id] {
+                Button {
+                    model.copyParagraphLink(bookAddress: doc.id, title: "\(doc.title) \u{00B6}\(number)",
+                                            fragment: paragraph.id)
+                } label: {
+                    Text("\(number)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Paragraph \(number) \u{2014} click to copy a link to it")
+                .accessibilityLabel("Paragraph \(number)")
+                .offset(x: -44)
+            }
+        }
         // Cited here: a mark in the margin when other documents in the
         // library cite or quote this passage — a click lists them.
         .overlay(alignment: .topTrailing) {
@@ -3329,6 +3385,15 @@ struct OrigamiReadingView: View {
             entries.append(.action(title: "Copy to Cite", symbol: "quote.opening") {
                 copyCitation(for: paragraph, quote: selected)
             })
+            // The system's dictionary and translation, at the pointer.
+            let words = selected.trimmingCharacters(in: .whitespacesAndNewlines)
+            let shown = words.count > 24 ? String(words.prefix(24)) + "\u{2026}" : words
+            entries.append(.action(title: "Look Up \u{201C}\(shown)\u{201D}", symbol: "character.book.closed") {
+                ReaderLookup.lookUp(words)
+            })
+            entries.append(.action(title: "Translate \u{201C}\(shown)\u{201D}", symbol: "translate") {
+                ReaderLookup.translate(words)
+            })
             // Lift: the words step off the page as a little slip (and
             // a free card in the visionOS room) — one annotation.
             entries.append(.action(title: "Lift", symbol: "balloon") {
@@ -3442,6 +3507,13 @@ struct OrigamiReadingView: View {
         }
         if url.scheme == "origami-jump" {
             followJump(String(url.absoluteString.dropFirst("origami-jump:".count)))
+            return true
+        }
+        // A book's own sound or film: opened from its folder by the system.
+        if url.scheme == "origami-media" {
+            let raw = String(url.absoluteString.dropFirst("origami-media:".count))
+            let path = raw.removingPercentEncoding ?? raw
+            NSWorkspace.shared.open(doc.fileURL.appendingPathComponent(path))
             return true
         }
         // A cross-document quote link opens in this library.
@@ -4098,6 +4170,7 @@ struct ReadingFootBar: View {
                     .buttonStyle(.plain)
                     .disabled(contentsDisabled)
                     .help("Contents — every section, one click away")
+                    .accessibilityLabel("Contents")
                     .popover(isPresented: showContents) { contents() }
                 }
                 if let typeMenu {
@@ -4230,6 +4303,7 @@ struct ReadingFootBar: View {
                 }
                 .buttonStyle(.plain)
                 .help("Fold the AI group away — back to the reading")
+                .accessibilityLabel("Close AI reading")
                 aiWord(.summary)
                 separator
                 aiWord(.proposals)
@@ -4308,6 +4382,7 @@ struct ReadingFootBar: View {
                 }
                 .buttonStyle(.plain)
                 .help("Return to the column reading")
+                .accessibilityLabel("Return to the column reading")
                 Button {
                     withAnimation(Self.modeSwitch) {
                         readerModeRaw = EPUBReaderMode.faithful.rawValue
@@ -4387,6 +4462,7 @@ struct ReadingFootBar: View {
             }
             .buttonStyle(.plain)
             .help("Fold the document into its outline — headings alone; Overview and Citations unfold beside it")
+            .accessibilityLabel("Outline")
         } else {
             HStack(spacing: 8) {
                 Text("[")

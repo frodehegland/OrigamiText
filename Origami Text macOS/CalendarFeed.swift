@@ -1,3 +1,6 @@
+// Calendar is off for this release (no Calendar permission); the
+// flag ORIGAMI_CALENDAR brings it back.
+#if ORIGAMI_CALENDAR
 import SwiftUI
 import EventKit
 
@@ -83,3 +86,4 @@ final class CalendarFeed {
         .sorted { $0.start < $1.start }
     }
 }
+#endif

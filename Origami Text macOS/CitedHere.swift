@@ -50,14 +50,28 @@ extension AppModel {
     /// so the citing paragraph is known and opens directly. Scanned once
     /// per book and library revision.
     func citedHere(inBook record: EPUBRecord) -> [String: [CitedHere]] {
+        _ = citedHereStamp
         let key = "\(record.folder)|\(index.revision)"
         if let cache = citedHereCache, cache.key == key { return cache.map }
-        let identities = Set([record.id, record.packageIdentifier, record.doi, record.folder]
-            .compactMap { $0?.trimmingCharacters(in: .whitespaces).lowercased() }
-            .filter { !$0.isEmpty })
-        let map = Self.citedHere(in: index.allByID.values.map(\.doc), identities: identities)
-        citedHereCache = (key, map)
-        return map
+        // Scanned off the main thread; until it lands, the last scan for
+        // this book stands (or nothing, the first time).
+        if citedHerePending != key {
+            citedHerePending = key
+            let identities = Set([record.id, record.packageIdentifier, record.doi, record.folder]
+                .compactMap { $0?.trimmingCharacters(in: .whitespaces).lowercased() }
+                .filter { !$0.isEmpty })
+            let docs = index.allByID.values.map(\.doc)
+            Task.detached(priority: .utility) {
+                let map = AppModel.citedHere(in: docs, identities: identities)
+                await MainActor.run {
+                    self.citedHereCache = (key, map)
+                    if self.citedHerePending == key { self.citedHerePending = nil }
+                    self.citedHereStamp += 1
+                }
+            }
+        }
+        if let cache = citedHereCache, cache.key.hasPrefix(record.folder + "|") { return cache.map }
+        return [:]
     }
 
     /// The scan itself, over any set of documents: every paragraph that

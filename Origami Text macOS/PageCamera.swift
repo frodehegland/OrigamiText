@@ -487,8 +487,6 @@ struct PageCaptureView: View {
         // document's .jsonld sidecar — visible at once in the opened
         // reading.
         let phrases = Self.underlinedPhrases(in: frame, lines: lineBoxes)
-        NSLog("PageCamera underlines detected: %@",
-              phrases.isEmpty ? "none" : phrases.joined(separator: " | "))
         let captured = model.captureUnderlines(phrases, in: entry.doc)
         let kept = captured == 0 ? "" :
             " — \(captured) underlined \(captured == 1 ? "passage" : "passages") kept"
