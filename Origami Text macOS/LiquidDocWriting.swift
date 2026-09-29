@@ -1331,6 +1331,22 @@ nonisolated enum ACMLaTeX {
                 continue
             }
 
+            // A display equation: the TeX itself where the converter can
+            // set it (so it uses nothing a paper's preamble would have to
+            // define), its readable words otherwise.
+            if let tex = OrigamiMath.displayTeX(in: text) {
+                closeList()
+                out.append("")
+                if TeXMathML.mathML(for: tex, display: true) != nil {
+                    out.append("\\[")
+                    out.append(tex)
+                    out.append("\\]")
+                } else {
+                    out.append(inline(OrigamiMath.readableTeX(tex), in: doc))
+                }
+                continue
+            }
+
             // "• item" and "1. item" are the format's list conventions. A
             // paragraph may hold several lines — Author writes a list as
             // one paragraph, an item per line — so each line is read on
@@ -1440,7 +1456,19 @@ nonisolated enum ACMLaTeX {
     /// `\cite`, so the reference list is set by ACM's own style rather
     /// than by the text the document happens to carry.
     static func inline(_ text: String, in doc: LiquidDoc) -> String {
-        var out = escaped(text)
+        // Inline TeX the converter can set is LaTeX already: held out of
+        // the escaping, restored as written. TeX it declines (a paper's
+        // own macros) prints escaped, as it always did, so it cannot stop
+        // the document compiling.
+        var source = text
+        var mathSpans: [String] = []
+        let accepted = OrigamiMath.inlineMath(in: text)
+            .filter { TeXMathML.mathML(for: $0.tex, display: false) != nil }
+        for (offset, span) in accepted.enumerated().reversed() {
+            source.replaceSubrange(span.range, with: "\u{E000}\(offset)\u{E001}")
+        }
+        mathSpans = accepted.map { "$\($0.tex)$" }
+        var out = escaped(source)
 
         // [cite:key] → \cite{key}. The escaper has turned nothing in a
         // key into anything else, since keys are UUIDs or slugs.
@@ -1485,9 +1513,14 @@ nonisolated enum ACMLaTeX {
             "\\href{\(groups[1])}{\(groups[0])}"
         }
         // The remaining markers are the emphasis conventions.
+        // ==Marked== has no core-LaTeX form; its words print as they are.
+        out = replacing(#"==(?=\S)([^=\n]+?)(?<=\S)=="#, in: out) { $0[0] }
         out = replacing(#"\*\*([^*]+)\*\*"#, in: out) { "\\textbf{\($0[0])}" }
         out = replacing(#"(?<![\*\w])\*([^*]+)\*(?!\w)"#, in: out) { "\\emph{\($0[0])}" }
         out = replacing("`([^`]+)`", in: out) { "\\texttt{\($0[0])}" }
+        for (offset, math) in mathSpans.enumerated() {
+            out = out.replacingOccurrences(of: "\u{E000}\(offset)\u{E001}", with: math)
+        }
         return out
     }
 

@@ -16,6 +16,9 @@ nonisolated enum WordImporter {
         let author: String?
         let body: [LiquidDoc.Paragraph]
         var assets: [LiquidDoc.Asset] = []
+        /// Tables the body places by `Paragraph.tableID` — Word's, ODT's
+        /// and HTML's grids, as the rich-text reader hands them over.
+        var tables: [LiquidDoc.Table] = []
         /// The works cited through a reference manager (Zotero,
         /// Mendeley), as cite-keyed BibTeX — the body carries matching
         /// `[cite:key]` tokens.
@@ -50,9 +53,46 @@ nonisolated enum WordImporter {
         var blocks: [(heading: Int?, text: String)] = []
         var assets: [LiquidDoc.Asset] = []
         var assetCounter = 0
+        // A table arrives as one paragraph per cell, each carrying its
+        // NSTextTableBlock (row, column, and the table it belongs to);
+        // consecutive cells of one table gather into one live grid.
+        var tables: [LiquidDoc.Table] = []
+        var openTable: NSTextTable?
+        var openCells: [[String]] = []
+        func closeTable() {
+            defer { openTable = nil; openCells = [] }
+            let rows = openCells.filter { row in row.contains { !$0.isEmpty } }
+            let columns = rows.map(\.count).max() ?? 0
+            guard !rows.isEmpty, columns > 0 else { return }
+            let identifier = "word-table-\(tables.count + 1)"
+            let cells = rows.map { row in
+                (0..<columns).map { LiquidDoc.Table.Cell(value: $0 < row.count ? row[$0] : "") }
+            }
+            tables.append(LiquidDoc.Table(identifier: identifier, rowCount: cells.count,
+                                          columnCount: columns, cells: cells))
+            blocks.append((nil, Self.tablePlaceholder + identifier))
+        }
         let nsString = rich.string as NSString
         nsString.enumerateSubstrings(in: NSRange(location: 0, length: nsString.length),
                                      options: .byParagraphs) { _, range, _, _ in
+            if range.length > 0 || openTable != nil,
+               let cell = (rich.attribute(.paragraphStyle, at: min(range.location, max(rich.length - 1, 0)),
+                                          effectiveRange: nil) as? NSParagraphStyle)?
+                .textBlocks.compactMap({ $0 as? NSTextTableBlock }).last {
+                if cell.table !== openTable {
+                    closeTable()
+                    openTable = cell.table
+                }
+                let row = cell.startingRow, column = cell.startingColumn
+                while openCells.count <= row { openCells.append([]) }
+                while openCells[row].count <= column { openCells[row].append("") }
+                let words = plainText(for: range, in: rich)
+                if !words.isEmpty {
+                    openCells[row][column] += openCells[row][column].isEmpty ? words : " " + words
+                }
+                return
+            }
+            if openTable != nil { closeTable() }
             // Images in this paragraph, in order, recovered as assets.
             var paragraphImages: [String] = []   // asset ids
             rich.enumerateAttribute(.attachment, in: range) { value, _, _ in
@@ -90,6 +130,17 @@ nonisolated enum WordImporter {
             for id in paragraphImages {
                 blocks.append((nil, "![](asset:\(id))"))
             }
+        }
+        closeTable()
+
+        // Word's footnotes: the rich-text reader drops both the notes and
+        // their marks, so the notes are read from the OOXML and each mark
+        // is put back after the words that precede it in its paragraph.
+        var notes: [String] = []
+        if let docxData {
+            let placed = placingFootnotes(fromDocx: docxData, into: blocks)
+            blocks = placed.blocks
+            notes = placed.notes
         }
 
         // Pages exports hyperlinks as Word HYPERLINK fields, which AppKit's
@@ -150,18 +201,130 @@ nonisolated enum WordImporter {
         let author = (documentAttributes?[NSAttributedString.DocumentAttributeKey.author] as? String)?
             .trimmingCharacters(in: .whitespaces)
 
+        let tablesByID = Dictionary(tables.map { ($0.identifier, $0) },
+                                    uniquingKeysWith: { first, _ in first })
         var paragraphs: [LiquidDoc.Paragraph] = []
         for block in blocks {
-            paragraphs.append(LiquidDoc.Paragraph(id: "p\(paragraphs.count + 1)",
-                                                  heading: block.heading,
+            let id = "p\(paragraphs.count + 1)"
+            if block.text.hasPrefix(Self.tablePlaceholder),
+               let table = tablesByID[String(block.text.dropFirst(Self.tablePlaceholder.count))] {
+                // The grid, with its pipe text as the plain fallback.
+                var paragraph = LiquidDoc.Paragraph(
+                    id: id, heading: nil,
+                    text: table.cells.map { "| " + $0.map(\.value).joined(separator: " | ") + " |" }
+                        .joined(separator: "\n"))
+                paragraph.tableID = table.identifier
+                paragraphs.append(paragraph)
+                continue
+            }
+            paragraphs.append(LiquidDoc.Paragraph(id: id, heading: block.heading,
                                                   text: block.text))
+        }
+        if !notes.isEmpty {
+            paragraphs.append(LiquidDoc.Paragraph(id: "p\(paragraphs.count + 1)",
+                                                  heading: 1, text: "Notes"))
+            for (index, note) in notes.enumerated() {
+                paragraphs.append(LiquidDoc.Paragraph(id: "fn\(index + 1)", heading: nil, text: note))
+            }
         }
         return ImportResult(title: title,
                             author: author?.isEmpty == false ? author : nil,
                             body: paragraphs,
                             assets: assets,
+                            tables: tables,
                             references: references,
                             notices: notices)
+    }
+
+    /// Stands in a block for a table until the paragraphs are made — a
+    /// control character no document's words begin with.
+    private static let tablePlaceholder = "\u{1}table:"
+
+    /// Word's footnotes, numbered in the order the text cites them, and
+    /// the blocks with a `[note:fnN]` mark where each footnote reference
+    /// stood. A paragraph is found by its words (the scanner's plain text
+    /// against the block's, emphasis marks aside), searching forward from
+    /// the last one placed; a mark lands after the words that preceded it.
+    private static func placingFootnotes(fromDocx data: Data,
+                                         into blocks: [(heading: Int?, text: String)])
+        -> (blocks: [(heading: Int?, text: String)], notes: [String]) {
+        guard let archive = DocxZip(data: data),
+              let xml = archive.read("word/document.xml") else { return (blocks, []) }
+        let texts = ACMWordPaper.footnoteTexts(archive: archive)
+        guard !texts.isEmpty else { return (blocks, []) }
+        func unmarked(_ text: String) -> String {
+            text.replacingOccurrences(of: "*", with: "")
+                .replacingOccurrences(of: "\u{00A0}", with: " ")
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+        }
+        var blocks = blocks
+        var notes: [String] = []
+        var cursor = 0
+        for item in ACMWordPaper.DocxScanner.scan(xml) {
+            guard case .paragraph(let paragraph) = item else { continue }
+            var context = ""
+            var marks: [(context: String, token: String)] = []
+            for run in paragraph.runs {
+                switch run.kind {
+                case .text: context += run.text
+                case .footnote(let id):
+                    guard let text = texts[id] else { continue }
+                    notes.append(text)
+                    marks.append((context, "[note:fn\(notes.count)]"))
+                case .equation: continue
+                }
+            }
+            guard !marks.isEmpty else { continue }
+            let target = unmarked(paragraph.plainText)
+            let head = String(target.prefix(40))
+            guard let index = (cursor..<blocks.count).first(where: {
+                      unmarked(blocks[$0].text) == target
+                  }) ?? (cursor..<blocks.count).first(where: {
+                      !head.isEmpty && unmarked(blocks[$0].text).hasPrefix(head)
+                  }) else {
+                // Not found: the marks still exist, so the notes stay
+                // reachable — at the end of the nearest paragraph.
+                if cursor < blocks.count {
+                    blocks[cursor].text += marks.map(\.token).joined()
+                }
+                continue
+            }
+            cursor = index
+            // Back to front, so each insertion leaves the earlier
+            // positions where they were.
+            for mark in marks.reversed() {
+                blocks[index].text = inserting(mark.token, after: unmarked(mark.context),
+                                               in: blocks[index].text)
+            }
+        }
+        return (blocks, notes)
+    }
+
+    /// The text with `token` placed after its first `count` visible
+    /// characters — emphasis stars and doubled spaces not counted, any
+    /// stars closing right there kept before the mark. Past the end, the
+    /// token closes the paragraph.
+    private static func inserting(_ token: String, after context: String,
+                                  in text: String) -> String {
+        let wanted = context.count
+        guard wanted > 0 else { return token + text }
+        var seen = 0
+        var previousSpace = false
+        var index = text.startIndex
+        while index < text.endIndex, seen < wanted {
+            let character = text[index]
+            if character != "*" {
+                let isSpace = character == " " || character == "\u{00A0}"
+                if !(isSpace && previousSpace) { seen += 1 }
+                previousSpace = isSpace
+            }
+            index = text.index(after: index)
+        }
+        while index < text.endIndex, text[index] == "*" { index = text.index(after: index) }
+        var out = text
+        out.insert(contentsOf: token, at: index)
+        return out
     }
 
     /// Applies the harvest to the body: the flattened bibliography's
@@ -780,7 +943,7 @@ nonisolated enum ACMWordPaper {
 
     // MARK: Pieces
 
-    private static func footnoteTexts(archive: DocxZip) -> [Int: String] {
+    fileprivate static func footnoteTexts(archive: DocxZip) -> [Int: String] {
         guard let data = archive.read("word/footnotes.xml"),
               let xml = String(data: data, encoding: .utf8) else { return [:] }
         var texts: [Int: String] = [:]

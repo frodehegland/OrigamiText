@@ -2308,6 +2308,17 @@ nonisolated enum OrigamiEPUBImporter {
                 // alttext — the words the book gives every reader — kept
                 // under the equation's id, so the Equations sheet's Go
                 // lands on it. It used to vanish from the native readings.
+                // An equation carrying its TeX (data-latex, which this
+                // app's exports write) comes back as the display block it
+                // was written from, so a re-export sets it as MathML again.
+                if let tex = element.attributes["data-latex"]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !tex.isEmpty {
+                    var paragraph = LiquidDoc.Paragraph(id: stableID(), heading: nil,
+                                                        text: "$$\n\(tex)\n$$")
+                    paragraph.stretchID = stretchID
+                    appendParagraph(paragraph, anchors: element)
+                    break
+                }
                 let words = (element.attributes["alttext"] ?? element.attributes["data-latex"]
                     ?? element.plainText).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !words.isEmpty {
@@ -3030,13 +3041,25 @@ nonisolated enum OrigamiEPUBImporter {
                 case "math":
                     // Inline MathML reads as its alttext; its pieces run
                     // together ("E=mc2") lose the superscript.
-                    out += inner.attributes["alttext"] ?? inner.attributes["data-latex"] ?? content
+                    // One carrying its TeX comes back as `$tex$`, which
+                    // the export sets as MathML again.
+                    if let tex = inner.attributes["data-latex"], !tex.isEmpty {
+                        out += "$\(tex)$"
+                    } else {
+                        out += inner.attributes["alttext"] ?? content
+                    }
                 case "strong", "b":
                     out += inner.attributes["class"] == "speaker"
                         ? content
                         : "**\(content)**"
                 case "em", "i":
                     out += "*\(content)*"
+                case "mark":
+                    // Author's Marked text arrives as <mark>; the reader's
+                    // convention for it is ==…== (OrigamiReading.inlineAttributed).
+                    // It fell through to plain words before, so no view
+                    // could show what the author had Marked.
+                    out += "==\(content)=="
                 case "code":
                     out += "`\(content)`"
                 case "dfn":

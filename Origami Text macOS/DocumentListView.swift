@@ -1605,19 +1605,19 @@ struct InboxListView: View {
         // the inbox to bring it in.
         .dropDestination(for: URL.self) { urls, _ in
             let importable = urls.filter {
-                ["epub", "zip", "tex", "json"].contains($0.pathExtension.lowercased())
+                $0.pathExtension.lowercased() == "json"
+                    || AppModel.importableExtensions.contains($0.pathExtension.lowercased())
             }
             guard !importable.isEmpty else { return false }
-            for url in importable {
-                // A drop on the inbox is an import, as the caption says —
-                // an EPUB joins the shelf even where a double-click would
-                // only have opened a look.
-                if url.pathExtension.lowercased() == "epub" {
-                    model.openEPUBFile(at: url)
-                } else {
-                    model.openFile(at: url)
-                }
+            // A drop on the inbox is an import, as the caption says — an
+            // EPUB joins the shelf even where a double-click would only
+            // have opened a look. A paper dropped with its bibliography
+            // imports with it.
+            for url in importable where url.pathExtension.lowercased() == "epub" {
+                model.openEPUBFile(at: url)
             }
+            model.openFiles(importable.filter { $0.pathExtension.lowercased() != "epub" },
+                            importing: false)
             return true
         } isTargeted: { isDropTargeted = $0 }
         .overlay {

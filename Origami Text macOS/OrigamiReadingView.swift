@@ -3140,6 +3140,20 @@ struct OrigamiReadingView: View {
                     menuView(menuEntries(for: paragraph, highlights: []))
                 }
                 .dimmedForStretch(dim)
+        } else if let tex = OrigamiMath.displayTeX(in: paragraph.text) {
+            // A display equation, centred as the page sets it: its
+            // readable words, since this view draws no MathML.
+            Text(OrigamiMath.readableTeX(tex))
+                .font(.system(.body, design: .serif))
+                .foregroundStyle(themeText.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
+                .textSelection(.enabled)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 6)
+                .contextMenu {
+                    menuView(menuEntries(for: paragraph, highlights: []))
+                }
+                .dimmedForStretch(dim)
         } else if paragraph.text == "---" {
             Divider()
                 .dimmedForStretch(dim)
@@ -4227,6 +4241,7 @@ struct ReadingFootBar: View {
                 defaultExpanded = false
                 model.readerFoldLevel = 0
                 model.readingAnalysisKind = nil
+                model.readingOverviewOn = false
                 model.readerFindFoldTerm = nil
             }
         } label: {
@@ -4235,6 +4250,7 @@ struct ReadingFootBar: View {
             let foldFree = model.readerFoldLevel == 0 && model.readerFindFoldTerm == nil
             let isActive = readerMode == mode
                 && model.readingAnalysisKind == nil
+                && !model.readingOverviewOn
                 && (!(mode == .scroll || mode == .faithful) || foldFree)
             Text(mode.displayName)
                 .font(.callout.weight(isActive ? .semibold : .regular))
@@ -4442,6 +4458,8 @@ struct ReadingFootBar: View {
     /// Which shape the fold stands in, read from the shared fold level
     /// and target — ⌘− folding by hand still reads as Outline.
     private var outlineShape: OutlineShape? {
+        // Overview is its own page now, not a fold.
+        if model.readingOverviewOn { return .overview }
         guard model.readerFoldLevel > 0 else { return nil }
         switch OrigamiReadingView.FoldTarget(rawValue: foldTargetRaw) ?? .headings {
         case .citations: return .citations
@@ -4472,7 +4490,7 @@ struct ReadingFootBar: View {
                           help: "Headings alone — the document's skeleton")
                 separator
                 shapeWord("Overview", .overview,
-                          help: "Headings with each section's first sentence, Marked lines, and concepts")
+                          help: "Each section with pictures of the people, places and organisations it mentions, its names, Marked and bold lines, and your highlights and comments — as in Author (⌘−)")
                 separator
                 shapeWord("Citations", .citations,
                           help: "Headings with the works each section cites")
@@ -4509,8 +4527,16 @@ struct ReadingFootBar: View {
             model.readingAnalysisKind = nil
             if outlineShape == shape {
                 model.readerFoldLevel = 0
+                model.readingOverviewOn = false
                 return
             }
+            // Overview is a whole page, as in Author, not a fold of the
+            // reading: it leaves the mode as it stands.
+            if shape == .overview {
+                model.readingOverviewOn = true
+                return
+            }
+            model.readingOverviewOn = false
             // The fold lives on the native flow: whatever mode the
             // reading stood in, folding moves it to Scroll.
             defaultExpanded = false

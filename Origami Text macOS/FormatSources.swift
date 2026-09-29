@@ -23,7 +23,8 @@ enum FormatSources {
         "xml",
         "pdf",
         "liquid",
-        "bib", "json",
+        "bib", "json", "ris", "enw",
+        "typ", "adoc", "asciidoc", "rst",
     ]
 
     static var contentTypes: [UTType] {
@@ -109,6 +110,15 @@ enum FormatSources {
             return Loaded(doc: doc(fromLaTeX: try LaTeXImporter.importArchive(at: url), url: url,
                                    fallbackAuthor: fallbackAuthor))
 
+        case "xml" where ReferenceFormats.isEndNoteXML(at: url), "ris", "enw":
+            // A reference manager's export — RIS, EndNote tagged or
+            // EndNote XML — set as a reference list, as a .bib is.
+            guard let text = ReferenceFormats.bibtexText(at: url) else {
+                throw SourceError.unreadable("\(url.lastPathComponent) holds no references.")
+            }
+            return Loaded(doc: try referenceList(fromBibTeX: text, url: url,
+                                                 fallbackAuthor: fallbackAuthor))
+
         case "xml":
             let result = try BITSImporter.importFile(at: url)
             var doc = make(title: result.title, author: result.author ?? fallbackAuthor,
@@ -117,12 +127,24 @@ enum FormatSources {
             doc.references = result.references
             doc.tables = result.tables
             doc.assets = result.assets
+            doc.applyingJATSFrontMatter(result)
             return Loaded(doc: doc)
 
-        case "md", "markdown", "txt":
-            let result = try MarkdownImporter.importFile(at: url)
-            return Loaded(doc: make(title: result.title, author: result.author ?? fallbackAuthor,
-                                    body: result.body, url: url))
+        case "md", "markdown", "txt", "typ", "adoc", "asciidoc", "rst":
+            // Typst, AsciiDoc and reStructuredText read through the
+            // Markdown importer (MarkupBridges.swift).
+            let result = try MarkupImport.importFile(at: url)
+            var doc = make(title: result.title, author: result.author ?? fallbackAuthor,
+                           body: result.body, url: url)
+            if !result.authors.isEmpty { doc.authors = result.authors }
+            doc.subtitle = result.subtitle
+            doc.date = result.date
+            doc.abstract = result.abstract
+            doc.keywords = result.keywords
+            doc.references = result.references
+            doc.tables = result.tables
+            doc.assets = result.assets
+            return Loaded(doc: doc, notices: result.notices)
 
         case "pdf":
             let result = try PDFImporter.importFile(at: url)
@@ -198,6 +220,7 @@ enum FormatSources {
         var doc = make(title: result.title, author: result.author ?? fallbackAuthor,
                        body: result.body, url: url)
         doc.assets = result.assets
+        doc.tables = result.tables
         doc.references = result.references
         return Loaded(doc: doc, notices: result.notices)
     }
@@ -360,7 +383,7 @@ enum FormatSources {
     /// `@Comment` — removed, and each abbreviation expanded where an entry
     /// uses it bare (`journal = CACM`), as BibTeX itself does. A template
     /// bibliography (ACM's sample-base.bib) opens with dozens of these.
-    static func expandingStringMacros(in text: String) -> String {
+    nonisolated static func expandingStringMacros(in text: String) -> String {
         var macros: [String: String] = [:]
         var kept = ""
         var index = text.startIndex
@@ -440,6 +463,30 @@ enum FormatSources {
         return referenceListDocument(references, url: url, fallbackAuthor: fallbackAuthor)
     }
 
+    /// Whether a JSON file is a CSL-JSON reference list rather than
+    /// something else that happens to be JSON (a reference dataset's
+    /// nodes file). CSL items say so in their own vocabulary: a CSL
+    /// `type`, or `author` as name objects, or an `issued` date.
+    static func isCSLJSON(at url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) else { return false }
+        let items = (json as? [[String: Any]])
+            ?? ((json as? [String: Any])?["items"] as? [[String: Any]])
+            ?? []
+        let cslTypes: Set<String> = [
+            "article", "article-journal", "article-magazine", "article-newspaper",
+            "book", "chapter", "paper-conference", "report", "thesis", "webpage",
+            "manuscript", "dataset", "entry-encyclopedia", "entry-dictionary",
+            "post", "post-weblog", "software", "speech", "standard", "patent",
+        ]
+        return items.prefix(20).contains { item in
+            if let type = item["type"] as? String, cslTypes.contains(type) { return true }
+            if let people = item["author"] as? [[String: Any]],
+               people.contains(where: { $0["family"] != nil || $0["literal"] != nil }) { return true }
+            return (item["issued"] as? [String: Any])?["date-parts"] != nil
+        }
+    }
+
     private static func referenceListDocument(_ references: [LiquidDoc.Reference], url: URL,
                                               fallbackAuthor: String) -> LiquidDoc {
         let title = url.deletingPathExtension().lastPathComponent
@@ -455,7 +502,7 @@ enum FormatSources {
     }
 
     /// One CSL-JSON item as a BibTeX record.
-    static func bibtex(fromCSL item: [String: Any], key: String) -> String {
+    nonisolated static func bibtex(fromCSL item: [String: Any], key: String) -> String {
         let type: String = switch (item["type"] as? String) ?? "" {
         case "article-journal", "article-magazine", "article-newspaper", "article": "article"
         case "paper-conference": "inproceedings"

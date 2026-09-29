@@ -77,7 +77,7 @@ enum ReaderLayoutStyle: String, CaseIterable, Identifiable {
 /// The Settings window's tabs, addressable so other parts of the app can
 /// open Settings onto a particular one.
 enum SettingsTab: Hashable {
-    case author, editor, reading, assistive, annotation, layout, library, hypermedia, ai, modules, openSource
+    case author, editor, reading, overview, assistive, annotation, layout, library, hypermedia, ai, modules, openSource
 }
 
 /// The app's Settings window (Origami Text → Settings…, ⌘,).
@@ -96,6 +96,9 @@ struct SettingsView: View {
             ReadingSettingsView()
                 .tabItem { Label("Reading", systemImage: "book") }
                 .tag(SettingsTab.reading)
+            OverviewSettingsView()
+                .tabItem { Label("Overview", systemImage: "list.bullet.rectangle.portrait") }
+                .tag(SettingsTab.overview)
             AssistiveSettingsView()
                 .tabItem { Label("Assistive", systemImage: "accessibility") }
                 .tag(SettingsTab.assistive)
@@ -123,7 +126,7 @@ struct SettingsView: View {
         }
         // Wide enough for all the tab buttons to stand in one row —
         // narrower, the toolbar crops the trailing tabs.
-        .frame(width: 960)
+        .frame(width: 1040)
         .fixedSize(horizontal: false, vertical: true)
     }
 }

@@ -781,7 +781,7 @@ nonisolated enum OrigamiEPUBExporter {
         lines.append("""
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE html>
-        <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en" lang="en">
         <head>
           <meta charset="utf-8" />
           <title>\(escaped(doc.title))</title>
@@ -960,7 +960,7 @@ nonisolated enum OrigamiEPUBExporter {
         lines.append("</main>")
 
         if !citations.isEmpty {
-            lines.append("<section id=\"references\">")
+            lines.append("<section id=\"references\" epub:type=\"bibliography\" role=\"doc-bibliography\">")
             lines.append("<h2>References</h2>")
             lines.append("<ol>")
             for citation in citations {
@@ -1226,6 +1226,18 @@ nonisolated enum OrigamiEPUBExporter {
         if trimmed.count >= 3, trimmed.allSatisfy({ $0 == "-" }) {
             return "<hr \(anchors) />"
         }
+        // A display equation (`$$⏎tex⏎$$`) is MathML, as the profile
+        // makes it authoritative (§7.7): the element's address on the
+        // <math> itself, the TeX as alttext and derived data-latex. TeX
+        // the converter declines stays readable words, as before.
+        if let tex = OrigamiMath.displayTeX(in: paragraph.text) {
+            if let math = TeXMathML.mathElement(
+                for: tex, display: true, id: element.address,
+                extraAttributes: " data-id=\"\(escaped(stableID(element)))\"") {
+                return math
+            }
+            return "<p \(anchors) class=\"equation\">\(escaped(OrigamiMath.readableTeX(tex)))</p>"
+        }
         // A fenced code block (```lang⏎…⏎```) is a real <pre> — words
         // exactly as written, monospace, never markdown-converted (code
         // is full of asterisks and brackets that mean nothing here).
@@ -1253,6 +1265,15 @@ nonisolated enum OrigamiEPUBExporter {
         if let level = element.headingLevel {
             return "<h\(level + 1) \(anchors)>\(inline)</h\(level + 1)>"
         }
+        // A quotation, written "> …" as Markdown and gemtext write it,
+        // is a real <blockquote>: the marker is the reader's to draw.
+        if trimmed.hasPrefix("> "), trimmed.count > 2 {
+            let quoted = inlineHTML(from: String(trimmed.dropFirst(2)), citations: citations,
+                                    noteAddresses: noteAddresses,
+                                    noteNumbers: noteNumbers,
+                                    anchoredNoteRefs: anchoredNoteRefs)
+            return "<blockquote \(anchors)>\(quoted)</blockquote>"
+        }
         // A bulleted or numbered paragraph is an item of a list, not a
         // paragraph that happens to start with a dot. The marker is the
         // list's to draw, so it is dropped from the words; the item keeps
@@ -1277,7 +1298,7 @@ nonisolated enum OrigamiEPUBExporter {
                 words = String(words.dropFirst("\(number).".count))
                     .trimmingCharacters(in: .whitespaces)
             }
-            return "<p \(anchors) role=\"doc-endnote\">\(back) \(words)</p>"
+            return "<p \(anchors) epub:type=\"endnote\" role=\"note\">\(back) \(words)</p>"
         }
         if let speaker = paragraph.speaker, element.text.hasPrefix("\(speaker):") {
             let rest = inlineHTML(from: String(element.text.dropFirst(speaker.count + 1)),
@@ -1315,7 +1336,8 @@ nonisolated enum OrigamiEPUBExporter {
                                    noteAddresses: [String: String] = [:],
                                    noteNumbers: [String: String] = [:],
                                    anchoredNoteRefs: NoteRefAnchors? = nil) -> String {
-        var html = escaped(text)
+        let stash = stashingInlineMath(text)
+        var html = escaped(stash.text)
         html = html.replacingOccurrences(of: "`([^`]+)`", with: "<code>$1</code>",
                                          options: .regularExpression)
         // A strong run may hold italic ones (***i1* Illegal Hate
@@ -1328,6 +1350,10 @@ nonisolated enum OrigamiEPUBExporter {
                                          with: "<strong>$1</strong>",
                                          options: .regularExpression)
         html = html.replacingOccurrences(of: "\\*([^*]+)\\*", with: "<em>$1</em>",
+                                         options: .regularExpression)
+        // ==Marked== text (Author's Mark, read back from <mark>) is a real
+        // <mark> again, so a re-export keeps what the author marked.
+        html = html.replacingOccurrences(of: "==(?=\\S)([^=\\n]+?)(?<=\\S)==", with: "<mark>$1</mark>",
                                          options: .regularExpression)
         html = html.replacingOccurrences(
             of: "\\[([^\\]]+)\\]\\((\(OrigamiEPUBLinks.schemePattern)://[^)\\s]+)\\)",
@@ -1400,7 +1426,7 @@ nonisolated enum OrigamiEPUBExporter {
                 let pattern = "\\[cite:\(NSRegularExpression.escapedPattern(for: citation.nodeID))\\]"
                 html = html.replacingOccurrences(
                     of: pattern,
-                    with: "<a class=\"citation\" href=\"#ref-\(citation.number)\" data-citation-id=\"\(attributeEscaped(citation.nodeID))\">[\(citation.number)]</a>",
+                    with: "<a class=\"citation\" epub:type=\"biblioref\" role=\"doc-biblioref\" href=\"#ref-\(citation.number)\" data-citation-id=\"\(attributeEscaped(citation.nodeID))\">[\(citation.number)]</a>",
                     options: .regularExpression)
                 continue
             }
@@ -1410,14 +1436,43 @@ nonisolated enum OrigamiEPUBExporter {
             let pattern = "\\[([a-z-]+:)?\(NSRegularExpression.escapedPattern(for: address))(#[A-Za-z0-9._-]+)?\\]"
             html = html.replacingOccurrences(
                 of: pattern,
-                with: "<a class=\"citation\" href=\"#ref-\(citation.number)\" data-citation-id=\"\(citation.nodeID)\" data-origami-ref=\"$1\(address)$2\">[\(citation.number)]</a>",
+                with: "<a class=\"citation\" epub:type=\"biblioref\" role=\"doc-biblioref\" href=\"#ref-\(citation.number)\" data-citation-id=\"\(citation.nodeID)\" data-origami-ref=\"$1\(address)$2\">[\(citation.number)]</a>",
                 options: [.regularExpression, .caseInsensitive])
         }
         // A cite token whose key the pool does not know degrades to the
         // bracketed key — legible, and honest about the gap.
         html = html.replacingOccurrences(of: "\\[cite:([^\\]]+)\\]", with: "[$1]",
                                          options: .regularExpression)
+        for (index, math) in stash.math.enumerated() {
+            html = html.replacingOccurrences(of: mathPlaceholder(index), with: math)
+        }
         return html
+    }
+
+    /// Inline TeX — `$…$` by Pandoc's rule: no space just inside either
+    /// dollar, no digit straight after the closing one, never `\$` — as
+    /// MathML, held out of the markdown passes behind placeholders so its
+    /// `*` and `_` are never read as emphasis. TeX the converter declines
+    /// stays as written, dollars and all; code spans keep theirs.
+    private static func stashingInlineMath(_ text: String) -> (text: String, math: [String]) {
+        var out = text
+        var math: [String] = []
+        // Back to front, so each replacement leaves the earlier ranges
+        // valid; the placeholders count up in reading order all the same.
+        let spans = OrigamiMath.inlineMath(in: text)
+            .compactMap { span in
+                TeXMathML.mathElement(for: span.tex, display: false, id: nil).map { (span.range, $0) }
+            }
+        for (offset, span) in spans.enumerated().reversed() {
+            out.replaceSubrange(span.0, with: mathPlaceholder(offset))
+        }
+        math = spans.map(\.1)
+        return (out, math)
+    }
+
+    /// Private-use characters no text carries, and no markdown pass reads.
+    private static func mathPlaceholder(_ index: Int) -> String {
+        "\u{E000}\(index)\u{E001}"
     }
 
     /// A table cell's text with its citation tokens resolved to the
@@ -1427,19 +1482,28 @@ nonisolated enum OrigamiEPUBExporter {
     /// The Visual-Meta tables entry keeps the raw value, so a round
     /// trip still recovers the token.
     private static func citedCellHTML(_ value: String, citations: [Citation]) -> String {
-        var html = escaped(value)
-        guard html.contains("[cite:") else { return html }
+        // A cell's inline TeX is set as MathML, as a paragraph's is.
+        let stash = stashingInlineMath(value)
+        func restored(_ html: String) -> String {
+            var out = html
+            for (index, math) in stash.math.enumerated() {
+                out = out.replacingOccurrences(of: mathPlaceholder(index), with: math)
+            }
+            return out
+        }
+        var html = escaped(stash.text)
+        guard html.contains("[cite:") else { return restored(html) }
         for citation in citations where citation.address == nil {
             let pattern = "\\[cite:\(NSRegularExpression.escapedPattern(for: citation.nodeID))\\]"
             html = html.replacingOccurrences(
                 of: pattern,
-                with: "<a class=\"citation\" href=\"#ref-\(citation.number)\""
+                with: "<a class=\"citation\" epub:type=\"biblioref\" role=\"doc-biblioref\" href=\"#ref-\(citation.number)\""
                     + " data-citation-id=\"\(attributeEscaped(citation.nodeID))\">[\(citation.number)]</a>",
                 options: .regularExpression)
         }
         // A key the pool does not know degrades to the bracketed key.
-        return html.replacingOccurrences(of: "\\[cite:([^\\]]+)\\]", with: "[$1]",
-                                         options: .regularExpression)
+        return restored(html.replacingOccurrences(of: "\\[cite:([^\\]]+)\\]", with: "[$1]",
+                                                  options: .regularExpression))
     }
 
     /// Wraps the first occurrence of `name` outside any tag in a
@@ -1447,10 +1511,18 @@ nonisolated enum OrigamiEPUBExporter {
     private static func wrappingFirstOccurrence(of name: String, in html: String) -> String? {
         let pattern = "\\b(\(NSRegularExpression.escapedPattern(for: name)))\\b(?![^<]*>)"
         guard let expression = try? NSRegularExpression(pattern: pattern,
-                                                        options: [.caseInsensitive]),
-              let match = expression.firstMatch(
+                                                        options: [.caseInsensitive]) else { return nil }
+        // Never inside an equation: a <dfn> is not MathML.
+        let mathRanges = (try? NSRegularExpression(pattern: "<math\\b.*?</math>",
+                                                   options: [.dotMatchesLineSeparators]))?
+            .matches(in: html, range: NSRange(html.startIndex..., in: html))
+            .map(\.range) ?? []
+        guard let match = expression.matches(
                   in: html, options: [],
-                  range: NSRange(html.startIndex..., in: html)),
+                  range: NSRange(html.startIndex..., in: html))
+                .first(where: { candidate in
+                    !mathRanges.contains { NSLocationInRange(candidate.range.location, $0) }
+                }),
               let range = Range(match.range(at: 1), in: html) else { return nil }
         let occurrence = html[range]
         return html.replacingCharacters(

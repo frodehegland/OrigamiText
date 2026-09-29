@@ -953,6 +953,15 @@ struct EPUBReaderScreen: View {
                         ReadingFootBar(modes: availableModes,
                                        outlineAvailable: model.readingDoc(forBook: book) != nil)
                     }
+            } else if model.readingOverviewOn, let doc = model.readingDoc(forBook: book) {
+                // Overview takes the whole page, as an AI reading does;
+                // the foot stays, so any word there is the way back.
+                OverviewReadingScreen(doc: doc)
+                    .id(book.id)
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        ReadingFootBar(modes: availableModes,
+                                       outlineAvailable: true)
+                    }
             } else if readerMode == .faithful {
                 // The slips stand above the WebView, where the reader
                 // left them: lifted quotes (which had no layer here at

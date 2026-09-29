@@ -35,6 +35,18 @@ nonisolated enum BITSImporter {
         var references: [LiquidDoc.Reference] = []
         var tables: [LiquidDoc.Table] = []
         var assets: [LiquidDoc.Asset] = []
+        /// Every author, in printed order.
+        var authors: [String] = []
+        /// The paper's own DOI, bare — `<article-id pub-id-type="doi">`
+        /// (JATS) or `<book-part-id>` (BITS).
+        var doi: String?
+        var date: LiquidDate?
+        var keywords: [String] = []
+        /// The distinct affiliation lines, in first-author order.
+        var affiliations: [String] = []
+        var authorAffiliations: [String: String] = [:]
+        var authorEmails: [String: String] = [:]
+        var authorORCIDs: [String: String] = [:]
     }
 
     // MARK: - Entry point
@@ -70,19 +82,84 @@ nonisolated enum BITSImporter {
             .map { flattened($0) }
             .flatMap { $0.isEmpty ? nil : $0 }
             ?? fallbackTitle
-        let authors = (meta?.child("contrib-group")?.children(named: "contrib") ?? [])
+        let contribs = (meta?.children(named: "contrib-group") ?? [])
+            .flatMap { $0.children(named: "contrib") }
             .filter { ($0.attributes["contrib-type"] ?? "author") == "author" }
-            .compactMap { contrib -> String? in
-                guard let name = contrib.child("name") else {
-                    let literal = contrib.child("string-name").map { flattened($0) }
-                    return literal?.isEmpty == false ? literal : nil
-                }
-                let given = name.child("given-names").map { flattened($0) } ?? ""
-                let surname = name.child("surname").map { flattened($0) } ?? ""
-                let full = [given, surname].filter { !$0.isEmpty }.joined(separator: " ")
-                return full.isEmpty ? nil : full
+        func name(of contrib: Node) -> String? {
+            guard let name = contrib.child("name") else {
+                let literal = contrib.child("string-name").map { flattened($0) }
+                return literal?.isEmpty == false ? literal : nil
             }
+            let given = name.child("given-names").map { flattened($0) } ?? ""
+            let surname = name.child("surname").map { flattened($0) } ?? ""
+            let full = [given, surname].filter { !$0.isEmpty }.joined(separator: " ")
+            return full.isEmpty ? nil : full
+        }
+        let authors = contribs.compactMap(name)
         let author = authors.isEmpty ? nil : authors.joined(separator: ", ")
+
+        // Affiliations: inside the contrib, or pooled beside the
+        // contribs (in the contrib-group or the meta) and pointed at by
+        // `<xref ref-type="aff" rid>`.
+        var affiliationsByID: [String: String] = [:]
+        let pooledAffiliations = (meta?.children(named: "aff") ?? [])
+            + (meta?.children(named: "contrib-group") ?? []).flatMap { $0.children(named: "aff") }
+        for aff in pooledAffiliations {
+            if let id = aff.attributes["id"] { affiliationsByID[id] = affiliationLine(aff) }
+        }
+        var affiliations: [String] = []
+        var authorAffiliations: [String: String] = [:]
+        var authorEmails: [String: String] = [:]
+        var authorORCIDs: [String: String] = [:]
+        for contrib in contribs {
+            guard let person = name(of: contrib) else { continue }
+            var lines = contrib.children(named: "aff").map(affiliationLine)
+            for xref in contrib.children(named: "xref") where xref.attributes["ref-type"] == "aff" {
+                for rid in (xref.attributes["rid"] ?? "").split(separator: " ") {
+                    if let line = affiliationsByID[String(rid)] { lines.append(line) }
+                }
+            }
+            lines = lines.filter { !$0.isEmpty }
+            if !lines.isEmpty {
+                authorAffiliations[person] = lines.joined(separator: "; ")
+                for line in lines where !affiliations.contains(line) { affiliations.append(line) }
+            }
+            if let email = (contrib.child("email") ?? contrib.child("address")?.child("email"))
+                .map({ flattened($0) }), !email.isEmpty {
+                authorEmails[person] = email
+            }
+            if let orcid = contrib.children(named: "contrib-id")
+                .first(where: { ($0.attributes["contrib-id-type"] ?? "").lowercased() == "orcid" })
+                .map({ flattened($0) }),
+               let bare = orcid.firstMatch(of: #/\d{4}-\d{4}-\d{4}-\d{3}[\dX]/#) {
+                authorORCIDs[person] = String(bare.0)
+            }
+        }
+        if affiliations.isEmpty {
+            affiliations = pooledAffiliations.map(affiliationLine).filter { !$0.isEmpty }
+        }
+
+        // The paper's own DOI, date and keywords.
+        let doi = ((meta?.children(named: "article-id") ?? [])
+                   + (meta?.children(named: "book-part-id") ?? []))
+            .first { ($0.attributes["pub-id-type"] ?? "").lowercased() == "doi" }
+            .map { flattened($0) }
+            .flatMap { $0.hasPrefix("10.") ? $0 : nil }
+        let pubDates = meta?.children(named: "pub-date") ?? []
+        let pubDate = pubDates.first {
+            ["epub", "ppub", "pub"].contains($0.attributes["pub-type"] ?? $0.attributes["date-type"] ?? "")
+        } ?? pubDates.first
+        let date = pubDate.flatMap { node -> LiquidDate? in
+            guard let year = node.child("year").flatMap({ Int(flattened($0)) }) else { return nil }
+            return LiquidDate(year: year,
+                              month: node.child("month").flatMap { Int(flattened($0)) },
+                              day: node.child("day").flatMap { Int(flattened($0)) })
+        }
+        let keywords = (meta?.children(named: "kwd-group") ?? [])
+            .filter { ($0.attributes["kwd-group-type"] ?? "author").lowercased() != "ccs" }
+            .flatMap { $0.children(named: "kwd") }
+            .map { flattened($0) }
+            .filter { !$0.isEmpty }
         let publication = (root.first("book-meta", "book-title-group", "book-title")
             ?? root.first("front", "journal-meta", "journal-title-group", "journal-title")
             ?? root.first("front", "journal-meta", "journal-title"))
@@ -106,10 +183,10 @@ nonisolated enum BITSImporter {
             guard !cleaned.isEmpty else { return }
             paragraphs.append(LiquidDoc.Paragraph(id: nextID(), heading: nil, text: cleaned))
         }
-        func appendHeading(_ text: String, level: Int) {
+        func appendHeading(_ text: String, level: Int, id: String? = nil) {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
-            paragraphs.append(LiquidDoc.Paragraph(id: nextID(), heading: min(max(level, 1), 3),
+            paragraphs.append(LiquidDoc.Paragraph(id: id ?? nextID(), heading: min(max(level, 1), 3),
                                                   text: trimmed))
         }
         func appendFigure(_ fig: Node) {
@@ -144,7 +221,7 @@ nonisolated enum BITSImporter {
                     }
                 }
             }
-            let paragraphID = nextID()
+            let paragraphID = anchorID(of: fig) ?? nextID()
             if let data = resolved, !data.isEmpty {
                 assetOrdinal += 1
                 let assetID = "img\(assetOrdinal)"
@@ -186,7 +263,7 @@ nonisolated enum BITSImporter {
                 })
             tables.append(live)
             var paragraph = LiquidDoc.Paragraph(
-                id: nextID(), heading: nil,
+                id: anchorID(of: wrap) ?? nextID(), heading: nil,
                 text: live.cells.map { row in
                     "| " + row.map(\.value).joined(separator: " | ") + " |"
                 }.joined(separator: "\n"))
@@ -203,7 +280,10 @@ nonisolated enum BITSImporter {
             }
             let math = strippedTeXDelimiters(flattened(tex, collapseWhitespace: false))
             if !math.isEmpty {
-                paragraphs.append(LiquidDoc.Paragraph(id: nextID(), heading: nil, text: math))
+                // The format's display block: the export sets it as
+                // MathML, or as readable words where it cannot.
+                paragraphs.append(LiquidDoc.Paragraph(id: anchorID(of: formula) ?? nextID(),
+                                                      heading: nil, text: "$$\n\(math)\n$$"))
             }
         }
         func appendList(_ list: Node) {
@@ -226,11 +306,13 @@ nonisolated enum BITSImporter {
                 switch child.name {
                 case "sec":
                     if let heading = child.child("title") {
-                        appendHeading(flattened(heading), level: depth)
+                        appendHeading(flattened(heading), level: depth, id: anchorID(of: child))
                     }
                     walk(child, depth: depth + 1)
                 case "title", "label":
                     continue   // handled by the sec/fig/table that owns it
+                case "fn", "fn-group":
+                    continue   // read under Notes, each under its own id
                 case "p":
                     // The DL nests figures, tables, and display formulas
                     // mid-paragraph; the flow model here is one block per
@@ -267,19 +349,39 @@ nonisolated enum BITSImporter {
             appendHeading("Abstract", level: 1)
             walk(abstract, depth: 1)
         }
-        if let body = root.first("book-part", "body") ?? root.child("body") {
-            walk(body, depth: 1)
+        let bodyNode = root.first("book-part", "body") ?? root.child("body")
+        // A note written inline in a paragraph needs an id for its mark
+        // to point at, before any paragraph is converted.
+        // The exporter prints a note's number from its id's digits, so
+        // these count on from the notes the XML numbered itself.
+        let allNotes = (bodyNode?.descendants("fn") ?? [])
+            + ((root.first("book-part", "back") ?? root.child("back"))?.descendants("fn") ?? [])
+        var noteOrdinal = allNotes.filter { $0.attributes["id"] != nil }.count
+        for fn in bodyNode?.descendants("fn") ?? [] where fn.attributes["id"] == nil {
+            noteOrdinal += 1
+            fn.attributes["id"] = "fn-inline-\(noteOrdinal)"
+        }
+        if let bodyNode {
+            walk(bodyNode, depth: 1)
         }
 
         // Footnotes read as endnotes under their own heading — the DL's
-        // fn-group carries author notes and numbered notes alike.
+        // fn-group carries author notes and numbered notes alike, and a
+        // note written inline in a paragraph joins them. Each keeps its
+        // own id, so the `[note:]` mark its xref became links to it.
         let back = root.first("book-part", "back") ?? root.child("back")
-        let footnotes = (back?.descendants("fn") ?? [])
-            .map { fn in flattened(inline(convert: fn)) }
-            .filter { !$0.isEmpty }
-        if !footnotes.isEmpty {
+        let footnotes = (bodyNode?.descendants("fn") ?? []) + (back?.descendants("fn") ?? [])
+        var notes: [LiquidDoc.Paragraph] = []
+        for fn in footnotes {
+            let text = tidyCitationBrackets(flattened(inline(convert: fn)))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            notes.append(LiquidDoc.Paragraph(id: anchorID(of: fn) ?? nextID(),
+                                             heading: nil, text: text))
+        }
+        if !notes.isEmpty {
             appendHeading("Notes", level: 1)
-            for note in footnotes { appendText(note) }
+            paragraphs.append(contentsOf: notes)
         }
 
         // The bibliography: every <ref> a reference on its own id — the
@@ -299,7 +401,35 @@ nonisolated enum BITSImporter {
 
         return Result(title: title, author: author, publication: publication,
                       body: paragraphs, references: references,
-                      tables: tables, assets: assets)
+                      tables: tables, assets: assets,
+                      authors: authors, doi: doi, date: date, keywords: keywords,
+                      affiliations: affiliations, authorAffiliations: authorAffiliations,
+                      authorEmails: authorEmails, authorORCIDs: authorORCIDs)
+    }
+
+    /// The paragraph id an element with an XML id takes, so a cross-
+    /// reference to it (`[words](origami-jump:…)`, `[note:…]`) resolves.
+    /// Prefixed, so a document's own ids can never collide with the
+    /// generated `pN` ones; characters the format's tokens refuse go.
+    private static func anchorID(of node: Node) -> String? {
+        guard let id = node.attributes["id"], !id.isEmpty else { return nil }
+        return anchorID(forRID: id)
+    }
+
+    private static func anchorID(forRID rid: String) -> String {
+        "x-" + rid.replacingOccurrences(of: #"[^A-Za-z0-9._:-]"#, with: "-",
+                                        options: .regularExpression)
+    }
+
+    /// One affiliation as a printed line: its structured parts joined
+    /// ("Institution, City, Country"), else its words.
+    private static func affiliationLine(_ aff: Node) -> String {
+        let parts = ["institution", "addr-line", "city", "state", "country"]
+            .flatMap { aff.children(named: $0) }
+            .map { flattened($0) }
+            .filter { !$0.isEmpty }
+        if !parts.isEmpty { return parts.joined(separator: ", ") }
+        return flattened(aff)
     }
 
     /// The block elements that may ride inside a `<p>`.
@@ -349,14 +479,36 @@ nonisolated enum BITSImporter {
                 let inner = flattened(inline(convert: child))
                 converted = inner.isEmpty ? "" : "`\(inner)`"
             case "xref":
-                if child.attributes["ref-type"] == "bibr",
-                   let rid = child.attributes["rid"], !rid.isEmpty {
+                let rid = child.attributes["rid"] ?? ""
+                let words = flattened(inline(convert: child))
+                switch child.attributes["ref-type"] {
+                case "bibr" where !rid.isEmpty:
                     // A multi-cite xref carries space-separated ids.
                     converted = rid.split(separator: " ")
                         .map { "[cite:\($0)]" }.joined(separator: ", ")
-                } else {
-                    converted = flattened(inline(convert: child))
+                case "fn" where !rid.isEmpty:
+                    // The note's mark: the exporter numbers it and links
+                    // it to the note, which keeps this id.
+                    converted = rid.split(separator: " ")
+                        .map { "[note:\(anchorID(forRID: String($0)))]" }.joined()
+                case "fig", "table", "sec", "disp-formula", "app", "boxed-text",
+                     "supplementary-material", "list", "chem":
+                    // An in-document jump to the element carrying the id;
+                    // one the body never gives degrades to its words.
+                    let target = rid.split(separator: " ").first.map(String.init) ?? ""
+                    converted = target.isEmpty || words.isEmpty
+                        || words.contains("[") || words.contains("]")
+                        ? words
+                        : "[\(words)](origami-jump:\(anchorID(forRID: target)))"
+                default:
+                    converted = words
                 }
+            case "fn":
+                // A note written inline: its words are the note's (read
+                // under Notes), its place a mark.
+                converted = child.attributes["id"].map {
+                    "[note:\(anchorID(forRID: $0))]"
+                } ?? ""
             case "ext-link":
                 let href = child.attributes["xlink:href"] ?? ""
                 let text = flattened(inline(convert: child))
@@ -371,7 +523,10 @@ nonisolated enum BITSImporter {
                 converted = tex.isEmpty
                     ? flattened(inline(convert: child))
                     : "$\(tex)$"
-            case "inline-graphic":
+            case "inline-graphic", "label":
+                // A label is the printed number the reader draws itself
+                // (a note's "1", a figure's "Figure 1") — as `flattened`
+                // skips it.
                 converted = ""
             default:
                 // sub/sup, underline, named-content, … — markup drops,
@@ -526,7 +681,7 @@ nonisolated enum BITSImporter {
     /// resolve without one.
     private final class Node {
         let name: String
-        let attributes: [String: String]
+        var attributes: [String: String]
         var children: [Node] = []
         var text: String = ""
 
@@ -613,5 +768,21 @@ nonisolated enum BITSImporter {
                 parent.children.append(node)
             }
         }
+    }
+}
+
+extension LiquidDoc {
+    /// The front matter a JATS/BITS paper states about itself — its
+    /// authors, DOI, date, keywords, affiliations, emails and ORCIDs —
+    /// laid onto the document, leaving what the XML does not say alone.
+    nonisolated mutating func applyingJATSFrontMatter(_ result: BITSImporter.Result) {
+        if result.authors.count > 1 { authors = result.authors }
+        if let doi = result.doi { self.doi = doi }
+        if let date = result.date { self.date = date }
+        if !result.keywords.isEmpty { keywords = result.keywords }
+        if !result.affiliations.isEmpty { affiliations = result.affiliations }
+        authorAffiliations.merge(result.authorAffiliations) { current, _ in current }
+        authorEmails.merge(result.authorEmails) { current, _ in current }
+        authorORCIDs.merge(result.authorORCIDs) { current, _ in current }
     }
 }

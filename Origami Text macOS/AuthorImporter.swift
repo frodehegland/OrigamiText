@@ -111,18 +111,66 @@ nonisolated enum AuthorImporter {
         // glossary, layouts, and the citation store.
         let knowledge = knowledgeLayer(in: url, files: files)
 
-        func finish(_ body: [LiquidDoc.Paragraph]) -> ImportResult {
-            ImportResult(title: title, author: author,
-                         body: applyingSectionLevels(knowledge.sections, to: body),
-                         concepts: knowledge.concepts, layouts: knowledge.layouts,
-                         mapConnections: knowledge.connections,
-                         references: knowledge.references)
+        /// `used`: the records the text cites, when Author's own store
+        /// says — then the reference list is those, and those the
+        /// glossary and the Map point at. Citations.plist also carries
+        /// records the document never cites (a 336-entry list under an
+        /// agenda that cites nothing), which are not its bibliography.
+        func finish(_ body: [LiquidDoc.Paragraph],
+                    citedAs: [String: String] = [:],
+                    used: Set<String>? = nil) -> ImportResult {
+            var references = knowledge.references
+            if let used {
+                let pointedAt = Set(knowledge.concepts.flatMap(\.citationIdentifiers))
+                    .union(knowledge.layouts.flatMap { $0.positions.map(\.id) })
+                    .union(knowledge.connections.flatMap { [$0.from, $0.to] })
+                references = references.filter { used.contains($0.id) || pointedAt.contains($0.id) }
+            }
+            for index in references.indices {
+                if let label = citedAs[references[index].id] { references[index].citedAs = label }
+            }
+            return ImportResult(title: title, author: author,
+                                body: applyingSectionLevels(knowledge.sections, to: body),
+                                concepts: knowledge.concepts, layouts: knowledge.layouts,
+                                mapConnections: knowledge.connections,
+                                references: references)
         }
 
-        // 1. RTFD sub-packages are the richest representation.
+        // 1. RTFD sub-packages are the richest representation — except
+        // that Author's own store of the same text also knows where each
+        // citation stands, which the RTFD forgets. When the two agree
+        // word for word, the store's text is read, citations marked.
         for rtfd in rtfdPackages {
             if let attributed = try? NSAttributedString(url: rtfd, options: [:], documentAttributes: nil),
                hasText(attributed) {
+                let known = Set(knowledge.references.map(\.id))
+                // The store is the document as Author holds it, saved in
+                // the same moment as the RTFD: wherever it marks a
+                // citation it is read, citations linked — even when the
+                // two copies' words differ (the store keeps attachment
+                // characters the RTFD drops, and Author may write the
+                // RTFD a step behind). Pictures are not carried on this
+                // path either way.
+                let store = known.isEmpty ? nil : contentStore(in: url)
+                if let store, hasText(store), !carriesCitations(store, known: known) {
+                    // The store says the text cites none of the records.
+                    return finish(paragraphs(from: attributed), used: [])
+                }
+                if let store, hasText(store) {
+                    let marked = markingCitations(in: store, known: known)
+                    let text = NSMutableAttributedString(attributedString: marked.text)
+                    let full = text.string as NSString
+                    var location = full.length
+                    while location > 0 {
+                        let found = full.range(of: "\u{FFFC}", options: .backwards,
+                                               range: NSRange(location: 0, length: location))
+                        guard found.location != NSNotFound else { break }
+                        text.deleteCharacters(in: found)
+                        location = found.location
+                    }
+                    return finish(paragraphs(from: text), citedAs: marked.citedAs,
+                                  used: citedIdentifiers(in: store, known: known))
+                }
                 return finish(paragraphs(from: attributed))
             }
         }
@@ -227,6 +275,183 @@ nonisolated enum AuthorImporter {
             }
             return LiquidDoc.Paragraph(id: "p\(index + 1)", heading: level, text: text)
         }
+    }
+
+    // MARK: - Citations in the text
+
+    /// Author's own archive of the document's text (Contents/
+    /// Content.liquidstore): the attributed string the RTFD is saved
+    /// from, carrying `LACitationIdentifierAttributeName` on each
+    /// citation. Decoded securely, the classes an attributed string's
+    /// runs can hold and nothing else; nil for anything outside them.
+    private static func contentStore(in package: URL) -> NSAttributedString? {
+        guard let data = try? Data(contentsOf: package.appendingPathComponent(
+            "Contents/Content.liquidstore")) else { return nil }
+        let classes: [AnyClass] = [
+            NSAttributedString.self, NSMutableAttributedString.self, NSString.self,
+            NSDictionary.self, NSArray.self, NSNumber.self, NSValue.self, NSDate.self,
+            NSData.self, NSURL.self, NSFont.self, NSColor.self, NSShadow.self,
+            NSParagraphStyle.self, NSTextTab.self, NSTextList.self,
+            NSTextAttachment.self, FileWrapper.self, NSImage.self,
+            ArchivedAttachmentPlaceholder.self,
+        ]
+        guard let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else { return nil }
+        let substitutes = AttachmentSubstitution()
+        unarchiver.delegate = substitutes
+        defer { unarchiver.finishDecoding() }
+        return unarchiver.decodeObject(of: classes, forKey: NSKeyedArchiveRootObjectKey)
+            as? NSAttributedString
+    }
+
+    /// Author archives its pictures as its own attachment classes
+    /// (`LiquidAuthorTextCore.InlineImageAttachment`, drawn by a
+    /// `ScaledImageCell`), which this app does not link. The store is read
+    /// for its words and citation marks only — pictures come from the RTFD
+    /// or not at all — so any unknown class the archive says descends
+    /// from an attachment or its cell reads as an inert placeholder,
+    /// itself securely decodable; anything else still fails.
+    private final class AttachmentSubstitution: NSObject, NSKeyedUnarchiverDelegate {
+        func unarchiver(_ unarchiver: NSKeyedUnarchiver,
+                        cannotDecodeObjectOfClassName name: String,
+                        originalClasses classNames: [String]) -> AnyClass? {
+            classNames.contains("NSTextAttachment") || classNames.contains("NSTextAttachmentCell")
+                ? ArchivedAttachmentPlaceholder.self : nil
+        }
+    }
+
+    /// Stands in for an archived attachment the app cannot rebuild; reads
+    /// nothing from the archive, so nothing it holds is ever instantiated.
+    @objc(OTArchivedAttachmentPlaceholder)
+    private final class ArchivedAttachmentPlaceholder: NSObject, NSSecureCoding {
+        static var supportsSecureCoding: Bool { true }
+        init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {}
+    }
+
+    /// Every record the store's text cites — picture credits included.
+    private static func citedIdentifiers(in text: NSAttributedString, known: Set<String>) -> Set<String> {
+        var ids: Set<String> = []
+        text.enumerateAttribute(citationIdentifierKey,
+                                in: NSRange(location: 0, length: text.length)) { value, _, _ in
+            if let id = value as? String, known.contains(id) { ids.insert(id) }
+        }
+        return ids
+    }
+
+    /// Whether the store marks at least one citation whose record the
+    /// package carries.
+    private static func carriesCitations(_ text: NSAttributedString, known: Set<String>) -> Bool {
+        var found = false
+        text.enumerateAttribute(citationIdentifierKey,
+                                in: NSRange(location: 0, length: text.length)) { value, _, stop in
+            if let id = value as? String, known.contains(id) {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
+    private static let citationIdentifierKey =
+        NSAttributedString.Key("LACitationIdentifierAttributeName")
+    private static let citationStartKey = NSAttributedString.Key("LACitationStartMarker")
+    private static let citationEndKey = NSAttributedString.Key("LACitationEndMarker")
+    private static let citationFormatKey = NSAttributedString.Key("LACitationFormatAttributeName")
+
+    /// The text with each citation Author placed marked by its
+    /// `[cite:<identifier>]` token — the exporter's numbered link to the
+    /// reference list. The citation's own label, "(Example 2022)", is
+    /// what the number stands in for, so it gives way to the token and
+    /// is kept as the reference's `citedAs`; quotation marks and the
+    /// cited words stay. A citation whose record the package lacks is
+    /// left as written.
+    static func markingCitations(in text: NSAttributedString, known: Set<String>)
+        -> (text: NSAttributedString, citedAs: [String: String]) {
+        let marked = NSMutableAttributedString(attributedString: text)
+        var citations: [(id: String, range: NSRange)] = []
+        text.enumerateAttribute(citationIdentifierKey,
+                                in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            guard let id = value as? String, known.contains(id) else { return }
+            // A picture's credit rides the picture, which this path does
+            // not carry: its record stays in the list, unmarked, rather
+            // than leave a number standing alone where the image was.
+            if text.attribute(citationFormatKey, at: range.location, effectiveRange: nil)
+                as? String == "attachment" { return }
+            citations.append((id, range))
+        }
+        var citedAs: [String: String] = [:]
+        let string = text.string as NSString
+        for citation in citations.reversed() {
+            // Author's usual form is all label — "(Engelbart, 2002)",
+            // the "(" its start and the rest its end: the number takes
+            // the whole citation's place.
+            let whole = string.substring(with: citation.range)
+            var allMarkers = true
+            text.enumerateAttributes(in: citation.range) { attributes, _, stop in
+                if attributes[citationStartKey] == nil, attributes[citationEndKey] == nil {
+                    allMarkers = false
+                    stop.pointee = true
+                }
+            }
+            if allMarkers,
+               whole.range(of: #"^\s*\([^()]*\)\s*$"#, options: .regularExpression) != nil {
+                if citedAs[citation.id] == nil {
+                    citedAs[citation.id] = whole.trimmingCharacters(in: .whitespaces)
+                }
+                let wordsEndInSpace = citation.range.location == 0
+                    || string.substring(with: NSRange(location: citation.range.location - 1, length: 1))
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                marked.replaceCharacters(in: citation.range, with: NSAttributedString(
+                    string: (wordsEndInSpace ? "" : " ") + "[cite:\(citation.id)]"
+                        + (whole.hasSuffix(" ") ? " " : ""),
+                    attributes: text.attributes(at: citation.range.location, effectiveRange: nil)))
+                continue
+            }
+            // The label: the runs carrying the end marker, else nothing
+            // (the token then closes the citation).
+            var labelRange = NSRange(location: NSMaxRange(citation.range), length: 0)
+            text.enumerateAttribute(citationEndKey, in: citation.range) { value, range, _ in
+                guard value != nil else { return }
+                labelRange = labelRange.length == 0 ? range : NSUnionRange(labelRange, range)
+            }
+            let label = string.substring(with: labelRange)
+            // Only the label's first line of words is the citation's own
+            // rendering; what follows (an annotated bibliography's note)
+            // stays as written.
+            var lines = label.components(separatedBy: "\n")
+            let token = "[cite:\(citation.id)]"
+            if let first = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                var line = lines[first]
+                if let parenthetical = line.range(of: #"\s*\([^()]*\)\s*$"#, options: .regularExpression) {
+                    let printed = line[parenthetical].trimmingCharacters(in: .whitespaces)
+                    if citedAs[citation.id] == nil { citedAs[citation.id] = printed }
+                    line.replaceSubrange(parenthetical, with: "")
+                }
+                lines[first] = line.isEmpty ? token : line + " " + token
+            } else {
+                // A label of spaces (or none): the token stands after the
+                // cited words, one space from them, any line end kept.
+                let wordsEndInSpace = labelRange.location > 0
+                    && string.substring(with: NSRange(location: labelRange.location - 1, length: 1))
+                        .trimmingCharacters(in: .whitespaces).isEmpty
+                lines = [(wordsEndInSpace ? "" : " ") + token + (label.hasSuffix("\n") ? "\n" : "")]
+            }
+            // A label that sat right against the cited words ("container
+            // (Example 2024)" printed without a gap) leaves the token one
+            // space from them.
+            var replacement = lines.joined(separator: "\n")
+            if replacement.hasPrefix("[cite:"), labelRange.location > 0,
+               !string.substring(with: NSRange(location: labelRange.location - 1, length: 1))
+                   .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                replacement = " " + replacement
+            }
+            let attributes = labelRange.length > 0
+                ? text.attributes(at: labelRange.location, effectiveRange: nil)
+                : text.attributes(at: max(0, NSMaxRange(citation.range) - 1), effectiveRange: nil)
+            marked.replaceCharacters(in: labelRange, with: NSAttributedString(
+                string: replacement, attributes: attributes))
+        }
+        return (marked, citedAs)
     }
 
     // MARK: - JSON fallbacks
@@ -510,7 +735,7 @@ nonisolated enum AuthorImporter {
         if let year = record["yearComponent"] as? Int, year > 0 {
             fields.append("year = {\(year)}")
         }
-        let fieldMap = [
+        let fieldMap: [(String, String)] = [
             ("journal", "journal"), ("publication", "publication"),
             ("publisher", "publisher"), ("doi", "doi"), ("isbn", "isbn"),
             ("issn", "issn"), ("volume", "volume"), ("issue", "number"),

@@ -859,8 +859,10 @@ final class AppModel {
         // WebView reader; a LaTeX project (zip or bare .tex) or an ACM
         // Digital Library XML paper (BITS/JATS) becomes an EPUB first.
         // A plain folder imports as a batch; a JSON file is tried as a
-        // reference dataset (§ReferenceDatasets.swift). Anything else
-        // is declined.
+        // reference dataset (§ReferenceDatasets.swift) unless it reads as
+        // a CSL-JSON reference list. Every other kind the importer
+        // understands (Word, Markdown, PDF, RTF…) goes through Import;
+        // anything else is declined.
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
            isDirectory.boolValue,
@@ -880,11 +882,17 @@ final class AppModel {
             } else {
                 quickViewEPUB(at: url)
             }
-        case "zip", "tex":
-            importLaTeX(at: url)
+        case "zip":
+            // A zip of EPUBs is a whole conference; any other zip is a
+            // LaTeX project — Import tells the two apart.
+            importFile(at: url)
+        case "tex":
+            importTeXWithBibliography(at: url, companions: [])
+        case "xml" where ReferenceFormats.isEndNoteXML(at: url):
+            importConverted(at: url)
         case "xml":
             importBITS(at: url)
-        case "html", "htm", "odt", "tgz", "tar", "gz", "bib":
+        case "html", "htm", "xhtml", "odt", "tgz", "tar", "gz", "bib", "ris", "enw":
             importConverted(at: url)
         case "gmi", "gemini":
             // A gemtext page double-clicked or dropped: the app declares
@@ -892,10 +900,42 @@ final class AppModel {
             // than decline it.
             importGemtext(at: url)
         case "json":
-            queueReferenceDatasetImport(url)
+            if FormatSources.isCSLJSON(at: url) {
+                importConverted(at: url)
+            } else {
+                queueReferenceDatasetImport(url)
+            }
+        case let ext where Self.importableExtensions.contains(ext):
+            // Word, Markdown, PDF, RTF, Author: the kinds Import reads,
+            // opened from Finder or dropped — imported, not declined.
+            importFile(at: url)
         default:
             NSSound.beep()
-            showNote("Origami Text opens EPUB files (and imports LaTeX, ACM XML, and gemtext).")
+            showNote("Origami Text opens EPUB files and imports LaTeX, ACM XML, Word, Markdown, Typst, AsciiDoc, reStructuredText, PDF, HTML, ODT, BibTeX, RIS, EndNote, CSL-JSON, and gemtext.")
+        }
+    }
+
+    // MARK: - Overview's portraits and the People directory
+
+    /// Overview and People keep one set of portraits. A person the
+    /// directory knows (by name or alias) shows their People photo in
+    /// Overview — never a Wikipedia namesake — and a picture chosen for
+    /// them in Overview's Pictures window becomes their People photo.
+    /// Wikipedia's own matches never overwrite a directory photo: a
+    /// namesake's face on a colleague is the one mistake to avoid.
+    private func connectOverviewPortraits() {
+        let store = OverviewPictureStore.shared
+        store.ownPicture = { [weak self] entity in
+            guard entity.kind == .person, let self,
+                  let person = self.people.person(named: entity.name) else { return nil }
+            return self.portraits.original(for: person.localID)
+                ?? self.portraits.portrait(for: person.localID)
+        }
+        store.onChosen = { [weak self] entity, image in
+            guard entity.kind == .person, let self,
+                  let person = self.people.person(named: entity.name) else { return }
+            self.portraits.adoptPhoto(image, for: person.localID)
+            NotificationCenter.default.post(name: OverviewPictureStore.changed, object: nil)
         }
     }
 
@@ -1126,16 +1166,46 @@ final class AppModel {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let names = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
-        let convertible = names
+        let files = names
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .map { url.appendingPathComponent($0) }
-            .filter {
-                ["epub", "zip", "tex", "xml", "gmi", "gemini"]
-                    .contains($0.pathExtension.lowercased())
+        // A batch files EPUBs, never drafts: the kinds that convert
+        // straight to an EPUB, and ACM-template Word papers (which do too).
+        // Companions are not documents of their own — a .bib beside a
+        // .tex is that paper's bibliography, and an .html beside a .docx
+        // of the same name is its TAPS rendering.
+        // A bibliography beside a document that cites is that document's.
+        let hasTeX = files.contains { Self.citingExtensions.contains($0.pathExtension.lowercased())
+            && $0.pathExtension.lowercased() != "txt" }
+        let wordStems = Set(files
+            .filter { ["docx", "doc"].contains($0.pathExtension.lowercased()) }
+            .map { $0.deletingPathExtension().lastPathComponent.lowercased() })
+        let convertible = files.filter { file in
+            switch file.pathExtension.lowercased() {
+            case "xml":
+                // An EndNote library beside a paper is that paper's.
+                return !(hasTeX && ReferenceFormats.isEndNoteXML(at: file))
+            case "epub", "zip", "tex", "gmi", "gemini",
+                 "odt", "xhtml", "tgz", "tar", "gz":
+                return true
+            case "bib", "ris", "enw":
+                return !hasTeX
+            case "md", "markdown", "typ", "adoc", "asciidoc", "rst":
+                // A batch files EPUBs, so only papers (below) — a plain
+                // note would need a draft.
+                return true
+            case "html", "htm":
+                return !wordStems.contains(
+                    file.deletingPathExtension().lastPathComponent.lowercased())
+            case "docx", "doc":
+                return ACMWordPaper.isPaper(at: file)
+            default:
+                return false
             }
+        }
         guard !convertible.isEmpty else {
             NSSound.beep()
-            showNote("No EPUB, LaTeX, ACM XML, or gemtext files in “\(url.lastPathComponent)”.")
+            showNote("No importable documents (EPUB, LaTeX, ACM XML or Word, HTML, ODT, BibTeX, gemtext) in “\(url.lastPathComponent)”.")
             return
         }
         showNote("Importing \(convertible.count) documents\u{2026}")
@@ -1151,6 +1221,7 @@ final class AppModel {
             var imported = 0
             var duplicates = 0
             var failed: [String] = []
+            var notPapers: [String] = []
             var epubsChanged = false
             for file in convertible {
                 let outcome: LibraryImportOutcome
@@ -1182,8 +1253,25 @@ final class AppModel {
                 case "gmi", "gemini":
                     outcome = self.importGemtext(at: file, andOpen: false)
                     await Task.yield()
-                case "html", "htm", "odt", "tgz", "tar", "gz", "bib":
+                case "html", "htm", "xhtml", "odt", "tgz", "tar", "gz", "bib":
                     outcome = self.importConverted(at: file, andOpen: false)
+                    await Task.yield()
+                case "docx", "doc":
+                    outcome = self.importWordPaper(at: file, andOpen: false)
+                    await Task.yield()
+                case "ris", "enw":
+                    outcome = self.importConverted(at: file, andOpen: false)
+                    await Task.yield()
+                case "xml" where ReferenceFormats.isEndNoteXML(at: file):
+                    outcome = self.importConverted(at: file, andOpen: false)
+                    await Task.yield()
+                case "md", "markdown", "typ", "adoc", "asciidoc", "rst":
+                    if let result = try? MarkupImport.importFile(at: file), result.isPaper {
+                        outcome = self.importMarkdownPaper(result, from: file, andOpen: false)
+                    } else {
+                        outcome = .failed
+                        notPapers.append(file.lastPathComponent)
+                    }
                     await Task.yield()
                 default:
                     outcome = self.importBITS(at: file, andOpen: false)
@@ -1192,7 +1280,8 @@ final class AppModel {
                 switch outcome {
                 case .imported: imported += 1
                 case .duplicate: duplicates += 1
-                case .failed: failed.append(file.lastPathComponent)
+                case .failed:
+                    if !notPapers.contains(file.lastPathComponent) { failed.append(file.lastPathComponent) }
                 }
             }
             if epubsChanged {
@@ -1201,6 +1290,9 @@ final class AppModel {
             }
             var parts = ["Imported \(imported) of \(convertible.count)"]
             if duplicates > 0 { parts.append("\(duplicates) already in the library") }
+            if !notPapers.isEmpty {
+                parts.append("\(notPapers.count) plain note\(notPapers.count == 1 ? "" : "s") left for Import on \(notPapers.count == 1 ? "its" : "their") own")
+            }
             if !failed.isEmpty {
                 parts.append("failed: \(failed.prefix(3).joined(separator: ", "))"
                     + (failed.count > 3 ? " and \(failed.count - 3) more" : ""))
@@ -1221,12 +1313,13 @@ final class AppModel {
     /// exporter, and filed into the reader's library — then opened,
     /// unless a batch (`andOpen: false`) is filing quietly.
     @discardableResult
-    func importLaTeX(at url: URL, andOpen: Bool = true) -> LibraryImportOutcome {
+    func importLaTeX(at url: URL, andOpen: Bool = true,
+                     extraBibliography: String = "") -> LibraryImportOutcome {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let result = url.pathExtension.lowercased() == "tex"
-                ? try LaTeXImporter.importTeXFile(at: url)
+                ? try LaTeXImporter.importTeXFile(at: url, extraBibliography: extraBibliography)
                 : try LaTeXImporter.importArchive(at: url)
             let created = Date.now
             let author = result.author ?? authorName
@@ -1350,6 +1443,7 @@ final class AppModel {
             doc.references = result.references
             doc.tables = result.tables
             doc.assets = result.assets
+            doc.applyingJATSFrontMatter(result)
             // Through the exporter and straight back in: the EPUB is the
             // document; the .xml was only ever a carrier.
             let epubURL = FileManager.default.temporaryDirectory
@@ -1439,6 +1533,78 @@ final class AppModel {
             }
             return .failed
         }
+    }
+
+    // MARK: - Markdown paper import (Pandoc-style scholarly Markdown)
+
+    /// A Markdown paper — citations backed by its bibliography, or
+    /// footnotes — turned into an EPUB the way LaTeX and ACM Word papers
+    /// are: through the Origami EPUB exporter and filed into the library,
+    /// so its contents, citations and notes are live links.
+    @discardableResult
+    func importMarkdownPaper(_ result: MarkdownImporter.ImportResult, from url: URL,
+                             andOpen: Bool = true) -> LibraryImportOutcome {
+        let created = Date.now
+        let author = result.author ?? authorName
+        if let existing = existingConversion(title: result.title, author: author) {
+            if andOpen {
+                openStoredEPUB(existing)
+                showNote("Already in the library: “\(existing.title)”")
+            }
+            return .duplicate
+        }
+        let id = LiquidAddress.makeID(author: result.authors.first ?? author, created: created)
+        var doc = LiquidDoc(format: LiquidDoc.knownFormat, id: id,
+                            title: result.title, author: author,
+                            created: created, body: result.body,
+                            links: [], wraps: nil,
+                            fileURL: FileManager.default.temporaryDirectory)
+        doc.documentType = LiquidDoc.DocumentType.book.rawValue
+        doc.authors = result.authors
+        doc.subtitle = result.subtitle
+        doc.date = result.date
+        doc.abstract = result.abstract
+        doc.keywords = result.keywords
+        doc.references = result.references
+        doc.tables = result.tables
+        doc.assets = result.assets
+        let epubURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(id + ".epub")
+        do {
+            try OrigamiEPUBExporter.write(doc: doc, resolve: { _ in nil }, to: epubURL)
+        } catch {
+            if andOpen {
+                NSSound.beep()
+                showNote("Could not import the Markdown paper: \(error.localizedDescription)")
+            }
+            return .failed
+        }
+        defer { try? FileManager.default.removeItem(at: epubURL) }
+        guard let record = importEPUB(at: epubURL) else { return .failed }
+        if andOpen {
+            openStoredEPUB(record)
+            let notice = result.notices.first.map { " · \($0)" } ?? ""
+            showNote("Imported \u{201C}\(result.title)\u{201D} from Markdown\(notice)")
+            mirrorShelfToCommunityFolder()
+        }
+        return .imported
+    }
+
+    /// Asks for read access to a folder the sandbox withholds — the one
+    /// beside a file being imported, where its figures and bibliography
+    /// live. Only ever asked during an import the person started; nil
+    /// when they decline.
+    func requestFolderAccess(for directory: URL, reason: String) -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = directory
+        panel.message = reason
+        panel.prompt = "Allow"
+        NSApp.activate()
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
     }
 
     /// The TAPS HTML rendering beside the manuscript, when one is
@@ -2826,7 +2992,23 @@ final class AppModel {
     /// Proposals, or Issues takes the whole reading area until closed.
     /// Set by the foot bar's AI group; cleared by Close, a mode word,
     /// or opening another book.
-    var readingAnalysisKind: ReadingAnalysisKind?
+    var readingAnalysisKind: ReadingAnalysisKind? {
+        didSet { if readingAnalysisKind != nil { readingOverviewOn = false } }
+    }
+
+    /// Overview standing over the page (OverviewReadingScreen): each
+    /// section's heading with its pictures, names, Marked and bold lines,
+    /// highlights, comments and citations — Author's Overview for a book.
+    /// Set from the foot bar's Outline group or ⌘−; any other reading —
+    /// a mode word, a fold, an AI reading, a find-fold — takes it down.
+    var readingOverviewOn = false {
+        didSet {
+            guard readingOverviewOn else { return }
+            readingAnalysisKind = nil
+            readerFindFoldTerm = nil
+            readerFoldLevel = 0
+        }
+    }
 
     /// The find-fold: a term clicked in an AI analysis folds the
     /// reading to headings plus the full sentences carrying the words.
@@ -2931,7 +3113,9 @@ final class AppModel {
     /// the foot bar's Outline group and the reading view, so the fold
     /// can be asked for from either presentation. Rests when the
     /// reading moves.
-    var readerFoldLevel = 0
+    var readerFoldLevel = 0 {
+        didSet { if readerFoldLevel > 0 { readingOverviewOn = false } }
+    }
 
     /// The opened EPUB whose address (its Origami id, or the identity of its
     /// unpacked folder) matches — how an `origamitext://open/<address>` link
@@ -3424,6 +3608,7 @@ final class AppModel {
         flowReading = false           // Flow rests when the reading moves
         readerFoldLevel = 0           // and so does the fold
         readingAnalysisKind = nil     // a new book begins on its page
+        readingOverviewOn = false     // not in Overview
         readerFindFoldTerm = nil      // and without a standing find-fold
         let base = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
         let content = base.appendingPathComponent(record.contentSubpath)
@@ -3728,14 +3913,10 @@ final class AppModel {
     @discardableResult
     func foldOpenReadingIntoOverview() -> Bool {
         guard let book = openEPUB, readingDoc(forBook: book) != nil else { return false }
-        readerFindFoldTerm = nil
-        readingAnalysisKind = nil
-        UserDefaults.standard.set(
-            OrigamiReadingView.FoldTarget.concepts.rawValue,
-            forKey: "readingFoldTarget")
-        UserDefaults.standard.set(
-            EPUBReaderMode.scroll.rawValue, forKey: "readerMode")
-        readerFoldLevel = 1
+        // ⌘− and pinching in open the Overview — Author's, section by
+        // section with its pictures — where they folded to the concepts
+        // before; one thing is called Overview.
+        readingOverviewOn = true
         return true
     }
 
@@ -5878,6 +6059,7 @@ final class AppModel {
     init() {
         letterPost.attach(self)
         migrateArchivedIDs()
+        connectOverviewPortraits()
         placeFinder.onPlace = { [weak self] place in
             self?.currentPlace = place
         }
@@ -6489,16 +6671,16 @@ final class AppModel {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         panel.treatsFilePackagesAsDirectories = false
-        // EPUBs open; a LaTeX project (an Overleaf/Author zip, or a
-        // bare .tex) imports — becoming an EPUB on the way in.
-        panel.allowedContentTypes = [.epub, .zip]
-            + (UTType(filenameExtension: "tex").map { [$0] } ?? [])
-        panel.message = "Open an EPUB to read it, or a LaTeX project (.zip or .tex) to import."
+        // EPUBs open; every other kind the importer reads — LaTeX, ACM
+        // XML, Word, Markdown, PDF, HTML, ODT, BibTeX, CSL-JSON, gemtext
+        // — imports, becoming an EPUB (or a draft) on the way in.
+        panel.allowedContentTypes = Self.openableContentTypes
+        panel.message = "Open an EPUB to read it, or any importable document to import it."
         panel.prompt = "Open"
         panel.setContentSize(NSSize(width: 450, height: 600))
         NSApp.activate()
         guard panel.runModal() == .OK else { return }
-        for url in panel.urls { openFile(at: url) }
+        openFiles(panel.urls, importing: false)
     }
 
     /// Imports an Author (.liquid) document, a Markdown (.md) file, or a
@@ -6525,7 +6707,7 @@ final class AppModel {
         // cannot write. Users widen it by dragging the divider; macOS
         // keeps it system-wide.
         guard panel.runModal() == .OK else { return }
-        for url in panel.urls { importFile(at: url) }
+        openFiles(panel.urls, importing: true)
     }
 
     /// Extensions the importer understands. Anything else opened or dropped
@@ -6533,8 +6715,84 @@ final class AppModel {
     static let importableExtensions: Set<String> = [
         "epub", "pdf", "doc", "docx", "md", "markdown", "txt", "rtf", "rtfd", "liquid",
         "zip", "tex", "xml", "gmi", "gemini",
-        "html", "htm", "odt", "tgz", "tar", "gz", "bib"
+        "html", "htm", "xhtml", "odt", "tgz", "tar", "gz", "bib",
+        "ris", "enw", "typ", "adoc", "asciidoc", "rst"
     ]
+
+    /// Documents that cite, and the bibliography files that can go with
+    /// them when chosen or dropped together.
+    static let citingExtensions: Set<String> = ["tex", "md", "markdown", "txt", "typ",
+                                                "adoc", "asciidoc", "rst"]
+    static func isBibliographyFile(_ url: URL) -> Bool {
+        switch url.pathExtension.lowercased() {
+        case "bib", "ris", "enw": return true
+        case "json": return FormatSources.isCSLJSON(at: url)
+        case "xml": return ReferenceFormats.isEndNoteXML(at: url)
+        default: return false
+        }
+    }
+
+    /// Several files arriving at once — chosen in a panel, dropped, or
+    /// opened from Finder. A document that cites (LaTeX, Markdown,
+    /// Typst, AsciiDoc, reStructuredText) arriving with bibliography
+    /// files (BibTeX, RIS, EndNote, CSL-JSON) imports WITH them, a full
+    /// paper with its references; the bibliographies are not filed on
+    /// their own. Anything else goes one by one, as `open` says.
+    func openFiles(_ urls: [URL], importing: Bool) {
+        let documents = urls.filter { Self.citingExtensions.contains($0.pathExtension.lowercased()) }
+        let bibliographies = documents.isEmpty ? [] : urls.filter(Self.isBibliographyFile)
+        for url in urls where !bibliographies.contains(url) {
+            if !bibliographies.isEmpty, documents.contains(url) {
+                importFile(at: url, companions: bibliographies)
+            } else if importing {
+                importFile(at: url)
+            } else {
+                openFile(at: url)
+            }
+        }
+    }
+
+    /// A bare .tex, its bibliography found: files given with it first;
+    /// else the ones it names or keeps beside it — and, when the sandbox
+    /// hides those, one question for the folder, asked at the import the
+    /// person started.
+    func importTeXWithBibliography(at url: URL, companions: [URL]) {
+        guard url.pathExtension.lowercased() == "tex" else {
+            importLaTeX(at: url)
+            return
+        }
+        let given = companions.compactMap { companion -> String? in
+            let scoped = companion.startAccessingSecurityScopedResource()
+            defer { if scoped { companion.stopAccessingSecurityScopedResource() } }
+            return ReferenceFormats.bibtexText(at: companion)
+        }.joined(separator: "\n")
+        if given.isEmpty, LaTeXImporter.needsBibliography(ofTeXAt: url),
+           let folder = requestFolderAccess(
+            for: url.deletingLastPathComponent(),
+            reason: "“\(url.lastPathComponent)” cites a bibliography kept beside it. Allow Origami Text to read its folder?") {
+            let scopedFolder = folder.startAccessingSecurityScopedResource()
+            defer { if scopedFolder { folder.stopAccessingSecurityScopedResource() } }
+            importLaTeX(at: url)
+            return
+        }
+        importLaTeX(at: url, extraBibliography: given)
+    }
+
+    /// What File ▸ Open… offers: every importable kind, plus JSON (a
+    /// CSL-JSON list or a reference dataset). RTFD and Author packages
+    /// are named by their real types — their extensions alone resolve
+    /// to dynamic types a panel cannot match.
+    static var openableContentTypes: [UTType] {
+        var types = (importableExtensions.union(["json"]))
+            .sorted()
+            .compactMap { UTType(filenameExtension: $0) }
+            .filter { !$0.isDynamic }
+        types.append(.rtfd)
+        if let liquid = UTType(filenameExtension: "liquid", conformingTo: .package) {
+            types.append(liquid)
+        }
+        return types
+    }
 
     /// Imports one file into a new draft — a PDF with a text layer, a Word
     /// or Markdown file, a plain-text or RTF meeting transcript, or an
@@ -6808,7 +7066,7 @@ final class AppModel {
         }
     }
 
-    func importFile(at url: URL) {
+    func importFile(at url: URL, companions: [URL] = []) {
         // Files arriving by Finder-open or drag carry their sandbox access
         // as a security-scoped resource; the Import… panel grants access a
         // different way, so starting it here is harmless there and necessary
@@ -6835,7 +7093,7 @@ final class AppModel {
             var layouts: [LiquidDoc.Layout] = []
             var mapConnections: [LiquidDoc.MapConnection] = []
             var references: [LiquidDoc.Reference] = []
-            let tables: [LiquidDoc.Table] = []
+            var tables: [LiquidDoc.Table] = []
             var assets: [LiquidDoc.Asset] = []
             let importedLinks: [LiquidDoc.Link] = []
             let preservedID: String? = nil
@@ -6847,28 +7105,45 @@ final class AppModel {
                 // a draft — the reverse of Author's LaTeX export.
                 if url.pathExtension.lowercased() == "zip",
                    importEPUBBundle(at: url) { return }
-                importLaTeX(at: url)
+                importTeXWithBibliography(at: url, companions: companions)
+                return
+            case "xml" where ReferenceFormats.isEndNoteXML(at: url):
+                // An EndNote library export: a reference list, as a .bib is.
+                importConverted(at: url)
                 return
             case "xml":
                 // Likewise an ACM Digital Library paper (BITS/JATS XML).
                 importBITS(at: url)
                 return
-            case "html", "htm", "odt", "tgz", "tar", "gz", "bib":
+            case "html", "htm", "xhtml", "odt", "tgz", "tar", "gz", "bib", "ris", "enw":
                 // Kinds Import to Format reads — a web page, OpenDocument,
                 // an arXiv source tarball, a .bib reference list — filed
                 // into the library as EPUBs, the way LaTeX is.
                 importConverted(at: url)
+                return
+            case "json":
+                // A CSL-JSON reference list (Zotero's export) becomes a
+                // reference-list EPUB; any other JSON is tried as a
+                // reference dataset, as Open does.
+                if FormatSources.isCSLJSON(at: url) {
+                    importConverted(at: url)
+                } else {
+                    queueReferenceDatasetImport(url)
+                }
                 return
             case "gmi", "gemini":
                 // A gemtext page: parsed, filed on the shelf, and read —
                 // a read-only source, its bytes kept unmodified beside it.
                 importGemtext(at: url)
                 return
-            case "md", "markdown", "txt":
+            case "md", "markdown", "txt", "typ", "adoc", "asciidoc", "rst":
                 // A file that reads as a meeting transcript (speaker names
                 // before statements) keeps its attributions structurally.
+                // Typst, AsciiDoc and reStructuredText read through the
+                // Markdown importer (MarkupBridges.swift).
                 let text = try String(contentsOf: url, encoding: .utf8)
-                if TranscriptImporter.looksLikeTranscript(text) {
+                let plainKind = ["md", "markdown", "txt"].contains(url.pathExtension.lowercased())
+                if plainKind, TranscriptImporter.looksLikeTranscript(text) {
                     let result = TranscriptImporter.importText(
                         text, fallbackTitle: url.deletingPathExtension().lastPathComponent)
                     title = result.title
@@ -6877,10 +7152,32 @@ final class AppModel {
                     date = result.date
                     documentType = LiquidDoc.DocumentType.transcript.rawValue
                 } else {
-                    let result = try MarkdownImporter.importFile(at: url)
+                    var result = try MarkupImport.importFile(at: url, companions: companions)
+                    // Figures and a bibliography beside the file are out
+                    // of the sandbox's reach until the person grants the
+                    // folder — asked here, at the import they started.
+                    if result.needsFolderAccess,
+                       let folder = requestFolderAccess(
+                        for: url.deletingLastPathComponent(),
+                        reason: "“\(url.lastPathComponent)” uses figures or a bibliography beside it. Allow Origami Text to read its folder?") {
+                        let scopedFolder = folder.startAccessingSecurityScopedResource()
+                        defer { if scopedFolder { folder.stopAccessingSecurityScopedResource() } }
+                        result = try MarkupImport.importFile(at: url, companions: companions)
+                    }
+                    // A paper — citations resolved against a bibliography,
+                    // or footnotes — goes the proceedings path, as an ACM
+                    // Word paper does: an EPUB whose citations and notes
+                    // are live links. A plain note stays a draft to edit.
+                    if result.isPaper {
+                        importMarkdownPaper(result, from: url)
+                        return
+                    }
                     title = result.title
                     author = result.author ?? authorName
                     body = result.body
+                    tables = result.tables
+                    assets = result.assets
+                    if let first = result.notices.first { showNote(first) }
                 }
             case "rtf", "rtfd":
                 // Meeting transcripts arrive as rich text; the plain text
@@ -6913,6 +7210,7 @@ final class AppModel {
                 author = result.author ?? authorName
                 body = result.body
                 assets = result.assets
+                tables = result.tables
                 references = result.references
                 if let first = result.notices.first {
                     let more = result.notices.count - 1

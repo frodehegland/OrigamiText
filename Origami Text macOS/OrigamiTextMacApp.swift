@@ -565,7 +565,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let model else { return }
         let urls = pending
         pending = []
-        for url in urls {
+        // Files opened together (a .tex and its .bib from Finder) import
+        // together; addresses go one by one.
+        let files = urls.filter(\.isFileURL)
+        if !files.isEmpty { model.openFiles(files, importing: false) }
+        for url in urls where !url.isFileURL {
             model.handleURL(url)
         }
     }

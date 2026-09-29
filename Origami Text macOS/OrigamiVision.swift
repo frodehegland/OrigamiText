@@ -3809,6 +3809,7 @@ struct VisionReaderView: View {
             && LiquidDoc.imageReference(in: paragraph.text) == nil
             && LiquidDoc.modelReference(in: paragraph.text) == nil
             && OrigamiReading.fencedCode(in: paragraph.text) == nil
+            && OrigamiMath.displayTeX(in: paragraph.text) == nil
     }
 
     /// What a paragraph is when it is not running text. The Mac's
@@ -3827,6 +3828,8 @@ struct VisionReaderView: View {
         /// The pool lost this table; its pipe-text stands in.
         case tableMissing
         case code(String)
+        /// A display equation's TeX, drawn as its readable words.
+        case equation(String)
         case rule
     }
 
@@ -3846,6 +3849,9 @@ struct VisionReaderView: View {
         }
         if let code = OrigamiReading.fencedCode(in: paragraph.text) {
             return .code(code)
+        }
+        if let tex = OrigamiMath.displayTeX(in: paragraph.text) {
+            return .equation(tex)
         }
         if paragraph.text.trimmingCharacters(in: .whitespaces) == "---" {
             return .rule
@@ -3888,6 +3894,15 @@ struct VisionReaderView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.quaternary.opacity(0.5),
                             in: RoundedRectangle(cornerRadius: 8))
+        case .equation(let tex):
+            // Centred, as the page sets it; this view draws no MathML,
+            // so the equation reads as its words.
+            Text(OrigamiMath.readableTeX(tex))
+                .font(.system(.body, design: .serif))
+                .textSelection(.enabled)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 6)
         case .rule:
             Divider()
         }

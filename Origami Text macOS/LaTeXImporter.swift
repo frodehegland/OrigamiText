@@ -263,7 +263,10 @@ nonisolated enum LaTeXImporter {
     }
 
     /// A bare .tex file, its figures and .bib resolved beside it on disk.
-    static func importTeXFile(at url: URL) throws -> Result {
+    /// `extraBibliography`: BibTeX given with the file — chosen or dropped
+    /// together with it, or converted from RIS/EndNote/CSL-JSON — read
+    /// before the files the source names.
+    static func importTeXFile(at url: URL, extraBibliography: String = "") throws -> Result {
         guard let tex = try? String(contentsOf: url, encoding: .utf8) else {
             throw LaTeXImportError.unreadable
         }
@@ -275,23 +278,56 @@ nonisolated enum LaTeXImporter {
                                           encoding: .utf8) }
                 .first
         }
-        // The .bib files the source names, else every one beside it.
-        var bibNames = captures(in: inlined, pattern: #"\\bibliography\{([^}]+)\}"#)
-            .flatMap { $0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) } }
-            .map { $0.hasSuffix(".bib") ? $0 : $0 + ".bib" }
-        if bibNames.isEmpty {
-            bibNames = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?
-                .filter { $0.lowercased().hasSuffix(".bib") } ?? []
-        }
-        let bibliography = bibNames
-            .compactMap { try? String(contentsOf: directory.appendingPathComponent($0),
-                                      encoding: .utf8) }
+        let bibliography = ([extraBibliography]
+            + namedBibliographies(in: inlined, directory: directory).texts)
+            .filter { !$0.isEmpty }
             .joined(separator: "\n")
         return importTeX(inlined, bibliography: bibliography,
                          resources: { path in
                              try? Data(contentsOf: directory.appendingPathComponent(path))
                          },
                          fallbackTitle: url.deletingPathExtension().lastPathComponent)
+    }
+
+    /// The bibliography files a source names — `\bibliography{a,b}`
+    /// (BibTeX) and `\addbibresource{a.bib}` (biblatex) — else every
+    /// .bib beside it, with the texts that could be read and the names
+    /// that could not (in the sandbox: all of them, until the folder is
+    /// granted).
+    static func namedBibliographies(in source: String, directory: URL)
+        -> (texts: [String], missing: [String]) {
+        var names = captures(in: source, pattern: #"\\bibliography\{([^}]+)\}"#)
+            .flatMap { $0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) } }
+            .map { $0.hasSuffix(".bib") ? $0 : $0 + ".bib" }
+        names += captures(in: source, pattern: #"\\addbibresource(?:\[[^\]]*\])?\{([^}]+)\}"#)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        if names.isEmpty {
+            names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?
+                .filter { $0.lowercased().hasSuffix(".bib") } ?? []
+        }
+        var texts: [String] = []
+        var missing: [String] = []
+        for name in names {
+            if let text = ReferenceFormats.bibtexText(at: directory.appendingPathComponent(name)) {
+                texts.append(text)
+            } else {
+                missing.append(name)
+            }
+        }
+        return (texts, missing)
+    }
+
+    /// Whether a bare .tex cites works its bibliography cannot supply
+    /// from here: it cites, and the files it names (or none beside it)
+    /// could not be read. Asking for the folder would then help.
+    static func needsBibliography(ofTeXAt url: URL) -> Bool {
+        guard let tex = try? String(contentsOf: url, encoding: .utf8),
+              tex.range(of: #"\\(no)?cite[a-zA-Z]*\*?(\[[^\]]*\])*\{"#,
+                        options: .regularExpression) != nil,
+              tex.range(of: #"\\begin\{thebibliography\}"#, options: .regularExpression) == nil
+        else { return false }
+        let found = namedBibliographies(in: tex, directory: url.deletingLastPathComponent())
+        return found.texts.isEmpty || !found.missing.isEmpty
     }
 
     // MARK: - The parse
@@ -929,12 +965,20 @@ nonisolated enum LaTeXImporter {
                                                   with: "", options: .regularExpression)
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         if !math.isEmpty {
-                            // Readable when simple; verbatim TeX (its
-                            // symbols at least as characters) otherwise.
-                            let shown = BibTeXParser.readableMath(math)
-                                ?? BibTeXParser.convertingTeXSymbols(in: math)
+                            // The TeX itself, as the format's display
+                            // block — the export sets it as MathML, or as
+                            // readable words where the converter declines.
+                            // An alignment keeps its columns: its body
+                            // becomes the matching inner environment.
+                            let tex: String
+                            switch name {
+                            case "align", "align*", "eqnarray":
+                                tex = "\\begin{aligned}\(math)\\end{aligned}"
+                            default:
+                                tex = math
+                            }
                             paragraphs.append(LiquidDoc.Paragraph(
-                                id: nextID(), heading: nil, text: shown))
+                                id: nextID(), heading: nil, text: "$$\n\(tex)\n$$"))
                         }
                         handled = true
                     case "CCSXML", "thebibliography", "titlepage":
@@ -1020,10 +1064,11 @@ nonisolated enum LaTeXImporter {
                                               with: "", options: .regularExpression)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !math.isEmpty {
-                        let shown = BibTeXParser.readableMath(math)
-                            ?? BibTeXParser.convertingTeXSymbols(in: math)
+                        // The TeX itself, as the format's display block:
+                        // the export sets it as MathML (readable words
+                        // where the converter declines).
                         paragraphs.append(LiquidDoc.Paragraph(
-                            id: nextID(), heading: nil, text: shown))
+                            id: nextID(), heading: nil, text: "$$\n\(math)\n$$"))
                     }
                     rest = rest[close.upperBound...]
                     continue
@@ -1609,7 +1654,7 @@ nonisolated enum LaTeXImporter {
     /// A PDF figure rasterised to PNG: WebKit shows a one-page PDF in
     /// an `<img>`, but the native readers — and the phone — cannot, so
     /// the EPUB carries pixels. Twice the media box, white-backed.
-    private static func rasterizedPDF(_ data: Data) -> Data? {
+    static func rasterizedPDF(_ data: Data) -> Data? {
         guard let provider = CGDataProvider(data: data as CFData),
               let document = CGPDFDocument(provider),
               let page = document.page(at: 1) else { return nil }

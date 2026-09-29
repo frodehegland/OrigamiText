@@ -45,13 +45,42 @@ files onto the window. What happens depends on the kind of file:
 | An **EPUB** | A book in your library, exactly as published |
 | A **LaTeX** project (`.zip`, `.tex`) or **arXiv source** (`.tar.gz`) | A converted EPUB in your library |
 | **ACM / JATS XML**, a **Word paper in the ACM template** | A converted EPUB in your library |
-| A **web page** (`.html`), **OpenDocument** (`.odt`), a **.bib** reference list | A converted EPUB in your library |
+| A **web page** (`.html`, `.xhtml`), **OpenDocument** (`.odt`) | A converted EPUB in your library |
+| A reference list: **BibTeX** (`.bib`), **RIS** (`.ris`), **EndNote** (`.enw` or EndNote XML), **CSL-JSON** | A converted EPUB in your library |
+| A **Markdown**, **Typst** (`.typ`), **AsciiDoc** (`.adoc`) or **reStructuredText** (`.rst`) paper with citations or footnotes | A converted EPUB in your library |
 | A **Word**, **Markdown**, **RTF**, **PDF** (with text) or **Author** document | A document you can edit and publish |
 | A **zip of many EPUBs** (e.g. a whole proceedings) | Every book joins the library at once |
 
+**A paper and its bibliography together.** Choose (or drop) a paper —
+LaTeX, Markdown, Typst, AsciiDoc or reStructuredText — together with
+its bibliography file (`.bib`, `.ris`, `.enw`, EndNote XML or CSL-JSON),
+and it imports as one document: every citation linked to a reference
+list built from that file. The bibliography is not filed on its own.
+
+Otherwise the paper's own bibliography is used: the one it names
+(`\bibliography{…}` or `\addbibresource{…}` in LaTeX,
+`bibliography:` in Markdown front matter, `#bibliography(…)` in Typst,
+`:bibtex-file:` in AsciiDoc, `.. bibliography::` in reStructuredText),
+or one kept beside it. If that sits beside the file, Origami Text asks
+once for access to the folder.
+
+**Author documents** import with their citations linked: each citation
+Author placed in the text becomes a numbered link to its reference, and
+the reference list holds the works the text cites (and those the
+glossary or Map points at), not every record in the document's
+citation library.
+
+Equations in LaTeX, JATS and Markdown (`$…$`, `$$…$$`) become MathML in
+the EPUB, so they are set as real mathematics. An equation using a
+command the converter does not know is kept as readable text instead.
+
 To import a **whole folder** of papers, choose the folder in the Import
-panel: each file is converted and filed, and you get one summary at the
-end. Already-imported papers are skipped, so re-running a folder never
+panel: each EPUB, LaTeX, XML, HTML, ODT, gemtext file, ACM-template
+Word paper, reference list, and Markdown/Typst/AsciiDoc/reStructuredText
+paper is converted and filed, and you get one summary at the end. A
+bibliography beside a paper, or an `.html` beside a `.docx` of the same
+name, is read as that paper's companion, not imported on its own.
+Already-imported papers are skipped, so re-running a folder never
 creates duplicates.
 
 You can also bring a paper in from the web with **File ▸ Fetch by DOI or
