@@ -2051,6 +2051,10 @@ final class VisionModel {
         doc.references = result.references
         doc.tables = result.tables
         doc.assets = result.assets
+        doc.language = result.language
+        doc.forms = result.forms
+        doc.authorForms = result.authorForms
+        doc.bibliographyConventions = result.bibliographyConventions
         return doc
     }
 }

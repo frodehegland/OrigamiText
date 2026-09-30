@@ -13,7 +13,21 @@ struct BookInformation: Sendable {
         let text: String
     }
 
+    /// One other form of a value, ready to show: what it is (a label in
+    /// the reader's own language), and the form itself.
+    struct AlternateForm: Identifiable, Sendable {
+        let id = UUID()
+        let label: String
+        let value: String
+        /// The form's BCP 47 tag, so it is spoken and shaped in its own
+        /// language.
+        let lang: String?
+    }
+
     var title = ""
+    /// The title's other forms, and each author's (profile §5.5).
+    var titleForms: [AlternateForm] = []
+    var nameForms: [AlternateForm] = []
     var creators: [String] = []
     var publisher: String?
     var date: String?
@@ -45,6 +59,7 @@ struct BookInformation: Sendable {
         info.language = tag("dc:language").first
         info.identifier = OrigamiEPUBImporter.uniqueIdentifier(in: opf)
         info.rights = tag("dc:rights").first
+        readForms(into: &info, folder: folder)
 
         let modes = Set(meta("schema:accessMode").map { $0.lowercased() })
         let sufficient = meta("schema:accessModeSufficient").map { $0.lowercased() }
@@ -122,6 +137,50 @@ struct BookInformation: Sendable {
         return info
     }
 
+    /// The alternate forms the semantic record carries. The labels are
+    /// the reader's, localized; the record's keys never are (§5.5).
+    private static func readForms(into info: inout BookInformation, folder: URL) {
+        guard let data = OrigamiEPUBImporter.recordData(inUnpackedFolder: folder,
+                                                        properties: "origami:visual-meta",
+                                                        fileName: "visual-meta.json"),
+              let record = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let document = record["document"] as? [String: Any] else { return }
+        for property in ["title", "subtitle"] {
+            let found = OrigamiEPUBImporter.languageForms(value: document[property], forms: nil)
+            for alternate in found?.alternate ?? [] {
+                info.titleForms.append(AlternateForm(
+                    label: label(for: alternate, of: property), value: alternate.value,
+                    lang: alternate.lang))
+            }
+        }
+        let details = OrigamiEPUBImporter.authorDetails(in: document["authors"])
+        for name in details.names {
+            for alternate in details.forms[name]?.alternate ?? [] {
+                info.nameForms.append(AlternateForm(
+                    label: name + " \u{2014} " + relationName(alternate.relation, lang: alternate.lang),
+                    value: alternate.value, lang: alternate.lang))
+            }
+        }
+    }
+
+    private static func label(for alternate: LiquidDoc.LanguageForms.Alternate,
+                              of property: String) -> String {
+        let field = property == "subtitle" ? String(localized: "Subtitle") : String(localized: "Title")
+        return field + " \u{2014} " + relationName(alternate.relation, lang: alternate.lang)
+    }
+
+    /// "Translation (English)", "Transliteration (Chinese, Latin)" — the
+    /// relation named in the reader's language, the tag read as a name.
+    private static func relationName(_ relation: String, lang: String?) -> String {
+        let name = switch relation {
+        case "translation": String(localized: "Translation")
+        case "transliteration": String(localized: "Transliteration")
+        case "display": String(localized: "Display form")
+        default: relation
+        }
+        return lang.map { "\(name) (\(LanguageTag.displayName($0)))" } ?? name
+    }
+
     private static func listed(_ items: [String]) -> String {
         guard items.count > 1 else { return items.first ?? "" }
         return items.dropLast().joined(separator: ", ") + " and " + (items.last ?? "")
@@ -161,9 +220,21 @@ struct BookInformationSheet: View {
             Form {
                 Section("About") {
                     LabeledContent("Title", value: info.title)
+                    ForEach(info.titleForms) { form in
+                        LabeledContent(form.label) {
+                            Text(form.value)
+                                .environment(\.locale, Locale(identifier: form.lang ?? ""))
+                                .textSelection(.enabled)
+                        }
+                    }
                     if !info.creators.isEmpty {
                         LabeledContent(info.creators.count == 1 ? "Author" : "Authors",
                                        value: info.creators.joined(separator: ", "))
+                    }
+                    ForEach(info.nameForms) { form in
+                        LabeledContent(form.label) {
+                            Text(form.value).textSelection(.enabled)
+                        }
                     }
                     if let publisher = info.publisher { LabeledContent("Publisher", value: publisher) }
                     if let date = info.date { LabeledContent("Date", value: date) }

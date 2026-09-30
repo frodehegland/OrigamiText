@@ -101,6 +101,16 @@ nonisolated enum OrigamiEPUBImporter {
         /// Images recovered from the body's `<figure>/<img>`, referenced by
         /// `![alt](asset:id)` markers in the body.
         var assets: [LiquidDoc.Asset] = []
+        /// The BCP 47 tag of the document's own values — the record's
+        /// `document.language`, else the package's `dc:language` (§5.5).
+        var language: String? = nil
+        /// Front-matter values' languages and alternate forms, by
+        /// invariant property name; and each author name's.
+        var forms: [String: LiquidDoc.LanguageForms] = [:]
+        var authorForms: [String: LiquidDoc.LanguageForms] = [:]
+        /// How the publication says its BibTeX is written (§11.1), when
+        /// its semantic record declares it.
+        var bibliographyConventions: BibTeXConventions? = nil
     }
 
     /// One package, readable either way: the EPUB's ZIP, or its files
@@ -623,7 +633,7 @@ nonisolated enum OrigamiEPUBImporter {
             return []
         }()
         let metaVenue = ["journal", "proceedings", "publication", "booktitle"]
-            .compactMap { document?[$0] as? String }
+            .compactMap { multilingualText(document?[$0]) }
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty }
         // Academic origami.json embeds venue under a "venue" sub-dict.
@@ -635,9 +645,37 @@ nonisolated enum OrigamiEPUBImporter {
         }()
         let doiFromMeta = (document?["doi"] as? String).flatMap(normalizedDOI)
             ?? (origamiDoc?["doi"] as? String).flatMap(normalizedDOI)
+
+        // Languages and alternate forms (§5.5). Each value stays in its
+        // own field in its own script; these only say what it is written
+        // in and what else it may be read as.
+        var forms: [String: LiquidDoc.LanguageForms] = [:]
+        for property in LiquidDoc.multilingualProperties {
+            if let found = languageForms(value: document?[property], forms: nil) {
+                forms[property] = found
+            }
+        }
+        let language = ((document?["language"] as? String) ?? firstTagText(in: opf, tag: "dc:language"))
+            .flatMap(LanguageTag.normalized)
+        // A cited work's language and title forms ride on its citation
+        // entry; its BibTeX keeps the title in its own script.
+        var citationForms: [String: LiquidDoc.LanguageForms] = [:]
+        for citation in dictionaries(visualMeta?["citations"]) {
+            guard let id = citation["id"] as? String,
+                  let found = languageForms(value: nil, forms: citation) else { continue }
+            citationForms[id] = found
+        }
+        if !citationForms.isEmpty {
+            references = references.map { reference in
+                var enriched = reference
+                if enriched.forms == nil { enriched.forms = citationForms[reference.id] }
+                return enriched
+            }
+        }
+
         return ImportResult(unreadableDocuments: unreadable,
-            title: document?["title"] as? String ?? origamiDoc?["title"] as? String ?? title ?? "Untitled",
-            subtitle: (document?["subtitle"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            title: multilingualText(document?["title"]) ?? origamiDoc?["title"] as? String ?? title ?? "Untitled",
+            subtitle: multilingualText(document?["subtitle"]).flatMap { $0.isEmpty ? nil : $0 },
             author: metaAuthors.first ?? creator,
             authors: metaAuthors.isEmpty ? creators : metaAuthors,
             publication: metaVenue ?? origamiVenue ?? opfVenue,
@@ -658,7 +696,7 @@ nonisolated enum OrigamiEPUBImporter {
                 (document?["author-emails"] as? [String: String]) ?? [:]) { $1 },
             authorAffiliations: vmDetails.affiliations.merging(
                 (document?["author-affiliations"] as? [String: String]) ?? [:]) { $1 },
-            abstract: (document?["abstract"] as? String)
+            abstract: multilingualText(document?["abstract"])
                 .flatMap { $0.isEmpty ? nil : $0 },
             keywords: (document?["keywords"] as? [String])?
                 .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -682,7 +720,12 @@ nonisolated enum OrigamiEPUBImporter {
             references: references,
             tables: tables,
             equations: equations,
-            assets: bodyAssets)
+            assets: bodyAssets,
+            language: language,
+            forms: forms,
+            authorForms: vmDetails.forms,
+            bibliographyConventions: BibTeXConventions(
+                record: (visualMeta?["bibliography"] as? [String: Any])?["conventions"]))
     }
 
     /// Unpacks the EPUB to `directory` (replacing whatever is there) and
@@ -990,6 +1033,49 @@ nonisolated enum OrigamiEPUBImporter {
         var orcids: [String: String] = [:]
         var emails: [String: String] = [:]
         var affiliations: [String: String] = [:]
+        /// Each name's language and other forms (§5.5), keyed by name.
+        var forms: [String: LiquidDoc.LanguageForms] = [:]
+    }
+
+    /// A human-language value as a string (§5.5): the structured
+    /// `{ "value": …, "lang": … }` the profile writes — also nested as
+    /// `{ "original": {…} }` — or the plain string earlier exports wrote.
+    nonisolated static func multilingualText(_ raw: Any?) -> String? {
+        if let text = raw as? String { return text }
+        guard let object = raw as? [String: Any] else { return nil }
+        if let value = object["value"] as? String { return value }
+        return multilingualText(object["original"])
+    }
+
+    /// A value's language and alternates (§5.5), from the structured value
+    /// itself — and, for an author or a citation entry, from the entry
+    /// (`forms`) where earlier drafts put them. Nil when neither says
+    /// anything.
+    nonisolated static func languageForms(value raw: Any?, forms entry: Any?) -> LiquidDoc.LanguageForms? {
+        var out = LiquidDoc.LanguageForms()
+        func absorb(_ object: [String: Any]?) {
+            guard let object else { return }
+            if (out.lang ?? "").isEmpty, let lang = object["lang"] as? String, !lang.isEmpty {
+                out.lang = lang
+            }
+            for alternate in dictionaries(object["alternate"]) {
+                guard let value = (alternate["value"] as? String)?
+                          .trimmingCharacters(in: .whitespacesAndNewlines),
+                      !value.isEmpty else { continue }
+                let form = LiquidDoc.LanguageForms.Alternate(
+                    value: value,
+                    lang: (alternate["lang"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                    relation: (alternate["relation"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                        ?? "alternate")
+                if !out.alternate.contains(form) { out.alternate.append(form) }
+            }
+        }
+        absorb(entry as? [String: Any])
+        if let object = raw as? [String: Any] {
+            absorb(object["original"] as? [String: Any])
+            absorb(object)
+        }
+        return out.isEmpty ? nil : out
     }
 
     nonisolated static func authorDetails(in raw: Any?) -> AuthorDetails {
@@ -1000,12 +1086,17 @@ nonisolated enum OrigamiEPUBImporter {
             return (trimmed?.isEmpty ?? true) ? nil : trimmed
         }
         for entry in entries {
-            let name: String? = text(entry["name"]) ?? {
+            let name: String? = text(multilingualText(entry["name"])) ?? {
                 guard let family = text(entry["family"]) else { return nil }
                 return text(entry["given"]).map { "\($0) \(family)" } ?? family
             }()
             guard let name else { continue }
             out.names.append(name)
+            // The name's forms: on the author entry itself (§5.5), or on
+            // a structured name.
+            if let forms = languageForms(value: entry["name"], forms: entry) {
+                out.forms[name] = forms
+            }
             if let orcid = text(entry["orcid"]) {
                 out.orcids[name] = orcid
                     .replacingOccurrences(of: "https://orcid.org/", with: "")
@@ -1139,7 +1230,7 @@ nonisolated enum OrigamiEPUBImporter {
         let metaAuthors = stringAuthors.isEmpty
             ? authorDetails(in: document?["authors"]).names : stringAuthors
         let metaVenue = ["journal", "proceedings", "publication", "booktitle"]
-            .compactMap { document?[$0] as? String }
+            .compactMap { multilingualText(document?[$0]) }
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty }
         let doiFromMeta = (document?["doi"] as? String).flatMap(normalizedDOI)
@@ -3089,7 +3180,20 @@ nonisolated enum OrigamiEPUBImporter {
                         // their own toggle from the aside's stretchID.
                         break
                     }
-                    if let key = citationKey(of: inner.attributes) {
+                    if (inner.attributes["class"] ?? "").contains("ot-note-back") {
+                        // An endnote's back link to its first mark: its
+                        // number stays as words (the exporter wraps it
+                        // again), never a jump token — whose target text
+                        // read as a citation of the paragraph's own id.
+                        out += content
+                        break
+                    }
+                    // A citation of another Origami document carries its
+                    // full-resolution address in data-origami-ref; it is
+                    // restored as that address below, never as a [cite:]
+                    // key, even though its href names #bib-<key> (1.0).
+                    if (inner.attributes["data-origami-ref"] ?? "").isEmpty,
+                       let key = citationKey(of: inner.attributes) {
                         // Author's biblioref anchors. Older exports split
                         // one citation across adjacent anchors (the
                         // parenthesis, then the label), all carrying the

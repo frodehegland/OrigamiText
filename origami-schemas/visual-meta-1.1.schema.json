@@ -31,8 +31,12 @@
       "properties": {
         "identifier": { "$ref": "#/$defs/publicationIdentifier" },
         "work": { "$ref": "#/$defs/publicationIdentifier" },
-        "title": { "type": "string" },
-        "subtitle": { "type": "string" },
+        "title": { "$ref": "#/$defs/multilingualValue" },
+        "subtitle": { "$ref": "#/$defs/multilingualValue" },
+        "language": {
+          "description": "The language the document's own values are written in — the same tag as dc:language (§5.5.1). Never assumed to be English; und when undetermined.",
+          "$ref": "#/$defs/languageTag"
+        },
         "authors": {
           "description": "One entry per author, in the order the publication prints them. An object carries the detail a scholarly front matter needs; a bare string is the legacy form and remains valid. Never several names joined into one string — that is what makes an author list unusable for anything but display.",
           "type": "array",
@@ -43,7 +47,15 @@
                 "type": "object",
                 "required": ["name"],
                 "properties": {
-                  "name": { "$ref": "#/$defs/nonEmptyString" },
+                  "name": {
+                    "description": "The name as printed, in its own script, with its other forms (§5.5).",
+                    "$ref": "#/$defs/multilingualValue"
+                  },
+                  "alternate": {
+                    "description": "Other forms of the name stated on the entry rather than inside name — accepted from earlier drafts.",
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/alternateForm" }
+                  },
                   "affiliation": { "type": "string" },
                   "email": { "type": "string" },
                   "orcid": {
@@ -59,7 +71,7 @@
         },
         "publication": {
           "description": "The venue the work is part of, mirroring dcterms:isPartOf.",
-          "type": "string"
+          "$ref": "#/$defs/multilingualValue"
         },
         "acmReference": {
           "description": "The publisher's own self-citation, verbatim as the publication prints it. Derived from nothing and reformatted by no one: it is the reference the publisher asks the work to be cited by.",
@@ -82,7 +94,7 @@
         "author-emails": { "description": "Legacy; see author-affiliations.", "type": "object" },
         "author-orcids": { "description": "Legacy; see author-affiliations.", "type": "object" },
         "date": { "$ref": "#/$defs/dateOrEmpty" },
-        "abstract": { "type": "string" },
+        "abstract": { "$ref": "#/$defs/multilingualValue" },
         "keywords": { "type": "array", "items": { "type": "string" } },
         "isbn": { "type": "string" },
         "doi": { "type": "string" },
@@ -173,6 +185,34 @@
       }
     },
 
+    "bibliography": {
+      "description": "How the bibliography record's BibTeX is written (§11.1): the choices BibTeX leaves open, declared so a consumer parses without guessing. The BibTeX governs; a writer declares what it actually is.",
+      "type": "object",
+      "required": ["conventions"],
+      "properties": {
+        "href": { "type": "string", "minLength": 1 },
+        "conventions": {
+          "type": "object",
+          "properties": {
+            "dialect": { "enum": ["bibtex", "biblatex"] },
+            "encoding": { "enum": ["utf-8", "latex", "ascii", "mixed"] },
+            "nameOrder": { "enum": ["family-given", "given-family", "mixed"] },
+            "nameSeparator": { "type": "string", "minLength": 1 },
+            "dateFields": { "enum": ["year-month", "date", "mixed"] },
+            "dateFormat": { "enum": ["YYYY-MM-DD", "YYYY-MM", "YYYY", "other", "mixed"] },
+            "monthFormat": { "enum": ["number", "macro", "name", "mixed"] },
+            "pageRange": { "enum": ["--", "en-dash", "hyphen", "mixed"] },
+            "keys": { "enum": ["uuid", "author-year", "other", "mixed"] },
+            "titleCase": { "enum": ["as-published", "sentence", "title"] },
+            "nonStandardFields": { "type": "array", "items": { "$ref": "#/$defs/nonEmptyString" } },
+            "source": { "enum": ["declared", "inspected", "declared-and-inspected"] }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+
     "citations": {
       "description": "Where citations sit and what they point at (§8.4). The bibliographic record itself is canonical in the bibliography record (§10) and MUST NOT be duplicated here — see the bibtex/csl prohibitions below.",
       "type": "array",
@@ -185,6 +225,15 @@
           "href": { "$ref": "#/$defs/address" },
           "concepts": { "type": "array", "items": { "type": "string" } },
           "citedAs": { "type": "string" },
+          "lang": {
+            "description": "The cited work's language (§9.5). Its title stays in the bibliography record, in its own script.",
+            "$ref": "#/$defs/languageTag"
+          },
+          "alternate": {
+            "description": "The cited work's title in other forms — what BibTeX has no place for (§5.5.2).",
+            "type": "array",
+            "items": { "$ref": "#/$defs/alternateForm" }
+          },
 
           "bibtex": {
             "description": "FORBIDDEN. references.bib is canonical (§10, §11.3). A BibTeX string here is a second copy with no declared authority.",
@@ -308,6 +357,41 @@
 
   "$defs": {
     "nonEmptyString": { "type": "string", "minLength": 1 },
+
+    "languageTag": {
+      "description": "A BCP 47 language tag, naming the script where the script is what tells two forms apart (zh-Hans, sr-Latn) — §5.5.",
+      "type": "string",
+      "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"
+    },
+
+    "alternateForm": {
+      "description": "Another representation of a value and why it exists (§5.5): transliteration, translation, display — or another relation, kept as written.",
+      "type": "object",
+      "required": ["value", "relation"],
+      "properties": {
+        "value": { "$ref": "#/$defs/nonEmptyString" },
+        "lang": { "$ref": "#/$defs/languageTag" },
+        "relation": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": true
+    },
+
+    "multilingualValue": {
+      "description": "A human-language value (§5.5): what the source says, in its own language and script, with its other forms. The original is always the value; a transliteration or translation never takes its place. A bare string is the earlier form, still valid for readers.",
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "required": ["value", "lang"],
+          "properties": {
+            "value": { "type": "string" },
+            "lang": { "$ref": "#/$defs/languageTag" },
+            "alternate": { "type": "array", "items": { "$ref": "#/$defs/alternateForm" } }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
 
     "recordVersion": {
       "description": "MAJOR.MINOR of the record format itself.",

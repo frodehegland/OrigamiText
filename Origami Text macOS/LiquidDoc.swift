@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import NaturalLanguage
 
 /// An in-memory Origami Document (`.origamitext`), either a text document
 /// (`body`) or a sidecar wrapping an external file (`wraps`).
@@ -41,6 +42,374 @@ enum PersonName {
         if corporate.contains(given) || body.contains("&") { return name }
         let family = parts.dropLast().joined(separator: ", ")
         return given + " " + family + suffix
+    }
+}
+
+/// BCP 47 language tags for metadata values (profile §5.5): what a value
+/// is written in, how it is transliterated, and how a writer names its
+/// own section headings in that language. Machine keys never pass
+/// through here — only values and presentation.
+nonisolated enum LanguageTag {
+    /// The language of `text`, as a BCP 47 tag with the script where the
+    /// script is what tells two apart ("zh-Hans" / "zh-Hant"). Nil when
+    /// there is too little text to say.
+    static func detect(_ text: String) -> String? {
+        let sample = String(text.prefix(4000))
+        guard sample.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3 else { return nil }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(sample)
+        guard let language = recognizer.dominantLanguage, language != .undetermined else { return nil }
+        return language.rawValue
+    }
+
+    /// The language subtag alone: "zh" for "zh-Hans".
+    static func base(_ tag: String) -> String {
+        String(tag.split(separator: "-").first ?? Substring(tag)).lowercased()
+    }
+
+    /// Whether values in this language are normally written in Latin
+    /// script — what a transliteration is for, and what pdfLaTeX can set.
+    static func isLatinScript(_ tag: String) -> Bool {
+        let parts = tag.split(separator: "-").map { $0.lowercased() }
+        if parts.contains("latn") { return true }
+        if parts.contains(where: { ["cyrl", "hans", "hant", "arab", "hebr", "grek", "jpan", "kore", "deva", "thai"].contains($0) }) {
+            return false
+        }
+        return !["zh", "ja", "ko", "ru", "uk", "bg", "be", "mk", "ar", "fa", "ur", "he",
+                 "yi", "el", "hi", "mr", "ne", "bn", "ta", "te", "th", "ka", "hy", "am"]
+            .contains(base(tag))
+    }
+
+    /// The Latin-script tag for a transliteration of a value in `tag`:
+    /// "zh-Hans" → "zh-Latn", "sr-Cyrl" → "sr-Latn".
+    static func latin(of tag: String) -> String { base(tag) + "-Latn" }
+
+    /// A Latin-script transliteration of `value`, without tone marks —
+    /// 王小明 → "Wang Xiao Ming", Пространство → "Prostranstvo". Nil when
+    /// the value is already Latin or nothing could be done.
+    static func transliterated(_ value: String) -> String? {
+        guard let latin = value.applyingTransform(.toLatin, reverse: false)?
+            .applyingTransform(.stripDiacritics, reverse: false) else { return nil }
+        let result = latin.split(separator: " ")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+        return result == value ? nil : result
+    }
+
+    /// The babel name acmart's `language=` option and \translatedtitle
+    /// take, for the languages pdfLaTeX sets in its default fonts.
+    static func babelName(for tag: String) -> String? {
+        [
+            "en": "english", "fr": "french", "de": "ngerman", "es": "spanish",
+            "it": "italian", "pt": "portuguese", "nl": "dutch", "sv": "swedish",
+            "da": "danish", "nb": "norsk", "no": "norsk", "nn": "nynorsk",
+            "fi": "finnish", "pl": "polish", "cs": "czech", "tr": "turkish",
+            "ca": "catalan", "ro": "romanian", "hu": "magyar", "is": "icelandic",
+        ][base(tag)]
+    }
+
+    /// The name of a language in the person's own language, for labels:
+    /// "zh-Hans" → "Chinese, Simplified".
+    static func displayName(_ tag: String) -> String {
+        Locale.current.localizedString(forIdentifier: tag) ?? tag
+    }
+
+    /// Headings a writer adds of its own — "Abstract", "References" —
+    /// in the publication's language, so a Chinese paper does not close
+    /// on an English heading. English where the language is not listed.
+    static func heading(_ key: String, in tag: String?) -> String {
+        let english = ["abstract": "Abstract", "keywords": "Keywords",
+                       "references": "References", "notes": "Notes",
+                       "contents": "Contents"]
+        let table: [String: [String: String]] = [
+            "zh": ["abstract": "摘要", "keywords": "关键词", "references": "参考文献",
+                   "notes": "注释", "contents": "目录"],
+            "ja": ["abstract": "概要", "keywords": "キーワード", "references": "参考文献",
+                   "notes": "注", "contents": "目次"],
+            "ko": ["abstract": "초록", "keywords": "주제어", "references": "참고문헌",
+                   "notes": "주", "contents": "목차"],
+            "ru": ["abstract": "Аннотация", "keywords": "Ключевые слова",
+                   "references": "Список литературы", "notes": "Примечания", "contents": "Содержание"],
+            "ar": ["abstract": "الملخص", "keywords": "الكلمات المفتاحية", "references": "المراجع",
+                   "notes": "الحواشي", "contents": "المحتويات"],
+            "fr": ["abstract": "Résumé", "keywords": "Mots-clés", "references": "Références",
+                   "notes": "Notes", "contents": "Table des matières"],
+            "de": ["abstract": "Zusammenfassung", "keywords": "Schlüsselwörter",
+                   "references": "Literatur", "notes": "Anmerkungen", "contents": "Inhalt"],
+            "es": ["abstract": "Resumen", "keywords": "Palabras clave", "references": "Referencias",
+                   "notes": "Notas", "contents": "Índice"],
+            "it": ["abstract": "Sommario", "keywords": "Parole chiave", "references": "Bibliografia",
+                   "notes": "Note", "contents": "Indice"],
+            "pt": ["abstract": "Resumo", "keywords": "Palavras-chave", "references": "Referências",
+                   "notes": "Notas", "contents": "Sumário"],
+            "nb": ["abstract": "Sammendrag", "keywords": "Nøkkelord", "references": "Referanser",
+                   "notes": "Noter", "contents": "Innhold"],
+            "no": ["abstract": "Sammendrag", "keywords": "Nøkkelord", "references": "Referanser",
+                   "notes": "Noter", "contents": "Innhold"],
+        ]
+        let chinese = tag.map { $0.lowercased().contains("hant") || $0.lowercased().hasSuffix("-tw") } ?? false
+        if chinese, key == "keywords" { return "關鍵詞" }
+        if chinese, key == "notes" { return "註釋" }
+        if chinese, key == "contents" { return "目錄" }
+        if chinese, key == "references" { return "參考文獻" }
+        return tag.flatMap { table[base($0)]?[key] } ?? english[key] ?? key
+    }
+
+    /// A BCP 47 tag from what a BibTeX `language`/`langid` field or a
+    /// package's `dc:language` says — "chinese", "Russian", "zh_CN", "de".
+    static func normalized(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: "-")
+        guard !trimmed.isEmpty else { return nil }
+        let names = ["english": "en", "american": "en-US", "british": "en-GB", "french": "fr",
+                     "german": "de", "ngerman": "de", "spanish": "es", "italian": "it",
+                     "portuguese": "pt", "brazilian": "pt-BR", "dutch": "nl", "russian": "ru",
+                     "ukrainian": "uk", "chinese": "zh", "japanese": "ja", "korean": "ko",
+                     "arabic": "ar", "hebrew": "he", "greek": "el", "polish": "pl",
+                     "czech": "cs", "swedish": "sv", "danish": "da", "norwegian": "no",
+                     "norsk": "nb", "finnish": "fi", "turkish": "tr", "hindi": "hi"]
+        if let tag = names[trimmed.lowercased()] { return tag }
+        return trimmed.range(of: #"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$"#, options: .regularExpression) != nil
+            ? trimmed : nil
+    }
+}
+
+/// How a publication's BibTeX is written (profile §11.1) — the choices
+/// BibTeX leaves open and tools make differently: whether names are
+/// "Family, Given" or "Given Family", how a month and a date are
+/// written, how a page range is dashed, whether accents are TeX escapes
+/// or UTF-8, which dialect's fields are used, how keys are formed, and
+/// which fields are not standard BibTeX at all. Declared in the semantic
+/// record; checked against the file itself.
+nonisolated struct BibTeXConventions: Hashable, Sendable {
+    /// "bibtex" or "biblatex" — `journal`/`address`/`year` against
+    /// `journaltitle`/`location`/`date`.
+    var dialect: String? = nil
+    /// "utf-8", "latex" (accents as TeX escapes), "ascii", or "mixed".
+    var encoding: String? = nil
+    /// "family-given", "given-family", or "mixed".
+    var nameOrder: String? = nil
+    /// The string between names — " and " in every standard tool.
+    var nameSeparator: String? = nil
+    /// "year-month" (BibTeX's fields) or "date" (biblatex's one field).
+    var dateFields: String? = nil
+    /// How `date` is written when it is used: "YYYY-MM-DD", "YYYY-MM", "YYYY".
+    var dateFormat: String? = nil
+    /// How `month` is written: "number" (9), "macro" (sep), "name"
+    /// ({September}), or "mixed".
+    var monthFormat: String? = nil
+    /// How a page range is dashed: "--", "en-dash" (–), "hyphen" (-), or "mixed".
+    var pageRange: String? = nil
+    /// "uuid", "author-year", or "other".
+    var keys: String? = nil
+    /// "as-published", "sentence", or "title" — only a declaration can
+    /// say; the file cannot show it.
+    var titleCase: String? = nil
+    /// Fields that are no standard BibTeX or biblatex field, as the file
+    /// uses them — a consumer knows to keep or drop them.
+    var nonStandardFields: [String] = []
+    /// "declared", "inspected", or "declared-and-inspected".
+    var source: String? = nil
+
+    var isEmpty: Bool {
+        [dialect, encoding, nameOrder, nameSeparator, dateFields, dateFormat, monthFormat,
+         pageRange, keys, titleCase].allSatisfy { $0 == nil } && nonStandardFields.isEmpty
+    }
+
+    /// The convention's keys, as the record writes them — invariant,
+    /// never localized (§5.5).
+    static let keysInOrder = ["dialect", "encoding", "nameOrder", "nameSeparator", "dateFields",
+                              "dateFormat", "monthFormat", "pageRange", "keys", "titleCase"]
+
+    private func value(_ key: String) -> String? {
+        switch key {
+        case "dialect": dialect
+        case "encoding": encoding
+        case "nameOrder": nameOrder
+        case "nameSeparator": nameSeparator
+        case "dateFields": dateFields
+        case "dateFormat": dateFormat
+        case "monthFormat": monthFormat
+        case "pageRange": pageRange
+        case "keys": keys
+        case "titleCase": titleCase
+        default: nil
+        }
+    }
+
+    private mutating func set(_ key: String, _ newValue: String?) {
+        switch key {
+        case "dialect": dialect = newValue
+        case "encoding": encoding = newValue
+        case "nameOrder": nameOrder = newValue
+        case "nameSeparator": nameSeparator = newValue
+        case "dateFields": dateFields = newValue
+        case "dateFormat": dateFormat = newValue
+        case "monthFormat": monthFormat = newValue
+        case "pageRange": pageRange = newValue
+        case "keys": keys = newValue
+        case "titleCase": titleCase = newValue
+        default: break
+        }
+    }
+
+    /// The record's `bibliography.conventions` object.
+    init?(record raw: Any?) {
+        guard let object = raw as? [String: Any] else { return nil }
+        for key in Self.keysInOrder {
+            if let text = object[key] as? String, !text.isEmpty { set(key, text) }
+        }
+        nonStandardFields = (object["nonStandardFields"] as? [String]) ?? []
+        source = object["source"] as? String
+        if isEmpty { return nil }
+    }
+
+    init() {}
+
+    /// The record's object: only the conventions that are known.
+    var record: [String: Any] {
+        var out: [String: Any] = [:]
+        for key in Self.keysInOrder { if let text = value(key) { out[key] = text } }
+        if !nonStandardFields.isEmpty { out["nonStandardFields"] = nonStandardFields }
+        if let source { out["source"] = source }
+        return out
+    }
+
+    /// What the declaration says, checked against what the file shows:
+    /// the file wins where they disagree, since it is what a consumer
+    /// will parse, and each disagreement is named.
+    func reconciled(withDeclared declared: BibTeXConventions?) -> (BibTeXConventions, [String]) {
+        guard let declared else {
+            var out = self
+            out.source = isEmpty ? nil : "inspected"
+            return (out, [])
+        }
+        var out = self
+        var disagreements: [String] = []
+        for key in Self.keysInOrder {
+            let seen = value(key), said = declared.value(key)
+            if let seen, let said, seen != said {
+                disagreements.append("\(key): declared \(said), the file has \(seen)")
+            } else if seen == nil, let said {
+                out.set(key, said)
+            }
+        }
+        if out.nonStandardFields.isEmpty { out.nonStandardFields = declared.nonStandardFields }
+        out.source = isEmpty ? "declared" : "declared-and-inspected"
+        return (out, disagreements)
+    }
+
+    /// Standard BibTeX and biblatex fields, plus the handful every tool
+    /// writes (doi, url, isbn, issn, abstract, keywords).
+    private static let standardFields: Set<String> = [
+        "address", "annote", "author", "booktitle", "chapter", "crossref", "edition", "editor",
+        "howpublished", "institution", "journal", "key", "month", "note", "number",
+        "organization", "pages", "publisher", "school", "series", "title", "type", "volume",
+        "year", "doi", "url", "isbn", "issn", "abstract", "keywords", "language",
+        "journaltitle", "location", "date", "langid", "eprint", "eprinttype", "eprintclass",
+        "urldate", "subtitle", "titleaddon", "origtitle", "origlanguage", "translator",
+        "maintitle", "booksubtitle", "issue", "pagetotal", "addendum", "pubstate", "file",
+    ]
+    private static let biblatexOnly: Set<String> = [
+        "journaltitle", "location", "date", "langid", "eprinttype", "eprintclass", "urldate",
+        "titleaddon", "origtitle", "origlanguage", "maintitle", "booksubtitle", "pagetotal",
+        "addendum", "pubstate",
+    ]
+
+    /// What a BibTeX text shows about how it is written. A convention the
+    /// text does not exercise stays nil — an empty file says nothing.
+    static func inspected(_ bibtex: String) -> BibTeXConventions {
+        var out = BibTeXConventions()
+        let entries = BibTeXParser.parse(bibtex)
+        guard !entries.isEmpty else { return out }
+        func verdict(_ seen: Set<String>) -> String? {
+            seen.count > 1 ? "mixed" : seen.first
+        }
+        var names = Set<String>(), months = Set<String>(), pages = Set<String>()
+        var keys = Set<String>(), extra = Set<String>(), dateFormats = Set<String>()
+        var sawBiblatex = false, sawDate = false, sawYear = false
+        for entry in entries {
+            for field in entry.fields.keys {
+                if biblatexOnly.contains(field) { sawBiblatex = true }
+                if !standardFields.contains(field) { extra.insert(field) }
+            }
+            for field in ["author", "editor"] {
+                for name in BibTeXParser.authorNames(inRaw: entry.raw, field: field) where !name.isLiteral {
+                    let text = name.name.trimmingCharacters(in: .whitespaces)
+                    if text.contains(",") { names.insert("family-given") }
+                    else if text.contains(" ") { names.insert("given-family") }
+                }
+            }
+            if let month = entry.fields["month"]?.trimmingCharacters(in: .whitespaces), !month.isEmpty {
+                let bare = entry.raw.range(of: #"month\s*=\s*[A-Za-z]{3}\s*[,}\n]"#,
+                                           options: .regularExpression) != nil
+                months.insert(Int(month) != nil ? "number" : bare ? "macro" : "name")
+            }
+            if let range = entry.fields["pages"], range.contains(where: { "-–".contains($0) }) {
+                pages.insert(range.contains("--") ? "--" : range.contains("–") ? "en-dash" : "hyphen")
+            }
+            if entry.fields["year"] != nil { sawYear = true }
+            if let date = entry.fields["date"]?.trimmingCharacters(in: .whitespaces) {
+                sawDate = true
+                let pattern = [#"^\d{4}-\d{2}-\d{2}$"#: "YYYY-MM-DD", #"^\d{4}-\d{2}$"#: "YYYY-MM",
+                               #"^\d{4}$"#: "YYYY"]
+                dateFormats.insert(pattern.first { date.range(of: $0.key, options: .regularExpression) != nil }?
+                    .value ?? "other")
+            }
+            let key = entry.key
+            keys.insert(key.range(of: #"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"#,
+                                  options: .regularExpression) != nil ? "uuid"
+                        : key.range(of: #"^[A-Za-z]+[:_-]?\d{4}"#, options: .regularExpression) != nil
+                            ? "author-year" : "other")
+        }
+        out.nameOrder = verdict(names)
+        out.nameSeparator = entries.contains { ($0.fields["author"] ?? "").contains(" and ") } ? " and " : nil
+        out.monthFormat = verdict(months)
+        out.pageRange = verdict(pages)
+        out.keys = verdict(keys)
+        out.dateFields = sawDate && !sawYear ? "date" : sawYear && !sawDate ? "year-month"
+            : sawDate ? "mixed" : nil
+        out.dateFormat = verdict(dateFormats)
+        out.dialect = sawBiblatex ? "biblatex" : "bibtex"
+        let escapes = bibtex.range(of: #"\\['"`^~=.uvHckbdrt]\s*\{?[A-Za-z]|\{\\[a-zA-Z]"#,
+                                   options: .regularExpression) != nil
+        let unicode = bibtex.unicodeScalars.contains { $0.value > 127 }
+        out.encoding = escapes && unicode ? "mixed" : escapes ? "latex" : unicode ? "utf-8" : "ascii"
+        out.nonStandardFields = extra.sorted()
+        return out
+    }
+
+    /// The conventions in words, for the Format sheet: "names Family,
+    /// Given · months as numbers · pages 13-18 · UTF-8".
+    var summary: String {
+        var parts: [String] = []
+        switch nameOrder {
+        case "family-given": parts.append("names Family, Given")
+        case "given-family": parts.append("names Given Family")
+        case "mixed": parts.append("names in both orders")
+        default: break
+        }
+        switch (dateFields, monthFormat) {
+        case ("date", _): parts.append("dates as \(dateFormat ?? "ISO 8601")")
+        case (_, "number"): parts.append("months as numbers")
+        case (_, "macro"): parts.append("months as jan–dec macros")
+        case (_, "name"): parts.append("months as names")
+        case (_, "mixed"): parts.append("months written several ways")
+        default: break
+        }
+        switch pageRange {
+        case "--": parts.append("pages 13--18")
+        case "en-dash": parts.append("pages 13–18")
+        case "hyphen": parts.append("pages 13-18")
+        case "mixed": parts.append("page ranges dashed several ways")
+        default: break
+        }
+        if let encoding { parts.append(encoding == "latex" ? "accents as TeX escapes" : encoding.uppercased()) }
+        if let dialect, dialect != "bibtex" { parts.append(dialect) }
+        if !nonStandardFields.isEmpty {
+            parts.append("non-standard fields: " + nonStandardFields.joined(separator: ", "))
+        }
+        return parts.joined(separator: " \u{00B7} ")
     }
 }
 
@@ -170,7 +539,74 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// the text editor; the EPUB export writes each into `content/images/`
     /// and turns the marker into a `<figure><img>`.
     var assets: [Asset] = []
+    /// The language and script the document's own values are written
+    /// in, as a BCP 47 tag ("zh-Hans", "ru", "sr-Cyrl") — `dc:language`
+    /// and the semantic record's `document.language`. Nil when the source
+    /// never said; the exporter then detects it rather than assuming "en".
+    var language: String? = nil
+    /// Other representations of a front-matter value — a transliterated
+    /// or translated title, a translated abstract — keyed by the value's
+    /// invariant property name ("title", "subtitle", "abstract",
+    /// "publication"). The value itself stays in its field, in the
+    /// source's own language and script: an alternate never replaces it.
+    var forms: [String: LanguageForms] = [:]
+    /// The same for each author's name, keyed by the name as printed —
+    /// "王小明" with "Wang Xiaoming" as its transliteration.
+    var authorForms: [String: LanguageForms] = [:]
+    /// How the incoming publication declared its BibTeX is written
+    /// (profile §11.1), when it did. The exporter checks it against the
+    /// BibTeX it writes and declares what that actually is.
+    var bibliographyConventions: BibTeXConventions? = nil
     let fileURL: URL          // where it was loaded from (not part of JSON)
+
+    /// A human-language value's language, and the other forms it has
+    /// (Origami EPUB Profile 1.0 §5.5). Machine keys never change with
+    /// the language; only values carry one.
+    struct LanguageForms: Hashable, Sendable {
+        /// The BCP 47 tag of the value itself, when it differs from, or
+        /// is more exact than, the document's language.
+        var lang: String? = nil
+        var alternate: [Alternate] = []
+
+        var isEmpty: Bool { (lang ?? "").isEmpty && alternate.isEmpty }
+
+        /// One other representation and why it exists.
+        struct Alternate: Hashable, Sendable {
+            var value: String
+            var lang: String?
+            /// "transliteration", "translation" or "display" — an open
+            /// vocabulary; an unknown relation is kept as written.
+            var relation: String
+        }
+
+        /// The first alternate with this relation, optionally in this
+        /// language.
+        func first(_ relation: String, lang wanted: String? = nil) -> Alternate? {
+            alternate.first { alternate in
+                alternate.relation == relation
+                    && (wanted == nil || alternate.lang == wanted)
+            }
+        }
+
+        /// Sets (or, given an empty value, removes) the alternate with this
+        /// relation and language, keeping every other one.
+        mutating func set(_ value: String, lang: String?, relation: String) {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let index = alternate.firstIndex {
+                $0.relation == relation && ($0.lang ?? "") == (lang ?? "")
+            }
+            if trimmed.isEmpty {
+                if let index { alternate.remove(at: index) }
+            } else if let index {
+                alternate[index].value = trimmed
+            } else {
+                alternate.append(Alternate(value: trimmed, lang: lang, relation: relation))
+            }
+        }
+    }
+
+    /// The front-matter properties that can carry alternate forms.
+    static let multilingualProperties = ["title", "subtitle", "abstract", "publication"]
 
     /// The instant the document is listed, sorted, and filtered by.
     var listedDate: Date { date?.sortDate ?? created }
@@ -561,6 +997,10 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         /// The entry's number in the source's visible reference list,
         /// when the file carries one — the numbered citation styles use it.
         var number: Int? = nil
+        /// The cited work's language and its title's other forms — the
+        /// BibTeX keeps the title in its own script; a translation or
+        /// transliteration rides here (profile §9.5).
+        var forms: LanguageForms? = nil
     }
 
     /// A Defined Concept: one node in the document's glossary. Ids are
@@ -635,6 +1075,10 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         copy.references = references
         copy.tables = tables
         copy.assets = assets
+        copy.language = language
+        copy.forms = forms
+        copy.authorForms = authorForms
+        copy.bibliographyConventions = bibliographyConventions
         return copy
     }
 

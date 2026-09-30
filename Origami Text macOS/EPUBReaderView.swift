@@ -2931,7 +2931,9 @@ struct EPUBReaderView: NSViewRepresentable {
         if (!img) return;
         var figure = img.closest('figure');
         if (!figure) return;
-        var id = figure.getAttribute('data-id');
+        // Profile 1.0 books carry the figure's id as its element id;
+        // the older exports as data-id.
+        var id = figure.getAttribute('data-id') || figure.id;
         if (!id) return;
         e.preventDefault();
         e.stopImmediatePropagation();

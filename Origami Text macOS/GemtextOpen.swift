@@ -354,6 +354,10 @@ extension AppModel {
         book.acmReference = result.acmReference
         book.license = result.license
         book.licenseURI = result.licenseURI
+        book.language = result.language
+        book.forms = result.forms
+        book.authorForms = result.authorForms
+        book.bibliographyConventions = result.bibliographyConventions
         return book
     }
 

@@ -26,9 +26,24 @@ smarts required for v1: static hosting over a folder of `.epub` files
 
 ## 2. The document format (what the exporter writes)
 
+The format itself is defined by the **Origami EPUB Profile 1.0**
+(`ORIGAMI-EPUB-PROFILE-1.0.md`, https://origamitext.org/profile/1.0;
+source at https://github.com/frodehegland/OrigamiFormat). Where this
+section and the profile disagree, the profile wins.
+
 Each book is a standard EPUB: one content document `paper.html`
-(XHTML — parse strictly), `style.css`, `images/`, and `visual-meta.json`
-at the package root.
+(XHTML — parse strictly), `style.css`, `images/`, and three records at
+the package root, declared in `package.opf` by
+`<link rel="record" properties="origami:…">` (not manifest items):
+`visual-meta.json` (the semantic record — structure, citations,
+concepts, identity), `origami.json` (the interaction record — live
+tables, the Map) and `references.bib` (the bibliography). The package
+also states `dcterms:conformsTo` = the profile URL.
+
+**Read the older form too.** Books exported before 29 September 2026 —
+including the HT '26 proceedings — carry a single `visual-meta.json`
+listed as a manifest item, BibTeX in `data-bibtex` attributes on each
+reference, and citation links to `#ref-…`. A reader must handle both.
 
 ### Front matter (in document order)
 - `<h1>` title, centered.
@@ -57,7 +72,8 @@ at the package root.
   `<aside class="ot-stretchtext-content" hidden>` — click reveals.
 
 ### Links (the interaction surface)
-- **Citations**: `<a class="origami-cite" href="#ref-…">`, rendered as
+- **Citations**: `<a class="origami-cite" href="#bib-…">` (`#ref-…` in
+  the older form), rendered as
   `[n]` in numbered style. Numbered/raised citation marks take **no
   underline**; other in-text links get a quiet underline
   (~0.35 opacity). Clicking opens the citation card (§4).
@@ -71,7 +87,13 @@ at the package root.
   citations and notes are never both superscript; if citations are
   superscript, notes yield to brackets.
 
-### Visual-Meta
+### Colophon and Visual-Meta
+Profile 1.0 books end with a visible `<section epub:type="colophon">`:
+an explanatory header, a plain-text BibTeX record for citing the
+document itself, a map of where the records are, and the rights.
+Render it as shipped.
+
+Both forms also keep a
 `<section id="visual-meta" hidden="hidden">` at the document's end: a
 heading, one explanatory sentence, `@visual-meta-start` /
 `@visual-meta-end` markers, and the JSON payload inside

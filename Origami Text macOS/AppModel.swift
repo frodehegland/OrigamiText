@@ -264,6 +264,16 @@ final class AppModel {
         endLaunchFoldWatch()   // a deliberate ask outranks the launch fold
         isListHidden = false
         sidebarSelection = .allDocuments
+        bringLibraryWindowForward()
+    }
+
+    /// Brings the library window to front — or opens a fresh one if it
+    /// was closed — leaving the library's layout as it is. The library's
+    /// sheets (Import to Format, catalogues) are attached to that window;
+    /// after a book opened from Finder it is often closed, and a sheet
+    /// asked for then has nowhere to appear.
+    func bringLibraryWindowForward() {
+        endLaunchFoldWatch()
         // Prefer the directly-tracked window (stays valid through title changes
         // and is nil only when the window has actually been closed).
         if let main = mainNSWindow, main.isVisible || main.isMiniaturized {
@@ -4022,6 +4032,10 @@ final class AppModel {
         doc.references = result.references
         doc.tables = result.tables
         doc.assets = result.assets
+        doc.language = result.language
+        doc.forms = result.forms
+        doc.authorForms = result.authorForms
+        doc.bibliographyConventions = result.bibliographyConventions
         return doc
     }
 
@@ -6852,6 +6866,9 @@ final class AppModel {
             // renders from exactly what a person would have read.
             let loaded = try FormatSources.load(url, fallbackAuthor: authorName)
             formatConversion = FormatConversion(url: url, doc: loaded.doc)
+            // The sheet lives on the library window, which a book opened
+            // from Finder leaves closed; a fresh one presents it on appear.
+            bringLibraryWindowForward()
             if let first = loaded.notices.first { showNote(first) }
         } catch {
             showNote("Could not read \(url.lastPathComponent): \(error.localizedDescription)")
@@ -6873,7 +6890,10 @@ final class AppModel {
         var rights: ACMLaTeX.Rights? = nil
         var event: ACMLaTeX.Conference? = nil
         var alsoEPUB = true
-        var colophon = true
+        /// Off unless kept in the sheet: a publisher's edition leaves out
+        /// the Visual-Meta colophon — the paper's own and the one an
+        /// EPUB would otherwise end with.
+        var colophon = false
         var compile = true
 
         var suffix: String { publisher == .acm ? style.rawValue : publisher.fileSuffix }
@@ -6895,7 +6915,7 @@ final class AppModel {
                      publisher: ACMLaTeX.Publisher = .acm,
                      rights: ACMLaTeX.Rights? = nil,
                      edited: LiquidDoc? = nil, event: ACMLaTeX.Conference? = nil,
-                     alsoEPUB: Bool = false, colophon: Bool = true,
+                     alsoEPUB: Bool = false, colophon: Bool = false,
                      compile: Bool) -> URL? {
         let options = FormatOptions(style: style, publisher: publisher, rights: rights,
                                     event: event, alsoEPUB: alsoEPUB, colophon: colophon,
@@ -6975,7 +6995,8 @@ final class AppModel {
             let url = folder.appendingPathComponent("\(sourceName) (\(options.label)).epub")
             do {
                 try OrigamiEPUBExporter.write(doc: epubDoc, resolve: { _ in nil }, to: url,
-                                              houseStyle: options.publisher.houseStyle)
+                                              houseStyle: options.publisher.houseStyle,
+                                              colophon: options.colophon)
                 outcome.epub = url
             } catch {
                 outcome.epubError = String(describing: error)

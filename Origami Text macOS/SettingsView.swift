@@ -1164,8 +1164,72 @@ private struct OpenSourceSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                LabeledContent("The Origami EPUB Profile 1.0") {
+                    HStack {
+                        Button("Open") {
+                            model.openBundledSpec(resource: "ORIGAMI-EPUB-PROFILE-1.0",
+                                                  title: "The Origami EPUB Profile 1.0")
+                        }
+                        Button("Copy as Prompt") {
+                            copyPrompt(Self.profilePrompt, resource: "ORIGAMI-EPUB-PROFILE-1.0")
+                        }
+                    }
+                }
+                LabeledContent("Building a Reader") {
+                    HStack {
+                        Button("Open") {
+                            model.openBundledSpec(resource: "WEB-READER-BRIEF",
+                                                  title: "Building an Origami Text Reader")
+                        }
+                        Button("Copy as Prompt") {
+                            copyPrompt(Self.readerPrompt, resource: "WEB-READER-BRIEF")
+                        }
+                    }
+                }
+                LabeledContent("Source") {
+                    Link("github.com/frodehegland/OrigamiFormat",
+                         destination: URL(string: "https://github.com/frodehegland/OrigamiFormat")!)
+                }
+            } header: {
+                Text("Prompts for Your AI")
+            } footer: {
+                Text("The EPUB profile says what an Origami EPUB is — its records, its colophon, its links — and the brief says how a reader of them behaves. Copy as Prompt puts the whole document on the clipboard with a short instruction in front, ready to paste into your own AI to understand the format or to build a reader of your own. Open Source, MIT License.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
+    }
+
+    private static let profilePrompt = """
+        Below is the Origami EPUB Profile 1.0, the complete specification of \
+        the Origami Text variant of EPUB 3. Read it, then help me understand, \
+        read or write documents in this format. When I ask for code, follow the \
+        specification's MUST and SHOULD rules exactly, and say where you are \
+        unsure rather than guess.
+        """
+
+    private static let readerPrompt = """
+        Below is a build brief for a reader of Origami Text EPUBs. Using it \
+        (and the Origami EPUB Profile 1.0 for the format itself), help me build \
+        a reader app for the platform I name. Start with the library list and \
+        the reading view, then citations and the Map.
+        """
+
+    /// The bundled document with a short instruction in front, on the
+    /// clipboard — ready to paste into any AI.
+    private func copyPrompt(_ instruction: String, resource: String) {
+        guard let url = Bundle.main.url(forResource: resource, withExtension: "md"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else {
+            NSSound.beep()
+            model.showNote("The bundled document \(resource).md was not found.")
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(instruction + "\n\n---\n\n" + text, forType: .string)
+        model.showNote("Copied — paste it into your AI")
     }
 }
 

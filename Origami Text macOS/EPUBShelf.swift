@@ -648,6 +648,24 @@ nonisolated enum EPUBMapViews {
         return read(at: folder.appendingPathComponent(sharedName)) ?? File()
     }
 
+    /// The shared views through a COORDINATED read — a plain read of an
+    /// iCloud item serves stale bytes forever on iOS and visionOS. It may
+    /// wait on the provider, so call it off the main actor (the hallway
+    /// does). (29 Sep 2026.)
+    static func sharedCoordinated(community folder: URL?) -> File {
+        guard let folder else { return File() }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        var file: File?
+        var coordinationError: NSError?
+        NSFileCoordinator().coordinate(
+            readingItemAt: folder.appendingPathComponent(sharedName),
+            options: [], error: &coordinationError) { readURL in
+            file = read(at: readURL)
+        }
+        return file ?? File()
+    }
+
     static func saveLocal(venue: String, name: String,
                           positions: [String: EPUBMapSharedLayout.Point]) {
         var file = local()

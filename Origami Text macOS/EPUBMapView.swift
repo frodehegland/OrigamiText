@@ -68,11 +68,14 @@ struct EPUBMapItem: ItemProtocol {
     /// own words. Nil for anything that is not a read document.
     /// (18 Sep 2026.)
     var lengthShare: Double?
+    /// Two papers raised: a citation they do NOT share stands dimmed
+    /// and out of reach, so the shared ones read at once. (29 Sep 2026.)
+    var isFaded = false
 
     var isAttachmentsEnabled: Bool {
         // Concepts carry Focus/Hide; documents and citations carry
         // Lift / Put Back. Ghosts carry nothing.
-        isSelected && !isGhost
+        isSelected && !isGhost && !isFaded
             && (kind == .concept || kind == .article
                 || kind == .cited || kind == .citedDeep)
     }
@@ -88,6 +91,7 @@ struct EPUBMapItem: ItemProtocol {
             && abstract == other.abstract && visionTheme == other.visionTheme
             && isGhost == other.isGhost && showsAbstract == other.showsAbstract
             && isLifted == other.isLifted && lengthShare == other.lengthShare
+            && isFaded == other.isFaded
     }
 }
 
@@ -456,6 +460,12 @@ struct EPUBMapView: View {
             }
             if !abstractParts.isEmpty {
                 abstractByArticle[record.id] = abstractParts.joined(separator: "\n\n")
+            } else if let abstract = doc.abstract?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                      !abstract.isEmpty {
+                // No Abstract heading in the body: the document's own
+                // front-matter abstract, as the importer read it.
+                abstractByArticle[record.id] = abstract
             }
             var cited: [String] = []
             for reference in doc.references {
@@ -620,9 +630,18 @@ struct EPUBMapView: View {
         sharedCitedStanding = !sharedIDs.isEmpty
         armMenu.setChipVisible(Self.onlyOverlapChipID,
                                showOpen && (!sharedIDs.isEmpty || onlyOverlap))
-        // When 2+ articles are raised but share no common citations,
-        // the wall goes quiet — nothing overlaps, so nothing to show.
-        let noOverlap = raisedArticleIDs.count >= 2 && sharedIDs.isEmpty
+        // Exactly two raised: the wall keeps every citation but FADES
+        // the ones the pair does not share, so the common ground stands
+        // out against the rest — and a pair sharing nothing still shows
+        // its whole wall, dimmed, rather than an empty room. Only
+        // Overlap remains the explicit filter that hides. (29 Sep 2026.)
+        let fadesUnshared = raisedArticleIDs.count == 2 && !onlyOverlap
+        // When 3+ articles are raised (or two under Only Overlap) but
+        // share no common citations, the wall goes quiet — nothing
+        // overlaps, so nothing to show.
+        let noOverlap = sharedIDs.isEmpty
+            && (raisedArticleIDs.count >= 3
+                || (raisedArticleIDs.count == 2 && onlyOverlap))
         // A lifted citation stands regardless — snapped to its surface,
         // it must not vanish when its article's wall retires.
         let shownCited = citedWorks.filter { work in
@@ -678,6 +697,8 @@ struct EPUBMapView: View {
                 citationCount: citationCounts[work.id] ?? 1,
                 abstract: facts[work.id]?.abstract ?? "")
             item.isLifted = liftedCards[work.id] != nil
+            item.isFaded = fadesUnshared && !sharedIDs.contains(work.id)
+                && !item.isLifted
             return item
         })
         citedTimelineZ = timelineZ
@@ -728,6 +749,8 @@ struct EPUBMapView: View {
             built.append(contentsOf: ghostItems(among: built))
             for index in built.indices where selected.contains(built[index].id) {
                 built[index].isSelected = true
+                // A card already in hand stays in reach, shared or not.
+                built[index].isFaded = false
                 built[index].showsAbstract = abstractOpenIDs.contains(built[index].id)
                 // A chosen card steps a centimetre toward the reader,
                 // so its grown face and its opened abstract stand in
@@ -832,9 +855,9 @@ struct EPUBMapView: View {
         citedToDeepLines.rebuild(items: linesActive ? items : [])
     }
 
-    /// Concept cards: a row of tiles in front of the article wall.
-    /// Positioned at z = -0.85 (closer to viewer than articles at z = -1.2)
-    /// using the same spaceShift so they move with the fist carry.
+    /// Concept cards: a galaxy on a shell around the reader, framing the
+    /// article wall, using the same spaceShift so they move with the
+    /// fist carry.
     private func buildConceptItems() -> [EPUBMapItem] {
         // The same concepts macOS shows: the reader's tracked list
         // (adopted through the standing file) leads, then the merged
@@ -872,21 +895,43 @@ struct EPUBMapView: View {
             !hiddenConceptIDs.contains("concept:" + $0.id)
         }
         guard !concepts.isEmpty else { return [] }
-        let cols = 8
-        let spacingX: Float = 0.28
-        let spacingY: Float = 0.20
-        let totalW = Float(min(concepts.count, cols) - 1) * spacingX
-        let startX = -totalW / 2
-        let startY: Float = 1.75
-        let conceptZ: Float = -0.85
+        // The galaxy (29 Sep 2026): the concepts hang on a shell around
+        // and a little above the reader instead of a flat row before
+        // the wall — the most shared on the inner ring, nearest the
+        // centre of view, the rest spiralling outward to the sides and
+        // overhead. The shell opens a hole straight ahead (45° of
+        // clear gaze) so it FRAMES the paper wall (x ±0.75, y 1.2–1.8,
+        // z −1.2) and the citations behind it rather than covering
+        // them, and it leaves out the arc below the eyes so no concept
+        // sinks toward the floor. Squashed vertically, so the top
+        // ring stays under a room's ceiling. MapCardTick turns every
+        // concept card to face the reader.
+        let centre = SIMD3<Float>(0, 1.55, 0)
+        let radius: Float = 1.9
+        let vertical: Float = 0.42
+        let innerAngle: Float = 45 * .pi / 180
+        let outerAngle: Float = 78 * .pi / 180
+        // Azimuth measured from the reader's right, counter-clockwise:
+        // from a little below the right-hand horizon, over the top, to
+        // a little below the left — the lower arc stays empty.
+        let arcStart: Float = -25 * .pi / 180
+        let arcSpan: Float = 230 * .pi / 180
+        let golden: Float = 0.618034
+        let count = Float(concepts.count)
         return concepts.enumerated().map { i, concept in
-            let col = i % cols
-            let row = i / cols
             let conceptID = "concept:" + concept.id
-            let seed = SIMD3<Float>(
-                startX + Float(col) * spacingX,
-                startY - Float(row) * spacingY,
-                conceptZ) + spaceShift
+            // Area-even steps from the inner ring outward (the order is
+            // the pool's: tracked, then most shared first), the golden
+            // fraction scattering each one's azimuth along the arc.
+            let t = (Float(i) + 0.5) / count
+            let cosTheta = cos(innerAngle) - t * (cos(innerAngle) - cos(outerAngle))
+            let theta = acos(cosTheta)
+            let phi = arcStart + (Float(i) * golden)
+                .truncatingRemainder(dividingBy: 1) * arcSpan
+            let seed = centre + SIMD3<Float>(
+                radius * sin(theta) * cos(phi),
+                radius * vertical * sin(theta) * sin(phi),
+                -radius * cosTheta) + spaceShift
             return EPUBMapItem(
                 id: conceptID,
                 title: concept.name,
@@ -1111,6 +1156,9 @@ struct EPUBMapView: View {
                         ?? reference.authors,
                     kind: .citedDeep,
                     isSelected: selectedDeep.contains(deepID)))
+                // A faded citation's rank fades with it.
+                raised[raised.count - 1].isFaded = items[parent].isFaded
+                    && !selectedDeep.contains(deepID)
             }
 
             // The rank spreads in X and Y behind its citation, but
@@ -1316,6 +1364,10 @@ struct EPUBMapView: View {
     /// The saved arrangements, five slots per venue — positions in
     /// map space (the carried shift removed), persisted.
     @State private var savedViews: [String: [String: SIMD3<Float>]] = [:]
+    /// The views the Mac shared to the community folder for the open
+    /// venue (`_map-views.json`): name → book folder → layout meters.
+    /// Read-only here.
+    @State private var sharedViews: [String: [String: EPUBMapSharedLayout.Point]] = [:]
     /// Where every card stood the moment a Layout or Views option was
     /// chosen — the watch's Undo restores it whole.
     @State private var watchUndo: [String: SIMD3<Float>]?
@@ -1374,6 +1426,12 @@ struct EPUBMapView: View {
     private static func savedViewSlotID(_ slot: Int) -> String {
         "map.arm.watch.saved.slot\(slot)"
     }
+    /// The shared views the fan offers beside the five local slots —
+    /// the first five by name. (29 Sep 2026.)
+    private static let sharedSlotCount = 5
+    private static func sharedViewSlotID(_ slot: Int) -> String {
+        "map.arm.watch.saved.shared\(slot)"
+    }
 
     /// Author Map's Layout options as chips, climbing away from the
     /// right forearm as one ladder from the folded Layout chip — the
@@ -1403,6 +1461,12 @@ struct EPUBMapView: View {
     private static var savedViewChips: [ArmMenu.Chip] {
         (1...savedSlotCount).map {
             ArmMenu.Chip(id: savedViewSlotID($0), title: "View \($0)",
+                         side: .right, group: watchSavedChipID)
+        }
+        // And the Mac's shared views for this venue, read-only, each
+        // retitled with its own name once the folder's file is read.
+        + (1...sharedSlotCount).map {
+            ArmMenu.Chip(id: sharedViewSlotID($0), title: "Shared \($0)",
                          side: .right, group: watchSavedChipID)
         }
     }
@@ -1575,6 +1639,9 @@ struct EPUBMapView: View {
             // run first.
             .onChange(of: model.openJournalVenue) {
                 reload()
+                // Another journal, another set of shared views.
+                sharedViews = [:]
+                if watchSavedOpen { refreshSharedViews() } else { updateWatchChips() }
             }
             .onChange(of: armMenuInverted) {
                 armMenu.setInverted(armMenuInverted)
@@ -1958,7 +2025,7 @@ struct EPUBMapView: View {
         view = view.constrainMovedNode { item, proposed, startPosition in
             // A ghost holds the lifted card's place — the slot is the
             // whole point of it.
-            if item.isGhost { return startPosition }
+            if item.isGhost || item.isFaded { return startPosition }
             // A snapped-off card moves free in every axis and courts
             // the room's surfaces: within reach of one it lands on the
             // plane. State writes only ON CHANGE — a write per frame
@@ -2033,10 +2100,10 @@ struct EPUBMapView: View {
                 }
                 return false
             }
-            // With exactly 2 articles raised: only articles and shared
-            // citations are shown — the wall narrows to the overlap.
-            let n = items.count(where: { $0.kind == .article && $0.isSelected })
-            if n == 2 { return item.kind == .article || item.kind == .concept || item.isShared }
+            // With exactly 2 articles raised the wall no longer narrows
+            // here: what the pair does not share stands FADED instead
+            // (EPUBMapItem.isFaded, set in journalItems), so the shared
+            // citations read against the rest. (29 Sep 2026.)
             return true
         }
         view = view.shouldDrawConnectionForNode { item in
@@ -2376,12 +2443,12 @@ struct EPUBMapView: View {
                 Text(selected ? item.author : shortByline(item.author))
                     .font(.system(size: 5.5 * s))
                     .foregroundStyle(Color.white.opacity(0.65))
-                // A chosen PAPER opens its abstract with everything
-                // else: it has no Abstract button to ask with, and the
-                // front row is what one reads from. A citation still
-                // waits to be asked — its own button does it.
+                // The abstract waits to be asked for — a chosen paper's
+                // Abstract button does it now, as a citation's always
+                // has (29 Sep 2026; the paper used to open it with
+                // selection itself).
                 if withAbstract && selected && !item.abstract.isEmpty,
-                   item.kind == .article || item.showsAbstract {
+                   item.showsAbstract {
                     // The full abstract in fine print — readable
                     // without stepping right up to the card.
                     Text(item.abstract)
@@ -2531,6 +2598,12 @@ struct EPUBMapView: View {
         if item.isAside {
             holder.components.set(OpacityComponent(opacity: 0.4))
         }
+        // A citation two raised papers do not share: dimmed whole, and
+        // its pinch target shrunk to nothing, so the gaze and the hand
+        // pass through it to the common ground.
+        if item.isFaded {
+            holder.components.set(OpacityComponent(opacity: 0.15))
+        }
         // The fist carries every card; the connection lines re-lay
         // themselves from the cards each frame.
         holder.components.set(MapSpaceNodeComponent())
@@ -2538,8 +2611,10 @@ struct EPUBMapView: View {
         // The body and the pinch target grow with the face, so the
         // gaze frame still fits a chosen card and its verbs still hang
         // clear beneath it (the attachment anchors on these bounds).
-        let shape = ShapeResource.generateBox(size: SIMD3<Float>(
-            extents.x * grown + 0.008, extents.y * grown + 0.008, 0.012))
+        let shape = item.isFaded
+            ? ShapeResource.generateBox(size: SIMD3<Float>(repeating: 0.0005))
+            : ShapeResource.generateBox(size: SIMD3<Float>(
+                extents.x * grown + 0.008, extents.y * grown + 0.008, 0.012))
         return (holder, shape)
     }
 
@@ -2648,7 +2723,7 @@ struct EPUBMapView: View {
     }
 
     private func matchesSelectKind(_ kind: SelectKind, _ item: EPUBMapItem) -> Bool {
-        guard !item.isGhost else { return false }
+        guard !item.isGhost, !item.isFaded else { return false }
         return switch kind {
         case .documents: item.kind == .article && !item.isAside
         case .citations: item.kind == .cited || item.kind == .citedDeep
@@ -2807,6 +2882,13 @@ struct EPUBMapView: View {
     @ViewBuilder private func onePaperButtons(for item: EPUBMapItem) -> some View {
         HStack(spacing: 8) {
             Button("Open") { handleTap(count: 2, on: item) }
+            // The citation card's own Abstract, verbatim: only when
+            // the paper carries one.
+            if !item.abstract.isEmpty {
+                Button(item.showsAbstract ? "Hide Abstract" : "Abstract") {
+                    toggleAbstract(item)
+                }
+            }
             if EPUBMapView.liftEnabled {
                 Button(liftedCards[item.id] == nil ? "Lift" : "Put Back") {
                     toggleLift(item)
@@ -3610,8 +3692,9 @@ struct EPUBMapView: View {
     }
 
     private func handleTap(count: Int, on item: EPUBMapItem) {
-        // A ghost only holds a place — it answers nothing.
-        guard !item.isGhost else { return }
+        // A ghost only holds a place — it answers nothing; nor does a
+        // citation faded behind a pair's common ground.
+        guard !item.isGhost, !item.isFaded else { return }
         switch count {
         case 1:
             // Selecting draws the citation lines — an article's run to
@@ -3906,6 +3989,9 @@ struct EPUBMapView: View {
             return true
         case Self.watchSavedChipID:
             openOnly(watchSavedOpen ? nil : .saved)
+            // The views the Mac shared for this venue join the fan as
+            // soon as the folder's copy is read.
+            if watchSavedOpen { refreshSharedViews() }
             return true
         case Self.watchSaveNowChipID:
             // The arrangement kept in the first free slot; its chip
@@ -3943,6 +4029,14 @@ struct EPUBMapView: View {
             for slot in 1...Self.savedSlotCount where id == Self.savedViewSlotID(slot) {
                 if let saved = loadSavedViews()["\(slot)"] {
                     recallSavedView(saved)
+                }
+                closeWatchMenus()
+                return true
+            }
+            for slot in 1...Self.sharedSlotCount where id == Self.sharedViewSlotID(slot) {
+                let names = sharedViews.keys.sorted()
+                if slot <= names.count, let stored = sharedViews[names[slot - 1]] {
+                    recallSharedView(stored)
                 }
                 closeWatchMenus()
                 return true
@@ -4580,6 +4674,53 @@ struct EPUBMapView: View {
         updateWatchChips()
     }
 
+    /// The Mac's shared views for the open venue, read from the
+    /// community folder's `_map-views.json` through a coordinated read,
+    /// off the main actor; each shared chip then wears its view's name.
+    private func refreshSharedViews() {
+        guard let venue = model.openJournalVenue else {
+            sharedViews = [:]
+            updateWatchChips()
+            return
+        }
+        let folder = model.index.folderURL
+        Task {
+            let file = await Task.detached {
+                EPUBMapViews.sharedCoordinated(community: folder)
+            }.value
+            // The room moved on to another journal meanwhile.
+            guard model.openJournalVenue == venue else { return }
+            let views = file.venues[venue] ?? [:]
+            let names = views.keys.sorted()
+            if names != sharedViews.keys.sorted() {
+                for (index, name) in names.prefix(Self.sharedSlotCount).enumerated() {
+                    armMenu.setChipTitle(Self.sharedViewSlotID(index + 1), name)
+                }
+            }
+            sharedViews = views
+            updateWatchChips()
+        }
+    }
+
+    /// A shared view recalled as a local slot is: the file speaks in
+    /// book folders (EPUBRecord.folder, never record.id) and the shared
+    /// layout's meters — the same x and y the room adopts from
+    /// origami-map-layout.json — so each standing paper takes its X/Y
+    /// and keeps its own depth, which the year reclaims regardless.
+    private func recallSharedView(_ stored: [String: EPUBMapSharedLayout.Point]) {
+        let folderByID = sharedKeyByID
+        var saved: [String: SIMD3<Float>] = [:]
+        for item in items where item.kind == .article && !item.isAside && !item.isGhost {
+            guard let folder = folderByID[item.id], let point = stored[folder],
+                  let current = item.position else { continue }
+            // recallSavedView adds the carried shift back, so the room
+            // lands on the layout's own meters, as adoption does.
+            saved[item.id] = SIMD3<Float>(Float(point.x), Float(point.y),
+                                          current.z) - spaceShift
+        }
+        recallSavedView(saved)
+    }
+
     /// The right arm's fans shown and lit to match what is open: the
     /// Layout ladder with Auto at its top, Auto's own arrangements,
     /// and the slots that actually hold a view. Undo View wears
@@ -4601,6 +4742,11 @@ struct EPUBMapView: View {
         for slot in 1...Self.savedSlotCount {
             armMenu.setChipVisible(Self.savedViewSlotID(slot),
                                    watchSavedOpen && kept.contains(slot))
+        }
+        let sharedCount = sharedViews.count
+        for slot in 1...Self.sharedSlotCount {
+            armMenu.setChipVisible(Self.sharedViewSlotID(slot),
+                                   watchSavedOpen && slot <= sharedCount)
         }
         armMenu.setChipActive(Self.watchLayoutChipID, watchLayoutOpen)
         armMenu.setChipActive(Self.watchSavedChipID, watchSavedOpen)
@@ -6327,6 +6473,24 @@ private final class MapCardTick {
                         card.orientation = turn
                     }
                 }
+            }
+            // The concept galaxy's cards turn to the reader, tilted as
+            // well as turned — the shell stands above and beside the
+            // eyes, and a card read from below must lean to them. The
+            // face and its collision turn together, as a lifted card's.
+            else if id.hasPrefix("concept:"), let head {
+                let toHead = head - place
+                let flat = simd_length(SIMD2(toHead.x, toHead.z))
+                if flat > 1e-4 {
+                    let yaw = simd_quatf(angle: atan2(toHead.x, toHead.z),
+                                         axis: SIMD3<Float>(0, 1, 0))
+                    let pitch = simd_quatf(angle: -atan2(toHead.y, flat),
+                                           axis: SIMD3<Float>(1, 0, 0))
+                    let turn = yaw * pitch
+                    if abs(simd_dot(card.orientation.vector, turn.vector)) < 0.99995 {
+                        card.orientation = turn
+                    }
+                }
             } else if abs(simd_dot(card.orientation.vector, upright.vector)) < 0.99995 {
                 card.orientation = upright
             }
@@ -7185,8 +7349,11 @@ final class FloorDecadeLines {
         let step = max(10, Int((Double(span) / 400).rounded(.up)) * 10)
         let root = Entity()
         root.components.set(MapSpaceNodeComponent())
+        // Quiet but there: at 0.02 grey (773cca6) the rules vanished
+        // into the carpet, so they now read as a pale hairline.
         var material = UnlitMaterial()
-        material.color = .init(tint: UIColor(white: 0.25, alpha: 0.02))
+        material.color = .init(tint: UIColor(white: 1, alpha: 0.35))
+        material.blending = .transparent(opacity: 1.0)
         let mesh = MeshResource.generateBox(
             size: SIMD3<Float>(Self.halfSpan * 2, 0.001, 0.004))
         let firstDecade = (years.oldest / 10 + 1) * 10

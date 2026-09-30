@@ -281,6 +281,50 @@ CASES = [
      interaction(tables=[{"identifier": "T-1"}]), False),
     ("interaction: map node without a ref", INTERACTION,
      interaction(map={"views": [{"nodes": [{"x": 1, "y": 2}]}]}), False),
+    # ---- §5.5 multilingual values --------------------------------------
+    ("semantic: structured multilingual values", SEMANTIC, semantic(
+        document={"identifier": UUID, "work": WORK, "language": "zh-Hans",
+                  "title": {"value": "数字文本与知识组织", "lang": "zh-Hans",
+                            "alternate": [
+                                {"value": "Shuzi Wenben yu Zhishi Zuzhi",
+                                 "lang": "zh-Latn", "relation": "transliteration"},
+                                {"value": "Digital Text and Knowledge Organization",
+                                 "lang": "en", "relation": "translation"}]},
+                  "abstract": {"value": "本文讨论……", "lang": "zh-Hans"},
+                  "authors": [{"name": {"value": "王小明", "lang": "zh-Hans",
+                                        "alternate": [{"value": "Wang Xiaoming",
+                                                       "lang": "zh-Latn",
+                                                       "relation": "transliteration"}]},
+                               "orcid": "0000-0002-1825-0097"}],
+                  "defaultDocument": "content.xhtml"},
+        citations=[{"id": "232A9EED", "number": 1, "lang": "de",
+                    "alternate": [{"value": "On Managing Spatial Hypermedia",
+                                   "lang": "en", "relation": "translation"}]}]), True),
+    ("semantic: an alternate that does not say why it exists", SEMANTIC, semantic(
+        document={"identifier": UUID, "work": WORK, "defaultDocument": "content.xhtml",
+                  "title": {"value": "Пространство", "lang": "ru",
+                            "alternate": [{"value": "Prostranstvo", "lang": "ru-Latn"}]}}),
+     False),
+    ("semantic: a structured value without its language", SEMANTIC, semantic(
+        document={"identifier": UUID, "work": WORK, "defaultDocument": "content.xhtml",
+                  "title": {"value": "A paper"}}), False),
+    ("semantic: a language that is not a BCP 47 tag", SEMANTIC, semantic(
+        document={"identifier": UUID, "work": WORK, "defaultDocument": "content.xhtml",
+                  "title": "A paper", "language": "Chinese (Simplified)"}), False),
+    # ---- §11.1 BibTeX conventions -------------------------------------
+    ("semantic: declared BibTeX conventions", SEMANTIC, semantic(
+        bibliography={"href": "references.bib",
+                      "conventions": {"dialect": "bibtex", "encoding": "utf-8",
+                                      "nameOrder": "family-given", "nameSeparator": " and ",
+                                      "dateFields": "year-month", "monthFormat": "number",
+                                      "pageRange": "--", "keys": "uuid",
+                                      "titleCase": "as-published",
+                                      "nonStandardFields": ["origami-source-id"],
+                                      "source": "declared-and-inspected"}}), True),
+    ("semantic: a name order no tool writes", SEMANTIC, semantic(
+        bibliography={"conventions": {"nameOrder": "surname-first-ish"}}), False),
+    ("semantic: bibliography without its conventions", SEMANTIC, semantic(
+        bibliography={"href": "references.bib"}), False),
 ]
 
 

@@ -22,6 +22,8 @@
 import AppKit
 import NaturalLanguage
 import CryptoKit
+import ImageIO
+import UniformTypeIdentifiers
 
 // MARK: - Entities
 
@@ -562,6 +564,7 @@ final class OverviewPictureStore {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent(old))
             images.removeObject(forKey: old as NSString)
         }
+        let (data, fileExtension) = Self.framedForSquare(data, extension: fileExtension)
         // A fresh name each time, so nothing cached under the old one shows.
         let file = UUID().uuidString + "." + fileExtension
         guard (try? data.write(to: directory.appendingPathComponent(file), options: .atomic)) != nil else { return }
@@ -570,6 +573,94 @@ final class OverviewPictureStore {
         hidden.remove(entity.key)
         save()
         NotificationCenter.default.post(name: Self.changed, object: nil)
+    }
+
+    // MARK: Framing on import
+
+    /// Overview shows every picture filled into a square (a circle for
+    /// people), so a tall portrait loses the top of its head and a wide
+    /// logo its ends. A picture that is not square is framed as it comes
+    /// in, the way People photos are: centred on a square a little larger
+    /// than its long side, the margin filled with the colour of its own
+    /// edge (clear for a transparent logo), so the whole picture shows
+    /// with some air around it. Square pictures are kept as they came;
+    /// pictures already stored are never touched.
+    nonisolated static func framedForSquare(_ data: Data, extension fileExtension: String) -> (Data, String) {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int,
+              let pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int,
+              pixelWidth > 0, pixelHeight > 0 else { return (data, fileExtension) }
+        let long = max(pixelWidth, pixelHeight)
+        // Within 3% of square, nothing worth mentioning is cropped.
+        guard Double(abs(pixelWidth - pixelHeight)) / Double(long) > 0.03 else { return (data, fileExtension) }
+        // The thumbnail call applies the EXIF orientation, so a phone
+        // photo is framed upright.
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: long,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return (data, fileExtension) }
+
+        let width = image.width, height = image.height
+        // A little extra border: 5% of the long side on every side.
+        let side = Int((Double(max(width, height)) * 1.1).rounded())
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return (data, fileExtension) }
+        let origin = CGPoint(x: (side - width) / 2, y: (side - height) / 2)
+        context.setFillColor(edgeColour(of: image, in: space))
+        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(origin: origin, size: CGSize(width: width, height: height)))
+
+        guard let framed = context.makeImage() else { return (data, fileExtension) }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.png.identifier as CFString, 1, nil)
+        else { return (data, fileExtension) }
+        CGImageDestinationAddImage(destination, framed, nil)
+        guard CGImageDestinationFinalize(destination) else { return (data, fileExtension) }
+        return (output as Data, "png")
+    }
+
+    /// The average colour of a picture's outermost pixels: what its margin
+    /// is filled with, so the frame reads as more of the same background.
+    private nonisolated static func edgeColour(of image: CGImage, in space: CGColorSpace) -> CGColor {
+        let width = image.width, height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn: Bool = pixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return CGColor(gray: 0.5, alpha: 1) }
+        // A ring two pixels deep (or less, for a sliver of an image).
+        let depth = max(1, min(2, min(width, height) / 4))
+        var sums = [Double](repeating: 0, count: 4)
+        var count = 0
+        for y in 0..<height {
+            let onEdgeRow = y < depth || y >= height - depth
+            for x in 0..<width where onEdgeRow || x < depth || x >= width - depth {
+                let i = (y * width + x) * 4
+                for c in 0..<4 { sums[c] += Double(pixels[i + c]) }
+                count += 1
+            }
+        }
+        guard count > 0 else { return CGColor(gray: 0.5, alpha: 1) }
+        let alpha = sums[3] / Double(count) / 255
+        // Mostly transparent at the edge: a logo on nothing stays on nothing.
+        guard alpha > 0.5 else { return CGColor(gray: 0, alpha: 0) }
+        // Premultiplied sums: dividing by the alpha sum gives the true colour.
+        let components = (0..<3).map { sums[$0] / max(sums[3], 1) }
+        return CGColor(colorSpace: space, components: components.map { CGFloat($0) } + [1])
+            ?? CGColor(gray: 0.5, alpha: 1)
     }
 
     static func wikipediaURL(for title: String) -> URL? {
@@ -662,9 +753,11 @@ final class OverviewPictureStore {
               let imageURL = URL(string: source) else { return nothing }
 
         try? await Task.sleep(nanoseconds: 250_000_000)
-        guard let imageData = await get(imageURL), NSImage(data: imageData) != nil else { return nil }
+        guard let fetched = await get(imageURL), NSImage(data: fetched) != nil else { return nil }
+        let (imageData, fileExtension) = framedForSquare(
+            fetched, extension: imageURL.pathExtension.isEmpty ? "jpg" : imageURL.pathExtension.lowercased())
         let file = SHA256.hash(data: Data(entity.key.utf8)).prefix(10).map { String(format: "%02x", $0) }.joined()
-            + "." + (imageURL.pathExtension.isEmpty ? "jpg" : imageURL.pathExtension.lowercased())
+            + "." + fileExtension
         do {
             try imageData.write(to: directory.appendingPathComponent(file), options: .atomic)
         } catch {

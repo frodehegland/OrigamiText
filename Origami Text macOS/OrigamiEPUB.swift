@@ -1,22 +1,37 @@
 import CryptoKit
 import Foundation
 
-/// Export as an Origami Text EPUB — the format's EPUB 3 profile
-/// (Origami Text EPUB — Implementation Specification v1.0, and
-/// visual-meta.info/origami-text): a standard .epub constrained to one
-/// semantic HTML content file, a navigation document, one optional
-/// stylesheet, and Visual-Meta in two identical copies —
-/// `visual-meta.json` in the package root and an embedded
-/// `application/json` block in the HTML between human-readable
-/// `@visual-meta-start` / `@visual-meta-end` markers.
+/// Export as an Origami Text EPUB, conforming to the Origami EPUB
+/// Profile 1.0 (ORIGAMI-EPUB-PROFILE-1.0.md): a standard EPUB 3 with one
+/// semantic content document, a navigation document, a stylesheet, and
+/// three metadata records beside the package document —
+/// `visual-meta.json` (the semantic record, §9), `origami.json` (the
+/// interaction record: tables and Map layouts, §10) and `references.bib`
+/// (the bibliography record, canonical for every cited work, §11). Each
+/// is declared by `<link rel="record" properties="origami:…">` and is
+/// never a manifest item (§4.4.1). The package declares the profile
+/// (`dcterms:conformsTo`, §4.2) and the work (`dcterms:isVersionOf`).
 ///
-/// Two identity systems, per the spec (§2): human-speakable addresses
-/// (section 3's heading is `id="3"`, the elements beneath it `3B`,
-/// `3C`, …) assigned at export, and stable ids carried in `data-id`,
-/// which is how Map views keep pointing at the right things across
-/// re-exports. Citations carry three mutually consistent encodings
-/// generated from one internal model: the visible reference text,
-/// `data-bibtex`, and `data-csl-json`.
+/// The content document ends with the visible Visual-Meta colophon
+/// (§8.4) — what the metadata is, the paper's own citation as BibTeX,
+/// where the records are, and the rights — generated from the same
+/// values as the package, so the prose cannot drift from it. An exact
+/// copy of the semantic record also rides in the hidden `#visual-meta`
+/// section between `@visual-meta-start` / `@visual-meta-end` (§12.2).
+///
+/// Two identity systems (§6.2): every element's `id` is its stable id
+/// — the paragraph's own, or a heading's Map-node UUID — made a valid
+/// XML name (`P-`, `H-`, `E-` before a bare UUID), which is how Map
+/// views and annotations keep pointing at the right things across
+/// re-exports; the human-speakable positional address (section 3's
+/// heading is "3", the elements beneath it "3B", "3C", …) rides in
+/// `data-origami-address`. Citations link to `#bib-<key>`, where the key
+/// is the BibTeX key in `references.bib` and the citation's id in the
+/// semantic record.
+///
+/// Pre-1.0 exports (the HT '26 proceedings) put the address in `id`,
+/// the stable id in `data-id`, BibTeX in `data-bibtex`, and everything in
+/// one manifest-listed `visual-meta.json`; the importer still reads them.
 /// The link schemes a book's words carry as real anchors: the web, and
 /// the network hypermedia protocols the reader opens itself rather than
 /// handing to a browser — Seed's `hm://` and Gemini's `gemini://` (see
@@ -42,6 +57,10 @@ nonisolated enum OrigamiEPUBExportError: LocalizedError {
     /// refused so a dead link (a footnote dagger that goes nowhere in a
     /// standard reader, the HT '26 lesson) never ships.
     case danglingAnchor(file: String, target: String)
+    /// A referential-integrity failure Origami EPUB Profile 1.0 §18.1
+    /// says a writer must refuse to export: a broken publication, not
+    /// merely an inconsistent one.
+    case profileViolation(String)
 
     var errorDescription: String? {
         switch self {
@@ -51,57 +70,161 @@ nonisolated enum OrigamiEPUBExportError: LocalizedError {
         case let .danglingAnchor(file, target):
             "The exported \(file) links to #\(target), but no element carries that id. "
                 + "This is a bug in Origami Text — please report it; the document was not exported."
+        case let .profileViolation(detail):
+            detail + " The document was not exported, because the EPUB would be broken."
         }
     }
 }
 
 nonisolated enum OrigamiEPUBExporter {
 
-    // MARK: The Visual-Meta document (spec §4)
+    // MARK: The records (Profile 1.0 §9–§11)
 
-    /// The canonical payload. Encoded with JSONEncoder rather than
-    /// JSONSerialization: floats keep their shortest round-trip form
-    /// (-570.28, never -570.27999999999997), and slashes are escaped so
-    /// "</script>" can never appear in the embedded copy.
+    /// The profile this writer conforms to (§4.2, §16.1).
+    static let profileURI = "https://origamitext.org/profile/1.0"
+
+    /// The package-relative path of the one content document — the path
+    /// half of every canonical address (§6.1).
+    private static let contentPath = "content/paper.html"
+
+    /// The semantic record, `visual-meta.json` (§9). Encoded with
+    /// JSONEncoder rather than JSONSerialization: floats keep their
+    /// shortest round-trip form (-570.28, never -570.27999999999997), and
+    /// slashes are escaped so "</script>" can never appear in the
+    /// embedded copy. It holds no tables, map or models (§10.0) — those
+    /// are the interaction record's.
     private struct VisualMetaDocument: Encodable {
         enum CodingKeys: String, CodingKey {
             case info = "visual-meta"
-            case document, structure, concepts, citations, map, tables
+            case document, structure, concepts, citations, equations, bibliography
         }
 
+        /// How the bibliography record's BibTeX is written (§11.1), so a
+        /// consumer parses it without guessing: name order, dates, page
+        /// dashes, encoding, dialect, keys, non-standard fields.
+        struct Bibliography: Encodable {
+            struct Conventions: Encodable {
+                var dialect, encoding, nameOrder, nameSeparator, dateFields, dateFormat,
+                    monthFormat, pageRange, keys, titleCase: String?
+                var nonStandardFields: [String]?
+                var source: String?
+
+                init(_ conventions: BibTeXConventions) {
+                    dialect = conventions.dialect
+                    encoding = conventions.encoding
+                    nameOrder = conventions.nameOrder
+                    nameSeparator = conventions.nameSeparator
+                    dateFields = conventions.dateFields
+                    dateFormat = conventions.dateFormat
+                    monthFormat = conventions.monthFormat
+                    pageRange = conventions.pageRange
+                    keys = conventions.keys
+                    titleCase = conventions.titleCase
+                    nonStandardFields = conventions.nonStandardFields.isEmpty
+                        ? nil : conventions.nonStandardFields
+                    source = conventions.source
+                }
+            }
+            /// The record described — `references.bib` — and, as the same
+            /// conventions govern it, the colophon's self-citation.
+            let href: String?
+            let conventions: Conventions
+        }
+
+        /// Self-identification (§9.1): a record extracted from its
+        /// publication still says what it is and what it describes.
         struct Info: Encodable {
-            let version = "1.0"
+            let format = "visual-meta"
+            let version = "1.1"
+            let profile = OrigamiEPUBExporter.profileURI
+            /// The publication's `dc:identifier`.
+            let describes: String
             let generator: String
             let introduction: String
         }
 
         struct DocumentInfo: Encodable {
             enum CodingKeys: String, CodingKey {
-                case title, subtitle, authors, date, identifier
+                case title, subtitle, authors, date, identifier, work, modified
                 case origamiID = "origami-id"
                 case abstract, keywords, ccsConcepts, isbn, doi, publication
                 case acmReference  // Profile 1.0 §5.4; exports before it wrote "acm-reference"
-                case rights, license
+                case rights, license, defaultDocument
+                case language
+            }
+
+            /// Another representation of a value, and why it exists
+            /// (§5.5): a transliteration, a translation, a display form.
+            struct Alternate: Encodable {
+                let value: String
+                var lang: String? = nil
+                let relation: String
+            }
+
+            /// A human-language value as the record states it (§5.5): what
+            /// the source says, the language and script it says it in, and
+            /// each other form with why it exists. The shape is the same for
+            /// every such value, so a parser always meets the same keys.
+            struct Value: Encodable {
+                let value: String
+                let lang: String
+                var alternate: [Alternate]? = nil
+
+                /// `text` in `forms`' language, else the publication's.
+                init(_ text: String, forms: LiquidDoc.LanguageForms?, publication: String) {
+                    value = text
+                    lang = forms?.lang.flatMap { $0.isEmpty ? nil : $0 } ?? publication
+                    let alternates = (forms?.alternate ?? []).map {
+                        Alternate(value: $0.value, lang: $0.lang, relation: $0.relation)
+                    }
+                    alternate = alternates.isEmpty ? nil : alternates
+                }
+            }
+
+            /// A value's language and alternates without the value — what a
+            /// citation entry carries for its work, whose title stays in
+            /// the bibliography record (§9.5).
+            struct Forms {
+                var lang: String? = nil
+                var alternate: [Alternate]? = nil
+
+                init?(_ forms: LiquidDoc.LanguageForms?) {
+                    guard let forms, !forms.isEmpty else { return nil }
+                    lang = forms.lang.flatMap { $0.isEmpty ? nil : $0 }
+                    let alternates = forms.alternate.map {
+                        Alternate(value: $0.value, lang: $0.lang, relation: $0.relation)
+                    }
+                    alternate = alternates.isEmpty ? nil : alternates
+                }
             }
 
             /// One person, as Profile 1.0 §5.2 has it. Keys without a
             /// value are omitted rather than written empty.
             struct Author: Encodable {
-                let name: String
+                /// The name as printed, in its language and script, with its
+                /// other forms — "王小明" with "Wang Xiaoming" as its
+                /// transliteration.
+                let name: Value
                 var affiliation: String? = nil
                 var email: String? = nil
                 var orcid: String? = nil
             }
 
-            let title: String
+            let title: Value
             /// The paper's subtitle, apart from the title.
-            var subtitle: String? = nil
+            var subtitle: Value? = nil
             /// One entry per person, in printed order (§5.2) — never
             /// several names joined into one, and never the pre-1.0
             /// name-keyed dictionaries.
             let authors: [Author]
             let date: String
+            /// The edition (`dc:identifier`), the work
+            /// (`dcterms:isVersionOf`) and the release
+            /// (`dcterms:modified`) — derived from the package, which
+            /// governs (§12.4).
             let identifier: String
+            let work: String
+            let modified: String
             /// The paper's ACM Reference Format, verbatim.
             var acmReference: String? = nil
             /// The rights as a person reads them (§4.7.2)…
@@ -110,22 +233,30 @@ nonisolated enum OrigamiEPUBExporter {
             var license: String? = nil
             /// The journal or proceedings the document is part of, when
             /// it declares one — the reader's Journals view groups by it.
-            var publication: String? = nil
+            var publication: Value? = nil
             /// The document's library address, carried openly so a
             /// receiving Origami Text can keep the book's identity —
             /// citations to it then resolve wherever it arrives.
             let origamiID: String
-            var abstract: String? = nil
+            var abstract: Value? = nil
             var keywords: [String]? = nil
             var ccsConcepts: [String]? = nil
             var isbn: String? = nil
-            var doi = ""
+            var doi: String? = nil
+            /// What the record's bare fragments resolve against (§9.2).
+            let defaultDocument = OrigamiEPUBExporter.contentPath
+            /// The BCP 47 tag of the document's own values (§5.5) —
+            /// the same tag as `dc:language`.
+            var language: String? = nil
         }
 
         struct Structure: Encodable {
             struct Heading: Encodable {
                 let address: String
+                /// The heading's published `id`…
                 let id: String
+                /// …and its canonical address (§6.1).
+                let href: String
                 let level: Int
                 let text: String
             }
@@ -142,19 +273,61 @@ nonisolated enum OrigamiEPUBExporter {
             let address: String?
         }
 
+        /// Where a citation sits and what it points at (§9.5). The work
+        /// itself — authors, title, abstract, DOI — is the bibliography
+        /// record's, under the same key, and is never copied here.
         struct CitationNode: Encodable {
             let id: String
-            let name: String
-            let authors: [String]
-            let year: String
-            let publication: String
-            let doi: String
-            let urls: [String]
-            /// The cited work's abstract, when the record carries one —
-            /// the citation card's summary.
-            let abstract: String
-            let bibtex: String
-            let csl: JSONValue
+            let number: Int
+            let href: String
+            /// The cited work's language, and its title's other forms —
+            /// what BibTeX has no place for (§5.5, §9.5). The title itself
+            /// stays in the bibliography record, in its own script.
+            var lang: String? = nil
+            var alternate: [DocumentInfo.Alternate]? = nil
+        }
+
+        /// The equation index (§7.7.1): the TeX each display equation was
+        /// set from, for citing and copying. The MathML governs.
+        struct EquationNode: Encodable {
+            enum CodingKeys: String, CodingKey {
+                case id, href, display, format, tex
+                case texSHA256 = "tex-sha256"
+            }
+            let id: String
+            let href: String
+            let display = "block"
+            let format = "mathml"
+            let tex: String
+            let texSHA256: String
+        }
+
+        let info: Info
+        let document: DocumentInfo
+        let structure: Structure
+        let concepts: [ConceptNode]
+        let citations: [CitationNode]
+        let equations: [EquationNode]?
+        var bibliography: Bibliography? = nil
+    }
+
+    /// The interaction record, `origami.json` (§10): what the writer
+    /// authored beyond the text — live tables and Map layouts. Never a
+    /// semantic member (§10.0), never reader state.
+    private struct InteractionDocument: Encodable {
+        enum CodingKeys: String, CodingKey {
+            case info = "origami"
+            case tables, map
+        }
+
+        /// Self-identification (§10.1).
+        struct Info: Encodable {
+            let format = "origami-text"
+            let version = "1.0"
+            let profile = OrigamiEPUBExporter.profileURI
+            let describes: String
+            let created: String
+            let generator: String
         }
 
         struct Map: Encodable {
@@ -189,67 +362,36 @@ nonisolated enum OrigamiEPUBExporter {
         }
 
         /// One live table: values and formulas both, so the reader's
-        /// grid recomputes — the same shape the importer reads back.
+        /// grid recomputes — the same shape the importer reads back —
+        /// and `href`, the address of the element that places it (§10.2).
         struct TableNode: Encodable {
             struct Cell: Encodable {
                 let value: String
                 let formula: String?
             }
             let identifier: String
+            let href: String?
             let rowCount: Int
             let columnCount: Int
             let cells: [[Cell]]
         }
 
         let info: Info
-        let document: DocumentInfo
-        let structure: Structure
-        let concepts: [ConceptNode]
-        let citations: [CitationNode]
-        let map: Map
-        let tables: [TableNode]
+        /// Omitted, not written empty, when the document has none.
+        let tables: [TableNode]?
+        let map: Map?
     }
 
-    /// A JSON fragment JSONEncoder can carry — used for the CSL object,
-    /// which is assembled dynamically.
-    private enum JSONValue: Encodable {
-        case string(String)
-        case number(Double)
-        case bool(Bool)
-        case array([JSONValue])
-        case object([String: JSONValue])
-        case null
-
-        func encode(to encoder: Encoder) throws {
-            var container = encoder.singleValueContainer()
-            switch self {
-            case .string(let value): try container.encode(value)
-            case .number(let value): try container.encode(value)
-            case .bool(let value): try container.encode(value)
-            case .array(let value): try container.encode(value)
-            case .object(let value): try container.encode(value)
-            case .null: try container.encodeNil()
-            }
-        }
-
-        static func from(_ any: Any) -> JSONValue {
-            switch any {
-            case let value as String: return .string(value)
-            case let value as Bool: return .bool(value)
-            case let value as NSNumber: return .number(value.doubleValue)
-            case let value as [Any]: return .array(value.map(from))
-            case let value as [String: Any]:
-                return .object(value.mapValues(from))
-            default: return .null
-            }
-        }
-    }
-
-    // MARK: The one citation model behind the three encodings
+    // MARK: The one citation model behind the visible line and the record
 
     private struct Citation {
         let number: Int          // [n] in body text
         let nodeID: String       // stable id in the Visual-Meta node pool
+        /// The citation's key (§7.3, §11): the BibTeX key, the id in
+        /// the semantic record, and — as `bib-<key>` — the reference
+        /// line's `id`. The node id itself wherever that makes a valid
+        /// XML name, which is almost always.
+        var key = ""
         let address: String?     // origami address, for internal citations
         let title: String
         let authors: [String]    // "Family, Given"
@@ -258,6 +400,8 @@ nonisolated enum OrigamiEPUBExporter {
         let doi: String
         let url: String?
         let bibtex: String?      // verbatim, when the link carried one
+        /// The work's language and its title's other forms (§5.5).
+        var forms: LiquidDoc.LanguageForms? = nil
 
         var formatted: String {
             var parts: [String] = []
@@ -272,7 +416,7 @@ nonisolated enum OrigamiEPUBExporter {
         }
 
         /// A BibTeX record even when the source link carried none, so
-        /// `data-bibtex` and the JSON pool are never empty (spec R18).
+        /// the bibliography record is never missing an entry (§18.1).
         var bibtexRecord: String {
             if let bibtex { return bibtex }
             var fields = ["title = {\(title)}"]
@@ -284,41 +428,41 @@ nonisolated enum OrigamiEPUBExporter {
             return "@misc{\(nodeID),\n\(fields.joined(separator: ",\n"))\n}"
         }
 
-        /// The node for the Visual-Meta citations pool (spec §4.5).
-        var node: VisualMetaDocument.CitationNode {
-            var urls: [String] = []
-            if let url { urls.append(url) }
-            if let address { urls.append("origamitext://open/\(address)") }
-            return VisualMetaDocument.CitationNode(
-                id: nodeID, name: title, authors: authors, year: year,
-                publication: publication, doi: doi, urls: urls,
-                abstract: BibTeXParser.first(bibtexRecord)?.fields["abstract"] ?? "",
-                bibtex: bibtexRecord, csl: JSONValue.from(cslJSON))
+        /// The entry as `references.bib` carries it (§11): keyed by the
+        /// citation's key, and — for a citation of another Origami
+        /// document — naming that document's address in
+        /// `origami-source-id`, which is how the importer turns it back
+        /// into a live link. Otherwise verbatim.
+        var bibliographyEntry: String {
+            var record = OrigamiEPUBExporter.rekeyed(bibtexRecord, as: key)
+            if let address, BibTeXParser.first(record)?.fields["origami-source-id"] == nil,
+               let closing = record.lastIndex(of: "}") {
+                var head = String(record[..<closing]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !head.hasSuffix(",") { head += "," }
+                record = head + "\n  origami-source-id = {\(address)}\n}"
+            }
+            return record
         }
 
-        /// The CSL-JSON object for `data-csl-json` (spec C7).
-        var cslJSON: [String: Any] {
-            var object: [String: Any] = [
-                "id": nodeID,
-                "type": "article-journal",
-                "title": title,
-            ]
-            if !authors.isEmpty {
-                object["author"] = authors.map { name -> [String: String] in
-                    let parts = name.split(separator: ",", maxSplits: 1)
-                        .map { $0.trimmingCharacters(in: .whitespaces) }
-                    if parts.count == 2 { return ["family": parts[0], "given": parts[1]] }
-                    return ["family": name]
-                }
-            }
-            if let yearNumber = Int(year) {
-                object["issued"] = ["date-parts": [[yearNumber]]]
-            }
-            if !publication.isEmpty { object["container-title"] = publication }
-            if !doi.isEmpty { object["DOI"] = doi }
-            if let url { object["URL"] = url }
-            return object
+        /// The entry in the semantic record's citations (§9.5).
+        var node: VisualMetaDocument.CitationNode {
+            let forms = VisualMetaDocument.DocumentInfo.Forms(forms)
+            return VisualMetaDocument.CitationNode(
+                id: key, number: number,
+                href: "\(OrigamiEPUBExporter.contentPath)#bib-\(key)",
+                lang: forms?.lang, alternate: forms?.alternate)
         }
+    }
+
+    /// The record with its key — whatever stands between the entry's "{"
+    /// and its first comma — replaced by `key`. A record without that
+    /// shape is left as it is.
+    fileprivate static func rekeyed(_ bibtex: String, as key: String) -> String {
+        guard let open = bibtex.firstIndex(of: "{") else { return bibtex }
+        let rest = bibtex[bibtex.index(after: open)...]
+        guard let comma = rest.firstIndex(of: ","),
+              !rest[..<comma].contains("=") else { return bibtex }
+        return String(bibtex[...open]) + key + String(rest[comma...])
     }
 
     // MARK: The addressed body (spec §2, §3.1)
@@ -332,6 +476,67 @@ nonisolated enum OrigamiEPUBExporter {
         let headingLevel: Int?   // resolved level, when this is a heading
         let text: String         // text with any markdown heading stripped
         let opensSection: Bool
+        /// The element's published `id` (§6.2), assigned once the whole
+        /// body is known so that every one is unique.
+        var htmlID = ""
+    }
+
+    // MARK: Published ids (§6.2)
+
+    /// Whether `id` is a valid XML name without colons (an NCName, in
+    /// the ASCII range this writer emits) — what every `id` must be; a
+    /// bare UUID starting with a digit is not.
+    private static func isNCName(_ id: String) -> Bool {
+        id.range(of: "^[A-Za-z_][A-Za-z0-9._-]*$", options: .regularExpression) != nil
+    }
+
+    /// The id half of an address: an element read back from a 1.0
+    /// publication carries `content/paper.html#P-…`, and its published
+    /// id is what follows the `#`.
+    private static func fragment(of id: String) -> String {
+        guard let hash = id.lastIndex(of: "#") else { return id }
+        let rest = String(id[id.index(after: hash)...])
+        return rest.isEmpty ? id : rest
+    }
+
+    /// `id` with anything an NCName cannot hold replaced by "-" — for
+    /// ids that follow a fixed prefix (`bib-`, `fnref-`).
+    private static func nameSafe(_ id: String) -> String {
+        String(id.map { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) ? $0 : "-" })
+    }
+
+    /// A stable id as an element's published `id`: kept exactly when it
+    /// is already a valid name; a bare UUID takes the registered prefix
+    /// (`P-`, `H-`, `E-`, `st-`), as the profile writes them; anything
+    /// else is made name-safe behind the prefix. Deterministic, so a
+    /// re-export publishes the same ids — and an id read back from a
+    /// 1.0 publication (already prefixed) is published unchanged.
+    private static func publishedID(for stableID: String, prefix: String) -> String {
+        let id = fragment(of: stableID)
+        let isUUID = id.range(of: "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                              options: .regularExpression) != nil
+        if isNCName(id), !isUUID { return id }
+        let safe = nameSafe(id)
+        if isUUID || !isNCName(safe) { return "\(prefix)-\(safe)" }
+        return safe
+    }
+
+    /// The ids one content document has already given out — XHTML
+    /// allows each once (§6.3, §18.1). A second claim on the same id
+    /// gets a numbered variant rather than a duplicate.
+    private final class PublishedIDs {
+        var taken: Set<String>
+        init(reserved: Set<String>) { taken = reserved }
+        func claim(_ id: String) -> String {
+            var candidate = id
+            var ordinal = 2
+            while taken.contains(candidate) {
+                candidate = "\(id)-\(ordinal)"
+                ordinal += 1
+            }
+            taken.insert(candidate)
+            return candidate
+        }
     }
 
     private static func addressedBody(of doc: LiquidDoc) -> [AddressedElement] {
@@ -428,17 +633,56 @@ nonisolated enum OrigamiEPUBExporter {
         }
     }
 
+    /// Whether the content document ends with the visible Visual-Meta
+    /// colophon (§8.4). Every export does, except a publisher's edition
+    /// written by Import to Format with "Keep the Visual-Meta colophon"
+    /// left off. The records and the hidden Visual-Meta copy are written
+    /// either way; only what a person reads is withheld.
+    @TaskLocal static var writesColophon = true
+
     /// Writes the EPUB in a publisher's house style.
     static func write(doc: LiquidDoc, resolve: (String) -> LiquidDoc?, to url: URL,
-                      houseStyle: HouseStyle) throws {
+                      houseStyle: HouseStyle, colophon: Bool = true) throws {
         try HouseStyle.$current.withValue(houseStyle) {
-            try write(doc: doc, resolve: resolve, to: url)
+            try $writesColophon.withValue(colophon) {
+                try write(doc: doc, resolve: resolve, to: url)
+            }
         }
     }
 
-    static func write(doc: LiquidDoc, resolve: (String) -> LiquidDoc?, to url: URL) throws {
-        let citations = gatherCitations(from: doc, resolve: resolve)
-        let body = addressedBody(of: doc)
+    /// The publication's language while it is being written — the tag in
+    /// `dc:language`, on the root elements, and the language the writer's
+    /// own headings are set in.
+    @TaskLocal static var writingLanguage = "und"
+
+    static func write(doc source: LiquidDoc, resolve: (String) -> LiquidDoc?, to url: URL) throws {
+        var resolved = source
+        resolved.language = publicationLanguage(of: source)
+        try $writingLanguage.withValue(resolved.language ?? "und") {
+            try writePackage(doc: resolved, resolve: resolve, to: url)
+        }
+    }
+
+    /// The language the document's own values are written in (§5.5): as
+    /// it states, else as its text reads — never assumed to be English.
+    /// "und" (undetermined) when there is no text to tell from.
+    static func publicationLanguage(of doc: LiquidDoc) -> String {
+        if let stated = doc.language.flatMap(LanguageTag.normalized) { return stated }
+        var sample = [doc.title, doc.abstract ?? ""]
+        for paragraph in (doc.body ?? []).prefix(40) where paragraph.heading == nil {
+            sample.append(paragraph.text)
+        }
+        return LanguageTag.detect(sample.joined(separator: "\n")) ?? "und"
+    }
+
+    private static func writePackage(doc source: LiquidDoc, resolve: (String) -> LiquidDoc?,
+                                     to url: URL) throws {
+        // A colophon read back from an earlier export belongs to that
+        // publication: this one writes its own (§8.4), so the old copy
+        // leaves the body rather than printing twice.
+        let doc = withoutImportedColophon(source)
+        var citations = gatherCitations(from: doc, resolve: resolve)
+        var body = addressedBody(of: doc)
 
         // Headings resolve to their stable ids through the concept pool:
         // Author's heading-concepts reuse the headings' Map-node UUIDs.
@@ -451,47 +695,143 @@ nonisolated enum OrigamiEPUBExporter {
                 ?? element.paragraph.id
         }
 
-        let headings = body.filter { $0.headingLevel != nil }.map { element in
-            VisualMetaDocument.Structure.Heading(
-                address: element.address, id: stableID(for: element),
-                level: element.headingLevel ?? 1, text: element.text)
-        }
-        var addressByStableID: [String: String] = [:]
-        for heading in headings {
-            addressByStableID[heading.id] = heading.address
+        // Every citation's key (§7.3, §11): its node id wherever that
+        // stands as a name behind `bib-` — an origami address or a BibTeX
+        // key always does — made name-safe otherwise, and never two alike.
+        var usedKeys: Set<String> = []
+        var keyByNodeID: [String: String] = [:]
+        for index in citations.indices {
+            let base = nameSafe(citations[index].nodeID).isEmpty
+                ? "ref\(citations[index].number)" : nameSafe(citations[index].nodeID)
+            var key = base
+            var ordinal = 2
+            while usedKeys.contains(key) {
+                key = "\(base)-\(ordinal)"
+                ordinal += 1
+            }
+            usedKeys.insert(key)
+            citations[index].key = key
+            if keyByNodeID[citations[index].nodeID] == nil {
+                keyByNodeID[citations[index].nodeID] = key
+            }
         }
 
+        // Every element's published id, unique across the document. The
+        // exporter's own section ids and the reference lines are claimed
+        // first, so no paragraph can take one.
+        let ids = PublishedIDs(reserved: Set(
+            ["references", "origami-publication-info", "visual-meta", "visual-meta-payload"]
+                + citations.map { "bib-\($0.key)" }))
+        for index in body.indices {
+            let element = body[index]
+            let prefix = element.headingLevel != nil ? "H"
+                : OrigamiMath.displayTeX(in: element.paragraph.text) != nil ? "E" : "P"
+            body[index].htmlID = ids.claim(publishedID(for: stableID(for: element), prefix: prefix))
+        }
+
+        let headings = body.filter { $0.headingLevel != nil }.map { element in
+            VisualMetaDocument.Structure.Heading(
+                address: element.address, id: element.htmlID,
+                href: "\(contentPath)#\(element.htmlID)",
+                level: element.headingLevel ?? 1, text: element.text)
+        }
+        // A heading-concept's positional address, by its stable id.
+        var addressByStableID: [String: String] = [:]
+        for element in body where element.headingLevel != nil {
+            addressByStableID[stableID(for: element)] = element.address
+        }
+
+        // Identity (§4.3): the edition and the work, both derived from
+        // the document's origami address so every export of it names the
+        // same ones; the release is this moment.
+        let edition = identifier(of: doc)
+        let work = workIdentifier(of: doc)
+        let timestamp = ISO8601DateFormatter()
+        timestamp.formatOptions = [.withInternetDateTime]
+        let modified = timestamp.string(from: Date())
+
         // The Map's node pool is the concepts and citations themselves —
-        // same ids, so view positions resolve (spec J3–J4).
-        var nodes: [VisualMetaDocument.Map.Node] = doc.concepts.map { concept in
-            VisualMetaDocument.Map.Node(
+        // same ids, so view positions resolve (spec J3–J4). A citation is
+        // named by its key, as everywhere else.
+        func mapRef(_ id: String) -> String { keyByNodeID[id] ?? id }
+        var nodes: [InteractionDocument.Map.Node] = doc.concepts.map { concept in
+            InteractionDocument.Map.Node(
                 id: concept.id, label: concept.name,
                 kind: concept.tag == "heading" ? "heading" : "concept")
         }
         nodes.append(contentsOf: citations.map {
-            VisualMetaDocument.Map.Node(id: $0.nodeID, label: $0.title, kind: "citation")
+            InteractionDocument.Map.Node(id: $0.key, label: $0.title, kind: "citation")
         })
+        let map = InteractionDocument.Map(
+            nodes: nodes,
+            connections: doc.mapConnections.map {
+                InteractionDocument.Map.Connection(from: mapRef($0.from), to: mapRef($0.to))
+            },
+            views: doc.layouts.map { layout in
+                InteractionDocument.Map.View(
+                    id: layout.sourceID ?? stableUUID(from: "\(doc.id):view:\(layout.index)"),
+                    name: layout.name,
+                    space: InteractionDocument.Map.View.Space(units: "points"),
+                    nodes: layout.positions.map {
+                        InteractionDocument.Map.View.Position(ref: mapRef($0.id), x: $0.x, y: $0.y, z: $0.z)
+                    })
+            })
 
+        // Where each live table stands in the flow (§10.2's href).
+        var tablePlacement: [String: String] = [:]
+        for element in body {
+            if let tableID = element.paragraph.tableID, tablePlacement[tableID] == nil {
+                tablePlacement[tableID] = "\(contentPath)#\(element.htmlID)"
+            }
+        }
+
+        // The equation index (§7.7.1): every display equation set as
+        // MathML — the same test element(for:) applies — with the TeX it
+        // was set from.
+        let tablesByID = Set(doc.tables.map(\.identifier))
+        let equations: [VisualMetaDocument.EquationNode] = body.compactMap { element in
+            let paragraph = element.paragraph
+            guard LiquidDoc.imageReference(in: paragraph.text) == nil,
+                  !(paragraph.tableID.map(tablesByID.contains) ?? false),
+                  let tex = OrigamiMath.displayTeX(in: paragraph.text),
+                  TeXMathML.mathElement(for: tex, display: true, id: nil) != nil else { return nil }
+            return VisualMetaDocument.EquationNode(
+                id: element.htmlID, href: "\(contentPath)#\(element.htmlID)",
+                tex: tex, texSHA256: OrigamiMath.sha256Hex(tex))
+        }
+
+        // The BibTeX, and how it is written (§11.1): the self-citation
+        // follows the bibliography's name order, and the declaration is
+        // read from both as written — what the incoming publication
+        // declared is kept where the text cannot show it, and set right
+        // where the text shows otherwise.
+        let bibliography = citations.map(\.bibliographyEntry)
+        let declared = bibliographyConventions(of: doc, entries: bibliography)
+        let selfCitation = declared.selfCitation
         let visualMeta = VisualMetaDocument(
             info: VisualMetaDocument.Info(
+                describes: edition,
                 generator: "Origami Text for macOS",
                 introduction: "This is Visual-Meta: the document's intellectual structure — its concepts, its citations, and any spatial layouts — carried with the document itself, readable by people and machines alike. See https://visual-meta.info."),
             document: VisualMetaDocument.DocumentInfo(
-                title: doc.title,
-                subtitle: doc.subtitle,
+                title: value(doc.title, "title", of: doc),
+                subtitle: doc.subtitle.flatMap { $0.isEmpty ? nil : value($0, "subtitle", of: doc) },
                 authors: authorEntries(of: doc),
                 date: documentDate(of: doc),
-                identifier: identifier(of: doc),
+                identifier: edition,
+                work: work,
+                modified: modified,
                 acmReference: doc.acmReference,
-                rights: doc.license.flatMap { $0.isEmpty ? nil : $0 },
-                license: doc.licenseURI.flatMap { $0.isEmpty ? nil : $0 },
-                publication: doc.publication,
+                rights: packageRights(of: doc),
+                license: packageLicenseURI(of: doc),
+                publication: doc.publication.flatMap { $0.isEmpty ? nil : value($0, "publication", of: doc) },
                 origamiID: doc.id,
-                abstract: doc.abstract.flatMap { $0.isEmpty ? nil : $0 },
+                abstract: doc.abstract.flatMap { $0.isEmpty ? nil : value($0, "abstract", of: doc) },
                 keywords: doc.keywords.isEmpty ? nil : doc.keywords,
                 ccsConcepts: doc.ccsConcepts.isEmpty ? nil : doc.ccsConcepts,
                 isbn: doc.isbn.flatMap { $0.isEmpty ? nil : $0 },
-                doi: doc.doi ?? ""),
+                doi: doc.doi.flatMap { $0.isEmpty ? nil : $0 },
+                language: doc.language),
             structure: VisualMetaDocument.Structure(headings: headings),
             concepts: doc.concepts.map { concept in
                 VisualMetaDocument.ConceptNode(
@@ -499,39 +839,73 @@ nonisolated enum OrigamiEPUBExporter {
                     description: concept.description,
                     tag: concept.tag ?? "concept",
                     urls: concept.urls,
-                    citationIdentifiers: concept.citationIdentifiers,
+                    citationIdentifiers: concept.citationIdentifiers.map(mapRef),
                     address: concept.tag == "heading" ? addressByStableID[concept.id] : nil)
             },
             citations: citations.map(\.node),
-            map: VisualMetaDocument.Map(
-                nodes: nodes,
-                connections: doc.mapConnections.map {
-                    VisualMetaDocument.Map.Connection(from: $0.from, to: $0.to)
-                },
-                views: doc.layouts.map { layout in
-                    VisualMetaDocument.Map.View(
-                        id: layout.sourceID ?? stableUUID(from: "\(doc.id):view:\(layout.index)"),
-                        name: layout.name,
-                        space: VisualMetaDocument.Map.View.Space(units: "points"),
-                        nodes: layout.positions.map {
-                            VisualMetaDocument.Map.View.Position(ref: $0.id, x: $0.x, y: $0.y, z: $0.z)
-                        })
-                }),
-            tables: doc.tables.map { table in
-                VisualMetaDocument.TableNode(
+            equations: equations.isEmpty ? nil : equations,
+            bibliography: declared.conventions.isEmpty ? nil : VisualMetaDocument.Bibliography(
+                href: citations.isEmpty ? nil : "references.bib",
+                conventions: .init(declared.conventions)))
+
+        let interaction = InteractionDocument(
+            info: InteractionDocument.Info(
+                describes: edition, created: modified, generator: "Origami Text for macOS"),
+            tables: doc.tables.isEmpty ? nil : doc.tables.map { table in
+                InteractionDocument.TableNode(
                     identifier: table.identifier,
+                    href: tablePlacement[table.identifier],
                     rowCount: table.rowCount,
                     columnCount: table.columnCount,
                     cells: table.cells.map { row in
-                        row.map { VisualMetaDocument.TableNode.Cell(value: $0.value,
-                                                                    formula: $0.formula) }
+                        row.map { InteractionDocument.TableNode.Cell(value: $0.value,
+                                                                     formula: $0.formula) }
                     })
-            })
+            },
+            map: nodes.isEmpty && map.connections.isEmpty && map.views.isEmpty ? nil : map)
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let visualMetaData = try encoder.encode(visualMeta)
         let visualMetaText = String(decoding: visualMetaData, as: UTF8.self)
+        let interactionData = try encoder.encode(interaction)
+
+        // §18.1: every citation's key must have its record, under that key.
+        for (citation, entry) in zip(citations, bibliography)
+        where BibTeXParser.first(entry)?.key != citation.key {
+            throw OrigamiEPUBExportError.profileViolation(
+                "The reference \"\(citation.title)\" has no BibTeX record under its key \(citation.key).")
+        }
+
+        // The records, in one list: the package's <link rel="record">
+        // declarations, the colophon's access map and the archive's
+        // entries are all generated from it, so none can drift from the
+        // others (§8.4.3). Every record sits beside the package document,
+        // never in META-INF (§4.4.2). A document citing nothing carries
+        // no bibliography record rather than an empty one.
+        var records = [
+            MetadataRecord(href: "visual-meta.json", mediaType: "application/json",
+                           properties: "origami:visual-meta",
+                           label: "Bibliographic and structural identity", data: visualMetaData),
+            MetadataRecord(href: "origami.json", mediaType: "application/json",
+                           properties: "origami:interaction",
+                           label: "Authored interaction and layout", data: interactionData),
+        ]
+        if !citations.isEmpty {
+            records.append(MetadataRecord(
+                href: "references.bib", mediaType: "application/x-bibtex",
+                properties: "origami:bibliography", label: "Bibliography",
+                data: Data((bibliography.joined(separator: "\n\n") + "\n").utf8)))
+        }
+
+        guard BibTeXParser.first(selfCitation) != nil else {
+            throw OrigamiEPUBExportError.profileViolation(
+                "The colophon's self-citation is not valid BibTeX.")
+        }
+        let colophon = writesColophon
+            ? colophonHTML(doc: doc, edition: edition, records: records,
+                           selfCitation: selfCitation)
+            : ""
 
         // Images the body actually references become files in the package
         // and items in the manifest; the markers become <figure><img>.
@@ -552,7 +926,8 @@ nonisolated enum OrigamiEPUBExporter {
         }
 
         let html = paperHTML(doc: doc, body: body, citations: citations,
-                             stableID: stableID, visualMetaText: visualMetaText,
+                             stableID: stableID, ids: ids, colophon: colophon,
+                             visualMetaText: visualMetaText,
                              assetsByID: assetsByID)
         let nav = navHTML(doc: doc, headings: headings)
 
@@ -561,9 +936,9 @@ nonisolated enum OrigamiEPUBExporter {
         // ship one — validate before writing anything. The same bar for
         // anchors: every internal href must land on a real id, in this
         // document and from the navigation document into it.
-        try assertWellFormed(html, file: "content/paper.html")
+        try assertWellFormed(html, file: contentPath)
         try assertWellFormed(nav, file: "content/nav.html")
-        try assertAnchorsResolve(in: html, file: "content/paper.html")
+        try assertAnchorsResolve(in: html, file: contentPath)
         // Structure the profile promises, which valid XHTML can still break.
         for warning in profileWarnings(in: html) {
             NSLog("Origami EPUB export: %@", warning)
@@ -586,8 +961,10 @@ nonisolated enum OrigamiEPUBExporter {
         zip.add("mimetype", Data("application/epub+zip".utf8))
         zip.add("META-INF/container.xml", Data(containerXML.utf8))
         zip.add("package.opf", Data(packageOPF(doc: doc, images: referencedAssets,
-                                               facts: accessibility).utf8))
-        zip.add("content/paper.html", Data(html.utf8))
+                                               facts: accessibility, edition: edition,
+                                               work: work, modified: modified,
+                                               records: records).utf8))
+        zip.add(contentPath, Data(html.utf8))
         zip.add("content/nav.html", Data(nav.utf8))
         var css = styleCSS
         let embedsFaces = HouseStyle.current == .acm
@@ -611,7 +988,9 @@ nonisolated enum OrigamiEPUBExporter {
            let badge = Data(base64Encoded: ccBadgePNGBase64) {
             zip.add("content/images/cc-by.png", badge)
         }
-        zip.add("visual-meta.json", visualMetaData)
+        for record in records {
+            zip.add(record.href, record.data)
+        }
         try zip.finished().write(to: url, options: .atomic)
     }
 
@@ -629,6 +1008,245 @@ nonisolated enum OrigamiEPUBExporter {
     /// to the same identifier every time.
     private static func identifier(of doc: LiquidDoc) -> String {
         "urn:uuid:\(stableUUID(from: doc.id))"
+    }
+
+    /// The work every edition of this document belongs to
+    /// (`dcterms:isVersionOf`, §4.3): a urn:uuid fixed by the document's
+    /// origami address, so it is generated once and never changes.
+    private static func workIdentifier(of doc: LiquidDoc) -> String {
+        "urn:uuid:\(stableUUID(from: "\(doc.id):work"))"
+    }
+
+    // MARK: The records and the colophon (§4.4, §8.4)
+
+    /// One metadata record: where it sits beside the package document,
+    /// what kind it is, and how the colophon names it to a person.
+    private struct MetadataRecord {
+        let href: String
+        let mediaType: String
+        let properties: String
+        let label: String
+        let data: Data
+    }
+
+    /// The colophon's heading — also how an earlier export's colophon is
+    /// recognised when that export is read back and written again.
+    static let colophonHeading = "Visual-Meta Colophon"
+
+    /// The document without a colophon read back from an earlier export:
+    /// the heading "Visual-Meta Colophon" and everything under it until a
+    /// heading of the same rank or higher. Only that exact heading — a
+    /// paper's own section about Visual-Meta is its text, never removed.
+    private static func withoutImportedColophon(_ source: LiquidDoc) -> LiquidDoc {
+        guard var body = source.body else { return source }
+        func level(_ paragraph: LiquidDoc.Paragraph) -> Int? {
+            paragraph.heading ?? LiquidDoc.markdownHeading(in: paragraph.text)?.level
+        }
+        func title(_ paragraph: LiquidDoc.Paragraph) -> String {
+            (LiquidDoc.markdownHeading(in: paragraph.text)?.text ?? paragraph.text)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let start = body.firstIndex(where: {
+                  level($0) != nil
+                      && title($0).caseInsensitiveCompare(colophonHeading) == .orderedSame
+              }),
+              let rank = level(body[start]) else { return source }
+        let end = body[(start + 1)...].firstIndex { (level($0) ?? Int.max) <= rank } ?? body.count
+        body.removeSubrange(start..<end)
+        var doc = source
+        doc.body = body
+        return doc
+    }
+
+    /// The rights as a person reads them — `dc:rights`, the record's
+    /// `document.rights`, and the colophon's Rights, all from this one
+    /// value (§4.7, §8.4.4).
+    private static func packageRights(of doc: LiquidDoc) -> String? {
+        guard let rights = doc.license?
+            .components(separatedBy: .newlines)
+            .map({ $0.trimmingCharacters(in: .whitespaces) })
+            .filter({ !$0.isEmpty })
+            .joined(separator: " "), !rights.isEmpty else { return nil }
+        return rights
+    }
+
+    /// The licence as a URI — `dcterms:license`, `document.license` and
+    /// the colophon's link. A value that is not a URI is not a licence
+    /// identifier (§4.7.1): it is left out, with a warning, rather than
+    /// declared as one.
+    private static func packageLicenseURI(of doc: LiquidDoc) -> String? {
+        guard let uri = doc.licenseURI?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !uri.isEmpty else { return nil }
+        guard uri.contains("://") || uri.hasPrefix("urn:") else {
+            NSLog("Origami EPUB export: the licence \"%@\" is not a URI, so it is not declared as one.", uri)
+            return nil
+        }
+        return uri
+    }
+
+    /// Whom reuse must credit, where a Creative Commons licence asks for
+    /// attribution (`cc:attributionName`, §4.7.1) — the authors, named
+    /// as the byline names them.
+    private static func attributionName(of doc: LiquidDoc) -> String? {
+        guard packageLicenseURI(of: doc)?.contains("creativecommons.org") == true else { return nil }
+        let names = doc.authors.isEmpty ? [doc.displayAuthor] : doc.authors
+        let credit = acmNameList(names.filter { !$0.isEmpty })
+        return credit.isEmpty ? nil : credit
+    }
+
+    /// A licence URI as a person names it: "Creative Commons Attribution
+    /// 4.0", "CC0 1.0 Universal" — else the URI itself.
+    private static func licenceName(for uri: String) -> String {
+        let parts = uri.lowercased().split(separator: "/").map(String.init)
+        if let index = parts.firstIndex(of: "licenses"), index + 1 < parts.count {
+            let words = ["by": "Attribution", "sa": "ShareAlike",
+                         "nc": "NonCommercial", "nd": "NoDerivatives"]
+            let terms = parts[index + 1].split(separator: "-").compactMap { words[String($0)] }
+            if !terms.isEmpty {
+                let version = index + 2 < parts.count ? " " + parts[index + 2] : ""
+                return "Creative Commons " + terms.joined(separator: "-") + version
+            }
+        }
+        if let index = parts.firstIndex(of: "zero") {
+            let version = index + 1 < parts.count ? " " + parts[index + 1] : ""
+            return "CC0" + version + " Universal"
+        }
+        return uri
+    }
+
+    /// The paper's own citation as the colophon prints it (§8.4.2):
+    /// valid BibTeX agreeing with the package — the same title, the same
+    /// creators, the same year — keyed by a slug a person can retype
+    /// (surname, year, first word of the title), and carrying only the
+    /// fields the document states.
+    /// How the publication's BibTeX is written (§11.1), as this writer
+    /// will write it: the bibliography's entries and the colophon's
+    /// self-citation read together, reconciled with what the incoming
+    /// publication declared. `notes` names each place the declaration and
+    /// the text disagree — the text wins, since it is what will be parsed.
+    static func bibliographyConventions(of doc: LiquidDoc, entries: [String])
+        -> (conventions: BibTeXConventions, notes: [String], selfCitation: String) {
+        let references = entries.joined(separator: "\n\n")
+        // The self-citation follows the references' name order, and the
+        // declared order when there are none; BibTeX's unambiguous
+        // "Family, Given" otherwise.
+        let order = BibTeXConventions.inspected(references).nameOrder
+            ?? doc.bibliographyConventions?.nameOrder
+        let selfCitation = selfCitationBibTeX(for: doc, givenFirst: order == "given-family")
+        // Everything but the key style is read from both; keys describe
+        // references.bib alone — the self-citation's key is its own.
+        var inspected = BibTeXConventions.inspected(references + "\n\n" + selfCitation)
+        inspected.keys = BibTeXConventions.inspected(references).keys
+        let (conventions, notes) = inspected.reconciled(withDeclared: doc.bibliographyConventions)
+        return (conventions, notes, selfCitation)
+    }
+
+    /// The same, for a document about to be written — what the Format
+    /// sheet shows before anything is rendered.
+    static func bibliographyConventions(of doc: LiquidDoc)
+        -> (conventions: BibTeXConventions, notes: [String]) {
+        let entries = gatherCitations(from: doc, resolve: { _ in nil }).map(\.bibtexRecord)
+        let result = bibliographyConventions(of: doc, entries: entries)
+        return (result.conventions, result.notes)
+    }
+
+    private static func selfCitationBibTeX(for doc: LiquidDoc, givenFirst: Bool = false) -> String {
+        func value(_ text: String) -> String {
+            text.replacingOccurrences(of: "{", with: "(")
+                .replacingOccurrences(of: "}", with: ")")
+                .components(separatedBy: .newlines).joined(separator: " ")
+                .trimmingCharacters(in: .whitespaces)
+        }
+        let names = (doc.authors.isEmpty ? [doc.displayAuthor] : doc.authors).filter { !$0.isEmpty }
+        let year = String(documentDate(of: doc).prefix(4))
+        let venue = doc.publication.map(value) ?? ""
+        var fields: [(String, String)] = []
+        if !names.isEmpty {
+            let ordered = names.map { givenFirst ? PersonName.givenFirst($0) : PersonName.familyFirst($0) }
+            fields.append(("author", ordered.map(value).joined(separator: " and ")))
+        }
+        fields.append(("title", value(doc.title)))
+        if !venue.isEmpty { fields.append(("booktitle", venue)) }
+        fields.append(("year", year))
+        if let doi = doc.doi.map(value), !doi.isEmpty {
+            fields.append(("doi", doi))
+            fields.append(("url", "https://doi.org/" + doi))
+        }
+        if let isbn = doc.isbn.map(value), !isbn.isEmpty { fields.append(("isbn", isbn)) }
+
+        func letters(_ text: Substring) -> String {
+            text.lowercased().filter { $0.isASCII && $0.isLetter }
+        }
+        let surname = names.first.map { name -> String in
+            name.contains(",")
+                ? letters(name.split(separator: ",").first ?? "")
+                : letters(name.split(separator: " ").last ?? "")
+        } ?? ""
+        let minor: Set<String> = ["the", "and", "for", "with", "from", "into", "onto", "about",
+                                  "towards", "toward", "what", "when", "this", "that", "their"]
+        let word = doc.title.split(separator: " ").map(letters)
+            .first { $0.count > 2 && !minor.contains($0) } ?? ""
+        let key = (surname.isEmpty ? "paper" : surname) + year + word
+        let width = fields.map(\.0.count).max() ?? 0
+        let body = fields.map { name, text in
+            "  " + name.padding(toLength: width, withPad: " ", startingAt: 0) + " = {\(text)}"
+        }
+        return "@\(venue.isEmpty ? "article" : "inproceedings"){\(key),\n"
+            + body.joined(separator: ",\n") + "\n}"
+    }
+
+    /// The rendered Visual-Meta colophon (§8.4), in the order the profile
+    /// sets: what Visual-Meta is, the paper's own citation, where the
+    /// machine-readable records are — listed from the very records the
+    /// package declares — and the rights, from the values the package
+    /// declares. Plain XHTML: it survives printing, pasting and any
+    /// reader that has never heard of the profile.
+    private static func colophonHTML(doc: LiquidDoc, edition: String,
+                                     records: [MetadataRecord], selfCitation: String) -> String {
+        var lines = [
+            "<section epub:type=\"colophon\" id=\"origami-publication-info\">",
+            "<h2>\(escaped(colophonHeading))</h2>",
+            "<p>This document includes Visual-Meta to enable permanent self-citation, "
+                + "metadata preservation, and seamless reference management across digital, "
+                + "Web, and printed formats.</p>",
+            "<h3>Self-citation record</h3>",
+            "<pre>\(escaped(selfCitation))</pre>",
+        ]
+        // The publisher's own reference, verbatim, where there is one —
+        // it is what the publisher asks the paper to be cited by.
+        if let reference = doc.acmReference, !reference.isEmpty {
+            lines.append("<p>The publisher asks that this work be cited as: \(escaped(reference))</p>")
+        }
+        lines.append("<h3>Embedded machine-readable metadata</h3>")
+        lines.append("<p>Structured metadata records are declared in this publication's package "
+            + "document and stored inside the EPUB container:</p>")
+        lines.append("<ul>")
+        for record in records {
+            lines.append("<li>\(escaped(record.label)): <code>\(escaped(record.href))</code></li>")
+        }
+        lines.append("</ul>")
+        lines.append("<p>To inspect the raw records, open this publication in a Visual-Meta-aware "
+            + "reader, or change the <code>.epub</code> extension to <code>.zip</code> and "
+            + "unpack the archive.</p>")
+        let rights = packageRights(of: doc)
+        let licence = packageLicenseURI(of: doc)
+        if rights != nil || licence != nil {
+            var sentences: [String] = []
+            if let rights { sentences.append(escaped(rights)) }
+            if let licence {
+                sentences.append("Licensed under <a href=\"\(attributeEscaped(licence))\">"
+                    + "\(escaped(licenceName(for: licence)))</a>.")
+            }
+            if let credit = attributionName(of: doc) {
+                sentences.append("When reusing this work, credit \(escaped(credit)).")
+            }
+            lines.append("<h3>Rights</h3>")
+            lines.append("<p>\(sentences.joined(separator: " "))</p>")
+        }
+        lines.append("<p>This publication is <code>\(escaped(edition))</code> and conforms to the "
+            + "Origami Text 1.0 profile (\(profileURI)).</p>")
+        lines.append("</section>")
+        return lines.joined(separator: "\n")
     }
 
     private static func stableUUID(from seed: String) -> String {
@@ -701,11 +1319,20 @@ nonisolated enum OrigamiEPUBExporter {
         // citationIdentifiers and Map view positions point at these.
         for reference in doc.references {
             guard let entry = BibTeXParser.parse(reference.bibtex).first else { continue }
-            citations.append(citation(number: citations.count + 1,
-                                      nodeID: reference.id,
-                                      address: nil,
-                                      entry: entry,
-                                      bibtex: reference.bibtex))
+            var cited = citation(number: citations.count + 1,
+                                 nodeID: reference.id,
+                                 address: nil,
+                                 entry: entry,
+                                 bibtex: reference.bibtex)
+            // The work's language: what the reference says, else what its
+            // BibTeX says (`language`, biblatex's `langid`).
+            var forms = reference.forms ?? LiquidDoc.LanguageForms()
+            if (forms.lang ?? "").isEmpty {
+                forms.lang = (entry.fields["langid"] ?? entry.fields["language"])
+                    .flatMap(LanguageTag.normalized)
+            }
+            cited.forms = forms.isEmpty ? nil : forms
+            citations.append(cited)
         }
         return citations
     }
@@ -775,13 +1402,15 @@ nonisolated enum OrigamiEPUBExporter {
     private static func paperHTML(doc: LiquidDoc, body: [AddressedElement],
                                   citations: [Citation],
                                   stableID: (AddressedElement) -> String,
+                                  ids: PublishedIDs,
+                                  colophon: String,
                                   visualMetaText: String,
                                   assetsByID: [String: LiquidDoc.Asset]) -> String {
         var lines: [String] = []
         lines.append("""
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE html>
-        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en" lang="en">
+        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="\(attributeEscaped(writingLanguage))" lang="\(attributeEscaped(writingLanguage))">
         <head>
           <meta charset="utf-8" />
           <title>\(escaped(doc.title))</title>
@@ -792,13 +1421,18 @@ nonisolated enum OrigamiEPUBExporter {
         <main>
         """)
 
-        // Every element's exported anchor, by its stable id: a note
-        // dagger must point at the id a standard reader resolves — the
-        // purple number — never the data-id only this app's own readers
-        // consult ("#fn1" finds nothing out there; "#60B" is the note).
-        let addressByStableID = Dictionary(
-            body.map { (stableID($0), $0.address) },
-            uniquingKeysWith: { first, _ in first })
+        // Every element's published id, by its stable id: a note dagger
+        // or a jump must point at the id a standard reader resolves. A
+        // stable id read back from a 1.0 publication is an address
+        // (`content/paper.html#fn1`) while the tokens citing it carry the
+        // bare id, so each is filed under its fragment as well.
+        var publishedIDs: [String: String] = [:]
+        for element in body {
+            let stable = stableID(element)
+            if publishedIDs[stable] == nil { publishedIDs[stable] = element.htmlID }
+            let bare = fragment(of: stable)
+            if publishedIDs[bare] == nil { publishedIDs[bare] = element.htmlID }
+        }
 
         // Every endnote's printed number, in the order the body first
         // cites it: the trailing digits of its stable id (fn24 → 24,
@@ -888,7 +1522,7 @@ nonisolated enum OrigamiEPUBExporter {
             var html = self.element(for: element, citations: citations,
                                     stableID: stableID, assetsByID: assetsByID,
                                     tablesByID: tablesByID,
-                                    noteAddresses: addressByStableID,
+                                    publishedIDs: publishedIDs,
                                     noteNumbers: noteNumbers,
                                     anchoredNoteRefs: anchoredNoteRefs)
             for name in pendingConcepts {
@@ -898,7 +1532,8 @@ nonisolated enum OrigamiEPUBExporter {
                 }
             }
             if let stretchID, stretchID != openStretchID {
-                let escapedID = attributeEscaped(stretchID)
+                // The aside's id is published like any other (§6.2, §7.10).
+                let escapedID = attributeEscaped(ids.claim(publishedID(for: stretchID, prefix: "st")))
                 let marker = "<a class=\"ot-stretchtext\" href=\"#\(escapedID)\""
                     + " role=\"button\" aria-controls=\"\(escapedID)\""
                     + " aria-expanded=\"false\">\u{00BB}\u{00BB}</a>"
@@ -959,33 +1594,40 @@ nonisolated enum OrigamiEPUBExporter {
         if sectionOpen { lines.append("</section>") }
         lines.append("</main>")
 
+        // The reference list (§8.2): each line addressed as `bib-<key>`,
+        // the key its BibTeX record carries in references.bib — the one
+        // canonical copy, never repeated in attributes here (§11).
         if !citations.isEmpty {
             lines.append("<section id=\"references\" epub:type=\"bibliography\" role=\"doc-bibliography\">")
-            lines.append("<h2>References</h2>")
+            lines.append("<h2>\(escaped(LanguageTag.heading("references", in: writingLanguage)))</h2>")
             lines.append("<ol>")
             for citation in citations {
-                let bibtexAttribute = attributeEscaped(citation.bibtexRecord)
-                let cslData = (try? JSONSerialization.data(
-                    withJSONObject: citation.cslJSON, options: [.sortedKeys])) ?? Data()
-                let cslAttribute = attributeEscaped(String(decoding: cslData, as: UTF8.self))
-                lines.append("<li id=\"ref-\(citation.number)\" data-bibtex=\"\(bibtexAttribute)\" data-csl-json=\"\(cslAttribute)\">\(referenceHTML(for: citation))</li>")
+                lines.append("<li id=\"bib-\(attributeEscaped(citation.key))\">\(referenceHTML(for: citation))</li>")
             }
             lines.append("</ol>")
             lines.append("</section>")
         }
 
-        // The JSON payload is wrapped in CDATA: paper.html is served as
-        // XHTML, where <script> content is parsed, so a bare & or < in the
-        // Visual-Meta (e.g. a heading "Further reading & resources") would
-        // otherwise break well-formedness. Any literal "]]>" in the JSON is
-        // split so it cannot close the section early.
+        // The rendered Visual-Meta colophon (§8.4) — end matter, visible,
+        // and never withheld by a reader.
+        lines.append(colophon)
+
+        // An exact copy of the semantic record (§12.2), for a reader that
+        // has only this document: the same bytes as visual-meta.json, and
+        // saying so in data-origami-derived-from. It is wrapped in CDATA:
+        // paper.html is served as XHTML, where <script> content is parsed,
+        // so a bare & or < in the Visual-Meta (e.g. a heading "Further
+        // reading & resources") would otherwise break well-formedness. Any
+        // literal "]]>" in the JSON is split so it cannot close the section
+        // early. The id stays last in the tag: readers find the copy by
+        // `id="visual-meta-payload">`.
         let safePayload = visualMetaText.replacingOccurrences(of: "]]>", with: "]]]]><![CDATA[>")
         lines.append("""
         <section id="visual-meta" hidden="hidden">
         <h2>Visual-Meta</h2>
         <p>The following is the metadata for this document, presented here for robust, long term preservation.</p>
         <p>@visual-meta-start</p>
-        <script type="application/json" id="visual-meta-payload">
+        <script type="application/json" data-origami-derived-from="visual-meta.json" id="visual-meta-payload">
         <![CDATA[
         \(safePayload)
         ]]>
@@ -1012,11 +1654,16 @@ nonisolated enum OrigamiEPUBExporter {
     /// split from the joined author string only when every chunk reads
     /// as a full name — "Doe, John" stays one line.
     private static func headerHTML(for doc: LiquidDoc) -> String {
-        var lines = ["<header>", "<h1>\(escaped(doc.title))</h1>"]
+        var lines = ["<header>",
+                     "<h1\(languageAttributes(doc.forms["title"]?.lang))>\(escaped(doc.title))</h1>"]
+        // The title's other forms stand under it, each in its own
+        // language (§5.5) — the original stays the heading.
+        lines.append(contentsOf: alternateLines(doc.forms["title"], className: "title-alternate"))
         // The subtitle stands under the title, as the paper prints it —
         // never in the body's flow.
         if let subtitle = doc.subtitle, !subtitle.isEmpty {
-            lines.append("<p class=\"subtitle\">\(escaped(subtitle))</p>")
+            lines.append("<p class=\"subtitle\"\(languageAttributes(doc.forms["subtitle"]?.lang))>\(escaped(subtitle))</p>")
+            lines.append(contentsOf: alternateLines(doc.forms["subtitle"], className: "subtitle-alternate"))
         }
         let display = doc.displayAuthor
         var authors = doc.authors.isEmpty ? [display] : doc.authors
@@ -1039,7 +1686,16 @@ nonisolated enum OrigamiEPUBExporter {
         lines.append("<div class=\"authors authors-\(columns)\">")
         for author in authors {
             lines.append("<div class=\"author-block\">")
-            lines.append("<p class=\"author\">\(escaped(author))</p>")
+            // A name's other forms follow it, quieter — "王小明 Wang
+            // Xiaoming" — each marked with its language.
+            let nameForms = doc.authorForms[author]
+            let alternates = (nameForms?.alternate ?? []).map {
+                "<span class=\"name-alternate\"\(languageAttributes($0.lang, always: true))"
+                    + " data-origami-relation=\"\(attributeEscaped($0.relation))\">\(escaped($0.value))</span>"
+            }
+            lines.append("<p class=\"author\"\(languageAttributes(nameForms?.lang))>\(escaped(author))"
+                + (alternates.isEmpty ? "" : " " + alternates.joined(separator: " "))
+                + "</p>")
             // The affiliation directly under the name, as the paper
             // groups its byline columns — then the contact line.
             if let affiliation = doc.authorAffiliations[author], !affiliation.isEmpty {
@@ -1089,7 +1745,7 @@ nonisolated enum OrigamiEPUBExporter {
         // instead, so this only appears when the body has no Abstract.
         if headerCarriesFrontMatter(doc), let abstract = doc.abstract {
             lines.append("<section class=\"abstract\" epub:type=\"abstract\" role=\"doc-abstract\">")
-            lines.append("<h2>Abstract</h2>")
+            lines.append("<h2>\(escaped(LanguageTag.heading("abstract", in: writingLanguage)))</h2>")
             for paragraph in abstract.components(separatedBy: "\n\n") where !paragraph.isEmpty {
                 lines.append("<p>\(escaped(paragraph))</p>")
             }
@@ -1099,7 +1755,7 @@ nonisolated enum OrigamiEPUBExporter {
                     + escaped(doc.ccsConcepts.map { "\u{2022} " + $0 }.joined(separator: "; ")) + ".</p>")
             }
             if !doc.keywords.isEmpty {
-                lines.append("<p class=\"keywords\"><strong>Keywords:</strong> "
+                lines.append("<p class=\"keywords\"><strong>\(escaped(LanguageTag.heading("keywords", in: writingLanguage)))\(["zh", "ja"].contains(LanguageTag.base(writingLanguage)) ? "\u{FF1A}" : ":")</strong> "
                     + escaped(doc.keywords.joined(separator: ", ")) + "</p>")
             }
             // The ACM Reference Format and the rights box follow the
@@ -1107,8 +1763,53 @@ nonisolated enum OrigamiEPUBExporter {
             lines.append(contentsOf: [acmReferenceHTML(for: doc), licenseHTML(for: doc)]
                 .compactMap { $0 })
         }
+        // A translated abstract is its own block, headed in its own
+        // language, after the original (§5.5).
+        for alternate in doc.forms["abstract"]?.alternate ?? [] {
+            lines.append("<section class=\"abstract abstract-alternate\"\(languageAttributes(alternate.lang, always: true))"
+                + " data-origami-relation=\"\(attributeEscaped(alternate.relation))\">")
+            lines.append("<h2>\(escaped(LanguageTag.heading("abstract", in: alternate.lang)))</h2>")
+            for paragraph in alternate.value.components(separatedBy: "\n\n") where !paragraph.isEmpty {
+                lines.append("<p>\(escaped(paragraph))</p>")
+            }
+            lines.append("</section>")
+        }
         lines.append("</header>")
         return lines.joined(separator: "\n")
+    }
+
+    /// ` lang="…" xml:lang="…"` for a value in another language than the
+    /// publication's — nothing when it is the same, or unknown, unless
+    /// `always`.
+    private static func languageAttributes(_ tag: String?, always: Bool = false) -> String {
+        guard let tag, !tag.isEmpty, always || tag != writingLanguage else { return "" }
+        let value = attributeEscaped(tag)
+        return " lang=\"\(value)\" xml:lang=\"\(value)\""
+    }
+
+    /// A header line for each alternate form of a value, in its language
+    /// and saying why it exists.
+    private static func alternateLines(_ forms: LiquidDoc.LanguageForms?,
+                                       className: String) -> [String] {
+        (forms?.alternate ?? []).map {
+            "<p class=\"\(className)\"\(languageAttributes($0.lang, always: true))"
+                + " data-origami-relation=\"\(attributeEscaped($0.relation))\">\(escaped($0.value))</p>"
+        }
+    }
+
+    /// The cited work's title as a reference line shows it: in its own
+    /// language, marked as such, with a translation after it in brackets
+    /// — "数字文本与知识组织 [Digital Text and Knowledge Organization]" —
+    /// as the citation styles set a work in another language.
+    private static func titleMarkup(_ citation: Citation) -> String {
+        guard !citation.title.isEmpty else { return "" }
+        let attributes = languageAttributes(citation.forms?.lang)
+        var out = attributes.isEmpty ? escaped(citation.title)
+            : "<span\(attributes)>\(escaped(citation.title))</span>"
+        if let translation = citation.forms?.first("translation") {
+            out += " [<span\(languageAttributes(translation.lang, always: true))>\(escaped(translation.value))</span>]"
+        }
+        return out
     }
 
     /// Whether the header sets the abstract (and keywords, and the
@@ -1131,12 +1832,20 @@ nonisolated enum OrigamiEPUBExporter {
                 guard let value, !value.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
                 return value
             }
-            return .init(name: name,
+            return .init(name: .init(name, forms: doc.authorForms[name],
+                                     publication: writingLanguage),
                          affiliation: stated(doc.authorAffiliations[name]
                              ?? (names.count == 1 ? doc.affiliations.first : nil)),
                          email: stated(doc.authorEmails[name]),
                          orcid: stated(doc.authorORCIDs[name]))
         }
+    }
+
+    /// A front-matter value as the record states it (§5.5), with the
+    /// language and alternate forms the document holds for `property`.
+    private static func value(_ text: String, _ property: String,
+                              of doc: LiquidDoc) -> VisualMetaDocument.DocumentInfo.Value {
+        .init(text, forms: doc.forms[property], publication: writingLanguage)
     }
 
     /// The license and copyright box — the CC badge, the boilerplate
@@ -1184,20 +1893,28 @@ nonisolated enum OrigamiEPUBExporter {
         var seen: Set<String> = []
     }
 
-    /// One element, carrying its address as the anchor (spec A1) and its
-    /// stable id in `data-id` (spec A2) — the paragraph's own id, or the
-    /// heading's Map-node UUID when the concept pool knows it.
+    /// The id of a note's first citing mark — where the note's back link
+    /// returns — made a valid name however the note's id is spelled.
+    private static func noteRefID(_ noteID: String) -> String {
+        "fnref-" + nameSafe(fragment(of: noteID))
+    }
+
+    /// One element, carrying its published id — the stable id, the
+    /// paragraph's own or the heading's Map-node UUID when the concept
+    /// pool knows it, as a valid name (§6.2) — and its positional address
+    /// in `data-origami-address`.
     private static func element(for element: AddressedElement,
                                 citations: [Citation],
                                 stableID: (AddressedElement) -> String,
                                 assetsByID: [String: LiquidDoc.Asset],
                                 tablesByID: [String: LiquidDoc.Table] = [:],
-                                noteAddresses: [String: String] = [:],
+                                publishedIDs: [String: String] = [:],
                                 noteNumbers: [String: String] = [:],
                                 anchoredNoteRefs: NoteRefAnchors? = nil) -> String {
         let paragraph = element.paragraph
         let trimmed = paragraph.text.trimmingCharacters(in: .whitespaces)
-        let anchors = "id=\"\(element.address)\" data-id=\"\(escaped(stableID(element)))\""
+        let anchors = "id=\"\(attributeEscaped(element.htmlID))\""
+            + " data-origami-address=\"\(attributeEscaped(element.address))\""
         // An image marker `![alt](asset:id)` becomes a <figure><img>, its
         // bytes written alongside as content/images/<file>.
         if let reference = LiquidDoc.imageReference(in: paragraph.text),
@@ -1227,13 +1944,13 @@ nonisolated enum OrigamiEPUBExporter {
             return "<hr \(anchors) />"
         }
         // A display equation (`$$⏎tex⏎$$`) is MathML, as the profile
-        // makes it authoritative (§7.7): the element's address on the
-        // <math> itself, the TeX as alttext and derived data-latex. TeX
-        // the converter declines stays readable words, as before.
+        // makes it authoritative (§7.7): the element's id and address on
+        // the <math> itself, the TeX as alttext and derived data-latex.
+        // TeX the converter declines stays readable words, as before.
         if let tex = OrigamiMath.displayTeX(in: paragraph.text) {
             if let math = TeXMathML.mathElement(
-                for: tex, display: true, id: element.address,
-                extraAttributes: " data-id=\"\(escaped(stableID(element)))\"") {
+                for: tex, display: true, id: element.htmlID,
+                extraAttributes: " data-origami-address=\"\(attributeEscaped(element.address))\"") {
                 return math
             }
             return "<p \(anchors) class=\"equation\">\(escaped(OrigamiMath.readableTeX(tex)))</p>"
@@ -1259,7 +1976,7 @@ nonisolated enum OrigamiEPUBExporter {
             return "<pre \(anchors)\(languageAttribute)><code\(codeClass)>\(escaped(code))</code></pre>"
         }
         let inline = inlineHTML(from: element.text, citations: citations,
-                                noteAddresses: noteAddresses,
+                                publishedIDs: publishedIDs,
                                 noteNumbers: noteNumbers,
                                 anchoredNoteRefs: anchoredNoteRefs)
         if let level = element.headingLevel {
@@ -1269,7 +1986,7 @@ nonisolated enum OrigamiEPUBExporter {
         // is a real <blockquote>: the marker is the reader's to draw.
         if trimmed.hasPrefix("> "), trimmed.count > 2 {
             let quoted = inlineHTML(from: String(trimmed.dropFirst(2)), citations: citations,
-                                    noteAddresses: noteAddresses,
+                                    publishedIDs: publishedIDs,
                                     noteNumbers: noteNumbers,
                                     anchoredNoteRefs: anchoredNoteRefs)
             return "<blockquote \(anchors)>\(quoted)</blockquote>"
@@ -1280,7 +1997,7 @@ nonisolated enum OrigamiEPUBExporter {
         // the paragraph's own id, so every item stays addressable.
         if element.headingLevel == nil, let item = listItem(of: element.text) {
             let marked = inlineHTML(from: item.text, citations: citations,
-                                    noteAddresses: noteAddresses,
+                                    publishedIDs: publishedIDs,
                                     noteNumbers: noteNumbers,
                                     anchoredNoteRefs: anchoredNoteRefs)
             return "<li \(anchors)>\(marked)</li>"
@@ -1289,10 +2006,14 @@ nonisolated enum OrigamiEPUBExporter {
         // the first mark that cites it. The number may already lead the
         // text (a re-imported export keeps it as words) — then it is
         // wrapped, never doubled.
+        // The note is found by its stable id, or by that id's fragment
+        // when the paragraph was read back from a 1.0 publication — the
+        // tokens citing it carry the bare id.
         let stable = stableID(element)
-        if element.headingLevel == nil, let number = noteNumbers[stable] {
+        let noteID = noteNumbers[stable] != nil ? stable : fragment(of: stable)
+        if element.headingLevel == nil, let number = noteNumbers[noteID] {
             let back = "<a class=\"ot-note-back\" role=\"doc-backlink\""
-                + " href=\"#fnref-\(attributeEscaped(stable))\">\(number).</a>"
+                + " href=\"#\(attributeEscaped(noteRefID(noteID)))\">\(number).</a>"
             var words = inline
             if words.hasPrefix("\(number).") {
                 words = String(words.dropFirst("\(number).".count))
@@ -1302,7 +2023,7 @@ nonisolated enum OrigamiEPUBExporter {
         }
         if let speaker = paragraph.speaker, element.text.hasPrefix("\(speaker):") {
             let rest = inlineHTML(from: String(element.text.dropFirst(speaker.count + 1)),
-                                  citations: citations, noteAddresses: noteAddresses,
+                                  citations: citations, publishedIDs: publishedIDs,
                                   noteNumbers: noteNumbers,
                                   anchoredNoteRefs: anchoredNoteRefs)
             return "<p \(anchors)><strong class=\"speaker\">\(escaped(speaker)):</strong>\(rest)</p>"
@@ -1333,7 +2054,7 @@ nonisolated enum OrigamiEPUBExporter {
     /// profile's numbered citation markers, linked to References with
     /// their stable citation id (spec C6).
     private static func inlineHTML(from text: String, citations: [Citation],
-                                   noteAddresses: [String: String] = [:],
+                                   publishedIDs: [String: String] = [:],
                                    noteNumbers: [String: String] = [:],
                                    anchoredNoteRefs: NoteRefAnchors? = nil) -> String {
         let stash = stashingInlineMath(text)
@@ -1372,7 +2093,7 @@ nonisolated enum OrigamiEPUBExporter {
                 String(match[$0.upperBound...].dropLast())
             } ?? ""
             let replacement: String
-            if let address = noteAddresses[id] {
+            if let address = publishedIDs[id] {
                 replacement = "<a class=\"ot-jump\" data-target-id=\"\(attributeEscaped(id))\""
                     + " href=\"#\(attributeEscaped(address))\">\(words)</a>"
             } else {
@@ -1393,7 +2114,7 @@ nonisolated enum OrigamiEPUBExporter {
             let pattern = "\\[\(token):([A-Za-z0-9._:-]+)\\]"
             while let range = html.range(of: pattern, options: .regularExpression) {
                 let id = String(html[range].dropFirst(token.count + 2).dropLast())
-                let target = noteAddresses[id] ?? id
+                let target = publishedIDs[id] ?? id
                 // An endnote mark shows the note's printed number, as
                 // the PDF did — ‡ only when no number is known (inline
                 // stretchtext notes, which fold in place). The first
@@ -1405,7 +2126,7 @@ nonisolated enum OrigamiEPUBExporter {
                     mark = "<sup>\(number)</sup>"
                     if let anchored = anchoredNoteRefs, !anchored.seen.contains(id) {
                         anchored.seen.insert(id)
-                        anchorID = " id=\"fnref-\(attributeEscaped(id))\""
+                        anchorID = " id=\"\(attributeEscaped(noteRefID(id)))\""
                     }
                 }
                 html.replaceSubrange(range, with:
@@ -1426,7 +2147,7 @@ nonisolated enum OrigamiEPUBExporter {
                 let pattern = "\\[cite:\(NSRegularExpression.escapedPattern(for: citation.nodeID))\\]"
                 html = html.replacingOccurrences(
                     of: pattern,
-                    with: "<a class=\"citation\" epub:type=\"biblioref\" role=\"doc-biblioref\" href=\"#ref-\(citation.number)\" data-citation-id=\"\(attributeEscaped(citation.nodeID))\">[\(citation.number)]</a>",
+                    with: "<a class=\"citation\" epub:type=\"biblioref\" role=\"doc-biblioref\" href=\"#bib-\(attributeEscaped(citation.key))\" data-citation-id=\"\(attributeEscaped(citation.key))\">[\(citation.number)]</a>",
                     options: .regularExpression)
                 continue
             }
@@ -1436,7 +2157,7 @@ nonisolated enum OrigamiEPUBExporter {
             let pattern = "\\[([a-z-]+:)?\(NSRegularExpression.escapedPattern(for: address))(#[A-Za-z0-9._-]+)?\\]"
             html = html.replacingOccurrences(
                 of: pattern,
-                with: "<a class=\"citation\" epub:type=\"biblioref\" role=\"doc-biblioref\" href=\"#ref-\(citation.number)\" data-citation-id=\"\(citation.nodeID)\" data-origami-ref=\"$1\(address)$2\">[\(citation.number)]</a>",
+                with: "<a class=\"citation\" epub:type=\"biblioref\" role=\"doc-biblioref\" href=\"#bib-\(attributeEscaped(citation.key))\" data-citation-id=\"\(attributeEscaped(citation.key))\" data-origami-ref=\"$1\(address)$2\">[\(citation.number)]</a>",
                 options: [.regularExpression, .caseInsensitive])
         }
         // A cite token whose key the pool does not know degrades to the
@@ -1497,8 +2218,8 @@ nonisolated enum OrigamiEPUBExporter {
             let pattern = "\\[cite:\(NSRegularExpression.escapedPattern(for: citation.nodeID))\\]"
             html = html.replacingOccurrences(
                 of: pattern,
-                with: "<a class=\"citation\" epub:type=\"biblioref\" role=\"doc-biblioref\" href=\"#ref-\(citation.number)\""
-                    + " data-citation-id=\"\(attributeEscaped(citation.nodeID))\">[\(citation.number)]</a>",
+                with: "<a class=\"citation\" epub:type=\"biblioref\" role=\"doc-biblioref\" href=\"#bib-\(attributeEscaped(citation.key))\""
+                    + " data-citation-id=\"\(attributeEscaped(citation.key))\">[\(citation.number)]</a>",
                 options: .regularExpression)
         }
         // A key the pool does not know degrades to the bracketed key.
@@ -1750,7 +2471,7 @@ nonisolated enum OrigamiEPUBExporter {
     /// One reference in the publisher's own cadence. The fields are the
     /// same everywhere; only their order and punctuation differ.
     private static func houseReferenceHTML(for citation: Citation, style: HouseStyle) -> String {
-        let title = escaped(citation.title)
+        let title = titleMarkup(citation)
         let venue = escaped(citation.publication)
         let year = escaped(citation.year)
         let link = doiLink(citation)
@@ -1822,7 +2543,7 @@ nonisolated enum OrigamiEPUBExporter {
             parts.append(names)
         }
         if !citation.year.isEmpty { parts.append("\(escaped(citation.year)).") }
-        if !citation.title.isEmpty { parts.append("\(escaped(citation.title)).") }
+        if !citation.title.isEmpty { parts.append("\(titleMarkup(citation)).") }
         if !citation.publication.isEmpty {
             parts.append("<em>\(escaped(citation.publication))</em>.")
         }
@@ -1901,25 +2622,30 @@ nonisolated enum OrigamiEPUBExporter {
                 // Emphasis markers are body notation — a contents label
                 // printed "**Networks with no central gravity**" raw.
                 let label = $0.text.replacingOccurrences(of: "*", with: "")
-                return "<li><a href=\"paper.html#\($0.address)\">\(escaped(label))</a></li>"
+                return "<li><a href=\"paper.html#\(attributeEscaped($0.id))\">\(escaped(label))</a></li>"
             }
         // The reference list is the exporter's own section — the body's
         // headings never carry it, so the contents must add it.
         if !doc.references.isEmpty {
-            entries.append("<li><a href=\"paper.html#references\">References</a></li>")
+            entries.append("<li><a href=\"paper.html#references\">\(escaped(LanguageTag.heading("references", in: writingLanguage)))</a></li>")
+        }
+        // So is the colophon, which every export ends with (§8.4) unless
+        // a publisher's edition leaves it off.
+        if writesColophon {
+            entries.append("<li><a href=\"paper.html#origami-publication-info\">\(escaped(colophonHeading))</a></li>")
         }
         let items = entries.joined(separator: "\n")
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE html>
-        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en" lang="en">
+        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="\(attributeEscaped(writingLanguage))" lang="\(attributeEscaped(writingLanguage))">
         <head>
           <meta charset="utf-8" />
           <title>\(escaped(doc.title))</title>
         </head>
         <body>
         <nav epub:type="toc" role="doc-toc">
-        <h1>Contents</h1>
+        <h1>\(escaped(LanguageTag.heading("contents", in: writingLanguage)))</h1>
         <ol>
         \(items)
         </ol>
@@ -2019,20 +2745,31 @@ nonisolated enum OrigamiEPUBExporter {
         for keyword in doc.keywords where !keyword.isEmpty {
             lines.append("    <dc:subject>\(escaped(keyword))</dc:subject>")
         }
-        if let rights = doc.license, !rights.isEmpty {
-            lines.append("    <dc:rights>\(escaped(rights.replacingOccurrences(of: "\n", with: " ")))</dc:rights>")
+        if let rights = packageRights(of: doc) {
+            lines.append("    <dc:rights>\(escaped(rights))</dc:rights>")
         }
-        if let uri = doc.licenseURI, !uri.isEmpty {
+        if let uri = packageLicenseURI(of: doc) {
             lines.append("    <meta property=\"dcterms:license\">\(escaped(uri))</meta>")
+        }
+        // Creative Commons licences require attribution: the name to
+        // credit, and where to point (§4.7.1).
+        if let credit = attributionName(of: doc) {
+            lines.append("    <meta property=\"cc:attributionName\">\(escaped(credit))</meta>")
+            if let doi = doc.doi, !doi.isEmpty {
+                lines.append("    <meta property=\"cc:attributionURL\">\(escaped("https://doi.org/" + doi))</meta>")
+            }
         }
         return lines.joined(separator: "\n")
     }
 
+    /// The package document. Beside the ordinary EPUB metadata it
+    /// declares the profile, the work, and — as `<link rel="record">`,
+    /// never as manifest items (§4.4.1) — each metadata record, its kind
+    /// in `properties`. The `origami:` prefix is declared because those
+    /// properties use it; `cc:` only when the attribution does.
     private static func packageOPF(doc: LiquidDoc, images: [LiquidDoc.Asset],
-                                   facts: AccessibilityFacts) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        let modified = formatter.string(from: Date())
+                                   facts: AccessibilityFacts, edition: String, work: String,
+                                   modified: String, records: [MetadataRecord]) -> String {
         var imageItems = images.enumerated().map { index, asset in
             "        <item id=\"img\(index + 1)\" href=\"content/images/\(attributeEscaped(asset.filename))\" media-type=\"\(asset.mediaType)\"/>"
         }.joined(separator: "\n")
@@ -2044,23 +2781,31 @@ nonisolated enum OrigamiEPUBExporter {
             imageItems += (imageItems.isEmpty ? "" : "\n")
                 + "        <item id=\"font\(index + 1)\" href=\"content/fonts/\(font.file)\" media-type=\"font/woff2\"/>"
         }
+        var prefixes = "origami: https://origamitext.org/vocab/"
+        if attributionName(of: doc) != nil { prefixes += " cc: http://creativecommons.org/ns#" }
+        let recordLinks = records.map { record in
+            "    <link rel=\"record\" href=\"\(attributeEscaped(record.href))\""
+                + " media-type=\"\(record.mediaType)\" properties=\"\(record.properties)\"/>"
+        }.joined(separator: "\n")
         return """
         <?xml version="1.0" encoding="UTF-8"?>
-        <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" xml:lang="en">
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" xml:lang="\(attributeEscaped(writingLanguage))" prefix="\(prefixes)">
           <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-            <dc:identifier id="pub-id">\(escaped(identifier(of: doc)))</dc:identifier>
+            <dc:identifier id="pub-id">\(escaped(edition))</dc:identifier>
             <dc:title>\(escaped(doc.title))</dc:title>
         \(packageFrontMatterXML(doc))
-            <dc:language>en</dc:language>
+            <dc:language>\(escaped(writingLanguage))</dc:language>
             <dc:date>\(documentDate(of: doc))</dc:date>
             <meta property="dcterms:modified">\(modified)</meta>
+            <meta property="dcterms:conformsTo">\(profileURI)</meta>
+            <meta property="dcterms:isVersionOf">\(escaped(work))</meta>
         \(accessibilityMetadataXML(facts))
+        \(recordLinks)
           </metadata>
           <manifest>
-            <item id="paper" href="content/paper.html" media-type="application/xhtml+xml"\(facts.contentHasMathML ? " properties=\"mathml\"" : "")/>
+            <item id="paper" href="\(contentPath)" media-type="application/xhtml+xml"\(facts.contentHasMathML ? " properties=\"mathml\"" : "")/>
             <item id="nav" href="content/nav.html" media-type="application/xhtml+xml" properties="nav"/>
             <item id="css" href="content/style.css" media-type="text/css"/>
-            <item id="visual-meta" href="visual-meta.json" media-type="application/json"/>
         \(imageItems)
           </manifest>
           <spine>
@@ -2103,6 +2848,9 @@ nonisolated enum OrigamiEPUBExporter {
     header { text-align: center; margin-bottom: 2.5em; }
     header h1 { font-size: 1.7em; margin-bottom: 0.6em; }
     .subtitle { font-size: 1.2em; color: #555555; margin: -0.3em 0 0.8em; }
+    .title-alternate { font-size: 1.1em; color: #555555; margin: -0.4em 0 0.8em; }
+    .subtitle-alternate { color: #555555; margin: -0.6em 0 0.8em; }
+    .name-alternate { color: #555555; font-size: 0.9em; }
     .authors { display: flex; flex-wrap: wrap; justify-content: center; margin: 0.4em 0; }
     .author-block { margin: 0.3em 0; }
     .authors-1 .author-block { width: 100%; }
@@ -2137,6 +2885,8 @@ nonisolated enum OrigamiEPUBExporter {
     dfn { font-style: normal; border-bottom: 0.08em dotted #999999; }
     #references li { margin-bottom: 0.6em; }
     #visual-meta { font-size: 0.8em; color: #777777; margin-top: 3em; }
+    #origami-publication-info { font-size: 0.9em; margin-top: 3em; border-top: 0.1em solid #cccccc; }
+    #origami-publication-info pre { font-size: 0.85em; white-space: pre-wrap; }
     hr { border: 0; border-top: 0.1em solid #cccccc; margin: 2em 0; }
     """
 }

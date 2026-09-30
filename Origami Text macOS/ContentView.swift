@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Translation
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
@@ -723,6 +724,8 @@ struct FrontMatterDraft: Equatable {
         var affiliation = ""
         var email = ""
         var orcid = ""
+        /// The name in Latin script, beside the name as printed (§5.5).
+        var transliteration = ""
     }
 
     var title = ""
@@ -738,6 +741,17 @@ struct FrontMatterDraft: Equatable {
     var keywords = ""
     var ccs = ""
     var abstract = ""
+    /// The paper's language, as a BCP 47 tag — what it states, else what
+    /// its text reads as.
+    var language = ""
+    /// The title in Latin script, when the paper's own is not.
+    var titleTransliteration = ""
+    /// The language the translations below are in, and the translations
+    /// themselves. Each is an additional form; the original stays the
+    /// title and the abstract (profile §5.5).
+    var translationLanguage = ""
+    var titleTranslation = ""
+    var abstractTranslation = ""
 
     init(_ doc: LiquidDoc) {
         title = doc.title
@@ -750,7 +764,8 @@ struct FrontMatterDraft: Equatable {
                    affiliation: doc.authorAffiliations[name]
                        ?? (names.count == 1 ? doc.affiliations.first ?? "" : ""),
                    email: doc.authorEmails[name] ?? "",
-                   orcid: doc.authorORCIDs[name] ?? "")
+                   orcid: doc.authorORCIDs[name] ?? "",
+                   transliteration: doc.authorForms[name]?.first("transliteration")?.value ?? "")
         }
         if authors.isEmpty { authors = [Author()] }
         venue = doc.publication ?? ""
@@ -766,6 +781,16 @@ struct FrontMatterDraft: Equatable {
         keywords = front.keywords.joined(separator: ", ")
         ccs = front.ccsConcepts.joined(separator: "\n")
         abstract = front.abstract ?? ""
+        language = OrigamiEPUBExporter.publicationLanguage(of: doc)
+        titleTransliteration = doc.forms["title"]?.first("transliteration")?.value ?? ""
+        let translated = doc.forms["title"]?.first("translation")
+            ?? doc.forms["abstract"]?.first("translation")
+        // A paper not in English is most often translated into English;
+        // an English one names no target until someone chooses.
+        translationLanguage = translated?.lang
+            ?? (LanguageTag.base(language) == "en" ? "" : "en")
+        titleTranslation = doc.forms["title"]?.first("translation", lang: translated?.lang)?.value ?? ""
+        abstractTranslation = doc.forms["abstract"]?.first("translation", lang: translated?.lang)?.value ?? ""
     }
 
     private static func trimmed(_ text: String) -> String {
@@ -797,6 +822,33 @@ struct FrontMatterDraft: Equatable {
             let orcid = Self.bareORCID(person.orcid)
             if !orcid.isEmpty { doc.authorORCIDs[name] = orcid }
         }
+        // Languages and alternate forms (§5.5). Every value keeps its own
+        // field in its own script; these are added beside it, and any
+        // other forms the EPUB carried are kept.
+        let tag = LanguageTag.normalized(language)
+        doc.language = tag
+        var authorForms: [String: LiquidDoc.LanguageForms] = [:]
+        for person in people {
+            let name = Self.trimmed(person.name)
+            var forms = source.authorForms[name] ?? LiquidDoc.LanguageForms()
+            let latinTag = tag.map(LanguageTag.latin(of:))
+            forms.alternate.removeAll { $0.relation == "transliteration" }
+            forms.set(person.transliteration, lang: latinTag, relation: "transliteration")
+            if !forms.isEmpty { authorForms[name] = forms }
+        }
+        doc.authorForms = authorForms
+        let target = LanguageTag.normalized(translationLanguage)
+        var titleForms = source.forms["title"] ?? LiquidDoc.LanguageForms()
+        titleForms.alternate.removeAll { $0.relation == "transliteration" }
+        titleForms.set(titleTransliteration, lang: tag.map(LanguageTag.latin(of:)),
+                       relation: "transliteration")
+        titleForms.alternate.removeAll { $0.relation == "translation" && $0.lang == target }
+        titleForms.set(titleTranslation, lang: target, relation: "translation")
+        var abstractForms = source.forms["abstract"] ?? LiquidDoc.LanguageForms()
+        abstractForms.alternate.removeAll { $0.relation == "translation" && $0.lang == target }
+        abstractForms.set(abstractTranslation, lang: target, relation: "translation")
+        doc.forms["title"] = titleForms.isEmpty ? nil : titleForms
+        doc.forms["abstract"] = abstractForms.isEmpty ? nil : abstractForms
         doc.publication = Self.trimmed(venue).isEmpty ? nil : Self.trimmed(venue)
         doc.doi = Self.trimmed(doi).isEmpty ? nil : Self.trimmed(doi)
             .replacingOccurrences(of: "https://doi.org/", with: "")
@@ -875,8 +927,9 @@ struct FormatChoiceSheet: View {
     /// house style, written into the bundle beside the LaTeX.
     @State private var alsoEPUB = true
     /// The Visual-Meta colophon at the paper's end: the paper's own, or
-    /// one written from its metadata when it has none.
-    @State private var colophon = true
+    /// one written from its metadata when it has none. Left out unless
+    /// kept — a publisher's edition carries none of it by default.
+    @State private var colophon = false
     /// The rights the rendered edition is published under. Origami Text
     /// decides this, not the writing tool: it starts from whatever the
     /// paper states, else CC BY 4.0, ACM's open-access default.
@@ -886,6 +939,14 @@ struct FormatChoiceSheet: View {
     /// Re-read after the helper is installed, so the toggle wakes up
     /// without reopening the sheet.
     @State private var canCompile = ACMLaTeX.isTeXAvailable
+    /// Set to run the system translation of the title and abstract; the
+    /// framework asks before downloading a language.
+    @State private var translation: TranslationSession.Configuration?
+    @State private var translationNote = ""
+    /// How the references' BibTeX is written, as the render will declare
+    /// it (§11.1), and where the EPUB's own declaration disagreed.
+    @State private var conventions = BibTeXConventions()
+    @State private var conventionNotes: [String] = []
 
     init(conversion: AppModel.FormatConversion) {
         self.conversion = conversion
@@ -936,6 +997,7 @@ struct FormatChoiceSheet: View {
             Form {
                 formatSection
                 paperSection
+                languageSection
                 authorsSection
                 venueSection
                 classificationSection
@@ -954,7 +1016,7 @@ struct FormatChoiceSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button(compile && canCompile ? "Render PDF\u{2026}" : "Write Bundle\u{2026}") {
+                Button("Process") {
                     let makePDF = compile && canCompile
                     let chosen = style
                     let chosenPublisher = publisher
@@ -982,6 +1044,9 @@ struct FormatChoiceSheet: View {
         .onAppear {
             compile = canCompile
             rights = ACMLaTeX.Rights.stated(by: conversion.doc) ?? .ccBy
+            let declared = OrigamiEPUBExporter.bibliographyConventions(of: conversion.doc)
+            conventions = declared.conventions
+            conventionNotes = declared.notes
         }
     }
 
@@ -1036,6 +1101,102 @@ struct FormatChoiceSheet: View {
         }
     }
 
+    private var languageSection: some View {
+        Section {
+            TextField("Language", text: $draft.language, prompt: Text("zh-Hans, ru, en"))
+            HStack {
+                TextField("Title in Latin script", text: $draft.titleTransliteration,
+                          prompt: Text("None"))
+                Button("Transliterate") {
+                    draft.titleTransliteration = LanguageTag.transliterated(draft.title) ?? ""
+                }
+                .help("Write the title in Latin script beside the original")
+            }
+            TextField("Translate into", text: $draft.translationLanguage, prompt: Text("en"))
+            TextField("Translated title", text: $draft.titleTranslation, prompt: Text("None"))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Translated abstract")
+                TextEditor(text: $draft.abstractTranslation)
+                    .font(.body)
+                    .frame(minHeight: 60)
+            }
+            HStack {
+                Button("Translate Title and Abstract") { startTranslation() }
+                    .disabled(LanguageTag.normalized(draft.translationLanguage) == nil)
+                if !translationNote.isEmpty {
+                    Text(translationNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Language and translation")
+        } footer: {
+            Text(languageFooter)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .translationTask(translation) { session in
+            await translate(with: session)
+        }
+    }
+
+    /// Where the declared conventions come from, in words.
+    private var conventionSource: String {
+        let declared = "Declared in the rendered EPUB's Visual-Meta, so its BibTeX is read without guessing. "
+        switch conventions.source {
+        case "declared": return declared + "Taken from the EPUB's own declaration."
+        case "declared-and-inspected":
+            return declared + "Taken from the EPUB's declaration and checked against its BibTeX."
+        case "inspected":
+            return declared + "The EPUB declared none, so they were read from its BibTeX."
+        default: return declared + "The EPUB declared none and has no references to read them from."
+        }
+    }
+
+    /// What the language fields mean, in words: the tag read back as a
+    /// language name, and the rule that an original is never replaced.
+    private var languageFooter: String {
+        let name = LanguageTag.normalized(draft.language).map(LanguageTag.displayName)
+        let written = name.map { "Written in \($0). " } ?? "A BCP 47 tag, such as zh-Hans or ru. "
+        return written + "The title, abstract and names stay in their own language and script; "
+            + "a transliteration or translation is added beside them, never in their place."
+    }
+
+    /// Starts the system translation, or runs it again with the current
+    /// text when it has run before.
+    private func startTranslation() {
+        guard let target = LanguageTag.normalized(draft.translationLanguage) else { return }
+        let source = LanguageTag.normalized(draft.language).map { Locale.Language(identifier: $0) }
+        translationNote = "Translating\u{2026}"
+        let configuration = TranslationSession.Configuration(
+            source: source, target: Locale.Language(identifier: target))
+        if translation == configuration {
+            translation?.invalidate()
+        } else {
+            translation = configuration
+        }
+    }
+
+    /// The title and abstract through the session, into the translation
+    /// fields. The originals are never touched.
+    private func translate(with session: TranslationSession) async {
+        do {
+            let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty {
+                draft.titleTranslation = try await session.translate(title).targetText
+            }
+            let abstract = draft.abstract.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !abstract.isEmpty {
+                draft.abstractTranslation = try await session.translate(abstract).targetText
+            }
+            translationNote = "Translated by the system; check it before rendering."
+        } catch {
+            translationNote = "Could not translate: \(error.localizedDescription)"
+        }
+    }
+
     private var authorsSection: some View {
         Section {
             ForEach($draft.authors) { $author in
@@ -1056,6 +1217,14 @@ struct FormatChoiceSheet: View {
                     TextField("Email", text: $author.email)
                     TextField("ORCID", text: $author.orcid,
                               prompt: Text("0000-0000-0000-0000"))
+                    HStack {
+                        TextField("Name in Latin script", text: $author.transliteration,
+                                  prompt: Text("Wang Xiaoming"))
+                        Button("Transliterate") {
+                            author.transliteration = LanguageTag.transliterated(author.name) ?? ""
+                        }
+                        .help("Write the name in Latin script beside the name as printed")
+                    }
                     if let problem = FrontMatterDraft.orcidProblem(author.orcid) {
                         Label(problem, systemImage: "exclamationmark.triangle")
                             .font(.caption)
@@ -1134,10 +1303,26 @@ struct FormatChoiceSheet: View {
                  + "references set in \(publisher == .acm ? "ACM" : publisher.label)'s style.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Toggle("Include the Visual-Meta colophon", isOn: $colophon)
-            Text(ACMLaTeX.hasColophon(conversion.doc)
-                 ? "The paper's own colophon, at the end."
-                 : "The paper has none; one is written from its metadata — its citation as BibTeX.")
+            LabeledContent("BibTeX conventions") {
+                Text(conventions.summary.isEmpty ? "None to declare" : conventions.summary)
+                    .multilineTextAlignment(.trailing)
+            }
+            Text(conventionSource)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(conventionNotes, id: \.self) { note in
+                Label(note, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Toggle("Keep the Visual-Meta colophon", isOn: $colophon)
+            Text(colophon
+                 ? (ACMLaTeX.hasColophon(conversion.doc)
+                    ? "The paper's own colophon, at the end."
+                    : "The paper has none; one is written from its metadata — its citation as BibTeX.")
+                 : "Everything in the colophon is left out of the PDF and the EPUB. "
+                   + "The EPUB's metadata records are still written.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Toggle("Also compile to PDF", isOn: $compile)
