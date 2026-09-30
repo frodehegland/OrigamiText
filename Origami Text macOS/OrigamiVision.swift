@@ -4407,11 +4407,21 @@ private struct VisionCitationSheet: View {
                     Label("Listed to acquire", systemImage: "checkmark")
                         .foregroundStyle(.secondary)
                 } else {
-                    Button("Acquire") {
-                        model.requestAcquisition(key: key, title: title,
-                                                 author: author, year: year, doi: doi)
+                    // The list lives in the community folder, so without
+                    // one there is nowhere to write it — said, not silent.
+                    VStack(spacing: 6) {
+                        Button("Acquire") {
+                            model.requestAcquisition(key: key, title: title,
+                                                     author: author, year: year, doi: doi)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.index.folderURL == nil)
+                        if model.index.folderURL == nil {
+                            Text("Choose a community folder to list books to acquire.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
                 }
             }
             .padding(.vertical, 12)

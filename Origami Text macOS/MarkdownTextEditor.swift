@@ -132,6 +132,10 @@ struct MarkdownTextEditor: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                   height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
+        // The standard find bar: Edit ▸ Find, and the context menu's
+        // Find in Document, search the draft in place.
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
         textView.augmentMenu = { [weak coordinator = context.coordinator] menu, charIndex in
             coordinator?.augment(menu, in: textView, at: charIndex)
         }

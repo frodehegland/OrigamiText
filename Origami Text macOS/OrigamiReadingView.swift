@@ -108,9 +108,13 @@ struct ReadingCommands: Commands {
             // number anyone can cite; a click copies its link.
             Toggle("Paragraph Numbers", isOn: $paragraphNumbers)
             Divider()
-            // Find in the open book — both presentations answer.
-            Button("Find in Book") { model.readerFindShow += 1 }
+            // ⌘F: the Find field at the foot of the list, which searches
+            // every book's title, authors and text; in the open book when
+            // the list is hidden. The book's own find is a menu item, and
+            // ⌘G opens its bar when closed.
+            Button("Find") { model.findCommand() }
                 .keyboardShortcut("f", modifiers: .command)
+            Button("Find in Book") { model.readerFindShow += 1 }
                 .disabled(model.openEPUB == nil)
             Button("Find Next") { model.readerFindNext += 1 }
                 .keyboardShortcut("g", modifiers: .command)

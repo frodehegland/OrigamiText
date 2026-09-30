@@ -3096,6 +3096,20 @@ final class AppModel {
     func requestReaderFind(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
+        // With no book open the words came from the editor: its find bar
+        // takes them, as Edit ▸ Find would.
+        if openEPUB == nil,
+           let textView = NSApp.keyWindow?.firstResponder as? NSTextView, textView.usesFindBar {
+            let pasteboard = NSPasteboard(name: .find)
+            pasteboard.clearContents()
+            pasteboard.setString(trimmed, forType: .string)
+            for action in [NSTextFinder.Action.showFindInterface, .setSearchString, .nextMatch] {
+                let item = NSMenuItem()
+                item.tag = action.rawValue
+                textView.performTextFinderAction(item)
+            }
+            return
+        }
         readerFindRequest = ReaderFindRequest(
             text: trimmed, stamp: (readerFindRequest?.stamp ?? 0) + 1)
     }
@@ -3118,6 +3132,20 @@ final class AppModel {
     var readerFindShow = 0
     var readerFindNext = 0
     var readerFindPrevious = 0
+
+    /// ⌘F: the Find field at the foot of the list takes the keyboard.
+    /// A counter the field watches; and whether that field is on screen
+    /// at all, so ⌘F finds in the book when the list is hidden.
+    var listFindFocusRequest = 0
+    var listFindBarShown = 0
+
+    func findCommand() {
+        if listFindBarShown > 0 {
+            listFindFocusRequest += 1
+        } else if openEPUB != nil {
+            readerFindShow += 1
+        }
+    }
 
     /// How far the open book is folded (0 reads whole) — shared between
     /// the foot bar's Outline group and the reading view, so the fold
@@ -4918,6 +4946,103 @@ final class AppModel {
             return false
         }
     }
+
+    /// Where Find met a book's text: the first passage carrying the
+    /// words, the paragraph it sits in, and how many places in all.
+    struct EPUBTextMatch: Hashable {
+        let paragraphID: String
+        let passage: String
+        let count: Int
+    }
+
+    /// Find at the foot of a book list, split in two (Frode's order):
+    /// books whose title, authors or venue carry the words first, then
+    /// books that carry them only in their text, each with where. A query
+    /// that matches nothing leaves the list whole and beeps, as Find
+    /// always has.
+    func searchSplitEPUBs(_ records: [EPUBRecord])
+        -> (named: [EPUBRecord], inText: [(record: EPUBRecord, match: EPUBTextMatch)]) {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return (records, []) }
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        func says(_ text: String?) -> Bool { text?.range(of: query, options: options) != nil }
+        var named: [EPUBRecord] = []
+        var inText: [(record: EPUBRecord, match: EPUBTextMatch)] = []
+        for record in records {
+            if says(record.title) || record.authorList.contains(where: says) || says(record.publication) {
+                named.append(record)
+            } else if let match = textMatch(for: record, query: query) {
+                inText.append((record, match))
+            }
+        }
+        // The books that carry the words most, first.
+        inText.sort { $0.match.count > $1.match.count }
+        if named.isEmpty, inText.isEmpty, !records.isEmpty {
+            if findMissAnswered != searchText {
+                findMissAnswered = searchText
+                NSSound.beep()
+            }
+            return (records, [])
+        }
+        return (named, inText)
+    }
+
+    /// Text matches, remembered per query until the index next changes —
+    /// a list redraws far more often than anyone types.
+    @ObservationIgnored private var textMatchCache: (query: String, revision: Int,
+                                                     matches: [String: EPUBTextMatch?]) =
+        ("", -1, [:])
+
+    private func textMatch(for record: EPUBRecord, query: String) -> EPUBTextMatch? {
+        if textMatchCache.query != query || textMatchCache.revision != index.revision {
+            textMatchCache = (query, index.revision, [:])
+        }
+        if let known = textMatchCache.matches[record.id] { return known }
+        var found: EPUBTextMatch?
+        if let doc = index.byID[record.id]?.doc {
+            let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+            var count = 0
+            var first: (id: String, passage: String)?
+            for paragraph in doc.body ?? [] where paragraph.effectiveHeading == nil {
+                let text = paragraph.text
+                var searchRange = text.startIndex..<text.endIndex
+                while let range = text.range(of: query, options: options, range: searchRange) {
+                    count += 1
+                    if first == nil {
+                        first = (paragraph.id, Self.passage(in: text, around: range))
+                    }
+                    searchRange = range.upperBound..<text.endIndex
+                }
+            }
+            if let first {
+                found = EPUBTextMatch(paragraphID: first.id, passage: first.passage, count: count)
+            }
+        }
+        textMatchCache.matches[record.id] = .some(found)
+        return found
+    }
+
+    /// Some words either side of a match, cut at word boundaries, with
+    /// ellipses where the paragraph goes on.
+    private static func passage(in text: String, around range: Range<String.Index>) -> String {
+        var lead = String(text[..<range.lowerBound].suffix(70))
+        var tail = String(text[range.upperBound...].prefix(90))
+        let cutLead = lead.count == 70, cutTail = tail.count == 90
+        if cutLead, let space = lead.firstIndex(where: \.isWhitespace) {
+            lead = String(lead[space...])
+        }
+        if cutTail, let space = tail.lastIndex(where: \.isWhitespace) {
+            tail = String(tail[..<space])
+        }
+        let body = (lead + text[range] + tail)
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return (cutLead ? "\u{2026}" : "") + body + (cutTail ? "\u{2026}" : "")
+    }
+
+    /// A find the reader runs when the named book opens — Find's text
+    /// matches open a book already searching for the words.
+    var pendingBookFind: (recordID: String, text: String)?
 
     /// The opened EPUBs that are part of a given journal or proceedings,
     /// under whichever of its names their pages carry.

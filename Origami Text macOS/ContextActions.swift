@@ -114,11 +114,17 @@ enum ContextActionBuilder {
                     mode: mode, model: model))
             }
             // Find submenu: search within the open document or online.
-            let findChildren: [ContextAction] = [
-                ContextAction(id: "find-in-doc", title: "Find in Document",
-                              systemImage: "doc.text.magnifyingglass") {
+            // In Document only where something can answer it: the EPUB
+            // reader, or the editor's find bar. A library document is set
+            // paragraph by paragraph and has no find to hand the words to.
+            var findChildren: [ContextAction] = []
+            if model.openEPUB != nil || mode == .editing {
+                findChildren.append(ContextAction(id: "find-in-doc", title: "Find in Document",
+                                                  systemImage: "doc.text.magnifyingglass") {
                     model.requestReaderFind(trimmed)
-                },
+                })
+            }
+            findChildren += [
                 ContextAction(id: "find-online", title: "Find Online",
                               systemImage: "globe") {
                     let encoded = trimmed.addingPercentEncoding(

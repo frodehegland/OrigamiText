@@ -225,6 +225,10 @@ struct EPUBReaderScreen: View {
     /// The foot's mode words: Faithful is the WebView rendering; the
     /// rest are the native reading styles (OrigamiReadingView).
     @AppStorage("readerMode") private var readerModeRaw = EPUBReaderMode.faithful.rawValue
+    /// Read Aloud's speed and system voice (Settings ▸ Assistive), the
+    /// same the Origami reading styles use.
+    @AppStorage(AppSettings.readAloudRateKey) private var readAloudRate: Double = 1.0
+    @AppStorage(AppSettings.readAloudVoiceIDKey) private var readAloudVoiceID = ""
     @Environment(AppModel.self) private var model
     let book: OpenEPUB
     var onClose: () -> Void
@@ -485,7 +489,9 @@ struct EPUBReaderScreen: View {
     private func startPageReading(sentences: [String], from start: Int) {
         let units = sentences.enumerated().dropFirst(max(0, min(start, sentences.count)))
             .map { index, text in SpeechUnit(blockID: "s\(index)", text: text, kind: .paragraph) }
-        pageReader.startReading(Array(units))
+        pageReader.startReading(Array(units),
+                                options: SpeechOptions(rate: Float(readAloudRate),
+                                                       voiceID: readAloudVoiceID))
     }
 
     /// The sentence being spoken, as its index in the page's list.
@@ -1077,6 +1083,15 @@ struct EPUBReaderScreen: View {
             if model.readerModeResetBookID != book.id {
                 model.readerModeResetBookID = book.id
                 readerModeRaw = EPUBReaderMode.faithful.rawValue
+            }
+            // Opened from Find's text matches: the book arrives already
+            // searching for the words.
+            if let pending = model.pendingBookFind, pending.recordID == model.openEPUBRecordID {
+                model.pendingBookFind = nil
+                findText = pending.text
+                showsFind = true
+                findForward = true
+                findStamp += 1
             }
         }
         // A find-fold landing has shown its matches; the highlight
@@ -3865,9 +3880,16 @@ final class ReaderWebView: WKWebView {
     }
 
     /// Plain "Copy" of the current selection — WebKit's own copy, so rich
-    /// text and formatting come along, not just the plain string.
+    /// text and formatting come along, not just the plain string. Sent as
+    /// the responder action Edit ▸ Copy sends: a page script's
+    /// execCommand('copy') is refused outside a user gesture. The plain
+    /// selection is the fallback.
     @objc private func copySelection(_ sender: Any?) {
-        evaluateJavaScript("document.execCommand('copy')")
+        if NSApp.sendAction(#selector(NSText.copy(_:)), to: self, from: sender) { return }
+        let text = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 

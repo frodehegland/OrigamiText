@@ -34,6 +34,8 @@ struct ContentView: View {
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     /// When true the detail pane is hidden so the list column can expand freely.
     @State private var wideListMode = false
+    /// The list's Find field, focused by ⌘F.
+    @FocusState private var findFieldFocused: Bool
 
     private var venueIsSelected: Bool {
         switch model.sidebarSelection {
@@ -420,6 +422,11 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                 TextField("Find", text: $model.searchText)
                     .textFieldStyle(.plain)
+                    .focused($findFieldFocused)
+                    // ⌘F lands here (Edit ▸ Find).
+                    .onChange(of: model.listFindFocusRequest) { findFieldFocused = true }
+                    .onAppear { model.listFindBarShown += 1 }
+                    .onDisappear { model.listFindBarShown -= 1 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)

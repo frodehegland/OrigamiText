@@ -4,7 +4,7 @@ Origami Text treats ways of seeing a library as **view modules**: single Swift f
 
 This follows Doug Engelbart's NLS, where a document could be seen through many *view specifications* without changing the document. The documents are plain, self-describing; the views multiply. When someone in your community thinks of a new way of looking — a reading-order timeline, a disagreement map, a view for teaching — they can build it and hand it to everyone else as one file.
 
-**Where this stands today:** Origami Text has just pivoted to EPUB + Visual-Meta as its document form, and the first generation of view modules (built against the earlier JSON documents) has been retired. The module mechanism itself — the registry, the sidebar routing, the exchange — remains and works; the registry is simply empty while views are rebuilt against the EPUB library. The built-in ways in (Chronological, Authors, Journals, People, Concepts) are currently wired directly. If you want to build a view now, the mechanism below is live and yours to use.
+**Where this stands today:** Origami Text reads EPUB + Visual-Meta as its document form, and the views have been rebuilt against the EPUB library: the registry holds 26 of them (Ask, Connections, The Weave, Glossary, Lineage, Agreements and Disagreements among them), eight shown on a fresh install and the rest offered in Edit Views. The built-in ways in (Chronological, Authors, Journals, People, Concepts) are wired directly. The mechanism below is live and yours to use.
 
 ## Writing a view
 

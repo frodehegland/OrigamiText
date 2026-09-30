@@ -153,11 +153,6 @@ struct EPUBLibraryListView: View {
         return ascending ? sorted : sorted.reversed()
     }
 
-    private var records: [EPUBRecord] {
-        // Find at the foot of the list narrows every mode the same way.
-        model.searchFilteredEPUBs(unsearchedRecords)
-    }
-
     private var unsearchedRecords: [EPUBRecord] {
         switch mode {
         case .all:
@@ -208,72 +203,43 @@ struct EPUBLibraryListView: View {
     }
 
     private var bookList: some View {
-        let records = records
+        let query = model.searchText.trimmingCharacters(in: .whitespaces)
+        let split = model.searchSplitEPUBs(unsearchedRecords)
+        let textIDs = Set(split.inText.map(\.record.id))
+        let records = split.named + split.inText.map(\.record)
         // Selection IS the open book: the row highlights natively, and
-        // selecting a row opens it in the reader.
-        return List(selection: epubListSelection(model)) {
-            ForEach(records) { record in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Image(systemName: "pin.fill")
-                            .font(.caption)
-                            .foregroundStyle(EmberIconLabelStyle.ember)
-                            .opacity(model.isTopOfPile(record) ? 1 : 0)
-                        Text(record.title)
-                            .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
-                            .fontWeight(model.isUnread(record) ? .bold : .regular)
-                            .lineLimit(2)
-                    }
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Image(systemName: "pin.fill")
-                            .font(.caption)
-                            .opacity(0)
-                        HStack(spacing: 6) {
-                            Text(record.author)
-                            if let filed = model.epubFolder(for: record.id), !inFolder {
-                                Text("· \(filed)")
-                            }
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    // The reader's whole-document annotation, quiet
-                    // lines under the author.
-                    if let note = model.documentAnnotationNote(forRecordID: record.id) {
-                        HStack(alignment: .firstTextBaseline, spacing: 5) {
-                            Image(systemName: "pin.fill")
-                                .font(.caption)
-                                .opacity(0)
-                            Text(note)
-                                .font(.caption)
-                                .italic()
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(2)
-                        }
+        // selecting a row opens it in the reader. A text match opens the
+        // book already searching for the words.
+        let base = epubListSelection(model)
+        let selection = Binding<Set<String>>(
+            get: { base.wrappedValue },
+            set: { ids in
+                if ids.count == 1, let id = ids.first, textIDs.contains(id) {
+                    if id == model.openEPUBRecordID {
+                        model.requestReaderFind(query)
+                    } else {
+                        model.pendingBookFind = (id, query)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 6)
-                .tag(record.id)
-                .contextMenu {
-                    Menu("File Under") {
-                        ForEach(model.epubFolders, id: \.self) { name in
-                            Button(name) { model.fileEPUB(record.id, under: name) }
-                        }
-                        if !model.epubFolders.isEmpty { Divider() }
-                        Button("New Folder…") { model.promptNewEPUBFolder(fileAfter: record.id) }
+                base.wrappedValue = ids
+            })
+        return List(selection: selection) {
+            if query.isEmpty || split.inText.isEmpty {
+                ForEach(split.named) { record in bookRow(record, match: nil) }
+            } else {
+                // Title, author and venue first; the books that carry the
+                // words only in their text below, each saying where.
+                if !split.named.isEmpty {
+                    Section("Title, Author or Venue") {
+                        ForEach(split.named) { record in bookRow(record, match: nil) }
                     }
-                    if model.epubFolder(for: record.id) != nil {
-                        Button("Remove from Folder") { model.unfileEPUB(record.id) }
-                    }
-                    Divider()
-                    EPUBPileMenu(record: record)
                 }
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+                Section("In the Text") {
+                    ForEach(split.inText, id: \.record.id) { hit in
+                        bookRow(hit.record, match: hit.match)
+                    }
+                }
             }
-
         }
         // The list starts right under the toolbar, no dead air.
         .contentMargins(.top, 0, for: .scrollContent)
@@ -286,6 +252,102 @@ struct EPUBLibraryListView: View {
                 }
             }
         }
+    }
+
+    /// The passage with Find's words marked.
+    private func marked(_ passage: String) -> AttributedString {
+        var text = AttributedString(passage)
+        let query = model.searchText.trimmingCharacters(in: .whitespaces)
+        var searchStart = text.startIndex
+        while !query.isEmpty,
+              let range = text[searchStart...].range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) {
+            text[range].font = .caption.bold()
+            text[range].foregroundColor = .primary
+            searchStart = range.upperBound
+        }
+        return text
+    }
+
+    /// One book in the list; a text match carries where Find met it.
+    @ViewBuilder
+    private func bookRow(_ record: EPUBRecord, match: AppModel.EPUBTextMatch?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "pin.fill")
+                    .font(.caption)
+                    .foregroundStyle(EmberIconLabelStyle.ember)
+                    .opacity(model.isTopOfPile(record) ? 1 : 0)
+                Text(record.title)
+                    .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
+                    .fontWeight(model.isUnread(record) ? .bold : .regular)
+                    .lineLimit(2)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "pin.fill")
+                    .font(.caption)
+                    .opacity(0)
+                HStack(spacing: 6) {
+                    Text(record.author)
+                    if let filed = model.epubFolder(for: record.id), !inFolder {
+                        Text("· \(filed)")
+                    }
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            // The reader's whole-document annotation, quiet
+            // lines under the author.
+            if let note = model.documentAnnotationNote(forRecordID: record.id) {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "pin.fill")
+                        .font(.caption)
+                        .opacity(0)
+                    Text(note)
+                        .font(.caption)
+                        .italic()
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
+            }
+            // A text match says where: the passage, the words in it
+            // marked, and how many places in the book carry them.
+            if let match {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "pin.fill")
+                        .font(.caption)
+                        .opacity(0)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(marked(match.passage))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                        Text(match.count == 1 ? "1 place" : "\(match.count) places")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
+        .tag(record.id)
+        .contextMenu {
+            Menu("File Under") {
+                ForEach(model.epubFolders, id: \.self) { name in
+                    Button(name) { model.fileEPUB(record.id, under: name) }
+                }
+                if !model.epubFolders.isEmpty { Divider() }
+                Button("New Folder…") { model.promptNewEPUBFolder(fileAfter: record.id) }
+            }
+            if model.epubFolder(for: record.id) != nil {
+                Button("Remove from Folder") { model.unfileEPUB(record.id) }
+            }
+            Divider()
+            EPUBPileMenu(record: record)
+        }
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 
     private var emptyTitle: String {

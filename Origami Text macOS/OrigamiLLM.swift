@@ -493,7 +493,7 @@ struct LLMModelSettingsSections: View {
                 }
             }
             HStack {
-                TextField("A server address, or a Hugging Face model id",
+                TextField("A server address, such as http://localhost:11434",
                           text: $pasted)
                     .onSubmit { classifyPasted() }
                 Button("Add") { classifyPasted() }
@@ -539,8 +539,8 @@ struct LLMModelSettingsSections: View {
         } footer: {
             Text("""
                 Ollama and LM Studio are found automatically while they run. \
-                Model downloads inside the app arrive with the MLX runtime; \
-                until then a Hugging Face id is remembered but not fetched.
+                To use a model from Hugging Face, run it in one of them \
+                (\u{201C}ollama pull\u{201D}) and it appears here.
                 """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
