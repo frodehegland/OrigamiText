@@ -245,7 +245,7 @@ extension LiquidDoc {
         let asset: Asset
         init(_ asset: Asset) { self.asset = asset }
 
-        enum CodingKeys: String, CodingKey { case id, filename, mediaType, dataBase64, alt }
+        enum CodingKeys: String, CodingKey { case id, filename, mediaType, dataBase64, alt, link, citationKey }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
@@ -254,6 +254,8 @@ extension LiquidDoc {
             try container.encode(asset.mediaType, forKey: .mediaType)
             try container.encode(asset.dataBase64, forKey: .dataBase64)
             try container.encodeIfPresent(asset.alt, forKey: .alt)
+            try container.encodeIfPresent(asset.link, forKey: .link)
+            try container.encodeIfPresent(asset.citationKey, forKey: .citationKey)
         }
     }
 
@@ -885,7 +887,7 @@ nonisolated enum ACMLaTeX {
     /// `acmcopyrightmode` values that an author or small venue would
     /// plausibly pick; the government variants stay out of the chooser.
     enum Rights: String, Sendable, CaseIterable, Identifiable {
-        case ccBy, ccBySA, ccByNC, ccByND, rightsRetained, acmLicensed, acmCopyright, none
+        case ccBy, ccBySA, ccByNC, ccByND, ccByNCND, rightsRetained, acmLicensed, acmCopyright, none
 
         var id: String { rawValue }
 
@@ -895,6 +897,7 @@ nonisolated enum ACMLaTeX {
             case .ccBySA: "CC BY-SA 4.0 (share alike)"
             case .ccByNC: "CC BY-NC 4.0 (non-commercial)"
             case .ccByND: "CC BY-ND 4.0 (no derivatives)"
+            case .ccByNCND: "CC BY-NC-ND 4.0 (non-commercial, no derivatives)"
             case .rightsRetained: "Rights retained by the authors"
             case .acmLicensed: "Licensed to ACM (authors keep copyright)"
             case .acmCopyright: "Copyright transferred to ACM"
@@ -905,7 +908,7 @@ nonisolated enum ACMLaTeX {
         /// The value `\setcopyright` takes.
         var acmartMode: String {
             switch self {
-            case .ccBy, .ccBySA, .ccByNC, .ccByND: "cc"
+            case .ccBy, .ccBySA, .ccByNC, .ccByND, .ccByNCND: "cc"
             case .rightsRetained: "rightsretained"
             case .acmLicensed: "acmlicensed"
             case .acmCopyright: "acmcopyright"
@@ -920,6 +923,7 @@ nonisolated enum ACMLaTeX {
             case .ccBySA: "by-sa"
             case .ccByNC: "by-nc"
             case .ccByND: "by-nd"
+            case .ccByNCND: "by-nc-nd"
             default: nil
             }
         }
@@ -933,6 +937,11 @@ nonisolated enum ACMLaTeX {
                 .compactMap { $0?.lowercased() }
                 .joined(separator: " ")
             guard !said.isEmpty else { return nil }
+            // NC-ND first: its code contains both of the others'.
+            if said.contains("by-nc-nd")
+                || (said.contains("noncommercial") && said.contains("noderivatives")) {
+                return .ccByNCND
+            }
             if said.contains("by-nc") || said.contains("noncommercial") { return .ccByNC }
             if said.contains("by-nd") || said.contains("noderivatives") { return .ccByND }
             if said.contains("by-sa") || said.contains("sharealike") { return .ccBySA }
@@ -1080,6 +1089,21 @@ nonisolated enum ACMLaTeX {
         return out.joined(separator: "\n") + "\n"
     }
 
+    /// Characters a paper's text carries that pdfLaTeX's fonts have no
+    /// slot for, mapped to what LaTeX sets them with. Shared by every
+    /// class's preamble, acmart's included.
+    private static let unicodeCharacterLines = [
+        "\\usepackage{newunicodechar}",
+        "\\newunicodechar{→}{\\ensuremath{\\rightarrow}}",
+        "\\newunicodechar{←}{\\ensuremath{\\leftarrow}}",
+        "\\newunicodechar{≈}{\\ensuremath{\\approx}}",
+        "\\newunicodechar{≤}{\\ensuremath{\\leq}}",
+        "\\newunicodechar{≥}{\\ensuremath{\\geq}}",
+        "\\newunicodechar{×}{\\ensuremath{\\times}}",
+        "\\newunicodechar{−}{\\ensuremath{-}}",
+        "\\newunicodechar{•}{\\textbullet}",
+    ]
+
     private static func preamble(for doc: LiquidDoc, rights: Rights,
                                  event given: Conference? = nil) -> [String] {
         var out: [String] = []
@@ -1089,6 +1113,9 @@ nonisolated enum ACMLaTeX {
         out.append("  \\providecommand\\BibTeX{{Bib\\TeX}}}")
         // For \FloatBarrier before the references; acmart does not load it.
         out.append("\\usepackage{placeins}")
+        // The characters pdfLaTeX has no glyph for — an ≈ in an abstract
+        // was dropped from the page, with an error, without these.
+        out.append(contentsOf: unicodeCharacterLines)
         out.append("")
         // A rule closing the title block, spanning the full text width so
         // it sits under *both* columns rather than inside one. acmart
@@ -1554,9 +1581,15 @@ nonisolated enum ACMLaTeX {
     private static func tableLines(_ table: LiquidDoc.Table, id: String,
                                    in doc: LiquidDoc) -> [String] {
         let columns = String(repeating: "l", count: max(table.columnCount, 1))
+        // The grid is set in a box and measured: wider than the column
+        // (eleven columns of three-decimal figures, say), it is scaled
+        // down to the column; narrower, it stands at its own size. Only
+        // graphicx's \resizebox — no package beyond what every class here
+        // already loads — so a table can never run into the margin.
         var out = ["",
                    "\\begin{table}[htbp]",
                    "  \\centering",
+                   "  \\sbox0{%",
                    "  \\begin{tabular}{\(columns)}",
                    "    \\toprule"]
         for (index, row) in table.cells.enumerated() {
@@ -1565,7 +1598,8 @@ nonisolated enum ACMLaTeX {
             if index == 0 { out.append("    \\midrule") }
         }
         out.append("    \\bottomrule")
-        out.append("  \\end{tabular}")
+        out.append("  \\end{tabular}}%")
+        out.append("  \\ifdim\\wd0>\\columnwidth\\resizebox{\\columnwidth}{!}{\\usebox0}\\else\\usebox0\\fi")
         out.append("  \\label{\(label(for: id))}")
         out.append("\\end{table}")
         return out
@@ -1811,6 +1845,303 @@ nonisolated enum ACMLaTeX {
         return doc
     }
 
+    /// What ACM's CCS tool hands over, read into the CCS field's own
+    /// form — one concept per line, levels joined with →. The tool gives
+    /// the `\begin{CCSXML}<ccs2012>…</ccs2012>\end{CCSXML}` block and the
+    /// `\ccsdesc[500]{Root~Leaf}` lines, together or apart; either is
+    /// enough, and a concept both name appears once. Lines that are
+    /// neither — concepts already typed — stay, in place, with a `~`
+    /// read as →. Nil when the text carries none of ACM's markup, so
+    /// ordinary typing is never rewritten.
+    static func ccsConcepts(inPasted text: String) -> String? {
+        let markers = ["<ccs2012", "CCSXML", "\\ccsdesc", "<concept_desc"]
+        guard markers.contains(where: { text.contains($0) }) else { return nil }
+
+        var concepts: [String] = []
+        var seen = Set<String>()
+        func add(_ raw: String) {
+            let path = raw
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "&apos;", with: "'")
+                .replacingOccurrences(of: "•", with: "")
+                .replacingOccurrences(of: "→", with: "~")
+                .components(separatedBy: "~")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " \u{2192} ")
+            guard !path.isEmpty, seen.insert(path.lowercased()).inserted else { return }
+            concepts.append(path)
+        }
+        func matches(_ pattern: String, in source: String) -> [String] {
+            guard let regex = try? NSRegularExpression(pattern: pattern,
+                                                       options: [.dotMatchesLineSeparators]) else { return [] }
+            let range = NSRange(source.startIndex..., in: source)
+            return regex.matches(in: source, range: range).compactMap {
+                Range($0.range(at: 1), in: source).map { String(source[$0]) }
+            }
+        }
+
+        // Lines already in the field, kept ahead of the paste — with
+        // the XML block and the \ccsdesc lines taken out first.
+        var rest = text.replacingOccurrences(
+            of: #"\\begin\{CCSXML\}.*?\\end\{CCSXML\}"#, with: "\n",
+            options: .regularExpression)
+        rest = rest.replacingOccurrences(of: #"<ccs2012>.*?</ccs2012>"#, with: "\n",
+                                         options: .regularExpression)
+        rest = rest.replacingOccurrences(of: #"\\ccsdesc(\[[^\]]*\])?\{[^}]*\}"#, with: "\n",
+                                         options: .regularExpression)
+        for line in rest.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Stray ends of a partly-copied block are not concepts.
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("<"), !trimmed.hasPrefix("\\") else { continue }
+            add(trimmed)
+        }
+        // The printed lines first — they are what acmart sets — then any
+        // concept only the XML names.
+        for path in matches(#"\\ccsdesc(?:\[[^\]]*\])?\{([^}]*)\}"#, in: text) { add(path) }
+        for path in matches(#"<concept_desc>(.*?)</concept_desc>"#, in: text) { add(path) }
+        return concepts.joined(separator: "\n")
+    }
+
+    /// The document without the italic lines Author sets under a figure
+    /// to credit it — an empty `*…*`, then "*Hegland, 2026.*" or the
+    /// caption again with the credit after it ("*Origami Text in XR 1.
+    /// Hegland, 2026.*"). A rendering prints the figure's own caption;
+    /// these would print it twice. Only lines wholly in italics, straight
+    /// after a figure, that are empty, repeat the caption, or read as a
+    /// "Name, Year." credit are taken; the first other paragraph ends the
+    /// run. A line that cites (`[cite:…]`) is left for the figure's
+    /// caption to carry (`figureSourceParagraphs`).
+    static func withoutFigureCreditLines(_ source: LiquidDoc) -> LiquidDoc {
+        guard let body = source.body else { return source }
+        var doc = source
+        var kept: [LiquidDoc.Paragraph] = []
+        var caption: String?
+        var taken = 0
+        for paragraph in body {
+            if let figure = LiquidDoc.imageReference(in: paragraph.text) {
+                let alt = figure.alt.isEmpty
+                    ? (source.assets.first { $0.id == figure.id }?.alt ?? "") : figure.alt
+                caption = alt
+                taken = 0
+                kept.append(paragraph)
+                continue
+            }
+            if let current = caption, taken < 3, paragraph.heading == nil,
+               isFigureCreditLine(paragraph.text, caption: current) {
+                taken += 1
+                continue
+            }
+            caption = nil
+            kept.append(paragraph)
+        }
+        doc.body = kept
+        return doc
+    }
+
+    private static func isFigureCreditLine(_ text: String, caption: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.contains("[cite:"), !trimmed.contains("[cites:") else { return false }
+        // Wholly in italics: the line opens and closes on an emphasis mark.
+        guard let first = trimmed.first, let last = trimmed.last,
+              "*_".contains(first), "*_".contains(last) else { return false }
+        let words = trimmed
+            .replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1",
+                                  options: .regularExpression)
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        if words.isEmpty { return true }
+        let plainCaption = caption
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        if !plainCaption.isEmpty,
+           words.lowercased().hasPrefix(plainCaption.lowercased()) { return true }
+        // "Hegland, 2026." / "Shipman & Marshall, 1999" — a name, a year.
+        return words.range(of: #"^[\p{L}][^.]{0,80}, (1[5-9]|20)\d\d\.?$"#,
+                           options: .regularExpression) != nil
+    }
+
+    /// A name as ACM's upload uses it — `<proceeding_acronym>-<paper_ID>`
+    /// — made safe for a file: no extension, no path characters, spaces
+    /// as hyphens. Nil when nothing usable is left.
+    static func uploadFileName(_ raw: String) -> String? {
+        var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.lowercased().hasSuffix(".zip") { name = String(name.dropLast(4)) }
+        name = name
+            .replacingOccurrences(of: #"[/\\:*?"<>|]"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+        return name.isEmpty ? nil : name
+    }
+
+    /// The upload name to offer: the source file's own name when it is
+    /// already ACM's (`ht26-3`, as TAPS hands papers out), otherwise the
+    /// event's acronym ("HUMAN '26" → `human26-`) waiting for the paper's
+    /// ID, which only ACM's system knows.
+    static func suggestedUploadName(sourceName: String, eventShort: String) -> String {
+        if sourceName.range(of: #"^[A-Za-z]+\d{2,4}-[A-Za-z0-9]+$"#,
+                            options: .regularExpression) != nil {
+            return sourceName
+        }
+        let acronym = eventShort.lowercased().filter { $0.isLetter || $0.isNumber }
+        return acronym.isEmpty ? "" : acronym + "-"
+    }
+
+    /// The rights block ACM's eRights form hands the author once the
+    /// paper is accepted — `\copyrightyear`, `\acmYear`, `\setcopyright`,
+    /// `\setcctype`, `\acmConference`, `\acmBooktitle`, `\acmDOI`,
+    /// `\acmISBN` — read back into the Format sheet's own fields. Each
+    /// member is nil when the paste does not state it, so a partial
+    /// paste fills only what it names.
+    struct PastedRights: Equatable {
+        var copyrightYear: String?
+        var rights: Rights?
+        var conference: Conference?
+        var doi: String?
+        var isbn: String?
+
+        /// The sheet's names for what was filled, for the confirmation.
+        var filled: [String] {
+            var out: [String] = []
+            if let conference {
+                out.append("venue")
+                if !conference.short.isEmpty { out.append("short name") }
+                if !conference.date.isEmpty { out.append("dates") }
+                if !conference.place.isEmpty { out.append("place") }
+            }
+            if doi != nil { out.append("DOI") }
+            if isbn != nil { out.append("ISBN") }
+            if rights != nil { out.append("rights") }
+            return out
+        }
+    }
+
+    /// Nil when the text carries none of these macros, so ordinary
+    /// typing in the paste box is never taken for a block.
+    static func rightsBlock(inPasted text: String) -> PastedRights? {
+        // A macro's braced arguments, balanced, in order — `\acmConference`
+        // takes an optional [short] and three braced arguments.
+        func arguments(of macro: String) -> (option: String?, values: [String])? {
+            guard let start = text.range(of: "\\" + macro) else { return nil }
+            var index = start.upperBound
+            // The macro name must end here (\acmYear, not \acmYearX).
+            if index < text.endIndex, text[index].isLetter { return nil }
+            var option: String?
+            var values: [String] = []
+            func skipSpace() {
+                while index < text.endIndex, text[index] == " " || text[index] == "\t" {
+                    index = text.index(after: index)
+                }
+            }
+            skipSpace()
+            if index < text.endIndex, text[index] == "[",
+               let close = text[index...].firstIndex(of: "]") {
+                option = String(text[text.index(after: index)..<close])
+                index = text.index(after: close)
+            }
+            while true {
+                skipSpace()
+                guard index < text.endIndex, text[index] == "{" else { break }
+                var depth = 0
+                var cursor = index
+                var closing: String.Index?
+                while cursor < text.endIndex {
+                    if text[cursor] == "{" { depth += 1 }
+                    if text[cursor] == "}" {
+                        depth -= 1
+                        if depth == 0 { closing = cursor; break }
+                    }
+                    cursor = text.index(after: cursor)
+                }
+                guard let closing else { break }
+                values.append(String(text[text.index(after: index)..<closing]))
+                index = text.index(after: closing)
+            }
+            return values.isEmpty && option == nil ? nil : (option, values)
+        }
+        // TeX's spellings, as a person reads them: -- an en dash, the
+        // escaped characters bare.
+        func plain(_ tex: String) -> String {
+            tex.replacingOccurrences(of: "---", with: "\u{2014}")
+                .replacingOccurrences(of: "--", with: "\u{2013}")
+                .replacingOccurrences(of: "\\&", with: "&")
+                .replacingOccurrences(of: "\\%", with: "%")
+                .replacingOccurrences(of: "\\_", with: "_")
+                .replacingOccurrences(of: "\\#", with: "#")
+                .replacingOccurrences(of: "~", with: " ")
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+        }
+        func first(_ macro: String) -> String? {
+            arguments(of: macro)?.values.first.map(plain).flatMap { $0.isEmpty ? nil : $0 }
+        }
+
+        var out = PastedRights()
+        out.copyrightYear = first("copyrightyear") ?? first("acmYear")
+        out.doi = first("acmDOI").map {
+            $0.replacingOccurrences(of: "https://doi.org/", with: "")
+        }
+        out.isbn = first("acmISBN")
+        if let mode = first("setcopyright")?.lowercased() {
+            switch mode {
+            case "cc":
+                // \setcctype[4.0]{by-nc} — the version option is ignored.
+                switch first("setcctype")?.lowercased() ?? "by" {
+                case "by-sa": out.rights = .ccBySA
+                case "by-nc", "by-nc-sa": out.rights = .ccByNC
+                case "by-nd": out.rights = .ccByND
+                case "by-nc-nd": out.rights = .ccByNCND
+                default: out.rights = .ccBy
+                }
+            case "rightsretained": out.rights = .rightsRetained
+            case "acmlicensed": out.rights = .acmLicensed
+            case "acmcopyright": out.rights = .acmCopyright
+            case "none": out.rights = Rights.none
+            default: break
+            }
+        }
+        if let conference = arguments(of: "acmConference"), let name = conference.values.first {
+            let values = conference.values.map(plain)
+            out.conference = Conference(
+                name: plain(name),
+                short: conference.option.map(plain) ?? "",
+                date: values.count > 1 ? values[1] : "",
+                place: values.count > 2 ? values[2] : "",
+                booktitle: first("acmBooktitle"))
+        } else if let booktitle = first("acmBooktitle") {
+            // A booktitle alone still names the event: "Name (SHORT),
+            // Dates, Place" — the form ACM prints and builds.
+            out.conference = conferenceFromBooktitle(booktitle)
+        }
+        return out == PastedRights() ? nil : out
+    }
+
+    /// "Name (SHORT), Month d–d, yyyy, Place" taken apart — the same
+    /// reading `conferenceFromReference` gives an ACM Reference Format.
+    private static func conferenceFromBooktitle(_ booktitle: String) -> Conference? {
+        guard let open = booktitle.range(of: " ("),
+              let close = booktitle.range(of: ")", range: open.upperBound..<booktitle.endIndex)
+        else { return Conference(name: booktitle, short: "", date: "", place: "",
+                                 booktitle: booktitle) }
+        let name = String(booktitle[..<open.lowerBound])
+        let short = String(booktitle[open.upperBound..<close.lowerBound])
+        let rest = booktitle[close.upperBound...]
+            .trimmingCharacters(in: CharacterSet(charactersIn: ", "))
+        guard let year = rest.range(of: #"\b(19|20)\d\d\b"#, options: .regularExpression)
+        else { return Conference(name: name, short: short, date: "", place: rest,
+                                 booktitle: booktitle) }
+        return Conference(name: name, short: short,
+                          date: String(rest[..<year.upperBound]),
+                          place: rest[year.upperBound...]
+                              .trimmingCharacters(in: CharacterSet(charactersIn: ", ")),
+                          booktitle: booktitle)
+    }
+
     /// The front matter moved, not copied: the fields filled from the
     /// body as `withFrontMatterFromBody` does, and the body paragraphs
     /// they came from removed — what Profile 1.0 §5.3 asks of a writer
@@ -1870,7 +2201,15 @@ nonisolated enum ACMLaTeX {
         fields.append(("author", names.joined(separator: " and ")))
         fields.append(("title", doc.title))
         fields.append(("year", String(Calendar.current.component(.year, from: doc.listedDate))))
-        if let venue = doc.publication, !venue.isEmpty { fields.append(("booktitle", venue)) }
+        // As the EPUB colophon: a journal makes it an @article, else a
+        // proceedings an @inproceedings, else a @misc.
+        let journal = doc.journal ?? ""
+        let venue = doc.publication ?? ""
+        if !journal.isEmpty {
+            fields.append(("journal", journal))
+        } else if !venue.isEmpty {
+            fields.append(("booktitle", venue))
+        }
         if let doi = doc.doi, !doi.isEmpty {
             fields.append(("doi", doi))
             fields.append(("url", "https://doi.org/" + doi))
@@ -1882,7 +2221,8 @@ nonisolated enum ACMLaTeX {
                 .filter { $0.isLetter }
         } ?? "paper"
         let key = family + fields[2].1
-        var record = ["@\(doc.publication?.isEmpty == false ? "inproceedings" : "article"){\(key),"]
+        let type = !journal.isEmpty ? "article" : venue.isEmpty ? "misc" : "inproceedings"
+        var record = ["@\(type){\(key),"]
         for (name, value) in fields {
             record.append("  \(name) = {\(value)},")
         }
@@ -1967,6 +2307,7 @@ nonisolated enum ACMLaTeX {
         if uri.contains("/by/") { return "CC BY" }
         if uri.contains("/by-sa/") { return "CC BY-SA" }
         if uri.contains("/by-nc/") { return "CC BY-NC" }
+        if uri.contains("/by-nc-nd/") { return "CC BY-NC-ND" }
         if uri.contains("/by-nc-sa/") { return "CC BY-NC-SA" }
         if uri.contains("/zero/") { return "CC0" }
         return "Creative Commons"
@@ -2147,16 +2488,7 @@ extension ACMLaTeX {
             "\\usepackage{booktabs}",
             "\\usepackage{amsmath,amssymb}",
             "\\usepackage{url}",
-            "\\usepackage{newunicodechar}",
-            "\\newunicodechar{→}{\\ensuremath{\\rightarrow}}",
-            "\\newunicodechar{←}{\\ensuremath{\\leftarrow}}",
-            "\\newunicodechar{≈}{\\ensuremath{\\approx}}",
-            "\\newunicodechar{≤}{\\ensuremath{\\leq}}",
-            "\\newunicodechar{≥}{\\ensuremath{\\geq}}",
-            "\\newunicodechar{×}{\\ensuremath{\\times}}",
-            "\\newunicodechar{−}{\\ensuremath{-}}",
-            "\\newunicodechar{•}{\\textbullet}",
-        ]
+        ] + unicodeCharacterLines
         if publisher == .elsevier || publisher == .elsevierTwoColumn {
             // elsarticle and orcidlink both load hyperref already; asking
             // for it again with options is an option clash.
@@ -2327,7 +2659,10 @@ extension ACMLaTeX {
 
     private static func elsevierFrontMatter(_ doc: LiquidDoc, event: Conference?) -> [String] {
         var out: [String] = []
-        let venue = event?.name ?? doc.publication ?? ""
+        // Elsevier's \journal names the journal; a stated one wins over
+        // the venue it was otherwise filled from.
+        let venue = doc.journal.flatMap { $0.isEmpty ? nil : $0 }
+            ?? event?.name ?? doc.publication ?? ""
         if !venue.isEmpty { out.append("\\journal{\(escaped(venue))}") }
         out.append("")
         out.append("\\begin{frontmatter}")
@@ -2409,11 +2744,12 @@ extension ACMLaTeX {
         switch rights {
         case .none:
             return nil
-        case .ccBy, .ccBySA, .ccByNC, .ccByND:
+        case .ccBy, .ccBySA, .ccByNC, .ccByND, .ccByNCND:
             let (name, path): (String, String) = switch rights {
             case .ccBySA: ("Attribution-ShareAlike", "by-sa")
             case .ccByNC: ("Attribution-NonCommercial", "by-nc")
             case .ccByND: ("Attribution-NoDerivatives", "by-nd")
+            case .ccByNCND: ("Attribution-NonCommercial-NoDerivatives", "by-nc-nd")
             default: ("Attribution", "by")
             }
             lines = ["This work is licensed under a Creative Commons \(name) 4.0 International "

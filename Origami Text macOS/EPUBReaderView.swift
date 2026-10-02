@@ -387,6 +387,11 @@ struct EPUBReaderScreen: View {
         // A transcript mode left over from a transcript book falls back
         // to the book's own pages here.
         if mode == .transcript, !isTranscriptBook { return .faithful }
+        // Full Width is no longer a view of its own — only the host of
+        // a standing fold. Left over from before, it reads as Scroll.
+        if mode == .scroll, model.readerFoldLevel == 0, model.readerFindFoldTerm == nil {
+            return .faithful
+        }
         return mode
     }
 
@@ -397,7 +402,28 @@ struct EPUBReaderScreen: View {
     @AppStorage("faithfulPublisherStyles") private var publisherStyles = false
     @AppStorage("faithfulJustify") private var justify = false
     @AppStorage("faithfulHyphenate") private var hyphenate = false
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("faithfulMeasure") private var measure = 0.0
+    /// Scroll reads in a column, as Author's text does: the old "Full"
+    /// (0) stands as Medium, leaving margins either side of it.
+    private var effectiveMeasure: Double { measure > 0 ? measure : 38 }
+    /// What each margin beside the column holds, and whether the margins
+    /// fade 4 seconds after the pointer leaves — Author's three settings.
+    @AppStorage(ReaderMarginMode.leftKey) private var leftMarginRaw = ReaderMarginMode.nothing.rawValue
+    @AppStorage(ReaderMarginMode.rightKey) private var rightMarginRaw = ReaderMarginMode.outline.rawValue
+    @AppStorage(ReaderMarginMode.autoHideKey) private var marginsAutoHide = true
+    /// The element id of the heading at the top of the page (from the
+    /// page's own script); "" above the first heading.
+    @State private var currentHeadingID = ""
+    /// The Outline entry that heading belongs to — kept when the page's
+    /// heading is one the contents does not list.
+    @State private var currentOutlineID: String?
+    /// Margins on show (with auto-hide on, only while the pointer is in
+    /// one and for 4 seconds after it leaves).
+    @State private var marginsShown = false
+    @State private var marginHideTask: Task<Void, Never>?
+    /// The Annotation margin has the keyboard: it stays on show.
+    @State private var annotationMarginEditing = false
     @AppStorage("reopenWhereLeftOff") private var reopenWhereLeftOff = false
     /// Read aloud on the book's own pages: the shared controller (the
     /// chosen voice), fed the page's sentences; the stamp asks the page
@@ -420,7 +446,7 @@ struct EPUBReaderScreen: View {
         ReaderStyle.css(bodyFont: bodyFont, headingFont: headingFont, theme: theme,
                         fontDelta: fontDelta, lineSpacing: lineSpacing,
                         options: .init(publisherStyles: publisherStyles, justify: justify,
-                                       hyphenate: hyphenate, measure: measure))
+                                       hyphenate: hyphenate, measure: effectiveMeasure))
     }
 
     /// The palette and type marks on the faithful (Scrolling) foot bar —
@@ -630,8 +656,9 @@ struct EPUBReaderScreen: View {
             }
             .disabled(publisherStyles)
             Divider()
-            Picker("Width", selection: $measure) {
-                Text("Full").tag(0.0)
+            // Always a column — the margins beside it carry the Outline.
+            Picker("Width", selection: Binding(get: { effectiveMeasure },
+                                               set: { measure = $0 })) {
                 Text("Wide").tag(46.0)
                 Text("Medium").tag(38.0)
                 Text("Narrow").tag(32.0)
@@ -976,6 +1003,9 @@ struct EPUBReaderScreen: View {
                 // comments on headings, which float rather than ink the
                 // heading.
                 faithfulReader
+                    // Author's margins beside the column: the Outline on
+                    // whichever side Settings ▸ Reading ▸ Margins puts it.
+                    .overlay { marginsLayer }
                     .overlay(alignment: .topLeading) { liftSlipsLayer }
                     .overlay(alignment: .topLeading) { commentSlipsLayer }
                     // After following a link inside the book: the way back.
@@ -1044,6 +1074,24 @@ struct EPUBReaderScreen: View {
                 // document: the faithful rendering stands.
                 faithfulReader
             }
+        }
+        // Leaving the AI with a place to read on from (the column's
+        // reading): a book in several files opens the chapter holding it,
+        // so the page that loads can land there.
+        .onChange(of: model.readingAnalysisKind == nil) { _, closed in
+            guard closed, chapters.count > 1,
+                  let fragment = model.pendingReaderFragment, !fragment.isEmpty,
+                  let index = chapterIndex(containing: fragment),
+                  index != chapterIndex else { return }
+            chapterIndex = index
+            requestedFragment = fragment
+            fragmentStamp += 1
+        }
+        // However a fold is left — pinch out, Find closed, a click in it
+        // — the reading returns to the view it came from, Scroll or
+        // Horizontal: Full Width only ever hosts a standing fold.
+        .onChange(of: model.readerFoldLevel == 0 && model.readerFindFoldTerm == nil) { _, unfolded in
+            if unfolded { model.restoreModeAfterFold() }
         }
         // ⌘F, ⌘G, and ⇧⌘G land here from the View menu's counters.
         .onChange(of: model.readerFindShow) {
@@ -1174,6 +1222,10 @@ struct EPUBReaderScreen: View {
             linkHistory = []
             initialFraction = nil
             tocEntries = []
+            currentHeadingID = ""
+            currentOutlineID = nil
+            // The Outline margin needs the contents from the first page.
+            loadContents()
             chapterWords = []
             pageReader.stopReading()
             // Reopening where the reader left off, when asked for — never
@@ -1207,6 +1259,104 @@ struct EPUBReaderScreen: View {
 
     /// The faithful rendering: the EPUB's own pages in the WebView, the
     /// mode words at the foot so the native styles are one click away.
+    // MARK: Margins (Author's, beside the Scroll column)
+
+    /// The heading at the top of the page, as the Outline's entry: the
+    /// contents entry naming it; the chapter's own entry above its first
+    /// heading; the last one found while the page shows a heading the
+    /// contents leaves out.
+    private func updateOutlineCurrent(_ headingID: String) {
+        currentHeadingID = headingID
+        let chapter = subpath(of: currentContent)
+        if !headingID.isEmpty,
+           let entry = tocEntries.first(where: { $0.subpath == chapter && $0.fragment == headingID }) {
+            if currentOutlineID != entry.id { currentOutlineID = entry.id }
+        } else if headingID.isEmpty || currentOutlineID == nil {
+            let chapterEntry = tocEntries.first { $0.subpath == chapter && $0.fragment == nil }?.id
+            if currentOutlineID != chapterEntry { currentOutlineID = chapterEntry }
+        }
+    }
+
+    /// Both margins over the page, each as wide as the space beside the
+    /// column (Author's margin is the text container's side inset). The
+    /// column is the page's own: the Width choice in ems plus its 1.5em
+    /// padding either side, at the body's size. A margin too narrow to
+    /// hold a heading is not drawn.
+    @ViewBuilder private var marginsLayer: some View {
+        let left = ReaderMarginMode(rawValue: leftMarginRaw) ?? .nothing
+        let right = ReaderMarginMode(rawValue: rightMarginRaw) ?? .nothing
+        if left != .nothing || right != .nothing,
+           !(left != .annotation && right != .annotation && tocEntries.isEmpty),
+           !model.rendition(inUnpackedFolder: book.base).fixedLayout {
+            GeometryReader { geo in
+                let percent = Double(max(50, Int(((18 + fontDelta) / 18 * 100).rounded())))
+                let em = 16.0 * percent / 100
+                let column = (effectiveMeasure + 3) * em
+                let width = floor((geo.size.width - column) / 2)
+                if width >= 120 {
+                    HStack(spacing: 0) {
+                        margin(left, side: .left)
+                            .frame(width: width)
+                        Spacer(minLength: 0)
+                        // Clear of the page's own scroll bar.
+                        margin(right, side: .right)
+                            .frame(width: max(0, width - 14))
+                            .padding(.trailing, 14)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func margin(_ mode: ReaderMarginMode, side: ReaderOutlineMargin.Side) -> some View {
+        switch mode {
+        case .nothing:
+            Color.clear.allowsHitTesting(false)
+        case .outline:
+            autoHiding(ReaderOutlineMargin(
+                side: side,
+                entries: tocEntries,
+                currentID: currentOutlineID,
+                headingFont: headingFont,
+                textColor: theme.textColor(for: colorScheme) ?? Color(nsColor: .labelColor),
+                background: theme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor),
+                onSelect: { entry in open(entry) }))
+        case .annotation:
+            autoHiding(ReaderAnnotationMargin(
+                side: side,
+                address: model.annotationAddress(forBook: book),
+                bodyFont: bodyFont,
+                textColor: theme.textColor(for: colorScheme) ?? Color(nsColor: .labelColor),
+                background: theme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor),
+                onEditing: { editing in
+                    annotationMarginEditing = editing
+                    if editing { marginHideTask?.cancel(); marginsShown = true }
+                }))
+        }
+    }
+
+    /// Author's auto-hide: there at once when the pointer comes in, gone
+    /// 4 seconds after it leaves — never while the Annotation margin is
+    /// being written in. No fade either way.
+    private func autoHiding<V: View>(_ margin: V) -> some View {
+        margin
+            .opacity(marginsAutoHide && !marginsShown ? 0 : 1)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                marginHideTask?.cancel()
+                if inside {
+                    marginsShown = true
+                } else {
+                    marginHideTask = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(4))
+                        guard !Task.isCancelled, !annotationMarginEditing else { return }
+                        marginsShown = false
+                    }
+                }
+            }
+    }
+
     private var faithfulReader: some View {
         EPUBReaderView(
             book: book,
@@ -1325,6 +1475,8 @@ struct EPUBReaderScreen: View {
                 guard !targetID.isEmpty else { return }
                 openWindow(value: FigureWindowValue(docID: book.id, paragraphID: targetID))
             },
+            onFigureLink: { url in model.openFigureLink(url) },
+            onCurrentHeading: { id in updateOutlineCurrent(id) },
             findText: showsFind ? findText : "",
             findStamp: findStamp,
             findForward: findForward,
@@ -1775,6 +1927,12 @@ struct EPUBReaderView: NSViewRepresentable {
     /// A jump link to a figure was clicked — the target's stable id;
     /// the reader shows the image in place, as a citation shows its card.
     var onFigureJump: (String) -> Void = { _ in }
+    /// A figure made from a view was clicked (or chosen from its menu):
+    /// its link, to open outside the app.
+    var onFigureLink: (URL) -> Void = { _ in }
+    /// The heading at the top of the page changed (its element id, or
+    /// "" above the first) — what the Outline margin bolds.
+    var onCurrentHeading: (String) -> Void = { _ in }
     /// Find in the page: each stamp steps to the next (or previous)
     /// match of the text, WebKit's own find doing the walking. An
     /// empty text clears the search.
@@ -1861,6 +2019,11 @@ struct EPUBReaderView: NSViewRepresentable {
         // Citations answer with their card, as in Knowledge Space — the
         // listener registers before the bridge's, so a click never
         // doubles as a Step 0 activation or a jump to the References.
+        // A figure's own link registers first: it opens its view.
+        controller.addUserScript(WKUserScript(source: currentHeadingScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        controller.addUserScript(WKUserScript(source: figureLinkScript,
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: citationScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: citationAnchorScript,
@@ -2062,6 +2225,15 @@ struct EPUBReaderView: NSViewRepresentable {
         webView.onRemoveAnnotation = { [weak coordinator = context.coordinator] id in
             coordinator?.onRemoveAnnotation(id)
         }
+        webView.onOpenFigureLink = { [weak coordinator = context.coordinator] url in
+            coordinator?.onFigureLink(url)
+        }
+        webView.onShowFigure = { [weak coordinator = context.coordinator] id in
+            coordinator?.onFigureJump(id)
+        }
+        webView.onShowFigureReference = { [weak coordinator = context.coordinator] key in
+            coordinator?.onCitation(key, "")
+        }
         webView.onPinchEnded = { [weak coordinator = context.coordinator] total in
             if total < -0.15 { coordinator?.onPinchIn() }
             else if total > 0.15 { coordinator?.onPinchOut() }
@@ -2116,6 +2288,8 @@ struct EPUBReaderView: NSViewRepresentable {
         })
         coordinator.onCitationAnchors = onCitationAnchors
         coordinator.onFigureJump = onFigureJump
+        coordinator.onFigureLink = onFigureLink
+        coordinator.onCurrentHeading = onCurrentHeading
         coordinator.annotations = annotations
         coordinator.quoteLinks = quoteLinks
         coordinator.citedHereCounts = citedHereCounts
@@ -2266,6 +2440,9 @@ struct EPUBReaderView: NSViewRepresentable {
         var notePopups = ReaderNoteStyle.opensAsPopup
         /// A jump link to a figure asked for its image (stable id).
         var onFigureJump: (String) -> Void = { _ in }
+        /// A linked figure was clicked: its href, to open outside.
+        var onFigureLink: (URL) -> Void = { _ in }
+        var onCurrentHeading: (String) -> Void = { _ in }
         var onActivate: (EPUBElementRef) -> Void = { _ in }
         var onSelect: (String) -> Void = { _ in }
         var onCopyQuote: (String, String?) -> Void = { _, _ in }
@@ -2370,6 +2547,23 @@ struct EPUBReaderView: NSViewRepresentable {
                 // A jump link to a figure: the image shows in place, as
                 // a citation shows its card.
                 onFigureJump(body["targetID"] as? String ?? "")
+            case "figurelink":
+                // A figure made from a view: its href, untouched, leaves
+                // the app (ORIGAMI-FIGURE-LINKS-SPEC §2).
+                guard let href = body["href"] as? String, !href.isEmpty,
+                      let url = URL(string: href) else { return }
+                onFigureLink(url)
+            case "currentHeading":
+                onCurrentHeading(body["id"] as? String ?? "")
+            case "figurelinkhover":
+                // Which linked figure is under the pointer — what the
+                // context menu's Open, Show Image and Show Reference
+                // are about.
+                let href = body["href"] as? String ?? ""
+                webView?.hoveredFigureLink = href.isEmpty ? nil : ReaderFigureLink(
+                    href: href,
+                    citationKey: (body["key"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                    figureID: (body["id"] as? String).flatMap { $0.isEmpty ? nil : $0 })
             case "citationAnchors":
                 guard let raw = body["anchors"] as? [[String: Any]] else { break }
                 let anchors: [InlineCitationAnchor] = raw.compactMap { d in
@@ -2831,6 +3025,9 @@ struct EPUBReaderView: NSViewRepresentable {
       // anchors (data-citation-key, epub:type/role biblioref).
       function isCitation(a){
         if (!a) return false;
+        // A figure's own <a href> opens its view (figureLinkScript),
+        // even with the figure's data-citation-key on it.
+        if (a.closest && a.closest('figure') && a.querySelector('img')) return false;
         if (a.classList && a.classList.contains('citation')) return true;
         if (a.getAttribute('data-citation-id')) return true;
         if (a.getAttribute('data-citation-key')) return true;
@@ -2852,6 +3049,123 @@ struct EPUBReaderView: NSViewRepresentable {
     })();
     """
 
+    /// The heading at the top of the page, reported as it changes — the
+    /// Outline margin's bold entry, as Author's margin tracks the heading
+    /// at the top of the screen (the last one starting within 25 points
+    /// of the top). Throttled to the scroll's settling, and posted only
+    /// when it changes.
+    private static let currentHeadingScript = """
+    (function(){
+      var bridge = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.origami;
+      if (!bridge) return;
+      var last = null, timer = null;
+      function current(){
+        var hs = Array.prototype.filter.call(
+          document.querySelectorAll('h1,h2,h3,h4,h5,h6'),
+          function(h){ return h.offsetParent !== null; });
+        var pick = null;
+        for (var i = 0; i < hs.length; i++) {
+          if (hs[i].getBoundingClientRect().top <= 25) pick = hs[i]; else break;
+        }
+        var id = '';
+        if (pick) {
+          var el = pick;
+          while (el && !el.id) el = el.parentElement;
+          id = el ? el.id : '';
+        }
+        if (id !== last) { last = id; bridge.postMessage({event:'currentHeading', id: id}); }
+      }
+      window.addEventListener('scroll', function(){
+        clearTimeout(timer); timer = setTimeout(current, 80);
+      }, {passive: true});
+      setTimeout(current, 300);
+    })();
+    """
+
+    /// A figure made from a view wraps its <img> in a plain <a href>
+    /// (ORIGAMI-FIGURE-LINKS-SPEC): a click opens that link outside the
+    /// app — never the bibliography, never this web view. The figure
+    /// shows it can be opened before the click: a lift on hover and a
+    /// small badge naming Interatlas only for its own link host or
+    /// scheme. The click waits out a double-click, which keeps the
+    /// figure window; hovering tells Swift which figure the context
+    /// menu (Show Image, Show Reference) is about.
+    private static let figureLinkScript = """
+    (function(){
+      var bridge = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.origami;
+      if (!bridge) return;
+      function figureLink(el){
+        var a = el && el.closest ? el.closest('figure a[href]') : null;
+        return a && a.querySelector('img') ? a : null;
+      }
+      function opensInteratlas(href){
+        try {
+          var u = new URL(href);
+          if (u.protocol === 'interatlas:') return true;
+          return u.hostname.toLowerCase() === 'link.augmentedtext.com'
+            && u.pathname.toLowerCase().indexOf('/liquid/') !== 0;
+        } catch (err) { return false; }
+      }
+      var style = document.createElement('style');
+      style.textContent =
+        'a.ot-figure-link{position:relative;display:inline-block;border-radius:6px;'
+        + 'transition:transform .15s ease,box-shadow .15s ease;text-decoration:none}'
+        + 'a.ot-figure-link img{display:block}'
+        + 'a.ot-figure-link:hover,a.ot-figure-link:focus-visible{transform:translateY(-2px);'
+        + 'box-shadow:0 8px 22px rgba(0,0,0,.22)}'
+        + '.ot-figure-link-badge{position:absolute;right:10px;bottom:10px;padding:3px 9px;'
+        + 'border-radius:999px;background:rgba(0,0,0,.62);color:#fff;'
+        + 'font:600 11px -apple-system,system-ui,sans-serif;letter-spacing:.01em;'
+        + 'pointer-events:none;opacity:.85;transition:opacity .15s ease}'
+        + 'a.ot-figure-link:hover .ot-figure-link-badge{opacity:1}';
+      document.head.appendChild(style);
+      document.querySelectorAll('figure a[href]').forEach(function(a){
+        if (!a.querySelector('img') || a.classList.contains('ot-figure-link')) return;
+        var app = opensInteratlas(a.getAttribute('href'));
+        a.classList.add('ot-figure-link');
+        a.setAttribute('title', app ? 'Opens in Interatlas' : 'Opens link');
+        var badge = document.createElement('span');
+        badge.className = 'ot-figure-link-badge';
+        badge.setAttribute('aria-hidden', 'true');
+        badge.textContent = app ? 'Open in Interatlas' : 'Open Link';
+        a.appendChild(badge);
+      });
+      var pending = null;
+      document.addEventListener('click', function(e){
+        var a = figureLink(e.target);
+        if (!a) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        // The second click of a double-click: the figure window has it.
+        if (e.detail > 1) { clearTimeout(pending); pending = null; return; }
+        var href = a.getAttribute('href');
+        clearTimeout(pending);
+        // Keyboard activation (detail 0) opens at once.
+        if (e.detail === 0) { bridge.postMessage({event:'figurelink', href: href}); return; }
+        pending = setTimeout(function(){
+          pending = null;
+          bridge.postMessage({event:'figurelink', href: href});
+        }, 280);
+      }, true);
+      document.addEventListener('mouseover', function(e){
+        var a = figureLink(e.target);
+        if (!a) return;
+        var figure = a.closest('figure');
+        bridge.postMessage({event:'figurelinkhover',
+                            href: a.getAttribute('href'),
+                            key: a.getAttribute('data-citation-key') || '',
+                            id: (figure && (figure.getAttribute('data-id') || figure.id)) || ''});
+      }, true);
+      document.addEventListener('mouseout', function(e){
+        var a = figureLink(e.target);
+        if (!a || (e.relatedTarget && a.contains(e.relatedTarget))) return;
+        bridge.postMessage({event:'figurelinkhover', href: ''});
+      }, true);
+    })();
+    """
+
     /// Locates every inline citation anchor in the document and posts their
     /// normalised document-space positions as a `citationAnchors` message.
     /// Runs once on load, then re-runs 150 ms after each scroll so the
@@ -2868,6 +3182,7 @@ struct EPUBReaderView: NSViewRepresentable {
       // EPUB noteref anchors for foreign EPUBs.
       function isCitationAnchor(a) {
         if (!a || a.tagName !== 'A') return false;
+        if (a.closest('figure') && a.querySelector('img')) return false;
         if (a.classList.contains('citation')) return true;
         if (a.getAttribute('data-citation-id')) return true;
         if (a.getAttribute('data-citation-key')) return true;
@@ -3571,6 +3886,198 @@ struct EPUBReaderView: NSViewRepresentable {
     """
 }
 
+/// What a reading margin beside the Scroll column holds — Author's
+/// Settings ▸ Appearance ▸ Margins, in Settings ▸ Reading here.
+enum ReaderMarginMode: String, CaseIterable, Identifiable {
+    case nothing, outline, annotation
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .nothing: "Nothing"
+        case .outline: "Outline"
+        case .annotation: "Annotation"
+        }
+    }
+    /// Author's margin choice tooltip, word for word.
+    var help: String {
+        switch self {
+        case .nothing: "An empty margin."
+        case .outline: "The document's headings, with the one at the top of the screen in bold. Click one to go to it."
+        case .annotation: "Your note on the whole document — the same note Add Note… writes and the book lists show under its author. Type in the margin; it is kept as you write."
+        }
+    }
+
+    static let leftKey = "readerLeftMarginMode"
+    static let rightKey = "readerRightMarginMode"
+    static let autoHideKey = "readerMarginsAutoHide"
+}
+
+/// The Outline margin, as Author draws it beside its text column
+/// (OutlineMarginViewController): the document's headings in its own
+/// heading font — 16 points at the top level, 13 below — at 60% of the
+/// text colour, the heading at the top of the page bold in pure black or
+/// white. Each level steps 12 points in from the side facing the text;
+/// the margin is inset 36 points on that side and 16 on the outer one,
+/// rows 6 points apart, every top-level heading after the first given
+/// 24 points more above it. Centred while it fits, scrolling from the
+/// top once it doesn't; it keeps the current heading in view.
+struct ReaderOutlineMargin: View {
+    enum Side { case left, right }
+
+    let side: Side
+    let entries: [OrigamiEPUBImporter.TOCEntry]
+    let currentID: String?
+    let headingFont: String
+    let textColor: Color
+    let background: Color
+    let onSelect: (OrigamiEPUBImporter.TOCEntry) -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    /// A clicked heading is not bolded at once — as in Author, bold
+    /// returns when the reading reaches another heading.
+    @State private var clickedID: String?
+
+    private var alignment: HorizontalAlignment { side == .left ? .trailing : .leading }
+
+    var body: some View {
+        GeometryReader { geo in
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    VStack(alignment: alignment, spacing: 6) {
+                        ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                            row(entry)
+                                .padding(.top, entry.level == 0 && index > 0 ? 24 : 0)
+                                .id(entry.id)
+                        }
+                    }
+                    .padding(.top, 20)
+                    .padding(.bottom, 20)
+                    .padding(side == .left ? .trailing : .leading, 36)
+                    .padding(side == .left ? .leading : .trailing, 16)
+                    .frame(maxWidth: .infinity,
+                           minHeight: geo.size.height,
+                           alignment: Alignment(horizontal: alignment, vertical: .center))
+                }
+                .scrollIndicators(.automatic)
+                .onChange(of: currentID) { _, id in
+                    if id != clickedID { clickedID = nil }
+                    if let id { proxy.scrollTo(id) }
+                }
+            }
+        }
+        .background(background)
+    }
+
+    private func row(_ entry: OrigamiEPUBImporter.TOCEntry) -> some View {
+        let isCurrent = entry.id == currentID && entry.id != clickedID
+        let size: CGFloat = entry.level == 0 ? 16 : 13
+        return Button {
+            clickedID = entry.id
+            onSelect(entry)
+        } label: {
+            Text(entry.label)
+                .font(.custom(headingFont, size: size).weight(isCurrent ? .bold : .regular))
+                .foregroundStyle(isCurrent
+                                 ? (colorScheme == .dark ? Color.white : Color.black)
+                                 : textColor.opacity(0.6))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .multilineTextAlignment(side == .left ? .trailing : .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .padding(side == .left ? .trailing : .leading, CGFloat(entry.level) * 12)
+        .help("\(entry.label) — click to go here")
+    }
+}
+
+/// The Annotation margin: the reader's note on the whole document,
+/// written beside the column — the one whole-document annotation the
+/// book keeps (the note Add Note… writes, the line the book lists show
+/// under the author). In the reader's body font and the theme's colours,
+/// inset as the Outline is; kept as it is typed (after a short pause)
+/// and when the margin leaves. Clearing it removes the note.
+struct ReaderAnnotationMargin: View {
+    @Environment(AppModel.self) private var model
+    let side: ReaderOutlineMargin.Side
+    let address: String
+    let bodyFont: String
+    let textColor: Color
+    let background: Color
+    let onEditing: (Bool) -> Void
+
+    @State private var text = ""
+    @State private var loaded = false
+    @State private var saveTask: Task<Void, Never>?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: $text)
+                .font(.custom(bodyFont, size: 15, relativeTo: .body))
+                .foregroundStyle(textColor)
+                .scrollContentBackground(.hidden)
+                .focused($focused)
+            if text.isEmpty {
+                Text("Write about this document\u{2026}")
+                    .font(.custom(bodyFont, size: 15, relativeTo: .body))
+                    .foregroundStyle(textColor.opacity(0.4))
+                    .padding(.leading, 5)
+                    .allowsHitTesting(false)
+            }
+        }
+        .padding(.top, 20)
+        .padding(.bottom, 20)
+        .padding(side == .left ? .trailing : .leading, 36)
+        .padding(side == .left ? .leading : .trailing, 16)
+        .background(background)
+        .onAppear(perform: load)
+        .onChange(of: address) { save(); loaded = false; load() }
+        .onChange(of: text) {
+            guard loaded else { return }
+            saveTask?.cancel()
+            saveTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(600))
+                guard !Task.isCancelled else { return }
+                save()
+            }
+        }
+        .onChange(of: focused) { _, now in
+            onEditing(now)
+            if !now { save() }
+        }
+        .onDisappear {
+            saveTask?.cancel()
+            save()
+            onEditing(false)
+        }
+    }
+
+    private func load() {
+        text = model.documentAnnotation(forAddress: address)?.body?.value ?? ""
+        loaded = true
+    }
+
+    private func save() {
+        guard loaded else { return }
+        let stored = model.documentAnnotation(forAddress: address)?.body?.value ?? ""
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines) != stored else { return }
+        model.setDocumentAnnotation(text, forAddress: address)
+    }
+}
+
+/// A linked figure on the page (ORIGAMI-FIGURE-LINKS-SPEC): the href it
+/// opens, untouched, its bibliography key, and the figure's stable id.
+struct ReaderFigureLink {
+    let href: String
+    let citationKey: String?
+    let figureID: String?
+
+    /// "Open in Interatlas" for its link host or scheme, else "Open Link".
+    var actionTitle: String { LiquidDoc.Asset.linkActionTitle(for: href) }
+}
+
 /// The EPUB reader's `WKWebView`, with a context menu we own completely.
 /// The rendered page is a real web view with its own AppKit menu, so the
 /// SwiftUI `.contextMenu` never reaches it; instead `willOpenMenu` clears
@@ -3611,6 +4118,16 @@ final class ReaderWebView: WKWebView {
     /// table of contents, as the phone answers a pinch.
     var onPinchEnded: (CGFloat) -> Void = { _ in }
     private var pinchTotal: CGFloat = 0
+    /// The linked figure under the pointer, kept current by
+    /// `figureLinkScript` — what the figure's menu items act on.
+    var hoveredFigureLink: ReaderFigureLink?
+    private var menuFigureLink: ReaderFigureLink?
+    /// Invoked with a linked figure's href for its Open item.
+    var onOpenFigureLink: (URL) -> Void = { _ in }
+    /// Invoked with a figure's stable id for "Show Image".
+    var onShowFigure: (String) -> Void = { _ in }
+    /// Invoked with a figure's bibliography key for "Show Reference".
+    var onShowFigureReference: (String) -> Void = { _ in }
 
     override func magnify(with event: NSEvent) {
         switch event.phase {
@@ -3699,6 +4216,19 @@ final class ReaderWebView: WKWebView {
             addItem(to: menu, title: "Look Up \u{201C}\(shown)\u{201D}", action: #selector(lookUpSelection(_:)))
             addItem(to: menu, title: "Translate \u{201C}\(shown)\u{201D}", action: #selector(translateSelection(_:)))
         }
+        // A figure made from a view: its own doors lead the menu — the
+        // link again, the image itself, and the figure's reference.
+        menuFigureLink = text.isEmpty ? hoveredFigureLink : nil
+        if let figure = menuFigureLink {
+            addItem(to: menu, title: figure.actionTitle, action: #selector(openFigureLink(_:)))
+            if figure.figureID != nil {
+                addItem(to: menu, title: "Show Image", action: #selector(showFigureImage(_:)))
+            }
+            if figure.citationKey != nil {
+                addItem(to: menu, title: "Show Reference", action: #selector(showFigureReference(_:)))
+            }
+            menu.addItem(.separator())
+        }
         if text.isEmpty {
             // Nothing selected: the book itself is what gets cited, as
             // from the list — and the paragraph under the click can be
@@ -3785,6 +4315,21 @@ final class ReaderWebView: WKWebView {
         definitionPopover = popover
         let anchor = NSRect(x: menuLocation.x - 2, y: menuLocation.y - 2, width: 4, height: 4)
         popover.show(relativeTo: anchor, of: self, preferredEdge: .maxY)
+    }
+
+    @objc private func openFigureLink(_ sender: Any?) {
+        guard let href = menuFigureLink?.href, let url = URL(string: href) else { return }
+        onOpenFigureLink(url)
+    }
+
+    @objc private func showFigureImage(_ sender: Any?) {
+        guard let id = menuFigureLink?.figureID else { return }
+        onShowFigure(id)
+    }
+
+    @objc private func showFigureReference(_ sender: Any?) {
+        guard let key = menuFigureLink?.citationKey else { return }
+        onShowFigureReference(key)
     }
 
     private func addItem(to menu: NSMenu, title: String, action: Selector) {

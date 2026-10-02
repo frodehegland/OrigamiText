@@ -76,7 +76,7 @@ struct AgreementsView: View {
                     Button {
                         run()
                     } label: {
-                        Label(isRunning ? "Reading…" : (hasRun ? "Find Agreements Again" : "Find Agreements"),
+                        Label(isRunning ? "Analysing…" : (hasRun ? "Find Agreements Again" : "Find Agreements"),
                               systemImage: "checkmark.bubble")
                     }
                     .disabled(isRunning)
@@ -92,9 +92,12 @@ struct AgreementsView: View {
                         .foregroundStyle(.red)
                 }
                 if !hasRun, !isRunning {
-                    Text("The on-device model reads every document in the library and names where documents genuinely converge — each shared position with the documents that independently hold it. The prompt is yours: Settings → AI.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("The on-device model reads every document in the library and names where documents genuinely converge — each shared position with the documents that independently hold it.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        EditPromptButton()
+                    }
                 } else if hasRun, agreements.isEmpty, !isRunning {
                     Text("No genuine agreement found between library documents — an empty list is an honest answer. Try again as the library grows.")
                         .font(.callout)

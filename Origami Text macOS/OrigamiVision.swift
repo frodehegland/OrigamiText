@@ -46,11 +46,57 @@ struct VisionFigureView: View {
     /// Empty for a figure with no document behind it — the plate then
     /// simply has nothing to open.
     var docID: String = ""
+    /// Show Reference for a linked figure: its bibliography entry's
+    /// card, by the figure's `citationKey`. Nil when it has none.
+    var onShowReference: (() -> Void)? = nil
 
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openURL) private var openURL
+    /// The long press's actions, drawn on the figure itself — no
+    /// presented menu can appear on a RealityKit attachment.
+    @State private var showsActions = false
 
     var body: some View {
-        if let asset, let image = visionFigureImage(for: asset) {
+        if let asset, let image = visionFigureImage(for: asset), let url = asset.linkURL {
+            // A figure made from a view (ORIGAMI-FIGURE-LINKS-SPEC): the
+            // pinch opens its link, untouched, outside the app —
+            // Interatlas when it holds the link, Safari's page otherwise.
+            // The figure window stays the double pinch; the long press
+            // offers Show Image and Show Reference.
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity)
+                .frame(maxHeight: 440)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(alignment: .bottomTrailing) {
+                    Text(asset.linkActionTitle)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .glassBackgroundEffect(in: Capsule())
+                        .padding(10)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 6))
+                .hoverEffect()
+                .onTapGesture(count: 2) { showImage(asset) }
+                .onTapGesture {
+                    if showsActions { showsActions = false } else { openURL(url) }
+                }
+                .onLongPressGesture { showsActions = true }
+                .overlay(alignment: .top) {
+                    if showsActions { linkActions(asset, url: url) }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(alt.isEmpty ? (asset.alt ?? "Figure") : alt)
+                .accessibilityHint(asset.linkAccessibilityHint)
+                .accessibilityAddTraits([.isLink, .isImage])
+                .accessibilityAction { openURL(url) }
+                .accessibilityAction(named: "Show Image") { showImage(asset) }
+                .help(asset.linkAccessibilityHint)
+        } else if let asset, let image = visionFigureImage(for: asset) {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFit()
@@ -84,6 +130,44 @@ struct VisionFigureView: View {
             .padding(14)
             .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
         }
+    }
+
+    private func showImage(_ asset: LiquidDoc.Asset) {
+        guard !docID.isEmpty else { return }
+        openWindow(id: "figure",
+                   value: VisionFigureTarget(docID: docID, assetID: asset.id))
+    }
+
+    /// A linked figure's long-press actions, as a small glass bar.
+    private func linkActions(_ asset: LiquidDoc.Asset, url: URL) -> some View {
+        HStack(spacing: 8) {
+            Button(asset.linkActionTitle) {
+                showsActions = false
+                openURL(url)
+            }
+            if !docID.isEmpty {
+                Button("Show Image") {
+                    showsActions = false
+                    showImage(asset)
+                }
+            }
+            if let onShowReference {
+                Button("Show Reference") {
+                    showsActions = false
+                    onShowReference()
+                }
+            }
+            Button {
+                showsActions = false
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Close")
+        }
+        .padding(8)
+        .glassBackgroundEffect(in: Capsule())
+        .padding(.top, 12)
     }
 }
 
@@ -3877,8 +3961,16 @@ struct VisionReaderView: View {
             // No caption is drawn here: in an Origami document a
             // figure's caption is the paragraph that FOLLOWS it, which
             // renders itself, exactly as on the Mac.
-            VisionFigureView(asset: doc.assets.first { $0.id == id },
-                             alt: alt, docID: docID)
+            let asset = doc.assets.first { $0.id == id }
+            // A linked figure's Show Reference: the same card an
+            // in-text citation opens, by the figure's own key.
+            let referenceKey = asset?.citationKey
+                .flatMap { key in doc.references.contains { $0.id == key } ? key : nil }
+            VisionFigureView(asset: asset,
+                             alt: alt, docID: docID,
+                             onShowReference: referenceKey.map { key in
+                                 { citationTarget = CitationTarget(key: key) }
+                             })
         case .table(let table):
             VisionTableView(table: table)
         case .tableMissing:

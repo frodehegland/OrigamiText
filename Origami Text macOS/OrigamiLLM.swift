@@ -470,7 +470,7 @@ struct LLMModelSettingsSections: View {
             Text("""
                 Apple\u{2019}s built-in model runs on this Mac \u{2014} no text \
                 leaves it. A server model sends the text it reads to that \
-                server. The reading\u{2019}s AI (Summary, Proposals, Issues, and \
+                server. The reading\u{2019}s AI (Summary, Issues, and \
                 the selection presets) uses the chosen model; when it isn\u{2019}t \
                 reachable, Apple\u{2019}s model answers and says so.
                 """)

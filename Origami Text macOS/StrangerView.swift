@@ -132,7 +132,7 @@ struct StrangerView: View {
                     Button {
                         run()
                     } label: {
-                        Label(isRunning ? "Reading…" : "Summon the Stranger",
+                        Label(isRunning ? "Analysing…" : "Summon the Stranger",
                               systemImage: "person.fill.questionmark")
                     }
                     .disabled(isRunning)
@@ -165,9 +165,12 @@ struct StrangerView: View {
                         .foregroundStyle(.red)
                 }
                 if reading == nil, !isRunning {
-                    Text("The Stranger stands both inside and outside the community — after Georg Simmel's stranger, by way of David Millard. It reads every document, but owes the community's conclusions nothing: in Challenge it names what everyone believes but no one has defended; in Support, what is right but undervalued. It may ask to switch modes; only you can grant it. The prompts are yours: Settings → AI.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("The Stranger stands both inside and outside the community — after Georg Simmel's stranger, by way of David Millard. It reads every document, but owes the community's conclusions nothing: in Challenge it names what everyone believes but no one has defended; in Support, what is right but undervalued. It may ask to switch modes; only you can grant it.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        EditPromptButton()
+                    }
                 }
                 if let reading {
                     if reading.findings.isEmpty, !isRunning {

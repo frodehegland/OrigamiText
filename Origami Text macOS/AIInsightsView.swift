@@ -118,7 +118,7 @@ struct AIInsightsView: View {
                     Button {
                         run()
                     } label: {
-                        Label(isRunning ? "Reading…" : "Generate Insights", systemImage: "sparkles")
+                        Label(isRunning ? "Analysing…" : "Generate Insights", systemImage: "sparkles")
                     }
                     .disabled(isRunning)
                     if isRunning {
@@ -133,9 +133,12 @@ struct AIInsightsView: View {
                         .foregroundStyle(.red)
                 }
                 if output.isEmpty, !isRunning {
-                    Text("Reads the text of every document in the library — Visual-Meta appendices and link metadata are treated as metadata, not content — and reports what the community is working out. The prompt is yours: Settings → AI.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Reads the text of every document in the library — Visual-Meta appendices and link metadata are treated as metadata, not content — and reports what the community is working out.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        EditPromptButton()
+                    }
                 } else {
                     report
                 }

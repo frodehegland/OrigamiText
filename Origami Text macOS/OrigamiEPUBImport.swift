@@ -52,6 +52,9 @@ nonisolated enum OrigamiEPUBImporter {
         /// when it does — Visual-Meta first, then the package's own
         /// collection declarations.
         var publication: String? = nil
+        /// The journal, when Visual-Meta states one apart from the
+        /// proceedings — `document.journal` beside `document.publication`.
+        var journal: String? = nil
         /// The printed affiliations from Visual-Meta — the exported
         /// front matter rebuilds from these.
         var affiliations: [String] = []
@@ -632,10 +635,16 @@ nonisolated enum OrigamiEPUBImporter {
             }
             return []
         }()
-        let metaVenue = ["journal", "proceedings", "publication", "booktitle"]
+        // The venue is what the paper states itself part of; a journal
+        // stated beside a publication is kept apart as the journal, and
+        // one stated alone (older writers) is the venue as well.
+        let metaVenue = ["publication", "proceedings", "booktitle", "journal"]
             .compactMap { multilingualText(document?[$0]) }
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty }
+        let metaJournal = multilingualText(document?["journal"])
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.isEmpty ? nil : $0 }
         // Academic origami.json embeds venue under a "venue" sub-dict.
         let origamiVenue: String? = {
             guard let venue = origamiDoc?["venue"] as? [String: Any] else { return nil }
@@ -679,6 +688,7 @@ nonisolated enum OrigamiEPUBImporter {
             author: metaAuthors.first ?? creator,
             authors: metaAuthors.isEmpty ? creators : metaAuthors,
             publication: metaVenue ?? origamiVenue ?? opfVenue,
+            journal: metaJournal,
             affiliations: (document?["affiliations"] as? [String])?
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty } ?? [],
@@ -2546,6 +2556,16 @@ nonisolated enum OrigamiEPUBImporter {
                     : nil
                 let alt = figcaption.flatMap { $0.isEmpty ? nil : $0 }
                     ?? image.attributes["alt"] ?? ""
+                // A figure made from a view wraps its <img> in a plain
+                // <a href> — the address that opens the view again — with
+                // the figure's bibliography key on it (ORIGAMI-FIGURE-
+                // LINKS-SPEC §1). The href is kept opaque: XMLParser has
+                // already decoded `&amp;`, and nothing else is touched.
+                let wrapper = element.name == "figure" ? element.parent(of: image) : nil
+                let link = wrapper?.name == "a"
+                    ? wrapper?.attributes["href"].flatMap { $0.isEmpty ? nil : $0 } : nil
+                let figureKey = link == nil ? nil
+                    : wrapper?.attributes["data-citation-key"].flatMap { $0.isEmpty ? nil : $0 }
                 let paragraphID = stableID()
                 if let data = resolveImage(src), !data.isEmpty {
                     assetOrdinal += 1
@@ -2557,7 +2577,9 @@ nonisolated enum OrigamiEPUBImporter {
                         filename: name.isEmpty ? "\(assetID).png" : name,
                         mediaType: LiquidDoc.mediaType(forExtension: ext),
                         dataBase64: data.base64EncodedString(),
-                        alt: alt.isEmpty ? nil : alt))
+                        alt: alt.isEmpty ? nil : alt,
+                        link: link,
+                        citationKey: figureKey))
                     appendParagraph(LiquidDoc.Paragraph(
                         id: paragraphID, heading: nil, text: "![\(alt)](asset:\(assetID))"),
                         anchors: element)
@@ -3440,6 +3462,17 @@ private final class XMLTree: NSObject, XMLParserDelegate {
             if attributes[attribute] != nil { return self }
             for element in elements {
                 if let found = element.firstDescendant(carrying: attribute) { return found }
+            }
+            return nil
+        }
+
+        /// The element in this subtree whose direct child is `target`,
+        /// this one included — how a figure's `<img>` finds the `<a>`
+        /// wrapping it.
+        func parent(of target: Element) -> Element? {
+            for element in elements {
+                if element === target { return self }
+                if let found = element.parent(of: target) { return found }
             }
             return nil
         }

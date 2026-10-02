@@ -552,6 +552,7 @@ fields. It cannot do it with a paragraph that happens to begin
 | Subtitle | — | `document.subtitle` |
 | Abstract | — | `document.abstract` |
 | Venue | `dcterms:isPartOf` | `document.publication` |
+| Journal | a further `dcterms:isPartOf` | `document.journal` |
 | DOI | a second `dc:identifier` | `document.doi` |
 | ISBN | — | `document.isbn` |
 | Keywords | `dc:subject`, one each | `document.keywords` |
@@ -570,7 +571,11 @@ in the record rather than being invented in the package.
 ```
 
 `dcterms:isPartOf` is "a related resource in which the described
-resource is … included", which is what a proceedings is. The DOI is a
+resource is … included", which is what a proceedings is — and a
+journal, which is why a paper in both carries two. `document.journal`
+says which of them is the journal, and is what makes the colophon's
+self-citation (§8.4.2) an `@article` with a `journal` field rather than
+an `@inproceedings` with a `booktitle`. The DOI is a
 second `dc:identifier`, which EPUB permits — only one identifier is the
 `unique-identifier` — and which catalogues already read.
 
@@ -686,7 +691,7 @@ own tag, on the element that shows it and in its record value.
 #### 5.5.2 In the records
 
 Every human-language value in the semantic record's `document` — `title`,
-`subtitle`, `abstract`, `publication`, and each author's `name` — is an
+`subtitle`, `abstract`, `publication`, `journal`, and each author's `name` — is an
 object that says what it is: `value`, what the source says; `lang`, the
 language and script it says it in (REQUIRED); and `alternate`, the other
 forms, each with the `relation` that says why it exists. The shape is the
@@ -1675,6 +1680,11 @@ display (§12.4). `tag` is an open vocabulary.
 **MUST NOT** carry a `bibtex` or `csl` member: the bibliography record
 is canonical (§12.4).
 
+A citation entry MAY mirror individual fields of its BibTeX entry, named
+as BibTeX names them — an `abstract`, say, so the reference can be read
+without opening `references.bib` (§11). Where a mirrored field and the
+BibTeX differ, the BibTeX governs.
+
 A citation entry MAY carry `lang` — the cited work's language — and
 `alternate`, its title's other forms (§5.5.2). These are not bibliographic
 data duplicated from the record: BibTeX cannot hold them. A reader that
@@ -1927,11 +1937,28 @@ data.**
 The BibTeX key MUST be the identifier used in the bibliography entry's
 address and in `citations[].id` (§9.5).
 
-BibTeX strings MUST NOT be duplicated into the semantic or interaction
-records, nor into `data-bibtex` or `data-csl-json` attributes in the
-body. A writer MAY emit CSL JSON as an additional, clearly-marked
-derived record (`properties="origami:bibliography-csl"`); where it does,
-the BibTeX remains canonical.
+**Canonical is not the same as only.** A work's details are useful in
+more than one place, so a citation entry in the semantic record (§9.5)
+MAY also carry individual fields of that work's BibTeX entry as its own
+members — `abstract`, `title`, `author`, `year`, `booktitle`, `journal`,
+`doi`, `url` and the like. Each member takes the BibTeX field's name and
+its value as written in the entry, without the enclosing braces, so a
+consumer that knows BibTeX knows the member and nothing has to be mapped.
+Software reading only the semantic record can then show, search or
+summarise a reference without parsing BibTeX.
+
+These fields are a derived representation (§12.3). A writer SHOULD
+generate them from the same entry it writes to `references.bib`. Where
+the two disagree, the BibTeX governs, a validator MUST report a warning,
+and a reader MUST NOT merge the two.
+
+What MUST NOT be duplicated is the BibTeX itself: no BibTeX string in the
+semantic or interaction records under any name, and no `data-bibtex` or
+`data-csl-json` attributes in the body. A second serialisation of a whole
+entry is a second bibliography, and two bibliographies drift. A writer
+MAY emit CSL JSON as an additional, clearly-marked derived record
+(`properties="origami:bibliography-csl"`); where it does, the BibTeX
+remains canonical.
 
 **Why this is the canonical form.** A publication whose references
 travel as BibTeX can be re-typeset by any bibliography style — including
@@ -2102,7 +2129,7 @@ declared in advance.
 | Glossary term and definition | content document glossary | semantic record `concepts` |
 | Concept relationships | semantic record | — |
 | Citation placement | content document `biblioref` | — |
-| Bibliographic record | bibliography record (BibTeX) | XHTML rendering; CSL |
+| Bibliographic record | bibliography record (BibTeX) | XHTML rendering; CSL; individual fields on semantic record `citations[]` |
 | Table presented values | content document `<table>` | interaction record `cells[].value` |
 | Table formulas | interaction record | — |
 | Equation | MathML in the body | `data-latex`; `equations[].tex` |
@@ -2297,7 +2324,7 @@ stop at the first that yields anything:
 |---|---|---|
 | concepts / glossary | semantic record `concepts` | interaction record `glossary` |
 | citations | semantic record `citations` | interaction record `references` |
-| bibliographic data | bibliography record | whichever JSON carries BibTeX |
+| bibliographic data | bibliography record | fields mirrored on semantic `citations[]`, then whichever JSON carries BibTeX |
 | headings | content documents | semantic `structure.headings`, then interaction `headings` |
 | endnotes | semantic record `endnotes` | interaction record `endnotes` |
 | equations | semantic record `equations` | the delimited block, then a `math[id]` scan |
@@ -2364,6 +2391,8 @@ the publication deterministic in every one of these cases:
 - a DOI, title or author differing between the OPF and a record;
 - `data-model-up` or `extent` differing from the `models` entry;
 - a glossary definition differing between XHTML and the semantic record;
+- a bibliographic field on a citation entry differing from its BibTeX
+  entry (§11);
 - a heading list differing from the content documents;
 - a 3D figure over a size budget whose `data-model-source` is absent;
 - no rights statement at all, or a `dcterms:license` that is not a URI
@@ -2955,7 +2984,7 @@ what it looks like. That is §1.15 in practice rather than in principle.
 | concepts, citations, structure index, endnotes, relationships, lineage, equation index | semantic record |
 | scholarly front matter (§5) | the package where EPUB has a property, else the semantic record |
 | table formulas, authored layouts, model index, interaction declarations | interaction record |
-| bibliographic records | bibliography record |
+| bibliographic records | bibliography record; individual fields MAY be mirrored on `citations[]` |
 | rights and licence | the package, mirrored in the record, stated in the colophon |
 | a resource's own differing rights | the publication's prose (§4.7.3) |
 | the artifact digest | outside the publication |

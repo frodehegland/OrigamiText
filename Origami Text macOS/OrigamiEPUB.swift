@@ -147,7 +147,7 @@ nonisolated enum OrigamiEPUBExporter {
             enum CodingKeys: String, CodingKey {
                 case title, subtitle, authors, date, identifier, work, modified
                 case origamiID = "origami-id"
-                case abstract, keywords, ccsConcepts, isbn, doi, publication
+                case abstract, keywords, ccsConcepts, isbn, doi, publication, journal
                 case acmReference  // Profile 1.0 §5.4; exports before it wrote "acm-reference"
                 case rights, license, defaultDocument
                 case language
@@ -234,6 +234,9 @@ nonisolated enum OrigamiEPUBExporter {
             /// The journal or proceedings the document is part of, when
             /// it declares one — the reader's Journals view groups by it.
             var publication: Value? = nil
+            /// The journal the paper is published in, apart from any
+            /// proceedings — what makes its self-citation an article.
+            var journal: Value? = nil
             /// The document's library address, carried openly so a
             /// receiving Origami Text can keep the book's identity —
             /// citations to it then resolve wherever it arrives.
@@ -825,6 +828,7 @@ nonisolated enum OrigamiEPUBExporter {
                 rights: packageRights(of: doc),
                 license: packageLicenseURI(of: doc),
                 publication: doc.publication.flatMap { $0.isEmpty ? nil : value($0, "publication", of: doc) },
+                journal: doc.journal.flatMap { $0.isEmpty ? nil : value($0, "journal", of: doc) },
                 origamiID: doc.id,
                 abstract: doc.abstract.flatMap { $0.isEmpty ? nil : value($0, "abstract", of: doc) },
                 keywords: doc.keywords.isEmpty ? nil : doc.keywords,
@@ -1132,7 +1136,12 @@ nonisolated enum OrigamiEPUBExporter {
         // "Family, Given" otherwise.
         let order = BibTeXConventions.inspected(references).nameOrder
             ?? doc.bibliographyConventions?.nameOrder
-        let selfCitation = selfCitationBibTeX(for: doc, givenFirst: order == "given-family")
+        // The month likewise, so the colophon does not make the declared
+        // conventions "mixed".
+        let months = BibTeXConventions.inspected(references).monthFormat
+            ?? doc.bibliographyConventions?.monthFormat
+        let selfCitation = selfCitationBibTeX(for: doc, givenFirst: order == "given-family",
+                                              monthFormat: months)
         // Everything but the key style is read from both; keys describe
         // references.bib alone — the self-citation's key is its own.
         var inspected = BibTeXConventions.inspected(references + "\n\n" + selfCitation)
@@ -1150,7 +1159,8 @@ nonisolated enum OrigamiEPUBExporter {
         return (result.conventions, result.notes)
     }
 
-    private static func selfCitationBibTeX(for doc: LiquidDoc, givenFirst: Bool = false) -> String {
+    private static func selfCitationBibTeX(for doc: LiquidDoc, givenFirst: Bool = false,
+                                           monthFormat: String? = nil) -> String {
         func value(_ text: String) -> String {
             text.replacingOccurrences(of: "{", with: "(")
                 .replacingOccurrences(of: "}", with: ")")
@@ -1158,16 +1168,41 @@ nonisolated enum OrigamiEPUBExporter {
                 .trimmingCharacters(in: .whitespaces)
         }
         let names = (doc.authors.isEmpty ? [doc.displayAuthor] : doc.authors).filter { !$0.isEmpty }
-        let year = String(documentDate(of: doc).prefix(4))
+        let date = documentDate(of: doc)
+        let year = String(date.prefix(4))
         let venue = doc.publication.map(value) ?? ""
+        // A journal makes it an @article, a proceedings an @inproceedings,
+        // neither a @misc — BibTeX's @article requires a journal. When
+        // both are stated the journal wins, since @article has no
+        // booktitle.
+        let journal = doc.journal.map(value) ?? ""
         var fields: [(String, String)] = []
         if !names.isEmpty {
             let ordered = names.map { givenFirst ? PersonName.givenFirst($0) : PersonName.familyFirst($0) }
             fields.append(("author", ordered.map(value).joined(separator: " and ")))
         }
         fields.append(("title", value(doc.title)))
-        if !venue.isEmpty { fields.append(("booktitle", venue)) }
+        if !journal.isEmpty {
+            fields.append(("journal", journal))
+        } else if !venue.isEmpty {
+            fields.append(("booktitle", venue))
+        }
         fields.append(("year", year))
+        // Macros are written bare (`month = sep`); numbers and names braced.
+        var bareFields: Set<String> = []
+        let monthDigits = date.dropFirst(5).prefix(2)
+        if monthDigits.count == 2, let month = Int(monthDigits), (1...12).contains(month) {
+            switch monthFormat {
+            case "macro":
+                fields.append(("month", ["jan", "feb", "mar", "apr", "may", "jun", "jul",
+                                         "aug", "sep", "oct", "nov", "dec"][month - 1]))
+                bareFields.insert("month")
+            case "name":
+                fields.append(("month", Calendar(identifier: .gregorian).monthSymbols[month - 1]))
+            default:
+                fields.append(("month", String(month)))
+            }
+        }
         if let doi = doc.doi.map(value), !doi.isEmpty {
             fields.append(("doi", doi))
             fields.append(("url", "https://doi.org/" + doi))
@@ -1189,9 +1224,11 @@ nonisolated enum OrigamiEPUBExporter {
         let key = (surname.isEmpty ? "paper" : surname) + year + word
         let width = fields.map(\.0.count).max() ?? 0
         let body = fields.map { name, text in
-            "  " + name.padding(toLength: width, withPad: " ", startingAt: 0) + " = {\(text)}"
+            "  " + name.padding(toLength: width, withPad: " ", startingAt: 0)
+                + (bareFields.contains(name) ? " = \(text)" : " = {\(text)}")
         }
-        return "@\(venue.isEmpty ? "article" : "inproceedings"){\(key),\n"
+        let type = !journal.isEmpty ? "article" : venue.isEmpty ? "misc" : "inproceedings"
+        return "@\(type){\(key),\n"
             + body.joined(separator: ",\n") + "\n}"
     }
 
@@ -1923,7 +1960,17 @@ nonisolated enum OrigamiEPUBExporter {
             // The caption is visible words, not only an alt attribute —
             // a browser never shows alt; a <figcaption> every reader does.
             let caption = alt.isEmpty ? "" : "<figcaption>\(escaped(alt))</figcaption>"
-            return "<figure \(anchors)><img src=\"images/\(attributeEscaped(asset.filename))\" alt=\"\(attributeEscaped(alt))\" />\(caption)</figure>"
+            var img = "<img src=\"images/\(attributeEscaped(asset.filename))\" alt=\"\(attributeEscaped(alt))\" />"
+            // A figure made from a view keeps its plain <a href> around
+            // the <img>, so the published figure still opens the view
+            // (ORIGAMI-FIGURE-LINKS-SPEC) — never a biblioref.
+            if let link = asset.link, !link.isEmpty {
+                let key = asset.citationKey.map {
+                    " data-citation-key=\"\(attributeEscaped($0))\""
+                } ?? ""
+                img = "<a href=\"\(attributeEscaped(link))\"\(key)>\(img)</a>"
+            }
+            return "<figure \(anchors)>\(img)\(caption)</figure>"
         }
         // A live table renders as a real grid, its `data-table-id` tying
         // the placement to the Visual-Meta tables entry (values and
@@ -2736,7 +2783,10 @@ nonisolated enum OrigamiEPUBExporter {
         for name in doc.authors.isEmpty ? [doc.displayAuthor] : doc.authors {
             lines.append("    <dc:creator>\(escaped(name))</dc:creator>")
         }
-        if let venue = doc.publication, !venue.isEmpty {
+        // A paper can be part of a proceedings and a journal both; each
+        // is its own dcterms:isPartOf.
+        for venue in [doc.publication, doc.journal].compactMap({ $0 })
+            .reduce(into: [String](), { if !$1.isEmpty && !$0.contains($1) { $0.append($1) } }) {
             lines.append("    <meta property=\"dcterms:isPartOf\">\(escaped(venue))</meta>")
         }
         if let doi = doc.doi, !doi.isEmpty {

@@ -198,8 +198,18 @@ struct OrigamiTextMacApp: App {
             if let target {
                 FigureWindowView(target: target)
                     .environment(model)
+                    // Always a window, never a full-screen space: from a
+                    // reading in full screen, macOS otherwise opened the
+                    // figure as its own full-screen window, and laying it
+                    // out inside that animation is the macOS 27
+                    // display-cycle crash (_postWindowNeedsUpdateConstraints).
+                    .windowFullScreenBehavior(.disabled)
             }
         }
+        // An associated window floats over the reading — full screen
+        // included — rather than taking a space of its own.
+        .windowManagerRole(.associated)
+        .defaultPosition(.center)
 
         // Editor Mode's window — the publisher's corrections (see
         // EDITOR-MODE-PLAN.md). Compiled only into publisher builds;

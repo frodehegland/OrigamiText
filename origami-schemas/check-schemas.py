@@ -97,6 +97,8 @@ CASES = [
      semantic(citations=[{"id": "C", "bibtex": "@book{C, title={T}}"}]), False),
     ("semantic: citation carrying CSL (§10)", SEMANTIC,
      semantic(citations=[{"id": "C", "csl": {"title": "T"}}]), False),
+    ("semantic: citation mirroring BibTeX fields (§11)", SEMANTIC,
+     semantic(citations=[{"id": "C", "abstract": "A.", "title": "T", "year": "2019"}]), True),
     ("semantic: carrying tables (§9.0)", SEMANTIC,
      semantic(tables=[{"identifier": "T-1", "cells": []}]), False),
     ("semantic: carrying map (§9.0)", SEMANTIC,

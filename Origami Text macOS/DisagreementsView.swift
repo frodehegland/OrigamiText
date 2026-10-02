@@ -86,7 +86,7 @@ struct DisagreementsView: View {
                     Button {
                         run()
                     } label: {
-                        Label(isRunning ? "Reading…" : (hasRun ? "Find Disagreements Again" : "Find Disagreements"),
+                        Label(isRunning ? "Analysing…" : (hasRun ? "Find Disagreements Again" : "Find Disagreements"),
                               systemImage: "bubble.left.and.bubble.right")
                     }
                     .disabled(isRunning)
@@ -102,9 +102,12 @@ struct DisagreementsView: View {
                         .foregroundStyle(.red)
                 }
                 if !hasRun, !isRunning {
-                    Text("The on-device model reads every document in the library and names where documents genuinely pull against each other — each dispute with its two sides and their documents. The prompt is yours: Settings → AI.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("The on-device model reads every document in the library and names where documents genuinely pull against each other — each dispute with its two sides and their documents.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        EditPromptButton()
+                    }
                 } else if hasRun, disagreements.isEmpty, !isRunning {
                     Text("No genuine disagreement found between library documents — an empty list is an honest answer. Try again as the library grows.")
                         .font(.callout)

@@ -42,7 +42,7 @@ enum EPUBReaderMode: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .faithful: "Scrolling"
+        case .faithful: "Scroll"
         case .scroll: "Full Width"
         case .horizontal: "Horizontal"
         case .focus: "Focus"
@@ -1667,7 +1667,7 @@ struct OrigamiReadingView: View {
                 VStack(spacing: 24) {
                     Spacer()
                     Text(rsvpWords[min(rsvpWordIndex, rsvpWords.count - 1)])
-                        .font(.system(size: 44 + fontDelta, weight: .regular))
+                        .font(Font.custom(bodyFontName, size: 44 + fontDelta))
                         .foregroundStyle(themeText.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
                         .frame(minWidth: 240, alignment: .center)
                         .contentTransition(.numericText())
@@ -1763,7 +1763,7 @@ struct OrigamiReadingView: View {
             VStack(spacing: 0) {
                 Spacer()
                 Text(sentences[idx])
-                    .font(.system(size: 18 + fontDelta, weight: .regular))
+                    .font(Font.custom(bodyFontName, size: 18 + fontDelta))
                     .foregroundStyle(themeText.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
                     .multilineTextAlignment(.leading)
                     .lineSpacing(CGFloat(lineSpacing))
@@ -1818,7 +1818,7 @@ struct OrigamiReadingView: View {
             VStack(spacing: 0) {
                 Spacer()
                 Text(paragraphs[idx])
-                    .font(.system(size: 18 + fontDelta, weight: .regular))
+                    .font(Font.custom(bodyFontName, size: 18 + fontDelta))
                     .foregroundStyle(themeText.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
                     .multilineTextAlignment(.leading)
                     .lineSpacing(CGFloat(lineSpacing))
@@ -1957,7 +1957,7 @@ struct OrigamiReadingView: View {
                             annotations: [String: [ResolvedAnnotation]]) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: flowSpacing) {
-                header
+                foldHeader
                 Divider()
                 ForEach(foldedSegments(paragraphs)) { segment in
                     switch segment {
@@ -2030,7 +2030,7 @@ struct OrigamiReadingView: View {
                               annotations: [String: [ResolvedAnnotation]]) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: flowSpacing) {
-                header
+                foldHeader
                 Divider()
                 ForEach(paragraphs, id: \.id) { paragraph in
                     Text(inlineText(paragraph,
@@ -2056,13 +2056,19 @@ struct OrigamiReadingView: View {
     /// stands, and the view lands on the clicked place — after the new
     /// layout is in, the fold toggles' own measure.
     private func jumpFromFindFold(to paragraphID: String) {
-        withAnimation(.easeInOut(duration: 0.15)) {
+        // Back to the view the fold was opened from — Scroll or
+        // Horizontal, never Full Width — at the place clicked.
+        let stayed = readerMode != .scroll
+        model.restoreModeAfterFold(landingOn: paragraphID)
+        withAnimation(ReadingFootBar.modeSwitch) {
             model.readerFindFoldTerm = nil
             model.readerFoldLevel = 0
         }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(180))
-            pendingScrollID = paragraphID
+            // A view switched back lands through the arriving fragment;
+            // only a fold that never left its view scrolls here.
+            if stayed { pendingScrollID = paragraphID }
             // The landing shows its matches; two seconds later the
             // orange fades and the reading stands at rest.
             try? await Task.sleep(for: .seconds(2))
@@ -2722,6 +2728,18 @@ struct OrigamiReadingView: View {
 
     // MARK: - Header and shared pieces
 
+    /// An outline's head: the paper's title alone — the authors,
+    /// venue, rights and cover belong to the full reading, not to a fold
+    /// that is all structure.
+    private var foldHeader: some View {
+        Text(doc.title)
+            .font(Font.custom(headingFontName,
+                              size: max(NSFont.preferredFont(forTextStyle: .largeTitle).pointSize
+                                        + fontDelta - 1, 8)))
+            .foregroundStyle(themeHeading.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             // A book opens on its cover, when the EPUB carried one.
@@ -3092,6 +3110,17 @@ struct OrigamiReadingView: View {
                     modelSheetTarget = ModelSheetTarget(figure: modelRef)
                 }
                 .help("Double-click for the model, its name and its size")
+                .dimmedForStretch(dim)
+        } else if let image = LiquidDoc.imageReference(in: paragraph.text),
+           let asset = doc.assets.first(where: { $0.id == image.id }),
+           asset.linkURL != nil {
+            // A figure made from a view: its click opens the view, so
+            // the figure window is its double-click and its menu.
+            OrigamiAssetView(
+                asset: asset,
+                fallback: OrigamiAssetView.imageCitation(after: paragraph, in: doc),
+                doc: doc,
+                onShowImage: { openFigureWindow(paragraphID: paragraph.id) })
                 .dimmedForStretch(dim)
         } else if let image = LiquidDoc.imageReference(in: paragraph.text),
            let asset = doc.assets.first(where: { $0.id == image.id }) {
@@ -3713,7 +3742,7 @@ struct OrigamiReadingView: View {
                 && wantsParagraphBreaks(paragraph.text)
         }
         guard !candidates.isEmpty else { return }
-        flashNotice("Reading for shifts in meaning\u{2026}")
+        flashNotice("Analysing for shifts in meaning\u{2026}")
         Task {
             for paragraph in candidates {
                 guard expandParagraphs else { break }
@@ -3760,7 +3789,7 @@ struct OrigamiReadingView: View {
                 && wantsKeySentence(paragraph.text)
         }
         guard !candidates.isEmpty else { return }
-        flashNotice("Reading for each paragraph\u{2019}s key sentence\u{2026}")
+        flashNotice("Analysing for each paragraph\u{2019}s key sentence\u{2026}")
         Task {
             for paragraph in candidates {
                 guard colourKeySentences || coloringMode == .keyStatement else { break }
@@ -4270,16 +4299,11 @@ struct ReadingFootBar: View {
 
     @State private var defaultExpanded = false
 
-    /// Expanded when explicitly opened, or automatically when Full Width
-    /// is active so the user can always see which sub-mode is selected —
-    /// but never while an outline shape, a find-fold, or an AI reading
-    /// stands: the active group owns the bar then.
-    private var defaultShowsExpanded: Bool {
-        let foldStanding = model.readerFoldLevel > 0
-            || model.readingAnalysisKind != nil
-            || model.readerFindFoldTerm != nil
-        return defaultExpanded || (readerMode == .scroll && !foldStanding)
-    }
+    /// Never expanded now: Full Width is no longer offered as a view —
+    /// it only hosts a standing fold, which returns to Scroll or
+    /// Horizontal when it leaves. The bracketed [ Scroll | Full Width ]
+    /// form below stays unreachable rather than deleted.
+    private var defaultShowsExpanded: Bool { false }
 
     // MARK: The AI group — the model's readings, unfolding in place
 
@@ -4307,7 +4331,7 @@ struct ReadingFootBar: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("This Mac's model reads the open book — the Summary opens, Proposals and Issues beside it")
+            .help("This Mac's model reads the open book — the Summary opens, Issues beside it")
         } else {
             HStack(spacing: 8) {
                 Button {
@@ -4325,8 +4349,6 @@ struct ReadingFootBar: View {
                 .help("Fold the AI group away — back to the reading")
                 .accessibilityLabel("Close AI reading")
                 aiWord(.summary)
-                separator
-                aiWord(.proposals)
                 separator
                 aiWord(.issues)
                 Text("]")
@@ -4361,11 +4383,9 @@ struct ReadingFootBar: View {
 
     @ViewBuilder private var defaultGroup: some View {
         if !defaultShowsExpanded {
-            // Collapsed: "Scrolling" word — clicking opens the group to
-            // reveal Full Width beside it, same as AI's collapsed word.
+            // The "Scroll" word: the column reading, nothing nested.
             Button {
                 withAnimation(Self.modeSwitch) {
-                    defaultExpanded = true
                     readerModeRaw = EPUBReaderMode.faithful.rawValue
                     model.readerFoldLevel = 0
                     model.readingAnalysisKind = nil
@@ -4376,13 +4396,13 @@ struct ReadingFootBar: View {
                     && model.readingAnalysisKind == nil
                     && model.readerFoldLevel == 0
                     && model.readerFindFoldTerm == nil
-                Text("Scrolling")
+                Text("Scroll")
                     .font(.callout.weight(isActive ? .semibold : .regular))
                     .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("The column-width reading — click to see Full Width")
+            .help("The column-width reading")
         } else {
             // Expanded: [ Scrolling | Full Width ] — active word bold.
             HStack(spacing: 8) {
@@ -4530,6 +4550,7 @@ struct ReadingFootBar: View {
             model.readerFindFoldTerm = nil
             model.readingAnalysisKind = nil
             if outlineShape == shape {
+                model.restoreModeAfterFold()
                 model.readerFoldLevel = 0
                 model.readingOverviewOn = false
                 return
@@ -4542,7 +4563,9 @@ struct ReadingFootBar: View {
             }
             model.readingOverviewOn = false
             // The fold lives on the native flow: whatever mode the
-            // reading stood in, folding moves it to Scroll.
+            // reading stood in, folding hosts it in the native flow —
+            // and the view it came from is noted, to return to.
+            model.rememberModeBeforeFold()
             defaultExpanded = false
             if readerMode != .scroll {
                 readerModeRaw = EPUBReaderMode.scroll.rawValue
@@ -6430,6 +6453,9 @@ struct OrigamiAssetView: View {
     /// The document the figure stands in, for the package's own scene
     /// datasets (data/<scene-id>.liquidinfo.json, spec §2.4).
     var doc: LiquidDoc? = nil
+    /// Show Image for a linked figure — its click belongs to the link,
+    /// so the figure window moves to the double-click and the menu.
+    var onShowImage: (() -> Void)? = nil
 
     /// The citation read out of the PNG, once, on appearance.
     @State private var record: BibTeXRecord?
@@ -6437,10 +6463,52 @@ struct OrigamiAssetView: View {
     /// `liquid-scene` chunk — the image as its own source of truth.
     @State private var scene: String?
     @State private var showsCitation = false
+    @State private var hovering = false
+
+    /// A linked figure's reference: its bibliography entry by
+    /// `citationKey` — the same entry in-text citations use — with the
+    /// PNG's own record only for display when the book has none.
+    private var figureReference: BibTeXRecord? {
+        if let key = asset.citationKey,
+           let entry = doc?.references.first(where: { $0.id == key }),
+           let parsed = BibTeXRecord.records(in: entry.bibtex).first {
+            return parsed
+        }
+        return record
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if record != nil {
+            if let url = asset.linkURL {
+                // A figure made from a view (ORIGAMI-FIGURE-LINKS-SPEC):
+                // the click opens its link, untouched, outside the app.
+                imageContent
+                    .overlay(alignment: .bottomTrailing) { linkBadge }
+                    .offset(y: hovering ? -2 : 0)
+                    .shadow(color: .black.opacity(hovering ? 0.22 : 0), radius: 10, y: 6)
+                    .animation(.easeOut(duration: 0.15), value: hovering)
+                    .onHover { hovering = $0 }
+                    .onTapGesture(count: 2) { onShowImage?() }
+                    .onTapGesture { model.openFigureLink(url) }
+                    .help(asset.linkAccessibilityHint)
+                    .contextMenu {
+                        Button(asset.linkActionTitle) { model.openFigureLink(url) }
+                        if let onShowImage {
+                            Button("Show Image", action: onShowImage)
+                        }
+                        if figureReference != nil {
+                            Button("Show Reference") { showsCitation = true }
+                        }
+                    }
+                    .popover(isPresented: $showsCitation) {
+                        citationPopover(figureReference)
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(asset.alt ?? asset.linkActionTitle)
+                    .accessibilityHint(asset.linkAccessibilityHint)
+                    .accessibilityAddTraits([.isLink, .isImage])
+                    .accessibilityAction { model.openFigureLink(url) }
+            } else if record != nil {
                 Button {
                     showsCitation = true
                 } label: {
@@ -6448,7 +6516,7 @@ struct OrigamiAssetView: View {
                 }
                 .buttonStyle(.plain)
                 .help("This image carries its citation — click for the record and Open Source")
-                .popover(isPresented: $showsCitation) { citationPopover }
+                .popover(isPresented: $showsCitation) { citationPopover(record) }
             } else {
                 imageContent
             }
@@ -6583,8 +6651,22 @@ struct OrigamiAssetView: View {
         }
     }
 
+    /// The small label on a linked figure: it can be opened.
+    private var linkBadge: some View {
+        Text(asset.linkActionTitle)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .background(.black.opacity(0.62), in: Capsule())
+            .opacity(hovering ? 1 : 0.85)
+            .padding(10)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
     /// The citation as the source speaks it, with its doors.
-    @ViewBuilder private var citationPopover: some View {
+    @ViewBuilder private func citationPopover(_ record: BibTeXRecord?) -> some View {
         if let record {
             VStack(alignment: .leading, spacing: 10) {
                 Text(record.citationSentence)

@@ -1091,6 +1091,51 @@ struct PhoneReaderView: View {
             // double-click lifts it into a window.
             VStack(alignment: .leading, spacing: 6) {
                 if let asset = doc.assets.first(where: { $0.id == reference.id }),
+                   let image = decodedImage(for: asset), let url = asset.linkURL {
+                    // A figure made from a view (ORIGAMI-FIGURE-LINKS-SPEC):
+                    // a tap opens its link, untouched, outside the app;
+                    // the double-tap keeps the figure card, and the long
+                    // press offers Show Image and Show Reference.
+                    let referenceKey = asset.citationKey
+                        .flatMap { key in doc.references.contains { $0.id == key } ? key : nil }
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxHeight: 480)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .overlay(alignment: .bottomTrailing) {
+                            Text(asset.linkActionTitle)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(.black.opacity(0.62), in: Capsule())
+                                .padding(8)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                        .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 4))
+                        .hoverEffect(.lift)
+                        .onTapGesture(count: 2) { jumpFigureID = paragraph.id }
+                        .onTapGesture { UIApplication.shared.open(url) }
+                        .contextMenu {
+                            Button(asset.linkActionTitle) { UIApplication.shared.open(url) }
+                            Button("Show Image") { jumpFigureID = paragraph.id }
+                            if let referenceKey {
+                                Button("Show Reference") { citationKey = referenceKey }
+                            }
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(asset.alt ?? asset.linkActionTitle)
+                        .accessibilityHint(asset.linkAccessibilityHint)
+                        .accessibilityAddTraits([.isLink, .isImage])
+                        .accessibilityAction { UIApplication.shared.open(url) }
+                    if let caption = asset.alt, !caption.isEmpty {
+                        Text(caption)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if let asset = doc.assets.first(where: { $0.id == reference.id }),
                    let image = decodedImage(for: asset) {
                     Image(uiImage: image)
                         .resizable()

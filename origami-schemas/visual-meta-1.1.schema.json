@@ -73,6 +73,10 @@
           "description": "The venue the work is part of, mirroring dcterms:isPartOf.",
           "$ref": "#/$defs/multilingualValue"
         },
+        "journal": {
+          "description": "The journal the work is published in, apart from any proceedings; also a dcterms:isPartOf.",
+          "$ref": "#/$defs/multilingualValue"
+        },
         "acmReference": {
           "description": "The publisher's own self-citation, verbatim as the publication prints it. Derived from nothing and reformatted by no one: it is the reference the publisher asks the work to be cited by.",
           "type": "string"

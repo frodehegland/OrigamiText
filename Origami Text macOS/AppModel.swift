@@ -2453,6 +2453,22 @@ final class AppModel {
                       cantReceiveNote: "Interatlas can\u{2019}t receive links yet — the scene link is on the clipboard, ready to paste there.")
     }
 
+    /// Opens a figure's own link — the `<a href>` around a figure made
+    /// from a view (ORIGAMI-FIGURE-LINKS-SPEC). The href is passed on
+    /// untouched and always leaves the app, never the reader's web
+    /// view: Liquid's /liquid/ path first (same domain), then
+    /// Interatlas by its doors, then the system for anything else —
+    /// an `interatlas:` link included.
+    func openFigureLink(_ url: URL) {
+        if LiquidViewLink.isLiquidViewLink(url) {
+            openLiquidViewLink(url)
+        } else if InteratlasLink.isInteratlasLink(url) {
+            openInteratlasLink(url)
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     /// Opens a Liquid view link — Author's 3D view citation on the
     /// same link domain, path /liquid/ — by the same ladder, through
     /// Liquid's own doors (`liquidinfo://`, the old `liquid://`, or
@@ -2998,8 +3014,8 @@ final class AppModel {
     /// finishes loading — set when a cross-document link is followed.
     var pendingReaderFragment: String?
 
-    /// The AI reading standing over the page, if any — Summary,
-    /// Proposals, or Issues takes the whole reading area until closed.
+    /// The AI reading standing over the page, if any — Summary or
+    /// Issues takes the whole reading area until closed.
     /// Set by the foot bar's AI group; cleared by Close, a mode word,
     /// or opening another book.
     var readingAnalysisKind: ReadingAnalysisKind? {
@@ -3029,8 +3045,38 @@ final class AppModel {
     /// reading returns folded to the find — the document's headings
     /// with the full sentences around every match, each highlighted,
     /// ⌘G stepping through them.
+    /// The view the reading stood in when a fold took the page — Scroll
+    /// or Horizontal. A fold needs the native flow, so it is hosted in
+    /// the (no longer offered) Full Width mode while it stands; leaving
+    /// it returns here, never to Full Width.
+    var readerModeBeforeFold: EPUBReaderMode?
+
+    /// Notes the view to come back to, as a fold opens. A fold opened
+    /// from another fold keeps the first view.
+    func rememberModeBeforeFold() {
+        guard readerFoldLevel == 0, readerFindFoldTerm == nil, readerModeBeforeFold == nil
+        else { return }
+        let mode = UserDefaults.standard.string(forKey: "readerMode")
+            .flatMap(EPUBReaderMode.init(rawValue:)) ?? .faithful
+        readerModeBeforeFold = mode == .horizontal ? .horizontal : .faithful
+    }
+
+    /// Back to the view the fold was opened from — Scroll or Horizontal —
+    /// landing on the paragraph clicked, when one was. Only the fold's
+    /// own host mode is replaced: a mode word chosen meanwhile stands.
+    func restoreModeAfterFold(landingOn paragraphID: String? = nil) {
+        let back = readerModeBeforeFold ?? .faithful
+        readerModeBeforeFold = nil
+        let current = UserDefaults.standard.string(forKey: "readerMode")
+            .flatMap(EPUBReaderMode.init(rawValue:)) ?? .faithful
+        guard current == .scroll else { return }
+        if let paragraphID, !paragraphID.isEmpty { pendingReaderFragment = paragraphID }
+        UserDefaults.standard.set(back.rawValue, forKey: "readerMode")
+    }
+
     func showFindFold(term: String) {
         readingAnalysisKind = nil
+        rememberModeBeforeFold()
         // The fold lives on the native flow, as the Outline group's.
         UserDefaults.standard.set(EPUBReaderMode.scroll.rawValue, forKey: "readerMode")
         readerFindFoldTerm = term
@@ -3060,7 +3106,8 @@ final class AppModel {
         var all = ReadingAnalysisStore.load(for: address, in: Self.analysesRoot)
         all[kind.rawValue] = StoredReadingAnalysis(
             text: result.text, names: result.names,
-            keywords: result.keywords, created: .now)
+            keywords: result.keywords, created: .now,
+            glossary: result.glossary.isEmpty ? nil : result.glossary)
         ReadingAnalysisStore.save(all, for: address, in: Self.analysesRoot)
     }
 
@@ -3764,7 +3811,7 @@ final class AppModel {
 
     /// The address a book's annotations are filed under: its Origami id
     /// when its record is known, else its unpack folder name.
-    private func annotationAddress(forBook book: OpenEPUB) -> String {
+    func annotationAddress(forBook book: OpenEPUB) -> String {
         epubRecords.first { $0.folder == book.id }?.id ?? book.id
     }
 
@@ -4039,6 +4086,7 @@ final class AppModel {
         doc.documentType = LiquidDoc.DocumentType.book.rawValue
         doc.subtitle = result.subtitle
         doc.publication = result.publication ?? record?.publication
+        doc.journal = result.journal
         doc.affiliations = result.affiliations
         doc.acmReference = result.acmReference
         doc.authorORCIDs = result.authorORCIDs
@@ -7020,6 +7068,9 @@ final class AppModel {
         /// EPUB would otherwise end with.
         var colophon = false
         var compile = true
+        /// ACM's `<proceeding_acronym>-<paper_ID>` for the upload ZIP;
+        /// empty takes the source file's name.
+        var uploadName = ""
 
         var suffix: String { publisher == .acm ? style.rawValue : publisher.fileSuffix }
         var label: String { publisher == .acm ? style.label : publisher.label }
@@ -7033,6 +7084,9 @@ final class AppModel {
         var epubError: String?
         var pdf: URL?
         var pdfError: String?
+        /// ACM's upload ZIP, when the publisher is ACM.
+        var upload: URL?
+        var uploadError: String?
     }
 
     @discardableResult
@@ -7041,10 +7095,10 @@ final class AppModel {
                      rights: ACMLaTeX.Rights? = nil,
                      edited: LiquidDoc? = nil, event: ACMLaTeX.Conference? = nil,
                      alsoEPUB: Bool = false, colophon: Bool = false,
-                     compile: Bool) -> URL? {
+                     compile: Bool, uploadName: String = "") -> URL? {
         let options = FormatOptions(style: style, publisher: publisher, rights: rights,
                                     event: event, alsoEPUB: alsoEPUB, colophon: colophon,
-                                    compile: compile)
+                                    compile: compile, uploadName: uploadName)
         // The sandbox granted the chosen EPUB, not the folder it sits in,
         // so writing a new folder beside it was refused ("no permission
         // to save"). A save panel grants the write; it opens beside the
@@ -7058,7 +7112,9 @@ final class AppModel {
         panel.prompt = compile ? "Render" : "Write"
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let folder = panel.url else { return nil }
-        let doc = edited ?? conversion.doc
+        // A figure prints its own caption; Author's italic credit lines
+        // under it would print it a second time.
+        let doc = ACMLaTeX.withoutFigureCreditLines(edited ?? conversion.doc)
         let sourceName = conversion.url.deletingPathExtension().lastPathComponent
         showNote(compile ? "Rendering\u{2026}" : "Writing\u{2026}")
         Task { @MainActor in
@@ -7134,7 +7190,56 @@ final class AppModel {
                 outcome.pdfError = "TeX could not finish the PDF; paper.log says why"
             }
         }
+        // ACM's upload: <acronym>-<paper ID>.zip holding pdf/ and Source/.
+        // It needs the PDF, so it is made only once there is one.
+        if options.publisher == .acm {
+            let name = ACMLaTeX.uploadFileName(options.uploadName)
+                ?? ACMLaTeX.uploadFileName(sourceName) ?? "paper"
+            if let pdf = outcome.pdf {
+                do {
+                    outcome.upload = try Self.writeACMUpload(in: folder, pdf: pdf, name: name)
+                } catch {
+                    outcome.uploadError = "the ACM upload ZIP could not be written: "
+                        + error.localizedDescription
+                }
+            } else {
+                outcome.uploadError = "ACM's upload ZIP needs the PDF, so it was not made"
+            }
+        }
         return outcome
+    }
+
+    /// ACM's upload package, exactly as the TAPS instructions lay it out:
+    ///
+    ///     <name>.zip
+    ///       pdf/<name>.pdf
+    ///       Source/<name>.tex
+    ///       Source/refs.bib, Source/images/…   (the supporting files)
+    ///
+    /// The supporting files keep their names, since the .tex reads them
+    /// by those names; only the paper and its PDF take the upload name.
+    /// Nothing TeX left behind (.aux, .log, .bbl) and none of Origami's
+    /// own extras (README, EPUB) go in.
+    private static func writeACMUpload(in folder: URL, pdf: URL, name: String) throws -> URL {
+        let fm = FileManager.default
+        var zip = ZipWriter()
+        zip.add("pdf/\(name).pdf", try Data(contentsOf: pdf))
+        zip.add("Source/\(name).tex",
+                try Data(contentsOf: folder.appendingPathComponent("paper.tex")))
+        let bib = folder.appendingPathComponent("refs.bib")
+        if fm.fileExists(atPath: bib.path) {
+            zip.add("Source/refs.bib", try Data(contentsOf: bib))
+        }
+        let images = folder.appendingPathComponent("images")
+        if let names = try? fm.contentsOfDirectory(atPath: images.path) {
+            for image in names.sorted() where !image.hasPrefix(".") {
+                zip.add("Source/images/\(image)",
+                        try Data(contentsOf: images.appendingPathComponent(image)))
+            }
+        }
+        let url = folder.appendingPathComponent("\(name).zip")
+        try zip.finished().write(to: url, options: .atomic)
+        return url
     }
 
     #if DEBUG
@@ -7201,9 +7306,11 @@ final class AppModel {
         var parts: [String] = ["Wrote \(outcome.folder.lastPathComponent)"]
         if outcome.pdf != nil { parts.append("PDF") }
         if outcome.epub != nil { parts.append("EPUB") }
+        if let upload = outcome.upload { parts.append("ACM upload \(upload.lastPathComponent)") }
         var note = parts.joined(separator: " · ")
         if let error = outcome.epubError { note += " — the EPUB failed: \(error)" }
         if let error = outcome.pdfError { note += " — \(error)" }
+        if let error = outcome.uploadError, outcome.pdfError == nil { note += " — \(error)" }
         showNote(note)
         if let pdf = outcome.pdf, outcome.epubError == nil {
             NSWorkspace.shared.open(pdf)

@@ -78,7 +78,7 @@ struct ThemesView: View {
                     Button {
                         run()
                     } label: {
-                        Label(isRunning ? "Reading…" : (hasRun ? "Find Themes Again" : "Find Themes"),
+                        Label(isRunning ? "Analysing…" : (hasRun ? "Find Themes Again" : "Find Themes"),
                               systemImage: "tag")
                     }
                     .disabled(isRunning)
@@ -94,9 +94,12 @@ struct ThemesView: View {
                         .foregroundStyle(.red)
                 }
                 if !hasRun, !isRunning {
-                    Text("The on-device model reads every document in the library and names the themes running through them — a living list, not a static index. Each theme opens to its documents. The prompt is yours: Settings → AI.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("The on-device model reads every document in the library and names the themes running through them — a living list, not a static index. Each theme opens to its documents.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        EditPromptButton()
+                    }
                 } else if hasRun, themes.isEmpty, !isRunning {
                     Text("No themes grounded in library documents came back. Try again, or adjust the prompt in Settings → AI.")
                         .font(.callout)

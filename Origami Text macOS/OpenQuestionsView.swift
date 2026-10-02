@@ -74,7 +74,7 @@ struct OpenQuestionsView: View {
                     Button {
                         run()
                     } label: {
-                        Label(isRunning ? "Reading…" : (hasRun ? "Find Questions Again" : "Find Open Questions"),
+                        Label(isRunning ? "Analysing…" : (hasRun ? "Find Questions Again" : "Find Open Questions"),
                               systemImage: "questionmark.circle")
                     }
                     .disabled(isRunning)
@@ -90,9 +90,12 @@ struct OpenQuestionsView: View {
                         .foregroundStyle(.red)
                 }
                 if !hasRun, !isRunning {
-                    Text("The on-device model reads every document in the library and names what the community is still working out — the questions no document has settled. Each opens to its documents. The prompt is yours: Settings → AI.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("The on-device model reads every document in the library and names what the community is still working out — the questions no document has settled. Each opens to its documents.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        EditPromptButton()
+                    }
                 } else if hasRun, questions.isEmpty, !isRunning {
                     Text("No open questions grounded in library documents came back. Try again, or adjust the prompt in Settings → AI.")
                         .font(.callout)

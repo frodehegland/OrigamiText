@@ -69,7 +69,7 @@ extension AppModel {
             // MARK: AI
 
             p("AI, On Your Mac", heading: 1),
-            p("The AI group stands at the left of the foot bar. Click it and the model chosen in Settings, AI — Apple's on-device model unless you choose another — reads the open book three ways: Summary, an abstract with the key concepts; Proposals, what the document argues for; Issues, where it strains — each taking the full page, streaming as it is written, and stored with the book so it is read once, not every time. Regenerate re-reads; Remove forgets. A concept named in a summary is a click: the reading returns folded to the find, headings plus the full sentences carrying the words. The three prompts are yours to edit in Settings, AI."),
+            p("The AI group stands at the left of the foot bar. Click it and the model chosen in Settings, AI — Apple's on-device model unless you choose another — reads the open book two ways: Summary, the paper's aim and conclusion, what else it covers, an abstract with the key concepts and a glossary of its own terms; Issues, where it strains — each taking the full page, streaming as it is written, and stored with the book so it is read once, not every time. Regenerate re-reads; Remove forgets. A concept named in a summary is a click: the reading returns folded to the find, headings plus the full sentences carrying the words. Both prompts are yours to edit in Settings, AI."),
             p("All of it runs on this Mac, through Apple's on-device language model. Nothing you read and nothing you write leaves the machine."),
 
             // MARK: Approaches and technologies

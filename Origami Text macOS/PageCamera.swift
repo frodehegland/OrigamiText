@@ -470,9 +470,9 @@ struct PageCaptureView: View {
         lastHit = (hit.docID, hit.paragraphID, Date.now)
         // The found document opens in the main window at the page's
         // own paragraph — Scroll mode so the landing is a flow to the
-        // very line. (Paragraph ids are only trustworthy in the
-        // revision they were matched against.)
-        UserDefaults.standard.set(EPUBReaderMode.scroll.rawValue,
+        // very line (Full Width is no longer a view). (Paragraph ids
+        // are only trustworthy in the revision they were matched against.)
+        UserDefaults.standard.set(EPUBReaderMode.faithful.rawValue,
                                   forKey: "readerMode")
         let target = model.index.latestRevision(of: hit.docID)
         guard let entry = model.index.allByID[target] else {

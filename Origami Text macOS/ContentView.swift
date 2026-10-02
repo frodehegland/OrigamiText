@@ -740,6 +740,9 @@ struct FrontMatterDraft: Equatable {
     var date = Date()
     var authors: [Author] = []
     var venue = ""
+    /// The journal the paper goes to — what the EPUB states, else the
+    /// last one typed in the sheet (see `FormatChoiceSheet.lastJournal`).
+    var journal = ""
     var eventShort = ""
     var eventDates = ""
     var eventPlace = ""
@@ -776,6 +779,7 @@ struct FrontMatterDraft: Equatable {
         }
         if authors.isEmpty { authors = [Author()] }
         venue = doc.publication ?? ""
+        journal = doc.journal ?? ""
         let front = ACMLaTeX.withFrontMatterFromBody(doc)
         if let event = ACMLaTeX.conferenceFromReference(doc) {
             if venue.isEmpty { venue = event.name }
@@ -857,6 +861,7 @@ struct FrontMatterDraft: Equatable {
         doc.forms["title"] = titleForms.isEmpty ? nil : titleForms
         doc.forms["abstract"] = abstractForms.isEmpty ? nil : abstractForms
         doc.publication = Self.trimmed(venue).isEmpty ? nil : Self.trimmed(venue)
+        doc.journal = Self.trimmed(journal).isEmpty ? nil : Self.trimmed(journal)
         doc.doi = Self.trimmed(doi).isEmpty ? nil : Self.trimmed(doi)
             .replacingOccurrences(of: "https://doi.org/", with: "")
         doc.isbn = Self.trimmed(isbn).isEmpty ? nil : Self.trimmed(isbn)
@@ -954,6 +959,15 @@ struct FormatChoiceSheet: View {
     /// it (§11.1), and where the EPUB's own declaration disagreed.
     @State private var conventions = BibTeXConventions()
     @State private var conventionNotes: [String] = []
+    /// The journal last typed here, kept across papers until it is typed
+    /// over, because several papers are often put into the same journal.
+    /// An EPUB that states its own journal starts from that instead.
+    @AppStorage("formatSheet.lastJournal") private var lastJournal = ""
+    /// The ACM rights code being pasted, and what it filled.
+    @State private var acmPaste = ""
+    @State private var acmPasteNote: String?
+    /// `<proceeding_acronym>-<paper_ID>` for ACM's upload ZIP.
+    @State private var uploadName = ""
 
     init(conversion: AppModel.FormatConversion) {
         self.conversion = conversion
@@ -1032,6 +1046,7 @@ struct FormatChoiceSheet: View {
                     let chosenRights = rights
                     let edited = draft.applied(to: conversion.doc)
                     let event = draft.event
+                    let upload = uploadName
                     // The save panel follows the sheet rather than
                     // stacking over it.
                     dismiss()
@@ -1040,7 +1055,7 @@ struct FormatChoiceSheet: View {
                                           rights: chosenRights,
                                           edited: edited, event: event,
                                           alsoEPUB: writeEPUB, colophon: writeColophon,
-                                          compile: makePDF)
+                                          compile: makePDF, uploadName: upload)
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -1050,6 +1065,10 @@ struct FormatChoiceSheet: View {
         .frame(width: 600, height: 720)
         .onAppear {
             compile = canCompile
+            if draft.journal.isEmpty { draft.journal = lastJournal }
+            uploadName = ACMLaTeX.suggestedUploadName(
+                sourceName: conversion.url.deletingPathExtension().lastPathComponent,
+                eventShort: draft.eventShort)
             rights = ACMLaTeX.Rights.stated(by: conversion.doc) ?? .ccBy
             let declared = OrigamiEPUBExporter.bibliographyConventions(of: conversion.doc)
             conventions = declared.conventions
@@ -1252,10 +1271,76 @@ struct FormatChoiceSheet: View {
         }
     }
 
+    /// ACM's rights code laid over the sheet: only what it states is
+    /// changed, and the rest of the front matter stands.
+    private func apply(_ block: ACMLaTeX.PastedRights) {
+        if let event = block.conference {
+            draft.venue = event.name
+            draft.eventShort = event.short
+            draft.eventDates = event.date
+            draft.eventPlace = event.place
+            // An upload name still waiting for its paper ID follows the
+            // event's acronym; one typed in full is left alone.
+            if uploadName.isEmpty || uploadName.hasSuffix("-") {
+                uploadName = ACMLaTeX.suggestedUploadName(
+                    sourceName: conversion.url.deletingPathExtension().lastPathComponent,
+                    eventShort: event.short)
+            }
+        }
+        if let doi = block.doi { draft.doi = doi }
+        if let isbn = block.isbn { draft.isbn = isbn }
+        if let chosen = block.rights { rights = chosen }
+        var note = "Filled from ACM\u{2019}s code: "
+            + block.filled.formatted(.list(type: .and)) + "."
+        // The copyright year is printed from the paper's date; say so
+        // when ACM's differs, rather than quietly printing another.
+        let paperYear = Calendar.current.component(.year, from: draft.date)
+        if let year = block.copyrightYear, Int(year) != paperYear {
+            note += " ACM gives the copyright year as \(year); the paper is dated "
+                + "\(paperYear), which is the year printed — change the date to match."
+        }
+        acmPasteNote = note
+    }
+
     private var venueSection: some View {
         Section {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("ACM rights code")
+                // The block ACM's rights form gives once the paper is
+                // accepted: it fills the fields below and the Rights
+                // choice, then clears — the fields are what renders.
+                TextEditor(text: $acmPaste)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(minHeight: 44)
+                    // TextEditor has no prompt of its own: the grey words
+                    // stand inside it while it is empty, and never take
+                    // the click from it.
+                    .overlay(alignment: .topLeading) {
+                        if acmPaste.isEmpty {
+                            Text("Paste the rights code here and it will automatically appear below")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .onChange(of: acmPaste) { _, pasted in
+                        guard let block = ACMLaTeX.rightsBlock(inPasted: pasted) else { return }
+                        apply(block)
+                        acmPaste = ""
+                    }
+                if let acmPasteNote {
+                    Text(acmPasteNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             TextField("Venue", text: $draft.venue,
                       prompt: Text("37th ACM Conference on Hypertext"))
+            TextField("Journal", text: $draft.journal,
+                      prompt: Text("ACM Transactions on Computer-Human Interaction"))
+                .onChange(of: draft.journal) { _, journal in lastJournal = journal }
             TextField("Short name", text: $draft.eventShort, prompt: Text("HT ’26"))
             TextField("Dates", text: $draft.eventDates,
                       prompt: Text("September 14–18, 2026"))
@@ -1266,8 +1351,12 @@ struct FormatChoiceSheet: View {
         } header: {
             Text("Venue and identifiers")
         } footer: {
-            Text("The short name, dates and place fill the running head and the "
-                 + "rights block. Leave them empty for a paper not yet placed.")
+            Text("Paste the \\copyrightyear … \\acmISBN code ACM sends you to fill "
+                 + "these and the Rights choice at once. "
+                 + "The short name, dates and place fill the running head and the "
+                 + "rights block. Leave them empty for a paper not yet placed. "
+                 + "A journal makes the paper's self-citation an @article, and "
+                 + "stays here for the next paper until it is typed over.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1282,11 +1371,21 @@ struct FormatChoiceSheet: View {
                 TextEditor(text: $draft.ccs)
                     .font(.body)
                     .frame(minHeight: 50)
+                    // What ACM's CCS tool gives — the CCSXML block, the
+                    // \ccsdesc lines, or both — becomes the field's own
+                    // lines the moment it lands.
+                    .onChange(of: draft.ccs) { _, pasted in
+                        if let concepts = ACMLaTeX.ccsConcepts(inPasted: pasted),
+                           concepts != pasted {
+                            draft.ccs = concepts
+                        }
+                    }
             }
         } header: {
             Text("Classification")
         } footer: {
-            Text("One concept per line, levels joined with →, e.g. "
+            Text("Paste the code ACM’s CCS tool gives you, or type one concept "
+                 + "per line, levels joined with →, e.g. "
                  + "“Human-centered computing → Hypertext / hypermedia”.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1305,6 +1404,16 @@ struct FormatChoiceSheet: View {
                  : "Starting from the rights the paper states.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            TextField("ACM upload name", text: $uploadName, prompt: Text("ht26-123"))
+                .disabled(publisher != .acm)
+            Text(publisher == .acm
+                 ? "With the PDF, \(ACMLaTeX.uploadFileName(uploadName) ?? "the paper").zip is "
+                   + "written for ACM: the PDF in pdf/, the LaTeX, bibliography and "
+                   + "images in Source/. Name it <proceeding acronym>-<paper ID>."
+                 : "ACM’s upload ZIP is written when the format is ACM.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Toggle("Also write an EPUB in this style", isOn: $alsoEPUB)
             Text("An Origami EPUB with the corrected front matter, its "
                  + "references set in \(publisher == .acm ? "ACM" : publisher.label)'s style.")

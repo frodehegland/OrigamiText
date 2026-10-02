@@ -469,6 +469,10 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// metadata) and carried into the EPUB export's Visual-Meta, so
     /// the Library's Journals view can group by it.
     var publication: String? = nil
+    /// The journal the paper is published in, when it goes to one rather
+    /// than (or as well as) a proceedings. Set in the Format sheet; it
+    /// makes the self-citation an `@article` with a `journal` field.
+    var journal: String? = nil
     /// The document's own DOI, bare form ("10.1145/…"), when the source
     /// declared one (LaTeX's \acmDOI, an EPUB's Visual-Meta) — written
     /// into the EPUB export's Visual-Meta document info.
@@ -606,7 +610,7 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     }
 
     /// The front-matter properties that can carry alternate forms.
-    static let multilingualProperties = ["title", "subtitle", "abstract", "publication"]
+    static let multilingualProperties = ["title", "subtitle", "abstract", "publication", "journal"]
 
     /// The instant the document is listed, sorted, and filtered by.
     var listedDate: Date { date?.sortDate ?? created }
@@ -775,8 +779,47 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         var dataBase64: String
         /// Alt text, when known.
         var alt: String?
+        /// The address a figure made from a view opens — the `href` of
+        /// the `<a>` wrapping its `<img>` (ORIGAMI-FIGURE-LINKS-SPEC).
+        /// Opaque: kept exactly as written, XML-unescaped and nothing
+        /// more, so parameters this app doesn't know pass through.
+        var link: String? = nil
+        /// That `<a>`'s `data-citation-key`: the figure's own entry in
+        /// the bibliography. Used for Show Reference, never to decide
+        /// where the figure opens.
+        var citationKey: String? = nil
 
         var data: Data? { Data(base64Encoded: dataBase64) }
+
+        /// The link as a URL the system can open, when there is one.
+        var linkURL: URL? {
+            guard let link, !link.isEmpty else { return nil }
+            return URL(string: link)
+        }
+
+        /// Whether the link names Interatlas: its link host (outside
+        /// Liquid's `/liquid/` path on the same domain) or its own
+        /// `interatlas:` scheme. Any other link is just a link.
+        var linkOpensInteratlas: Bool { link.map(Self.opensInteratlas) ?? false }
+
+        /// The figure's badge and menu item for its link.
+        var linkActionTitle: String { Self.linkActionTitle(for: link ?? "") }
+
+        /// The accessibility hint for a linked figure.
+        var linkAccessibilityHint: String {
+            linkOpensInteratlas ? "Opens in Interatlas" : "Opens link"
+        }
+
+        static func opensInteratlas(_ link: String) -> Bool {
+            guard let url = URL(string: link) else { return false }
+            if url.scheme?.lowercased() == "interatlas" { return true }
+            return url.host?.lowercased() == "link.augmentedtext.com"
+                && !url.path.lowercased().hasPrefix("/liquid/")
+        }
+
+        static func linkActionTitle(for link: String) -> String {
+            opensInteratlas(link) ? "Open in Interatlas" : "Open Link"
+        }
 
         /// True for a figure's packaged scene dataset —
         /// `data/<scene-id>.liquidinfo.json` (spec §2.4) — rather than
@@ -1284,7 +1327,9 @@ extension LiquidDoc {
                          filename: rawAsset.filename ?? "\(assetID)",
                          mediaType: rawAsset.mediaType ?? "application/octet-stream",
                          dataBase64: dataBase64,
-                         alt: rawAsset.alt)
+                         alt: rawAsset.alt,
+                         link: rawAsset.link,
+                         citationKey: rawAsset.citationKey)
         }
 
         return LiquidDoc(format: format, id: id, title: title, author: author,
@@ -1370,6 +1415,8 @@ extension LiquidDoc {
         var mediaType: String?
         var dataBase64: String?
         var alt: String?
+        var link: String?
+        var citationKey: String?
     }
 
     private nonisolated struct RawConnection: Decodable {

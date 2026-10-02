@@ -18,7 +18,6 @@ enum AppSettings {
     static let testAccountNameKey = "testAccountName"
     static let aiPersonProfilePromptKey = "aiPersonProfilePrompt"
     static let aiReadingSummaryPromptKey = "aiReadingSummaryPrompt"
-    static let aiReadingProposalsPromptKey = "aiReadingProposalsPrompt"
     static let aiReadingIssuesPromptKey = "aiReadingIssuesPrompt"
     /// The Summary's relevance sentence names this subject — set for the
     /// conference at hand ("Hypertext"); cleared, the sentence is left out.
@@ -456,6 +455,9 @@ private struct ReadingSettingsView: View {
     @AppStorage(CitationLookup.enabledKey) private var lookupCitedWorks = true
     @AppStorage(AppSettings.tripleClickSelectsSentenceKey) private var tripleClickSelectsSentence = true
     @AppStorage(CitationLookup.openAlexKeyKey) private var openAlexKey = ""
+    @AppStorage(ReaderMarginMode.leftKey) private var leftMarginRaw = ReaderMarginMode.nothing.rawValue
+    @AppStorage(ReaderMarginMode.rightKey) private var rightMarginRaw = ReaderMarginMode.outline.rawValue
+    @AppStorage(ReaderMarginMode.autoHideKey) private var marginsAutoHide = true
 
     private let families = NSFontManager.shared.availableFontFamilies.sorted()
 
@@ -475,6 +477,29 @@ private struct ReadingSettingsView: View {
                 }
             } footer: {
                 Text("Background and text colour across the whole app — lists, columns, and reading surface. Cream and Soft Peach reduce visual stress for dyslexic readers (BDA). Yellow Tint, Green Tint, and Purple Tint simulate Irlen overlays. Black on Yellow is recommended for macular degeneration. Night and Solarized suit photophobia and low-light reading. Themes follow light and dark mode. Edit Theme Colors adjusts the selected theme's own colours — and the highlight inks — to taste.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            // Author's Settings ▸ Appearance ▸ Margins: what each margin
+            // beside the Scroll column holds, and whether they hide.
+            Section {
+                Picker("Left Margin:", selection: $leftMarginRaw) {
+                    ForEach(ReaderMarginMode.allCases) { mode in
+                        Text(mode.label).tag(mode.rawValue).help(mode.help)
+                    }
+                }
+                .pickerStyle(.menu)
+                Picker("Right Margin:", selection: $rightMarginRaw) {
+                    ForEach(ReaderMarginMode.allCases) { mode in
+                        Text(mode.label).tag(mode.rawValue).help(mode.help)
+                    }
+                }
+                .pickerStyle(.menu)
+                Toggle("Auto Hide Margins after 4 sec:", isOn: $marginsAutoHide)
+            } header: {
+                Text("Margins")
+            } footer: {
+                Text("Scroll reads in a column, as Author does, with a margin either side. Outline puts the document's headings in a margin, with the one at the top of the screen in bold — click one to go to it. Annotation gives a margin to your note on the whole document — the same note Add Note… writes — typed straight into the margin and kept as you write. With Auto Hide, a margin shows when the pointer moves into it and hides 4 seconds after it leaves.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -809,12 +834,10 @@ private struct AuthorSettingsView: View {
 /// The prompts behind the AI features, fully user-owned. Everything runs
 /// on this Mac only — no text leaves it. One editor, a picker to choose
 /// which prompt it edits: the reading foot's AI group (Summary,
-/// Proposals, Issues) and the continual Person Profiles.
+/// Issues) and the continual Person Profiles.
 private struct AISettingsView: View {
     @AppStorage(AppSettings.aiReadingSummaryPromptKey) private var summaryPrompt =
         ReadingAnalysisKind.summary.defaultPrompt
-    @AppStorage(AppSettings.aiReadingProposalsPromptKey) private var proposalsPrompt =
-        ReadingAnalysisKind.proposals.defaultPrompt
     @AppStorage(AppSettings.aiReadingIssuesPromptKey) private var issuesPrompt =
         ReadingAnalysisKind.issues.defaultPrompt
     @AppStorage(AppSettings.aiPersonProfilePromptKey) private var personProfilePrompt = AuthorProfiles.defaultPrompt
@@ -824,7 +847,6 @@ private struct AISettingsView: View {
 
     private var prompt: Binding<String> {
         switch selection {
-        case "Proposals": $proposalsPrompt
         case "Issues": $issuesPrompt
         case "Person Profiles": $personProfilePrompt
         default: $summaryPrompt
@@ -833,7 +855,6 @@ private struct AISettingsView: View {
 
     private var defaultValue: String {
         switch selection {
-        case "Proposals": ReadingAnalysisKind.proposals.defaultPrompt
         case "Issues": ReadingAnalysisKind.issues.defaultPrompt
         case "Person Profiles": AuthorProfiles.defaultPrompt
         default: ReadingAnalysisKind.summary.defaultPrompt
@@ -842,8 +863,6 @@ private struct AISettingsView: View {
 
     private var note: String {
         switch selection {
-        case "Proposals":
-            "The reading foot's AI ▸ Proposals: what the open document asks the reader to accept, plainly stated."
         case "Issues":
             "The reading foot's AI ▸ Issues: an honest reviewer's pass — the logic first, then factual correctness, then the structure and what is missing."
         case "Person Profiles":
@@ -861,7 +880,7 @@ private struct AISettingsView: View {
             LLMModelSettingsSections()
             Section {
                 Picker("Prompt", selection: $selection) {
-                    ForEach(["Summary", "Proposals", "Issues", "Person Profiles"],
+                    ForEach(["Summary", "Issues", "Person Profiles"],
                             id: \.self) {
                         Text($0)
                     }
