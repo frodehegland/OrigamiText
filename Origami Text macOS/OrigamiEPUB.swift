@@ -643,6 +643,12 @@ nonisolated enum OrigamiEPUBExporter {
     /// either way; only what a person reads is withheld.
     @TaskLocal static var writesColophon = true
 
+    /// Whether the header is the title alone — no authors, affiliations
+    /// or date — in the heading face at its usual size, mid-grey. For a
+    /// document with no house title of its own (the introduction); every
+    /// paper keeps its full front matter.
+    @TaskLocal static var writesTitleOnly = false
+
     /// Writes the EPUB in a publisher's house style.
     static func write(doc: LiquidDoc, resolve: (String) -> LiquidDoc?, to url: URL,
                       houseStyle: HouseStyle, colophon: Bool = true) throws {
@@ -1691,6 +1697,13 @@ nonisolated enum OrigamiEPUBExporter {
     /// split from the joined author string only when every chunk reads
     /// as a full name — "Doe, John" stays one line.
     private static func headerHTML(for doc: LiquidDoc) -> String {
+        if writesTitleOnly {
+            return """
+            <header class="title-only">
+            <h1\(languageAttributes(doc.forms["title"]?.lang))>\(escaped(doc.title))</h1>
+            </header>
+            """
+        }
         var lines = ["<header>",
                      "<h1\(languageAttributes(doc.forms["title"]?.lang))>\(escaped(doc.title))</h1>"]
         // The title's other forms stand under it, each in its own
@@ -2897,6 +2910,7 @@ nonisolated enum OrigamiEPUBExporter {
     body { font-family: Georgia, serif; line-height: 1.5; margin: 6% 12%; }
     header { text-align: center; margin-bottom: 2.5em; }
     header h1 { font-size: 1.7em; margin-bottom: 0.6em; }
+    header.title-only h1 { color: #808080; }
     .subtitle { font-size: 1.2em; color: #555555; margin: -0.3em 0 0.8em; }
     .title-alternate { font-size: 1.1em; color: #555555; margin: -0.4em 0 0.8em; }
     .subtitle-alternate { color: #555555; margin: -0.6em 0 0.8em; }

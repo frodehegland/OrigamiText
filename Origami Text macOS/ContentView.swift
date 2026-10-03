@@ -206,14 +206,14 @@ struct ContentView: View {
         .sheet(isPresented: $model.showXRExport) {
             ExportToXRSheet()
         }
-        // A first launch opens the built-in guide, once. A book the
-        // launch itself opened (double-clicked in Finder) keeps the page;
-        // the guide then waits for the next launch.
+        // A launch with nothing selected opens the built-in guide, so the
+        // window never stands empty. A book the launch itself opened
+        // (double-clicked in Finder, or restored), a selected document or
+        // a draft keeps the page; the guide then waits.
         .task {
-            guard !UserDefaults.standard.bool(forKey: "introShownOnce") else { return }
             try? await Task.sleep(for: .seconds(1))
-            guard model.openEPUB == nil,
-                  !UserDefaults.standard.bool(forKey: "introShownOnce") else { return }
+            guard model.openEPUB == nil, model.current == nil,
+                  model.draftEditor == nil else { return }
             UserDefaults.standard.set(true, forKey: "introShownOnce")
             model.openIntroGuide()
         }
@@ -996,8 +996,10 @@ struct FormatChoiceSheet: View {
             + "holds the one command that builds the PDF."
         case .absent:
             "No TeX installation was found, so the LaTeX bundle is written "
-            + "and its README.txt says how to compile it. TeX Live and "
-            + "MacTeX both include the ACM class."
+            + "and its README.txt says how to compile it. To make the PDF "
+            + "here, install MacTeX (free, about 7 GB): Get MacTeX downloads "
+            + "its installer; open it, follow the steps, then come back. "
+            + "Origami Text supplies the current ACM class itself."
         }
     }
 
@@ -1443,6 +1445,9 @@ struct FormatChoiceSheet: View {
                 .foregroundStyle(.secondary)
             Toggle("Also compile to PDF", isOn: $compile)
                 .disabled(!canCompile)
+            if publisher == .acm, canCompile {
+                ACMartStatusLine()
+            }
             if !canCompile {
                 Text(unreachableNote)
                     .font(.caption)
@@ -1451,6 +1456,21 @@ struct FormatChoiceSheet: View {
                 if helperWouldHelp {
                     Button("Save Compile Helper\u{2026}") {
                         if ACMLaTeX.installHelper() {
+                            canCompile = ACMLaTeX.isTeXAvailable
+                            compile = canCompile
+                        }
+                    }
+                }
+                if case .absent = ACMLaTeX.tex {
+                    HStack {
+                        // The installer itself: a person must run it — it
+                        // asks for an administrator's password, as it should.
+                        Button("Get MacTeX\u{2026}") {
+                            if let url = URL(string: "https://mirror.ctan.org/systems/mac/mactex/MacTeX.pkg") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        Button("Check Again") {
                             canCompile = ACMLaTeX.isTeXAvailable
                             compile = canCompile
                         }

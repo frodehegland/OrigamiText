@@ -155,6 +155,7 @@ enum ReaderStyle {
         a, a:link, a:visited { color: inherit; }
         body { font-family: \(family(bodyFont, fallback: "'Times New Roman', Times, serif")); font-size: \(size)%; line-height: \(String(format: "%.2f", lineHeight)); }
         h1, h2, h3, h4, h5, h6 { font-family: \(family(headingFont, fallback: "Georgia, serif")); }
+        header.title-only h1 { font-family: \(family(headingFont, fallback: "Georgia, serif")); color: #808080; }
         dfn { font-style: inherit; border-bottom: none; }
         a[role="doc-glossref"], a[data-glossary-id] { text-decoration: none; cursor: text; }
         img { max-width: 100%; height: auto; }
@@ -442,6 +443,15 @@ struct EPUBReaderScreen: View {
     @State private var showsFaithfulPalette = false
     @State private var showsFaithfulType = false
 
+    /// The foot bar's progress readout, held to one line at its own width.
+    private func progressText(_ words: String) -> some View {
+        Text(words)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+    }
+
     private var readerCSS: String {
         ReaderStyle.css(bodyFont: bodyFont, headingFont: headingFont, theme: theme,
                         fontDelta: fontDelta, lineSpacing: lineSpacing,
@@ -559,13 +569,18 @@ struct EPUBReaderScreen: View {
                 .accessibilityLabel("Stop reading aloud")
             }
             if let progress = bookProgress {
-                Text(progress.minutesLeft > 0
-                     ? "\(Int(progress.fraction * 100))% \u{00B7} \(progress.minutesLeft) min left"
-                     : "\(Int(progress.fraction * 100))%")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .help("Through the book, and reading time left at an average pace")
-                    .accessibilityLabel("Through the book, and reading time left at an average pace")
+                // One line always: in a narrow window the readout shortens
+                // to the percentage, then steps aside — it never wraps a
+                // letter a line (which stood the whole foot bar on end).
+                ViewThatFits(in: .horizontal) {
+                    if progress.minutesLeft > 0 {
+                        progressText("\(Int(progress.fraction * 100))% \u{00B7} \(progress.minutesLeft) min left")
+                    }
+                    progressText("\(Int(progress.fraction * 100))%")
+                    Color.clear.frame(width: 0, height: 0)
+                }
+                .help("Through the book, and reading time left at an average pace")
+                .accessibilityLabel("Through the book, and reading time left at an average pace")
             }
             Menu {
                 Button("Add Bookmark Here") {
@@ -994,6 +1009,14 @@ struct EPUBReaderScreen: View {
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         ReadingFootBar(modes: availableModes,
                                        outlineAvailable: true)
+                    }
+            } else if model.readingReferencesOn {
+                // References takes the whole page too; the foot stays.
+                ReferencesScreen(book: book)
+                    .id(book.id)
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        ReadingFootBar(modes: availableModes,
+                                       outlineAvailable: model.readingDoc(forBook: book) != nil)
                     }
             } else if readerMode == .faithful {
                 // The slips stand above the WebView, where the reader

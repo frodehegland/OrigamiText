@@ -2112,11 +2112,23 @@ private struct TwoFingerScrollConfigurator: UIViewRepresentable {
 }
 #endif
 
+/// A small keyword under a map card's title — a cited work's standing
+/// on the References map (Retracted, Corrected, Open Access…).
+struct MapCardMark: Hashable {
+    enum Tone: Hashable { case alarm, caution, quiet, positive, info, good }
+    var text: String
+    var tone: Tone
+    /// The longer account, for the help tag.
+    var detail: String = ""
+    /// Drawn as a pill (the trust keywords), else plain text.
+    var pill: Bool = false
+}
+
 /// One article on the map: a card that drags and opens on a double
 /// click or tap. The pile choices ride the Mac's context menu; on
 /// touch they appear on the lifted card, since a long press there
 /// must stay free for hold-and-drag.
-private struct ProceedingsMapNode: View {
+struct ProceedingsMapNode: View {
     enum Emphasis { case normal, matched, dimmed }
 
     let item: ProceedingsMapView.Item
@@ -2136,6 +2148,12 @@ private struct ProceedingsMapNode: View {
     let moved: () -> Void
     /// The card's place while in hand, each frame; nil on release.
     var liveMoved: (CGPoint?) -> Void = { _ in }
+    /// Keywords standing under the title, lifted or not — the References
+    /// map's retractions and the like. Empty on the journal Map.
+    var marks: [MapCardMark] = []
+    /// The Mac's context menu in place of the pile choices, when the
+    /// plane is not a shelf (the References map).
+    var menu: (() -> AnyView)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -2161,9 +2179,13 @@ private struct ProceedingsMapNode: View {
         // lifted card instead — tap to lift, the buttons appear.
         #if os(macOS)
         card.contextMenu {
-            Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
-            Button(item.isSetAside ? "Bring Back" : "Set Aside",
-                   action: toggleSetAside)
+            if let menu {
+                menu()
+            } else {
+                Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
+                Button(item.isSetAside ? "Bring Back" : "Set Aside",
+                       action: toggleSetAside)
+            }
         }
         #else
         card
@@ -2220,6 +2242,9 @@ private struct ProceedingsMapNode: View {
             Text(item.title)
                 .font(titleFont)
                 .lineLimit(lifted && !item.isSetAside ? nil : 1)
+            if !marks.isEmpty {
+                markLine
+            }
             if lifted, !item.isSetAside {
                 Text(item.author)
                     .font(authorFont)
@@ -2336,6 +2361,39 @@ private struct ProceedingsMapNode: View {
                 lastTap = now
                 select()
             }
+        }
+    }
+
+    /// The keywords in a row, the grave ones in colour.
+    private var markLine: some View {
+        HStack(spacing: 5) {
+            ForEach(marks, id: \.self) { mark in
+                let color = Self.color(for: mark.tone)
+                Text(mark.text)
+                    .font(.system(size: 8, weight: mark.pill ? .semibold : .medium))
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+                    .padding(.horizontal, mark.pill ? 5 : 0)
+                    .padding(.vertical, mark.pill ? 1 : 0)
+                    .background {
+                        if mark.pill { Capsule().fill(color.opacity(0.12)) }
+                    }
+                    .overlay {
+                        if mark.pill { Capsule().strokeBorder(color.opacity(0.45), lineWidth: 0.6) }
+                    }
+                    .help(mark.detail)
+            }
+        }
+    }
+
+    static func color(for tone: MapCardMark.Tone) -> Color {
+        switch tone {
+        case .alarm: .red
+        case .caution: .orange
+        case .positive: .accentColor
+        case .info: .blue
+        case .good: .green
+        case .quiet: .secondary
         }
     }
 

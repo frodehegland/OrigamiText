@@ -501,6 +501,117 @@ enum ReadingAnalyzer {
             .trimmingCharacters(in: .whitespaces)
     }
 
+    /// The model's names, keywords and glossary terms held to the paper's
+    /// own text — the prompt asks for only words the text uses, and a
+    /// small model does not always keep to it (a cited author, say, who
+    /// stands only in the bibliography, or a name it recalled). Find runs
+    /// on these words, so each must be findable:
+    ///   • a term the text uses (case, accents, curly quotes and dashes
+    ///     aside) stays as written;
+    ///   • a person's name the text does not carry whole is found by its
+    ///     surname and rewritten in the text's own spelling ("Doug
+    ///     Engelbart" → "Douglas Engelbart");
+    ///   • anything else is left out.
+    static func verified(_ result: ReadingAnalysisResult, in doc: LiquidDoc) -> ReadingAnalysisResult {
+        let appendix = doc.visualMetaParagraphIDs
+        let text = ([doc.title] + (doc.body ?? [])
+            .filter { !appendix.contains($0.id) }
+            .map { plainSentenceText($0.text) })
+            .joined(separator: "\n")
+        let haystack = normalizedForMatch(text)
+        func uses(_ term: String) -> Bool {
+            let wanted = normalizedForMatch(term)
+            return !wanted.isEmpty && haystack.contains(wanted)
+        }
+        var seen = Set<String>()
+        func unique(_ term: String) -> Bool { seen.insert(normalizedForMatch(term)).inserted }
+
+        // A term that matches only once quotes and dashes are folded is
+        // given in the text's own spelling — Find (case and accents aside)
+        // must see it exactly as printed.
+        func asPrinted(_ term: String) -> String? {
+            guard uses(term) else { return nil }
+            if text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                return term
+            }
+            return textSpelling(of: term, in: text)
+        }
+        var out = result
+        out.keywords = result.keywords.compactMap { keyword -> String? in
+            guard let printed = asPrinted(keyword), unique(printed) else { return nil }
+            return printed
+        }
+        seen = []
+        out.names = result.names.compactMap { name -> String? in
+            if let printed = asPrinted(name) { return unique(printed) ? printed : nil }
+            guard let spelled = textSpelling(ofSurnameIn: name, in: text) else { return nil }
+            return unique(spelled) ? spelled : nil
+        }
+        // A bare surname beside the full name it belongs to says nothing
+        // more — "Rubart" with "Jessica Rubart" — and is left out.
+        out.names = out.names.filter { name in
+            name.contains(" ") || !out.names.contains { other in
+                other != name && normalizedForMatch(other).hasSuffix(" " + normalizedForMatch(name))
+            }
+        }
+        out.glossary = result.glossary.compactMap { entry -> ReadingGlossaryEntry? in
+            guard let printed = asPrinted(entry.term) else { return nil }
+            var kept = entry
+            kept.term = printed
+            return kept
+        }
+        return out
+    }
+
+    /// Text folded for matching: case, accents and width aside, curly
+    /// quotes and dashes as their plain forms, runs of space as one.
+    private static func normalizedForMatch(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                     locale: nil)
+            .replacingOccurrences(of: "[\u{2018}\u{2019}\u{02BC}]", with: "'", options: .regularExpression)
+            .replacingOccurrences(of: "[\u{201C}\u{201D}]", with: "\"", options: .regularExpression)
+            .replacingOccurrences(of: "[\u{2010}-\u{2015}]", with: "-", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The text's own spelling of a term that differs from it only in its
+    /// quotes, dashes or spacing: "Engelbart's" for "Engelbart’s".
+    private static func textSpelling(of term: String, in text: String) -> String? {
+        var pattern = ""
+        for character in term {
+            switch character {
+            case "'", "\u{2018}", "\u{2019}", "\u{02BC}": pattern += #"['\x{2018}\x{2019}\x{02BC}]"#
+            case "-", "\u{2010}", "\u{2011}", "\u{2012}", "\u{2013}", "\u{2014}", "\u{2015}":
+                pattern += #"[-\x{2010}-\x{2015}]"#
+            case " ": pattern += #"\s+"#
+            default: pattern += NSRegularExpression.escapedPattern(for: String(character))
+            }
+        }
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range, in: text) else { return nil }
+        return String(text[range])
+    }
+
+    /// A name the text does not carry whole, looked for by its surname:
+    /// the text's own run of capitalised words ending on that surname
+    /// ("Douglas C. Engelbart"), or the surname alone. Nil when the
+    /// surname is not in the text either, or too short to be telling.
+    private static func textSpelling(ofSurnameIn name: String, in text: String) -> String? {
+        let words = name.split(whereSeparator: { $0 == " " }).map(String.init)
+        guard words.count > 1, let surname = words.last?
+                .trimmingCharacters(in: .punctuationCharacters),
+              surname.count >= 3, surname.first?.isUppercase == true else { return nil }
+        let escaped = NSRegularExpression.escapedPattern(for: surname)
+        // ICU spells a code point \x{…} — a raw \u{…} would not compile.
+        let pattern = #"((?:\p{Lu}[\p{L}.'\x{2019}-]*\s+){0,3})"# + escaped + #"(?![\p{L}])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range, in: text) else { return nil }
+        return String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// A glossary entry kept only when it has both a term and a meaning.
     static func glossaryEntry(term: String, meaning: String,
                               introduced: Bool) -> ReadingGlossaryEntry? {
@@ -1236,15 +1347,17 @@ struct ReadingAnalysisScreen: View {
         }
         // A kept analysis answers at once; Regenerate reads afresh.
         if !regenerate, let stored = model.storedAnalysis(kind, forBook: book) {
-            result = stored.result
+            // Checked against the paper on the way in too: an analysis kept
+            // from before the check loses any name the text never uses.
+            result = ReadingAnalyzer.verified(stored.result, in: doc)
             created = stored.created
             dismissedBlocks = Set(stored.dismissed ?? [])
             return
         }
         do {
-            let fresh = try await ReadingAnalyzer.run(kind, on: doc) { text in
-                partial = text
-            }
+            let fresh = ReadingAnalyzer.verified(
+                try await ReadingAnalyzer.run(kind, on: doc) { text in partial = text },
+                in: doc)
             result = fresh
             created = .now
             model.saveAnalysis(kind, result: fresh, forBook: book)

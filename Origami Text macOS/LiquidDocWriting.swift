@@ -660,6 +660,12 @@ nonisolated enum ACMLaTeX {
               paper.tex    the paper, for ACM's acmart class
               refs.bib     the works it cites, as BibTeX
               images/      the figures, unmodified
+              acmart.cls, ACM-Reference-Format.bst
+                           ACM's current class and reference style,
+                           fetched from CTAN by Origami Text so the
+                           paper is set with the latest release whatever
+                           TeX is installed. Not part of the upload:
+                           ACM typesets with its own copy.
 
             To compile:
 
@@ -759,17 +765,29 @@ nonisolated enum ACMLaTeX {
             atPath: dir.appendingPathComponent(helperName).path)
     }
 
+    /// The helper's own version line: a helper saved before it learned to
+    /// build acmart lacks it, and the sheet offers to replace it.
+    static let helperMarker = "# origami-helper 2"
+
     /// Four passes, as `compile(in:)` runs them, with the usual TeX
     /// locations on PATH since a GUI app's PATH carries none of them.
+    /// Given "acmart" as a second argument it instead builds acmart.cls
+    /// from CTAN's source in that folder (docstrip, one `latex` run).
     static let helperScript = """
     #!/bin/sh
     # Installed by Origami Text. Compiles an exported ACM LaTeX bundle
     # (paper.tex, refs.bib) into paper.pdf. Runs outside the app's
     # sandbox, which is why it lives here. Safe to delete; the app will
     # offer to install it again.
+    \(helperMarker)
     cd "$1" || exit 1
     PATH="/Library/TeX/texbin:/usr/local/texlive/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
     export PATH
+    if [ "$2" = "acmart" ]; then
+      latex -interaction=nonstopmode acmart.ins >/dev/null 2>&1
+      test -f acmart.cls
+      exit $?
+    fi
     pdflatex -interaction=nonstopmode paper >/dev/null 2>&1
     bibtex paper >/dev/null 2>&1
     pdflatex -interaction=nonstopmode paper >/dev/null 2>&1
@@ -798,6 +816,44 @@ nonisolated enum ACMLaTeX {
             return false
         }
         return isHelperInstalled
+    }
+
+    /// Whether the saved helper is this version — able to build acmart.
+    static var isHelperCurrent: Bool {
+        guard let dir = scriptsDirectory,
+              let script = try? String(contentsOf: dir.appendingPathComponent(helperName),
+                                       encoding: .utf8)
+        else { return false }
+        return script.contains(helperMarker)
+    }
+
+    /// Builds acmart.cls from CTAN's acmart.dtx and acmart.ins in
+    /// `folder` — docstrip, run by TeX directly or through the helper.
+    static func buildACMartClass(in folder: URL) async -> Bool {
+        let cls = folder.appendingPathComponent("acmart.cls")
+        if case .runnable(let pdflatex) = tex {
+            let latex = (pdflatex as NSString).deletingLastPathComponent + "/latex"
+            return await Task.detached(priority: .userInitiated) { () -> Bool in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: latex)
+                process.arguments = ["-interaction=nonstopmode", "acmart.ins"]
+                process.currentDirectoryURL = folder
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                do { try process.run() } catch { return false }
+                process.waitUntilExit()
+                return FileManager.default.fileExists(atPath: cls.path)
+            }.value
+        }
+        guard isHelperCurrent, let dir = scriptsDirectory,
+              let task = try? NSUserUnixTask(url: dir.appendingPathComponent(helperName))
+        else { return false }
+        let ok: Bool = await withCheckedContinuation { continuation in
+            task.execute(withArguments: [folder.path, "acmart"]) { error in
+                continuation.resume(returning: error == nil)
+            }
+        }
+        return ok && FileManager.default.fileExists(atPath: cls.path)
     }
 
     /// Runs the helper on a bundle folder; the PDF where it succeeded.
@@ -887,7 +943,7 @@ nonisolated enum ACMLaTeX {
     /// `acmcopyrightmode` values that an author or small venue would
     /// plausibly pick; the government variants stay out of the chooser.
     enum Rights: String, Sendable, CaseIterable, Identifiable {
-        case ccBy, ccBySA, ccByNC, ccByND, ccByNCND, rightsRetained, acmLicensed, acmCopyright, none
+        case ccBy, ccBySA, ccByNC, ccByNCSA, ccByND, ccByNCND, rightsRetained, acmLicensed, acmCopyright, none
 
         var id: String { rawValue }
 
@@ -896,6 +952,7 @@ nonisolated enum ACMLaTeX {
             case .ccBy: "Creative Commons Attribution 4.0 (CC BY)"
             case .ccBySA: "CC BY-SA 4.0 (share alike)"
             case .ccByNC: "CC BY-NC 4.0 (non-commercial)"
+            case .ccByNCSA: "CC BY-NC-SA 4.0 (non-commercial, share alike)"
             case .ccByND: "CC BY-ND 4.0 (no derivatives)"
             case .ccByNCND: "CC BY-NC-ND 4.0 (non-commercial, no derivatives)"
             case .rightsRetained: "Rights retained by the authors"
@@ -908,7 +965,7 @@ nonisolated enum ACMLaTeX {
         /// The value `\setcopyright` takes.
         var acmartMode: String {
             switch self {
-            case .ccBy, .ccBySA, .ccByNC, .ccByND, .ccByNCND: "cc"
+            case .ccBy, .ccBySA, .ccByNC, .ccByNCSA, .ccByND, .ccByNCND: "cc"
             case .rightsRetained: "rightsretained"
             case .acmLicensed: "acmlicensed"
             case .acmCopyright: "acmcopyright"
@@ -922,6 +979,7 @@ nonisolated enum ACMLaTeX {
             case .ccBy: "by"
             case .ccBySA: "by-sa"
             case .ccByNC: "by-nc"
+            case .ccByNCSA: "by-nc-sa"
             case .ccByND: "by-nd"
             case .ccByNCND: "by-nc-nd"
             default: nil
@@ -937,10 +995,14 @@ nonisolated enum ACMLaTeX {
                 .compactMap { $0?.lowercased() }
                 .joined(separator: " ")
             guard !said.isEmpty else { return nil }
-            // NC-ND first: its code contains both of the others'.
+            // NC-ND and NC-SA first: each code contains NC's.
             if said.contains("by-nc-nd")
                 || (said.contains("noncommercial") && said.contains("noderivatives")) {
                 return .ccByNCND
+            }
+            if said.contains("by-nc-sa")
+                || (said.contains("noncommercial") && said.contains("sharealike")) {
+                return .ccByNCSA
             }
             if said.contains("by-nc") || said.contains("noncommercial") { return .ccByNC }
             if said.contains("by-nd") || said.contains("noderivatives") { return .ccByND }
@@ -1731,9 +1793,40 @@ nonisolated enum ACMLaTeX {
                 if record.isEmpty {
                     record = "@misc{\(reference.id),\n  title = {\(reference.citedAs ?? reference.id)}\n}"
                 }
-                return record
+                return bibtexDialect(record)
             }
             .joined(separator: "\n\n") + "\n"
+    }
+
+    /// A record in BibTeX's own field names, for ACM-Reference-Format.bst,
+    /// which reads `journal`, `address` and `year` and silently ignores
+    /// biblatex's `journaltitle`, `location` and `date` — so a journal
+    /// article's journal went missing from the printed references. The
+    /// stored record stays as written; only the bundle's copy speaks
+    /// BibTeX, and a field the record already has is never doubled.
+    static func bibtexDialect(_ record: String) -> String {
+        func has(_ field: String) -> Bool {
+            record.range(of: #"(?i)[,\n]\s*"# + field + #"\s*="#,
+                         options: .regularExpression) != nil
+        }
+        var out = record
+        for (biblatex, bibtex) in [("journaltitle", "journal"), ("location", "address")]
+        where has(biblatex) && !has(bibtex) {
+            out = out.replacingOccurrences(
+                of: #"(?i)([,\n]\s*)"# + biblatex + #"(\s*=)"#,
+                with: "$1" + bibtex + "$2", options: .regularExpression)
+        }
+        // A biblatex date carries the year BibTeX wants in its own field.
+        if !has("year"),
+           let match = out.range(of: #"(?i)[,\n]\s*date\s*=\s*[{"]?\s*(\d{4})"#,
+                                 options: .regularExpression),
+           let yearRange = out[match].range(of: #"\d{4}"#, options: .regularExpression),
+           let close = out.lastIndex(of: "}") {
+            let year = String(out[match][yearRange])
+            let head = out[..<close].trimmingCharacters(in: .whitespacesAndNewlines)
+            out = head + (head.hasSuffix(",") ? "" : ",") + "\n  year = {\(year)}\n}"
+        }
+        return out
     }
 
     // MARK: Odds and ends
@@ -2093,7 +2186,8 @@ nonisolated enum ACMLaTeX {
                 // \setcctype[4.0]{by-nc} — the version option is ignored.
                 switch first("setcctype")?.lowercased() ?? "by" {
                 case "by-sa": out.rights = .ccBySA
-                case "by-nc", "by-nc-sa": out.rights = .ccByNC
+                case "by-nc": out.rights = .ccByNC
+                case "by-nc-sa": out.rights = .ccByNCSA
                 case "by-nd": out.rights = .ccByND
                 case "by-nc-nd": out.rights = .ccByNCND
                 default: out.rights = .ccBy
@@ -2744,10 +2838,11 @@ extension ACMLaTeX {
         switch rights {
         case .none:
             return nil
-        case .ccBy, .ccBySA, .ccByNC, .ccByND, .ccByNCND:
+        case .ccBy, .ccBySA, .ccByNC, .ccByNCSA, .ccByND, .ccByNCND:
             let (name, path): (String, String) = switch rights {
             case .ccBySA: ("Attribution-ShareAlike", "by-sa")
             case .ccByNC: ("Attribution-NonCommercial", "by-nc")
+            case .ccByNCSA: ("Attribution-NonCommercial-ShareAlike", "by-nc-sa")
             case .ccByND: ("Attribution-NoDerivatives", "by-nd")
             case .ccByNCND: ("Attribution-NonCommercial-NoDerivatives", "by-nc-nd")
             default: ("Attribution", "by")

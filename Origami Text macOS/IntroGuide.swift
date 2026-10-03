@@ -11,7 +11,7 @@ extension AppModel {
     /// Bump whenever the guide's text changes: the next Intro click
     /// replaces the unpacked copy with the new edition. The document id
     /// stays `introGuideID`, so the reader's annotations survive editions.
-    nonisolated static let introGuideVersion = 5
+    nonisolated static let introGuideVersion = 6
     nonisolated static let introGuideID = "origami-text-intro"
 
     nonisolated static func introGuideDoc() -> LiquidDoc {

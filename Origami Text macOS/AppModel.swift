@@ -2945,8 +2945,11 @@ final class AppModel {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("Introducing Origami Text.epub")
         do {
-            try OrigamiEPUBExporter.write(doc: Self.introGuideDoc(),
-                                          resolve: { _ in nil }, to: url)
+            // The guide has no house title: its header is the title alone.
+            try OrigamiEPUBExporter.$writesTitleOnly.withValue(true) {
+                try OrigamiEPUBExporter.write(doc: Self.introGuideDoc(),
+                                              resolve: { _ in nil }, to: url)
+            }
         } catch {
             NSSound.beep()
             showNote("Could not write the introduction: \(error.localizedDescription)")
@@ -3019,7 +3022,12 @@ final class AppModel {
     /// Set by the foot bar's AI group; cleared by Close, a mode word,
     /// or opening another book.
     var readingAnalysisKind: ReadingAnalysisKind? {
-        didSet { if readingAnalysisKind != nil { readingOverviewOn = false } }
+        didSet {
+            if readingAnalysisKind != nil {
+                readingOverviewOn = false
+                readingReferencesOn = false
+            }
+        }
     }
 
     /// Overview standing over the page (OverviewReadingScreen): each
@@ -3031,6 +3039,22 @@ final class AppModel {
         didSet {
             guard readingOverviewOn else { return }
             readingAnalysisKind = nil
+            readingReferencesOn = false
+            readerFindFoldTerm = nil
+            readerFoldLevel = 0
+        }
+    }
+
+    /// References standing over the page (ReferencesScreen): the open
+    /// document's cited works by title, author or date, or on a map of
+    /// who cites whom, each with its standing — retracted, corrected,
+    /// open. Set from the foot bar's References word, right of Focus;
+    /// any other reading takes it down.
+    var readingReferencesOn = false {
+        didSet {
+            guard readingReferencesOn else { return }
+            readingAnalysisKind = nil
+            readingOverviewOn = false
             readerFindFoldTerm = nil
             readerFoldLevel = 0
         }
@@ -3199,7 +3223,12 @@ final class AppModel {
     /// can be asked for from either presentation. Rests when the
     /// reading moves.
     var readerFoldLevel = 0 {
-        didSet { if readerFoldLevel > 0 { readingOverviewOn = false } }
+        didSet {
+            if readerFoldLevel > 0 {
+                readingOverviewOn = false
+                readingReferencesOn = false
+            }
+        }
     }
 
     /// The opened EPUB whose address (its Origami id, or the identity of its
@@ -3694,6 +3723,7 @@ final class AppModel {
         readerFoldLevel = 0           // and so does the fold
         readingAnalysisKind = nil     // a new book begins on its page
         readingOverviewOn = false     // not in Overview
+        readingReferencesOn = false   // nor References
         readerFindFoldTerm = nil      // and without a standing find-fold
         let base = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
         let content = base.appendingPathComponent(record.contentSubpath)
@@ -4986,13 +5016,27 @@ final class AppModel {
             if record.publication?.localizedCaseInsensitiveContains(query) == true {
                 return true
             }
-            if let doc = index.byID[record.id]?.doc,
+            if let doc = searchableDoc(for: record),
                (doc.body ?? []).contains(where: {
                    $0.text.localizedCaseInsensitiveContains(query) }) {
                 return true
             }
             return false
         }
+    }
+
+    /// A book's built text for Find: the index's copy by the record's
+    /// address, else the EPUB build's own by shelf folder (a book can be
+    /// built and read without standing in the index under that address),
+    /// else any build carrying the address. Nil only for a book not yet
+    /// built at all.
+    func searchableDoc(for record: EPUBRecord) -> LiquidDoc? {
+        if let entry = index.byID[record.id] { return entry.doc }
+        if let memo = epubIndexMemo[record.folder] { return memo.doc }
+        if let cached = readingDocCache.last(where: { $0.bookID == record.folder || $0.doc.id == record.id }) {
+            return cached.doc
+        }
+        return epubIndexMemo.values.first { $0.doc.id == record.id }?.doc
     }
 
     /// Where Find met a book's text: the first passage carrying the
@@ -5008,9 +5052,12 @@ final class AppModel {
     /// books that carry them only in their text, each with where. A query
     /// that matches nothing leaves the list whole and beeps, as Find
     /// always has.
-    func searchSplitEPUBs(_ records: [EPUBRecord])
+    /// `query` is the words of a list's own Find (a venue's, say); nil
+    /// takes the Library's foot Find.
+    func searchSplitEPUBs(_ records: [EPUBRecord], query given: String? = nil)
         -> (named: [EPUBRecord], inText: [(record: EPUBRecord, match: EPUBTextMatch)]) {
-        let query = searchText.trimmingCharacters(in: .whitespaces)
+        let typed = given ?? searchText
+        let query = typed.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return (records, []) }
         let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
         func says(_ text: String?) -> Bool { text?.range(of: query, options: options) != nil }
@@ -5026,8 +5073,8 @@ final class AppModel {
         // The books that carry the words most, first.
         inText.sort { $0.match.count > $1.match.count }
         if named.isEmpty, inText.isEmpty, !records.isEmpty {
-            if findMissAnswered != searchText {
-                findMissAnswered = searchText
+            if findMissAnswered != typed {
+                findMissAnswered = typed
                 NSSound.beep()
             }
             return (records, [])
@@ -5047,7 +5094,7 @@ final class AppModel {
         }
         if let known = textMatchCache.matches[record.id] { return known }
         var found: EPUBTextMatch?
-        if let doc = index.byID[record.id]?.doc {
+        if let doc = searchableDoc(for: record) {
             let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
             var count = 0
             var first: (id: String, passage: String)?
@@ -7087,6 +7134,8 @@ final class AppModel {
         /// ACM's upload ZIP, when the publisher is ACM.
         var upload: URL?
         var uploadError: String?
+        /// Said when the installed acmart is older than CTAN's current.
+        var acmartNotice: String?
     }
 
     @discardableResult
@@ -7184,10 +7233,26 @@ final class AppModel {
             }
         }
         if options.compile {
+            // CTAN's current acmart, built once per release and placed
+            // beside paper.tex, so TeX uses it whatever version the
+            // installation carries. Not part of the ACM upload.
+            if options.publisher == .acm {
+                await ACMartVersion.prepareCurrent()
+                ACMartVersion.supply(into: folder)
+            }
             if let pdf = await ACMLaTeX.makePDF(in: folder) {
                 outcome.pdf = pdf
             } else {
                 outcome.pdfError = "TeX could not finish the PDF; paper.log says why"
+            }
+            // The acmart TeX really used, from the log, against CTAN's
+            // current release — an old class can be sent back by TAPS.
+            if options.publisher == .acm {
+                ACMartVersion.recordInstalled(fromLogIn: folder)
+                _ = await ACMartVersion.refreshLatest()
+                if let status = ACMartVersion.status(), status.outdated {
+                    outcome.acmartNotice = status.text
+                }
             }
         }
         // ACM's upload: <acronym>-<paper ID>.zip holding pdf/ and Source/.
@@ -7311,6 +7376,7 @@ final class AppModel {
         if let error = outcome.epubError { note += " — the EPUB failed: \(error)" }
         if let error = outcome.pdfError { note += " — \(error)" }
         if let error = outcome.uploadError, outcome.pdfError == nil { note += " — \(error)" }
+        if let notice = outcome.acmartNotice { note += " — \(notice)" }
         showNote(note)
         if let pdf = outcome.pdf, outcome.epubError == nil {
             NSWorkspace.shared.open(pdf)

@@ -384,6 +384,61 @@ struct EPUBLibraryListView: View {
 /// The book lists' shared selection: the highlighted row is the book
 /// open in the reader, and selecting a row opens it.
 @MainActor
+/// A list's selection when Find has text matches in it: choosing a book
+/// Find met only in its text opens it already searching for the words,
+/// as the Library's own list does.
+func epubFindSelection(_ model: AppModel, textIDs: Set<String>, query: String) -> Binding<Set<String>> {
+    let base = epubListSelection(model)
+    return Binding(
+        get: { base.wrappedValue },
+        set: { ids in
+            if ids.count == 1, let id = ids.first, textIDs.contains(id) {
+                if id == model.openEPUBRecordID {
+                    model.requestReaderFind(query)
+                } else {
+                    model.pendingBookFind = (id, query)
+                }
+            }
+            base.wrappedValue = ids
+        })
+}
+
+/// A book Find met only in its text: its row, then where — the passage
+/// with the words marked, and how many places carry them.
+struct EPUBTextMatchRow: View {
+    let record: EPUBRecord
+    let match: AppModel.EPUBTextMatch
+    let query: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            EPUBRecordRow(record: record)
+            Text(marked(match.passage))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+            if match.count > 1 {
+                Text("\(match.count) places in the text")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func marked(_ passage: String) -> AttributedString {
+        var text = AttributedString(passage)
+        let words = query.trimmingCharacters(in: .whitespaces)
+        var start = text.startIndex
+        while !words.isEmpty,
+              let range = text[start...].range(of: words, options: [.caseInsensitive, .diacriticInsensitive]) {
+            text[range].font = .caption.bold()
+            text[range].foregroundColor = .primary
+            start = range.upperBound
+        }
+        return text
+    }
+}
+
 func epubListSelection(_ model: AppModel) -> Binding<Set<String>> {
     Binding(
         get: { model.epubListSelectionIDs },
@@ -976,13 +1031,17 @@ struct JournalBooksListView: View {
 
     private func cancelMapListHide() { mapListHideTask?.cancel() }
 
-    /// The foot Find's cut: title or author carrying the words.
+    /// The foot Find's cut for the set-aside papers: title, author, or
+    /// the words anywhere in the text.
     private func findFiltered(_ records: [EPUBRecord]) -> [EPUBRecord] {
         let query = findText.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return records }
-        return records.filter {
-            $0.title.localizedCaseInsensitiveContains(query)
-                || $0.author.localizedCaseInsensitiveContains(query)
+        return records.filter { record in
+            record.title.localizedCaseInsensitiveContains(query)
+                || record.author.localizedCaseInsensitiveContains(query)
+                || (model.searchableDoc(for: record)?.body ?? []).contains {
+                    $0.text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+                }
         }
     }
 
@@ -991,10 +1050,18 @@ struct JournalBooksListView: View {
         // never stands over the papers now, and applying its text here
         // would empty the list with no visible cause.
         // A series reads in its own order (group-position), pinned first.
-        let shown = findFiltered(
-            model.pinnedFirst(model.inSeriesOrder(model.epubRecords(inPublication: name))))
+        // Find reads the papers' text too: title or author first, then
+        // the papers that carry the words only in their text, each with
+        // the passage — opening one opens it already searching.
+        let query = findText.trimmingCharacters(in: .whitespaces)
+        let split = model.searchSplitEPUBs(
+            model.pinnedFirst(model.inSeriesOrder(model.epubRecords(inPublication: name))),
+            query: query)
+        let shown = split.named
+        let textHits = split.inText
         let aside = findFiltered(model.epubSetAsideRecords(inPublication: name))
-        return List(selection: epubListSelection(model)) {
+        return List(selection: epubFindSelection(model, textIDs: Set(textHits.map(\.record.id)),
+                                                 query: query)) {
             Section {
                 ForEach(shown) { record in
                     EPUBRecordRow(record: record)
@@ -1014,13 +1081,20 @@ struct JournalBooksListView: View {
                     }
                 }
             } header: {
-                Text(name)
+                Text(textHits.isEmpty ? name : "\(name) — Title or Author")
+            }
+            if !textHits.isEmpty {
+                Section("In the Text") {
+                    ForEach(textHits, id: \.record.id) { hit in
+                        EPUBTextMatchRow(record: hit.record, match: hit.match, query: query)
+                    }
+                }
             }
         }
         // The list starts right under the toolbar, no dead air.
         .contentMargins(.top, 0, for: .scrollContent)
         .overlay {
-            if shown.isEmpty, aside.isEmpty {
+            if shown.isEmpty, textHits.isEmpty, aside.isEmpty {
                 ContentUnavailableView {
                     Label(name, systemImage: "newspaper")
                 } description: {
@@ -1263,10 +1337,11 @@ struct PublicationFilteredListView: View {
     let venue: String
     let filter: PublicationFilter
 
-    private var records: [EPUBRecord] {
+    /// The venue's papers by this author (or on this topic), before Find.
+    private var unsearched: [EPUBRecord] {
         switch filter {
         case .author(let name):
-            model.searchFilteredEPUBs(model.pinnedFirst(
+            (model.pinnedFirst(
                 model.epubRecords(inPublication: venue).filter { record in
                     // Some records hold the joined byline as one string;
                     // the sidebar lists people, so match within commas.
@@ -1279,14 +1354,19 @@ struct PublicationFilteredListView: View {
                 }
             ))
         case .topic(let topic):
-            model.searchFilteredEPUBs(model.pinnedFirst(
+            (model.pinnedFirst(
                 model.epubRecords(inPublication: venue, matchingTopic: topic)))
         }
     }
 
     var body: some View {
-        let records = records
-        List(selection: epubListSelection(model)) {
+        // Find reads the papers' text too, as the Library's list does.
+        let query = model.searchText.trimmingCharacters(in: .whitespaces)
+        let split = model.searchSplitEPUBs(unsearched)
+        let records = split.named
+        let textHits = split.inText
+        List(selection: epubFindSelection(model, textIDs: Set(textHits.map(\.record.id)),
+                                          query: query)) {
             Section {
                 ForEach(records) { record in
                     EPUBRecordRow(record: record)
@@ -1300,10 +1380,17 @@ struct PublicationFilteredListView: View {
                 .buttonStyle(.plain)
                 .help("Back to \(venue)")
             }
+            if !textHits.isEmpty {
+                Section("In the Text") {
+                    ForEach(textHits, id: \.record.id) { hit in
+                        EPUBTextMatchRow(record: hit.record, match: hit.match, query: query)
+                    }
+                }
+            }
         }
         .contentMargins(.top, 0, for: .scrollContent)
         .overlay {
-            if records.isEmpty {
+            if records.isEmpty, textHits.isEmpty {
                 ContentUnavailableView {
                     Label(filterLabel, systemImage: "doc.text.magnifyingglass")
                 } description: {

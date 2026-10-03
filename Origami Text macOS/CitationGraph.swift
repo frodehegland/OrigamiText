@@ -47,6 +47,13 @@ enum CitationGraph {
         var source: String
         var fetched: Date
         var found: Bool
+        /// Every service was asked and their lists folded together
+        /// (`completeReferences`) — not just the first that answered.
+        /// Absent in entries written before it existed.
+        var complete: Bool? = nil
+        /// Cited works known only by DOI (OpenCitations) — kept apart from
+        /// `references`, whose readers expect a title on every entry.
+        var citedDOIs: [String]? = nil
     }
 
     private static let missRetryDays = 7.0
@@ -190,6 +197,77 @@ enum CitationGraph {
 
         let stored = entry ?? Entry(doi: doi, references: [], source: "",
                                     fetched: .now, found: false)
+        cache[key] = stored
+        persist()
+        return stored
+    }
+
+    /// Whether the work's list was gathered from every service, recently.
+    static func isComplete(key: String) -> Bool {
+        guard let known = cache[key], known.complete == true else { return false }
+        // A work no service could answer is asked again sooner.
+        let days: Double = known.found ? 30 : 3
+        return Date.now.timeIntervalSince(known.fetched) < days * 86_400
+    }
+
+    /// The work's references from EVERY service, folded into one list —
+    /// for the References map, which must see all of a work's
+    /// references to tell which of its neighbours it cites. Each service
+    /// alone misses some: Semantic Scholar drops unresolved entries,
+    /// Crossref holds only what the publisher deposited, OpenAlex (with
+    /// the reader's key) resolves others again. Misses are asked again
+    /// here, whatever their age — the reader asked.
+    @discardableResult
+    static func completeReferences(title: String, author: String, year: Int?,
+                                   doi: String?) async -> Entry? {
+        guard isEnabled else { return nil }
+        let key = key(title: title, author: author)
+        if isComplete(key: key) { return cache[key] }
+
+        var parts: [Entry] = []
+        if let answer = await semanticScholar(doi: doi, title: title, year: year) {
+            parts.append(answer)
+        }
+        if let answer = await openAlex(doi: doi, title: title, year: year) {
+            parts.append(answer)
+        }
+        let resolvedDOI = doi ?? parts.compactMap(\.doi).first
+        if let resolvedDOI, let answer = await crossref(doi: resolvedDOI) {
+            parts.append(answer)
+        }
+
+        // Folded across services, never within one: a single list may
+        // hold distinct works under one name (Crossref's "Proc. …"
+        // volume titles), and those must all stand.
+        var references: [CitedRef] = []
+        var seenDOIs = Set<String>()
+        var seenTitles = Set<String>()
+        for part in parts {
+            var partTitles = Set<String>()
+            for reference in part.references {
+                let folded = normalize(reference.title) + "|" + (reference.year.map(String.init) ?? "")
+                if let doi = reference.doi?.lowercased(), !doi.isEmpty {
+                    guard seenDOIs.insert(doi).inserted else { continue }
+                } else if folded.count >= 24, seenTitles.contains(folded) {
+                    continue
+                }
+                partTitles.insert(folded)
+                references.append(reference)
+            }
+            seenTitles.formUnion(partTitles)
+        }
+        // OpenCitations: the cited works by DOI — keyless, and present
+        // where the publisher deposited open references.
+        var citedDOIs: [String] = []
+        if let resolvedDOI, let dois = await openCitationsReferences(doi: resolvedDOI) {
+            citedDOIs = dois.filter { !seenDOIs.contains($0) }
+        }
+        let sources = parts.map(\.source) + (citedDOIs.isEmpty ? [] : ["OpenCitations"])
+        let stored = Entry(doi: resolvedDOI, references: references,
+                           source: sources.joined(separator: " + "),
+                           fetched: .now, found: !references.isEmpty || !citedDOIs.isEmpty,
+                           complete: true,
+                           citedDOIs: citedDOIs.isEmpty ? nil : citedDOIs)
         cache[key] = stored
         persist()
         return stored
@@ -365,6 +443,29 @@ enum CitationGraph {
         guard !references.isEmpty else { return nil }
         return Entry(doi: doi, references: references,
                      source: "Crossref", fetched: .now, found: true)
+    }
+
+    /// OpenCitations' index: the DOIs a work cites, from the open
+    /// reference deposits — no titles, but a DOI is the surest match.
+    private static func openCitationsReferences(doi: String) async -> [String]? {
+        guard let encoded = doi.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "https://api.opencitations.net/index/v2/references/doi:\(encoded)")
+        else { return nil }
+        await politePause()
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.setValue("OrigamiText/1.0 (mailto:frode@hegland.com)",
+                         forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+        else { return nil }
+        // "cited" holds space-separated ids: "omid:… doi:10.… openalex:…".
+        return rows.compactMap { row in
+            (row["cited"] as? String)?
+                .split(separator: " ")
+                .first { $0.hasPrefix("doi:") }
+                .map { String($0.dropFirst(4)).lowercased() }
+        }
     }
 
     // MARK: Plumbing (the card lookups' etiquette)

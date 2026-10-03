@@ -1541,6 +1541,7 @@ struct OrigamiReadingView: View {
                     readerModeRaw = EPUBReaderMode.focus.rawValue
                     model.readerFoldLevel = 0
                     model.readingAnalysisKind = nil
+                    model.readingReferencesOn = false
                     model.readerFindFoldTerm = nil
                 }
             } label: {
@@ -4173,7 +4174,8 @@ struct ReadingFootBar: View {
                         let followsOpen = (prev == .scroll && outlineAvailable && outlineShape != nil)
                             || (prev == .faithful && !modes.contains(.scroll)
                                 && (outlineAvailable ? outlineShape != nil : defaultShowsExpanded))
-                            || (prev == .horizontal && focusContent != nil && readerMode == .focus)
+                            || (prev == .horizontal && focusContent != nil && readerMode == .focus
+                                && model.openEPUB == nil)
                         if !followsOpen { separator }
                     }
                     if mode == .faithful, !modes.contains(.scroll) {
@@ -4189,6 +4191,12 @@ struct ReadingFootBar: View {
                         }
                     } else {
                         modeWord(mode)
+                        // References stands right of Focus — here, where
+                        // Focus is a mode word of its own.
+                        if mode == .focus, model.openEPUB != nil {
+                            separator
+                            referencesWord
+                        }
                         // In EPUBReaderView, Full Width is its own mode word
                         // and the Outline group rides beside it as before.
                         if mode == .scroll, outlineAvailable {
@@ -4200,6 +4208,12 @@ struct ReadingFootBar: View {
                         if mode == .horizontal, let focusContent {
                             if readerMode != .focus { separator }
                             focusContent()
+                            // …and here, after the Focus group (no | after
+                            // its closing bracket).
+                            if model.openEPUB != nil {
+                                if readerMode != .focus { separator }
+                                referencesWord
+                            }
                         }
                     }
                 }
@@ -4275,6 +4289,7 @@ struct ReadingFootBar: View {
                 model.readerFoldLevel = 0
                 model.readingAnalysisKind = nil
                 model.readingOverviewOn = false
+                model.readingReferencesOn = false
                 model.readerFindFoldTerm = nil
             }
         } label: {
@@ -4284,6 +4299,7 @@ struct ReadingFootBar: View {
             let isActive = readerMode == mode
                 && model.readingAnalysisKind == nil
                 && !model.readingOverviewOn
+                && !model.readingReferencesOn
                 && (!(mode == .scroll || mode == .faithful) || foldFree)
             Text(mode.displayName)
                 .font(.callout.weight(isActive ? .semibold : .regular))
@@ -4293,6 +4309,26 @@ struct ReadingFootBar: View {
         }
         .buttonStyle(.plain)
         .help(mode.help)
+    }
+
+    // MARK: References — the cited works as a page
+
+    /// The References word: the open document's cited works as a whole
+    /// page; chosen again, back to the reading.
+    private var referencesWord: some View {
+        Button {
+            withAnimation(Self.modeSwitch) {
+                model.readingReferencesOn.toggle()
+            }
+        } label: {
+            Text("References")
+                .font(.callout.weight(model.readingReferencesOn ? .semibold : .regular))
+                .foregroundStyle(model.readingReferencesOn ? AnyShapeStyle(.primary)
+                                 : AnyShapeStyle(.secondary))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("The works this document cites — by title, author, date, or on a map of who cites whom — each marked if retracted, corrected or open to read")
     }
 
     // MARK: The Default group — column or full width, nesting in place
@@ -5230,6 +5266,20 @@ struct CitationCardSheet: View {
     @Environment(\.openURL) private var openURL
     let doc: LiquidDoc
     let key: String
+    /// The work's marks from the References page — Retracted, Preprint,
+    /// Foundational… — shown under the title, each with its reason.
+    var marks: [ReferenceStatus.Mark] = []
+    /// The References map's own works: a cited work that is also one of
+    /// this document's references answers with its card key, and its
+    /// row in "Cites N works" wears an arrow that opens that card.
+    var siblingKey: ((CitationGraph.CitedRef) -> String?)? = nil
+    var openSibling: ((String) -> Void)? = nil
+    /// The citation graph's key for this work, when the caller already
+    /// knows it (the References page keys by the raw BibTeX title).
+    var graphKey: String? = nil
+    /// A work from the "Cites" list, double-clicked: its own card, looked
+    /// up the way every card is.
+    @State private var lookedUp: LookedUpWork?
 
     private var reference: LiquidDoc.Reference? {
         if let direct = doc.references.first(where: { $0.id == key }) { return direct }
@@ -5310,6 +5360,9 @@ struct CitationCardSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                }
+                if !marks.isEmpty {
+                    marksSection
                 }
                 if let abstract = recordAbstract ?? enrichment?.abstract {
                     // The abstract reads as the body does — the card is
@@ -5522,6 +5575,9 @@ struct CitationCardSheet: View {
         }
         .padding(20)
         .frame(minWidth: 680, maxWidth: 900)
+        .sheet(item: $lookedUp) { work in
+            CitationCardSheet(doc: work.doc, key: work.id)
+        }
         // What the package left out, the services fill in: the cache
         // answers free; the network is asked only when the record
         // carries no abstract of its own (Settings ▸ Reading turns
@@ -5533,7 +5589,7 @@ struct CitationCardSheet: View {
             Task { await resolveDatasetMatch(record) }
             // The citation graph's answer, when the quiet prefetch (or
             // an earlier ask) already holds it.
-            graph = CitationGraph.cached(forKey: CitationGraph.key(
+            graph = CitationGraph.cached(forKey: graphKey ?? CitationGraph.key(
                 title: record.title, author: record.fields["author"] ?? ""))
             if let cached = CitationLookup.cached(for: record) {
                 enrichment = cached
@@ -5664,18 +5720,37 @@ struct CitationCardSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(Array(graph.references.enumerated()), id: \.offset) { _, cited in
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(cited.title)
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                siblingArrow(siblingKey?(cited))
+                                VStack(alignment: .leading, spacing: 1) {
+                                    // No text selection here: a double-click
+                                    // opens the work rather than picking a word.
+                                    Text(cited.title)
+                                        .font(.callout)
+                                    let line = [cited.authors,
+                                                cited.year.map(String.init) ?? ""]
+                                        .filter { !$0.isEmpty }.joined(separator: " · ")
+                                    if !line.isEmpty {
+                                        Text(line)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .onTapGesture(count: 2) { open(cited) }
+                                .help("Double-click to look this work up — abstract, open copy, Acquire")
+                            }
+                        }
+                        // Works known to the graph by DOI alone show only
+                        // when they are on the map — named by this
+                        // document's own entry for them.
+                        ForEach(siblingsByDOIOnly(graph), id: \.self) { sibling in
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                siblingArrow(sibling)
+                                Text(siblingTitle(sibling))
                                     .font(.callout)
                                     .textSelection(.enabled)
-                                let line = [cited.authors,
-                                            cited.year.map(String.init) ?? ""]
-                                    .filter { !$0.isEmpty }.joined(separator: " · ")
-                                if !line.isEmpty {
-                                    Text(line)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
                             }
                         }
                     }
@@ -5689,6 +5764,11 @@ struct CitationCardSheet: View {
             Text("References via \(graph.source)")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+            if siblingKey != nil {
+                Text("\(Image(systemName: "arrow.left")) also on this map — click to open its card")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
         } else if fetchingGraph {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
@@ -5715,6 +5795,119 @@ struct CitationCardSheet: View {
             .font(.callout)
             .help("The work's own reference list, from the scholarly services — how the Maps grow longer chains")
         }
+    }
+}
+
+/// A work from a card's "Cites" list made into a one-reference document,
+/// so its own card can look it up — abstract, TL;DR, open copy, library
+/// match, its references — and offer Acquire.
+struct LookedUpWork: Identifiable {
+    let id: String
+    let doc: LiquidDoc
+
+    init(_ cited: CitationGraph.CitedRef, from parent: LiquidDoc) {
+        // A BibTeX key ends at its first comma: letters and digits only.
+        let graphKey = CitationGraph.key(title: cited.title, author: cited.authors)
+        id = "cited-" + String(String.UnicodeScalarView(
+            graphKey.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) && $0.isASCII }
+        ).prefix(60))
+        func clean(_ text: String) -> String {
+            text.replacingOccurrences(of: "{", with: "(").replacingOccurrences(of: "}", with: ")")
+        }
+        var fields = ["title = {\(clean(cited.title))}"]
+        // "A, B, C et al." as BibTeX names: " and " between, "others" last.
+        var authors = cited.authors
+        let etAl = authors.hasSuffix(" et al.")
+        if etAl { authors = String(authors.dropLast(" et al.".count)) }
+        var names = authors.components(separatedBy: ", ").filter { !$0.isEmpty }
+        if etAl { names.append("others") }
+        if !names.isEmpty { fields.append("author = {\(clean(names.joined(separator: " and ")))}") }
+        if let year = cited.year { fields.append("year = {\(year)}") }
+        if let doi = cited.doi, !doi.isEmpty { fields.append("doi = {\(doi)}") }
+        var doc = LiquidDoc(format: LiquidDoc.knownFormat, id: id, title: cited.title,
+                            author: "", created: .now, body: [], links: [], wraps: nil,
+                            fileURL: parent.fileURL)
+        doc.references = [LiquidDoc.Reference(
+            id: id, bibtex: "@misc{\(id),\n  " + fields.joined(separator: ",\n  ") + "\n}")]
+        self.doc = doc
+    }
+}
+
+extension CitationCardSheet {
+    /// A double-clicked work from the "Cites" list: when it is one of this
+    /// document's own references, its card here; otherwise looked up.
+    func open(_ cited: CitationGraph.CitedRef) {
+        if let sibling = siblingKey?(cited), sibling != key, let openSibling {
+            openSibling(sibling)
+        } else {
+            lookedUp = LookedUpWork(cited, from: doc)
+        }
+    }
+
+    /// The References page's marks, each as it shows there, with what it
+    /// means and — quieter — the evidence: source, date, reason.
+    var marksSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(marks, id: \.self) { mark in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    ReferenceMarkView(mark: ReferencesScreen.mapMark(mark), size: 11)
+                        .fixedSize()
+                        .frame(minWidth: 96, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 2) {
+                        if !mark.meaning.isEmpty {
+                            Text(mark.meaning)
+                                .font(.callout)
+                        }
+                        if !mark.detail.isEmpty {
+                            Text(mark.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// The arrow before a cited work that is also on the map; an
+    /// arrow-wide space otherwise, so the titles stand aligned.
+    @ViewBuilder func siblingArrow(_ sibling: String?) -> some View {
+        if let sibling, sibling != key, let openSibling {
+            Button {
+                openSibling(sibling)
+            } label: {
+                Image(systemName: "arrow.left")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 16)
+            }
+            .buttonStyle(.plain)
+            .help("Also on this map — open its card")
+        } else if siblingKey != nil {
+            Color.clear.frame(width: 16, height: 1)
+        }
+    }
+
+    /// The DOI-only references (OpenCitations) that are on the map,
+    /// each once, and none already listed by title.
+    func siblingsByDOIOnly(_ graph: CitationGraph.Entry) -> [String] {
+        guard let siblingKey else { return [] }
+        let titled = Set(graph.references.compactMap { siblingKey($0) })
+        var seen = Set<String>()
+        return (graph.citedDOIs ?? []).compactMap { doi in
+            siblingKey(CitationGraph.CitedRef(title: "", authors: "", year: nil, doi: doi))
+        }.filter { $0 != key && !titled.contains($0) && seen.insert($0).inserted }
+    }
+
+    /// A sibling's title, from this document's own entry for it.
+    func siblingTitle(_ sibling: String) -> String {
+        let bibtex = doc.references.first { $0.id == sibling }?.bibtex
+            ?? doc.links.first { $0.to == sibling }?.bibtex ?? ""
+        let title = BibTeXRecord.records(in: bibtex).first?.title ?? ""
+        return title.isEmpty ? "Untitled" : title
     }
 }
 

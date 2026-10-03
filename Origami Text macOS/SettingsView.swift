@@ -458,8 +458,29 @@ private struct ReadingSettingsView: View {
     @AppStorage(ReaderMarginMode.leftKey) private var leftMarginRaw = ReaderMarginMode.nothing.rawValue
     @AppStorage(ReaderMarginMode.rightKey) private var rightMarginRaw = ReaderMarginMode.outline.rawValue
     @AppStorage(ReaderMarginMode.autoHideKey) private var marginsAutoHide = true
+    /// The References page's sources — see ReferenceStatus.swift.
+    @AppStorage(ReferenceStatus.retractionWatchKey) private var referencesRetractionWatch = true
+    @AppStorage(ReferenceStatus.crossrefNoticesKey) private var referencesCrossrefNotices = true
+    @AppStorage(ReferenceStatus.openAccessKey) private var referencesOpenAccess = true
+    @AppStorage(ReferenceStatus.citationCountsKey) private var referencesCitationCounts = true
+    @AppStorage(ReferenceStatus.replicationsKey) private var referencesReplications = true
+    @State private var retractionWatchBeat = 0
 
     private let families = NSFontManager.shared.availableFontFamilies.sorted()
+
+    /// The Retraction Watch copy as it stands, for the References section.
+    private var retractionWatchState: String {
+        if ReferenceStatus.isRefreshingIndex { return "Fetching the database…" }
+        if let index = ReferenceStatus.retractionIndex {
+            var line = "\(index.records.formatted()) retraction notices, updated \(index.updated.formatted(date: .abbreviated, time: .shortened))"
+            if let replications = ReferenceStatus.replicationIndex {
+                line += " · \(replications.records.formatted()) replication attempts"
+            }
+            return line
+        }
+        if let error = ReferenceStatus.indexError { return error }
+        return "Not yet fetched — it arrives when References first opens"
+    }
 
     @State private var showsThemeColorEditor = false
 
@@ -566,6 +587,41 @@ private struct ReadingSettingsView: View {
                 Text("When a citation's card lacks an abstract, the app asks Crossref and Semantic Scholar (both free, no account) and shows what they know — abstract, TL;DR, venue, DOI, an open-access link — naming the source. Answers are kept on this Mac, so a work is looked up once. OpenAlex has the widest abstract coverage but requires a free API key (openalex.org/settings/api); paste one to put it first in line.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Keep the Retraction Watch database on this Mac", isOn: $referencesRetractionWatch)
+                HStack {
+                    let _ = retractionWatchBeat
+                    Text(retractionWatchState)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Update Now") {
+                        Task {
+                            retractionWatchBeat += 1
+                            await ReferenceStatus.refreshIndexIfStale(force: true)
+                            await ReferenceStatus.refreshReplicationsIfStale(force: true)
+                            retractionWatchBeat += 1
+                        }
+                    }
+                    .disabled(!(referencesRetractionWatch || referencesReplications)
+                              || ReferenceStatus.isRefreshingIndex)
+                }
+                Toggle("Keep the FORRT replication database on this Mac", isOn: $referencesReplications)
+                Toggle("Check each DOI with Crossref for retractions and corrections", isOn: $referencesCrossrefNotices)
+                Toggle("Show which works are free to read (Unpaywall)", isOn: $referencesOpenAccess)
+                Toggle("Show how often each work is cited (OpenCitations)", isOn: $referencesCitationCounts)
+            } header: {
+                Text("References")
+            } footer: {
+                Text("The References page, beside Focus at the reading's foot, marks each cited work. Pills tell whether it can be trusted — Retracted, Withdrawn, Expression of Concern, Corrected, Replicated, Not Replicated, Preprint, Unverified; words say what it is and how it is used — Foundational (cited by the paper's other references), Top 1% Cited, Classic, Data, Review, Key, Self, In Library, Open Access. The Retraction Watch database (about 67 MB, updated daily) and FORRT's replication database (about 10 MB) are kept on this Mac and checked offline; both are fetched when References first opens and refreshed when over a week old — never at launch. The live checks (Crossref, the DOI system, Unpaywall, OpenCitations) are free and need no account; each DOI is asked once a month. Top 1% Cited needs the OpenAlex key above. Foundational and the map's lines come from Look up cited works online.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .task {
+                await ReferenceStatus.loadIndexIfNeeded()
+                await ReferenceStatus.loadReplicationsIfNeeded()
+                retractionWatchBeat += 1
             }
             Section {
                 Picker("Body", selection: $bodyFont) {
