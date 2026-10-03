@@ -47,20 +47,23 @@ struct ReferencesScreen: View {
 
     enum Listing: String, CaseIterable, Identifiable {
         // "map" stays the Time Map's stored name, so a kept choice holds.
-        case title, author, date, map, concept
+        case asCited, title, author, date, map, concept
         var id: String { rawValue }
         var label: String {
             switch self {
             case .title: "Title"
             case .author: "Author"
             case .date: "Date"
+            case .asCited: "As Cited"
             case .map: "Time Map"
             case .concept: "Concept Map"
             }
         }
     }
 
-    @AppStorage("referencesListing") private var listingRaw = Listing.title.rawValue
+    // As Cited is where References opens; a new key, so an older kept
+    // choice does not hide the new default.
+    @AppStorage("referencesListing2") private var listingRaw = Listing.asCited.rawValue
 
     /// The Time Map's up-and-down order within each year — its View menu.
     enum TimeOrder: String, CaseIterable, Identifiable {
@@ -121,6 +124,15 @@ struct ReferencesScreen: View {
     /// the section that first cites each work, and how often two works
     /// share a paragraph.
     @State private var firstSection: [String: String] = [:]
+    /// As Cited: the paper's headings, each followed by the works its
+    /// section cites in the order it first cites them — the Outline's
+    /// Citations fold, as a page.
+    @State private var asCitedOutline: [AsCitedItem] = []
+
+    enum AsCitedItem: Hashable {
+        case heading(text: String, level: Int, id: String)
+        case work(entryID: String, sectionID: String)
+    }
     @State private var togetherCounts: [ReferencesMapView.Pair: Int] = [:]
     private var timeOrder: TimeOrder { TimeOrder(rawValue: timeOrderRaw) ?? .arranged }
     // The reading's theme, as Scroll wears it — edited colours apply live.
@@ -147,7 +159,7 @@ struct ReferencesScreen: View {
             + 0.0722 * color.blueComponent
         return luminance < 0.5
     }
-    private var listing: Listing { Listing(rawValue: listingRaw) ?? .title }
+    private var listing: Listing { Listing(rawValue: listingRaw) ?? .asCited }
 
     @State private var doc: LiquidDoc?
     @State private var entries: [ReferenceEntry] = []
@@ -207,6 +219,8 @@ struct ReferencesScreen: View {
                     // Each map, and each order or view, its own plane:
                     // positions load afresh.
                     .id(listingRaw + "|" + (listing == .map ? timeOrderRaw : conceptViewRaw))
+            } else if listing == .asCited {
+                asCitedList
             } else {
                 list
             }
@@ -233,6 +247,7 @@ struct ReferencesScreen: View {
             entries = found.map(buildEntries) ?? []
             textCounts = found.map(Self.citationCounts) ?? [:]
             if let found {
+                asCitedOutline = Self.asCited(in: found, entries: entries)
                 let structure = Self.citationStructure(in: found)
                 firstSection = structure.sections
                 togetherCounts = structure.together
@@ -425,7 +440,7 @@ struct ReferencesScreen: View {
 
     private var sections: [ListSection] {
         switch listing {
-        case .title, .map, .concept:
+        case .title, .map, .concept, .asCited:
             let sorted = entries.sorted {
                 $0.title.localizedStandardCompare($1.title) == .orderedAscending
             }
@@ -508,6 +523,79 @@ struct ReferencesScreen: View {
         }
     }
 
+    /// The As Cited page: headings in the heading face, stepped in by
+    /// level, each section's works under it as the list shows them.
+    private var asCitedList: some View {
+        let _ = statusStamp
+        let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(asCitedOutline, id: \.self) { item in
+                    switch item {
+                    case .heading(let text, let level, _):
+                        Text(text)
+                            .font(AppFonts.heading(level <= 1 ? 19 : level == 2 ? 16 : 14,
+                                                   weight: .semibold))
+                            .padding(.top, level <= 1 ? 22 : 14)
+                            .padding(.bottom, 4)
+                            .padding(.leading, CGFloat(max(level - 1, 0)) * 16)
+                    case .work(let id, _):
+                        if let entry = byID[id] {
+                            row(entry)
+                                .padding(.leading, 16)
+                            Divider().opacity(0.5)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: 760)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Every heading with the works its section cites — first mention
+    /// first, each once per section, as the Citations fold lists them;
+    /// works the text never cites gather at the end.
+    private static func asCited(in doc: LiquidDoc, entries: [ReferenceEntry]) -> [AsCitedItem] {
+        guard let regex = try? NSRegularExpression(pattern: #"\[cite:([^\]]+)\]"#)
+        else { return [] }
+        let known = Set(entries.map(\.id))
+        var items: [AsCitedItem] = []
+        var cited = Set<String>()
+        var sectionID = "start"
+        var seenInSection = Set<String>()
+        for paragraph in doc.body ?? [] {
+            if let level = paragraph.heading {
+                items.append(.heading(text: paragraph.text, level: level, id: paragraph.id))
+                sectionID = paragraph.id
+                seenInSection = []
+                continue
+            }
+            guard paragraph.text.contains("[cite:") else { continue }
+            let text = paragraph.text as NSString
+            for match in regex.matches(in: paragraph.text,
+                                       range: NSRange(location: 0, length: text.length)) {
+                for raw in text.substring(with: match.range(at: 1)).split(separator: ",") {
+                    let key = raw.trimmingCharacters(in: .whitespaces)
+                    guard known.contains(key), seenInSection.insert(key).inserted else { continue }
+                    items.append(.work(entryID: key, sectionID: sectionID))
+                    cited.insert(key)
+                }
+            }
+        }
+        // Headings that cite nothing stay: the outline is the paper's.
+        let uncited = entries.filter { !cited.contains($0.id) }
+        if !uncited.isEmpty {
+            items.append(.heading(text: "Not Cited in the Text", level: 1, id: "uncited"))
+            for entry in uncited {
+                items.append(.work(entryID: entry.id, sectionID: "uncited"))
+            }
+        }
+        return items
+    }
+
     private func row(_ entry: ReferenceEntry) -> some View {
         Button {
             cardKey = CardKey(key: entry.id)
@@ -516,14 +604,16 @@ struct ReferencesScreen: View {
                 // Sorted by author, the names read black and the title
                 // steps back to grey — the same fonts either way.
                 let byAuthor = listing == .author
+                // By author the sizes trade places too: the names read
+                // large, the title at the byline's size, each in its own
+                // face.
                 Text(entry.title)
-                    .font(AppFonts.body(16))
+                    .font(AppFonts.body(byAuthor ? Self.calloutSize : 16))
                     .foregroundStyle(byAuthor ? .secondary : .primary)
                     .multilineTextAlignment(.leading)
                 let byline = byline(for: entry)
                 if !byline.isEmpty {
                     bylineText(for: entry, byAuthor: byAuthor)
-                        .font(.callout)
                         .lineLimit(2)
                 }
                 let marks = marks(for: entry)
@@ -549,13 +639,18 @@ struct ReferencesScreen: View {
     /// black, the year and venue grey as ever.
     private func bylineText(for entry: ReferenceEntry, byAuthor: Bool) -> Text {
         guard byAuthor, !entry.authors.isEmpty else {
-            return Text(byline(for: entry)).foregroundStyle(.secondary)
+            return Text(byline(for: entry)).font(.callout).foregroundStyle(.secondary)
         }
         let rest = [entry.year.map(String.init) ?? "", entry.venue]
             .filter { !$0.isEmpty }.joined(separator: " · ")
-        let names = Text(entry.authors).foregroundStyle(.primary)
+        let names = Text(entry.authors).font(.system(size: 14)).foregroundStyle(.primary)
         return rest.isEmpty ? names
-            : names + Text(" · " + rest).foregroundStyle(.secondary)
+            : names + Text(" · " + rest).font(.callout).foregroundStyle(.secondary)
+    }
+
+    /// The callout style's size on this Mac — the byline's size.
+    private static var calloutSize: CGFloat {
+        NSFont.preferredFont(forTextStyle: .callout).pointSize
     }
 
     /// The listing decides what leads the byline: the authors in Author,
@@ -1134,6 +1229,9 @@ struct ReferencesMapView: View {
     }
     private static let margin: CGFloat = 160
     private static let columnWidth: CGFloat = 185
+    /// The Time Map's year columns: a closed card (159) and a narrow
+    /// gutter, so the years stand close.
+    private static let yearColumnWidth: CGFloat = 172
     private static let rowHeight: CGFloat = 64
     private static let top: CGFloat = 150
 
@@ -1508,49 +1606,47 @@ struct ReferencesMapView: View {
         let dated = entries.filter { $0.year != nil }
             .sorted { ($0.year ?? 0, $0.title) < ($1.year ?? 0, $1.title) }
         let undated = entries.filter { $0.year == nil }
-        let years = dated.compactMap(\.year)
-        let first = years.min() ?? 0, last = years.max() ?? 0
-        let span = CGFloat(max(last - first, 1))
-        let usable = Self.baseSize.width - 2 * Self.margin - Self.columnWidth
-        let columnCount = max(Int(usable / Self.columnWidth), 1)
+
+        // One column per year that has works — never a span of years under
+        // one heading. Years with nothing between them sit a column apart;
+        // a gap in time adds a little air (capped, so a quiet decade does
+        // not push the plane wide). A column is wider than a closed card,
+        // so neighbours never overlap.
+        let years = Array(Set(dated.compactMap(\.year))).sorted()
+        var columnX: [Int: CGFloat] = [:]
+        var x = Self.margin
+        for (index, year) in years.enumerated() {
+            if index > 0 {
+                let skipped = year - years[index - 1] - 1
+                x += Self.yearColumnWidth + CGFloat(min(skipped, 4)) * 12
+            }
+            columnX[year] = x
+        }
 
         var positions: [String: CGPoint] = [:]
-        var stacks: [Int: Int] = [:]
-        var columnYears: [Int: (low: Int, high: Int)] = [:]
-        // Each work to its year's column first; then each column stacked
-        // in the chosen order (year, then title, when none is chosen).
+        // Each work to its year's column; each column stacked in the chosen
+        // order (year, then title, when none is chosen).
         var columns: [Int: [ReferenceEntry]] = [:]
         for entry in dated {
-            let year = entry.year ?? first
-            let column = min(Int(CGFloat(year - first) / span * CGFloat(columnCount - 1)),
-                             columnCount - 1)
-            columns[column, default: []].append(entry)
-            let held = columnYears[column] ?? (year, year)
-            columnYears[column] = (min(held.low, year), max(held.high, year))
+            if let year = entry.year { columns[year, default: []].append(entry) }
         }
-        for (column, members) in columns {
+        for (year, members) in columns {
             let stacked = ordering.map { members.sorted(by: $0) } ?? members
             for (row, entry) in stacked.enumerated() {
-                positions[entry.id] = CGPoint(
-                    x: Self.margin + CGFloat(column) * Self.columnWidth,
-                    y: Self.top + CGFloat(row) * Self.rowHeight)
+                positions[entry.id] = CGPoint(x: columnX[year] ?? Self.margin,
+                                              y: Self.top + CGFloat(row) * Self.rowHeight)
             }
-            stacks[column] = stacked.count
         }
-        let lastColumn = (stacks.keys.max() ?? -1) + 1
+        let undatedX = (years.last.flatMap { columnX[$0] }.map { $0 + Self.yearColumnWidth + 30 })
+            ?? Self.margin
         let undatedStacked = ordering.map { undated.sorted(by: $0) } ?? undated
         for (row, entry) in undatedStacked.enumerated() {
-            positions[entry.id] = CGPoint(
-                x: Self.margin + CGFloat(lastColumn) * Self.columnWidth + 40,
-                y: Self.top + CGFloat(row) * Self.rowHeight)
+            positions[entry.id] = CGPoint(x: undatedX,
+                                          y: Self.top + CGFloat(row) * Self.rowHeight)
         }
-        var captions = columnYears.sorted { $0.key < $1.key }.map { column, range in
-            (label: range.low == range.high ? "\(range.low)" : "\(range.low)–\(range.high)",
-             x: Self.margin + CGFloat(column) * Self.columnWidth)
-        }
+        var captions = years.map { (label: "\($0)", x: columnX[$0] ?? Self.margin) }
         if !undated.isEmpty {
-            captions.append((label: "No Date",
-                             x: Self.margin + CGFloat(lastColumn) * Self.columnWidth + 40))
+            captions.append((label: "No Date", x: undatedX))
         }
         return (positions, captions)
     }
