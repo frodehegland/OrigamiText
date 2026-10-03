@@ -2154,6 +2154,19 @@ struct ProceedingsMapNode: View {
     /// The Mac's context menu in place of the pile choices, when the
     /// plane is not a shelf (the References map).
     var menu: (() -> AnyView)? = nil
+    /// Title lines on a standing (closed) card — one on the journal Map,
+    /// two on the References map, where titles are the whole story.
+    var standingTitleLines = 1
+    /// A lifted card reads larger, with air between its lines — the
+    /// References map, where the opened card is read, not scanned.
+    var roomyWhenLifted = false
+    /// The card moves up and down only — its place across the plane is
+    /// its year on the References map, not the reader's to change.
+    var verticalOnly = false
+
+    /// How much larger a roomy lifted card's type stands.
+    private var liftBoost: CGFloat { roomyWhenLifted && lifted ? 2 : 0 }
+    private var liftLineSpacing: CGFloat { roomyWhenLifted && lifted ? 3 : 0 }
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -2196,17 +2209,17 @@ struct ProceedingsMapNode: View {
     /// grew up with — sixty cards on the plane read better smaller.
     private var titleFont: Font {
         #if os(macOS)
-        .system(size: 10, weight: .semibold)
+        .system(size: 10 + liftBoost, weight: .semibold)
         #else
-        .system(size: 14, weight: .semibold)
+        .system(size: 14 + liftBoost, weight: .semibold)
         #endif
     }
 
     private var authorFont: Font {
         #if os(macOS)
-        .system(size: 8)
+        .system(size: 8 + liftBoost)
         #else
-        .system(size: 10)
+        .system(size: 10 + liftBoost)
         #endif
     }
 
@@ -2215,9 +2228,9 @@ struct ProceedingsMapNode: View {
     /// carry AppFonts; the system serif stands in there.
     private var abstractFont: Font {
         #if os(macOS)
-        AppFonts.body(10)
+        AppFonts.body(10 + liftBoost)
         #else
-        .system(size: 12, design: .serif)
+        .system(size: 12 + liftBoost, design: .serif)
         #endif
     }
 
@@ -2226,7 +2239,8 @@ struct ProceedingsMapNode: View {
     /// abstract, so the fine print reads as a paragraph, not a ribbon.
     private func cardWidth(abstract: String) -> CGFloat {
         #if os(macOS)
-        lifted ? (abstract.isEmpty ? 168 : 260) : 159
+        lifted ? (abstract.isEmpty ? (roomyWhenLifted ? 210 : 168)
+                                   : (roomyWhenLifted ? 330 : 260)) : 159
         #else
         lifted ? (abstract.isEmpty ? 168 : 260) : 195
         #endif
@@ -2241,19 +2255,22 @@ struct ProceedingsMapNode: View {
             // full title and the authors unfold on the lifted one.
             Text(item.title)
                 .font(titleFont)
-                .lineLimit(lifted && !item.isSetAside ? nil : 1)
+                .lineSpacing(liftLineSpacing)
+                .lineLimit(lifted && !item.isSetAside ? nil : standingTitleLines)
             if !marks.isEmpty {
                 markLine
             }
             if lifted, !item.isSetAside {
                 Text(item.author)
                     .font(authorFont)
+                    .lineSpacing(liftLineSpacing)
                     .foregroundStyle(.secondary)
                 // The abstract unfolds beneath the byline — capped, so
                 // a long one lifts a card, not a wall.
                 if !abstract.isEmpty {
                     Text(abstract)
                         .font(abstractFont)
+                        .lineSpacing(liftLineSpacing)
                         // Black on the light card; the dark scheme's
                         // card is near-black, so there it stays white.
                         .foregroundStyle(colorScheme == .dark
@@ -2326,8 +2343,9 @@ struct ProceedingsMapNode: View {
                     if dragStart == nil { dragStart = position }
                     guard let start = dragStart else { return }
                     livePosition = CGPoint(
-                        x: min(max(start.x + value.translation.width, 90),
-                               bounds.width - 90),
+                        x: verticalOnly ? start.x
+                            : min(max(start.x + value.translation.width, 90),
+                                  bounds.width - 90),
                         y: min(max(start.y + value.translation.height, 40),
                                bounds.height - 40))
                     liveMoved(livePosition)

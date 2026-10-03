@@ -872,6 +872,63 @@ enum ReferenceStatus {
         }
     }
 
+    // MARK: The reader's own word
+
+    /// Marks the reader has removed, by work — they may know better than
+    /// the indexes (an Unverified reference they hold in their hands).
+    /// Kept on this Mac: work key → mark ids.
+    private static let removedKey = "referenceMarksRemoved"
+
+    /// A work's keys for removals: its DOI and its folded title, both —
+    /// so a removal holds in every document that cites the work, whether
+    /// that document's entry carries the DOI or only the title, and after
+    /// a lookup finds the DOI later.
+    static func workKeys(doi: String?, title: String) -> [String] {
+        var keys: [String] = []
+        if let doi = cleanDOI(doi) { keys.append(doi) }
+        let folded = normalizedTitle(title)
+        if folded.count >= 12 { keys.append("title:" + folded) }
+        return keys
+    }
+
+    /// A mark's id for removals — "Corrected 2×" and "Corrected" are one.
+    static func markID(_ mark: Mark) -> String {
+        mark.text.hasPrefix("Corrected") ? "Corrected" : mark.text
+    }
+
+    private static var removedStore: [String: [String]] {
+        get { UserDefaults.standard.dictionary(forKey: removedKey) as? [String: [String]] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: removedKey) }
+    }
+
+    /// What the reader removed for the work, under any of its keys.
+    static func removedMarks(for keys: [String]) -> Set<String> {
+        let all = removedStore
+        return keys.reduce(into: Set<String>()) { $0.formUnion(all[$1] ?? []) }
+    }
+
+    static func removeMark(_ mark: Mark, for keys: [String]) {
+        var all = removedStore
+        for key in keys {
+            var marks = Set(all[key] ?? [])
+            marks.insert(markID(mark))
+            all[key] = marks.sorted()
+        }
+        removedStore = all
+    }
+
+    static func restoreMarks(for keys: [String]) {
+        var all = removedStore
+        for key in keys { all[key] = nil }
+        removedStore = all
+    }
+
+    /// The marks less those the reader removed.
+    static func visible(_ marks: [Mark], for keys: [String]) -> [Mark] {
+        let removed = removedMarks(for: keys)
+        return removed.isEmpty ? marks : marks.filter { !removed.contains(markID($0)) }
+    }
+
     /// Preprint servers' DOI prefixes: arXiv, bioRxiv/medRxiv, PsyArXiv
     /// and the OSF family, Research Square, Preprints.org, SSRN.
     private static let preprintPrefixes = ["10.48550/", "10.1101/", "10.31234/", "10.31219/",

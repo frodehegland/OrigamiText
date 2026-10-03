@@ -46,19 +46,107 @@ struct ReferencesScreen: View {
     let book: OpenEPUB
 
     enum Listing: String, CaseIterable, Identifiable {
-        case title, author, date, map
+        // "map" stays the Time Map's stored name, so a kept choice holds.
+        case title, author, date, map, concept
         var id: String { rawValue }
         var label: String {
             switch self {
             case .title: "Title"
             case .author: "Author"
             case .date: "Date"
-            case .map: "Map"
+            case .map: "Time Map"
+            case .concept: "Concept Map"
             }
         }
     }
 
     @AppStorage("referencesListing") private var listingRaw = Listing.title.rawValue
+
+    /// The Time Map's up-and-down order within each year — its View menu.
+    enum TimeOrder: String, CaseIterable, Identifiable {
+        case arranged, title, author, mostCited, citedHere, citedInPaper, venue, trust
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .arranged: "As Arranged"
+            case .title: "Title"
+            case .author: "First Author"
+            case .mostCited: "Most Cited"
+            case .citedHere: "Cited by These References"
+            case .citedInPaper: "Cited Most in This Paper"
+            case .venue: "Venue"
+            case .trust: "Trust (warnings first)"
+            }
+        }
+    }
+
+    @AppStorage("referencesTimeMapOrder") private var timeOrderRaw = TimeOrder.arranged.rawValue
+
+    /// The Concept Map's views — the ways bibliometrics lays out a set of
+    /// works (VOSviewer, CiteSpace, Connected Papers), from what this
+    /// paper and its references already hold.
+    enum ConceptView: String, CaseIterable, Identifiable {
+        case arranged, network, sharedReferences, citedTogether, section, author, venue, core
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .arranged: "As Arranged"
+            case .network: "Citation Network"
+            case .sharedReferences: "Shared References"
+            case .citedTogether: "Cited Together"
+            case .section: "By Section"
+            case .author: "By Author"
+            case .venue: "By Venue"
+            case .core: "Core & Periphery"
+            }
+        }
+        var help: String {
+            switch self {
+            case .arranged: "Where you have put them"
+            case .network: "Works that cite each other drawn together"
+            case .sharedReferences: "Works that cite the same earlier works drawn together — bibliographic coupling"
+            case .citedTogether: "Works this paper cites in the same paragraph drawn together — how the author grouped them"
+            case .section: "Gathered under the section of this paper that first cites them"
+            case .author: "Gathered under the authors who recur in the list"
+            case .venue: "Gathered by journal or conference"
+            case .core: "The most connected works at the centre, the rest in rings outward"
+            }
+        }
+    }
+
+    @AppStorage("referencesConceptView") private var conceptViewRaw = ConceptView.arranged.rawValue
+    private var conceptView: ConceptView { ConceptView(rawValue: conceptViewRaw) ?? .arranged }
+
+    /// This paper's own facts for the Concept Map, read once per book:
+    /// the section that first cites each work, and how often two works
+    /// share a paragraph.
+    @State private var firstSection: [String: String] = [:]
+    @State private var togetherCounts: [ReferencesMapView.Pair: Int] = [:]
+    private var timeOrder: TimeOrder { TimeOrder(rawValue: timeOrderRaw) ?? .arranged }
+    // The reading's theme, as Scroll wears it — edited colours apply live.
+    @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+    @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var readerTheme: ReaderTheme {
+        _ = themeEditTick
+        return ReaderTheme(rawValue: themeRaw) ?? .highContrast
+    }
+
+    private var themeBackground: Color {
+        readerTheme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor)
+    }
+
+    /// Whether the page reads light-on-dark — from the theme's own
+    /// background, since a dark theme can stand in the light scheme.
+    private var isDarkPage: Bool {
+        guard let color = NSColor(themeBackground).usingColorSpace(.sRGB) else {
+            return colorScheme == .dark
+        }
+        let luminance = 0.2126 * color.redComponent + 0.7152 * color.greenComponent
+            + 0.0722 * color.blueComponent
+        return luminance < 0.5
+    }
     private var listing: Listing { Listing(rawValue: listingRaw) ?? .title }
 
     @State private var doc: LiquidDoc?
@@ -98,28 +186,42 @@ struct ReferencesScreen: View {
                 Text("This document carries no reference list.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if listing == .map {
+            } else if listing == .map || listing == .concept {
                 ReferencesMapView(
                     entries: entries,
                     links: links,
+                    byTime: listing == .map,
+                    lineColor: isDarkPage ? .white : .black,
                     layoutKey: book.id,
                     stamp: statusStamp,
                     marks: { mapMarks(for: $0) },
                     abstractFor: { abstract(forID: $0) },
                     open: { cardKey = CardKey(key: $0.id) },
-                    menu: { AnyView(entryMenu($0)) })
+                    menu: { AnyView(entryMenu($0)) },
+                    ordering: listing == .map ? timeOrdering : nil,
+                    conceptLayout: listing == .concept ? conceptLayout : .arranged,
+                    arranged: {
+                        if listing == .map { timeOrderRaw = TimeOrder.arranged.rawValue }
+                        else { conceptViewRaw = ConceptView.arranged.rawValue }
+                    })
+                    // Each map, and each order or view, its own plane:
+                    // positions load afresh.
+                    .id(listingRaw + "|" + (listing == .map ? timeOrderRaw : conceptViewRaw))
             } else {
                 list
             }
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        // The same theme as Scroll: its background, its ink.
+        .foregroundStyle(readerTheme.textColor(for: colorScheme) ?? Color.primary)
+        .background(themeBackground)
         .sheet(item: $cardKey) { card in
             if let doc {
                 // A cited work that is also one of these references wears
                 // an arrow in the card's "Cites" list: click, its card.
                 CitationCardSheet(
                     doc: doc, key: card.key,
-                    marks: entries.first { $0.id == card.key }.map(marks(for:)) ?? [],
+                    marks: entries.first { $0.id == card.key }.map(allMarks(for:)) ?? [],
+                    markWorkKeys: entries.first { $0.id == card.key }.map(workKeys(for:)),
                     siblingKey: matcher(),
                     openSibling: { cardKey = CardKey(key: $0) },
                     graphKey: entries.first { $0.id == card.key }?.graphKey)
@@ -130,6 +232,11 @@ struct ReferencesScreen: View {
             doc = found
             entries = found.map(buildEntries) ?? []
             textCounts = found.map(Self.citationCounts) ?? [:]
+            if let found {
+                let structure = Self.citationStructure(in: found)
+                firstSection = structure.sections
+                togetherCounts = structure.together
+            }
             loaded = true
             recomputeLinks()
             await ReferenceStatus.loadIndexIfNeeded()
@@ -227,6 +334,35 @@ struct ReferencesScreen: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
+                if listing == .concept {
+                    Menu {
+                        Picker("Arrange By", selection: $conceptViewRaw) {
+                            ForEach(ConceptView.allCases) { view in
+                                Text(view.label).tag(view.rawValue)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        Text("View")
+                    }
+                    .fixedSize()
+                    .help(conceptView.help)
+                }
+                if listing == .map {
+                    // How each year's column is ordered, top to bottom.
+                    Menu {
+                        Picker("Order Each Year By", selection: $timeOrderRaw) {
+                            ForEach(TimeOrder.allCases) { order in
+                                Text(order.label).tag(order.rawValue)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        Text("View")
+                    }
+                    .fixedSize()
+                    .help("Order each year's works top to bottom — by title, author, how often cited, and more")
+                }
                 Spacer()
                 // Balances the title, so the tabs stand centred.
                 Text("References").font(AppFonts.heading(20, weight: .semibold)).hidden()
@@ -256,7 +392,7 @@ struct ReferencesScreen: View {
         }
         if let progress = graphProgress {
             parts.append("Reading the cited works' own reference lists — \(progress.done) of \(progress.total)")
-        } else if listing == .map {
+        } else if listing == .map || listing == .concept {
             if !CitationGraph.isEnabled {
                 parts.append("Turn on Look up cited works online in Settings to draw the links")
             } else {
@@ -289,7 +425,7 @@ struct ReferencesScreen: View {
 
     private var sections: [ListSection] {
         switch listing {
-        case .title, .map:
+        case .title, .map, .concept:
             let sorted = entries.sorted {
                 $0.title.localizedStandardCompare($1.title) == .orderedAscending
             }
@@ -360,7 +496,7 @@ struct ReferencesScreen: View {
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 4)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(nsColor: .textBackgroundColor))
+                                .background(themeBackground)
                         }
                     }
                 }
@@ -460,9 +596,25 @@ struct ReferencesScreen: View {
 
     // MARK: Standing, abstracts, links
 
+    /// The marks shown under an entry: all of them, less any the reader
+    /// removed from its card.
     private func marks(for entry: ReferenceEntry) -> [ReferenceStatus.Mark] {
-        let doi = entry.doi ?? foundDOIs[entry.id]
+        ReferenceStatus.visible(allMarks(for: entry), for: workKeys(for: entry))
+    }
+
+    private func resolvedDOI(for entry: ReferenceEntry) -> String? {
+        entry.doi ?? foundDOIs[entry.id]
             ?? ReferenceStatus.cleanDOI(CitationGraph.cached(forKey: entry.graphKey)?.doi)
+    }
+
+    private func workKeys(for entry: ReferenceEntry) -> [String] {
+        ReferenceStatus.workKeys(doi: resolvedDOI(for: entry), title: entry.title)
+    }
+
+    /// Every mark the sources give the entry, removals or not — the card
+    /// needs them to offer Restore.
+    private func allMarks(for entry: ReferenceEntry) -> [ReferenceStatus.Mark] {
+        let doi = resolvedDOI(for: entry)
         // Unverified without a DOI: a paper-shaped entry the card's
         // lookup searched for by title and no service knew. Books and
         // web pages are often absent from the services; they never earn it.
@@ -500,6 +652,187 @@ struct ReferencesScreen: View {
         case .good: .good
         }
         return MapCardMark(text: mark.text, tone: tone, detail: mark.detail, pill: mark.pill)
+    }
+
+    /// The Time Map's order within a year: true when the first work
+    /// should stand above the second. Nil keeps the reader's arrangement.
+    private var timeOrdering: ((ReferenceEntry, ReferenceEntry) -> Bool)? {
+        func cited(_ entry: ReferenceEntry) -> Int {
+            ReferenceStatus.cachedLive(doi: resolvedDOI(for: entry))?.citedBy ?? 0
+        }
+        func gravity(_ entry: ReferenceEntry) -> Int {
+            let marks = marks(for: entry)
+            if marks.contains(where: { $0.tone == .alarm }) { return 0 }
+            if marks.contains(where: { $0.tone == .caution }) { return 1 }
+            if marks.contains(where: { $0.pill }) { return 2 }
+            return 3
+        }
+        func byTitle(_ a: ReferenceEntry, _ b: ReferenceEntry) -> Bool {
+            a.title.localizedStandardCompare(b.title) == .orderedAscending
+        }
+        switch timeOrder {
+        case .arranged: return nil
+        case .title: return byTitle
+        case .author:
+            return { ($0.familyKey, $0.title) < ($1.familyKey, $1.title) }
+        case .mostCited:
+            return { let a = cited($0), b = cited($1); return a != b ? a > b : byTitle($0, $1) }
+        case .citedHere:
+            return {
+                let a = neighbourCounts[$0.id] ?? 0, b = neighbourCounts[$1.id] ?? 0
+                return a != b ? a > b : byTitle($0, $1)
+            }
+        case .citedInPaper:
+            return {
+                let a = textCounts[$0.id] ?? 0, b = textCounts[$1.id] ?? 0
+                return a != b ? a > b : byTitle($0, $1)
+            }
+        case .venue:
+            return {
+                let a = $0.venue.isEmpty ? "\u{10FFFF}" : $0.venue
+                let b = $1.venue.isEmpty ? "\u{10FFFF}" : $1.venue
+                return a != b ? a.localizedStandardCompare(b) == .orderedAscending : byTitle($0, $1)
+            }
+        case .trust:
+            return { let a = gravity($0), b = gravity($1); return a != b ? a < b : byTitle($0, $1) }
+        }
+    }
+
+    // MARK: The Concept Map's views
+
+    /// What the chosen view asks of the plane.
+    private var conceptLayout: ReferencesMapView.ConceptLayout {
+        switch conceptView {
+        case .arranged:
+            return .arranged
+        case .network:
+            return .force(links.map { .init(from: $0.from, to: $0.to, weight: 1) })
+        case .sharedReferences:
+            return .force(sharedReferenceEdges())
+        case .citedTogether:
+            return .force(togetherCounts.map {
+                .init(from: $0.key.a, to: $0.key.b, weight: CGFloat($0.value))
+            })
+        case .section:
+            return .groups(entries.reduce(into: [:]) { groups, entry in
+                groups[entry.id] = firstSection[entry.id] ?? "Not Cited in the Text"
+            })
+        case .author:
+            return .groups(authorGroups())
+        case .venue:
+            return .groups(venueGroups())
+        case .core:
+            var degree: [String: Double] = [:]
+            for link in links {
+                degree[link.from, default: 0] += 1
+                degree[link.to, default: 0] += 1
+            }
+            return .radial(degree)
+        }
+    }
+
+    /// Bibliographic coupling: two works joined as strongly as their
+    /// reference lists overlap (Jaccard), from the shelf's copy or the
+    /// citation graph — DOIs where known, folded titles otherwise.
+    private func sharedReferenceEdges() -> [ReferencesMapView.WeightedLink] {
+        var sets: [(id: String, refs: Set<String>)] = []
+        for entry in entries {
+            let cited: [CitationGraph.CitedRef]
+            var dois: [String] = []
+            if let own = libraryReferences(for: entry) {
+                cited = own
+            } else if let graph = CitationGraph.cached(forKey: entry.graphKey), graph.found {
+                cited = graph.references
+                dois = graph.citedDOIs ?? []
+            } else {
+                continue
+            }
+            var refs = Set(dois)
+            for reference in cited {
+                if let doi = ReferenceStatus.cleanDOI(reference.doi) {
+                    refs.insert(doi)
+                } else {
+                    let title = ReferenceStatus.normalizedTitle(reference.title)
+                    if title.count >= 12 { refs.insert("t:" + title) }
+                }
+            }
+            if !refs.isEmpty { sets.append((entry.id, refs)) }
+        }
+        var edges: [ReferencesMapView.WeightedLink] = []
+        for (i, a) in sets.enumerated() {
+            for b in sets[(i + 1)...] {
+                let shared = a.refs.intersection(b.refs).count
+                guard shared >= 2 else { continue }
+                let jaccard = CGFloat(shared) / CGFloat(a.refs.union(b.refs).count)
+                edges.append(.init(from: a.id, to: b.id, weight: 1 + jaccard * 8))
+            }
+        }
+        return edges
+    }
+
+    /// Each work under the author it shares with most of the list; works
+    /// whose authors appear once gather as "Single Appearances".
+    private func authorGroups() -> [String: String] {
+        func names(_ entry: ReferenceEntry) -> [String] {
+            entry.authors.components(separatedBy: ", ")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty && $0 != "others" }
+        }
+        var counts: [String: Int] = [:]
+        for entry in entries { for name in Set(names(entry)) { counts[name, default: 0] += 1 } }
+        return entries.reduce(into: [:]) { groups, entry in
+            let best = names(entry).filter { (counts[$0] ?? 0) >= 2 }
+                .max { (counts[$0] ?? 0, $1) < (counts[$1] ?? 0, $0) }
+            groups[entry.id] = best ?? (names(entry).isEmpty ? "No Author" : "Single Appearances")
+        }
+    }
+
+    /// Each work under its venue; venues that appear once gather together.
+    private func venueGroups() -> [String: String] {
+        var counts: [String: Int] = [:]
+        for entry in entries where !entry.venue.isEmpty { counts[entry.venue, default: 0] += 1 }
+        return entries.reduce(into: [:]) { groups, entry in
+            if entry.venue.isEmpty { groups[entry.id] = "No Venue" }
+            else if (counts[entry.venue] ?? 0) >= 2 { groups[entry.id] = entry.venue }
+            else { groups[entry.id] = "Other Venues" }
+        }
+    }
+
+    /// The paper's own structure: the heading over each work's first
+    /// citation, and how many paragraphs cite each pair of works together.
+    private static func citationStructure(in doc: LiquidDoc)
+        -> (sections: [String: String], together: [ReferencesMapView.Pair: Int]) {
+        guard let regex = try? NSRegularExpression(pattern: #"\[cite:([^\]]+)\]"#)
+        else { return ([:], [:]) }
+        var sections: [String: String] = [:]
+        var together: [ReferencesMapView.Pair: Int] = [:]
+        var heading = "Before the First Heading"
+        for paragraph in doc.body ?? [] {
+            if let level = paragraph.heading, level <= 2 {
+                // Printed numbers off: "2.1 Related Work" reads "Related Work".
+                heading = paragraph.text
+                    .replacingOccurrences(of: #"^[\d.]+\s+"#, with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespaces)
+                continue
+            }
+            guard paragraph.text.contains("[cite:") else { continue }
+            let text = paragraph.text as NSString
+            var keys: [String] = []
+            for match in regex.matches(in: paragraph.text,
+                                       range: NSRange(location: 0, length: text.length)) {
+                for key in text.substring(with: match.range(at: 1)).split(separator: ",") {
+                    keys.append(key.trimmingCharacters(in: .whitespaces))
+                }
+            }
+            for key in keys where sections[key] == nil { sections[key] = heading }
+            let distinct = Array(Set(keys)).sorted()
+            for (i, a) in distinct.enumerated() {
+                for b in distinct[(i + 1)...] {
+                    together[ReferencesMapView.Pair(a: a, b: b), default: 0] += 1
+                }
+            }
+        }
+        return (sections, together)
     }
 
     /// How often the text cites each reference — its `[cite:key]` tokens.
@@ -726,8 +1059,34 @@ struct ReferencesMapView: View {
         let to: String
     }
 
+    /// Two works, unordered — a pair cited in one paragraph.
+    struct Pair: Hashable {
+        let a: String
+        let b: String
+    }
+
+    struct WeightedLink {
+        let from: String
+        let to: String
+        let weight: CGFloat
+    }
+
+    /// How the Concept Map lays its cards: where the reader put them, by
+    /// forces along weighted ties, in labelled groups, or in rings by score.
+    enum ConceptLayout {
+        case arranged
+        case force([WeightedLink])
+        case groups([String: String])
+        case radial([String: Double])
+    }
+
     let entries: [ReferenceEntry]
     let links: [Link]
+    /// The Time Map: years across, cards move up and down only. Off, the
+    /// Concept Map: no years, cards go anywhere the reader puts them.
+    var byTime = true
+    /// Black on a light page, white on a dark one.
+    var lineColor: Color = .primary
     let layoutKey: String
     /// Redraw beat — standings and lines landing.
     let stamp: Int
@@ -735,11 +1094,33 @@ struct ReferencesMapView: View {
     let abstractFor: (String) -> String
     let open: (ReferenceEntry) -> Void
     let menu: (ReferenceEntry) -> AnyView
+    /// The Time Map's order within each year; nil keeps the reader's own
+    /// arrangement (and the seeded year-then-title order before it).
+    var ordering: ((ReferenceEntry, ReferenceEntry) -> Bool)? = nil
+    /// The Concept Map's view; `.arranged` keeps the reader's own places.
+    var conceptLayout: ConceptLayout = .arranged
+
+    /// A view the plane computes rather than the reader's arrangement.
+    private var isComputed: Bool {
+        if byTime { return ordering != nil }
+        if case .arranged = conceptLayout { return false }
+        return true
+    }
+    /// The reader moved a card while an order stood: the plane becomes
+    /// theirs — the screen switches back to As Arranged.
+    var arranged: () -> Void = {}
 
     @State private var positions: [String: CGPoint] = [:]
     @State private var liftedID: String?
     @State private var liveDrag = MapLiveDrag()
     @State private var yearCaptions: [(label: String, x: CGFloat)] = []
+    /// The grouped views' names, standing over their groups.
+    @State private var groupCaptions: [(label: String, at: CGPoint)] = []
+    /// ⌘A's selection: every card wears the ring, and dragging any one
+    /// carries the rest. A click on the empty plane lets go.
+    @State private var selectedIDs: Set<String> = []
+    @State private var groupDragBase: [String: CGPoint]?
+    @State private var selectAllMonitor: Any?
 
     /// The plane's least size; it grows to hold every card, so a long
     /// column of one year's works scrolls rather than falling off.
@@ -753,10 +1134,12 @@ struct ReferencesMapView: View {
     }
     private static let margin: CGFloat = 160
     private static let columnWidth: CGFloat = 185
-    private static let rowHeight: CGFloat = 50
+    private static let rowHeight: CGFloat = 64
     private static let top: CGFloat = 150
 
-    private var storeKey: String { "referencesMap:" + layoutKey }
+    private var storeKey: String {
+        (byTime ? "referencesMap:" : "referencesConceptMap:") + layoutKey
+    }
 
     var body: some View {
         let _ = stamp
@@ -767,11 +1150,25 @@ struct ReferencesMapView: View {
                 Color.clear
                     .frame(width: canvasSize.width, height: canvasSize.height)
                     .contentShape(Rectangle())
-                    .onTapGesture { liftedID = nil }
+                    .onTapGesture {
+                        liftedID = nil
+                        selectedIDs = []
+                    }
+                ForEach(groupCaptions.indices, id: \.self) { index in
+                    Text(groupCaptions[index].label)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .frame(maxWidth: 360, alignment: .leading)
+                        .position(groupCaptions[index].at)
+                        .allowsHitTesting(false)
+                }
                 ForEach(yearCaptions.indices, id: \.self) { index in
+                    // The theme's heading ink: in Scroll a heading wears the
+                    // theme's own text colour, and so does each year here.
                     Text(yearCaptions[index].label)
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.secondary.opacity(0.55))
+                        .foregroundStyle(.primary)
                         .position(x: yearCaptions[index].x, y: Self.top - 60)
                         .allowsHitTesting(false)
                 }
@@ -791,6 +1188,7 @@ struct ReferencesMapView: View {
                         emphasis: connected.map { $0.contains(entry.id) } ?? true
                             ? .normal : .dimmed,
                         isLifted: liftedID == entry.id,
+                        isGrouped: selectedIDs.contains(entry.id),
                         position: binding(for: entry),
                         // A card may be dragged a screen beyond the
                         // last one; the plane grows to follow it.
@@ -801,13 +1199,25 @@ struct ReferencesMapView: View {
                         select: { liftedID = liftedID == entry.id ? nil : entry.id },
                         togglePin: {},
                         toggleSetAside: {},
-                        moved: { save() },
+                        groupDragged: { translation in
+                            groupDragged(entry, translation: translation)
+                        },
+                        moved: {
+                            groupDragBase = nil
+                            save()
+                            // A hand move ends a sorted view: the sorted
+                            // places become the reader's own to change.
+                            if isComputed { arranged() }
+                        },
                         liveMoved: { point in
                             liveDrag.id = point == nil ? nil : entry.id
                             if let point { liveDrag.point = point }
                         },
                         marks: marks(entry),
-                        menu: { menu(entry) })
+                        menu: { menu(entry) },
+                        standingTitleLines: 2,
+                        roomyWhenLifted: true,
+                        verticalOnly: byTime)
                     .zIndex(liftedID == entry.id ? 1 : 0)
                 }
             }
@@ -815,7 +1225,50 @@ struct ReferencesMapView: View {
         .defaultScrollAnchor(.topLeading)
         .background(Color.secondary.opacity(0.06))
         .onAppear(perform: load)
+        // ⌘A takes the whole plane — unless a text field is writing.
+        .onAppear {
+            guard selectAllMonitor == nil else { return }
+            selectAllMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                      event.charactersIgnoringModifiers?.lowercased() == "a",
+                      !(NSApp.keyWindow?.firstResponder is NSTextView)
+                else { return event }
+                selectedIDs = Set(entries.map(\.id))
+                return nil
+            }
+        }
+        .onDisappear {
+            if let selectAllMonitor { NSEvent.removeMonitor(selectAllMonitor) }
+            selectAllMonitor = nil
+        }
         .onChange(of: entries.map(\.id)) { load() }
+        // A sorted Time Map re-sorts as counts and lines land.
+        .onChange(of: stamp) {
+            if isComputed { load() }
+        }
+        // The Concept Map gathers by its lines, which land while the
+        // works' reference lists are read: until the reader has moved a
+        // card, it re-gathers as they come.
+        .onChange(of: links) {
+            guard !byTime, UserDefaults.standard.dictionary(forKey: storeKey) == nil else { return }
+            load()
+        }
+    }
+
+    /// A member of the ⌘A selection in hand: the others follow it — on the
+    /// Time Map up and down only, as each card moves alone.
+    private func groupDragged(_ entry: ReferenceEntry, translation: CGSize) {
+        guard selectedIDs.contains(entry.id), selectedIDs.count > 1 else { return }
+        let base = groupDragBase ?? {
+            let snapshot = positions.filter { selectedIDs.contains($0.key) }
+            groupDragBase = snapshot
+            return snapshot
+        }()
+        for (id, start) in base where id != entry.id {
+            positions[id] = CGPoint(
+                x: byTime ? start.x : max(start.x + translation.width, 90),
+                y: max(start.y + translation.height, 40))
+        }
     }
 
     /// While a card is lifted, the works joined to it by a line.
@@ -837,27 +1290,13 @@ struct ReferencesMapView: View {
             let touchesLifted = liftedID != nil
                 && (link.from == liftedID || link.to == liftedID)
             let quiet = liftedID != nil && !touchesLifted
-            let color = Color.accentColor.opacity(quiet ? 0.08 : touchesLifted ? 0.85 : 0.35)
+            // No arrowheads: the newer work cites the older, always — the
+            // years left to right already say which way a line runs.
+            let color = lineColor.opacity(quiet ? 0.08 : touchesLifted ? 0.85 : 0.35)
             var path = Path()
             path.move(to: start)
             path.addLine(to: end)
             context.stroke(path, with: .color(color), lineWidth: touchesLifted ? 2 : 1.2)
-            // The arrowhead stops short of the cited card's centre, so it
-            // shows beside the card rather than under it.
-            let dx = end.x - start.x, dy = end.y - start.y
-            let length = max(sqrt(dx * dx + dy * dy), 1)
-            let ux = dx / length, uy = dy / length
-            let inset: CGFloat = min(26, length / 2)
-            let tip = CGPoint(x: end.x - ux * inset, y: end.y - uy * inset)
-            let size: CGFloat = touchesLifted ? 9 : 7
-            var head = Path()
-            head.move(to: tip)
-            head.addLine(to: CGPoint(x: tip.x - ux * size - uy * size * 0.55,
-                                     y: tip.y - uy * size + ux * size * 0.55))
-            head.addLine(to: CGPoint(x: tip.x - ux * size + uy * size * 0.55,
-                                     y: tip.y - uy * size - ux * size * 0.55))
-            head.closeSubpath()
-            context.fill(head, with: .color(color))
         }
     }
 
@@ -869,15 +1308,118 @@ struct ReferencesMapView: View {
 
     /// The seeded plane, overlaid with every card the reader has moved.
     private func load() {
-        let seeded = seeds()
-        var next = seeded.positions
-        if let stored = UserDefaults.standard.dictionary(forKey: storeKey) as? [String: [Double]] {
-            for (id, pair) in stored where pair.count == 2 && next[id] != nil {
-                next[id] = CGPoint(x: pair[0], y: pair[1])
+        let seededPositions: [String: CGPoint]
+        let seededCaptions: [(label: String, x: CGFloat)]
+        if byTime {
+            let seeded = seeds()
+            seededPositions = seeded.positions
+            seededCaptions = seeded.captions
+        } else {
+            switch conceptLayout {
+            case .arranged:
+                seededPositions = conceptSeeds()
+            case .force(let edges):
+                seededPositions = forceLayout(edges.map { ($0.from, $0.to, $0.weight) })
+            case .groups(let labels):
+                let laid = groupLayout(labels)
+                seededPositions = laid.positions
+                groupCaptions = laid.captions
+            case .radial(let scores):
+                seededPositions = radialLayout(scores)
+            }
+            seededCaptions = []
+        }
+        if case .groups = conceptLayout, !byTime {} else { groupCaptions = [] }
+        var next = seededPositions
+        // A computed concept view may reach past the plane's top or left
+        // (wide rings): it is moved in whole, since the plane scrolls
+        // only right and down.
+        if !byTime, isComputed {
+            let minX = next.values.map(\.x).min() ?? Self.margin
+            let minY = next.values.map(\.y).min() ?? Self.top
+            let dx = max(Self.margin - minX, 0), dy = max(Self.top - minY, 0)
+            if dx > 0 || dy > 0 {
+                next = next.mapValues { CGPoint(x: $0.x + dx, y: $0.y + dy) }
+                groupCaptions = groupCaptions.map { ($0.label, CGPoint(x: $0.at.x + dx, y: $0.at.y + dy)) }
+            }
+        }
+        // A computed view stands as computed; the reader's own places wait.
+        if !isComputed,
+           let stored = UserDefaults.standard.dictionary(forKey: storeKey) as? [String: [Double]] {
+            for (id, pair) in stored where pair.count == 2 {
+                guard let seat = next[id] else { continue }
+                // On the Time Map only the height is the reader's: across,
+                // a card always stands at its year. The Concept Map keeps
+                // wherever it was put.
+                next[id] = byTime ? CGPoint(x: seat.x, y: pair[1])
+                                  : CGPoint(x: pair[0], y: pair[1])
             }
         }
         positions = next
-        yearCaptions = seeded.captions
+        yearCaptions = seededCaptions
+    }
+
+    /// The Concept Map's first arrangement: works that cite each other
+    /// drawn together, the rest kept apart — a few hundred rounds of
+    /// springs along the lines and push between every pair, from a
+    /// deterministic ring, so the same list always opens the same way.
+    private func conceptSeeds() -> [String: CGPoint] {
+        forceLayout(links.map { ($0.from, $0.to, 1) })
+    }
+
+    /// Springs along weighted ties, push between every pair: stronger ties
+    /// pull harder and sit closer.
+    private func forceLayout(_ edges: [(String, String, CGFloat)]) -> [String: CGPoint] {
+        let ids = entries.map(\.id)
+        guard !ids.isEmpty else { return [:] }
+        let centre = CGPoint(x: Self.baseSize.width / 2, y: Self.baseSize.height / 2)
+        var points: [String: CGPoint] = [:]
+        let radius = min(Self.baseSize.width, Self.baseSize.height) * 0.38
+        for (index, id) in ids.enumerated() {
+            let angle = Double(index) / Double(ids.count) * 2 * .pi
+            points[id] = CGPoint(x: centre.x + radius * cos(angle),
+                                 y: centre.y + radius * sin(angle))
+        }
+        let joined = edges.filter { points[$0.0] != nil && points[$0.1] != nil }
+        let spring: CGFloat = 230, push: CGFloat = 60_000
+        for round in 0..<300 {
+            let step = 0.9 * (1 - CGFloat(round) / 300) + 0.05
+            var move: [String: CGVector] = [:]
+            for (i, a) in ids.enumerated() {
+                for b in ids[(i + 1)...] {
+                    guard let pa = points[a], let pb = points[b] else { continue }
+                    let dx = pa.x - pb.x, dy = pa.y - pb.y
+                    let d2 = max(dx * dx + dy * dy, 100)
+                    let force = push / d2
+                    let d = sqrt(d2)
+                    move[a, default: .zero].dx += dx / d * force
+                    move[a, default: .zero].dy += dy / d * force
+                    move[b, default: .zero].dx -= dx / d * force
+                    move[b, default: .zero].dy -= dy / d * force
+                }
+            }
+            for (from, to, weight) in joined {
+                guard let pa = points[from], let pb = points[to] else { continue }
+                let dx = pb.x - pa.x, dy = pb.y - pa.y
+                let d = max(sqrt(dx * dx + dy * dy), 1)
+                let rest = spring / sqrt(max(weight, 1))
+                let pull = (d - rest) * 0.05 * min(weight, 4)
+                move[from, default: .zero].dx += dx / d * pull
+                move[from, default: .zero].dy += dy / d * pull
+                move[to, default: .zero].dx -= dx / d * pull
+                move[to, default: .zero].dy -= dy / d * pull
+            }
+            for id in ids {
+                guard var p = points[id], let m = move[id] else { continue }
+                // A gentle pull to the middle keeps loners on the plane.
+                p.x += (m.dx + (centre.x - p.x) * 0.01) * step
+                p.y += (m.dy + (centre.y - p.y) * 0.01) * step
+                p.x = min(max(p.x, Self.margin), Self.baseSize.width - Self.margin)
+                p.y = min(max(p.y, Self.top - 40), Self.baseSize.height - 80)
+                points[id] = p
+            }
+        }
+        return points
     }
 
     private func save() {
@@ -886,6 +1428,77 @@ struct ReferencesMapView: View {
             stored[id] = [Double(point.x), Double(point.y)]
         }
         UserDefaults.standard.set(stored, forKey: storeKey)
+    }
+
+    /// Labelled groups, largest first, each a block of columns eight
+    /// cards deep under its name, the blocks wrapping across the plane.
+    private func groupLayout(_ labels: [String: String])
+        -> (positions: [String: CGPoint], captions: [(label: String, at: CGPoint)]) {
+        var members: [String: [ReferenceEntry]] = [:]
+        for entry in entries { members[labels[entry.id] ?? "Other", default: []].append(entry) }
+        // Largest first; the catch-all groups last.
+        let catchAll: Set<String> = ["Single Appearances", "Other Venues", "No Venue",
+                                     "No Author", "Not Cited in the Text", "Other"]
+        let order = members.keys.sorted {
+            let a = catchAll.contains($0), b = catchAll.contains($1)
+            if a != b { return !a }
+            let ca = members[$0]?.count ?? 0, cb = members[$1]?.count ?? 0
+            return ca != cb ? ca > cb : $0 < $1
+        }
+        let depth = 8
+        var positions: [String: CGPoint] = [:]
+        var captions: [(label: String, at: CGPoint)] = []
+        var x = Self.margin, y = Self.top
+        var rowHeight: CGFloat = 0
+        for label in order {
+            let group = (members[label] ?? []).sorted {
+                $0.title.localizedStandardCompare($1.title) == .orderedAscending
+            }
+            let columns = Int(ceil(Double(group.count) / Double(depth)))
+            let width = CGFloat(columns) * Self.columnWidth
+            let height = CGFloat(min(group.count, depth)) * Self.rowHeight + 70
+            if x + width > Self.baseSize.width - Self.margin / 2, x > Self.margin {
+                x = Self.margin
+                y += rowHeight + 30
+                rowHeight = 0
+            }
+            captions.append((label, CGPoint(x: x + 100, y: y - 44)))
+            for (index, entry) in group.enumerated() {
+                positions[entry.id] = CGPoint(x: x + CGFloat(index / depth) * Self.columnWidth,
+                                              y: y + CGFloat(index % depth) * Self.rowHeight)
+            }
+            x += width + 70
+            rowHeight = max(rowHeight, height)
+        }
+        return (positions, captions)
+    }
+
+    /// Rings by score: the highest at the centre, each ring outward
+    /// holding more, the unconnected on the outermost.
+    private func radialLayout(_ scores: [String: Double]) -> [String: CGPoint] {
+        let centre = CGPoint(x: Self.baseSize.width / 2, y: Self.baseSize.height / 2 + 60)
+        let ranked = entries.sorted {
+            let a = scores[$0.id] ?? 0, b = scores[$1.id] ?? 0
+            return a != b ? a > b : $0.title.localizedStandardCompare($1.title) == .orderedAscending
+        }
+        var positions: [String: CGPoint] = [:]
+        var index = 0
+        var ring = 0
+        while index < ranked.count {
+            let capacity = ring == 0 ? 1 : 7 * ring
+            let radius = CGFloat(ring) * 210
+            let members = ranked[index..<min(index + capacity, ranked.count)]
+            for (slot, entry) in members.enumerated() {
+                // Each ring turned a little, so its cards fall between the
+                // inner ring's.
+                let angle = (Double(slot) / Double(max(members.count, 1)) + Double(ring) * 0.13) * 2 * .pi
+                positions[entry.id] = CGPoint(x: centre.x + radius * cos(angle) * 1.25,
+                                              y: centre.y + radius * sin(angle))
+            }
+            index += capacity
+            ring += 1
+        }
+        return positions
     }
 
     /// Years run left to right across the plane; works of nearby years
@@ -904,20 +1517,29 @@ struct ReferencesMapView: View {
         var positions: [String: CGPoint] = [:]
         var stacks: [Int: Int] = [:]
         var columnYears: [Int: (low: Int, high: Int)] = [:]
+        // Each work to its year's column first; then each column stacked
+        // in the chosen order (year, then title, when none is chosen).
+        var columns: [Int: [ReferenceEntry]] = [:]
         for entry in dated {
             let year = entry.year ?? first
             let column = min(Int(CGFloat(year - first) / span * CGFloat(columnCount - 1)),
                              columnCount - 1)
-            let row = stacks[column, default: 0]
-            stacks[column] = row + 1
-            positions[entry.id] = CGPoint(
-                x: Self.margin + CGFloat(column) * Self.columnWidth,
-                y: Self.top + CGFloat(row) * Self.rowHeight)
+            columns[column, default: []].append(entry)
             let held = columnYears[column] ?? (year, year)
             columnYears[column] = (min(held.low, year), max(held.high, year))
         }
+        for (column, members) in columns {
+            let stacked = ordering.map { members.sorted(by: $0) } ?? members
+            for (row, entry) in stacked.enumerated() {
+                positions[entry.id] = CGPoint(
+                    x: Self.margin + CGFloat(column) * Self.columnWidth,
+                    y: Self.top + CGFloat(row) * Self.rowHeight)
+            }
+            stacks[column] = stacked.count
+        }
         let lastColumn = (stacks.keys.max() ?? -1) + 1
-        for (row, entry) in undated.enumerated() {
+        let undatedStacked = ordering.map { undated.sorted(by: $0) } ?? undated
+        for (row, entry) in undatedStacked.enumerated() {
             positions[entry.id] = CGPoint(
                 x: Self.margin + CGFloat(lastColumn) * Self.columnWidth + 40,
                 y: Self.top + CGFloat(row) * Self.rowHeight)

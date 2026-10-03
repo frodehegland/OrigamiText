@@ -4425,11 +4425,14 @@ struct ReadingFootBar: View {
                     readerModeRaw = EPUBReaderMode.faithful.rawValue
                     model.readerFoldLevel = 0
                     model.readingAnalysisKind = nil
+                    model.readingReferencesOn = false
                     model.readerFindFoldTerm = nil
                 }
             } label: {
+                // References owns the bar while it stands: Scroll rests.
                 let isActive = (readerMode == .faithful || readerMode == .scroll)
                     && model.readingAnalysisKind == nil
+                    && !model.readingReferencesOn
                     && model.readerFoldLevel == 0
                     && model.readerFindFoldTerm == nil
                 Text("Scroll")
@@ -5269,6 +5272,11 @@ struct CitationCardSheet: View {
     /// The work's marks from the References page — Retracted, Preprint,
     /// Foundational… — shown under the title, each with its reason.
     var marks: [ReferenceStatus.Mark] = []
+    /// The work's keys for the reader's removals (ReferenceStatus); nil
+    /// when the marks are not the reader's to change.
+    var markWorkKeys: [String]? = nil
+    /// Removals made in this card, so a pill goes the moment it is removed.
+    @State private var removedHere: Set<String>?
     /// The References map's own works: a cited work that is also one of
     /// this document's references answers with its card key, and its
     /// row in "Cites N works" wears an arrow that opens that card.
@@ -5846,11 +5854,18 @@ extension CitationCardSheet {
 
     /// The References page's marks, each as it shows there, with what it
     /// means and — quieter — the evidence: source, date, reason.
+    /// The marks still standing: the reader's removals left out.
+    private var shownMarks: [ReferenceStatus.Mark] {
+        guard let markWorkKeys else { return marks }
+        let removed = removedHere ?? ReferenceStatus.removedMarks(for: markWorkKeys)
+        return marks.filter { !removed.contains(ReferenceStatus.markID($0)) }
+    }
+
     var marksSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(marks, id: \.self) { mark in
+            ForEach(shownMarks, id: \.self) { mark in
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    ReferenceMarkView(mark: ReferencesScreen.mapMark(mark), size: 11)
+                    pill(mark)
                         .fixedSize()
                         .frame(minWidth: 96, alignment: .leading)
                     VStack(alignment: .leading, spacing: 2) {
@@ -5868,8 +5883,42 @@ extension CitationCardSheet {
                     .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            if let markWorkKeys, marks.count > shownMarks.count {
+                let hidden = marks.count - shownMarks.count
+                Button(hidden == 1 ? "Restore 1 removed mark" : "Restore \(hidden) removed marks") {
+                    ReferenceStatus.restoreMarks(for: markWorkKeys)
+                    removedHere = []
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    /// A pill answers a click with its menu — Remove, for the reader who
+    /// knows better than the indexes. Plain-text marks stay as they are.
+    @ViewBuilder private func pill(_ mark: ReferenceStatus.Mark) -> some View {
+        let view = ReferenceMarkView(mark: ReferencesScreen.mapMark(mark), size: 11)
+        if mark.pill, let markWorkKeys {
+            Menu {
+                Button("Remove") {
+                    ReferenceStatus.removeMark(mark, for: markWorkKeys)
+                    var removed = removedHere ?? ReferenceStatus.removedMarks(for: markWorkKeys)
+                    removed.insert(ReferenceStatus.markID(mark))
+                    removedHere = removed
+                }
+            } label: {
+                view
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Click to remove this mark, if you know better")
+        } else {
+            view
+        }
     }
 
     /// The arrow before a cited work that is also on the map; an
