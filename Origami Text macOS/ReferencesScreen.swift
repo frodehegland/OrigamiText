@@ -131,7 +131,9 @@ struct ReferencesScreen: View {
 
     enum AsCitedItem: Hashable {
         case heading(text: String, level: Int, id: String)
-        case work(entryID: String, sectionID: String)
+        /// `occurrence` of `total`: the same work under several sections
+        /// is numbered in reading order.
+        case work(entryID: String, sectionID: String, occurrence: Int, total: Int)
     }
     @State private var togetherCounts: [ReferencesMapView.Pair: Int] = [:]
     private var timeOrder: TimeOrder { TimeOrder(rawValue: timeOrderRaw) ?? .arranged }
@@ -528,6 +530,17 @@ struct ReferencesScreen: View {
     private var asCitedList: some View {
         let _ = statusStamp
         let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // Each work's sections in reading order, by heading text — the
+        // pop-up over its 1st, 2nd… names them.
+        var headings: [String: String] = ["uncited": "Not Cited in the Text"]
+        var sectionsOf: [String: [String]] = [:]
+        for item in asCitedOutline {
+            switch item {
+            case .heading(let text, _, let id): headings[id] = text
+            case .work(let id, let section, _, _):
+                sectionsOf[id, default: []].append(headings[section] ?? "Before the First Heading")
+            }
+        }
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(asCitedOutline, id: \.self) { item in
@@ -539,10 +552,18 @@ struct ReferencesScreen: View {
                             .padding(.top, level <= 1 ? 22 : 14)
                             .padding(.bottom, 4)
                             .padding(.leading, CGFloat(max(level - 1, 0)) * 16)
-                    case .work(let id, _):
+                    case .work(let id, _, let occurrence, let total):
                         if let entry = byID[id] {
-                            row(entry)
-                                .padding(.leading, 16)
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                // Cited in more than one section: which
+                                // time this is, in bold.
+                                OccurrenceLabel(
+                                    label: total > 1 ? Self.ordinal(occurrence) : "",
+                                    occurrence: occurrence,
+                                    sections: sectionsOf[id] ?? [])
+                                    .frame(width: 34, alignment: .trailing)
+                                row(entry)
+                            }
                             Divider().opacity(0.5)
                         }
                     }
@@ -580,7 +601,7 @@ struct ReferencesScreen: View {
                 for raw in text.substring(with: match.range(at: 1)).split(separator: ",") {
                     let key = raw.trimmingCharacters(in: .whitespaces)
                     guard known.contains(key), seenInSection.insert(key).inserted else { continue }
-                    items.append(.work(entryID: key, sectionID: sectionID))
+                    items.append(.work(entryID: key, sectionID: sectionID, occurrence: 0, total: 0))
                     cited.insert(key)
                 }
             }
@@ -590,10 +611,27 @@ struct ReferencesScreen: View {
         if !uncited.isEmpty {
             items.append(.heading(text: "Not Cited in the Text", level: 1, id: "uncited"))
             for entry in uncited {
-                items.append(.work(entryID: entry.id, sectionID: "uncited"))
+                items.append(.work(entryID: entry.id, sectionID: "uncited", occurrence: 0, total: 0))
             }
         }
-        return items
+        // Number each work's appearances in reading order.
+        var totals: [String: Int] = [:]
+        for item in items {
+            if case .work(let id, _, _, _) = item { totals[id, default: 0] += 1 }
+        }
+        var seen: [String: Int] = [:]
+        return items.map { item in
+            guard case .work(let id, let section, _, _) = item else { return item }
+            seen[id, default: 0] += 1
+            return .work(entryID: id, sectionID: section,
+                         occurrence: seen[id] ?? 1, total: totals[id] ?? 1)
+        }
+    }
+
+    static func ordinal(_ number: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .ordinal
+        return formatter.string(from: NSNumber(value: number)) ?? "\(number)"
     }
 
     private func row(_ entry: ReferenceEntry) -> some View {
@@ -1675,5 +1713,42 @@ struct ReferenceMarkView: View {
                 .foregroundStyle(color)
                 .help(mark.detail)
         }
+    }
+}
+
+/// As Cited's "2nd" beside a work cited in several sections: hovered, a
+/// pop-up names every section that cites it, this one in bold.
+struct OccurrenceLabel: View {
+    let label: String
+    let occurrence: Int
+    let sections: [String]
+    @State private var showing = false
+
+    var body: some View {
+        Text(label)
+            .font(AppFonts.body(16, weight: .bold))
+            .onHover { inside in
+                guard !label.isEmpty else { return }
+                showing = inside
+            }
+            .popover(isPresented: $showing, arrowEdge: .leading) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Cited in \(sections.count) sections")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(sections.enumerated()), id: \.offset) { index, section in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(ReferencesScreen.ordinal(index + 1))
+                                .font(.callout.weight(.semibold))
+                                .frame(width: 34, alignment: .trailing)
+                            Text(section)
+                                .font(.callout.weight(index + 1 == occurrence ? .bold : .regular))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(12)
+                .frame(width: 320, alignment: .leading)
+            }
     }
 }

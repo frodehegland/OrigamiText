@@ -3131,6 +3131,30 @@ nonisolated enum OrigamiEPUBImporter {
         return "@misc{\(key),\n" + fields.joined(separator: ",\n") + ",\n}"
     }
 
+    /// Emphasis as the readers parse it: the marker hugging the words,
+    /// its spaces outside ("*Origami *" never opens a run — the stray
+    /// star then pairs with the next and bolds a word), nothing for a run
+    /// of spaces alone, and a run straight after one of its own kind
+    /// joined to it ("*Origami Text**XR*" read its "**" as bold). Author
+    /// splits one italic phrase wherever a glossary link falls inside it.
+    static func appendEmphasis(_ content: String, marker: String, to out: inout String) {
+        let core = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !core.isEmpty else {
+            out += content
+            return
+        }
+        let leading = String(content.prefix { $0.isWhitespace })
+        let trailing = String(content.reversed().prefix { $0.isWhitespace }.reversed())
+        // A run of the same kind just closed, with nothing between: one run.
+        let longer = marker + "*"
+        if leading.isEmpty, out.hasSuffix(marker), !out.hasSuffix(longer) {
+            out.removeLast(marker.count)
+            out += core + marker + trailing
+            return
+        }
+        out += leading + marker + core + marker + trailing
+    }
+
     /// One element's text with the inline conventions restored: strong
     /// back to `**`, em to `*`, code to backticks, plain hyperlinks to
     /// `[label](url)`, citation anchors back to their bracketed origami
@@ -3162,11 +3186,13 @@ nonisolated enum OrigamiEPUBImporter {
                         out += inner.attributes["alttext"] ?? content
                     }
                 case "strong", "b":
-                    out += inner.attributes["class"] == "speaker"
-                        ? content
-                        : "**\(content)**"
+                    if inner.attributes["class"] == "speaker" {
+                        out += content
+                    } else {
+                        appendEmphasis(content, marker: "**", to: &out)
+                    }
                 case "em", "i":
-                    out += "*\(content)*"
+                    appendEmphasis(content, marker: "*", to: &out)
                 case "mark":
                     // Author's Marked text arrives as <mark>; the reader's
                     // convention for it is ==…== (OrigamiReading.inlineAttributed).

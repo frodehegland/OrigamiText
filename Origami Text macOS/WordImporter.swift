@@ -588,6 +588,46 @@ nonisolated enum ACMWordPaper {
 
     // MARK: The import
 
+    /// ACM's CCS code as the template stores it — the CCSXML block and
+    /// the \\ccsdesc lines in docProps/core.xml's description — as the
+    /// body's CCS line: "• Root → Leaf; • Root → Leaf".
+    private static func ccsFromProperties(_ archive: DocxZip) -> String? {
+        guard let data = archive.read("docProps/core.xml"),
+              let core = String(data: data, encoding: .utf8),
+              let start = core.range(of: "<dc:description>"),
+              let end = core.range(of: "</dc:description>", range: start.upperBound..<core.endIndex)
+        else { return nil }
+        let description = String(core[start.upperBound..<end.lowerBound])
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            .replacingOccurrences(of: "&amp;", with: "&")
+        guard let concepts = ACMLaTeX.ccsConcepts(inPasted: description),
+              !concepts.isEmpty else { return nil }
+        return concepts.components(separatedBy: "\n")
+            .filter { !$0.isEmpty }
+            .map { "• " + $0 }
+            .joined(separator: "; ")
+    }
+
+    /// The template's printed CCS line — "Human-centered computing •
+    /// Human computer interaction (HCI) • Empirical studies in HCI", one
+    /// concept, its levels between bullets; several concepts between
+    /// semicolons — as "• Root → … → Leaf".
+    static func ccsFromPrintedLine(_ line: String) -> String {
+        let concepts = line.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+            .components(separatedBy: ";")
+            .map { concept in
+                concept.components(separatedBy: "•")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " → ")
+            }
+            .filter { !$0.isEmpty }
+        return concepts.isEmpty ? line : concepts.map { "• " + $0 }.joined(separator: "; ")
+    }
+
     static func importPaper(at url: URL, tapsHTML htmlURL: URL? = nil) throws -> Result {
         guard let data = try? Data(contentsOf: url),
               let archive = DocxZip(data: data),
@@ -744,7 +784,14 @@ nonisolated enum ACMWordPaper {
                     body.append(LiquidDoc.Paragraph(id: nextID(), heading: nil,
                                                     text: flowedText(paragraph)))
                 case "CCSDescription":
-                    let ccs = taps?.ccsConcepts ?? plain
+                    // The concepts as levels ("Root → Leaf"), so the paper's
+                    // CCS reads and renders as ACM's: the TAPS HTML's line
+                    // first, then ACM's own code where the template keeps
+                    // it (the document's description property), then the
+                    // printed line, whose "•" marks each level.
+                    let ccs = taps?.ccsConcepts
+                        ?? Self.ccsFromProperties(archive)
+                        ?? Self.ccsFromPrintedLine(plain)
                     body.append(LiquidDoc.Paragraph(
                         id: nextID(), heading: nil,
                         text: "**CCS Concepts:** \(ccs)"))

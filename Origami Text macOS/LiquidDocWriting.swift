@@ -1442,6 +1442,21 @@ nonisolated enum ACMLaTeX {
         // Paragraphs already set as part of a figure's caption.
         var captioned: Set<String> = []
         let paragraphs = doc.body ?? []
+        // "Table 3: Results for…" set as a paragraph beside its table: the
+        // table's own caption, by the table paragraph's id.
+        var tableCaptions: [String: (text: String, id: String)] = [:]
+        for (index, paragraph) in paragraphs.enumerated() where paragraph.tableID != nil {
+            let before = index > 0 ? paragraphs[index - 1] : nil
+            let after = index + 1 < paragraphs.count ? paragraphs[index + 1] : nil
+            // Above the table first, as ACM sets it; below when not.
+            for neighbour in [before, after].compactMap({ $0 })
+            where tableCaption(in: neighbour.text) != nil
+                && !captioned.contains(neighbour.id) && neighbour.tableID == nil {
+                tableCaptions[paragraph.id] = (tableCaption(in: neighbour.text) ?? "", neighbour.id)
+                captioned.insert(neighbour.id)
+                break
+            }
+        }
 
         for (index, paragraph) in paragraphs.enumerated() {
             if captioned.contains(paragraph.id) { continue }
@@ -1485,7 +1500,8 @@ nonisolated enum ACMLaTeX {
             if let identifier = paragraph.tableID,
                let table = doc.tables.first(where: { $0.identifier == identifier }) {
                 closeList()
-                out.append(contentsOf: tableLines(table, id: paragraph.id, in: doc))
+                out.append(contentsOf: tableLines(table, id: paragraph.id, in: doc,
+                                                  caption: tableCaptions[paragraph.id]))
                 continue
             }
 
@@ -1640,8 +1656,26 @@ nonisolated enum ACMLaTeX {
                 "\\end{figure}"].filter { !$0.isEmpty || $0 == "" }
     }
 
+    /// A table's printed caption — "Table 3: Results for…", bold or not —
+    /// as its words alone; nil when the paragraph is not one. acmart
+    /// numbers tables itself, so "Table 3:" would print twice.
+    static func tableCaption(in text: String) -> String? {
+        var line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Bold runs around the whole line or around the label alone.
+        line = line.replacingOccurrences(of: #"^\*\*(Table\s+[\dIVXivx]+[.:])\*\*"#,
+                                         with: "$1", options: .regularExpression)
+        if line.hasPrefix("**"), line.hasSuffix("**"), line.count > 4 {
+            line = String(line.dropFirst(2).dropLast(2))
+        }
+        guard let label = line.range(of: #"^Table\s+[\dIVXivx]+\s*[.:]\s*"#,
+                                     options: .regularExpression) else { return nil }
+        let words = line[label.upperBound...].trimmingCharacters(in: .whitespaces)
+        return words.isEmpty ? nil : words
+    }
+
     private static func tableLines(_ table: LiquidDoc.Table, id: String,
-                                   in doc: LiquidDoc) -> [String] {
+                                   in doc: LiquidDoc,
+                                   caption: (text: String, id: String)? = nil) -> [String] {
         let columns = String(repeating: "l", count: max(table.columnCount, 1))
         // The grid is set in a box and measured: wider than the column
         // (eleven columns of three-decimal figures, say), it is scaled
@@ -1649,8 +1683,14 @@ nonisolated enum ACMLaTeX {
         // graphicx's \resizebox — no package beyond what every class here
         // already loads — so a table can never run into the margin.
         var out = ["",
-                   "\\begin{table}[htbp]",
-                   "  \\centering",
+                   "\\begin{table}[htbp]"]
+        // ACM sets a table's caption above it — and its label there, so a
+        // "see Table 3" written against the caption still resolves.
+        if let caption {
+            out.append("  \\caption{\(inline(caption.text, in: doc))}")
+            out.append("  \\label{\(label(for: caption.id))}")
+        }
+        out += ["  \\centering",
                    "  \\sbox0{%",
                    "  \\begin{tabular}{\(columns)}",
                    "    \\toprule"]
