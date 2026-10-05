@@ -152,7 +152,7 @@ struct OrigamiTextMacApp: App {
             // Help leads somewhere: the built-in guide (an Origami EPUB,
             // opened like any book) and the lab's site.
             CommandGroup(replacing: .help) {
-                Button("Origami Text Guide") { model.openIntroGuide() }
+                Button("Origami Text Guide") { model.openUserGuide() }
                 Button("Future Text Lab Website") {
                     if let url = URL(string: "https://futuretextlab.info") { NSWorkspace.shared.open(url) }
                 }

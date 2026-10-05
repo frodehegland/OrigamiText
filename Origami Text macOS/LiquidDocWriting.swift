@@ -1298,7 +1298,12 @@ nonisolated enum ACMLaTeX {
     }
 
     private static func frontMatter(for doc: LiquidDoc) -> [String] {
-        var out: [String] = ["\\title{\(inline(doc.title, in: doc))}"]
+        // acmart sets the title again in the running head beside the
+        // venue; a long one ran into it. The head takes a short title
+        // (\title[short]{full}) — the page itself keeps the whole title.
+        let short = runningTitle(doc.title)
+        var out: [String] = [short.map { "\\title[\(inline($0, in: doc))]{\(inline(doc.title, in: doc))}" }
+            ?? "\\title{\(inline(doc.title, in: doc))}"]
         if let subtitle = doc.subtitle, !subtitle.isEmpty {
             out.append("\\subtitle{\(inline(subtitle, in: doc))}")
         }
@@ -1509,6 +1514,21 @@ nonisolated enum ACMLaTeX {
             // floats in LaTeX and the paragraphs after it do not, so left
             // as body text they printed as lone "[2] [2]" pages away from
             // the image they belong to. They travel in its caption instead.
+            // Pictures sharing one caption (the Word template's figure of
+            // three images, the caption on the last): one figure, the
+            // pictures side by side under the caption. Set apart, the
+            // uncaptioned ones were figures LaTeX could not number, and a
+            // "see Figure 1" aimed at the first printed "Figure 1 ??".
+            if let group = figureGroup(startingAt: index, in: paragraphs, doc: doc) {
+                closeList()
+                let last = group[group.count - 1]
+                let sources = figureSourceParagraphs(
+                    after: paragraphs.firstIndex { $0.id == last.id } ?? index, in: paragraphs)
+                out.append(contentsOf: groupedFigureLines(group, in: doc, citing: sources.keys))
+                captioned.formUnion(group.map(\.id))
+                captioned.formUnion(sources.ids)
+                continue
+            }
             let sources = figureSourceParagraphs(after: index, in: paragraphs)
             if let figure = figureLines(paragraph, in: doc,
                                         citing: sources.keys) {
@@ -1642,7 +1662,8 @@ nonisolated enum ACMLaTeX {
         }) else { return nil }
 
         let cites = sources.isEmpty ? "" : "\\cite{\(sources.joined(separator: ","))}"
-        let printed = [caption.isEmpty ? "" : inline(caption, in: doc), cites]
+        let words = withoutFigureLabel(caption)
+        let printed = [words.isEmpty ? "" : inline(words, in: doc), cites]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
 
@@ -1654,6 +1675,28 @@ nonisolated enum ACMLaTeX {
                 "  \\Description{\(inline(caption.isEmpty ? "Figure" : caption, in: doc))}",
                 "  \\label{\(label(for: paragraph.id))}",
                 "\\end{figure}"].filter { !$0.isEmpty || $0 == "" }
+    }
+
+    /// The running head's title when the paper's own is too long for it
+    /// (about 110 characters fit beside the venue in sigconf): the part
+    /// before the colon, as authors shorten a title, else the title cut at
+    /// a word with an ellipsis. Nil when the title fits as it is.
+    static func runningTitle(_ title: String) -> String? {
+        let limit = 100
+        let whole = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard whole.count > limit else { return nil }
+        let quotes = CharacterSet(charactersIn: "\"“”‘’' ")
+        if let colon = whole.firstIndex(of: ":") {
+            let head = whole[..<colon].trimmingCharacters(in: quotes)
+            if (12...limit).contains(head.count) { return head }
+        }
+        var cut = ""
+        for word in whole.split(separator: " ") {
+            let next = cut.isEmpty ? String(word) : cut + " " + word
+            if next.count > limit - 2 { break }
+            cut = next
+        }
+        return cut.trimmingCharacters(in: CharacterSet(charactersIn: ",;:—– ")) + "…"
     }
 
     /// A table's printed caption — "Table 3: Results for…", bold or not —
@@ -1671,6 +1714,74 @@ nonisolated enum ACMLaTeX {
                                      options: .regularExpression) else { return nil }
         let words = line[label.upperBound...].trimmingCharacters(in: .whitespaces)
         return words.isEmpty ? nil : words
+    }
+
+    /// A caption without its printed label — "Figure 1: Examples…" reads
+    /// "Examples…" — since acmart numbers figures itself and would print
+    /// "Figure 1: Figure 1: …".
+    static func withoutFigureLabel(_ caption: String) -> String {
+        caption.replacingOccurrences(
+            of: #"^\s*(\*\*)?(Figure|Fig\.)\s*[\dIVXivx]+\s*[.:](\*\*)?\s*"#,
+            with: "", options: .regularExpression)
+    }
+
+    /// The figure paragraph's caption and its asset, when it is one the
+    /// rendering can print.
+    private static func figureParts(_ paragraph: LiquidDoc.Paragraph,
+                                    in doc: LiquidDoc) -> (caption: String, asset: LiquidDoc.Asset)? {
+        guard let match = paragraph.text.range(
+            of: #"!\[([^\]]*)\]\((asset|model):([^)?]+)"#, options: .regularExpression)
+        else { return nil }
+        let marker = String(paragraph.text[match])
+        let caption = marker.components(separatedBy: "](").first?
+            .replacingOccurrences(of: "![", with: "") ?? ""
+        let reference = marker.components(separatedBy: ":").last ?? ""
+        guard let asset = doc.assets.first(where: {
+            $0.id == reference || imageFileName(for: $0).contains(reference)
+        }) else { return nil }
+        return (caption, asset)
+    }
+
+    /// Consecutive uncaptioned pictures ending in a captioned one — one
+    /// figure in print. Nil for a lone picture (figureLines sets it).
+    private static func figureGroup(startingAt index: Int, in paragraphs: [LiquidDoc.Paragraph],
+                                    doc: LiquidDoc) -> [LiquidDoc.Paragraph]? {
+        guard let first = figureParts(paragraphs[index], in: doc),
+              first.caption.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        var group = [paragraphs[index]]
+        var next = index + 1
+        while next < paragraphs.count, let parts = figureParts(paragraphs[next], in: doc) {
+            group.append(paragraphs[next])
+            if !parts.caption.trimmingCharacters(in: .whitespaces).isEmpty { break }
+            next += 1
+        }
+        return group.count > 1 ? group : nil
+    }
+
+    /// One figure holding several pictures: side by side, two to a row
+    /// past three, under the group's one caption — every member's label
+    /// answering, so a reference aimed at any of them resolves.
+    private static func groupedFigureLines(_ group: [LiquidDoc.Paragraph], in doc: LiquidDoc,
+                                           citing sources: [String]) -> [String] {
+        let parts = group.compactMap { figureParts($0, in: doc) }
+        let caption = parts.last?.caption ?? ""
+        let perRow = parts.count <= 3 ? parts.count : 2
+        let width = String(format: "%.2f", 0.98 / Double(perRow) - 0.01)
+        var out = ["", "\\begin{figure}[htbp]", "  \\centering"]
+        for (index, part) in parts.enumerated() {
+            out.append("  \\includegraphics[width=\(width)\\columnwidth]{images/\(imageFileName(for: part.asset))}"
+                       + ((index + 1) % perRow == 0 || index == parts.count - 1 ? "" : "\\hfill"))
+            if (index + 1) % perRow == 0, index < parts.count - 1 { out.append("  \\par\\medskip") }
+        }
+        let cites = sources.isEmpty ? "" : "\\cite{\(sources.joined(separator: ","))}"
+        let words = withoutFigureLabel(caption)
+        let printed = [words.isEmpty ? "" : inline(words, in: doc), cites]
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        if !printed.isEmpty { out.append("  \\caption{\(printed)}") }
+        out.append("  \\Description{\(inline(caption.isEmpty ? "Figure" : caption, in: doc))}")
+        for member in group { out.append("  \\label{\(label(for: member.id))}") }
+        out.append("\\end{figure}")
+        return out
     }
 
     private static func tableLines(_ table: LiquidDoc.Table, id: String,
@@ -1695,7 +1806,18 @@ nonisolated enum ACMLaTeX {
                    "  \\begin{tabular}{\(columns)}",
                    "    \\toprule"]
         for (index, row) in table.cells.enumerated() {
-            let cells = row.map { escaped($0.value) }.joined(separator: " & ")
+            // A spanning cell is one \multicolumn, centred over the
+            // columns it heads; the cells it covers are not set.
+            var parts: [String] = []
+            var covered = 0
+            for cell in row {
+                if covered > 0 { covered -= 1; continue }
+                let span = max(cell.columnSpan ?? 1, 1)
+                covered = span - 1
+                parts.append(span > 1 ? "\\multicolumn{\(span)}{c}{\(escaped(cell.value))}"
+                                      : escaped(cell.value))
+            }
+            let cells = parts.joined(separator: " & ")
             out.append("    \(cells) \\\\")
             if index == 0 { out.append("    \\midrule") }
         }
@@ -1764,7 +1886,22 @@ nonisolated enum ACMLaTeX {
                         || paragraph.text.range(of: #"!\[[^\]]*\]\((asset|model):"#,
                                                 options: .regularExpression) != nil)
             }
-            return labelled ? "\(groups[0])~\\ref{\(label(for: target))}" : groups[0]
+            guard labelled else { return groups[0] }
+            // Words that are only the number: the number alone, LaTeX's.
+            if groups[0].range(of: #"^\s*[\dIVXivx]+(\.\d+)*\s*$"#,
+                               options: .regularExpression) != nil {
+                return "\\ref{\(label(for: target))}"
+            }
+            // "Figure 1", "Table 3", "Section 2.1": LaTeX numbers the
+            // target, so the printed number gives way to \ref — "Figure 1
+            // 1" otherwise.
+            if let number = groups[0].range(of: #"\s*[\dIVXivx]+(\.\d+)*\s*$"#,
+                                            options: .regularExpression),
+               number.lowerBound > groups[0].startIndex {
+                let words = groups[0][..<number.lowerBound]
+                return "\(words)~\\ref{\(label(for: target))}"
+            }
+            return "\(groups[0])~\\ref{\(label(for: target))}"
         }
         out = replacing(#"\[([^\]]*)\]\((https?://[^)]+)\)"#, in: out) { groups in
             "\\href{\(groups[1])}{\(groups[0])}"

@@ -751,6 +751,9 @@ struct EPUBReaderScreen: View {
     /// presentation is up answers — the WebView's own find, or the
     /// native styles' paragraph search.
     @State private var findStamp = 0
+    /// Find runs while its bar shows — or during a find-fold, which
+    /// highlights its words and steps them with ⌘G without the bar.
+    private var findIsLive: Bool { showsFind || model.readerFindFoldTerm != nil }
     @State private var findForward = true
     @FocusState private var findFocused: Bool
     /// The whole book's matches, listed from the find bar.
@@ -1088,7 +1091,7 @@ struct EPUBReaderScreen: View {
                 // body — the OrigamiReadingView carries the foot bar,
                 // the folding, and the Aa menu itself.
                 OrigamiReadingView(doc: doc,
-                                   findText: showsFind ? findText : "",
+                                   findText: findIsLive ? findText : "",
                                    findStamp: findStamp,
                                    findForward: findForward)
                     .id(book.id)
@@ -1139,7 +1142,7 @@ struct EPUBReaderScreen: View {
         .onChange(of: model.readerFindRequest) {
             guard let request = model.readerFindRequest else { return }
             findText = request.text
-            showsFind = true
+            if request.showsBar { showsFind = true }
             findForward = true
             findStamp += 1
         }
@@ -1217,6 +1220,12 @@ struct EPUBReaderScreen: View {
                 fragmentStamp += 1
             }
         }
+        // The selection dot, for Scroll and Horizontal alike: each reports
+        // its selection into the model; this one layer draws the dot,
+        // its menu and the context panel.
+        .overlay { SelectionDotLayer() }
+        .onChange(of: readerModeRaw) { model.selectionContext = nil }
+        .onChange(of: book.id) { model.selectionContext = nil }
         .sheet(item: $commentSelection) { selection in
             ReaderCommentSheet(selection: selection) { note in
                 model.addComment(note, on: selection)
@@ -1425,6 +1434,7 @@ struct EPUBReaderScreen: View {
             onSelect: { text in
                 model.lastEPUBSelection = text
             },
+            onSelectionAt: { selection, point in reportSelection(selection, at: point) },
             onCopyQuote: { text, page in copyAsQuote(text, page: page) },
             onCopyBookCitation: {
                 if let record = model.epubRecords.first(where: { $0.folder == book.id }) {
@@ -1500,7 +1510,7 @@ struct EPUBReaderScreen: View {
             },
             onFigureLink: { url in model.openFigureLink(url) },
             onCurrentHeading: { id in updateOutlineCurrent(id) },
-            findText: showsFind ? findText : "",
+            findText: findIsLive ? findText : "",
             findStamp: findStamp,
             findForward: findForward,
             headingStep: headingStep,
@@ -1742,6 +1752,30 @@ struct EPUBReaderScreen: View {
     /// same "Copy as Quote" that the document reader offers, reachable
     /// in the EPUB's own context menu. The address is the book's Origami
     /// id; paragraph-scoped fragments are a later step.
+    /// The Scroll reader's selection, for the selection dot: a scroll
+    /// moves the dot of the same words; new words are a new selection.
+    private func reportSelection(_ selection: ReaderSelection?, at point: CGPoint?) {
+        guard SelectionContextStyle.showsDot, let selection, let point else {
+            if model.selectionContext?.sourceID == "scroll" { model.selectionContext = nil }
+            return
+        }
+        if model.selectionContext?.sourceID == "scroll",
+           model.selectionContext?.text == selection.text {
+            model.selectionContext?.point = point
+            return
+        }
+        let record = model.epubRecords.first { $0.folder == book.id }
+        model.selectionContext = SelectionContext(
+            text: selection.text,
+            doc: model.readingDoc(forBook: book),
+            bookAddress: record?.id ?? book.id,
+            sourceID: "scroll",
+            point: point,
+            annotate: { kind in model.addTag(kind, on: selection) },
+            comment: { note in model.addComment(note, on: selection) },
+            copyCitation: { copyAsQuote(selection.text, page: selection.page) })
+    }
+
     private func copyAsQuote(_ text: String, page: String? = nil) {
         guard !text.isEmpty else { return }
         let record = model.epubRecords.first { $0.folder == book.id }
@@ -1879,6 +1913,9 @@ struct EPUBReaderView: NSViewRepresentable {
     var onActivate: (EPUBElementRef) -> Void = { _ in }
     /// The reader's text selection changed (empty string when cleared).
     var onSelect: (String) -> Void = { _ in }
+    /// The selection and where it ends, in SwiftUI global coordinates —
+    /// the selection dot's report; nil, nil when the selection clears.
+    var onSelectionAt: (ReaderSelection?, CGPoint?) -> Void = { _, _ in }
     /// "Copy as Quote" was chosen from the page's context menu, carrying the
     /// selected text. The screen builds the citation from the book's metadata.
     var onCopyQuote: (String, String?) -> Void = { _, _ in }
@@ -2281,6 +2318,7 @@ struct EPUBReaderView: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.onActivate = onActivate
         coordinator.onSelect = onSelect
+        coordinator.onSelectionAt = onSelectionAt
         coordinator.onCopyQuote = onCopyQuote
         coordinator.onCopyBookCitation = onCopyBookCitation
         coordinator.onCopyParagraphLink = onCopyParagraphLink
@@ -2437,6 +2475,7 @@ struct EPUBReaderView: NSViewRepresentable {
     private func load(into webView: WKWebView, context: Context) {
         context.coordinator.onActivate = onActivate
         context.coordinator.onSelect = onSelect
+        context.coordinator.onSelectionAt = onSelectionAt
         context.coordinator.annotations = annotations
         context.coordinator.quoteLinks = quoteLinks
         context.coordinator.citedHereCounts = citedHereCounts
@@ -2468,6 +2507,17 @@ struct EPUBReaderView: NSViewRepresentable {
         var onCurrentHeading: (String) -> Void = { _ in }
         var onActivate: (EPUBElementRef) -> Void = { _ in }
         var onSelect: (String) -> Void = { _ in }
+        var onSelectionAt: (ReaderSelection?, CGPoint?) -> Void = { _, _ in }
+
+        /// The page's point for the selection's end (viewport, the web
+        /// view's own flipped coordinates) as a SwiftUI global point.
+        func selectionPoint(_ body: [String: Any]) -> CGPoint? {
+            guard let webView,
+                  let x = (body["x"] as? NSNumber)?.doubleValue,
+                  let y = (body["y"] as? NSNumber)?.doubleValue else { return nil }
+            let window = webView.convert(NSPoint(x: x, y: y), to: nil)
+            return SelectionContext.globalPoint(fromWindow: window, in: webView.window)
+        }
         var onCopyQuote: (String, String?) -> Void = { _, _ in }
         var onCopyBookCitation: () -> Void = {}
         var onCopyParagraphLink: (String) -> Void = { _ in }
@@ -2549,6 +2599,11 @@ struct EPUBReaderView: NSViewRepresentable {
                     glossaryTarget: (body["glossary"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                     page: (body["page"] as? String).flatMap { $0.isEmpty ? nil : $0 })
                 onSelect(text)
+                onSelectionAt(webView?.currentSelection, selectionPoint(body))
+            case "selectionMoved":
+                if let selection = webView?.currentSelection, let point = selectionPoint(body) {
+                    onSelectionAt(selection, point)
+                }
             case "annotation":
                 // A click on a painted highlight: show its popover (the
                 // comment's words, and the way to remove it).
@@ -3571,7 +3626,10 @@ struct EPUBReaderView: NSViewRepresentable {
         var text = (e.target.textContent || '').trim().slice(0, 200);
         bridge.postMessage({event:'activate', kind:info.kind, id:info.id, text:text});
       }, true);
-      document.addEventListener('mouseup', function(){
+      // Where the hand let go, in the page's own coordinates, so the dot
+      // stays by it as the page scrolls.
+      var dotAnchor = null;
+      document.addEventListener('mouseup', function(e){
         // Report every mouseup, empty included, so the native "Copy as
         // Quote" item appears only while text is actually selected. A real
         // selection also carries its anchoring ladder: the enclosing
@@ -3614,9 +3672,34 @@ struct EPUBReaderView: NSViewRepresentable {
             info.prefix = context.slice(Math.max(0, at - 32), at);
             info.suffix = context.slice(at + raw.length, at + raw.length + 32);
           }
+          // The selection dot stands where the hand let go of the drag
+          // or the double click — where the finger already is.
+          info.x = e.clientX; info.y = e.clientY;
+          dotAnchor = {x: e.clientX + window.scrollX, y: e.clientY + window.scrollY};
+        } else {
+          dotAnchor = null;
         }
         bridge.postMessage(info);
       }, false);
+      function selectionEnd(sel) {
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+        var rects = sel.getRangeAt(0).getClientRects();
+        var last = rects.length ? rects[rects.length - 1] : sel.getRangeAt(0).getBoundingClientRect();
+        return last ? {x: last.right, y: last.bottom} : null;
+      }
+      // The dot follows its words as the page scrolls.
+      var dotFrame = false;
+      window.addEventListener('scroll', function(){
+        if (dotFrame) return;
+        dotFrame = true;
+        requestAnimationFrame(function(){
+          dotFrame = false;
+          var sel = window.getSelection ? window.getSelection() : null;
+          if (!dotAnchor || !sel || sel.isCollapsed) return;
+          bridge.postMessage({event:'selectionMoved',
+                              x: dotAnchor.x - window.scrollX, y: dotAnchor.y - window.scrollY});
+        });
+      }, {passive: true});
     })();
     """
 

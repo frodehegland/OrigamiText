@@ -865,8 +865,11 @@ nonisolated enum ACMWordPaper {
                     pendingTableCaption = false
                     let identifier = "word-table-\(tables.count + 1)"
                     let columns = table.rows.map(\.count).max() ?? 0
-                    let cells = table.rows.map { row -> [LiquidDoc.Table.Cell] in
-                        var padded = row.map { LiquidDoc.Table.Cell(value: $0) }
+                    let cells = table.rows.enumerated().map { rowIndex, row -> [LiquidDoc.Table.Cell] in
+                        let spans = rowIndex < table.spans.count ? table.spans[rowIndex] : [:]
+                        var padded = row.enumerated().map { column, value in
+                            LiquidDoc.Table.Cell(value: value, columnSpan: spans[column])
+                        }
                         while padded.count < columns {
                             padded.append(LiquidDoc.Table.Cell(value: ""))
                         }
@@ -1188,6 +1191,8 @@ extension ACMWordPaper {
 
         struct Table {
             var rows: [[String]] = []
+            /// Per row: the column index of each spanning cell → its span.
+            var spans: [[Int: Int]] = []
             var imageRIDs: [String] = []
         }
 
@@ -1217,6 +1222,10 @@ extension ACMWordPaper {
         private var tableDepth = 0
         private var currentRow: [String] = []
         private var currentCell = ""
+        /// The cell's gridSpan: a header over several columns.
+        private var currentSpan = 1
+        /// Per table: row → column → span, for the cells that span.
+        private var currentRowSpans: [Int: Int] = [:]
 
         func parser(_ parser: XMLParser, didStartElement elementName: String,
                     namespaceURI: String?, qualifiedName: String?,
@@ -1227,8 +1236,12 @@ extension ACMWordPaper {
                 if tableDepth == 1 { table = Table() }
             case "w:tr" where tableDepth == 1:
                 currentRow = []
+                currentRowSpans = [:]
             case "w:tc" where tableDepth == 1:
                 currentCell = ""
+                currentSpan = 1
+            case "w:gridSpan" where tableDepth == 1:
+                currentSpan = max(Int(attributes["w:val"] ?? "") ?? 1, 1)
             case "w:p":
                 paragraph = Paragraph()
             case "w:pStyle":
@@ -1276,9 +1289,17 @@ extension ACMWordPaper {
                 }
                 tableDepth = max(0, tableDepth - 1)
             case "w:tr" where tableDepth == 1:
-                if !currentRow.isEmpty { table?.rows.append(currentRow) }
+                if !currentRow.isEmpty {
+                    table?.rows.append(currentRow)
+                    table?.spans.append(currentRowSpans)
+                }
             case "w:tc" where tableDepth == 1:
+                // A spanning cell, then an empty cell for each column it
+                // covers — the row keeps the grid's width, so the
+                // columns after it stay under their own headings.
+                if currentSpan > 1 { currentRowSpans[currentRow.count] = currentSpan }
                 currentRow.append(currentCell.trimmingCharacters(in: .whitespacesAndNewlines))
+                for _ in 1..<currentSpan { currentRow.append("") }
             case "w:p":
                 closeRun()
                 guard let done = paragraph else { break }

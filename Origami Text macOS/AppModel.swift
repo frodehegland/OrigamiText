@@ -852,7 +852,7 @@ final class AppModel {
         // A library book first: its address may be a DOI or URN, which
         // the Liquid id rules below would refuse.
         let raw = String(components.path.trimmingPrefix("/"))
-        if epubRecord(forAddress: raw) != nil {
+        if epubRecord(forAddress: raw) != nil || raw == Self.userGuideID {
             openEPUB(address: raw, fragment: components.fragment)
             return
         }
@@ -2964,29 +2964,34 @@ final class AppModel {
     /// whatever app owns Markdown. Re-exported when the bundled copy
     /// changes; already-converted copies just open.
     func openBundledSpec(resource: String, title: String) {
+        guard let record = bundledDocumentRecord(resource: resource, title: title) else { return }
+        openStoredEPUB(record)
+    }
+
+    /// A Markdown document shipped inside the app, as a book on the shelf:
+    /// converted the first time, again whenever a new build ships a
+    /// changed copy (its file date moves), otherwise found where it is.
+    /// `id` is its library address — stable, so citations can name it.
+    @discardableResult
+    func bundledDocumentRecord(resource: String, title: String, id given: String? = nil,
+                               quietly: Bool = false) -> EPUBRecord? {
         guard let source = Bundle.main.url(forResource: resource, withExtension: "md") else {
-            NSSound.beep()
-            showNote("The bundled document \(resource).md was not found.")
-            return
+            if !quietly {
+                NSSound.beep()
+                showNote("The bundled document \(resource).md was not found.")
+            }
+            return nil
         }
-        let id = "origami-spec-" + resource.lowercased()
+        let id = given ?? "origami-spec-" + resource.lowercased()
         let stampKey = "openSourceDocStamp-" + resource
         let modified = (try? source.resourceValues(
             forKeys: [.contentModificationDateKey]))?
             .contentModificationDate?.timeIntervalSince1970 ?? 0
         if UserDefaults.standard.double(forKey: stampKey) != modified,
            let stale = epubRecords.first(where: { $0.id == id }) {
-            if openEPUB?.id == stale.folder { openEPUB = nil }
-            try? FileManager.default.removeItem(
-                at: Self.epubsRoot.appendingPathComponent(stale.folder, isDirectory: true))
-            try? FileManager.default.removeItem(at: storedEPUBURL(for: stale))
-            epubRecords.removeAll { $0.id == id }
-            persistEPUBRecords()
+            removeShelfCopy(stale)
         }
-        if let record = epubRecords.first(where: { $0.id == id }) {
-            openStoredEPUB(record)
-            return
-        }
+        if let record = epubRecords.first(where: { $0.id == id }) { return record }
         do {
             let imported = try MarkdownImporter.importFile(at: source)
             let doc = LiquidDoc(
@@ -3003,12 +3008,98 @@ final class AppModel {
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent(title + ".epub")
             try OrigamiEPUBExporter.write(doc: doc, resolve: { _ in nil }, to: url)
-            openEPUBFile(at: url)
+            guard let record = importEPUB(at: url) else { return nil }
             UserDefaults.standard.set(modified, forKey: stampKey)
+            return record
         } catch {
-            NSSound.beep()
-            showNote("Could not open \(title): \(error.localizedDescription)")
+            if !quietly {
+                NSSound.beep()
+                showNote("Could not open \(title): \(error.localizedDescription)")
+            }
+            return nil
         }
+    }
+
+    /// A shelf copy removed whole — its unpacked folder, its stored EPUB,
+    /// its record — so a newer copy of the same document can replace it.
+    private func removeShelfCopy(_ record: EPUBRecord) {
+        if openEPUB?.id == record.folder { openEPUB = nil }
+        try? FileManager.default.removeItem(
+            at: Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true))
+        try? FileManager.default.removeItem(at: storedEPUBURL(for: record))
+        epubRecords.removeAll { $0.id == record.id }
+        persistEPUBRecords()
+    }
+
+    // MARK: - The user guide and the introduction, shipped in the app
+    //
+    // RELEASE NOTE: OrigamiTextUserGuide.md (and Introduction.epub, when
+    // present) ship inside the app. Update the guide for every build
+    // submitted to the App Store — see RELEASE-CHECKLIST.md.
+
+    /// The user guide's library address. Never change it: a citation to
+    /// the guide (the Introduction's, say) names it in its vm-id field.
+    static let userGuideID = "origami-text-user-guide"
+
+    /// The user guide, on the shelf — quietly, at launch, so a citation to
+    /// it can be followed before anyone has opened it.
+    @discardableResult
+    func ensureUserGuide() -> EPUBRecord? {
+        bundledDocumentRecord(resource: "OrigamiTextUserGuide",
+                              title: "Origami Text User Guide",
+                              id: Self.userGuideID, quietly: true)
+    }
+
+    /// Help ▸ Origami Text Guide.
+    func openUserGuide() {
+        guard let record = ensureUserGuide() else {
+            NSSound.beep()
+            showNote("The user guide is missing from this copy of the app.")
+            return
+        }
+        openStoredEPUB(record)
+    }
+
+    /// Intro, at the foot of the sidebar, and the app's first page at
+    /// launch: the Introduction written for this release
+    /// (Introduction.epub, shipped in the app), replaced on the shelf
+    /// whenever a new build ships a changed copy. Until it ships, the
+    /// built-in guide (IntroGuide.swift) stands in.
+    func openIntroduction() {
+        guard let source = Bundle.main.url(forResource: "Introduction", withExtension: "epub") else {
+            openIntroGuide()
+            return
+        }
+        let stampKey = "bundledIntroductionStamp"
+        let recordKey = "bundledIntroductionRecordID"
+        let modified = (try? source.resourceValues(
+            forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?.timeIntervalSince1970 ?? 0
+        let known = UserDefaults.standard.string(forKey: recordKey)
+            .flatMap { id in epubRecords.first { $0.id == id } }
+        if let known {
+            if UserDefaults.standard.double(forKey: stampKey) == modified {
+                openStoredEPUB(known)
+                return
+            }
+            removeShelfCopy(known)
+        }
+        // Imported from a copy: the app's own bundle is read-only.
+        let copy = FileManager.default.temporaryDirectory.appendingPathComponent("Introduction.epub")
+        try? FileManager.default.removeItem(at: copy)
+        do {
+            try FileManager.default.copyItem(at: source, to: copy)
+        } catch {
+            openIntroGuide()
+            return
+        }
+        guard let record = importEPUB(at: copy) else {
+            openIntroGuide()
+            return
+        }
+        UserDefaults.standard.set(record.id, forKey: recordKey)
+        UserDefaults.standard.set(modified, forKey: stampKey)
+        openStoredEPUB(record)
     }
 
     // MARK: - Cross-document quote links (live + transclusion)
@@ -3044,6 +3135,11 @@ final class AppModel {
             readerFoldLevel = 0
         }
     }
+
+    /// The selection the reading's dot stands for (SelectionContext.swift):
+    /// the words, where they end on screen, and what can be done with
+    /// them. Set by the Scroll and Horizontal readers; nil hides the dot.
+    var selectionContext: SelectionContext?
 
     /// References standing over the page (ReferencesScreen): the open
     /// document's cited works by title, author or date, or on a map of
@@ -3105,7 +3201,8 @@ final class AppModel {
         UserDefaults.standard.set(EPUBReaderMode.scroll.rawValue, forKey: "readerMode")
         readerFindFoldTerm = term
         readerFoldLevel = 1
-        requestReaderFind(term)
+        // The matches highlight and ⌘G steps them, without the Find bar.
+        requestReaderFind(term, showsBar: false)
     }
 
     // MARK: Stored AI analyses (Regenerate / Remove)
@@ -3161,10 +3258,13 @@ final class AppModel {
     struct ReaderFindRequest: Equatable {
         let text: String
         let stamp: Int
+        /// Whether the reader shows its Find bar. A find-fold runs the
+        /// find without it — its foot already says what it is finding.
+        var showsBar = true
     }
     private(set) var readerFindRequest: ReaderFindRequest?
 
-    func requestReaderFind(_ text: String) {
+    func requestReaderFind(_ text: String, showsBar: Bool = true) {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         // With no book open the words came from the editor: its find bar
@@ -3182,7 +3282,7 @@ final class AppModel {
             return
         }
         readerFindRequest = ReaderFindRequest(
-            text: trimmed, stamp: (readerFindRequest?.stamp ?? 0) + 1)
+            text: trimmed, stamp: (readerFindRequest?.stamp ?? 0) + 1, showsBar: showsBar)
     }
 
     /// Asks the open reading to clear its find — after a find-fold
@@ -3246,6 +3346,11 @@ final class AppModel {
     /// reader and, when the link named a paragraph, scrolls to it once the
     /// page has loaded. The "live" half of a quote link.
     func openEPUB(address: String, fragment: String?) {
+        // The user guide ships in the app: a citation to it adds it to the
+        // shelf if it is not there yet.
+        if epubRecord(forAddress: address) == nil, address == Self.userGuideID {
+            ensureUserGuide()
+        }
         guard let record = epubRecord(forAddress: address) else {
             showNote("That document is not in your library yet.")
             return
@@ -5054,7 +5159,10 @@ final class AppModel {
     /// always has.
     /// `query` is the words of a list's own Find (a venue's, say); nil
     /// takes the Library's foot Find.
-    func searchSplitEPUBs(_ records: [EPUBRecord], query given: String? = nil)
+    /// `quietly`: no beep, and a miss is a miss — empty, not the whole
+    /// list (the selection dot's panel asks, not a Find).
+    func searchSplitEPUBs(_ records: [EPUBRecord], query given: String? = nil,
+                          quietly: Bool = false)
         -> (named: [EPUBRecord], inText: [(record: EPUBRecord, match: EPUBTextMatch)]) {
         let typed = given ?? searchText
         let query = typed.trimmingCharacters(in: .whitespaces)
@@ -5073,6 +5181,7 @@ final class AppModel {
         // The books that carry the words most, first.
         inText.sort { $0.match.count > $1.match.count }
         if named.isEmpty, inText.isEmpty, !records.isEmpty {
+            if quietly { return ([], []) }
             if findMissAnswered != typed {
                 findMissAnswered = typed
                 NSSound.beep()

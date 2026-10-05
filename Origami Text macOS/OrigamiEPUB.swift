@@ -371,6 +371,8 @@ nonisolated enum OrigamiEPUBExporter {
             struct Cell: Encodable {
                 let value: String
                 let formula: String?
+                /// Columns the cell spans, when more than one.
+                var columnSpan: Int? = nil
             }
             let identifier: String
             let href: String?
@@ -869,7 +871,8 @@ nonisolated enum OrigamiEPUBExporter {
                     columnCount: table.columnCount,
                     cells: table.cells.map { row in
                         row.map { InteractionDocument.TableNode.Cell(value: $0.value,
-                                                                     formula: $0.formula) }
+                                                                     formula: $0.formula,
+                                                                     columnSpan: $0.columnSpan) }
                     })
             },
             map: nodes.isEmpty && map.connections.isEmpty && map.views.isEmpty ? nil : map)
@@ -1992,9 +1995,17 @@ nonisolated enum OrigamiEPUBExporter {
         if let tableID = paragraph.tableID, let table = tablesByID[tableID] {
             let rows = table.cells.enumerated().map { rowIndex, row -> String in
                 let tag = rowIndex == 0 && table.cells.count > 1 ? "th" : "td"
-                let cells = row.map {
-                    "<\(tag)>\(citedCellHTML($0.value, citations: citations))</\(tag)>"
-                }.joined()
+                // A spanning cell is one cell with colspan; the cells it
+                // covers are not written.
+                var cells = ""
+                var covered = 0
+                for cell in row {
+                    if covered > 0 { covered -= 1; continue }
+                    let span = max(cell.columnSpan ?? 1, 1)
+                    covered = span - 1
+                    let colspan = span > 1 ? " colspan=\"\(span)\"" : ""
+                    cells += "<\(tag)\(colspan)>\(citedCellHTML(cell.value, citations: citations))</\(tag)>"
+                }
                 return "<tr>\(cells)</tr>"
             }
             return "<table \(anchors) data-table-id=\"\(attributeEscaped(table.identifier))\">"

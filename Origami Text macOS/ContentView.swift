@@ -206,16 +206,19 @@ struct ContentView: View {
         .sheet(isPresented: $model.showXRExport) {
             ExportToXRSheet()
         }
-        // A launch with nothing selected opens the built-in guide, so the
+        // A launch with nothing selected opens the Introduction, so the
         // window never stands empty. A book the launch itself opened
         // (double-clicked in Finder, or restored), a selected document or
-        // a draft keeps the page; the guide then waits.
+        // a draft keeps the page; the Introduction then waits. The user
+        // guide joins the shelf quietly first, so a citation to it — the
+        // Introduction's — can be followed at once.
         .task {
             try? await Task.sleep(for: .seconds(1))
+            model.ensureUserGuide()
             guard model.openEPUB == nil, model.current == nil,
                   model.draftEditor == nil else { return }
             UserDefaults.standard.set(true, forKey: "introShownOnce")
-            model.openIntroGuide()
+            model.openIntroduction()
         }
         .sheet(isPresented: $model.showOPDS) {
             OPDSBrowser()

@@ -253,7 +253,7 @@ struct SidebarView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Divider()
                 Button {
-                    model.openIntroGuide()
+                    model.openIntroduction()
                 } label: {
                     Label("Intro", systemImage: "book")
                 }

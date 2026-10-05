@@ -736,6 +736,10 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         struct Cell: Hashable, Sendable {
             var value: String
             var formula: String? = nil
+            /// A cell spanning this many columns (a header over a group);
+            /// the cells it covers stay in the row, empty, so the grid
+            /// stays rectangular. Nil is one column.
+            var columnSpan: Int? = nil
         }
         /// Matches `Paragraph.tableID` and the body `<table data-table-id>`.
         let identifier: String

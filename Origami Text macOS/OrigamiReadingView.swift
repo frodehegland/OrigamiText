@@ -3234,7 +3234,10 @@ struct OrigamiReadingView: View {
                                 clickWindowPoint: windowPoint)
                 },
                 selectionEntries: selectionEntries(for: paragraph),
-                onLink: handleLink)
+                onLink: handleLink,
+                onSelectionChange: { text, range, point in
+                    reportSelection(in: paragraph, text: text, range: range, at: point)
+                })
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         // Reference mode: the paragraph's number in the left margin; a
@@ -3659,6 +3662,38 @@ struct OrigamiReadingView: View {
     /// The citation onto the clipboard: all four flavours via CitationClipboard.write —
     /// JSON, Author's native type, HTML, and plain text. Author reads the richest
     /// available; other apps fall through to HTML or plain.
+    /// Horizontal's selection, for the selection dot. A paragraph losing
+    /// its selection clears only its own report — the next paragraph's
+    /// new selection may already stand.
+    private func reportSelection(in paragraph: LiquidDoc.Paragraph, text: String,
+                                 range: NSRange, at point: CGPoint?) {
+        let source = "horizontal:" + paragraph.id
+        guard SelectionContextStyle.showsDot, readerMode == .horizontal,
+              range.length > 0, let point,
+              NSMaxRange(range) <= (text as NSString).length else {
+            if model.selectionContext?.sourceID == source { model.selectionContext = nil }
+            return
+        }
+        let selected = (text as NSString).substring(with: range)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selected.isEmpty else { return }
+        model.selectionContext = SelectionContext(
+            text: selected,
+            doc: doc,
+            bookAddress: model.openEPUB.flatMap { book in
+                model.epubRecords.first { $0.folder == book.id }?.id
+            } ?? doc.id,
+            sourceID: source,
+            point: point,
+            annotate: { kind in
+                model.addTag(kind, to: doc, paragraphID: paragraph.id, exact: selected)
+            },
+            comment: { note in
+                model.addComment(note, to: doc, paragraphID: paragraph.id, exact: selected)
+            },
+            copyCitation: { copyCitation(for: paragraph, quote: selected) })
+    }
+
     private func copyCitation(for paragraph: LiquidDoc.Paragraph,
                               quote: String? = nil) {
         let record = model.epubRecord(forAddress: doc.id)
@@ -5512,7 +5547,8 @@ struct CitationCardSheet: View {
                 }
                 Spacer()
                 if let address = citedAddress,
-                   model.epubRecord(forAddress: address.docID) != nil {
+                   model.epubRecord(forAddress: address.docID) != nil
+                    || address.docID == AppModel.userGuideID {
                     // The entry names the cited document by address —
                     // and this library holds it: open it right there,
                     // at the very paragraph the citation quotes.
@@ -6267,6 +6303,10 @@ private struct SelectableParagraph: NSViewRepresentable {
     /// the view options over selected text (Flow, the AI submenu).
     let selectionEntries: (String, NSRange) -> [ParagraphMenuEntry]
     let onLink: (URL) -> Bool
+    /// The selection changed: the paragraph's text, the selected range,
+    /// and where it ends in SwiftUI global coordinates (nil when empty) —
+    /// the selection dot's report.
+    var onSelectionChange: (String, NSRange, CGPoint?) -> Void = { _, _, _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -6292,6 +6332,7 @@ private struct SelectableParagraph: NSViewRepresentable {
         context.coordinator.entriesFor = entriesFor
         context.coordinator.selectionEntries = selectionEntries
         context.coordinator.onLink = onLink
+        context.coordinator.onSelectionChange = onSelectionChange
         let converted = converted()
         // Replacing the storage drops any live selection; only real
         // content changes are worth that.
@@ -6419,6 +6460,39 @@ private struct SelectableParagraph: NSViewRepresentable {
         var entriesFor: (String?, NSPoint?) -> [ParagraphMenuEntry] = { _, _ in [] }
         var selectionEntries: (String, NSRange) -> [ParagraphMenuEntry] = { _, _ in [] }
         var onLink: (URL) -> Bool = { _ in false }
+        var onSelectionChange: (String, NSRange, CGPoint?) -> Void = { _, _, _ in }
+
+        /// Where the selection ends — the last selected glyph's bottom
+        /// right — reported for the selection dot.
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            let range = textView.selectedRange()
+            guard range.length > 0, let layout = textView.layoutManager,
+                  let container = textView.textContainer else {
+                onSelectionChange(textView.string, range, nil)
+                return
+            }
+            // Where the hand is: the mouse event that made the selection
+            // (the drag's last place, the double click's spot). A
+            // keyboard selection has none — the selection's end stands in.
+            let window: NSPoint
+            if let event = NSApp.currentEvent,
+               [.leftMouseUp, .leftMouseDown, .leftMouseDragged].contains(event.type),
+               event.window === textView.window {
+                window = event.locationInWindow
+            } else {
+                let last = NSRange(location: NSMaxRange(range) - 1, length: 1)
+                let glyphs = layout.glyphRange(forCharacterRange: last, actualCharacterRange: nil)
+                var rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
+                rect.origin.x += textView.textContainerOrigin.x
+                rect.origin.y += textView.textContainerOrigin.y
+                // The text view is flipped: its rect's max-y is the line's foot.
+                let corner = NSPoint(x: rect.maxX, y: textView.isFlipped ? rect.maxY : rect.minY)
+                window = textView.convert(corner, to: nil)
+            }
+            onSelectionChange(textView.string, range,
+                              SelectionContext.globalPoint(fromWindow: window, in: textView.window))
+        }
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any,
                       at charIndex: Int) -> Bool {

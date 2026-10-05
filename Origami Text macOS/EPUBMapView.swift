@@ -1946,8 +1946,8 @@ struct EPUBMapView: View {
         view = view.shouldUseHoverNode { _ in false }
         view = view.attachmentAnchorRule { _, item in
             // Centre horizontally, sit at the card's bottom edge, then
-            // drop clear of it. A single paper's four verbs — Open,
-            // Lift, Set Aside, Pin — hang 0.8 cm under the card: the
+            // drop clear of it. A single paper's verbs — Open,
+            // Abstract, Lift — hang 0.8 cm under the card: the
             // 2 cm every other row takes read as a gap with nothing in
             // it, the verbs adrift from the card they belong to.
             // (17 Sep 2026.)
@@ -2806,8 +2806,8 @@ struct EPUBMapView: View {
         }.count
     }
 
-    /// The verbs under a chosen paper. One paper in hand: Open, Lift,
-    /// Set Aside, Pin — each acting on this card alone. Several in
+    /// The verbs under a chosen paper. One paper in hand: Open, Abstract,
+    /// Lift — each acting on this card alone. Several in
     /// hand: Layout, which acts on all of them, and unfolds Author's
     /// arrangements right there (nothing may present a menu on an
     /// attachment, so the options are buttons like everything else).
@@ -2878,7 +2878,7 @@ struct EPUBMapView: View {
         }
     }
 
-    /// One paper chosen: its own four verbs.
+    /// One paper chosen: its own verbs.
     @ViewBuilder private func onePaperButtons(for item: EPUBMapItem) -> some View {
         HStack(spacing: 8) {
             Button("Open") { handleTap(count: 2, on: item) }
@@ -2894,17 +2894,8 @@ struct EPUBMapView: View {
                     toggleLift(item)
                 }
             }
-            Button("Set Aside") {
-                model.toggleSetAside(item.id)
-                reload()
-                updateStandingChips()
-            }
-            // Pinned, the word names the way back out.
-            Button(item.isPinned ? "Unpin" : "Pin") {
-                model.togglePinned(item.id)
-                reload()
-                updateStandingChips()
-            }
+            // Set Aside and Pin moved to the open reading's title bar,
+            // right of the title (5 Oct 2026).
         }
     }
 
@@ -4088,11 +4079,18 @@ struct EPUBMapView: View {
     ///   is how a single article opened above the reader's head.)
     private func openReading(docID: String, title: String,
                              toReader: Bool = false) {
-        let head = toReader ? faceTurner.headPose() : nil
+        // Every reading opens in front of the reader's head, wherever
+        // its card stands — a card high on the wall opened its page
+        // above them. The card stays the reading's home: the close
+        // flies it back there. (Without a head pose — the simulator —
+        // the card's own place stands in, as before.)
+        let head = faceTurner.headPose()
+        let place = head != nil || toReader ? inFrontOfReader(head) : readingPlace(for: docID)
         readerPanels.open(
             docID: docID,
-            at: toReader ? inFrontOfReader(head) : readingPlace(for: docID),
+            at: place,
             facing: head.map { -$0.forward },
+            home: readingPlace(for: docID),
             view: panelView(docID: docID, title: title),
             onClose: { closeReader(docID) })
         model.openDocIDs.insert(docID)
@@ -5737,8 +5735,8 @@ final class ReaderPanels {
     ///   brought to the reader passes their heading, so the page meets
     ///   them square however they are turned.
     func open(docID: String, at position: SIMD3<Float>,
-              facing: SIMD3<Float>? = nil, view: AnyView,
-              onClose: @escaping () -> Void) {
+              facing: SIMD3<Float>? = nil, home: SIMD3<Float>? = nil,
+              view: AnyView, onClose: @escaping () -> Void) {
         guard let content else { return }
         // Already open: bring it to the asked place instead.
         if let standing = roots[docID] {
@@ -5751,7 +5749,7 @@ final class ReaderPanels {
             return
         }
         // Where the card stood — the close flies the reading home.
-        origins[docID] = position
+        origins[docID] = home ?? position
         let root = Entity()
         root.position = position
         if let facing {
@@ -7045,6 +7043,25 @@ struct MapReaderPanel: View {
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
+                // The paper's standing, across the title from how it is
+                // held: Pin brings it first in the pile, Set Aside lays
+                // it in the quiet row. The Map answers either change.
+                let pinned = model.pinnedIDs.contains(docID)
+                Button {
+                    model.togglePinned(docID)
+                } label: {
+                    Image(systemName: pinned ? "pin.fill" : "pin")
+                }
+                .buttonBorderShape(.circle)
+                .help(pinned ? "Unpin" : "Pin — first in the pile")
+                let aside = model.setAsideIDs.contains(docID)
+                Button {
+                    model.toggleSetAside(docID)
+                } label: {
+                    Image(systemName: aside ? "tray.and.arrow.up" : "tray.and.arrow.down")
+                }
+                .buttonBorderShape(.circle)
+                .help(aside ? "Bring Back" : "Set Aside")
                 Spacer()
             }
             .padding(.horizontal, 16)

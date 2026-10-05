@@ -317,7 +317,8 @@ nonisolated enum OrigamiEPUBImporter {
             let cells: [[LiquidDoc.Table.Cell]] = cellRows.map { row in
                 row.map { cell in
                     LiquidDoc.Table.Cell(value: cell["value"] as? String ?? "",
-                                         formula: cell["formula"] as? String)
+                                         formula: cell["formula"] as? String,
+                                         columnSpan: (cell["columnSpan"] as? NSNumber)?.intValue)
                 }
             }
             return LiquidDoc.Table(
@@ -2609,11 +2610,18 @@ nonisolated enum OrigamiEPUBImporter {
                     func collectRows(_ node: XMLTree.Element) {
                         for child in node.elements {
                             if child.name == "tr" {
-                                rows.append(child.elements
-                                    .filter { $0.name == "td" || $0.name == "th" }
-                                    .map { .init(value: $0.plainText
+                                // colspan: the spanning cell, then empty
+                                // cells for the columns it covers.
+                                var row: [LiquidDoc.Table.Cell] = []
+                                for cell in child.elements where cell.name == "td" || cell.name == "th" {
+                                    let span = max(Int(cell.attributes["colspan"] ?? "") ?? 1, 1)
+                                    row.append(.init(value: cell.plainText
                                         .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-                                        .trimmingCharacters(in: .whitespacesAndNewlines)) })
+                                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                                                     columnSpan: span > 1 ? span : nil))
+                                    for _ in 1..<span { row.append(.init(value: "")) }
+                                }
+                                rows.append(row)
                             } else if child.name != "table" {
                                 collectRows(child)
                             }

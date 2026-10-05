@@ -450,6 +450,7 @@ private struct ReadingSettingsView: View {
     private var noteStyleRaw = ReaderNoteStyle.superscript.rawValue
     @AppStorage(ReaderNoteStyle.popupKey) private var notesAsPopup = true
     @AppStorage("reopenWhereLeftOff") private var reopenWhereLeftOff = false
+    @AppStorage(SelectionContextStyle.key) private var selectionStyleRaw = SelectionContextStyle.custom.rawValue
     /// Whether citation cards may ask the scholarly services for what
     /// the package left out — see CitationLookup.swift.
     @AppStorage(CitationLookup.enabledKey) private var lookupCitedWorks = true
@@ -566,6 +567,20 @@ private struct ReadingSettingsView: View {
                 Toggle("Reopen books where I left off", isOn: $reopenWhereLeftOff)
             } footer: {
                 Text("Off, a book always opens at its beginning. On, it opens in Scrolling at the chapter and place you were last reading.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Picker("Selection", selection: $selectionStyleRaw) {
+                    ForEach(SelectionContextStyle.allCases) { style in
+                        Text(style.label).tag(style.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Selection")
+            } footer: {
+                Text("Custom: selecting words in Scroll or Horizontal shows a small dot just below and right of them; its menu offers Annotate, Copy as Citation and Context, which opens a panel of what this paper and your library know about the words. System: no dot, only the right-click menu.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

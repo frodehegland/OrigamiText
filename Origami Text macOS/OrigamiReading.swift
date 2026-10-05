@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import NaturalLanguage
 import SwiftUI
 
 // Ported from Knowledge Space's OrigamiReading.swift (itself from
@@ -1836,5 +1837,432 @@ nonisolated struct OrigamiCitation: Codable, Sendable {
     var fallbackBibTeX: String {
         OrigamiReading.bibTeXEntry(title: quotedText, author: author,
                                    year: year, address: address)
+    }
+}
+
+// MARK: - Context engine
+//
+// The context panel's engine, shared by the Mac, iPhone and Vision Pro
+// (stage A of CONTEXT-PANEL-PLAN.md). A selection becomes a
+// `ContextQuery` — the words and what kind of thing they look like —
+// offline and cheaply, so it is ready by the time the selection dot
+// appears. `ContextPaperFindings` then answers it from the open paper
+// alone (ring 1), and gives the one-line quick answer the dot's menu
+// shows before anything is opened. The library, the reader's notes and
+// the online rings belong to each platform's panel.
+
+// MARK: - The query
+
+struct ContextQuery: Hashable {
+    /// What the words look like, decided in this order (plan §3).
+    enum Kind: String, Hashable {
+        case citation, identifier, figureOrTable, name, number, symbol, term, claim, passage
+
+        var label: String {
+            switch self {
+            case .citation: "Citation"
+            case .identifier: "Identifier"
+            case .figureOrTable: "Figure or Table"
+            case .name: "Name"
+            case .number: "Number"
+            case .symbol: "Symbol"
+            case .term: "Term"
+            case .claim: "Claim"
+            case .passage: "Passage"
+            }
+        }
+    }
+
+    /// The selected words, trimmed.
+    let text: String
+    let kind: Kind
+    /// A citation: the reference the words are the inline form of.
+    var reference: LiquidDoc.Reference?
+    /// An identifier: where it resolves (doi.org, the URL, arXiv).
+    var identifierURL: URL?
+    /// A figure, table or equation: its label as written ("Figure 3").
+    var label: String?
+
+    /// Classifies the words. `isKnownName` asks the platform whether a
+    /// person, place or organisation is known (the Mac's People).
+    static func make(text raw: String, doc: LiquidDoc?,
+                     isKnownName: (String) -> Bool = { _ in false }) -> ContextQuery {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bare = text.trimmingCharacters(in: CharacterSet(charactersIn: "()[]{}.,;:"))
+        // 1. Citation: the words are the inline form of a reference.
+        if let doc, let reference = reference(citedAs: text, in: doc) {
+            return ContextQuery(text: text, kind: .citation, reference: reference)
+        }
+        // 2. Identifier: a DOI, URL, arXiv id or ISBN.
+        if let url = identifierURL(for: bare) {
+            return ContextQuery(text: text, kind: .identifier, identifierURL: url)
+        }
+        // 3. Figure, table or equation, by its label.
+        if let match = bare.range(of: #"^(fig(ure)?|tab(le)?|eq(uation)?)\.?\s*\d+[a-z]?"#,
+                                  options: [.regularExpression, .caseInsensitive]),
+           match.lowerBound == bare.startIndex {
+            return ContextQuery(text: text, kind: .figureOrTable, label: String(bare[match]))
+        }
+        let words = text.split(whereSeparator: \.isWhitespace)
+        // 4. A name the platform knows.
+        if words.count <= 5, text.count <= 80, isKnownName(bare) {
+            return ContextQuery(text: text, kind: .name)
+        }
+        // 5. A number, with or without its unit.
+        if text.count <= 24,
+           bare.range(of: #"^[~≈<>≤≥±−-]?\s*\d[\d,.\s]*\s*(%|[A-Za-zµΩ°/]{1,5})?$"#,
+                      options: .regularExpression) != nil {
+            return ContextQuery(text: text, kind: .number)
+        }
+        // 6. A symbol: a token of a character or two, or Greek.
+        if words.count == 1, bare.count <= 3, !bare.isEmpty,
+           bare.count == 1 || bare.unicodeScalars.contains(where: { (0x0370...0x03FF).contains($0.value) }) {
+            return ContextQuery(text: text, kind: .symbol)
+        }
+        // 7. A term: one to five words.
+        if words.count <= 5, text.count <= 80 {
+            return ContextQuery(text: text, kind: .term)
+        }
+        // 8. A claim: a sentence, or words that claim.
+        let claimWords = #"\b(we (show|find|found|demonstrate|argue|propose)|results? (show|indicate|suggest)|significant(ly)?|evidence|suggests?|demonstrates?)\b"#
+        if words.count <= 60,
+           text.last.map({ ".!?".contains($0) }) == true
+            || text.range(of: claimWords, options: [.regularExpression, .caseInsensitive]) != nil {
+            return ContextQuery(text: text, kind: .claim)
+        }
+        return ContextQuery(text: text, kind: .passage)
+    }
+
+    /// The reference whose inline form the words are: "[3]" or "3" by
+    /// the source's own numbering, "(Hegland 2025)" or "Hegland 2025" by
+    /// the citation as written.
+    static func reference(citedAs text: String, in doc: LiquidDoc) -> LiquidDoc.Reference? {
+        let folded = plainKey(text)
+        guard !folded.isEmpty, folded.count <= 80 else { return nil }
+        if let number = Int(folded) {
+            return doc.references.first { $0.number == number }
+        }
+        // Author-year needs a year in the words, or every surname would
+        // read as a citation.
+        guard folded.range(of: #"\b(1[5-9]|20)\d\d[a-z]?\b"#, options: .regularExpression) != nil
+        else { return nil }
+        return doc.references.first { reference in
+            guard let cited = reference.citedAs.map(plainKey), !cited.isEmpty else { return false }
+            return cited == folded || cited.contains(folded) || folded.contains(cited)
+        }
+    }
+
+    /// Lowercased, brackets and edge punctuation away, spaces single.
+    private static func plainKey(_ text: String) -> String {
+        text.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "()[] .,;:"))
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    }
+
+    static func identifierURL(for text: String) -> URL? {
+        guard !text.contains(" ") else { return nil }
+        if let range = text.range(of: #"10\.\d{4,9}/\S+"#, options: .regularExpression) {
+            return URL(string: "https://doi.org/" + text[range])
+        }
+        if text.lowercased().hasPrefix("http://") || text.lowercased().hasPrefix("https://") {
+            return URL(string: text)
+        }
+        if let range = text.range(of: #"^(arxiv:)?\d{4}\.\d{4,5}(v\d+)?$"#,
+                                   options: [.regularExpression, .caseInsensitive]) {
+            let id = text[range].replacingOccurrences(of: "arxiv:", with: "", options: .caseInsensitive)
+            return URL(string: "https://arxiv.org/abs/" + id)
+        }
+        let digits = text.filter { $0.isNumber || $0 == "X" || $0 == "x" }
+        if text.range(of: #"^(isbn[:\s]*)?[\d-]{9,17}[\dXx]$"#,
+                      options: [.regularExpression, .caseInsensitive]) != nil,
+           digits.count == 10 || digits.count == 13 {
+            return URL(string: "https://openlibrary.org/isbn/" + digits)
+        }
+        return nil
+    }
+
+    /// A body paragraph's words as a reader sees them: citation tokens,
+    /// link targets, image markup and emphasis marks taken out. Keep in
+    /// step with ReadingAnalyzer.plainSentenceText on the Mac.
+    static func plain(_ text: String) -> String {
+        text.replacingOccurrences(of: #"\[cites?:[^\]]+\]"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"!\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: #"(?<![\w*])\*(?!\s)|(?<!\s)\*(?![\w*])"#, with: "",
+                                  options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+}
+
+// MARK: - Ring 1: this paper
+
+/// What the open paper itself says about the words.
+struct ContextPaperFindings {
+    /// How many times the paper uses the words, case aside.
+    var uses = 0
+    /// The first and last sentences using them (last nil when the same).
+    var firstUse: String?
+    var lastUse: String?
+    /// The paper's own glossary entry (its Defined Concepts).
+    var definition: (name: String, description: String)?
+    /// A citation: the reference as one readable line, and where it is.
+    var citationLine: String?
+    var citationURL: URL?
+    /// A figure or table: its caption, where it stands, how often the
+    /// paper discusses it.
+    var caption: String?
+    var captionParagraphID: String?
+    var mentions = 0
+    /// A symbol: the sentence where the paper says what it stands for.
+    var symbolDefinition: String?
+
+    static func gather(for query: ContextQuery, in doc: LiquidDoc) -> ContextPaperFindings {
+        var found = ContextPaperFindings()
+        let words = query.text
+        let paragraphs = (doc.body ?? []).filter { !doc.visualMetaParagraphIDs.contains($0.id) }
+        if words.count <= 80 {
+            found.uses = occurrences(of: words, in: paragraphs)
+            let uses = firstAndLastUse(of: words, in: paragraphs)
+            found.firstUse = uses.first
+            found.lastUse = uses.last
+            found.definition = definition(of: words, in: doc)
+        }
+        switch query.kind {
+        case .citation:
+            if let reference = query.reference {
+                found.citationLine = line(for: reference)
+                found.citationURL = url(for: reference)
+            }
+        case .figureOrTable:
+            if let label = query.label {
+                let figure = caption(labelled: label, in: paragraphs)
+                found.caption = figure?.caption
+                found.captionParagraphID = figure?.paragraphID
+                found.mentions = max(occurrences(of: label, in: paragraphs) - (figure == nil ? 0 : 1), 0)
+            }
+        case .symbol:
+            found.symbolDefinition = symbolDefinition(of: words, in: paragraphs)
+        default:
+            break
+        }
+        return found
+    }
+
+    /// The single line the dot's menu shows before anything is opened —
+    /// nil when the paper has nothing better to say than the words.
+    /// `definition` is the platform's own glossary answer, which wins.
+    func quickAnswer(for query: ContextQuery,
+                     definition outside: (name: String, description: String)? = nil) -> String? {
+        let line: String?
+        if let citationLine {
+            line = citationLine
+        } else if query.kind == .identifier, let host = query.identifierURL?.host() {
+            line = "Opens at \(host)"
+        } else if let caption {
+            line = mentions > 0 ? "\(caption) · discussed \(Self.times(mentions))" : caption
+        } else if let defined = outside ?? definition, !defined.description.isEmpty {
+            line = defined.description
+        } else if let symbolDefinition {
+            line = symbolDefinition
+        } else if query.kind == .claim || query.kind == .passage {
+            line = nil
+        } else if uses > 1 {
+            line = "Used \(Self.times(uses)) in this paper"
+        } else if uses == 1 {
+            line = "Only here in this paper"
+        } else {
+            line = nil
+        }
+        return line.map { Self.clipped($0, to: 90) }
+    }
+
+    /// The findings as words, kept as a comment on the selection.
+    func keptText(for query: ContextQuery,
+                  definition outside: (name: String, description: String)? = nil,
+                  extra: [String] = []) -> String {
+        var lines = ["Context (\(query.kind.label.lowercased()))"]
+        if let defined = outside ?? definition {
+            lines.append("Definition: \(defined.name) — \(defined.description)")
+        }
+        if let citationLine { lines.append("Reference: \(citationLine)") }
+        if let url = citationURL ?? query.identifierURL { lines.append(url.absoluteString) }
+        if let caption { lines.append("\(caption) (discussed \(Self.times(mentions)))") }
+        if let symbolDefinition { lines.append("Defined: \(symbolDefinition)") }
+        if uses > 0 { lines.append("Used \(Self.times(uses)) in this paper.") }
+        if let firstUse { lines.append("First: \(firstUse)") }
+        if let lastUse { lines.append("Last: \(lastUse)") }
+        lines.append(contentsOf: extra)
+        return lines.joined(separator: "\n")
+    }
+
+    static func times(_ count: Int) -> String {
+        switch count {
+        case 1: "once"
+        case 2: "twice"
+        default: "\(count) times"
+        }
+    }
+
+    static func clipped(_ text: String, to length: Int) -> String {
+        let flat = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        guard flat.count > length else { return flat }
+        return String(flat.prefix(length - 1)).trimmingCharacters(in: .whitespaces) + "\u{2026}"
+    }
+
+    // MARK: Lookups
+
+    static func occurrences(of words: String, in paragraphs: [LiquidDoc.Paragraph]) -> Int {
+        let needle = words.lowercased()
+        guard !needle.isEmpty else { return 0 }
+        var count = 0
+        for paragraph in paragraphs {
+            var text = ContextQuery.plain(paragraph.text).lowercased()[...]
+            while let range = text.range(of: needle) {
+                count += 1
+                text = text[range.upperBound...]
+            }
+        }
+        return count
+    }
+
+    static func firstAndLastUse(of words: String, in paragraphs: [LiquidDoc.Paragraph])
+        -> (first: String?, last: String?) {
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        let using = paragraphs
+            .filter { $0.heading == nil }
+            .map { ContextQuery.plain($0.text) }
+            .filter { $0.range(of: words, options: options) != nil }
+        func sentences(of text: String) -> [String] {
+            let tokenizer = NLTokenizer(unit: .sentence)
+            tokenizer.string = text
+            return tokenizer.tokens(for: text.startIndex..<text.endIndex)
+                .map { String(text[$0]).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.range(of: words, options: options) != nil }
+        }
+        guard let first = using.first.flatMap({ sentences(of: $0).first }) else { return (nil, nil) }
+        let last = using.last.flatMap { sentences(of: $0).last }
+        return (first, last == first ? nil : last)
+    }
+
+    /// The paper's Defined Concept named (or marked) by the words.
+    static func definition(of words: String, in doc: LiquidDoc) -> (name: String, description: String)? {
+        let key = words.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "“”\"'‘’.,;:!?()[] "))
+        guard !key.isEmpty else { return nil }
+        guard let concept = doc.concepts.first(where: { concept in
+            concept.name.lowercased() == key
+                || concept.markedForms.contains { $0.lowercased() == key }
+        }) else { return nil }
+        let text = concept.userDefinition?.isEmpty == false
+            ? concept.userDefinition ?? "" : concept.description
+        return text.isEmpty ? nil : (concept.name, text)
+    }
+
+    /// "Hegland, F. (2025). The Title. Venue." from the reference's BibTeX.
+    static func line(for reference: LiquidDoc.Reference) -> String {
+        let fields = BibTeXParser.first(reference.bibtex)?.fields ?? [:]
+        func field(_ name: String) -> String? {
+            fields[name].map { $0.replacingOccurrences(of: #"[{}]"#, with: "", options: .regularExpression) }
+                .flatMap { $0.isEmpty ? nil : $0 }
+        }
+        var head = ""
+        if let author = field("author") {
+            let names = author.components(separatedBy: " and ")
+            head = names.count > 2 ? names[0] + " et al." : names.joined(separator: " & ")
+        }
+        if let year = field("year") { head += head.isEmpty ? year : " (\(year))" }
+        let parts = [head, field("title"), field("journal") ?? field("booktitle") ?? field("publisher")]
+            .compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? (reference.citedAs ?? reference.id)
+            : parts.map { $0.hasSuffix(".") ? $0 : $0 + "." }.joined(separator: " ")
+    }
+
+    static func url(for reference: LiquidDoc.Reference) -> URL? {
+        let fields = BibTeXParser.first(reference.bibtex)?.fields ?? [:]
+        if let doi = fields["doi"], !doi.isEmpty {
+            return URL(string: doi.hasPrefix("http") ? doi : "https://doi.org/" + doi)
+        }
+        return fields["url"].flatMap(URL.init(string:))
+    }
+
+    /// The caption paragraph that begins with the label ("Figure 3:"),
+    /// figure markup or plain caption alike.
+    static func caption(labelled label: String, in paragraphs: [LiquidDoc.Paragraph])
+        -> (caption: String, paragraphID: String)? {
+        let number = label.filter { $0.isNumber || $0.isLetter && $0.isLowercase && label.last == $0 }
+        let stem = label.lowercased().hasPrefix("t") ? "tab(le)?"
+            : label.lowercased().hasPrefix("e") ? "eq(uation)?" : "fig(ure)?"
+        let pattern = #"^\s*"# + stem + #"\.?\s*"# + NSRegularExpression.escapedPattern(for: number) + #"\b"#
+        for paragraph in paragraphs {
+            let text = ContextQuery.plain(paragraph.text)
+            if text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
+                return (clipped(text, to: 160), paragraph.id)
+            }
+        }
+        return nil
+    }
+
+    /// The sentence that says what a symbol stands for: "where k is…",
+    /// "k denotes…", "let k be…".
+    static func symbolDefinition(of symbol: String, in paragraphs: [LiquidDoc.Paragraph]) -> String? {
+        let s = NSRegularExpression.escapedPattern(for: symbol)
+        let pattern = #"(where|let)\s+"# + s + #"\s+(is|be|denotes|represents|stands for)\b|(?<!\w)"#
+            + s + #"\s+(denotes|represents|stands for|is defined as)\b"#
+        for paragraph in paragraphs where paragraph.heading == nil {
+            let text = ContextQuery.plain(paragraph.text)
+            guard let hit = text.range(of: pattern, options: .regularExpression) else { continue }
+            let tokenizer = NLTokenizer(unit: .sentence)
+            tokenizer.string = text
+            if let sentence = tokenizer.tokens(for: text.startIndex..<text.endIndex)
+                .first(where: { $0.overlaps(hit) }) {
+                return clipped(String(text[sentence]), to: 200)
+            }
+        }
+        return nil
+    }
+}
+
+// MARK: - The dot
+
+/// The chrome ball: a polished sphere, lit from the upper left. Drawn the
+/// same on the Mac and Vision Pro.
+struct SelectionDot: View {
+    var size: CGFloat = 18
+    var lifted = false
+
+    var body: some View {
+        ZStack {
+            // Chrome reflects its room: bright sky above, the dark horizon
+            // band just below the middle, the lit floor at the foot.
+            Circle()
+                .fill(LinearGradient(stops: [
+                    .init(color: Color(white: 0.97), location: 0.0),
+                    .init(color: Color(white: 0.86), location: 0.30),
+                    .init(color: Color(white: 0.62), location: 0.50),
+                    .init(color: Color(white: 0.30), location: 0.60),
+                    .init(color: Color(white: 0.55), location: 0.75),
+                    .init(color: Color(white: 0.88), location: 0.95),
+                ], startPoint: .top, endPoint: .bottom))
+            // Curvature: the edge falls away into shadow.
+            Circle()
+                .fill(RadialGradient(colors: [.clear, .clear, Color.black.opacity(0.35)],
+                                     center: UnitPoint(x: 0.45, y: 0.40),
+                                     startRadius: 0, endRadius: size * 0.58))
+            // The window's highlight, upper left.
+            Ellipse()
+                .fill(Color.white)
+                .frame(width: size * 0.42, height: size * 0.26)
+                .blur(radius: size * 0.035)
+                .offset(x: -size * 0.12, y: -size * 0.24)
+            Circle()
+                .strokeBorder(Color.black.opacity(0.22), lineWidth: 0.6)
+        }
+        .frame(width: size, height: size)
+        .compositingGroup()
+        .shadow(color: .black.opacity(lifted ? 0.35 : 0.25), radius: lifted ? 3 : 1.5,
+                x: 0, y: lifted ? 2 : 1)
+        .scaleEffect(lifted ? 1.15 : 1)
+        .animation(.easeOut(duration: 0.12), value: lifted)
     }
 }

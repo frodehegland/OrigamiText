@@ -839,6 +839,19 @@ struct OrigamiVisionApp: App {
             WindowPlacement(.utilityPanel)
         }
 
+        // A context panel torn off the reading: a window of its own, to
+        // stand anywhere in the room.
+        WindowGroup(id: "context", for: VisionContextTarget.self) { $target in
+            if let target {
+                VisionContextWindow(target: target)
+                    .environment(model)
+            }
+        }
+        .defaultSize(width: 440, height: 580)
+        .defaultWindowPlacement { _, _ in
+            WindowPlacement(.utilityPanel)
+        }
+
         // The journal's articles live in the immersive space itself (see
         // JournalFieldSpace below) — the full room, not a volume.
 
@@ -3009,6 +3022,7 @@ struct VisionReaderView: View {
     @Environment(VisionModel.self) private var model
     /// Set by the Map's panel, which sizes itself to this reading.
     @Environment(\.visionReadingHostGrows) private var hostGrows
+    @Environment(\.openWindow) private var openWindow
     let docID: String
     /// The speaker whose statements are being browsed, sheet-presented.
     @State private var browsingSpeaker: SpeakerSelection?
@@ -3047,6 +3061,19 @@ struct VisionReaderView: View {
     /// and whether its Highlight kinds row stands open.
     @State private var verbParagraph: LiquidDoc.Paragraph?
     @State private var verbShowsKinds = false
+    /// The selection the chrome dot stands beside, and whether its menu
+    /// is open — the Mac's selection dot, here.
+    @State private var dotSelection: VisionDotSelection?
+    @State private var dotMenuOpen = false
+    /// The dot's centre in the reading's own space ("visionReader"),
+    /// where its menu and the context panel are hung.
+    @State private var dotAnchor: CGPoint = .zero
+    /// The open context panel's words, and where it was opened from.
+    @State private var contextTarget: VisionContextTarget?
+    @State private var contextAnchor: CGPoint = .zero
+    /// How far the reader has dragged the panel from where it opened.
+    @State private var contextShift: CGSize = .zero
+    @State private var contextShiftStart: CGSize?
     /// The selection a Note… is being written for, and the words typed.
     @State private var annotating: VisionModel.ReaderSelection?
     @State private var noteDraft = ""
@@ -3149,6 +3176,14 @@ struct VisionReaderView: View {
             // endnote — as on the Mac. Overlaid, not sheeted: this
             // view lives on a RealityKit attachment, where a sheet has
             // no window to present in.
+            .coordinateSpace(.named(Self.readerSpace))
+            // The selection dot's menu and the context panel, hung beside
+            // the dot as on the Mac, lifted toward the reader.
+            .overlay(alignment: .topLeading) {
+                GeometryReader { geometry in
+                    dotLayer(doc, size: geometry.size)
+                }
+            }
             .overlay {
                 if let paragraph = verbParagraph {
                     // The floating verbs, aligned to the document's
@@ -4172,16 +4207,181 @@ struct VisionReaderView: View {
                     onLongPress: {
                         verbShowsKinds = false
                         verbParagraph = paragraph
+                    },
+                    onSelection: { report in
+                        if let report {
+                            if dotSelection?.paragraphID != paragraph.id
+                                || dotSelection?.text != report.text {
+                                dotMenuOpen = false
+                            }
+                            dotSelection = VisionDotSelection(
+                                paragraphID: paragraph.id, text: report.text,
+                                prefix: report.prefix, suffix: report.suffix,
+                                point: report.point)
+                            // An open panel follows the new words, where
+                            // it stands.
+                            if contextTarget != nil {
+                                contextTarget = VisionContextTarget(
+                                    docID: docID, paragraphID: paragraph.id,
+                                    text: report.text, prefix: report.prefix,
+                                    suffix: report.suffix)
+                            }
+                        } else if dotSelection?.paragraphID == paragraph.id, !dotMenuOpen {
+                            // While the menu is open it keeps its words:
+                            // the pinch on the dot can clear the text
+                            // view's selection on its way past.
+                            dotSelection = nil
+                        }
                     })
                 // NO presented menu can appear on a RealityKit
                 // attachment (no window to present into) — the text
                 // view's own long-press recognizer summons the
                 // floating verb bar, drawn inside the panel itself.
                 selectable
+                    .overlay(alignment: .topLeading) {
+                        if let dot = dotSelection, dot.paragraphID == paragraph.id {
+                            selectionDot(dot, doc: doc)
+                        }
+                    }
             }
         }
         .padding(.bottom, 12)
+        // The paragraph with the dot draws above its neighbours, so the
+        // dot's menu is never covered by the next paragraph.
+        .zIndex(dotSelection?.paragraphID == paragraph.id ? 1 : 0)
         .id(paragraph.id)   // the contents land here
+    }
+
+    /// The chrome dot just below and right of where the selection ends;
+    /// a pinch opens its menu (see dotMenu).
+    @ViewBuilder private func selectionDot(_ dot: VisionDotSelection,
+                                           doc: LiquidDoc) -> some View {
+        ZStack(alignment: .topLeading) {
+            Button {
+                dotMenuOpen.toggle()
+            } label: {
+                SelectionDot(size: 22, lifted: dotMenuOpen)
+                    // Held to 32 points so the target stops short of
+                    // the system's end handle beside it.
+                    .frame(width: 32, height: 32)
+                    .contentShape(.hoverEffect, Circle())
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .hoverEffect(.highlight)
+            .onGeometryChange(for: CGRect.self) {
+                $0.frame(in: .named(Self.readerSpace))
+            } action: { frame in
+                dotAnchor = CGPoint(x: frame.midX, y: frame.midY)
+            }
+            // Level with the system's own end handle — the blue ball
+            // hanging about 23 points below the caret's foot (measured
+            // on device, 5 Oct 2026) — and just to its left, so the
+            // handle stays free to drag. The 32-point target is offset
+            // by its half.
+            .offset(x: dot.point.x - 1 - 30 - 16, y: dot.point.y + 23 - 16)
+        }
+    }
+
+    /// The dot's menu, drawn in the reading's own overlay like the verb
+    /// bar — inside a paragraph it was covered by its neighbours.
+    @ViewBuilder private func dotMenu(_ dot: VisionDotSelection, doc: LiquidDoc) -> some View {
+        let selection = VisionModel.ReaderSelection(
+            address: docID, paragraphID: dot.paragraphID,
+            text: dot.text, prefix: dot.prefix, suffix: dot.suffix)
+        VisionSelectionMenu(
+            doc: doc, text: dot.text,
+            onContext: {
+                // The menu steps aside as the panel opens beside the dot.
+                contextTarget = VisionContextTarget(
+                    docID: docID, paragraphID: dot.paragraphID, text: dot.text,
+                    prefix: dot.prefix, suffix: dot.suffix)
+                contextAnchor = dotAnchor
+                contextShift = .zero
+                dotMenuOpen = false
+            },
+            onHighlight: { kind in
+                model.addTag(kind, on: selection)
+                closeDotMenu()
+            },
+            onNote: {
+                noteDraft = ""
+                annotating = selection
+                closeDotMenu()
+            },
+            onCite: {
+                if let paragraph = doc.body?.first(where: { $0.id == dot.paragraphID }) {
+                    copySelectionCitation(doc, paragraph: paragraph, selected: dot.text)
+                }
+                closeDotMenu()
+            },
+            onLift: {
+                model.floatText(on: selection)
+                closeDotMenu()
+            })
+        .fixedSize()
+    }
+
+    static let readerSpace = "visionReader"
+
+    /// The panel leaves the reading for a window the reader can place
+    /// anywhere in the room.
+    private func tearOffContext(_ target: VisionContextTarget) {
+        openWindow(id: "context", value: target)
+        contextTarget = nil
+        contextShift = .zero
+    }
+
+    /// The dot's menu just right of and below the dot, and the context
+    /// panel beside where it was opened — to the dot's left when the
+    /// right has no room.
+    @ViewBuilder private func dotLayer(_ doc: LiquidDoc, size: CGSize) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear.allowsHitTesting(false)
+            if dotMenuOpen, let dot = dotSelection {
+                dotMenu(dot, doc: doc)
+                    .offset(x: dotAnchor.x + 26, y: dotAnchor.y - 6)
+                    .offset(z: 40)
+            }
+            if let target = contextTarget {
+                let width: CGFloat = 420
+                let height: CGFloat = min(540, max(size.height - 24, 240))
+                let right = contextAnchor.x + 30
+                let x = right + width <= size.width ? right : max(contextAnchor.x - 30 - width, 8)
+                let y = min(max(contextAnchor.y - 60, 12), max(size.height - height - 12, 12))
+                VisionContextPanel(
+                    target: target,
+                    onClose: { contextTarget = nil },
+                    onDrag: { translation in
+                        let start = contextShiftStart ?? contextShift
+                        contextShiftStart = start
+                        contextShift = CGSize(width: start.width + translation.width,
+                                              height: start.height + translation.height)
+                    },
+                    onDragEnd: {
+                        contextShiftStart = nil
+                        // Dragged well off the reading: it tears away
+                        // into a window of its own.
+                        let left = x + contextShift.width
+                        let top = y + contextShift.height
+                        if left < -width / 2 || left + width / 2 > size.width
+                            || top < -height / 3 || top + height * 2 / 3 > size.height + height / 3 {
+                            tearOffContext(target)
+                        }
+                    },
+                    onTearOff: { tearOffContext(target) })
+                    .frame(width: width, height: height)
+                    .offset(x: x + contextShift.width, y: y + contextShift.height)
+                    .offset(z: 40)
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+    }
+
+    /// The menu done with: it closes, and the dot goes with it.
+    private func closeDotMenu() {
+        dotMenuOpen = false
+        dotSelection = nil
     }
 
     /// The floating verb bar: the reader's verbs on the long-pressed
@@ -4622,6 +4822,10 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
     /// summons, recognized INSIDE the text view (whose own gestures
     /// swallow SwiftUI's long-press before it can fire).
     var onLongPress: () -> Void = {}
+    /// The live selection — its words, neighbours, and where it ends in
+    /// the text view's own space — or nil when it empties. The reading's
+    /// selection dot stands there.
+    var onSelection: ((text: String, prefix: String?, suffix: String?, point: CGPoint)?) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -4659,6 +4863,22 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
             let prefix = String(full[..<swiftRange.lowerBound].suffix(32))
             let suffix = String(full[swiftRange.upperBound...].prefix(32))
             return (selected, prefix.isEmpty ? nil : prefix, suffix.isEmpty ? nil : suffix)
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            let report = parent.onSelection
+            guard let pieces = pieces(of: textView, in: textView.selectedRange),
+                  let end = textView.selectedTextRange?.end else {
+                Task { @MainActor in report(nil) }
+                return
+            }
+            // The foot of the selection's last character: the dot stands
+            // just below and right of it.
+            let caret = textView.caretRect(for: end)
+            let point = CGPoint(x: caret.maxX, y: caret.maxY)
+            Task { @MainActor in
+                report((pieces.selected, pieces.prefix, pieces.suffix, point))
+            }
         }
 
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
@@ -4801,6 +5021,339 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
             out.append(NSAttributedString(string: text, attributes: attributes))
         }
         return out
+    }
+}
+
+/// Where the selection dot stands: the paragraph, the words, and the
+/// foot of the selection in the paragraph's own space.
+struct VisionDotSelection: Equatable {
+    let paragraphID: String
+    let text: String
+    let prefix: String?
+    let suffix: String?
+    let point: CGPoint
+}
+
+/// What a Context window stands for — ids and words, never the document.
+struct VisionContextTarget: Codable, Hashable {
+    let docID: String
+    let paragraphID: String
+    let text: String
+    let prefix: String?
+    let suffix: String?
+}
+
+/// The dot's menu, in the Mac's order and shape: the quick answer, then
+/// Annotate (its kinds and Note… open beneath it), Copy as Citation, Lift,
+/// and Context last, which opens the panel beside the dot.
+private struct VisionSelectionMenu: View {
+    let doc: LiquidDoc
+    let text: String
+    let onContext: () -> Void
+    let onHighlight: (ReaderAnnotationKind) -> Void
+    let onNote: () -> Void
+    let onCite: () -> Void
+    let onLift: () -> Void
+    @State private var quickAnswer: String?
+    @State private var showsKinds = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let quickAnswer {
+                Text(quickAnswer)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: 320, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                Divider().padding(.horizontal, 10)
+            }
+            item("Annotate", "highlighter") { showsKinds.toggle() }
+            if showsKinds {
+                ForEach(ReaderAnnotationKind.allCases, id: \.self) { kind in
+                    item(VisionAnnotationInk.displayName(of: kind), kind.systemImage, indent: true) {
+                        onHighlight(kind)
+                    }
+                }
+                item("Note\u{2026}", "square.and.pencil", indent: true, action: onNote)
+            }
+            item("Copy as Citation", "quote.opening", action: onCite)
+            item("Lift", "balloon", action: onLift)
+            item("Context", "info.circle", action: onContext)
+        }
+        .padding(8)
+        .frame(minWidth: 220, alignment: .leading)
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 20))
+        .task(id: text) {
+            let query = ContextQuery.make(text: text, doc: doc)
+            quickAnswer = ContextPaperFindings.gather(for: query, in: doc).quickAnswer(for: query)
+        }
+    }
+
+    private func item(_ title: String, _ systemImage: String, indent: Bool = false,
+                      action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, indent ? 22 : 0)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 12))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .hoverEffect()
+    }
+}
+
+/// A torn-off context panel, in its own window.
+struct VisionContextWindow: View {
+    @Environment(\.dismissWindow) private var dismissWindow
+    let target: VisionContextTarget
+
+    var body: some View {
+        VisionContextPanel(target: target, onClose: { dismissWindow() }, inWindow: true)
+    }
+}
+
+/// The context panel, beside the selection dot: what the paper says about
+/// the words, the reader's own notes on them, and the other papers in the
+/// library that use them. The check keeps the findings as a note on the
+/// selection.
+struct VisionContextPanel: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    let target: VisionContextTarget
+    let onClose: () -> Void
+    /// The header is the panel's grip: drag it anywhere.
+    var onDrag: (CGSize) -> Void = { _ in }
+    var onDragEnd: () -> Void = {}
+    /// Present on the reading: the panel can leave it for a window.
+    var onTearOff: (() -> Void)? = nil
+    /// In a window of its own, which wears the glass already.
+    var inWindow = false
+
+    @State private var query: ContextQuery?
+    @State private var paper = ContextPaperFindings()
+    @State private var notes: [(book: String, words: String, note: String?)] = []
+    @State private var library: [(id: String, title: String, passage: String)] = []
+    @State private var searched = false
+    @State private var kept = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button(action: onClose) { Image(systemName: "xmark") }
+                    .buttonBorderShape(.circle)
+                    .accessibilityLabel("Close")
+                Text(query.map { "Context \u{00B7} \($0.kind.label)" } ?? "Context")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                if let onTearOff {
+                    Button(action: onTearOff) {
+                        Image(systemName: "macwindow.on.rectangle")
+                    }
+                    .buttonBorderShape(.circle)
+                    .accessibilityLabel("Tear Off")
+                    .help("Tear off — a window to place anywhere")
+                }
+                Button(action: keep) {
+                    Image(systemName: kept ? "checkmark.circle.fill" : "checkmark.circle")
+                }
+                .buttonBorderShape(.circle)
+                .disabled(kept || query == nil)
+                .accessibilityLabel(kept ? "Kept" : "Keep")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(coordinateSpace: .global)
+                .onChanged { onDrag($0.translation) }
+                .onEnded { _ in onDragEnd() })
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("\u{201C}\(target.text)\u{201D}")
+                        .font(AppFonts.body(19).italic())
+                        .lineLimit(5)
+                    specifics
+                    if let defined = paper.definition {
+                        section("Definition") {
+                            Text(defined.name).font(.headline)
+                            Text(defined.description).font(AppFonts.body(17))
+                        }
+                    }
+                    section("In this paper") {
+                        if paper.uses == 0 {
+                            quiet("Not found elsewhere in this paper.")
+                        } else {
+                            Text("Used \(ContextPaperFindings.times(paper.uses)).")
+                            if let first = paper.firstUse { usage("First", first) }
+                            if let last = paper.lastUse { usage("Last", last) }
+                        }
+                    }
+                    section("Your notes") {
+                        if notes.isEmpty {
+                            quiet("No notes of yours on these words.")
+                        } else {
+                            ForEach(Array(notes.enumerated()), id: \.offset) { _, note in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(note.note ?? "\u{201C}\(note.words)\u{201D}")
+                                        .font(AppFonts.body(17)).lineLimit(3)
+                                    Text(note.book).font(.callout).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    section("In your library") {
+                        if !searched {
+                            ProgressView()
+                        } else if library.isEmpty {
+                            quiet("No other paper in your library uses these words.")
+                        } else {
+                            ForEach(library, id: \.id) { hit in
+                                Button {
+                                    openWindow(id: "reader", value: hit.id)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(hit.title).font(.headline).lineLimit(2)
+                                            .multilineTextAlignment(.leading)
+                                        Text(hit.passage).font(AppFonts.body(15))
+                                            .foregroundStyle(.secondary).lineLimit(2)
+                                            .multilineTextAlignment(.leading)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 24),
+                               displayMode: inWindow ? .never : .always)
+        .task(id: target) { await gather() }
+    }
+
+    @ViewBuilder private var specifics: some View {
+        if let line = paper.citationLine {
+            section("Reference") {
+                Text(line).font(AppFonts.body(17))
+                if let url = paper.citationURL {
+                    Link(url.absoluteString, destination: url).font(.callout)
+                }
+            }
+        }
+        if query?.kind == .identifier, let url = query?.identifierURL {
+            section("Identifier") {
+                Link("Open at \(url.host() ?? url.absoluteString)", destination: url)
+            }
+        }
+        if query?.kind == .figureOrTable {
+            section(query?.label ?? "Figure") {
+                if let caption = paper.caption {
+                    Text(caption).font(AppFonts.body(17))
+                    Text(paper.mentions == 0 ? "Not discussed elsewhere in the text."
+                         : "Discussed \(ContextPaperFindings.times(paper.mentions)) in the text.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    quiet("No caption with this label in the paper.")
+                }
+            }
+        }
+        if query?.kind == .symbol {
+            section("Symbol") {
+                if let defined = paper.symbolDefinition {
+                    Text(defined).font(AppFonts.body(17))
+                } else {
+                    quiet("The paper does not say what it stands for.")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func section<Content: View>(
+        _ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased())
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            content()
+        }
+    }
+
+    private func quiet(_ text: String) -> some View {
+        Text(text).font(.callout).foregroundStyle(.tertiary)
+    }
+
+    private func usage(_ label: String, _ sentence: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).font(.callout.weight(.semibold)).foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .leading)
+            Text(sentence).font(AppFonts.body(17)).lineLimit(4)
+        }
+    }
+
+    /// Keep: the findings become a note on the selected words.
+    private func keep() {
+        guard let query else { return }
+        var extra: [String] = []
+        if !library.isEmpty {
+            extra.append("In your library: " + library.map(\.title).joined(separator: "; "))
+        }
+        model.addComment(paper.keptText(for: query, extra: extra),
+                         on: VisionModel.ReaderSelection(
+                            address: target.docID, paragraphID: target.paragraphID,
+                            text: target.text, prefix: target.prefix, suffix: target.suffix))
+        kept = true
+    }
+
+    private func gather() async {
+        let doc = model.index.byID[target.docID]?.doc
+        let query = ContextQuery.make(text: target.text, doc: doc)
+        self.query = query
+        kept = false
+        paper = doc.map { ContextPaperFindings.gather(for: query, in: $0) } ?? ContextPaperFindings()
+        let words = query.text
+        let folded = words.lowercased()
+        let entries = Array(model.index.byID.values)
+        // Your notes: annotations on the same words, or whose note
+        // mentions them, in any book.
+        var found: [(book: String, words: String, note: String?)] = []
+        for entry in entries where found.count < 5 {
+            for annotation in model.annotations(forAddress: entry.id) {
+                let exact = annotation.quotedText ?? ""
+                let note = annotation.body?.value
+                guard exact.lowercased().contains(folded)
+                        || (note?.lowercased().contains(folded) ?? false) else { continue }
+                found.append((entry.doc.title, exact, note))
+                if found.count == 5 { break }
+            }
+        }
+        notes = found
+        await Task.yield()
+        if Task.isCancelled { return }
+        // In your library: other papers whose text uses the words, most
+        // uses first.
+        if words.count <= 80 {
+            library = entries
+                .filter { $0.id != target.docID }
+                .compactMap { entry -> (id: String, title: String, passage: String, count: Int)? in
+                    let body = entry.doc.body ?? []
+                    let count = ContextPaperFindings.occurrences(of: words, in: body)
+                    guard count > 0 else { return nil }
+                    let passage = ContextPaperFindings.firstAndLastUse(of: words, in: body).first ?? ""
+                    return (entry.id, entry.doc.title, passage, count)
+                }
+                .sorted { $0.count > $1.count }
+                .prefix(6)
+                .map { ($0.id, $0.title, $0.passage) }
+        }
+        searched = true
     }
 }
 
