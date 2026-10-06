@@ -223,7 +223,8 @@ struct EPUBLibraryListView: View {
                 }
                 base.wrappedValue = ids
             })
-        return List(selection: selection) {
+        return ScrollViewReader { proxy in
+          List(selection: selection) {
             if query.isEmpty || split.inText.isEmpty {
                 ForEach(split.named) { record in bookRow(record, match: nil) }
             } else {
@@ -251,6 +252,16 @@ struct EPUBLibraryListView: View {
                     Text(emptyDescription)
                 }
             }
+        }
+        // A book just imported: scrolled to, its row already selected
+        // (selection is the open book).
+        .task(id: model.libraryRevealID) {
+            guard let id = model.libraryRevealID else { return }
+            // Let the list take in the new record before scrolling.
+            try? await Task.sleep(for: .milliseconds(150))
+            withAnimation { proxy.scrollTo(id, anchor: .center) }
+            model.libraryRevealID = nil
+        }
         }
     }
 

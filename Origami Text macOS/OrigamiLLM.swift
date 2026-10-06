@@ -6,8 +6,14 @@
 // concrete provider; a missing model falls back to Apple's with a
 // notice, never a failure. In-app MLX model downloads arrive when the
 // mlx-swift-examples package joins the project.
-#if os(macOS)
+//
+// Shared with Vision Pro (5 Oct 2026): the headset routes its AI through
+// the same store, so a reader's Ollama server on the Mac (added by its
+// .local address in the headset's Settings ▸ AI) answers there too. The
+// Mac's hardware-based model recommendations stay Mac-only.
+#if os(macOS) || os(visionOS)
 import Foundation
+import NaturalLanguage
 import Security
 import SwiftUI
 #if canImport(FoundationModels)
@@ -29,7 +35,7 @@ nonisolated enum OrigamiLLMError: LocalizedError {
         case .authRequired(let host):
             "\(host) needs an API key. Add one in Settings."
         case .appleUnavailable:
-            "The on-device model isn\u{2019}t available on this Mac."
+            "The on-device model isn\u{2019}t available on \(OrigamiLLM.thisDevice)."
         case .generationFailed(let why):
             why
         }
@@ -66,6 +72,15 @@ nonisolated struct OrigamiEndpoint: Codable, Identifiable, Hashable {
 @MainActor @Observable
 final class OrigamiLLM {
     static let shared = OrigamiLLM()
+
+    /// The device the built-in model runs on, for the settings' words.
+    nonisolated static var thisDevice: String {
+        #if os(visionOS)
+        "this headset"
+        #else
+        "this Mac"
+        #endif
+    }
 
     /// The active model: "apple", or "endpoint|<base>|<model>".
     /// Persisted; the picker binds to it directly.
@@ -174,6 +189,33 @@ final class OrigamiLLM {
         let text = try await appleRespond(instructions: instructions,
                                           to: prompt, onPartial: onPartial)
         return (text, "Apple\u{2019}s built-in model")
+    }
+
+    /// Whether any model can answer now: a chosen server, or Apple's
+    /// built-in model (which may still refuse — callers catch that).
+    var canRespond: Bool {
+        if selectedEndpointModel() != nil { return true }
+        #if canImport(FoundationModels)
+        if case .available = SystemLanguageModel.default.availability { return true }
+        #endif
+        return false
+    }
+
+    /// A structured answer from the chosen server: the model is asked for
+    /// one JSON object, which is decoded. Nil when no server is chosen —
+    /// the caller then uses Apple's guided generation. Throws when the
+    /// reply is not the JSON asked for.
+    func respondJSON<T: Decodable>(_ type: T.Type, instructions: String,
+                                   prompt: String) async throws -> T? {
+        guard selectedEndpointModel() != nil else { return nil }
+        let (text, _) = try await respond(
+            instructions: instructions + "\nReply with one JSON object only \u{2014} no prose, no code fence.",
+            to: prompt)
+        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"),
+              let data = String(text[start...end]).data(using: .utf8) else {
+            throw OrigamiLLMError.generationFailed("The model did not answer in the form asked for.")
+        }
+        return try JSONDecoder().decode(T.self, from: data)
     }
 
     private func appleRespond(instructions: String?, to prompt: String,
@@ -433,6 +475,234 @@ private nonisolated enum LLMKeychain {
     }
 }
 
+// MARK: - Context panel: Explain in context and Claim Check
+
+/// The context panel's AI layer (CONTEXT-PANEL-PLAN.md §4–5), through
+/// OrigamiLLM so the reader's chosen model answers. The rule is the AI
+/// summary's: the model may only say what the material it is handed
+/// says, every claim carries a quote, each quote is checked verbatim
+/// against the material, and whatever fails the check is dropped.
+@MainActor
+enum ContextAI {
+    /// One passage the model may draw on, and where it is from.
+    struct Source: Hashable {
+        var text: String
+        var name: String
+        var url: URL?
+    }
+
+    struct Explanation {
+        var sentences: [String]
+        var dropped: Int
+        var modelName: String
+    }
+
+    struct Verdict: Hashable, Identifiable {
+        enum Stance: String { case supports, contradicts, refines }
+        var stance: Stance
+        var quote: String
+        var source: Source
+        var id: String { source.name + quote }
+    }
+
+    /// Lowercased, quotes straightened, spaces single — for verbatim checks.
+    static func folded(_ text: String) -> String {
+        text.lowercased()
+            .replacingOccurrences(of: "[\u{2018}\u{2019}]", with: "'", options: .regularExpression)
+            .replacingOccurrences(of: "[\u{201C}\u{201D}]", with: "\"", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    static func verifies(_ quote: String, in material: [Source]) -> Bool {
+        let needle = folded(quote)
+        guard needle.count >= 8 else { return false }
+        return material.contains { folded($0.text).contains(needle) }
+    }
+
+    /// What the words mean here, from the material alone: sentences
+    /// whose quotes all check out are kept, the rest dropped and counted.
+    static func explain(_ words: String, sentence: String?, material: [Source]) async throws -> Explanation {
+        let numbered = material.enumerated().map { "[\($0.offset + 1)] \($0.element.name): \($0.element.text)" }
+            .joined(separator: "\n\n")
+        let answer = try await OrigamiLLM.shared.respond(
+            instructions: """
+                You explain what selected words mean in the passage they come from, \
+                using ONLY the numbered material given. Write two to four short sentences. \
+                Every sentence must contain at least one exact quotation from the material \
+                in double quotation marks, copied word for word. Say nothing the material \
+                does not say. If the material is not enough, say so in one sentence.
+                """,
+            to: """
+                SELECTED WORDS: \(words)
+                \(sentence.map { "THE SENTENCE THEY ARE IN: \($0)" } ?? "")
+
+                MATERIAL:
+                \(numbered)
+                """)
+        var kept: [String] = []
+        var dropped = 0
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = answer.text
+        for range in tokenizer.tokens(for: answer.text.startIndex..<answer.text.endIndex) {
+            let line = String(answer.text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let quotes = quotations(in: line)
+            if !quotes.isEmpty, quotes.allSatisfy({ verifies($0, in: material) }) {
+                kept.append(line)
+            } else {
+                dropped += 1
+            }
+        }
+        return Explanation(sentences: kept, dropped: dropped, modelName: answer.modelName)
+    }
+
+    /// Each passage sorted against the claim — supports, contradicts or
+    /// refines — with the words that decide it, checked verbatim against
+    /// the passage. Unrelated passages and failed quotes are dropped.
+    static func checkClaim(_ claim: String, passages: [Source]) async throws -> [Verdict] {
+        struct Reply: Decodable { var stance: String; var quote: String }
+        var verdicts: [Verdict] = []
+        for passage in passages.prefix(8) {
+            if Task.isCancelled { break }
+            let answer = try await OrigamiLLM.shared.respond(
+                instructions: """
+                    You compare a passage with a claim. Answer with one JSON object only, \
+                    no prose: {"stance": "supports" | "contradicts" | "refines" | "unrelated", \
+                    "quote": "the exact words from the passage that decide it, copied word for word"}.
+                    """,
+                to: "CLAIM: \(claim)\n\nPASSAGE (\(passage.name)): \(passage.text)")
+            guard let start = answer.text.firstIndex(of: "{"), let end = answer.text.lastIndex(of: "}"),
+                  let data = String(answer.text[start...end]).data(using: .utf8),
+                  let reply = try? JSONDecoder().decode(Reply.self, from: data),
+                  let stance = Verdict.Stance(rawValue: reply.stance.lowercased()),
+                  verifies(reply.quote, in: [passage]) else { continue }
+            verdicts.append(Verdict(stance: stance, quote: reply.quote, source: passage))
+        }
+        return verdicts
+    }
+
+    private static func quotations(in line: String) -> [String] {
+        let pattern = #"[\"\u{201C}]([^\"\u{201C}\u{201D}]{4,})[\"\u{201D}]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let text = line as NSString
+        return regex.matches(in: line, range: NSRange(location: 0, length: text.length))
+            .map { text.substring(with: $0.range(at: 1)) }
+    }
+}
+
+/// The AI rows of a context panel, shared by the Mac and Vision Pro:
+/// Explain in Context always; Check This Claim for a claim or passage.
+struct ContextAISection: View {
+    let query: ContextQuery
+    /// The sentence the words are in, when known.
+    let sentence: String?
+    /// What the panel found — ring 1 and ring 2 — as quotable material.
+    let material: [ContextAI.Source]
+    var excerptSize: CGFloat = 15
+
+    @State private var explanation: ContextAI.Explanation?
+    @State private var verdicts: [ContextAI.Verdict]?
+    @State private var working: String?
+    @State private var failure: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("AI").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button("Explain in Context", action: explain)
+                    .disabled(working != nil || material.isEmpty)
+                if query.kind == .claim || query.kind == .passage {
+                    Button("Check This Claim", action: check)
+                        .disabled(working != nil)
+                }
+            }
+            .controlSize(.small)
+            if let working {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(working).font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            if let failure {
+                Text(failure).font(.callout).foregroundStyle(.orange)
+            }
+            if let explanation {
+                ForEach(explanation.sentences, id: \.self) { line in
+                    Text(line).font(.system(size: excerptSize))
+                }
+                Text(explanation.sentences.isEmpty
+                     ? "Nothing the model said could be checked against the material, so nothing is shown."
+                     : "\(explanation.modelName)\(explanation.dropped > 0 ? " \u{00B7} \(explanation.dropped) unverified sentence\(explanation.dropped == 1 ? "" : "s") dropped" : "")")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let verdicts {
+                if verdicts.isEmpty {
+                    Text("No passage clearly bears on this claim.").font(.callout).foregroundStyle(.tertiary)
+                }
+                ForEach([ContextAI.Verdict.Stance.supports, .contradicts, .refines], id: \.self) { stance in
+                    let group = verdicts.filter { $0.stance == stance }
+                    if !group.isEmpty {
+                        Text(stance.rawValue.capitalized).font(.callout.weight(.semibold))
+                            .foregroundStyle(stance == .supports ? .green : stance == .contradicts ? .red : .orange)
+                        ForEach(group) { verdict in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("\u{201C}\(verdict.quote)\u{201D}").font(.system(size: excerptSize))
+                                if let url = verdict.source.url {
+                                    Link(verdict.source.name, destination: url).font(.caption)
+                                } else {
+                                    Text(verdict.source.name).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: query) {
+            explanation = nil; verdicts = nil; failure = nil
+        }
+    }
+
+    private func explain() {
+        working = "Reading the material\u{2026}"
+        failure = nil
+        Task {
+            defer { working = nil }
+            do {
+                explanation = try await ContextAI.explain(query.text, sentence: sentence, material: material)
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+    }
+
+    /// Gathers the library's passages and, when allowed, Semantic
+    /// Scholar's, then sorts each against the claim.
+    private func check() {
+        working = "Gathering passages\u{2026}"
+        failure = nil
+        Task {
+            defer { working = nil }
+            var passages = material.filter { $0.name != "This paper" }
+            if ContextOnline.isOn(ContextOnline.passagesKey),
+               let online = await ContextOnline.passages(for: query.text) {
+                passages += online.map { ContextAI.Source(text: $0.text, name: $0.title, url: $0.url) }
+            }
+            guard !passages.isEmpty else {
+                failure = "No passages to check against \u{2014} nothing in your library, and nothing online."
+                return
+            }
+            working = "Checking \(min(passages.count, 8)) passages\u{2026}"
+            do {
+                verdicts = try await ContextAI.checkClaim(query.text, passages: passages)
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+    }
+}
+
 // MARK: - The settings sections (spec §8, hosted by Settings ▸ AI)
 
 /// The model picker, the paste box, and the endpoint list — dropped
@@ -456,7 +726,7 @@ struct LLMModelSettingsSections: View {
             Picker("Choose Model", selection: Binding(
                 get: { llm.selectedID },
                 set: { llm.selectedID = $0 })) {
-                Text("Apple\u{2019}s built-in \u{2014} on this Mac").tag("apple")
+                Text("Apple\u{2019}s built-in \u{2014} on \(OrigamiLLM.thisDevice)").tag("apple")
                 ForEach(llm.endpoints) { endpoint in
                     ForEach(endpoint.models, id: \.self) { model in
                         Text("\(endpoint.hostLabel) \u{00B7} \(model)")
@@ -468,7 +738,7 @@ struct LLMModelSettingsSections: View {
             Text("Language Model")
         } footer: {
             Text("""
-                Apple\u{2019}s built-in model runs on this Mac \u{2014} no text \
+                Apple\u{2019}s built-in model runs on \(OrigamiLLM.thisDevice) \u{2014} no text \
                 leaves it. A server model sends the text it reads to that \
                 server. The reading\u{2019}s AI (Summary, Issues, and \
                 the selection presets) uses the chosen model; when it isn\u{2019}t \
@@ -508,7 +778,7 @@ struct LLMModelSettingsSections: View {
             if let pendingRemote {
                 // §11: a non-local server sees the reader's text — said
                 // before it is added, not after.
-                Text("\(pendingRemote.base) is not on this Mac: document text will be sent to that server.")
+                Text("\(pendingRemote.base) is not on \(OrigamiLLM.thisDevice): document text will be sent to that server.")
                     .font(.caption)
                     .foregroundStyle(.orange)
                 Button("Add Anyway") {
@@ -528,12 +798,14 @@ struct LLMModelSettingsSections: View {
             } else if let status {
                 Text(status).font(.caption).foregroundStyle(.secondary)
             }
+            #if os(macOS)
             Button("Find a model for this Mac\u{2026}") {
                 showingRecommendations = true
             }
             .popover(isPresented: $showingRecommendations, arrowEdge: .trailing) {
                 ModelRecommendationsView(specs: .current)
             }
+            #endif
         } header: {
             Text("Add a Model or Server")
         } footer: {
@@ -644,6 +916,7 @@ struct LLMModelSettingsSections: View {
     }
 }
 
+#if os(macOS)
 // MARK: - Mac hardware snapshot
 
 fileprivate struct MacSpecs {
@@ -886,4 +1159,5 @@ private struct RecommendationRow: View {
         .padding(.vertical, 10)
     }
 }
+#endif // os(macOS) — recommendations
 #endif

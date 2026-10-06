@@ -18,6 +18,7 @@
 
 import SwiftUI
 import AppKit
+import NaturalLanguage
 
 /// Settings ▸ Reading ▸ Selection: the custom dot, or the system's own
 /// selection behaviour alone (the right-click menu, no dot).
@@ -365,6 +366,10 @@ struct SelectionContextPanel: View {
     @State private var definition: (name: String, description: String)?
     @State private var person: String?
     @State private var kept = false
+    /// Your library's papers that cite this one, and the standing of a
+    /// selected citation's work.
+    @State private var citingPapers: [LiquidDoc] = []
+    @State private var standing: [ReferenceStatus.Mark] = []
     @State private var notes: [(book: String, words: String, note: String?)] = []
     @State private var library: [(record: EPUBRecord, passage: String, count: Int)] = []
     @State private var searchedLibrary = false
@@ -418,6 +423,30 @@ struct SelectionContextPanel: View {
                             }
                         }
                     }
+                    if !standing.isEmpty {
+                        section("Standing") {
+                            ForEach(standing, id: \.self) { mark in
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(mark.text)
+                                        .font(.callout.weight(mark.pill ? .semibold : .regular))
+                                        .foregroundStyle(Self.color(of: mark.tone))
+                                    if !mark.meaning.isEmpty {
+                                        Text(mark.meaning).font(.callout).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .help(mark.detail)
+                            }
+                        }
+                    }
+                    if !citingPapers.isEmpty {
+                        section("Cited Here") {
+                            Text("Papers in your library citing this one:")
+                                .font(.callout).foregroundStyle(.secondary)
+                            ForEach(citingPapers, id: \.id) { paper in
+                                Text(paper.title).font(.body.weight(.medium)).lineLimit(2)
+                            }
+                        }
+                    }
                     section("In your library") {
                         if !searchedLibrary {
                             ProgressView().controlSize(.small)
@@ -441,6 +470,13 @@ struct SelectionContextPanel: View {
                                 .buttonStyle(.plain)
                                 .help("Open this paper")
                             }
+                        }
+                    }
+                    if let query {
+                        ContextOnlineSection(query: query)
+                        if searchedLibrary {
+                            ContextAISection(query: query, sentence: aiSentence,
+                                             material: aiMaterial)
                         }
                     }
                 }
@@ -571,6 +607,47 @@ struct SelectionContextPanel: View {
         }
     }
 
+    static func color(of tone: ReferenceStatus.Mark.Tone) -> Color {
+        switch tone {
+        case .alarm: .red
+        case .caution: .orange
+        case .info: .blue
+        case .good: .green
+        case .positive: .accentColor
+        case .quiet: .secondary
+        }
+    }
+
+    /// The paragraph the words are in, as the AI's first source.
+    private var aiParagraph: String? {
+        guard let doc = context.doc else { return nil }
+        return (doc.body ?? []).lazy.map { ContextQuery.plain($0.text) }
+            .first { $0.localizedCaseInsensitiveContains(context.text) }
+    }
+
+    private var aiSentence: String? {
+        guard let paragraph = aiParagraph else { return nil }
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = paragraph
+        return tokenizer.tokens(for: paragraph.startIndex..<paragraph.endIndex)
+            .map { String(paragraph[$0]) }
+            .first { $0.localizedCaseInsensitiveContains(context.text) }
+    }
+
+    /// Everything the panel found, as quotable material for the AI.
+    private var aiMaterial: [ContextAI.Source] {
+        var out: [ContextAI.Source] = []
+        if let aiParagraph { out.append(.init(text: aiParagraph, name: "This paper")) }
+        if let first = paper.firstUse { out.append(.init(text: first, name: "This paper")) }
+        if let last = paper.lastUse { out.append(.init(text: last, name: "This paper")) }
+        if let definition { out.append(.init(text: definition.description, name: "Glossary: \(definition.name)")) }
+        for note in notes { out.append(.init(text: note.note ?? note.words, name: "Your note, \(note.book)")) }
+        for hit in library where hit.count > 0 {
+            out.append(.init(text: hit.passage, name: hit.record.title))
+        }
+        return out
+    }
+
     /// Keep: the findings, as words, become a comment on the selection —
     /// an annotation like any other, found again in Your notes.
     private func keep() {
@@ -579,6 +656,9 @@ struct SelectionContextPanel: View {
         if let person { extra.append("Person: \(person)") }
         if !library.isEmpty {
             extra.append("In your library: " + library.map(\.record.title).joined(separator: "; "))
+        }
+        if !standing.isEmpty {
+            extra.append("Standing: " + standing.map(\.text).joined(separator: ", "))
         }
         context.comment(paper.keptText(for: query, definition: definition, extra: extra))
         kept = true
@@ -604,6 +684,23 @@ struct SelectionContextPanel: View {
         if phrase {
             definition = model.glossaryDefinition(matching: words) ?? paper.definition
             if query.kind == .name { person = words }
+        }
+        citingPapers = []; standing = []
+        if let reference = query.reference, let doc = context.doc {
+            let record = BibTeXRecord.records(in: reference.bibtex).first
+            let title = record?.title ?? reference.citedAs ?? ""
+            let doi = ReferenceStatus.cleanDOI(record?.fields["doi"])
+            await ReferenceStatus.loadIndexIfNeeded()
+            let all = ReferenceStatus.marks(for: ReferenceStatus.MarkInput(
+                doi: doi, title: title,
+                year: Int((record?.year ?? "").filter(\.isNumber).prefix(4)),
+                entryType: record?.entryType ?? "", fields: record?.fields ?? [:],
+                smallList: doc.references.count < 15))
+            standing = ReferenceStatus.visible(all, for: ReferenceStatus.workKeys(doi: doi, title: title))
+        }
+        if let doc = context.doc {
+            citingPapers = Array(ContextPaperFindings.papers(
+                citing: doc, among: model.index.byID.values.map(\.doc)).prefix(5))
         }
         // Your notes: annotations on the same words, or whose comment
         // mentions them, in any book.

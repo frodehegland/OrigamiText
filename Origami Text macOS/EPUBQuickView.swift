@@ -106,6 +106,13 @@ struct EPUBQuickViewScreen: View {
             resolveEndnote: { id in model.endnoteText(inBook: book, id: id) },
             onCitation: { key, ref in
                 let key = key.isEmpty ? ref : key
+                // A reference naming a library book (its vm-id, or an
+                // origamitext:// url) opens that book in the main window,
+                // as it does in the reader.
+                if !key.isEmpty,
+                   model.openCitedLibraryBook(key: key, in: model.citationCardDoc(forBook: book)) {
+                    return
+                }
                 if !key.isEmpty { citationCard = QuickViewCitation(key: key) }
             },
             requestedFragment: requestedFragment,

@@ -245,6 +245,7 @@ struct EPUBMapView: View {
     /// used here: a panel's attachment keeps the size it was made at,
     /// so when Horizontal is chosen the panels must be measured again.
     @AppStorage("visionReaderMode") private var readerModeRaw = "scroll"
+    @AppStorage("visionReaderMargin") private var readerMarginOn = false
 
     /// 3D figures pinched out of their pages and standing in the room.
     @State private var spatialModels = SpatialModels()
@@ -1658,6 +1659,10 @@ struct EPUBMapView: View {
             // panel must be allowed to become as wide as the reading
             // now asks for.
             .onChange(of: readerModeRaw) {
+                remeasureOpenReadings()
+            }
+            // The margin column widens the flowing page's panel.
+            .onChange(of: readerMarginOn) {
                 remeasureOpenReadings()
             }
             // A 3D figure pinched and pulled out of its page.
@@ -6935,8 +6940,14 @@ struct MapReaderPanel: View {
     /// its own spread (each reader sizes itself); every other view
     /// keeps the page width.
     private var panelWidth: CGFloat? {
-        isHorizontal || isOrigami ? nil : 640
+        if isHorizontal || isOrigami { return nil }
+        // The margin column earns its width beside the flowing page.
+        let flowing = readerModeRaw == "scroll" || readerModeRaw == "outline"
+        return marginOn && flowing ? 921 : 640   // the page as before, plus the 280 margin and its rule
     }
+
+    /// The reader's margin column, shared with VisionReaderView.
+    @AppStorage("visionReaderMargin") private var marginOn = false
 
     private var isHorizontal: Bool { readerModeRaw == "horizontal" }
     private var isOrigami: Bool { readerModeRaw == "origami" }
@@ -7217,6 +7228,21 @@ enum FloorShow: String, CaseIterable, Identifiable {
 /// them like tiles underfoot. Wikidata's most widely carried events
 /// win the floor space when years crowd.
 @MainActor
+/// How the floor timeline looks — one place to tune it. Lowered contrast
+/// and a lighter floor (5 Oct 2026): a pale wash over the timeline's
+/// stretch of floor, soft pale beds, dark grey words, grey rules.
+enum FloorLook {
+    /// The pale sheet over the floor: higher is lighter.
+    static let washOpacity: CGFloat = 0.22
+    /// The beds under events and years.
+    static let bed = Color(white: 0.96).opacity(0.78)
+    static let eventInk = Color(white: 0.22)
+    static let yearInk = Color(white: 0.38)
+    /// Decade rules across the floor.
+    static let ruleWhite: CGFloat = 0.3
+    static let ruleOpacity: CGFloat = 0.3
+}
+
 final class FloorBand {
     private var content: RealityViewContent?
     private var entity: ModelEntity?
@@ -7366,10 +7392,22 @@ final class FloorDecadeLines {
         let step = max(10, Int((Double(span) / 400).rounded(.up)) * 10)
         let root = Entity()
         root.components.set(MapSpaceNodeComponent())
-        // Quiet but there: at 0.02 grey (773cca6) the rules vanished
-        // into the carpet, so they now read as a pale hairline.
+        // The floor lightened under the timeline (5 Oct 2026): one pale,
+        // translucent sheet across the whole stretch, so the room reads
+        // soft and light rather than words on a dark carpet.
+        var wash = UnlitMaterial()
+        wash.color = .init(tint: UIColor(white: 1, alpha: FloorLook.washOpacity))
+        wash.blending = .transparent(opacity: 1.0)
+        let sheet = ModelEntity(
+            mesh: .generatePlane(width: Self.halfSpan * 2, depth: citedSpace.depth),
+            materials: [wash])
+        sheet.position = SIMD3<Float>(0, -0.001,
+                                      citedSpace.origin.z - citedSpace.depth / 2 + shift.z)
+        root.addChild(sheet)
+        // Quiet grey hairlines: they must show on the pale sheet, where
+        // the old white rules vanished.
         var material = UnlitMaterial()
-        material.color = .init(tint: UIColor(white: 1, alpha: 0.35))
+        material.color = .init(tint: UIColor(white: FloorLook.ruleWhite, alpha: FloorLook.ruleOpacity))
         material.blending = .transparent(opacity: 1.0)
         let mesh = MeshResource.generateBox(
             size: SIMD3<Float>(Self.halfSpan * 2, 0.001, 0.004))
@@ -7429,11 +7467,11 @@ struct FloorHistoryView: View {
                 // Only draw year numbers for the left and right bands.
                 // (The decade rule lines come from FloorDecadeLines, not here.)
                 if sideOffset != 0 {
-                    // A black bed under every year, so the number reads
-                    // on any carpet.
+                    // A soft pale bed under every year, the number in
+                    // grey — low contrast on the lightened floor.
                     let yearText = Text(String(year))
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.85))
+                        .foregroundStyle(FloorLook.yearInk)
                     let resolvedYear = context.resolve(yearText)
                     let yearSize = resolvedYear.measure(
                         in: CGSize(width: 100, height: 30))
@@ -7445,7 +7483,7 @@ struct FloorHistoryView: View {
                             x: bedX, y: rule - 14 - yearSize.height / 2 - 3,
                             width: yearSize.width + 12,
                             height: yearSize.height + 6), cornerRadius: 6),
-                        with: .color(.black))
+                        with: .color(FloorLook.bed))
                     context.draw(resolvedYear,
                                  at: CGPoint(x: yearX, y: rule - 14),
                                  anchor: yearAnchor)
@@ -7466,7 +7504,7 @@ struct FloorHistoryView: View {
                 let words = event.title
                 let text = Text(words)
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.92))
+                    .foregroundStyle(FloorLook.eventInk)
                 let resolved = context.resolve(text)
                 let measured = resolved.measure(in: CGSize(width: size.width - 80,
                                                            height: lineHeight))
@@ -7486,10 +7524,10 @@ struct FloorHistoryView: View {
                 let bed = CGRect(x: bedX, y: row - measured.height / 2 - 5,
                                  width: measured.width + 24,
                                  height: measured.height + 10)
-                // Solid black: the words must read on any floor — pale
-                // carpet, wood, the void of a dark rug alike.
+                // A soft pale bed, dark grey words: legible on any floor
+                // without the hard black-and-white of before.
                 context.fill(Path(roundedRect: bed, cornerRadius: 8),
-                             with: .color(.black))
+                             with: .color(FloorLook.bed))
                 context.draw(resolved, at: CGPoint(x: textX, y: row), anchor: textAnchor)
             }
         }

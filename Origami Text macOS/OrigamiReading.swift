@@ -2223,6 +2223,314 @@ struct ContextPaperFindings {
     }
 }
 
+// MARK: - Ring 2 helpers: your library
+
+extension ContextPaperFindings {
+    /// The library's papers whose reference lists name this one — by DOI
+    /// when both carry one, else by normalised title.
+    static func papers(citing doc: LiquidDoc, among library: [LiquidDoc]) -> [LiquidDoc] {
+        func key(_ title: String) -> String {
+            title.lowercased().filter { $0.isLetter || $0.isNumber }
+        }
+        let title = key(doc.title)
+        let doi = doc.doi?.lowercased()
+        guard title.count > 8 || doi != nil else { return [] }
+        return library.filter { other in
+            other.id != doc.id && other.references.contains { reference in
+                let fields = BibTeXParser.first(reference.bibtex)?.fields ?? [:]
+                if let doi, let cited = fields["doi"]?.lowercased(), cited.hasSuffix(doi) { return true }
+                return key(BibTeXParser.displayText(fields["title"] ?? "")) == title
+            }
+        }
+    }
+
+    /// The library's papers with the person among their authors.
+    static func papers(by name: String, among library: [LiquidDoc]) -> [LiquidDoc] {
+        let needle = name.lowercased()
+        return library.filter { doc in
+            (doc.authors + [doc.displayAuthor]).contains { $0.lowercased().contains(needle) }
+        }
+    }
+}
+
+// MARK: - Ring 3: the scholarly record (online, only when the panel opens)
+
+/// The online providers, each answering from one free, keyless source and
+/// each with its own switch (Settings), "Local only" turning all of them
+/// off. Nothing here runs at launch: only an open context panel asks, and
+/// what it sends is the selected words. Answers are kept for the session.
+enum ContextOnline {
+    static let localOnlyKey = "contextLocalOnly"
+    static let conceptKey = "contextOnlineWikipedia"
+    static let worksKey = "contextOnlineOpenAlex"
+    static let passagesKey = "contextOnlineSemanticScholar"
+
+    static func isOn(_ key: String) -> Bool {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: localOnlyKey) else { return false }
+        return defaults.object(forKey: key) as? Bool ?? true
+    }
+
+    struct Concept: Hashable, Sendable {
+        var title: String
+        var extract: String
+        var url: URL?
+    }
+
+    struct Work: Hashable, Sendable {
+        var title: String
+        var authors: String
+        var year: Int?
+        var doi: String?
+        var url: URL? { doi.flatMap { URL(string: $0.hasPrefix("http") ? $0 : "https://doi.org/" + $0) } }
+    }
+
+    struct Passage: Hashable, Sendable {
+        var text: String
+        var title: String
+        var url: URL?
+    }
+
+    /// Which providers answer which kinds (plan §4).
+    static func asksConcept(_ kind: ContextQuery.Kind) -> Bool { [.term, .name].contains(kind) }
+    static func asksWorks(_ kind: ContextQuery.Kind) -> Bool {
+        [.term, .claim, .passage, .identifier, .citation].contains(kind)
+    }
+    static func asksPassages(_ kind: ContextQuery.Kind) -> Bool { [.claim, .passage, .term].contains(kind) }
+
+    // MARK: Session cache
+
+    @MainActor private static var conceptCache: [String: Concept?] = [:]
+    @MainActor private static var worksCache: [String: [Work]] = [:]
+    @MainActor private static var passagesCache: [String: [Passage]] = [:]
+
+    private static func get(_ url: URL) async -> Any? {
+        var request = URLRequest(url: url, timeoutInterval: 12)
+        request.setValue("OrigamiText/1.1 (https://github.com/frodehegland/OrigamiText)",
+                         forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    private static func encoded(_ text: String) -> String {
+        text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? text
+    }
+
+    /// Wikipedia's summary of the term: the article it redirects to, else
+    /// the first search hit.
+    @MainActor static func concept(for term: String) async -> Concept? {
+        if let cached = conceptCache[term.lowercased()] { return cached }
+        func summary(_ title: String) async -> Concept? {
+            let path = title.replacingOccurrences(of: " ", with: "_")
+                .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? title
+            guard let url = URL(string: "https://en.wikipedia.org/api/rest_v1/page/summary/" + path),
+                  let object = await get(url) as? [String: Any],
+                  (object["type"] as? String) != "disambiguation",
+                  let extract = object["extract"] as? String, !extract.isEmpty else { return nil }
+            let page = ((object["content_urls"] as? [String: Any])?["desktop"] as? [String: Any])?["page"] as? String
+            return Concept(title: object["title"] as? String ?? title, extract: extract,
+                           url: page.flatMap(URL.init(string:)))
+        }
+        var found = await summary(term)
+        if found == nil,
+           let url = URL(string: "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=1&srsearch=" + encoded(term)),
+           let object = await get(url) as? [String: Any],
+           let first = ((object["query"] as? [String: Any])?["search"] as? [[String: Any]])?.first,
+           let title = first["title"] as? String {
+            found = await summary(title)
+        }
+        conceptCache[term.lowercased()] = found
+        return found
+    }
+
+    /// OpenAlex's works for the words — a DOI looked up directly.
+    @MainActor static func works(for text: String, doi: String? = nil) async -> [Work] {
+        let cacheKey = (doi ?? text).lowercased()
+        if let cached = worksCache[cacheKey] { return cached }
+        let select = "&select=title,publication_year,doi,authorships"
+        let url: URL? = if let doi {
+            URL(string: "https://api.openalex.org/works/doi:" + encoded(doi) + "?" + select.dropFirst())
+        } else {
+            URL(string: "https://api.openalex.org/works?per-page=4&search=" + encoded(String(text.prefix(300))) + select)
+        }
+        var out: [Work] = []
+        if let url, let object = await get(url) as? [String: Any] {
+            let results = (object["results"] as? [[String: Any]]) ?? (object["title"] != nil ? [object] : [])
+            out = results.compactMap { work in
+                guard let title = work["title"] as? String, !title.isEmpty else { return nil }
+                let names = (work["authorships"] as? [[String: Any]] ?? [])
+                    .compactMap { ($0["author"] as? [String: Any])?["display_name"] as? String }
+                let authors = names.count > 2 ? names[0] + " et al." : names.joined(separator: " & ")
+                return Work(title: title, authors: authors, year: work["publication_year"] as? Int,
+                            doi: (work["doi"] as? String)?.replacingOccurrences(of: "https://doi.org/", with: ""))
+            }
+        }
+        worksCache[cacheKey] = out
+        return out
+    }
+
+    /// Semantic Scholar's passages from open-access papers using the words
+    /// — nil when the service would not answer (its shared tier is often
+    /// busy), which is not remembered, so the next opening asks again.
+    @MainActor static func passages(for text: String) async -> [Passage]? {
+        let cacheKey = text.lowercased()
+        if let cached = passagesCache[cacheKey] { return cached }
+        guard let url = URL(string: "https://api.semanticscholar.org/graph/v1/snippet/search?limit=3&query="
+                            + encoded(String(text.prefix(300)))),
+              let object = await get(url) as? [String: Any] else { return nil }
+        var out: [Passage] = []
+        if let data = object["data"] as? [[String: Any]] {
+            out = data.compactMap { hit in
+                guard let snippet = (hit["snippet"] as? [String: Any])?["text"] as? String else { return nil }
+                let title = (hit["paper"] as? [String: Any])?["title"] as? String ?? "A paper"
+                let search = URL(string: "https://www.semanticscholar.org/search?q=" + encoded(title))
+                return Passage(text: ContextPaperFindings.clipped(snippet, to: 320), title: title, url: search)
+            }
+        }
+        passagesCache[cacheKey] = out
+        return out
+    }
+}
+
+/// The online ring in a context panel — shared by the Mac and Vision Pro.
+/// Each source says what it sends; a switched-off source says so rather
+/// than vanishing, so the reader knows what was and was not asked.
+struct ContextOnlineSection: View {
+    let query: ContextQuery
+    /// The reader's preferred reading size for excerpts.
+    var excerptSize: CGFloat = 15
+    @State private var concept: ContextOnline.Concept?
+    @State private var works: [ContextOnline.Work] = []
+    @State private var passages: [ContextOnline.Passage] = []
+    @State private var passagesBusy = false
+    @State private var asking = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if ContextOnline.asksConcept(query.kind) {
+                source("Wikipedia", key: ContextOnline.conceptKey) {
+                    if let concept {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(concept.title).font(.body.weight(.semibold))
+                            Text(ContextPaperFindings.clipped(concept.extract, to: 360))
+                                .font(.system(size: excerptSize))
+                            if let url = concept.url {
+                                Link("Read on Wikipedia", destination: url).font(.callout)
+                            }
+                        }
+                    } else if !asking {
+                        quiet("Nothing found.")
+                    }
+                }
+            }
+            if ContextOnline.asksWorks(query.kind) {
+                source("Related Works \u{00B7} OpenAlex", key: ContextOnline.worksKey) {
+                    if works.isEmpty, !asking { quiet("Nothing found.") }
+                    ForEach(works, id: \.self) { work in
+                        VStack(alignment: .leading, spacing: 1) {
+                            if let url = work.url {
+                                Link(work.title, destination: url)
+                                    .font(.system(size: excerptSize, weight: .medium))
+                                    .multilineTextAlignment(.leading)
+                            } else {
+                                Text(work.title).font(.system(size: excerptSize, weight: .medium))
+                            }
+                            Text([work.authors, work.year.map(String.init) ?? ""]
+                                .filter { !$0.isEmpty }.joined(separator: " \u{00B7} "))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            if ContextOnline.asksPassages(query.kind) {
+                source("Who Else Says This \u{00B7} Semantic Scholar", key: ContextOnline.passagesKey) {
+                    if passagesBusy {
+                        quiet("Semantic Scholar is busy \u{2014} try again shortly.")
+                    } else if passages.isEmpty, !asking {
+                        quiet("Nothing found.")
+                    }
+                    ForEach(passages, id: \.self) { passage in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\u{201C}\(passage.text)\u{201D}").font(.system(size: excerptSize))
+                            if let url = passage.url {
+                                Link(passage.title, destination: url).font(.caption)
+                            } else {
+                                Text(passage.title).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: query) { await ask() }
+    }
+
+    @ViewBuilder private func source<Content: View>(_ name: String, key: String,
+                                                    @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text(name.uppercased())
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                if asking, ContextOnline.isOn(key) { ProgressView().controlSize(.mini) }
+            }
+            if ContextOnline.isOn(key) {
+                content()
+            } else {
+                quiet("Off in Settings \u{2014} nothing sent.")
+            }
+        }
+    }
+
+    private func quiet(_ text: String) -> some View {
+        Text(text).font(.callout).foregroundStyle(.tertiary)
+    }
+
+    private func ask() async {
+        concept = nil; works = []; passages = []; passagesBusy = false
+        asking = true
+        defer { asking = false }
+        // A selection still settling is not asked about.
+        try? await Task.sleep(for: .milliseconds(400))
+        if Task.isCancelled { return }
+        let words = query.text
+        if ContextOnline.asksConcept(query.kind), ContextOnline.isOn(ContextOnline.conceptKey) {
+            concept = await ContextOnline.concept(for: words)
+        }
+        if Task.isCancelled { return }
+        if ContextOnline.asksWorks(query.kind), ContextOnline.isOn(ContextOnline.worksKey) {
+            let doi = query.identifierURL?.host() == "doi.org"
+                ? String(query.identifierURL?.path().dropFirst() ?? "") : nil
+            works = await ContextOnline.works(for: words, doi: doi)
+        }
+        if Task.isCancelled { return }
+        if ContextOnline.asksPassages(query.kind), ContextOnline.isOn(ContextOnline.passagesKey) {
+            let answer = await ContextOnline.passages(for: words)
+            passages = answer ?? []
+            passagesBusy = answer == nil
+        }
+    }
+}
+
+/// The online switches, for either platform's Settings.
+struct ContextOnlineSettings: View {
+    @AppStorage(ContextOnline.localOnlyKey) private var localOnly = false
+    @AppStorage(ContextOnline.conceptKey) private var concept = true
+    @AppStorage(ContextOnline.worksKey) private var works = true
+    @AppStorage(ContextOnline.passagesKey) private var passages = true
+
+    var body: some View {
+        Toggle("Local only", isOn: $localOnly)
+        Toggle("Wikipedia \u{2014} definitions of terms and names", isOn: $concept)
+            .disabled(localOnly)
+        Toggle("OpenAlex \u{2014} related works", isOn: $works)
+            .disabled(localOnly)
+        Toggle("Semantic Scholar \u{2014} who else says this", isOn: $passages)
+            .disabled(localOnly)
+    }
+}
+
 // MARK: - The dot
 
 /// The chrome ball: a polished sphere, lit from the upper left. Drawn the

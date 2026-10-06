@@ -1,6 +1,8 @@
 #if os(visionOS)
 import SwiftUI
 import RealityKit
+import AVFoundation
+import NaturalLanguage
 import UniformTypeIdentifiers
 import FoundationModels
 import WebKit
@@ -1092,8 +1094,11 @@ final class VisionModel {
                     return nil
                 }.first
                 guard let exact, !exact.isEmpty else { continue }
+                // A kept context card shows its findings; lifted words
+                // show themselves.
+                let note = annotation.body?.value ?? ""
                 floats.append(FloatingText(
-                    id: annotation.id, text: exact, docID: record.id,
+                    id: annotation.id, text: note.isEmpty ? exact : note, docID: record.id,
                     position: SIMD3<Float>(Float(place.x), Float(place.y),
                                            Float(place.z))))
             }
@@ -1726,6 +1731,50 @@ final class VisionModel {
         let text: String
         let prefix: String?
         let suffix: String?
+    }
+
+    /// Whether the words name an author on the shelf — a capitalised name,
+    /// matched against every paper's authors.
+    func knowsAuthor(named name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 3, trimmed.first?.isUppercase == true else { return false }
+        let needle = trimmed.lowercased()
+        return index.byID.values.contains { entry in
+            (entry.doc.authors + [entry.doc.displayAuthor]).contains { $0.lowercased().contains(needle) }
+        }
+    }
+
+    /// Keep from the context panel: the findings become a note on the
+    /// words, and the note stands in the room as a card beside the reader
+    /// — moved like any lifted words, filed with the book.
+    func keepContext(_ text: String, on selection: ReaderSelection) {
+        let place = WebAnnotation.FloatPosition(x: 0.35, y: 1.35, z: -0.9)
+        guard let annotation = addAnnotation(
+            motivation: WebAnnotation.Motivation.commenting, note: text,
+            float: place, on: selection) else { return }
+        floatingTexts.append(FloatingText(
+            id: annotation.id, text: text, docID: selection.address,
+            position: SIMD3<Float>(Float(place.x), Float(place.y), Float(place.z))))
+    }
+
+    /// Each book's defined terms, read once from its unpacked package.
+    @ObservationIgnored private var glossaryCache: [String: [String: (name: String, description: String)]] = [:]
+
+    /// The book's own definition of the words — its Visual-Meta concepts
+    /// or Author's glossary, as the Mac's Show Definition reads them.
+    func glossaryDefinition(matching text: String, docID: String) -> (name: String, description: String)? {
+        let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "“”\"'‘’.,;:!?()[]"))
+            .lowercased()
+        guard !key.isEmpty, key.count <= 100,
+              let record = epubRecords.first(where: { $0.id == docID || $0.folder == docID })
+        else { return nil }
+        if glossaryCache[record.folder] == nil {
+            let base = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+            glossaryCache[record.folder] = OrigamiEPUBImporter.glossary(
+                content: base.appendingPathComponent(record.contentSubpath), base: base)
+        }
+        return glossaryCache[record.folder]?[key]
     }
 
     /// Every annotation on the given book, oldest first.
@@ -2912,6 +2961,14 @@ struct VisionSettingsView: View {
             }
             // The graphs' data dialog — its arm chips are gone; this
             // tab is the one door.
+            Tab("AI", systemImage: "sparkles") {
+                // The model the headset reads with — Apple's on-device
+                // model, or a server such as Ollama on the Mac, added by
+                // its .local address (localhost is the headset itself).
+                Form {
+                    LLMModelSettingsSections()
+                }
+            }
             Tab("Graph Data", systemImage: "chart.line.uptrend.xyaxis") {
                 VisionDataView()
             }
@@ -2941,6 +2998,13 @@ struct VisionSettingsView: View {
                     Text("Arm Menus")
                 } footer: {
                     Text("Moves every wrist chip to the opposite forearm — for wearing the working row on the other arm.")
+                }
+                Section {
+                    ContextOnlineSettings()
+                } header: {
+                    Text("Context Panel Online")
+                } footer: {
+                    Text("Asked only when a context panel opens, and sent only the selected words.")
                 }
                 Section("Community Folder") {
                     LabeledContent("Folder",
@@ -3040,6 +3104,8 @@ struct VisionReaderView: View {
     @State private var aiSummary: String?
     @State private var aiWorking = false
     @State private var aiError: String?
+    /// Which model made the summary, as OrigamiLLM names it.
+    @State private var aiModelName: String?
     /// One point either way for every reading, remembered — the Aa menu.
     @AppStorage("visionReaderFontDelta") private var fontDelta = 0.0
     /// The Origami View: which fold stands open — nil, and the whole
@@ -3074,6 +3140,18 @@ struct VisionReaderView: View {
     /// How far the reader has dragged the panel from where it opened.
     @State private var contextShift: CGSize = .zero
     @State private var contextShiftStart: CGSize?
+    /// Find: the words looked for, whether the find-fold stands (the
+    /// paper folded to its headings and every paragraph using them),
+    /// the field's draft, and the view to return to when it closes.
+    /// The margin column beside the flowing page — the reader's notes and
+    /// the AI summary, the Mac's Scroll margins and Column View.
+    @AppStorage("visionReaderMargin") private var marginOn = false
+    /// Read aloud: the voice, and the paragraph it is reading.
+    @State private var readAloud = VisionReadAloud()
+    @State private var findTerm = ""
+    @State private var findDraft = ""
+    @State private var findFieldOpen = false
+    @State private var modeBeforeFind: String?
     /// The selection a Note… is being written for, and the words typed.
     @State private var annotating: VisionModel.ReaderSelection?
     @State private var noteDraft = ""
@@ -3108,7 +3186,7 @@ struct VisionReaderView: View {
     /// The Mac's reading views, here: Default (the EPUB's own pages),
     /// Scroll, Horizontal, Focus, Outline, and AI.
     private enum Mode: String, CaseIterable {
-        case faithful, scroll, horizontal, focus, outline, ai, origami
+        case faithful, scroll, horizontal, focus, outline, ai, origami, references
 
         var word: String {
             switch self {
@@ -3119,6 +3197,7 @@ struct VisionReaderView: View {
             case .outline: "Outline"
             case .ai: "AI"
             case .origami: "Origami"
+            case .references: "References"
             }
         }
     }
@@ -3154,6 +3233,15 @@ struct VisionReaderView: View {
                     origamiView(doc)
                 case .scroll, .outline:
                     scrollBody(doc)
+                case .references:
+                    // The cited works as a whole page, the Mac's
+                    // References: listings and maps, standing pills.
+                    VisionReferencesView(doc: doc, docID: docID) { key in
+                        citationTarget = CitationTarget(key: key)
+                    }
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        footBar(doc, proxy: nil)
+                    }
                 }
             }
             // The selected reading — the desk — stands on solid paper,
@@ -3231,6 +3319,7 @@ struct VisionReaderView: View {
                 model.populateCitations(forDocID: docID)
             }
             .onDisappear {
+                readAloud.stop()
                 model.openDocIDs.remove(docID)
                 model.openDocCitations.removeValue(forKey: docID)
             }
@@ -3243,6 +3332,7 @@ struct VisionReaderView: View {
     /// Scroll, Outline and Transcript share the flowing page.
     private func scrollBody(_ doc: LiquidDoc) -> some View {
         ScrollViewReader { proxy in
+          HStack(alignment: .top, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(doc.title)
@@ -3251,7 +3341,14 @@ struct VisionReaderView: View {
                     Text("\(doc.displayAuthor) · \(doc.listedDateText)")
                         .foregroundStyle(.secondary)
                         .padding(.bottom, 20)
-                    if mode == .scroll {
+                    if !findTerm.isEmpty {
+                        // The find-fold: headings and every paragraph
+                        // using the words, the words marked.
+                        findHeader(doc)
+                        ForEach(foundParagraphs(of: doc)) { paragraph in
+                            paragraphView(paragraph, doc: doc)
+                        }
+                    } else if mode == .scroll {
                         // Scroll reads the whole flow, stretch folds
                         // and all.
                         flowView(readable(of: doc), doc: doc)
@@ -3266,8 +3363,18 @@ struct VisionReaderView: View {
                 .frame(maxWidth: .infinity)
                 .padding(28)
             }
+            if marginOn {
+                Divider()
+                marginColumn(doc, proxy: proxy)
+            }
+          }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 footBar(doc, proxy: proxy)
+            }
+            // The page follows the voice.
+            .onChange(of: readAloud.paragraphID) {
+                guard let id = readAloud.paragraphID else { return }
+                withAnimation { proxy.scrollTo(id, anchor: .center) }
             }
         }
     }
@@ -3789,7 +3896,7 @@ struct VisionReaderView: View {
                 Text("\(doc.displayAuthor) · \(doc.listedDateText)")
                     .foregroundStyle(.secondary)
                 Divider()
-                if case .available = SystemLanguageModel.default.availability {
+                if OrigamiLLM.shared.canRespond {
                     if let aiSummary {
                         Text("Summary")
                             .font(.headline)
@@ -3801,15 +3908,27 @@ struct VisionReaderView: View {
                     } else if aiWorking {
                         HStack(spacing: 10) {
                             ProgressView()
-                            Text("Reading on this device\u{2026}")
+                            Text("Reading\u{2026}")
                                 .foregroundStyle(.secondary)
                         }
                     } else {
                         Button("Summarize This Reading") { summarize(doc) }
                             .buttonStyle(.borderedProminent)
-                        Text("The summary is made on this device by Apple Intelligence — the document never leaves the headset.")
+                        // Which model reads, and where the text goes —
+                        // Settings ▸ AI chooses.
+                        Text(OrigamiLLM.shared.selectedEndpointModel().map {
+                            "The summary is made by \($0.model) on \($0.endpoint.hostLabel) \u{2014} the document's text is sent there."
+                        } ?? "The summary is made on this device by Apple Intelligence \u{2014} the document never leaves the headset.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                    if let aiModelName, aiSummary != nil {
+                        Text("Made by \(aiModelName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let notice = OrigamiLLM.shared.fallbackNotice {
+                        Text(notice).font(.caption).foregroundStyle(.orange)
                     }
                     if let aiError {
                         Label(aiError, systemImage: "xmark.octagon")
@@ -3854,19 +3973,201 @@ struct VisionReaderView: View {
         Task { @MainActor in
             defer { aiWorking = false }
             do {
-                let session = LanguageModelSession(instructions: """
+                // Through OrigamiLLM, so the reader's chosen model (their
+                // Ollama server, say) reads here as on the Mac.
+                let answer = try await OrigamiLLM.shared.respond(
+                    instructions: """
                     You summarize academic and literary documents faithfully \
                     and plainly, in a few short paragraphs, never inventing \
                     what the text does not say.
-                    """)
-                let response = try await session.respond(
-                    to: "Summarize \u{201C}\(title)\u{201D}:\n\n"
-                        + String(text.prefix(12_000)))
-                aiSummary = response.content
+                    """,
+                    to: "Summarize \u{201C}\(title)\u{201D}:\n\n" + String(text.prefix(12_000)),
+                    onPartial: { aiSummary = $0 })
+                aiSummary = answer.text
+                aiModelName = answer.modelName
             } catch {
                 aiError = error.localizedDescription
             }
         }
+    }
+
+    // MARK: The margin
+
+    /// The reader's notes on this paper, each one a way back to its
+    /// paragraph, and the AI summary beneath — or the button that makes it.
+    private func marginColumn(_ doc: LiquidDoc, proxy: ScrollViewProxy) -> some View {
+        let _ = model.annotationsStamp
+        let notes = model.annotations(forAddress: docID)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("YOUR NOTES")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    if notes.isEmpty {
+                        Text("Highlights and notes you make appear here.")
+                            .font(.callout)
+                            .foregroundStyle(.tertiary)
+                    }
+                    ForEach(notes, id: \.id) { note in
+                        let fragment = note.target.selectors.lazy.compactMap { selector -> String? in
+                            if case .fragment(let value, _) = selector { return value }
+                            return nil
+                        }.first
+                        let kind = ReaderAnnotationKind.kind(of: note) ?? .highlight
+                        Button {
+                            if let fragment {
+                                withAnimation { proxy.scrollTo(fragment, anchor: .center) }
+                            }
+                        } label: {
+                            HStack(alignment: .top, spacing: 8) {
+                                Circle()
+                                    .fill(VisionAnnotationInk.color(of: kind))
+                                    .frame(width: 8, height: 8)
+                                    .padding(.top, 6)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    if let body = note.body?.value, !body.isEmpty {
+                                        Text(body).font(AppFonts.body(15))
+                                    }
+                                    if let quote = note.quotedText, !quote.isEmpty {
+                                        Text("\u{201C}\(quote)\u{201D}")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(3)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        .hoverEffect()
+                    }
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("AI SUMMARY")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    if let aiSummary {
+                        Text(aiSummary).font(AppFonts.body(15))
+                    } else if aiWorking {
+                        ProgressView()
+                    } else {
+                        Button("Summarize This Reading") { summarize(doc) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        if let aiError {
+                            Text(aiError).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 280)
+    }
+
+    // MARK: Read aloud
+
+    /// Play, pause, resume. A fresh start reads from the selected
+    /// paragraph when there is one, else from the top — what is shown
+    /// (the find-fold, an Outline's open sections) is what is read.
+    private func toggleReadAloud(_ doc: LiquidDoc) {
+        if readAloud.isSpeaking {
+            readAloud.togglePause()
+            return
+        }
+        // The flowing page reads aloud; other views turn to it first.
+        if mode != .scroll, mode != .outline { modeRaw = Mode.scroll.rawValue }
+        var paragraphs = findTerm.isEmpty ? shownParagraphs(of: doc) : foundParagraphs(of: doc)
+        if let from = dotSelection?.paragraphID,
+           let index = paragraphs.firstIndex(where: { $0.id == from }) {
+            paragraphs = Array(paragraphs[index...])
+        }
+        readAloud.start(paragraphs.compactMap { paragraph in
+            let words = ContextQuery.plain(paragraph.text)
+            return words.isEmpty || block(of: paragraph, doc: doc) != nil
+                ? nil : (paragraph.id, words)
+        })
+    }
+
+    // MARK: Find
+
+    /// Opens the find-fold on the words: the reading turns to the flowing
+    /// page while it stands, and goes back to its own view when it closes.
+    private func startFind(_ term: String) {
+        let words = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty else { return }
+        if findTerm.isEmpty, mode != .scroll, mode != .outline {
+            modeBeforeFind = modeRaw
+            modeRaw = Mode.scroll.rawValue
+        }
+        findTerm = words
+        findDraft = words
+        findFieldOpen = false
+    }
+
+    private func endFind() {
+        findTerm = ""
+        findFieldOpen = false
+        if let previous = modeBeforeFind {
+            modeRaw = previous
+            modeBeforeFind = nil
+        }
+    }
+
+    /// Headings over every paragraph that uses the words — each heading
+    /// shown once, and only above a match (the Mac's find-fold).
+    private func foundParagraphs(of doc: LiquidDoc) -> [LiquidDoc.Paragraph] {
+        var shown: [LiquidDoc.Paragraph] = []
+        var pending: [Int: LiquidDoc.Paragraph] = [:]
+        for paragraph in readable(of: doc) {
+            if let level = paragraph.effectiveHeading {
+                pending = pending.filter { $0.key < level }
+                pending[level] = paragraph
+                continue
+            }
+            guard ContextQuery.plain(paragraph.text)
+                    .range(of: findTerm, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            else { continue }
+            shown.append(contentsOf: pending.keys.sorted().compactMap { pending[$0] })
+            pending = [:]
+            shown.append(paragraph)
+        }
+        return shown
+    }
+
+    /// The count and the way out, above the fold.
+    private func findHeader(_ doc: LiquidDoc) -> some View {
+        let count = ContextPaperFindings.occurrences(of: findTerm, in: readable(of: doc))
+        return HStack(spacing: 12) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            Text(count == 0 ? "No matches for \u{201C}\(findTerm)\u{201D}"
+                 : "\(count) match\(count == 1 ? "" : "es") for \u{201C}\(findTerm)\u{201D}")
+                .font(.callout)
+            Spacer()
+            Button("Done", action: endFind)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(.bottom, 16)
+    }
+
+    /// Every use of the found words, marked behind the ink.
+    private func markingFound(_ attributed: AttributedString) -> AttributedString {
+        var out = attributed
+        let plain = String(out.characters)
+        var searchStart = plain.startIndex
+        while let range = plain.range(of: findTerm, options: [.caseInsensitive, .diacriticInsensitive],
+                                      range: searchStart..<plain.endIndex) {
+            if let attrRange = Range(range, in: out) {
+                out[attrRange].backgroundColor = Color.yellow.opacity(0.45)
+            }
+            searchStart = range.upperBound
+        }
+        return out
     }
 
     // MARK: The flow
@@ -4104,6 +4405,7 @@ struct VisionReaderView: View {
                                                   citations: .authorDate,
                                                   appearance: readingScheme)
         out = painted(out, paragraphID: paragraph.id)
+        if !findTerm.isEmpty { out = markingFound(out) }
         if let trailing = trailingStretch,
            let url = URL(string: OrigamiReading.stretchScheme + ":" + trailing.id) {
             var mark = AttributedString(
@@ -4246,6 +4548,14 @@ struct VisionReaderView: View {
             }
         }
         .padding(.bottom, 12)
+        // The paragraph being read aloud wears a quiet wash.
+        .background {
+            if readAloud.paragraphID == paragraph.id {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.accentColor.opacity(0.14))
+                    .padding(-6)
+            }
+        }
         // The paragraph with the dot draws above its neighbours, so the
         // dot's menu is never covered by the next paragraph.
         .zIndex(dotSelection?.paragraphID == paragraph.id ? 1 : 0)
@@ -4290,7 +4600,11 @@ struct VisionReaderView: View {
             address: docID, paragraphID: dot.paragraphID,
             text: dot.text, prefix: dot.prefix, suffix: dot.suffix)
         VisionSelectionMenu(
-            doc: doc, text: dot.text,
+            doc: doc, docID: docID, text: dot.text,
+            onShowAll: {
+                startFind(dot.text)
+                closeDotMenu()
+            },
             onContext: {
                 // The menu steps aside as the panel opens beside the dot.
                 contextTarget = VisionContextTarget(
@@ -4471,18 +4785,68 @@ struct VisionReaderView: View {
     private func footBar(_ doc: LiquidDoc, proxy: ScrollViewProxy?) -> some View {
         let headings = (doc.body ?? []).filter { $0.effectiveHeading != nil }
         let modes: [Mode] = [.faithful, .scroll, .horizontal, .focus,
-                             .outline, .ai, .origami]
+                             .outline, .ai, .origami, .references]
         return HStack(spacing: 12) {
             Spacer()
             ForEach(Array(modes.enumerated()), id: \.offset) { index, word in
                 if index > 0 { separator }
-                modeWord(word.word, chosen: mode == word) {
+                modeWord(word.word, chosen: mode == word && findTerm.isEmpty) {
+                    findTerm = ""
+                    modeBeforeFind = nil
                     modeRaw = word.rawValue
                     if word == .outline { expanded = [] }
                     if word == .focus { focusIndex = 0 }
                 }
             }
             separator
+            if findFieldOpen {
+                TextField("Find", text: $findDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 180)
+                    .onSubmit { startFind(findDraft) }
+            }
+            Button {
+                if findFieldOpen, !findDraft.trimmingCharacters(in: .whitespaces).isEmpty {
+                    startFind(findDraft)
+                } else {
+                    findFieldOpen.toggle()
+                }
+            } label: {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(findTerm.isEmpty ? .secondary : .primary)
+            }
+            .buttonStyle(.plain)
+            .help("Find — the paper folded to every use of the words")
+            Button {
+                marginOn.toggle()
+                if marginOn, mode != .scroll, mode != .outline {
+                    modeRaw = Mode.scroll.rawValue
+                }
+            } label: {
+                Image(systemName: "sidebar.right")
+                    .foregroundStyle(marginOn ? .primary : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(marginOn ? "Hide the margin" : "Margin — your notes and the AI summary beside the page")
+            Button {
+                toggleReadAloud(doc)
+            } label: {
+                Image(systemName: readAloud.isSpeaking
+                      ? (readAloud.isPaused ? "play.fill" : "pause.fill")
+                      : "speaker.wave.2")
+                    .foregroundStyle(readAloud.isSpeaking ? .primary : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(readAloud.isSpeaking ? "Pause or resume reading aloud" : "Read aloud")
+            if readAloud.isSpeaking {
+                Button {
+                    readAloud.stop()
+                } label: {
+                    Image(systemName: "stop.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Stop reading aloud")
+            }
             Button {
                 showsContents = true
             } label: {
@@ -4635,6 +4999,506 @@ struct VisionReaderView: View {
 /// A tapped citation's card, overlaid on the reading: all the record
 /// the document carries — with Acquire at the bottom centre when the
 /// library lacks the work, listing it in the Mac's Time view.
+// MARK: - References
+
+/// One cited work, as the References page reads it.
+struct VisionReferenceEntry: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let authors: String
+    /// The first author's family name, folded — the Author listing's order.
+    let familyKey: String
+    let year: Int?
+    let venue: String
+    let reference: LiquidDoc.Reference
+}
+
+/// The standing of a cited work — ReferenceStatus, shared with the Mac:
+/// Retraction Watch held locally, Crossref notices, open access and
+/// citation counts asked live and cached.
+@MainActor
+enum VisionReferenceStanding {
+    static func entries(in doc: LiquidDoc) -> [VisionReferenceEntry] {
+        var seen = Set<String>()
+        return doc.references.compactMap { reference in
+            let record = BibTeXRecord.records(in: reference.bibtex).first
+            var title = record?.title ?? ""
+            if title.isEmpty { title = reference.citedAs ?? "Untitled" }
+            let dedupe = ReferenceStatus.normalizedTitle(title)
+            guard seen.insert(dedupe.isEmpty ? reference.id : dedupe).inserted else { return nil }
+            let fields = record?.fields ?? [:]
+            let firstAuthor = BibTeXParser.displayText(
+                (fields["author"] ?? fields["editor"] ?? "").components(separatedBy: " and ").first ?? "")
+            let family: String = {
+                let name = firstAuthor.trimmingCharacters(in: .whitespaces)
+                if let comma = name.firstIndex(of: ",") { return String(name[..<comma]) }
+                return name.split(separator: " ").last.map(String.init) ?? name
+            }()
+            let venue = [fields["journal"], fields["journaltitle"], fields["booktitle"], fields["publisher"]]
+                .compactMap { $0 }.first.map(BibTeXParser.displayText) ?? ""
+            return VisionReferenceEntry(
+                id: reference.id, title: title,
+                authors: record?.displayAuthors ?? "",
+                familyKey: family.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil),
+                year: Int((record?.year ?? "").filter(\.isNumber).prefix(4)),
+                venue: venue, reference: reference)
+        }
+    }
+
+    /// How often the paper's text cites each reference.
+    static func citationCounts(in doc: LiquidDoc) -> [String: Int] {
+        guard let regex = try? NSRegularExpression(pattern: #"\[cites?:([^\]]+)\]"#) else { return [:] }
+        var counts: [String: Int] = [:]
+        for paragraph in doc.body ?? [] where paragraph.text.contains("[cite") {
+            let text = paragraph.text as NSString
+            for match in regex.matches(in: paragraph.text, range: NSRange(location: 0, length: text.length)) {
+                for raw in text.substring(with: match.range(at: 1)).split(separator: ",") {
+                    counts[raw.trimmingCharacters(in: .whitespaces), default: 0] += 1
+                }
+            }
+        }
+        return counts
+    }
+
+    static func doi(of reference: LiquidDoc.Reference) -> String? {
+        ReferenceStatus.cleanDOI(BibTeXParser.first(reference.bibtex)?.fields["doi"])
+    }
+
+    /// The marks under a work, less any the reader removed on the Mac.
+    static func marks(for reference: LiquidDoc.Reference, in doc: LiquidDoc,
+                      inLibrary: Bool, counts: [String: Int]? = nil) -> [ReferenceStatus.Mark] {
+        let record = BibTeXRecord.records(in: reference.bibtex).first
+        let title = record?.title ?? reference.citedAs ?? ""
+        let doi = doi(of: reference)
+        let all = ReferenceStatus.marks(for: ReferenceStatus.MarkInput(
+            doi: doi, title: title,
+            year: Int((record?.year ?? "").filter(\.isNumber).prefix(4)),
+            inLibrary: inLibrary,
+            entryType: record?.entryType ?? "",
+            fields: record?.fields ?? [:],
+            smallList: doc.references.count < 15,
+            citedInText: (counts ?? citationCounts(in: doc))[reference.id] ?? 0))
+        return ReferenceStatus.visible(all, for: ReferenceStatus.workKeys(doi: doi, title: title))
+    }
+}
+
+/// A keyword under an entry: the trust words as pills, the rest as quiet
+/// text, each in its tone.
+struct VisionMarkPill: View {
+    let mark: ReferenceStatus.Mark
+
+    var body: some View {
+        let color: Color = switch mark.tone {
+        case .alarm: .red
+        case .caution: .orange
+        case .info: .blue
+        case .good: .green
+        case .positive: .accentColor
+        case .quiet: .secondary
+        }
+        Text(mark.text)
+            .font(.caption.weight(mark.pill ? .semibold : .regular))
+            .foregroundStyle(color)
+            .padding(.horizontal, mark.pill ? 7 : 0)
+            .padding(.vertical, mark.pill ? 2 : 0)
+            .overlay {
+                if mark.pill { Capsule().strokeBorder(color.opacity(0.7), lineWidth: 1) }
+            }
+            .help(mark.detail)
+    }
+}
+
+/// The References page: the open paper's cited works listed as cited,
+/// by title, author or date, or laid out on the Time Map (years left to
+/// right) and the Concept Map (cards the hand arranges, kept per paper).
+/// A card opens the citation card.
+struct VisionReferencesView: View {
+    let doc: LiquidDoc
+    let docID: String
+    let onCard: (String) -> Void
+
+    enum Listing: String, CaseIterable, Identifiable {
+        case asCited, title, author, date, timeMap, conceptMap
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .asCited: "As Cited"
+            case .title: "Title"
+            case .author: "Author"
+            case .date: "Date"
+            case .timeMap: "Time Map"
+            case .conceptMap: "Concept Map"
+            }
+        }
+    }
+
+    enum TimeOrder: String, CaseIterable, Identifiable {
+        case title, author, citedInPaper, trust
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .title: "Title"
+            case .author: "First Author"
+            case .citedInPaper: "Cited Most in This Paper"
+            case .trust: "Trust (warnings first)"
+            }
+        }
+    }
+
+    /// As Cited's rows: the paper's headings, and each work under the
+    /// section that cites it — its occurrence counted across sections.
+    enum AsCitedItem: Hashable {
+        case heading(text: String, level: Int, id: String)
+        case work(entryID: String, sectionID: String, occurrence: Int, total: Int)
+    }
+
+    @AppStorage("visionReferencesListing") private var listingRaw = Listing.asCited.rawValue
+    @AppStorage("visionReferencesTimeOrder") private var timeOrderRaw = TimeOrder.title.rawValue
+    @State private var entries: [VisionReferenceEntry] = []
+    @State private var counts: [String: Int] = [:]
+    @State private var marks: [String: [ReferenceStatus.Mark]] = [:]
+    @State private var asCited: [AsCitedItem] = []
+    @State private var openOccurrence: String?
+    @State private var positions: [String: CGPoint] = [:]
+    @State private var dragStart: [String: CGPoint] = [:]
+
+    private var listing: Listing { Listing(rawValue: listingRaw) ?? .asCited }
+    private var timeOrder: TimeOrder { TimeOrder(rawValue: timeOrderRaw) ?? .title }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Picker("Listing", selection: $listingRaw) {
+                    ForEach(Listing.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 620)
+                if listing == .timeMap {
+                    Picker("View", selection: $timeOrderRaw) {
+                        ForEach(TimeOrder.allCases) { Text($0.label).tag($0.rawValue) }
+                    }
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                }
+                Spacer()
+            }
+            if entries.isEmpty {
+                ContentUnavailableView("No References", systemImage: "quote.opening",
+                                       description: Text("This paper carries no reference list."))
+            } else {
+                switch listing {
+                case .asCited: asCitedList
+                case .title, .author, .date: sortedList
+                case .timeMap: timeMap
+                case .conceptMap: conceptMap
+                }
+            }
+        }
+        .padding(24)
+        .task(id: docID) { await load() }
+    }
+
+    // MARK: Listings
+
+    private var asCitedList: some View {
+        let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let headings = Dictionary(asCited.compactMap { item -> (String, String)? in
+            if case .heading(let text, _, let id) = item { return (id, text) }
+            return nil
+        }, uniquingKeysWith: { a, _ in a })
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(asCited.enumerated()), id: \.offset) { _, item in
+                    switch item {
+                    case .heading(let text, let level, _):
+                        Text(text)
+                            .font(AppFonts.heading(level <= 1 ? 22 : 18))
+                            .padding(.top, 10)
+                    case .work(let id, let section, let occurrence, let total):
+                        if let entry = byID[id] {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    if total > 1 {
+                                        // 1st, 2nd…: tap to see where the
+                                        // other mentions are.
+                                        let key = "\(id)|\(section)"
+                                        Button(Self.ordinal(occurrence)) {
+                                            openOccurrence = openOccurrence == key ? nil : key
+                                        }
+                                        .font(.callout.bold())
+                                        .buttonStyle(.plain)
+                                    }
+                                    row(entry)
+                                }
+                                if openOccurrence == "\(id)|\(section)" {
+                                    let others = asCited.compactMap { other -> String? in
+                                        guard case .work(let otherID, let otherSection, _, _) = other,
+                                              otherID == id, otherSection != section else { return nil }
+                                        return headings[otherSection] ?? "Opening"
+                                    }
+                                    Text("Also cited in: " + others.joined(separator: " · "))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .padding(.leading, 36)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var sortedList: some View {
+        let sorted: [VisionReferenceEntry] = switch listing {
+        case .author: entries.sorted { ($0.familyKey, $0.title) < ($1.familyKey, $1.title) }
+        case .date: entries.sorted { ($0.year ?? Int.max, $0.title) < ($1.year ?? Int.max, $1.title) }
+        default: entries.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        }
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(sorted.enumerated()), id: \.element.id) { index, entry in
+                    let group = groupLabel(entry)
+                    if index == 0 || groupLabel(sorted[index - 1]) != group {
+                        Text(group)
+                            .font(AppFonts.heading(20))
+                            .padding(.top, 8)
+                    }
+                    row(entry)
+                }
+            }
+        }
+    }
+
+    private func groupLabel(_ entry: VisionReferenceEntry) -> String {
+        switch listing {
+        case .author: String(entry.familyKey.prefix(1)).uppercased()
+        case .date: entry.year.map(String.init) ?? "Undated"
+        default: String(entry.title.drop { !$0.isLetter && !$0.isNumber }.prefix(1)).uppercased()
+        }
+    }
+
+    private func row(_ entry: VisionReferenceEntry) -> some View {
+        Button {
+            onCard(entry.id)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.title)
+                    .font(AppFonts.body(17))
+                    .multilineTextAlignment(.leading)
+                Text([entry.authors, entry.year.map(String.init) ?? "", entry.venue]
+                    .filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                pills(entry)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .hoverEffect()
+    }
+
+    @ViewBuilder private func pills(_ entry: VisionReferenceEntry) -> some View {
+        if let shown = marks[entry.id], !shown.isEmpty {
+            HStack(spacing: 8) {
+                ForEach(shown, id: \.self) { VisionMarkPill(mark: $0) }
+            }
+        }
+    }
+
+    // MARK: Time Map
+
+    private var timeMap: some View {
+        let years = Array(Set(entries.map { $0.year ?? 0 })).sorted()
+        return ScrollView([.horizontal, .vertical]) {
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(years, id: \.self) { year in
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(year == 0 ? "Undated" : String(year))
+                            .font(AppFonts.heading(20))
+                        ForEach(ordered(entries.filter { ($0.year ?? 0) == year })) { entry in
+                            mapCard(entry)
+                        }
+                    }
+                    .frame(width: 210, alignment: .topLeading)
+                }
+            }
+            .padding(.bottom, 20)
+        }
+    }
+
+    private func ordered(_ column: [VisionReferenceEntry]) -> [VisionReferenceEntry] {
+        switch timeOrder {
+        case .title:
+            return column.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .author:
+            return column.sorted { $0.familyKey < $1.familyKey }
+        case .citedInPaper:
+            return column.sorted { (counts[$0.id] ?? 0) > (counts[$1.id] ?? 0) }
+        case .trust:
+            func weight(_ entry: VisionReferenceEntry) -> Int {
+                (marks[entry.id] ?? []).contains { $0.tone == .alarm } ? 0
+                    : (marks[entry.id] ?? []).contains { $0.tone == .caution } ? 1 : 2
+            }
+            return column.sorted { weight($0) < weight($1) }
+        }
+    }
+
+    private func mapCard(_ entry: VisionReferenceEntry) -> some View {
+        Button {
+            onCard(entry.id)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                Text(entry.authors)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let first = marks[entry.id]?.first(where: \.pill) {
+                    VisionMarkPill(mark: first)
+                }
+            }
+            .padding(10)
+            .frame(width: 200, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .hoverEffect()
+    }
+
+    // MARK: Concept Map
+
+    /// Cards the hand arranges freely; where they are put is kept per
+    /// paper on this headset.
+    private var conceptMap: some View {
+        ScrollView([.horizontal, .vertical]) {
+            ZStack(alignment: .topLeading) {
+                Color.clear.frame(width: 1400, height: 1000)
+                ForEach(entries) { entry in
+                    let place = positions[entry.id] ?? defaultPlace(for: entry)
+                    mapCard(entry)
+                        .position(place)
+                        .gesture(DragGesture()
+                            .onChanged { value in
+                                let start = dragStart[entry.id] ?? place
+                                dragStart[entry.id] = start
+                                positions[entry.id] = CGPoint(x: start.x + value.translation.width,
+                                                              y: start.y + value.translation.height)
+                            }
+                            .onEnded { _ in
+                                dragStart[entry.id] = nil
+                                savePositions()
+                            })
+                }
+            }
+        }
+    }
+
+    private func defaultPlace(for entry: VisionReferenceEntry) -> CGPoint {
+        let index = entries.firstIndex(of: entry) ?? 0
+        return CGPoint(x: 130 + CGFloat(index % 5) * 230, y: 80 + CGFloat(index / 5) * 130)
+    }
+
+    private var positionsKey: String { "visionConceptMap-" + docID }
+
+    private func savePositions() {
+        let flat = positions.mapValues { [Double($0.x), Double($0.y)] }
+        UserDefaults.standard.set(flat, forKey: positionsKey)
+    }
+
+    // MARK: Loading
+
+    private func load() async {
+        entries = VisionReferenceStanding.entries(in: doc)
+        counts = VisionReferenceStanding.citationCounts(in: doc)
+        asCited = Self.asCited(in: doc, entries: entries)
+        if let stored = UserDefaults.standard.dictionary(forKey: positionsKey) as? [String: [Double]] {
+            positions = stored.compactMapValues { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil }
+        }
+        refreshMarks()
+        // The standing's sources, asked only now the page is open: the
+        // Retraction Watch copy held here (refreshed when a week old),
+        // then each DOI's live answer, cached.
+        await ReferenceStatus.loadIndexIfNeeded()
+        refreshMarks()
+        await ReferenceStatus.refreshIndexIfStale()
+        refreshMarks()
+        for entry in entries {
+            if Task.isCancelled { return }
+            let doi = VisionReferenceStanding.doi(of: entry.reference)
+            guard ReferenceStatus.needsLive(doi: doi) else { continue }
+            _ = await ReferenceStatus.checkLive(doi: doi)
+            refreshMarks()
+        }
+    }
+
+    private func refreshMarks() {
+        var out: [String: [ReferenceStatus.Mark]] = [:]
+        for entry in entries {
+            out[entry.id] = VisionReferenceStanding.marks(for: entry.reference, in: doc,
+                                                          inLibrary: false, counts: counts)
+        }
+        marks = out
+    }
+
+    static func asCited(in doc: LiquidDoc, entries: [VisionReferenceEntry]) -> [AsCitedItem] {
+        guard let regex = try? NSRegularExpression(pattern: #"\[cite:([^\]]+)\]"#) else { return [] }
+        let known = Set(entries.map(\.id))
+        var items: [AsCitedItem] = []
+        var cited = Set<String>()
+        var sectionID = "start"
+        var seenInSection = Set<String>()
+        for paragraph in doc.body ?? [] {
+            if let level = paragraph.heading {
+                items.append(.heading(text: paragraph.text, level: level, id: paragraph.id))
+                sectionID = paragraph.id
+                seenInSection = []
+                continue
+            }
+            guard paragraph.text.contains("[cite:") else { continue }
+            let text = paragraph.text as NSString
+            for match in regex.matches(in: paragraph.text, range: NSRange(location: 0, length: text.length)) {
+                for raw in text.substring(with: match.range(at: 1)).split(separator: ",") {
+                    let key = raw.trimmingCharacters(in: .whitespaces)
+                    guard known.contains(key), seenInSection.insert(key).inserted else { continue }
+                    items.append(.work(entryID: key, sectionID: sectionID, occurrence: 0, total: 0))
+                    cited.insert(key)
+                }
+            }
+        }
+        let uncited = entries.filter { !cited.contains($0.id) }
+        if !uncited.isEmpty {
+            items.append(.heading(text: "Not Cited in the Text", level: 1, id: "uncited"))
+            for entry in uncited {
+                items.append(.work(entryID: entry.id, sectionID: "uncited", occurrence: 0, total: 0))
+            }
+        }
+        var totals: [String: Int] = [:]
+        for item in items {
+            if case .work(let id, _, _, _) = item { totals[id, default: 0] += 1 }
+        }
+        var seen: [String: Int] = [:]
+        return items.map { item in
+            guard case .work(let id, let section, _, _) = item else { return item }
+            seen[id, default: 0] += 1
+            return .work(entryID: id, sectionID: section,
+                         occurrence: seen[id] ?? 1, total: totals[id] ?? 1)
+        }
+    }
+
+    static func ordinal(_ number: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .ordinal
+        return formatter.string(from: NSNumber(value: number)) ?? "\(number)"
+    }
+}
+
 private struct VisionCitationSheet: View {
     @Environment(VisionModel.self) private var model
     let doc: LiquidDoc
@@ -4688,6 +5552,26 @@ private struct VisionCitationSheet: View {
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                             .textSelection(.enabled)
+                    }
+                    // The work's standing, with what each keyword means.
+                    if let reference {
+                        let marks = VisionReferenceStanding.marks(for: reference, in: doc,
+                                                                 inLibrary: false)
+                        if !marks.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(marks, id: \.self) { mark in
+                                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                        VisionMarkPill(mark: mark)
+                                        if !mark.meaning.isEmpty {
+                                            Text(mark.meaning)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.top, 4)
+                        }
                     }
                 }
                 .padding(16)
@@ -5024,6 +5908,71 @@ private struct VisionSelectableParagraph: UIViewRepresentable {
     }
 }
 
+/// Read aloud on the headset: the system voice reading paragraph after
+/// paragraph, saying which one it is on so the page can follow.
+@MainActor @Observable
+final class VisionReadAloud: NSObject, AVSpeechSynthesizerDelegate {
+    private(set) var paragraphID: String?
+    private(set) var isSpeaking = false
+    private(set) var isPaused = false
+    @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
+    @ObservationIgnored private var queue: [(id: String, text: String)] = []
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func start(_ paragraphs: [(id: String, text: String)]) {
+        stop()
+        queue = paragraphs
+        isSpeaking = !queue.isEmpty
+        speakNext()
+    }
+
+    func togglePause() {
+        if isPaused {
+            synthesizer.continueSpeaking()
+        } else {
+            synthesizer.pauseSpeaking(at: .word)
+        }
+        isPaused.toggle()
+    }
+
+    func stop() {
+        queue = []
+        synthesizer.stopSpeaking(at: .immediate)
+        paragraphID = nil
+        isSpeaking = false
+        isPaused = false
+    }
+
+    private func speakNext() {
+        guard !queue.isEmpty else {
+            paragraphID = nil
+            isSpeaking = false
+            return
+        }
+        let next = queue.removeFirst()
+        paragraphID = next.id
+        let utterance = AVSpeechUtterance(string: next.text)
+        // The paragraph's own language when it can be told, else the
+        // reader's.
+        let language = NLLanguageRecognizer.dominantLanguage(for: next.text)?.rawValue
+        utterance.voice = language.flatMap(AVSpeechSynthesisVoice.init(language:))
+            ?? AVSpeechSynthesisVoice(language: Locale.current.identifier)
+        utterance.postUtteranceDelay = 0.25
+        synthesizer.speak(utterance)
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
+                                       didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            if self.isSpeaking { self.speakNext() }
+        }
+    }
+}
+
 /// Where the selection dot stands: the paragraph, the words, and the
 /// foot of the selection in the paragraph's own space.
 struct VisionDotSelection: Equatable {
@@ -5044,11 +5993,14 @@ struct VisionContextTarget: Codable, Hashable {
 }
 
 /// The dot's menu, in the Mac's order and shape: the quick answer, then
-/// Annotate (its kinds and Note… open beneath it), Copy as Citation, Lift,
+/// Show All (the find-fold on the words), Annotate (its kinds and Note… open beneath it), Copy as Citation, Lift,
 /// and Context last, which opens the panel beside the dot.
 private struct VisionSelectionMenu: View {
+    @Environment(VisionModel.self) private var model
     let doc: LiquidDoc
+    let docID: String
     let text: String
+    let onShowAll: () -> Void
     let onContext: () -> Void
     let onHighlight: (ReaderAnnotationKind) -> Void
     let onNote: () -> Void
@@ -5069,6 +6021,7 @@ private struct VisionSelectionMenu: View {
                     .padding(.vertical, 6)
                 Divider().padding(.horizontal, 10)
             }
+            item("Show All", "list.bullet.indent", action: onShowAll)
             item("Annotate", "highlighter") { showsKinds.toggle() }
             if showsKinds {
                 ForEach(ReaderAnnotationKind.allCases, id: \.self) { kind in
@@ -5086,8 +6039,11 @@ private struct VisionSelectionMenu: View {
         .frame(minWidth: 220, alignment: .leading)
         .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 20))
         .task(id: text) {
-            let query = ContextQuery.make(text: text, doc: doc)
-            quickAnswer = ContextPaperFindings.gather(for: query, in: doc).quickAnswer(for: query)
+            let query = ContextQuery.make(text: text, doc: doc,
+                                          isKnownName: { model.knowsAuthor(named: $0) })
+            let defined = model.glossaryDefinition(matching: query.text, docID: docID)
+            quickAnswer = ContextPaperFindings.gather(for: query, in: doc)
+                .quickAnswer(for: query, definition: defined)
         }
     }
 
@@ -5140,6 +6096,11 @@ struct VisionContextPanel: View {
     @State private var library: [(id: String, title: String, passage: String)] = []
     @State private var searched = false
     @State private var kept = false
+    /// Ring 2 beyond the words: the person's papers, the library's papers
+    /// citing this one, and a cited work's standing.
+    @State private var byPerson: [(id: String, title: String)] = []
+    @State private var citing: [(id: String, title: String)] = []
+    @State private var standing: [ReferenceStatus.Mark] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -5182,6 +6143,43 @@ struct VisionContextPanel: View {
                         section("Definition") {
                             Text(defined.name).font(.headline)
                             Text(defined.description).font(AppFonts.body(17))
+                        }
+                    }
+                    if !standing.isEmpty {
+                        section("Standing") {
+                            ForEach(standing, id: \.self) { mark in
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    VisionMarkPill(mark: mark)
+                                    if !mark.meaning.isEmpty {
+                                        Text(mark.meaning).font(.callout).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if query?.kind == .name {
+                        section("Person") {
+                            if byPerson.isEmpty {
+                                quiet("No papers by this name in your library.")
+                            }
+                            ForEach(byPerson, id: \.id) { paper in
+                                Button(paper.title) { openWindow(id: "reader", value: paper.id) }
+                                    .buttonStyle(.plain)
+                                    .font(.headline)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                    if !citing.isEmpty {
+                        section("Cited Here") {
+                            Text("Papers in your library citing this one:")
+                                .font(.callout).foregroundStyle(.secondary)
+                            ForEach(citing, id: \.id) { paper in
+                                Button(paper.title) { openWindow(id: "reader", value: paper.id) }
+                                    .buttonStyle(.plain)
+                                    .font(.headline)
+                                    .lineLimit(2)
+                            }
                         }
                     }
                     section("In this paper") {
@@ -5227,6 +6225,13 @@ struct VisionContextPanel: View {
                                 }
                                 .buttonStyle(.plain)
                             }
+                        }
+                    }
+                    if let query {
+                        ContextOnlineSection(query: query, excerptSize: 16)
+                        if searched {
+                            ContextAISection(query: query, sentence: aiSentence,
+                                             material: aiMaterial, excerptSize: 16)
                         }
                     }
                 }
@@ -5298,6 +6303,38 @@ struct VisionContextPanel: View {
         }
     }
 
+    /// The paragraph the words were selected in.
+    private var aiParagraph: String? {
+        model.index.byID[target.docID]?.doc.body?
+            .first { $0.id == target.paragraphID }
+            .map { ContextQuery.plain($0.text) }
+    }
+
+    private var aiSentence: String? {
+        guard let paragraph = aiParagraph else { return nil }
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = paragraph
+        return tokenizer.tokens(for: paragraph.startIndex..<paragraph.endIndex)
+            .map { String(paragraph[$0]) }
+            .first { $0.localizedCaseInsensitiveContains(target.text) }
+    }
+
+    /// Everything the panel found, as quotable material for the AI.
+    private var aiMaterial: [ContextAI.Source] {
+        var out: [ContextAI.Source] = []
+        if let aiParagraph { out.append(.init(text: aiParagraph, name: "This paper")) }
+        if let first = paper.firstUse { out.append(.init(text: first, name: "This paper")) }
+        if let last = paper.lastUse { out.append(.init(text: last, name: "This paper")) }
+        if let defined = paper.definition {
+            out.append(.init(text: defined.description, name: "Glossary: \(defined.name)"))
+        }
+        for note in notes { out.append(.init(text: note.note ?? note.words, name: "Your note, \(note.book)")) }
+        for hit in library where !hit.passage.isEmpty {
+            out.append(.init(text: hit.passage, name: hit.title))
+        }
+        return out
+    }
+
     /// Keep: the findings become a note on the selected words.
     private func keep() {
         guard let query else { return }
@@ -5305,8 +6342,11 @@ struct VisionContextPanel: View {
         if !library.isEmpty {
             extra.append("In your library: " + library.map(\.title).joined(separator: "; "))
         }
-        model.addComment(paper.keptText(for: query, extra: extra),
-                         on: VisionModel.ReaderSelection(
+        if !standing.isEmpty {
+            extra.append("Standing: " + standing.map(\.text).joined(separator: ", "))
+        }
+        model.keepContext(paper.keptText(for: query, extra: extra),
+                          on: VisionModel.ReaderSelection(
                             address: target.docID, paragraphID: target.paragraphID,
                             text: target.text, prefix: target.prefix, suffix: target.suffix))
         kept = true
@@ -5314,13 +6354,30 @@ struct VisionContextPanel: View {
 
     private func gather() async {
         let doc = model.index.byID[target.docID]?.doc
-        let query = ContextQuery.make(text: target.text, doc: doc)
+        let query = ContextQuery.make(text: target.text, doc: doc,
+                                      isKnownName: { model.knowsAuthor(named: $0) })
         self.query = query
         kept = false
         paper = doc.map { ContextPaperFindings.gather(for: query, in: $0) } ?? ContextPaperFindings()
+        // The book's own glossary wins over a Defined Concept match.
+        if let defined = model.glossaryDefinition(matching: query.text, docID: target.docID) {
+            paper.definition = defined
+        }
         let words = query.text
         let folded = words.lowercased()
         let entries = Array(model.index.byID.values)
+        let shelf = entries.map(\.doc)
+        standing = []
+        if let reference = query.reference, let doc {
+            await ReferenceStatus.loadIndexIfNeeded()
+            standing = VisionReferenceStanding.marks(for: reference, in: doc, inLibrary: false)
+        }
+        byPerson = query.kind == .name
+            ? ContextPaperFindings.papers(by: words, among: shelf).prefix(6).map { ($0.id, $0.title) }
+            : []
+        citing = doc.map {
+            ContextPaperFindings.papers(citing: $0, among: shelf).prefix(6).map { ($0.id, $0.title) }
+        } ?? []
         // Your notes: annotations on the same words, or whose note
         // mentions them, in any book.
         var found: [(book: String, words: String, note: String?)] = []
@@ -5998,17 +7055,39 @@ final class VisionBotStore {
     }
 
     /// Asks the on-device model who a typed name means.
-    nonisolated static func identify(name: String) async throws -> VisionBotIdentification {
+    static func identify(name: String) async throws -> VisionBotIdentification {
         let prompt = identificationPrompt + "\n\nTHE TYPED NAME: \(name)\n"
+        // A chosen server answers in JSON; Apple's model by guided generation.
+        if let reply = try await OrigamiLLM.shared.respondJSON(
+            BotIdentificationJSON.self,
+            instructions: #"Fields: "isConfident" (true or false) and "candidates" (up to five objects with "name", "years", "summary")."#,
+            prompt: prompt) {
+            return VisionBotIdentification(
+                isConfident: reply.isConfident,
+                candidates: reply.candidates.prefix(5).map {
+                    VisionBotCandidate(name: $0.name, years: $0.years, summary: $0.summary)
+                })
+        }
         let session = LanguageModelSession()
         return try await session.respond(to: prompt, generating: VisionBotIdentification.self).content
+    }
+
+    private struct BotIdentificationJSON: Decodable {
+        struct Candidate: Decodable { var name: String; var years: String; var summary: String }
+        var isConfident: Bool
+        var candidates: [Candidate]
+    }
+
+    private struct BotStanceJSON: Decodable {
+        var verdict: String
+        var reason: String
     }
 
     /// One bot reads the library: every document its judgements do not
     /// yet cover goes to the on-device model with the bot's persona, and
     /// each verdict lands — and is saved — as it arrives.
     func analyze(_ bot: VisionBot, documents: [LiquidDoc]) {
-        guard case .available = SystemLanguageModel.default.availability else { return }
+        guard OrigamiLLM.shared.canRespond else { return }
         cancelAnalysis()
         let pending = documents.filter { stance(botID: bot.id, docID: $0.id) == nil }
         guard !pending.isEmpty else { return }
@@ -6042,12 +7121,21 @@ final class VisionBotStore {
         if !bot.summary.isEmpty { prompt += "\n\(bot.summary)" }
         prompt += "\n\nTHE DOCUMENT:\n\(Self.digest(of: doc, limit: Self.perDocumentCharacterLimit))"
         do {
-            let session = LanguageModelSession()
-            let response = try await session.respond(to: prompt, generating: VisionBotStanceReply.self)
+            let reply: (verdict: String, reason: String)
+            if let json = try await OrigamiLLM.shared.respondJSON(
+                BotStanceJSON.self,
+                instructions: #"Fields: "verdict" ("agree", "disagree" or "neutral") and "reason" (one or two sentences in the person's voice)."#,
+                prompt: prompt) {
+                reply = (json.verdict.lowercased(), json.reason)
+            } else {
+                let session = LanguageModelSession()
+                let response = try await session.respond(to: prompt, generating: VisionBotStanceReply.self)
+                reply = (response.content.verdict, response.content.reason)
+            }
             guard !Task.isCancelled else { return }
-            let verdict = VisionBotStance.Verdict(rawValue: response.content.verdict) ?? .neutral
+            let verdict = VisionBotStance.Verdict(rawValue: reply.verdict) ?? .neutral
             stances[bot.id, default: [:]][doc.id] =
-                VisionBotStance(verdict: verdict, reason: response.content.reason)
+                VisionBotStance(verdict: verdict, reason: reply.reason)
             write(bot)
         } catch {
             // Left unjudged; a later reading tries again.
@@ -6329,8 +7417,8 @@ struct VisionBotsView: View {
     private func identifyTypedName() {
         let name = newBotName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !isIdentifying else { return }
-        guard case .available = SystemLanguageModel.default.availability else {
-            creationNotice = "Apple Intelligence is not available on this device."
+        guard OrigamiLLM.shared.canRespond else {
+            creationNotice = "No model is available \u{2014} choose one in Settings \u{25B8} AI."
             return
         }
         isIdentifying = true

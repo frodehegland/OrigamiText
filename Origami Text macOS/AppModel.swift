@@ -2344,13 +2344,39 @@ final class AppModel {
             return refreshed
         }
         let meta = fresh.meta
-        let bookID = meta.origamiID ?? prepared.identity
+        var prepared = prepared
+        var bookID = meta.origamiID ?? prepared.identity
+        // A re-export: the same publication (its package identifier, which
+        // Author keeps across exports) under a new filename. It is the
+        // book's newer text, never a duplicate — it takes the standing
+        // record's place: its folder (which every sidecar keys by — notes,
+        // pins, places) and its id, so nothing the reader made is lost.
+        var refreshedFrom: EPUBRecord?
+        if let identifier = meta.identifier, !identifier.isEmpty,
+           let standing = epubRecords.first(where: {
+               $0.packageIdentifier == identifier && $0.folder != prepared.folder
+           }) {
+            let root = Self.epubsRoot
+            let fm = FileManager.default
+            let oldFolder = root.appendingPathComponent(standing.folder, isDirectory: true)
+            let newFolder = root.appendingPathComponent(prepared.folder, isDirectory: true)
+            try? fm.removeItem(at: oldFolder)
+            try? fm.removeItem(at: root.appendingPathComponent(standing.folder + ".epub"))
+            if (try? fm.moveItem(at: newFolder, to: oldFolder)) != nil {
+                try? fm.moveItem(at: root.appendingPathComponent(prepared.folder + ".epub"),
+                                 to: root.appendingPathComponent(standing.folder + ".epub"))
+                prepared = PreparedEPUBImport(folder: standing.folder, identity: prepared.identity,
+                                              fresh: fresh, enrich: prepared.enrich)
+                bookID = standing.id
+                refreshedFrom = standing
+            }
+        }
         // The duplicate gate: the same book under ANOTHER filename
         // must not shelve twice. Identity speaks in order — the
         // package's own dc:identifier, the DOI, then title plus first
         // author. The same folder or bookID is a refresh (below),
         // never a duplicate.
-        if dedupe, let twin = epubRecords.first(where: { record in
+        if dedupe, refreshedFrom == nil, let twin = epubRecords.first(where: { record in
             record.folder != prepared.folder && record.id != bookID
                 && Self.epubDuplicateMatch(record: record,
                                            title: fresh.title, meta: meta)
@@ -2370,6 +2396,9 @@ final class AppModel {
         // A refreshed book keeps its place in time; only a truly
         // new one arrives at the top as just-opened.
         let openedAt = epubRecords.first(where: { $0.folder == prepared.folder })?.openedAt ?? .now
+        if let refreshedFrom, refreshedFrom.title != fresh.title {
+            showNote("Updated \u{201C}\(refreshedFrom.title)\u{201D} to the newer export, \u{201C}\(fresh.title)\u{201D}")
+        }
         let record = EPUBRecord(id: bookID, title: fresh.title,
                                 author: authors.count > 1
                                     ? authors.joined(separator: ", ")
@@ -2651,7 +2680,7 @@ final class AppModel {
 
     /// Opens an EPUB in the faithful WebView reader: imports it (unpacking as
     /// needed), then shows paper.html as authored. Opening marks it read.
-    func openEPUBFile(at url: URL) {
+    func openEPUBFile(at url: URL, revealInLibrary reveal: Bool = false) {
         // The prepare half unzips when the source is newer than the
         // unpack — a freshly re-published book, every time the corpus
         // is patched. Off the main actor, so the double-click answers
@@ -2666,7 +2695,8 @@ final class AppModel {
                 }.value
                 guard let record = applyPreparedImport(prepared) else { return }
                 openStoredEPUB(record)
-                showNote("Opened “\(record.title)”")
+                if reveal { revealInLibrary(record) }
+                showNote(reveal ? "Added “\(record.title)” to the library" : "Opened “\(record.title)”")
                 // The new arrival joins the community folder too, so every
                 // device reading it shows the same shelf.
                 mirrorShelfToCommunityFolder()
@@ -2688,7 +2718,7 @@ final class AppModel {
             showNote("This book's file is no longer at hand — File ▸ Import… will add it.")
             return
         }
-        openEPUBFile(at: source)
+        openEPUBFile(at: source, revealInLibrary: true)
         // The window that showed the look: matched by the unpack folder
         // its delegate holds, which is what the book's id is made from.
         if let index = quickViewWindows.firstIndex(where: {
@@ -2696,6 +2726,25 @@ final class AppModel {
         }) {
             quickViewWindows[index].window.close()
         }
+    }
+
+    /// The book the papers list should scroll to and show selected — set
+    /// by Import to Library, cleared by the list once it has scrolled.
+    var libraryRevealID: String?
+
+    /// A book just added, found at once: the main window comes forward on
+    /// the papers list (Library ▸ Papers), with nothing that would hide
+    /// the book — no venue focus, no Find text, no Unread-only filter for
+    /// a book already read — and the list scrolls to its selected row.
+    func revealInLibrary(_ record: EPUBRecord) {
+        leaveVenueFocus()
+        searchText = ""
+        if !isUnread(record) {
+            UserDefaults.standard.set(false, forKey: "libraryTimelineUnreadOnly")
+        }
+        sidebarSelection = .epubsTimeline
+        libraryRevealID = record.id
+        bringLibraryWindowForward()
     }
 
     /// Whether a double-clicked EPUB joins the shelf: only when it is
@@ -3786,39 +3835,7 @@ final class AppModel {
     /// the content document).
     private static func loadGlossary(content: URL, base: URL)
         -> [String: (name: String, description: String)] {
-        var byName: [String: (name: String, description: String)] = [:]
-        func add(_ name: String?, _ description: String?) {
-            guard let name = name?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
-                  let description = description?
-                      .trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty
-            else { return }
-            byName[name.lowercased()] = (name, description)
-        }
-        let visualMeta = OrigamiEPUBImporter.recordData(
-                inUnpackedFolder: base, properties: "origami:visual-meta",
-                fileName: "visual-meta.json")
-            ?? (try? String(contentsOf: content, encoding: .utf8))
-                .flatMap(OrigamiEPUBImporter.embeddedVisualMeta(in:))
-        if let visualMeta,
-           let object = (try? JSONSerialization.jsonObject(with: visualMeta)) as? [String: Any],
-           let concepts = object["concepts"] as? [[String: Any]] {
-            for concept in concepts where (concept["tag"] as? String) != "heading" {
-                add(concept["name"] as? String, concept["description"] as? String)
-            }
-        }
-        let origamiURL = content.deletingLastPathComponent()
-            .appendingPathComponent("origami.json")
-        if let data = OrigamiEPUBImporter.recordData(
-                inUnpackedFolder: base, properties: "origami:interaction",
-                fileName: "origami.json")
-            ?? (try? Data(contentsOf: origamiURL)),
-           let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-           let glossary = object["glossary"] as? [String: [String: Any]] {
-            for node in glossary.values {
-                add(node["phrase"] as? String, node["entry"] as? String)
-            }
-        }
-        return byName
+        OrigamiEPUBImporter.glossary(content: content, base: base)
     }
 
     /// Reopens a remembered EPUB from its unpacked folder in the container.
@@ -4354,6 +4371,35 @@ final class AppModel {
     /// or — for a book whose content document will not parse (older
     /// exports predating the well-formedness check) — the Visual-Meta
     /// citation pool alone, abstracts folded in.
+    /// Opens the library book a citation names, when it names one: the
+    /// reference's `vm-id`, or an `origamitext://open/<address>` url —
+    /// the way an Introduction cites the bundled user guide. True when a
+    /// book opened; false leaves the click to the citation card.
+    @discardableResult
+    func openCitedLibraryBook(key: String, in doc: LiquidDoc?) -> Bool {
+        guard let reference = doc?.references.first(where: { $0.id == key }),
+              let fields = BibTeXParser.first(reference.bibtex)?.fields else { return false }
+        var raw = fields["vm-id"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if raw.isEmpty, let url = fields["url"].flatMap(URL.init(string:)),
+           url.scheme?.lowercased() == "origamitext", url.host()?.lowercased() == "open" {
+            raw = String(url.path().trimmingPrefix("/"))
+                + (url.fragment().map { "#" + $0 } ?? "")
+        }
+        guard !raw.isEmpty else { return false }
+        var address = raw
+        var fragment: String?
+        if let hash = raw.firstIndex(of: "#") {
+            address = String(raw[..<hash])
+            fragment = String(raw[raw.index(after: hash)...])
+        }
+        guard epubRecord(forAddress: address) != nil || address == Self.userGuideID else { return false }
+        openEPUB(address: address, fragment: fragment)
+        // From a look-only window the book opens in the main window,
+        // which comes forward to show it.
+        bringLibraryWindowForward()
+        return true
+    }
+
     func citationCardDoc(forBook book: OpenEPUB) -> LiquidDoc? {
         if let doc = readingDoc(forBook: book) { return doc }
         let visualMetaData = OrigamiEPUBImporter.recordData(

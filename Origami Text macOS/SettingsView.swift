@@ -585,6 +585,15 @@ private struct ReadingSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section {
+                ContextOnlineSettings()
+            } header: {
+                Text("Context Panel Online")
+            } footer: {
+                Text("When the context panel opens, these sources are asked about the selected words, and only then. Each sends the words you selected, nothing else. Local only turns them all off.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 Toggle("Triple-click selects the sentence", isOn: $tripleClickSelectsSentence)
             } footer: {
                 Text("In the native reading styles, a triple-click selects the whole sentence around the click — the reading's natural unit. Off, it selects the paragraph, the system's way. Double-click always selects the word.")

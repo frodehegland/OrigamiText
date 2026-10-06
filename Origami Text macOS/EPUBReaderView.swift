@@ -1481,6 +1481,13 @@ struct EPUBReaderScreen: View {
                     }
                 }
                 let key = key.isEmpty ? ref : key
+                // A reference naming a library book (its vm-id, or an
+                // origamitext:// url) opens that book, as an internal
+                // citation does.
+                if !key.isEmpty,
+                   model.openCitedLibraryBook(key: key, in: model.citationCardDoc(forBook: book)) {
+                    return
+                }
                 if !key.isEmpty { citationCard = FaithfulCitation(key: key) }
             },
             initialFragment: model.pendingReaderFragment,
@@ -3119,9 +3126,13 @@ struct EPUBReaderView: NSViewRepresentable {
         e.preventDefault();
         e.stopImmediatePropagation();
         if (!bridge) return;
+        // Author's anchors carry only href="#bib-<key>" (Profile 1.0
+        // §7): the key is the target's, as the importer reads it.
+        var target = (a.getAttribute('href') || '').split('#')[1] || '';
+        var fromHref = target.indexOf('bib-') === 0 ? target.slice(4) : '';
         bridge.postMessage({event:'citation',
                             key: a.getAttribute('data-citation-id')
-                                 || a.getAttribute('data-citation-key') || '',
+                                 || a.getAttribute('data-citation-key') || fromHref,
                             ref: a.getAttribute('data-origami-ref') || ''});
       }, true);
     })();

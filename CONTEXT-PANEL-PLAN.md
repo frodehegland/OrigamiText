@@ -22,6 +22,19 @@ Annotate, …) are Frode's design; this plan supplies what sits behind them.*
   Keep. The provider protocol (§7) is not yet split out; rings 2 to 4
   follow the plan below.
 
+- **Built 5 Oct, later (stages B–D, Mac and Vision Pro):** ring 2 adds
+  Standing (ReferenceStatus pills), Cited Here (library papers citing
+  this one), Person (library papers by the name); ring 3 is
+  `ContextOnline` + `ContextOnlineSection` in OrigamiReading.swift —
+  Wikipedia, OpenAlex, Semantic Scholar snippets (often 429 on the shared
+  tier: shown as busy, not cached), each with a switch and Local only
+  (`ContextOnlineSettings`, Mac Settings ▸ Reading, headset Settings).
+  Stage D is `ContextAI` + `ContextAISection` in OrigamiLLM.swift:
+  Explain in Context and Check This Claim through OrigamiLLM, quotes
+  verified verbatim, failures dropped. Vision Pro's Keep also stands the
+  findings in the room as a card (`keepContext`). Not yet: meaning-based
+  search (E), field packs (F), keeping Claim Check as a linked document.
+
 ## 1. What it is for
 
 A reader selects anything in a paper — a word, a name, a claim, a number,

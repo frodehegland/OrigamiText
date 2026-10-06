@@ -1061,7 +1061,11 @@ struct OrigamiReadingView: View {
         // term opens its definition; every other link opens as links do.
         .environment(\.openURL, OpenURLAction { url in
             if let key = OrigamiReading.citationKey(from: url) {
-                citationTarget = CitationTarget(key: key)
+                // A reference naming a library book opens it; any other
+                // shows its card.
+                if !model.openCitedLibraryBook(key: key, in: doc) {
+                    citationTarget = CitationTarget(key: key)
+                }
                 return .handled
             }
             if url.scheme == "origami-jump" {
@@ -3553,7 +3557,9 @@ struct OrigamiReadingView: View {
             return true
         }
         if let key = OrigamiReading.citationKey(from: url) {
-            citationTarget = CitationTarget(key: key)
+            if !model.openCitedLibraryBook(key: key, in: doc) {
+                citationTarget = CitationTarget(key: key)
+            }
             return true
         }
         if url.scheme == "origami-jump" {

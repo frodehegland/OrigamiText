@@ -1126,6 +1126,44 @@ nonisolated enum OrigamiEPUBImporter {
         return out
     }
 
+    /// An unpacked book's defined terms, by lowercased name, from either
+    /// carrier: the Visual-Meta `concepts` (this app's exports — the
+    /// package's `visual-meta.json`, else the copy embedded in the content
+    /// document) and Author's `origami.json` `glossary` (phrase/entry
+    /// pairs). Shared by the Mac's Show Definition and Vision Pro's
+    /// context panel.
+    static func glossary(content: URL, base: URL) -> [String: (name: String, description: String)] {
+        var byName: [String: (name: String, description: String)] = [:]
+        func add(_ name: String?, _ description: String?) {
+            guard let name = name?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
+                  let description = description?
+                      .trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty
+            else { return }
+            byName[name.lowercased()] = (name, description)
+        }
+        let visualMeta = recordData(inUnpackedFolder: base, properties: "origami:visual-meta",
+                                    fileName: "visual-meta.json")
+            ?? (try? String(contentsOf: content, encoding: .utf8)).flatMap(embeddedVisualMeta(in:))
+        if let visualMeta,
+           let object = (try? JSONSerialization.jsonObject(with: visualMeta)) as? [String: Any],
+           let concepts = object["concepts"] as? [[String: Any]] {
+            for concept in concepts where (concept["tag"] as? String) != "heading" {
+                add(concept["name"] as? String, concept["description"] as? String)
+            }
+        }
+        let origamiURL = content.deletingLastPathComponent().appendingPathComponent("origami.json")
+        if let data = recordData(inUnpackedFolder: base, properties: "origami:interaction",
+                                 fileName: "origami.json")
+            ?? (try? Data(contentsOf: origamiURL)),
+           let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let glossary = object["glossary"] as? [String: [String: Any]] {
+            for node in glossary.values {
+                add(node["phrase"] as? String, node["entry"] as? String)
+            }
+        }
+        return byName
+    }
+
     /// A metadata record in an unpacked book, found the way `import` finds
     /// it: the package's `<link rel="record">` declaration first, then the
     /// pre-1.0 well-known name at the root or beside the package document.

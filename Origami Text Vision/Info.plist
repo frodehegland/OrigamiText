@@ -19,6 +19,13 @@
 	</array>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Origami Text reaches the AI model you chose in Settings ▸ AI — such as Ollama running on your Mac — over your local network.</string>
 	<key>NSHandsTrackingUsageDescription</key>
 	<string>Origami Text tracks your hands to place the arm menus — Settings and Documents ride above your right hand.</string>
 	<key>NSWorldSensingUsageDescription</key>
