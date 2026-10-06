@@ -281,10 +281,15 @@ final class AppModel {
     func bringLibraryWindowForward() {
         endLaunchFoldWatch()
         // Prefer the directly-tracked window (stays valid through title changes
-        // and is nil only when the window has actually been closed).
-        if let main = mainNSWindow, main.isVisible || main.isMiniaturized {
+        // and is nil only when the window has actually been closed). A
+        // library the launch fold ordered out is still this window: it
+        // comes back itself. Opening a fresh one instead had the dedupe in
+        // captureMainWindow close the newcomer at once — Import to Library
+        // and ⌘L showed the library for an instant and lost it.
+        if let main = mainNSWindow {
             if main.styleMask.contains(.fullScreen) { main.toggleFullScreen(nil) }
             if main.isMiniaturized { main.deminiaturize(nil) }
+            main.alphaValue = 1
             main.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -799,6 +804,13 @@ final class AppModel {
     /// Opens a document in the reading context (All Documents), used by
     /// insight views whose rows lead to a document.
     func openInLibrary(_ doc: LiquidDoc, fragment: String? = nil) {
+        // A book of the shelf opens in its own reader, as the shelf's
+        // views do — the views ported from Knowledge Space call this, and
+        // the structured note reader is not where a book is read.
+        if epubRecord(forAddress: doc.id) != nil {
+            openEPUB(address: doc.id, fragment: fragment)
+            return
+        }
         sidebarSelection = .allDocuments
         open(doc, fragment: fragment)
     }
@@ -2399,10 +2411,19 @@ final class AppModel {
         // book's newer text, never a duplicate — it takes the standing
         // record's place: its folder (which every sidecar keys by — notes,
         // pins, places) and its id, so nothing the reader made is lost.
+        // A record shelved before package identifiers were kept has none
+        // to compare: when it is the same book by the duplicate gate's
+        // measure (DOI, or title under the same first author), the
+        // identified export is its newer text too. Skipping it as a
+        // duplicate kept the old text forever — the bundled Introduction
+        // opened an earlier "Welcome to Origami Text" this way.
         var refreshedFrom: EPUBRecord?
         if let identifier = meta.identifier, !identifier.isEmpty,
            let standing = epubRecords.first(where: {
                $0.packageIdentifier == identifier && $0.folder != prepared.folder
+           }) ?? epubRecords.first(where: {
+               ($0.packageIdentifier ?? "").isEmpty && $0.folder != prepared.folder
+                   && Self.epubDuplicateMatch(record: $0, title: fresh.title, meta: meta)
            }) {
             let root = Self.epubsRoot
             let fm = FileManager.default
@@ -2919,8 +2940,16 @@ final class AppModel {
     /// whole book on every navigation.
     func captureMainWindow(_ window: NSWindow) {
         if let main = mainNSWindow, main !== window {
-            window.close()
-            return
+            // The library on screen stays and the newcomer goes. But a
+            // tracked library that is hidden — neither on screen nor in
+            // the Dock — must not swallow the one just asked for: the
+            // hidden one closes and the new one takes its place.
+            guard !main.isVisible, !main.isMiniaturized else {
+                window.close()
+                return
+            }
+            mainNSWindow = nil
+            main.close()
         }
         mainNSWindow = window
         if launchFoldObserver != nil { mainNSWindow?.alphaValue = 0 }

@@ -60,7 +60,8 @@ struct SphereWeaveView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             #endif
         }
-        .background(AppGreys.page)
+        // The header wears the theme; the scene keeps its own pale field.
+        .themedSurface()
         .onAppear {
             // Arrive centered on something: a Show-in term, the open
             // document — or, given nothing, the word the whole field

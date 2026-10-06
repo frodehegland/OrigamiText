@@ -211,7 +211,7 @@ struct AgreementsView: View {
     /// an agreement must keep at least two real documents to survive — one
     /// document cannot agree with itself.
     private func resolve(_ generated: [GeneratedAgreement]) -> [ResolvedAgreement] {
-        let byID = model.index.byID
+        let byID = AIInsights.canonicalIndex(model.index.byID)
         return generated.compactMap { agreement in
             var seen: Set<String> = []
             let entries = agreement.addresses

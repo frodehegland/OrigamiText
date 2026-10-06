@@ -130,8 +130,9 @@ missing row). Choosing a row clears `openEPUB` (leaves the book reader) and sets
 Retired places still reachable by code (no sidebar row): `.inbox`, `.timeline`, `.transcripts`, `.extracts`,
 `.filed*`, `.drafts`, `.published`, `.notes*`, `.transcriptDrafts`, `.transcriptsPublished`,
 `.bookDrafts`, `.booksPublished`, `.allDocuments`, `.archived`, `.epubsAll`, `.epubsInbox`,
-`.epubsAlphabetical`, `.epubsSetAside`. For example `newDraft()` selects `.drafts`; `openInLibrary` selects
-`.allDocuments`. `SidebarCatalog` keeps the old section arrays (Dialog, Outgoing, Notes, Transcripts, Books)
+`.epubsAlphabetical`, `.epubsSetAside`. For example `newDraft()` selects `.drafts`; `openInLibrary` opens a shelf
+book (found by `epubRecord(forAddress:)`) in the EPUB reader through `openEPUB(address:fragment:)`, leaving
+the selection where it is, and selects `.allDocuments` only for anything else. `SidebarCatalog` keeps the old section arrays (Dialog, Outgoing, Notes, Transcripts, Books)
 but `sections` returns only `[("", received)]`.
 
 **List column** (`ContentView.listPane`) maps the selection to a list view:
@@ -845,11 +846,13 @@ community folder named `sample--<suggestedExportFileName>`. Remove deletes top-l
   `hidesDocumentList`, `showInAppetite` (`.text` = receive selected words, `.note` = receive the document).
   "Show in <View>" stores a one-shot `ShowInPayload{viewID, text?, docID}` and selects the view; the view takes
   it with `takeShowInPayload(for:)`.
-- **Registry** (26 modules, sidebar order): ask-library, sphere-weave, connections, weave, authors-circle,
-  places, attentions, the-stranger, trails, geometries, glossary, glossary-space, k-nav, hot-paragraphs,
-  ai-insights, themes, open-questions, agreements, disagreements, the-deal, z, zigzag, zz-structure, health,
-  citation-tree, lineage. Fresh-install shown set: **ask-library, glossary, lineage**. DEBUG asserts unique
-  ids. Contents of each view: chapter 06.
+- **Registry** (21 modules, sidebar order): ask-library, sphere-weave, connections, weave, authors-circle,
+  the-stranger, geometries, glossary, glossary-space, k-nav, ai-insights, themes, open-questions,
+  agreements, disagreements, the-deal, z, zigzag, zz-structure, citation-tree, lineage. Fresh-install shown
+  set: **ask-library, glossary, lineage**. DEBUG asserts unique ids. Places, Attentions, Trails, Hot
+  Paragraphs and Health are left out of the registry: they read what only Knowledge Space's notes carry
+  (locations, addressees, trail documents, paragraph links, the community folder) and on a shelf of books
+  could show only their empty state. Their files stay. Contents of each view: chapter 06.
 - **Exchange** (`ModuleExchange.swift`): `.origamiview` = JSON `{format:"origami-view-module/1", id, name,
   systemImage, fileName, source}`. Import accepts a `.origamiview` or a bare `.swift` (id/name/systemImage scraped
   with `<label>:\s*"([^"]+)"`, falling back to the file name / `puzzlepiece.extension`). Imported modules not in

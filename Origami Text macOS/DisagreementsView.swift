@@ -232,7 +232,7 @@ struct DisagreementsView: View {
     /// one side, and a disagreement must keep at least one real document
     /// on each side to survive.
     private func resolve(_ generated: [GeneratedDisagreement]) -> [ResolvedDisagreement] {
-        let byID = model.index.byID
+        let byID = AIInsights.canonicalIndex(model.index.byID)
         return generated.compactMap { disagreement in
             var seen: Set<String> = []
             func entries(for addresses: [String]) -> [IndexEntry] {

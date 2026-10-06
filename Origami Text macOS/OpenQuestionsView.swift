@@ -209,12 +209,13 @@ struct OpenQuestionsView: View {
     /// Grounding: unknown addresses are dropped; a question with no real
     /// documents left disappears with them.
     private func resolve(_ generated: [GeneratedQuestion]) -> [ResolvedQuestion] {
-        generated.compactMap { question in
+        let byID = AIInsights.canonicalIndex(model.index.byID)
+        return generated.compactMap { question in
             var seen: Set<String> = []
             let entries = question.addresses
                 .map { LiquidAddress.canonical($0) }
                 .filter { seen.insert($0).inserted }
-                .compactMap { model.index.byID[$0] }
+                .compactMap { byID[$0] }
             guard !entries.isEmpty else { return nil }
             return ResolvedQuestion(question: question.question, status: question.status, entries: entries)
         }

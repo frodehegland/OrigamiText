@@ -938,15 +938,26 @@ struct KNavView: View {
             .filter { $0.doc.documentType != BotDocument.documentType }
             .filter { $0.doc.documentType != TrailDocument.documentType }
             .filter { $0.doc.documentType != PersonalGlossary.documentType }
+        // Unit ids key dictionaries downstream, so a book that repeats a
+        // paragraph id must not yield the same unit twice.
+        var seenIDs: Set<String> = []
         for entry in entries {
             let appendixIDs = entry.doc.visualMetaParagraphIDs
+            let candidates = (entry.doc.body ?? []).filter {
+                !appendixIDs.contains($0.id)
+                    && $0.effectiveHeading == nil
+                    && $0.displayText.count >= 60
+            }
+            // Thirty paragraphs spread through the book, not its first
+            // thirty — a book's opening is front matter and a preface.
+            let step = max(1, candidates.count / 30)
             var taken = 0
-            for paragraph in (entry.doc.body ?? []) {
+            for index in stride(from: 0, to: candidates.count, by: step) {
                 guard taken < 30, units.count < 400 else { break }
-                guard !appendixIDs.contains(paragraph.id),
-                      paragraph.effectiveHeading == nil,
-                      paragraph.displayText.count >= 60 else { continue }
-                units.append(KNavEngine.Unit(id: "\(entry.id)#\(paragraph.id)",
+                let paragraph = candidates[index]
+                let id = "\(entry.id)#\(paragraph.id)"
+                guard seenIDs.insert(id).inserted else { continue }
+                units.append(KNavEngine.Unit(id: id,
                                              docID: entry.id,
                                              paragraphID: paragraph.id,
                                              docTitle: entry.doc.title,

@@ -116,6 +116,52 @@ enum AppGreys {
     static var quietText: Color { .secondary }
 }
 
+/// The app theme (Settings ▸ Reading) as a view's own surface: the
+/// theme's page colour behind, its ink in front — what ContentView gives
+/// each column, for a view that must paint a background of its own. It
+/// observes the theme and its edited colours itself, so a change in
+/// Settings repaints the view live. Views with a palette of their own
+/// (The Weave's night canvas, the Sphere's scene) keep it.
+struct ThemedSurface: ViewModifier {
+    @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+    @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        let _ = themeEditTick
+        let theme = ReaderTheme(rawValue: themeRaw) ?? .highContrast
+        content
+            .foregroundStyle(theme.textColor(for: colorScheme) ?? Color.primary)
+            .background(theme.background(for: colorScheme)
+                        ?? Color(nsColor: .textBackgroundColor))
+    }
+}
+
+/// The theme's page colour inside a shape — for chips, legends and
+/// floating labels that must stand opaque over a view's lines, where a
+/// system material would show the system's grey instead of the theme.
+struct ThemedFill<S: Shape>: ViewModifier {
+    @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+    @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
+    @Environment(\.colorScheme) private var colorScheme
+    let shape: S
+
+    func body(content: Content) -> some View {
+        let _ = themeEditTick
+        let theme = ReaderTheme(rawValue: themeRaw) ?? .highContrast
+        content.background(theme.background(for: colorScheme)
+                           ?? Color(nsColor: .textBackgroundColor), in: shape)
+    }
+}
+
+extension View {
+    /// Paints the current theme behind this view and sets its ink.
+    func themedSurface() -> some View { modifier(ThemedSurface()) }
+
+    /// Fills `shape` behind this view with the current theme's page colour.
+    func themedFill<S: Shape>(in shape: S) -> some View { modifier(ThemedFill(shape: shape)) }
+}
+
 /// The installed views, in sidebar order — the experimental views shared
 /// with Knowledge Space (the lab's interaction experiments), written
 /// against the same AppModel API so the files travel between the two
@@ -128,17 +174,25 @@ enum LibraryViewRegistry {
         DocumentWebView.module,
         WeaveView.module,
         AuthorsCircleView.module,
-        PlacesView.module,
+        // Off for the EPUB reader (6 Oct 2026) — each reads what only
+        // Knowledge Space's written notes carry, so on a shelf of books
+        // it can only ever show its empty state. The files stay, in step
+        // with Knowledge Space; restore a line here to bring one back.
+        //   PlacesView.module — a document's location; books have none.
+        //   AttentionsView.module — a letter's addressees.
+        //   TrailsView.module — trail documents and discourse links.
+        //   HotParagraphsView.module — links into paragraphs, which
+        //     only Origami papers citing each other by address make.
+        //   HealthDashboardView.module — the community folder's
+        //     housekeeping; on a shelf it reports every citation of a
+        //     work not owned as an issue.
         // CalendarEventsView.module — off for this release (no Calendar
         // permission); restore with the ORIGAMI_CALENDAR flag.
-        AttentionsView.module,
         StrangerView.module,
-        TrailsView.module,
         GeometriesView.module,
         GlossaryView.module,
         GlossarySpaceView.module,
         KNavView.module,
-        HotParagraphsView.module,
         AIInsightsView.module,
         ThemesView.module,
         OpenQuestionsView.module,
@@ -148,7 +202,6 @@ enum LibraryViewRegistry {
         ZView.module,
         ZigZagView.module,
         ZZNavigatorView.module,
-        HealthDashboardView.module,
         CitationTreeView.module,
         LineageModuleView.module,
     ]
@@ -158,8 +211,8 @@ enum LibraryViewRegistry {
     /// Views until asked for.
     static let defaultShownIDs: Set<String> = [
         // The dependable three for a new library; the experiments (The
-        // Weave, Trails, Hot Paragraphs, Health, The Deal) are one click
-        // away in Edit Views.
+        // Weave, The Deal, the AI reports) are one click away in Edit
+        // Views.
         AskLibraryView.module.id,
         GlossaryView.module.id,
         LineageModuleView.module.id,

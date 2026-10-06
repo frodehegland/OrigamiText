@@ -2,7 +2,7 @@
 title: Origami Text User Guide
 subtitle: For macOS
 author: Future Text Lab
-date: 2026-10-05
+date: 2026-10-06
 ---
 
 # Origami Text User Guide
@@ -631,9 +631,16 @@ A journal's **AI Analyse** gathers its topics for the Map.
 - **Concept Space** and **Tracked Concepts**;
 - the library views you have switched on — **Ask**, **Glossary** and
   **Lineage** to begin with. **Edit Views** chooses which appear, from
-  Connections, The Weave, Author's Circle, Map (places), Trails, Themes, Open
-  Questions, Agreements, Disagreements, Hot Paragraphs, AI Insights,
-  Citation Tree and more.
+  Sphere Weave, Connections, The Weave, Author's Circle, The Stranger,
+  Geometries, Glossary Space, K. Nav, AI Insights, Themes, Open Questions,
+  Agreements, Disagreements, The Deal, Z, ZigZag, zzStructure and Citation
+  Tree.
+
+Views wear your reading theme (Settings ▸ Reading), apart from the few with
+a palette of their own — The Weave's night sky, the Sphere, ZigZag and
+zzStructure's cells, and The Deal's card table. A book you click in any
+view opens in the reader. The AI views read a share of each of your newest
+books, so they answer from a whole shelf of long texts.
 
 Settings ▸ **View Modules** turns views on and off, imports views made by
 others, and helps you make your own.

@@ -44,6 +44,13 @@ nonisolated enum AIInsights {
         var total = 0
         var included = 0
         let ordered = entries.sorted { $0.doc.listedDate > $1.doc.listedDate }
+        // A book is far longer than the whole budget: each one gets a
+        // share and is cut to it, so the newest books all have a voice.
+        // Whole texts made the first book overrun the budget alone and
+        // the model was handed nothing.
+        let textCount = entries.filter { $0.doc.body != nil }.count
+        let share = max(1_500, characterBudget / max(1, min(textCount, 8)))
+        let shelved = Set(entries.map { LiquidAddress.canonical($0.id) })
         for entry in ordered {
             guard let body = entry.doc.body else { continue }
             let appendixIDs = entry.doc.visualMetaParagraphIDs
@@ -52,13 +59,17 @@ nonisolated enum AIInsights {
                 .map(\.displayText)
                 .joined(separator: "\n")
             var header = "== \"\(entry.doc.title)\" by \(entry.doc.displayAuthor) (\(entry.doc.listedDateText), address \(entry.id))"
-            if !entry.doc.links.isEmpty {
-                let relations = entry.doc.links.map { link in
+            // Only relations between books on the shelf: a book's many
+            // citations of works elsewhere would spend its share.
+            let local = entry.doc.links.filter { shelved.contains(LiquidAddress.canonical($0.to)) }
+            if !local.isEmpty {
+                let relations = local.map { link in
                     "\(link.rel ?? "links-to") [\(link.to)\(link.fragment.map { "#\($0)" } ?? "")]"
                 }.joined(separator: " · ")
                 header += "\nRelations: \(relations)"
             }
-            let block = header + "\n" + text
+            var block = header + "\n" + text
+            if block.count > share { block = String(block.prefix(share)) + " …" }
             guard total + block.count <= characterBudget else { break }
             blocks.append(block)
             total += block.count
@@ -68,6 +79,15 @@ nonisolated enum AIInsights {
         return (blocks.joined(separator: "\n\n"),
                 included,
                 max(0, textDocumentCount - included))
+    }
+
+    /// The library keyed by canonical (lowercased) address, for grounding
+    /// the addresses a model hands back. A book shelved under its file
+    /// name ("Moby Dick") keeps that case in the index, so a canonical
+    /// address never found it in `byID` itself.
+    static func canonicalIndex(_ byID: [String: IndexEntry]) -> [String: IndexEntry] {
+        Dictionary(byID.values.map { (LiquidAddress.canonical($0.id), $0) },
+                   uniquingKeysWith: { first, _ in first })
     }
 }
 

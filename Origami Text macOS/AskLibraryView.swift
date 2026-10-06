@@ -91,7 +91,7 @@ struct AskLibraryView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(AppGreys.page)
+        .themedSurface()
         // Citation links open their passage here, not in a browser.
         .environment(\.openURL, OpenURLAction { url in
             state.handleURL(url)

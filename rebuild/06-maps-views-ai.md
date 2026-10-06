@@ -488,9 +488,11 @@ The project memory rule "classify FoundationModels errors against both enums" re
 - Sort by `listedDate`, newest first, and skip documents with no body.
 - Each block is:
   - a header line `== "<title>" by <displayAuthor> (<listedDateText>, address <id>)`;
-  - if the document has links, a line `Relations: <rel ?? "links-to"> [<to>#<fragment>] · …`;
+  - if the document links to other books in `entries` (compared by canonical address), a line `Relations: <rel ?? "links-to"> [<to>#<fragment>] · …` — links to works off the shelf are left out;
   - the body's `displayText` joined with "\n", excluding Visual-Meta paragraphs.
+- Each block is cut to a share of the budget, `max(1500, budget / min(textDocuments, 8))`, with " …" appended. A whole book is longer than the budget; without the share the first block overran it and nothing was sent.
 - Add blocks until the next one would exceed the budget, then stop. Blocks are joined with "\n\n".
+- Addresses the model returns are grounded through `AIInsights.canonicalIndex(byID)`, the index keyed by lowercased id (Themes, Open Questions, Agreements, Disagreements), since a book shelved under its file name keeps its case.
 - The request is: `prompt + "\n\nTHE DOCUMENTS (N included[, M older omitted for space]):\n\n" + corpus`.
 - If no documents are included, the view shows "No text documents in the library yet."
 
@@ -598,6 +600,7 @@ How modules are listed and shown:
 
 - `LibraryViewRegistry.modules` is the ordered list. `module(id:)` looks a module up; in debug builds it asserts that ids are unique.
 - The sidebar lists modules through `SidebarCatalog.views`, which filters out the id `"authors"`.
+- **Theme.** Every view wears the app theme (`ReaderTheme`, key `"readerTheme"`, plus edited colours). A view that paints its own background uses `.themedSurface()` (the theme's page behind, its ink in front). Chips, legends and labels that sit over lines use `.themedFill(in: shape)`, floating panels use `.readingThemeCard(...)`, and lines use the hierarchical `.secondary` style or a Canvas's `.foreground` shading, never `Color.primary`/`Color.secondary`, system materials or window colours. Both modifiers live in `LibraryViewModule.swift` and observe the theme themselves, so they repaint live. Lineage, which also builds for iOS and visionOS, reads the theme directly. Its paper and ink follow the theme, and the bloom keeps its ultramarine and ochre. These keep palettes of their own by design: The Weave's night canvas, K. Nav's weave mode, the Sphere Weave scene, ZigZag's and zzStructure's cell canvases, and The Deal's felt and cards.
 - **Shown and hidden.** Only hidden ids are stored, in UserDefaults `"hiddenViewIDs"` (`AppModel.swift`, around lines 476–494). If the key is absent, every module not in `defaultShownIDs` is hidden. `setView(_:hidden:)` writes the whole array. Hiding the selected view moves the selection to `.epubsTimeline`. "Edit Views" opens Settings on the `.modules` tab. Once the user has made a choice in Edit Views, it always overrides the defaults.
 - **Show In.** `showIn(viewID:selectedText:docID:)` builds a `ShowInPayload{viewID, text, docID}`. The selected text is passed only if the module's appetite is `.text`. The payload is consumed once through `takeShowInPayload(for:)`.
 
@@ -606,8 +609,8 @@ How modules are listed and shown:
 ```swift
 static let defaultShownIDs: Set<String> = [
     // The dependable three for a new library; the experiments (The
-    // Weave, Trails, Hot Paragraphs, Health, The Deal) are one click
-    // away in Edit Views.
+    // Weave, The Deal, the AI reports) are one click away in Edit
+    // Views.
     AskLibraryView.module.id,      // "ask-library"
     GlossaryView.module.id,        // "glossary"
     LineageModuleView.module.id,   // "lineage"
@@ -616,7 +619,7 @@ static let defaultShownIDs: Set<String> = [
 
 > Views are modules: which ones a fresh install shows is a choice, not part of the format. A rebuild may ship any set; the code currently shows three.
 
-**Registry order** (26 modules):
+**Registry order** (21 modules):
 
 | # | id | Name | Type |
 |---|---|---|---|
@@ -625,32 +628,28 @@ static let defaultShownIDs: Set<String> = [
 | 3 | `connections` | Connections | `DocumentWebView` |
 | 4 | `weave` | The Weave | `WeaveView` |
 | 5 | `authors-circle` | Author's Circle | `AuthorsCircleView` |
-| 6 | `places` | Map | `PlacesView` |
-| 7 | `attentions` | Attentions | `AttentionsView` |
-| 8 | `the-stranger` | The Stranger | `StrangerView` |
-| 9 | `trails` | Trails | `TrailsView` |
-| 10 | `geometries` | Geometries | `GeometriesView` |
-| 11 | `glossary` | Glossary | `GlossaryView` |
-| 12 | `glossary-space` | Glossary Space | `GlossarySpaceView` |
-| 13 | `k-nav` | K. Nav | `KNavView` |
-| 14 | `hot-paragraphs` | Hot Paragraphs | `HotParagraphsView` |
-| 15 | `ai-insights` | AI Insights | `AIInsightsView` |
-| 16 | `themes` | Themes | `ThemesView` |
-| 17 | `open-questions` | Open Questions | `OpenQuestionsView` |
-| 18 | `agreements` | Agreements | `AgreementsView` |
-| 19 | `disagreements` | Disagreements | `DisagreementsView` |
-| 20 | `the-deal` | The Deal | `TheDealView` |
-| 21 | `z` | Z | `ZView` |
-| 22 | `zigzag` | ZigZag | `ZigZagView` |
-| 23 | `zz-structure` | zzStructure | `ZZNavigatorView` |
-| 24 | `health` | Health | `HealthDashboardView` |
-| 25 | `citation-tree` | Citation Tree | `CitationTreeView` |
-| 26 | `lineage` | Lineage | `LineageModuleView` (in `LineageView.swift`) |
+| 6 | `the-stranger` | The Stranger | `StrangerView` |
+| 7 | `geometries` | Geometries | `GeometriesView` |
+| 8 | `glossary` | Glossary | `GlossaryView` |
+| 9 | `glossary-space` | Glossary Space | `GlossarySpaceView` |
+| 10 | `k-nav` | K. Nav | `KNavView` |
+| 11 | `ai-insights` | AI Insights | `AIInsightsView` |
+| 12 | `themes` | Themes | `ThemesView` |
+| 13 | `open-questions` | Open Questions | `OpenQuestionsView` |
+| 14 | `agreements` | Agreements | `AgreementsView` |
+| 15 | `disagreements` | Disagreements | `DisagreementsView` |
+| 16 | `the-deal` | The Deal | `TheDealView` |
+| 17 | `z` | Z | `ZView` |
+| 18 | `zigzag` | ZigZag | `ZigZagView` |
+| 19 | `zz-structure` | zzStructure | `ZZNavigatorView` |
+| 20 | `citation-tree` | Citation Tree | `CitationTreeView` |
+| 21 | `lineage` | Lineage | `LineageModuleView` (in `LineageView.swift`) |
 
 Defined but **not registered**:
 
 - `BotsView` (id `bots`) and `LiftWeaveView` (id `lift-weave`) each define a `.module` that nothing registers.
 - `CalendarEventsView` is commented out behind `ORIGAMI_CALENDAR`.
+- `PlacesView` (`places`), `AttentionsView` (`attentions`), `TrailsView` (`trails`), `HotParagraphsView` (`hot-paragraphs`) and `HealthDashboardView` (`health`) were taken out of the registry on 6 Oct 2026. They read what only Knowledge Space's notes carry — a location, addressees, trail documents and discourse links, links into paragraphs, the community folder's housekeeping — so on a shelf of EPUBs each could show only its empty state. Their files stay, in step with Knowledge Space, and their descriptions below still apply if a line is restored.
 
 Not modules at all:
 

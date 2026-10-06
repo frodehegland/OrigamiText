@@ -245,6 +245,9 @@ struct ZZNavigatorView: View {
             }
         }
         .listStyle(.sidebar)
+        // The panel wears the app theme; only the cell canvas is night.
+        .scrollContentBackground(.hidden)
+        .themedSurface()
     }
 
     private func axisButton(_ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {

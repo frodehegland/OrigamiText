@@ -136,7 +136,7 @@ struct DocumentWebView: View {
                let from = positions[web.centerID] {
                 ZStack {
                     if let path = Self.edgePath(from: from, to: ghostPosition) {
-                        path.stroke(Color.secondary.opacity(0.4),
+                        path.stroke(.secondary.opacity(0.4),
                                     style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
                     }
                 }
@@ -150,7 +150,7 @@ struct DocumentWebView: View {
                     .frame(width: 120)
                     .overlay(
                         RoundedRectangle(cornerRadius: 7)
-                            .stroke(Color.secondary.opacity(0.4),
+                            .stroke(.secondary.opacity(0.4),
                                     style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     )
                     .position(ghostPosition)
@@ -169,7 +169,9 @@ struct DocumentWebView: View {
                     Circle()
                         .fill(RelStyle.color(for: edge.rel))
                         .frame(width: 9, height: 9)
-                        .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
+                        // A ring of the theme's page parts the dot from its line.
+                        .padding(1.5)
+                        .themedFill(in: Circle())
                         .padding(6)   // generous click target
                         .contentShape(Circle())
                 }
@@ -196,10 +198,10 @@ struct DocumentWebView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .frame(width: node.ring == 0 ? 170 : 140)
-        .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .themedFill(in: RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(node.ring == 0 ? Color.accentColor : Color.secondary.opacity(0.35),
+                .stroke(node.ring == 0 ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary.opacity(0.35)),
                         lineWidth: node.ring == 0 ? 2 : 1)
         )
         .opacity(node.ring == 2 ? 0.82 : 1)
@@ -242,7 +244,7 @@ struct DocumentWebView: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(.regularMaterial, in: Capsule())
+        .themedFill(in: Capsule())
         .padding(.bottom, 10)
     }
 
@@ -305,12 +307,12 @@ struct WebSpaceView: View {
                                        anchorPrefix: doc.id,
                                        highlights: highlights(for: doc, connections: connections))
                         .frame(width: 340)
-                        .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        .themedFill(in: RoundedRectangle(cornerRadius: 10))
                         .overlay(
                             RoundedRectangle(cornerRadius: 10)
                                 .stroke(doc.id == docs.first?.id
-                                        ? Color.accentColor.opacity(0.7)
-                                        : Color.secondary.opacity(0.25),
+                                        ? AnyShapeStyle(Color.accentColor.opacity(0.7))
+                                        : AnyShapeStyle(.secondary.opacity(0.25)),
                                         lineWidth: doc.id == docs.first?.id ? 1.5 : 1)
                         )
                 }
@@ -331,7 +333,7 @@ struct WebSpaceView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(.regularMaterial, in: Capsule())
+                    .themedFill(in: Capsule())
                     .padding(.bottom, 10)
             }
         }

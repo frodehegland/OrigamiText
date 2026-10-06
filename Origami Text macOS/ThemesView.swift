@@ -213,12 +213,13 @@ struct ThemesView: View {
     /// unknown addresses are dropped, and a theme with no real documents
     /// left disappears with them.
     private func resolve(_ generated: [GeneratedTheme]) -> [ResolvedTheme] {
-        generated.compactMap { theme in
+        let byID = AIInsights.canonicalIndex(model.index.byID)
+        return generated.compactMap { theme in
             var seen: Set<String> = []
             let entries = theme.addresses
                 .map { LiquidAddress.canonical($0) }
                 .filter { seen.insert($0).inserted }
-                .compactMap { model.index.byID[$0] }
+                .compactMap { byID[$0] }
             guard !entries.isEmpty else { return nil }
             return ResolvedTheme(name: theme.name, summary: theme.summary, entries: entries)
         }

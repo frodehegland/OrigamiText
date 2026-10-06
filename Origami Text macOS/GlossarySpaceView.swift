@@ -87,11 +87,7 @@ struct GlossarySpaceView: View {
             .onChange(of: nodes.map(\.id)) { seedIfNeeded(in: geometry.size) }
             .overlay(alignment: .bottom) { legend(in: geometry.size) }
         }
-        #if os(macOS)
-        .background(Color(nsColor: .windowBackgroundColor))
-        #else
-        .background(.background)
-        #endif
+        .themedSurface()
     }
 
     private var hoveredNode: TermNode? {
@@ -112,7 +108,7 @@ struct GlossarySpaceView: View {
                     let width = min(1 + Double(edge.paragraphs) * 0.8, 4)
                     let opacity = edge.paragraphs > 0 ? 0.45 : 0.18
                     context.stroke(path,
-                                   with: .color(touched ? .accentColor : .secondary.opacity(opacity)),
+                                   with: touched ? .color(.accentColor) : .style(.secondary.opacity(opacity)),
                                    lineWidth: touched ? max(width, 1.5) : width)
                 }
                 if edge.glossed {
@@ -145,12 +141,12 @@ struct GlossarySpaceView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(.thickMaterial, in: Capsule())
+        .themedFill(in: Capsule())
         .overlay(
             Capsule()
-                .strokeBorder(isSelected ? Color.accentColor
-                              : isNeighborOfSelection(node.id) ? Color.orange
-                              : Color.secondary.opacity(0.3),
+                .strokeBorder(isSelected ? AnyShapeStyle(Color.accentColor)
+                              : isNeighborOfSelection(node.id) ? AnyShapeStyle(Color.orange)
+                              : AnyShapeStyle(.secondary.opacity(0.3)),
                               lineWidth: isSelected || isNeighborOfSelection(node.id) ? 2 : 1)
         )
         .onHover { inside in
@@ -204,13 +200,9 @@ struct GlossarySpaceView: View {
         }
         .padding(14)
         .frame(width: 380, alignment: .leading)
-        // The shadow belongs to the panel, not its text — shadowing the
-        // whole view softens every glyph.
-        .background {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(.regularMaterial)
-                .shadow(radius: 4)
-        }
+        // The theme's page and ink; the shadow belongs to the panel, not
+        // its text — shadowing the whole view softens every glyph.
+        .readingThemeCard(cornerRadius: 10, shadow: 4, outline: 0.15)
         .position(x: min(max(anchor.x, 200), size.width - 200),
                   y: max(anchor.y - 90, 85))
     }
@@ -254,7 +246,7 @@ struct GlossarySpaceView: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(.regularMaterial, in: Capsule())
+        .themedFill(in: Capsule())
         .padding(.bottom, 10)
     }
 

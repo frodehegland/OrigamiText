@@ -143,6 +143,8 @@ struct GlossaryView: View {
                     }
                 }
                 .listStyle(.sidebar)
+                // The column's theme shows through, not the sidebar material.
+                .scrollContentBackground(.hidden)
             }
             Divider()
             addBar

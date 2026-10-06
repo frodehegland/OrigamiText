@@ -23,6 +23,10 @@ struct LineageView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // The app theme (key AppSettings.readerThemeKey, spelled out because
+    // this file also builds for iOS and visionOS) and its edited colours.
+    @AppStorage("readerTheme") private var themeRaw = ReaderTheme.highContrast.rawValue
+    @AppStorage(ThemeColorOverrides.tickKey) private var themeEditTick = 0
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
@@ -41,6 +45,24 @@ struct LineageView: View {
 
     private let panelWidth: CGFloat = 360
 
+    /// The theme's palette when it has one; nil leaves Lineage's own
+    /// paper and graphite (untouched High Contrast). The ultramarine
+    /// and ochre of the bloom mean something and never change.
+    private var themePaper: Color? {
+        _ = themeEditTick
+        return (ReaderTheme(rawValue: themeRaw) ?? .highContrast).background(for: colorScheme)
+    }
+    private var themeInk: Color? {
+        _ = themeEditTick
+        return (ReaderTheme(rawValue: themeRaw) ?? .highContrast).textColor(for: colorScheme)
+    }
+    private var paper: Color {
+        themePaper ?? color(colorScheme == .dark ? LineageStyle.paperDark : LineageStyle.paper)
+    }
+    private var ink: Color {
+        themeInk ?? color(colorScheme == .dark ? LineageStyle.inkDark : LineageStyle.ink)
+    }
+
     var body: some View {
         Group {
             if let graph {
@@ -57,8 +79,8 @@ struct LineageView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(color(colorScheme == .dark ? LineageStyle.paperDark
-                                               : LineageStyle.paper))
+        .foregroundStyle(ink)
+        .background(paper)
         .task(id: papers) {
             let input = papers
             let name = collectionName
@@ -224,9 +246,10 @@ struct LineageView: View {
                       positions: LineageLayout.Positions,
                       matches: Set<Int>, searching: Bool, now: Date) {
         let dark = colorScheme == .dark
-        let ink = color(dark ? LineageStyle.inkDark : LineageStyle.ink)
-        let graphite = color(dark ? LineageStyle.graphiteDark
-                                  : LineageStyle.graphite)
+        let ink = self.ink
+        // Under a theme the graphite is its ink, thinned by the alphas below.
+        let graphite = themeInk ?? color(dark ? LineageStyle.graphiteDark
+                                              : LineageStyle.graphite)
         let restingEdge = dark ? LineageStyle.restingEdgeAlphaDark
                                : LineageStyle.restingEdgeAlpha
         let trace = (selectedIndex ?? hoverIndex) != nil ? cachedTrace : nil
@@ -317,7 +340,7 @@ struct LineageView: View {
         guard let minYear = graph.years.first,
               let maxYear = graph.years.last, maxYear > minYear else { return }
         let spacing = positions.yearSpacing
-        let muted = color(LineageStyle.muted)
+        let muted = themeInk?.opacity(0.7) ?? color(LineageStyle.muted)
         let axisY = size.height - 40
         for year in graph.years {
             guard let x = positions.xForYear[year] else { continue }
@@ -484,7 +507,8 @@ struct LineageView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(.thinMaterial, in: Capsule())
+        .background(paper, in: Capsule())
+        .overlay(Capsule().strokeBorder(ink.opacity(0.15), lineWidth: 1))
     }
 
     private func statusLine(_ graph: LineageGraph, matchCount: Int,
@@ -526,8 +550,13 @@ struct LineageView: View {
         }
         .padding(10)
         .frame(maxWidth: 280, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .shadow(radius: 4, y: 2)
+        .foregroundStyle(ink)
+        .background {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(paper)
+                .shadow(radius: 4, y: 2)
+        }
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ink.opacity(0.15), lineWidth: 1))
     }
 
     private func tooltipPosition(_ cursor: CGPoint, in size: CGSize) -> CGPoint {

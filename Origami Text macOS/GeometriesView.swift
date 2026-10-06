@@ -70,7 +70,7 @@ struct GeometriesView: View {
             }
         }
         #if os(macOS)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .themedSurface()
         #else
         .background(.background)
         #endif
@@ -122,7 +122,8 @@ struct GeometriesView: View {
                 .environment(\.geometryRelatedIDs, related)
         }
         .padding(10)
-        .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 10))
+        // A tint of the theme's own ink, not a system material.
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 10))
     }
 
     /// The essay's argument, standing where a sixth pane would.
@@ -139,7 +140,8 @@ struct GeometriesView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, minHeight: 262, alignment: .topLeading)
-        .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 10))
+        // A tint of the theme's own ink, not a system material.
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: The line
@@ -286,7 +288,7 @@ struct GeometriesView: View {
                             path.move(to: from)
                             path.addLine(to: to)
                             context.stroke(path,
-                                           with: .color(touched ? .accentColor : .secondary.opacity(0.2)),
+                                           with: touched ? .color(.accentColor) : .style(.secondary.opacity(0.2)),
                                            lineWidth: touched ? 1.5 : 1)
                         }
                     }
@@ -425,9 +427,11 @@ private struct GeometryDot: View {
     var body: some View {
         let isRelated = relatedIDs.contains(entry.id)
         Circle()
-            .fill(isSelected ? Color.accentColor
-                  : isRelated ? Color.orange
-                  : Color.secondary.opacity(0.55))
+            // The resting dot in the theme's ink (the hierarchical style),
+            // not the system's grey.
+            .fill(isSelected ? AnyShapeStyle(Color.accentColor)
+                  : isRelated ? AnyShapeStyle(Color.orange)
+                  : AnyShapeStyle(.secondary.opacity(0.55)))
             .frame(width: isSelected ? 13 : 10, height: isSelected ? 13 : 10)
             .overlay(
                 Circle()

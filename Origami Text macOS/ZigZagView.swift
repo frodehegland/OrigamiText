@@ -83,6 +83,13 @@ struct ZigZagView: View {
                 }
             }
         }
+        // The shelf's index is built in the background: a view shown
+        // before it lands would otherwise rest on "Nothing to ZigZag".
+        .onChange(of: model.index.revision) {
+            if focusedID.map({ model.index.byID[$0] == nil }) ?? true {
+                focusedID = model.index.timeline.last?.id
+            }
+        }
     }
 
     /// Two dimensions showing the same rank teach nothing; when the user

@@ -107,7 +107,7 @@ struct AuthorsCircleView: View {
             )
         }
         #if os(macOS)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .themedSurface()
         #else
         .background(.background)
         #endif
@@ -187,8 +187,12 @@ struct AuthorsCircleView: View {
         }
         .padding(10)
         .frame(width: 280, alignment: .leading)
+        #if os(macOS)
+        .readingThemeCard(cornerRadius: 8, shadow: 4, outline: 0.15)
+        #else
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
         .shadow(radius: 4)
+        #endif
         .position(x: min(max(panelPoint.x, 150), size.width - 150),
                   y: max(panelPoint.y - 60, 70))
     }
@@ -303,15 +307,20 @@ struct AuthorsCircleView: View {
         // author selected, their replies run in the label color and what
         // comes toward them in gray; with everyone selected the mesh is
         // uniform.
+        // "Label colour" is the theme's ink: the view's foreground style,
+        // not the system's primary, so the lines read on every theme.
         let width = 1 + min(CGFloat(segment.edge.docs.count), 7) + (isActive ? 1.5 : 0)
-        let color: Color = if let selected = selectedAuthor, segment.edge.from == selected {
-            .primary.opacity(isActive ? 1 : 0.8)
+        var line = context
+        if let selected = selectedAuthor, segment.edge.from == selected {
+            line.opacity = isActive ? 1 : 0.8
+            line.stroke(path, with: .foreground, lineWidth: width)
         } else if selectedAuthor != nil {
-            .gray.opacity(isActive ? 0.95 : 0.55)
+            line.stroke(path, with: .color(.gray.opacity(isActive ? 0.95 : 0.55)),
+                        lineWidth: width)
         } else {
-            .primary.opacity(isActive ? 0.9 : 0.45)
+            line.opacity = isActive ? 0.9 : 0.45
+            line.stroke(path, with: .foreground, lineWidth: width)
         }
-        context.stroke(path, with: .color(color), lineWidth: width)
     }
 }
 

@@ -36,7 +36,7 @@ struct ZView: View {
                         .frame(maxWidth: .infinity)
                     }
                 }
-                .background(desk)
+                .themedSurface()
             } else {
                 startState
             }
@@ -58,10 +58,6 @@ struct ZView: View {
                 trail = [current.id]
             }
         }
-    }
-
-    private var desk: some View {
-        Color(red: 0.93, green: 0.91, blue: 0.87).ignoresSafeArea()
     }
 
     private var startState: some View {
@@ -161,7 +157,7 @@ struct ZView: View {
         }
         .padding(18)
         .frame(maxWidth: 560, alignment: .leading)
-        .background(slipPaper)
+        .readingThemeCard(cornerRadius: 5, shadow: 2, outline: 0.10)
         .onTapGesture(count: 2) { model.openInLibrary(doc) }
     }
 
@@ -235,7 +231,7 @@ struct ZView: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(slipPaper)
+            .readingThemeCard(cornerRadius: 5, shadow: 2, outline: 0.10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -243,12 +239,6 @@ struct ZView: View {
         .help("Step to “\(doc.title)” — double-click to read it in full")
     }
 
-    private var slipPaper: some View {
-        RoundedRectangle(cornerRadius: 5)
-            .fill(.white)
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.black.opacity(0.10), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.10), radius: 2, y: 1)
-    }
 }
 
 extension ZView {
