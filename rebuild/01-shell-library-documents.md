@@ -848,7 +848,7 @@ community folder named `sample--<suggestedExportFileName>`. Remove deletes top-l
 - **Registry** (26 modules, sidebar order): ask-library, sphere-weave, connections, weave, authors-circle,
   places, attentions, the-stranger, trails, geometries, glossary, glossary-space, k-nav, hot-paragraphs,
   ai-insights, themes, open-questions, agreements, disagreements, the-deal, z, zigzag, zz-structure, health,
-  citation-tree, lineage. Fresh-install shown set: **ask-library, glossary, lineage** (D8). DEBUG asserts unique
+  citation-tree, lineage. Fresh-install shown set: **ask-library, glossary, lineage**. DEBUG asserts unique
   ids. Contents of each view: chapter 06.
 - **Exchange** (`ModuleExchange.swift`): `.origamiview` = JSON `{format:"origami-view-module/1", id, name,
   systemImage, fileName, source}`. Import accepts a `.origamiview` or a bare `.swift` (id/name/systemImage scraped
@@ -1115,7 +1115,6 @@ Shell:
 | D5 | `relates-to` | Spec §5 lists it. | No `DocumentRelation` case; only a colour in `RelStyle`. |
 | D6 | Appendix keeps fields | Code comment: "Everything the document carries rides through". | `appendingAppendix` drops `tables`, `assets`, `sourceURL`, `publication`. |
 | D7 | Field key prose | Appendix explains `JSON`, `tag`, `showInFind`, `note`, and a `@{glossary}` block. | This generator never writes those. |
-| D8 | Default views | VIEW-MODULES.md: 26 views, eight shown on a fresh install (memory notes say the same). | 26 registered; `defaultShownIDs` has three (ask-library, glossary, lineage). |
 | D9 | Bundled module sources | `ModuleExchange`: "Regenerate ModuleSources.json when a module changes". | The JSON holds 17 ids including `authors`, `lift-weave` (not registered) and lacks e.g. ask-library, glossary, lineage, citation-tree, so those cannot be exported. |
 | D10 | Dead view routes | — | `follow` (person address), `openAuthorPage` route to `.view("authors")`; `openLocations` to `.view("location")`; neither id is in the registry, so the list falls back to `DocumentListView` with no sidebar row. |
 | D11 | Duplicates across feeds | Spec §9: flag duplicates. | A JSON document and an EPUB with the same id: EPUB wins silently. |

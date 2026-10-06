@@ -593,7 +593,7 @@ static let defaultShownIDs: Set<String> = [
 ]
 ```
 
-> **Discrepancy:** `VIEW-MODULES.md`, the brief for this chapter and the project memory ("Distribution defaults") all say a fresh install shows **eight** curated Views. The source shows **three**. The rebuild should follow whichever Frode confirms. The code currently says three.
+> Views are modules: which ones a fresh install shows is a choice, not part of the format. A rebuild may ship any set; the code currently shows three.
 
 **Registry order** (26 modules):
 

@@ -73,7 +73,7 @@ Each chapter ends with a list of places where the code does something the
 documents don't say, or the other way round. Read these before trusting
 either side:
 
-- Chapter 1 §9 — file naming, fields missing from the spec, default views, module sources
+- Chapter 1 §9 — file naming, fields missing from the spec, module sources
 - Chapter 2 §10 — reading-mode names, citation class names, reading-position keys
 - Chapter 3 §3.6, §4 and §7.3 — sync-file keys, the identity scheme, how the OrigamiFormat package and the app differ
 - Chapter 4 §7.3 — the writer against Profile 1.0, stale pipeline documents
