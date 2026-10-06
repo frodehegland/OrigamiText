@@ -10,9 +10,10 @@ Open `OrigamiText.xcodeproj` and build the **Origami Text macOS** scheme — tha
 
 ## Documentation
 
+- [rebuild/](rebuild/) — **the rebuild guide**: the whole app described closely enough for a person or an LLM to build it again on any platform, chapter by chapter, tied to the source
 - [ORIGAMI-TEXT-OVERVIEW.md](ORIGAMI-TEXT-OVERVIEW.md) — what the app is and how it thinks
 - [ORIGAMI-DOCUMENT-FORMAT.md](ORIGAMI-DOCUMENT-FORMAT.md) — the full format specification
-- [LIQUID-DOCUMENT-FORMAT.md](LIQUID-DOCUMENT-FORMAT.md) — the interoperable sibling format
+- [LIQUID-DOCUMENT-FORMAT.md](LIQUID-DOCUMENT-FORMAT.md) — a rename notice: Liquid is the format's earlier name
 - [ORIGAMI-EPUB-PROFILE-1.0.md](ORIGAMI-EPUB-PROFILE-1.0.md) — the EPUB profile: how an Origami document travels as a conforming EPUB 3, normative
 - [origami-schemas/](origami-schemas/) — the profile's JSON schemas, their test suite, and a conforming sample publication
 - [origami-packaging-tests/](origami-packaging-tests/) — the first conformance corpus item, with its EPUBCheck results

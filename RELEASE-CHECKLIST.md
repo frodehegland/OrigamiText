@@ -20,6 +20,13 @@ Do these before archiving a build for App Store submission.
 - [ ] In a fresh install (or after removing the shelf copies), click the
   guide citation in the Introduction — Open Original should open the guide.
 
+## Rebuild guide
+
+- [ ] **Bring `rebuild/` up to date** — for every feature added or changed
+  since the last build, update the matching chapter (feature section,
+  data-on-disk table, acceptance checks). See `rebuild/README.md`,
+  "Keeping this guide current".
+
 ## Build
 
 - [ ] Version and build number bumped on all three schemes (macOS, iOS, visionOS).
