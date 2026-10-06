@@ -273,6 +273,10 @@ This read-only sheet shows the **writer's own spatial arrangement** of a book, m
 3. A reference. The label is `citedAs` and the detail is the BibTeX.
 4. Otherwise the node has kind "other".
 
+**Lines.** The book's `map.connections` when it has any. Author's export never has any, on purpose, so when the list is empty `AuthoredMapView.mentionConnections(among:)` derives them: two placed concepts are joined when either one's definition names the other's label as a whole word (case-insensitive), once per pair. Derived lines are drawn only, never written back.
+
+**What Author writes** (Profile 1.0 §10.3): one view, `MAP-1`, whose `ref`s are bare concept UUIDs (the same as `visual-meta.json` `concepts[].id`), x/y in canvas points with an arbitrary origin, `right-handed-y-up`. `z` is depth in metres with 0 meaning unset; the 2D sheet ignores it. Concepts listed in `map.nodes` but placed in no view are left out. Older exports with no map show "No Map in This Document" and need re-exporting from Author; very old ones kept the map in `visual-meta.json` with heading refs and 0–1 coordinates, which the fallback and the fit-to-view still draw.
+
 **Layout (`fit`).** Scale the coordinates uniformly to fit the sheet with `margin 110`: `scale = min(w/spanX, h/spanY)` (1 if the span is zero), then centre the result. Connections are lines at secondary 0.6 opacity, width 1.2.
 
 **Cards:**
@@ -1015,6 +1019,8 @@ The reader pulls 3D figures off the page: drag 40 pt (`pullThreshold`), or doubl
 
 - [ ] For a book with `space.convention: "y-up"`, nodes are mirrored vertically compared with a book without it.
 - [ ] Tapping a passage card opens the reader at that paragraph.
+- [ ] For an Author export (concept refs, no connections), a line joins two concepts exactly when one's definition names the other.
+- [ ] A concept in `map.nodes` with no view position is not drawn at (0, 0).
 
 ### 7.3 Open items (unclear from source or not verified)
 

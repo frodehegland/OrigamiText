@@ -82,9 +82,11 @@ struct AuthoredMapView: View {
         GeometryReader { proxy in
             let placed = nodes(for: layout)
             let fitted = fit(placed, in: proxy.size)
+            let connections = doc.mapConnections.isEmpty
+                ? mentionConnections(among: placed) : doc.mapConnections
             ZStack {
                 Canvas { context, _ in
-                    for connection in doc.mapConnections {
+                    for connection in connections {
                         guard let from = fitted[connection.from],
                               let to = fitted[connection.to] else { continue }
                         var path = Path()
@@ -166,6 +168,28 @@ struct AuthoredMapView: View {
             return Node(id: ref, label: extras.labels[ref] ?? ref, kind: .other,
                         point: point, paragraphID: nil, detail: nil)
         }
+    }
+
+    /// Author writes no connections on purpose: links between concepts
+    /// follow from what each definition says. So, when the book declares
+    /// none, two placed concepts are joined when either one's definition
+    /// names the other as a whole word — once per pair, whichever way.
+    private func mentionConnections(among nodes: [Node]) -> [LiquidDoc.MapConnection] {
+        let concepts = nodes.filter { $0.kind == .concept }
+        guard concepts.count > 1 else { return [] }
+        func mentions(_ text: String?, _ name: String) -> Bool {
+            guard let text, !text.isEmpty, !name.isEmpty else { return false }
+            let pattern = "\\b" + NSRegularExpression.escapedPattern(for: name) + "\\b"
+            return text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+        }
+        var joined: [LiquidDoc.MapConnection] = []
+        for (index, one) in concepts.enumerated() {
+            for other in concepts[(index + 1)...]
+            where mentions(one.detail, other.label) || mentions(other.detail, one.label) {
+                joined.append(LiquidDoc.MapConnection(from: one.id, to: other.id))
+            }
+        }
+        return joined
     }
 
     /// The writer's coordinates are unitless (§10.3): scaled uniformly to

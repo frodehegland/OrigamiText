@@ -1884,9 +1884,33 @@ back to `value`.
 }
 ```
 
-`ref`, `from` and `to` are element addresses (§6.1). Coordinates are
-writer-defined and unitless unless `space.units` says otherwise; a
-reader MUST NOT interpret them as metres by default.
+`ref`, `from` and `to` are element addresses (§6.1), or the bare `id`
+of a concept in the semantic record (`concepts[].id`, §9) — the same id
+the glossary's `<dt id="gloss-<id>">` and the text's concept links carry.
+A map of concepts, which is what Author writes, uses the second form. A
+reader MUST resolve a reference against both. Every concept `ref` MUST
+name a concept that exists.
+
+`nodes` (OPTIONAL) lists the map's members with a display `label` and a
+`kind`, keyed by the same `id` as the views' `ref`. A member listed in
+`nodes` but placed in no view was never arranged by the writer: a reader
+MAY place it itself or leave it out, and MUST NOT treat a missing
+position as `(0, 0)`.
+
+Coordinates are writer-defined and unitless unless `space.units` says
+otherwise; a reader MUST NOT interpret them as metres by default. The
+origin is arbitrary, so a reader fits the arrangement to its view. Where
+`space.convention` is `right-handed-y-up`, `y` grows upward and a reader
+drawing to a y-down screen negates it once. `space.units` governs `x`
+and `y`. `z`, when present, is depth in **metres** for a spatial reader,
+and `0` means "no depth set" rather than "flat": a spatial reader uses
+its own default depth for it, and a two-dimensional reader ignores `z`.
+
+`connections` MAY be empty, and in Author's export it always is: the
+links between concepts follow from what each definition mentions. A
+reader MAY derive lines that way — joining two placed concepts when one's
+definition names the other — and MUST NOT write what it derives back
+into this structure.
 
 **A reader MUST NOT write reader-created positions into this
 structure** (§1.11, §15).
