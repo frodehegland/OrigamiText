@@ -1643,7 +1643,15 @@ final class AppModel {
 
     /// Every EPUB the user has opened, newest first. Persisted internally —
     /// no `.origamitext` is written.
-    private(set) var epubRecords: [EPUBRecord] = AppModel.loadEPUBRecords()
+    private(set) var epubRecords: [EPUBRecord] = AppModel.loadEPUBRecords() {
+        didSet { Self.refreshBookIdentities(epubRecords) }
+    }
+
+    /// Keeps the annotation store's table of book names in step with the
+    /// shelf, so every sidecar save names its book the shared way.
+    private nonisolated static func refreshBookIdentities(_ records: [EPUBRecord]) {
+        BookIdentities.update(records) { storedEPUBURL(inFolder: $0.folder) }
+    }
 
     private static func loadEPUBRecords() -> [EPUBRecord] {
         guard let data = try? Data(contentsOf: epubManifestURL),
@@ -5729,6 +5737,7 @@ final class AppModel {
         analysisInProgress.insert(name)
         defer { analysisInProgress.remove(name) }
         var analysisFailures = 0
+        var lastFailure: Error?
 
         let records = epubRecords(inPublication: name)
         guard !records.isEmpty else { return }
@@ -5742,10 +5751,20 @@ final class AppModel {
                 List 3 to 5 short topic keywords or phrases for this paper. \
                 Reply with only a comma-separated list, nothing else.
                 """
-            guard let (text, _) = try? await OrigamiLLM.shared.respond(
-                instructions: "Extract topic keywords from academic paper titles. Be concise and specific.",
-                to: prompt)
-            else { analysisFailures += 1; continue }
+            // One paper refused or failed costs only itself; the reason is
+            // kept, so a run where nothing answered can say why.
+            let text: String
+            do {
+                text = try await OrigamiLLM.shared.respond(
+                    instructions: "Extract topic keywords from academic paper titles. Be concise and specific.",
+                    to: prompt).text
+            } catch is CancellationError {
+                return
+            } catch {
+                analysisFailures += 1
+                lastFailure = error
+                continue
+            }
 
             let topics = text
                 .components(separatedBy: ",")
@@ -5757,8 +5776,11 @@ final class AppModel {
         // Every paper refused: say so, rather than a spinner that stops
         // with nothing to show.
         if paperTopics.isEmpty, analysisFailures > 0 {
-            showNote("The analysis could not run \u{2014} no AI model answered. Choose or install one in Settings \u{25B8} AI.")
+            showNote("The analysis could not run \u{2014} no AI model answered: \(lastFailure?.localizedDescription ?? "no reason given"). Choose or install one in Settings \u{25B8} AI.")
             return
+        }
+        if analysisFailures > 0, let lastFailure {
+            showNote("\(analysisFailures) of \(records.count) papers could not be analysed: \(lastFailure.localizedDescription)")
         }
         var updated = publicationAnalyses[name] ?? PublicationAnalysis()
         updated.paperTopics = paperTopics
@@ -5795,6 +5817,7 @@ final class AppModel {
     private func categoriseTopics(_ topics: [String]) async -> [String: String] {
         var categories: [String: String] = [:]
         var coined: [String] = [Self.aiCategoryName]
+        var reportedCategoryFailure = false
         let unique = Array(Set(topics.filter { !$0.isEmpty })).sorted()
         var start = 0
         while start < unique.count {
@@ -5817,10 +5840,22 @@ final class AppModel {
                 Topics:
                 \(chunk.joined(separator: "\n"))
                 """
-            guard let (text, _) = try? await OrigamiLLM.shared.respond(
-                instructions: "Group academic topic keywords under broad umbrella categories. Follow the output format exactly.",
-                to: prompt)
-            else { continue }
+            // A chunk that fails leaves its topics uncategorised (filed
+            // under Other) — said once, with the reason, not hidden.
+            let text: String
+            do {
+                text = try await OrigamiLLM.shared.respond(
+                    instructions: "Group academic topic keywords under broad umbrella categories. Follow the output format exactly.",
+                    to: prompt).text
+            } catch is CancellationError {
+                break
+            } catch {
+                if !reportedCategoryFailure {
+                    reportedCategoryFailure = true
+                    showNote("Some topics could not be grouped and are filed under Other: \(error.localizedDescription)")
+                }
+                continue
+            }
             var replied: [String: String] = [:]
             for line in text.components(separatedBy: .newlines) {
                 let parts = line.components(separatedBy: "::")
@@ -6037,14 +6072,27 @@ final class AppModel {
         guard !records.isEmpty else { return }
         extractionProgress = (0, records.count)
         defer { extractionProgress = nil }
+        var reportedFailure = false
         for (position, record) in records.enumerated() {
             extractionProgress = (position, records.count)
             guard !Task.isCancelled else { return }
             let paragraphs = (index.byID[record.id]?.doc.body ?? []).map(\.text)
             guard !paragraphs.isEmpty else { continue }
-            guard let extraction = try? await EntityExtractor.extract(
-                paragraphs: paragraphs, excluding: record.authorList)
-            else { continue }
+            // One book that fails costs only itself; the first reason is
+            // said once, so a run where the model never answers isn't silent.
+            let extraction: DocumentExtraction
+            do {
+                extraction = try await EntityExtractor.extract(
+                    paragraphs: paragraphs, excluding: record.authorList)
+            } catch is CancellationError {
+                return
+            } catch {
+                if !reportedFailure {
+                    reportedFailure = true
+                    showNote("Names could not be found in \u{201C}\(record.title)\u{201D}: \(error.localizedDescription)")
+                }
+                continue
+            }
             documentExtractions[record.id] = extraction
             saveExtractionsFile()
         }
@@ -6446,6 +6494,7 @@ final class AppModel {
     let letterPost = LetterPostStore()
 
     init() {
+        Self.refreshBookIdentities(epubRecords)
         letterPost.attach(self)
         migrateArchivedIDs()
         connectOverviewPortraits()

@@ -66,14 +66,13 @@ struct DisagreementsView: View {
 
     var body: some View {
         Group {
-            switch SystemLanguageModel.default.availability {
-            case .available:
+            if OrigamiLLM.shared.canRespond {
                 content
-            case .unavailable(let reason):
+            } else if case .unavailable(let reason) = SystemLanguageModel.default.availability {
                 ContentUnavailableView {
-                    Label("Apple Intelligence Unavailable", systemImage: "bubble.left.and.bubble.right")
+                    Label("No AI Model Available", systemImage: "bubble.left.and.bubble.right")
                 } description: {
-                    Text("Disagreements uses the on-device model, so no text leaves this Mac. \(describe(reason))")
+                    Text("Disagreements needs a model: choose a server in Settings \u{25B8} AI, or use Apple\u{2019}s on-device model. \(describe(reason))")
                 }
             }
         }
@@ -217,8 +216,8 @@ struct DisagreementsView: View {
         let request = fullPrompt
         Task {
             do {
-                let session = LanguageModelSession()
-                let response = try await session.respond(to: request, generating: GeneratedDisagreementList.self)
+                let response = try await OrigamiLLM.shared.generate(
+                    GeneratedDisagreementList.self, instructions: nil, prompt: request)
                 disagreements = resolve(response.content.disagreements)
                 unfurled = []
                 hasRun = true

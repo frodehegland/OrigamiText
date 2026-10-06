@@ -39,7 +39,7 @@ Read in this order. Paths are from the repository root.
 | [ORIGAMI-EPUB-CONFORMANCE-PLAN.md](../ORIGAMI-EPUB-CONFORMANCE-PLAN.md) | What the reader supports of EPUB 3 itself, and what is still planned. |
 | [AUTHOR-EXPORT-FRONT-MATTER.md](../AUTHOR-EXPORT-FRONT-MATTER.md) | Front matter as the Author app exports it. |
 | [LIQUID-DOCUMENT-FORMAT.md](../LIQUID-DOCUMENT-FORMAT.md) | A rename notice: "Liquid" is the older name of the Origami document format. |
-| [OrigamiFormat](https://github.com/frodehegland/OrigamiFormat) | A Swift package holding the annotation model, document identity, EPUB container reader and reading styles that the Reader app uses. Origami Text has its own copies of this code and does not yet link the package. Chapter 3 §4 compares the two. |
+| [OrigamiFormat](https://github.com/frodehegland/OrigamiFormat) | A Swift package holding the annotation model, document identity, EPUB container reader and reading styles that the Reader app uses. Origami Text has its own copies of this code (including a mirror of the document identity rule, applied when annotations are saved) and does not yet link the package. Chapter 3 §4 compares the two. |
 
 Some of these documents also have a copy inside `Origami Text macOS/`. Those
 copies are bundled into the app and can be older or newer than the
@@ -75,10 +75,10 @@ either side:
 
 - Chapter 1 §9 — file naming, fields missing from the spec, module sources
 - Chapter 2 §10 — reading-mode names, citation class names, reading-position keys
-- Chapter 3 §3.6, §4 and §7.3 — sync-file keys, the identity scheme, how the OrigamiFormat package and the app differ
-- Chapter 4 §7.3 — the writer against Profile 1.0, stale pipeline documents
-- Chapter 5 appendix — DOI cleaners, AI routing exceptions
-- Chapter 6 §3.6 and §7.3 — AI calls that bypass `OrigamiLLM`, where the Map code lives
+- Chapter 3 §3.6, §4 and §7.3 — sync-file keys, where the identity rule is applied, how the OrigamiFormat package and the app differ
+- Chapter 4 §7.3 — the writer against Profile 1.0 (revised 6 October 2026), stale pipeline documents
+- Chapter 5 appendix — DOI cleaners, the one remaining `try?` on extraction
+- Chapter 6 §3.6 and §7.3 — what is left of the AI routing rule (one `try?`, iOS reading AI, privacy wording), where the Map code lives
 
 These lists describe the code as it was when the guide was written. They are
 not a to-do list: some differences may be deliberate.

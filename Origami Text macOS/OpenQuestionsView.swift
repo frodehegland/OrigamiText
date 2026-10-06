@@ -54,14 +54,13 @@ struct OpenQuestionsView: View {
 
     var body: some View {
         Group {
-            switch SystemLanguageModel.default.availability {
-            case .available:
+            if OrigamiLLM.shared.canRespond {
                 content
-            case .unavailable(let reason):
+            } else if case .unavailable(let reason) = SystemLanguageModel.default.availability {
                 ContentUnavailableView {
-                    Label("Apple Intelligence Unavailable", systemImage: "questionmark.circle")
+                    Label("No AI Model Available", systemImage: "questionmark.circle")
                 } description: {
-                    Text("Open Questions uses the on-device model, so no text leaves this Mac. \(describe(reason))")
+                    Text("Open Questions needs a model: choose a server in Settings \u{25B8} AI, or use Apple\u{2019}s on-device model. \(describe(reason))")
                 }
             }
         }
@@ -195,8 +194,8 @@ struct OpenQuestionsView: View {
         let request = fullPrompt
         Task {
             do {
-                let session = LanguageModelSession()
-                let response = try await session.respond(to: request, generating: GeneratedQuestionList.self)
+                let response = try await OrigamiLLM.shared.generate(
+                    GeneratedQuestionList.self, instructions: nil, prompt: request)
                 questions = resolve(response.content.questions)
                 unfurled = []
                 hasRun = true

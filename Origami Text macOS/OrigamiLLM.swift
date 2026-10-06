@@ -24,14 +24,27 @@ import FoundationModels
 
 nonisolated enum OrigamiLLMError: LocalizedError {
     case serverUnreachable(String)
+    case modelNotFound(String)
     case authRequired(String)
     case appleUnavailable
     case generationFailed(String)
+
+    /// Only these send a request on to Apple's model: the chosen server
+    /// or model is simply not there. Anything else — a missing key, a
+    /// refusal, a malformed answer — is the user's to see (spec §2).
+    var allowsFallback: Bool {
+        switch self {
+        case .serverUnreachable, .modelNotFound: true
+        default: false
+        }
+    }
 
     var errorDescription: String? {
         switch self {
         case .serverUnreachable(let host):
             "Can\u{2019}t reach \(host). Is the server running?"
+        case .modelNotFound(let model):
+            "The model \(model) isn\u{2019}t on the server."
         case .authRequired(let host):
             "\(host) needs an API key. Add one in Settings."
         case .appleUnavailable:
@@ -166,7 +179,12 @@ final class OrigamiLLM {
     /// model does, and `fallbackNotice` says so — a user action never
     /// fails solely because the preferred model is missing. Streaming
     /// lands on `onPartial` as the words arrive.
+    /// `transformingContent` is for work on the reader's own material —
+    /// summarizing, analysing — where Apple's default guardrails refuse
+    /// far too easily; Apple's model then runs with its
+    /// content-transformation guardrails. Servers ignore it.
     func respond(instructions: String?, to prompt: String,
+                 transformingContent: Bool = false,
                  onPartial: (@MainActor (String) -> Void)? = nil)
         async throws -> (text: String, modelName: String) {
         if let (endpoint, model) = selectedEndpointModel() {
@@ -177,19 +195,90 @@ final class OrigamiLLM {
                     instructions: instructions, prompt: prompt,
                     onPartial: onPartial)
                 return (text, "\(endpoint.hostLabel) \u{00B7} \(model)")
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                fallbackNotice = """
-                    \(model) wasn\u{2019}t available \u{2014} used Apple\u{2019}s \
-                    built-in model instead.
-                    """
+            } catch let error as OrigamiLLMError where error.allowsFallback {
+                noteFallback(from: model)
             }
         }
-        let text = try await appleRespond(instructions: instructions,
-                                          to: prompt, onPartial: onPartial)
+        let text = try await appleRespond(instructions: instructions, to: prompt,
+                                          transformingContent: transformingContent,
+                                          onPartial: onPartial)
         return (text, "Apple\u{2019}s built-in model")
     }
+
+    private func noteFallback(from model: String) {
+        fallbackNotice = """
+            \(model) wasn\u{2019}t available \u{2014} used Apple\u{2019}s \
+            built-in model instead.
+            """
+    }
+
+    #if canImport(FoundationModels)
+    /// A structured answer of type `T` from whichever model is chosen —
+    /// the one door for every feature that needs more than prose. Apple's
+    /// model fills `T` by guided generation. A server is sent `T`'s
+    /// generation schema as a JSON Schema (`response_format`, which Ollama,
+    /// LM Studio and MLX-LM honour), and its JSON reply is read back
+    /// through `GeneratedContent`, so the feature sees the same `T` either
+    /// way. The fallback rule is `respond`'s: only a missing server or
+    /// model falls back.
+    func generate<T: Generable>(_ type: T.Type, instructions: String?,
+                                prompt: String,
+                                options: GenerationOptions = GenerationOptions(),
+                                transformingContent: Bool = false)
+        async throws -> (content: T, modelName: String) {
+        if let (endpoint, model) = selectedEndpointModel() {
+            do {
+                let schema = try Self.jsonSchema(for: T.self)
+                let shape = "Reply with one JSON object only \u{2014} no prose, no code fence \u{2014} matching this JSON Schema:\n"
+                    + (String(data: try JSONSerialization.data(withJSONObject: schema), encoding: .utf8) ?? "")
+                let text = try await ChatCompletionsClient.respond(
+                    base: endpoint.base, model: model,
+                    key: apiKey(for: endpoint.base),
+                    instructions: [instructions, shape].compactMap { $0 }.joined(separator: "\n\n"),
+                    prompt: prompt,
+                    jsonSchema: (name: String(describing: T.self), schema: schema),
+                    temperature: options.temperature)
+                return (try Self.decode(T.self, from: text, host: endpoint.hostLabel),
+                        "\(endpoint.hostLabel) \u{00B7} \(model)")
+            } catch let error as OrigamiLLMError where error.allowsFallback {
+                noteFallback(from: model)
+            }
+        }
+        guard case .available = SystemLanguageModel.default.availability else {
+            throw OrigamiLLMError.appleUnavailable
+        }
+        let session = Self.appleSession(instructions: instructions,
+                                        transformingContent: transformingContent)
+        let response = try await session.respond(to: prompt, generating: T.self,
+                                                 options: options)
+        return (response.content, "Apple\u{2019}s built-in model")
+    }
+
+    /// `T`'s generation schema in JSON Schema form, as a JSON object.
+    nonisolated static func jsonSchema<T: Generable>(for type: T.Type) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(T.generationSchema)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw OrigamiLLMError.generationFailed("Could not describe the answer\u{2019}s shape.")
+        }
+        return object
+    }
+
+    /// Reads a server's reply as `T`: the outermost `{…}` (tolerating a
+    /// stray fence or sentence around it), through `GeneratedContent`.
+    nonisolated static func decode<T: Generable>(_ type: T.Type, from text: String,
+                                                 host: String) throws -> T {
+        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"),
+              start < end else {
+            throw OrigamiLLMError.generationFailed("\(host) did not answer in the form asked for.")
+        }
+        do {
+            return try T(GeneratedContent(json: String(text[start...end])))
+        } catch {
+            throw OrigamiLLMError.generationFailed(
+                "\(host) answered, but not in the form asked for: \(error.localizedDescription)")
+        }
+    }
+    #endif
 
     /// Whether any model can answer now: a chosen server, or Apple's
     /// built-in model (which may still refuse — callers catch that).
@@ -218,15 +307,26 @@ final class OrigamiLLM {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
+    #if canImport(FoundationModels)
+    private static func appleSession(instructions: String?,
+                                     transformingContent: Bool) -> LanguageModelSession {
+        let model = transformingContent
+            ? SystemLanguageModel(guardrails: .permissiveContentTransformations)
+            : SystemLanguageModel.default
+        return LanguageModelSession(model: model, instructions: instructions)
+    }
+    #endif
+
     private func appleRespond(instructions: String?, to prompt: String,
+                              transformingContent: Bool,
                               onPartial: (@MainActor (String) -> Void)?)
         async throws -> String {
         #if canImport(FoundationModels)
         guard case .available = SystemLanguageModel.default.availability else {
             throw OrigamiLLMError.appleUnavailable
         }
-        let session = instructions.map { LanguageModelSession(instructions: $0) }
-            ?? LanguageModelSession()
+        let session = Self.appleSession(instructions: instructions,
+                                        transformingContent: transformingContent)
         if let onPartial {
             var text = ""
             for try await partial in session.streamResponse(to: prompt) {
@@ -383,9 +483,15 @@ nonisolated enum ChatCompletionsClient {
     }
 
     /// One generation, streamed (SSE) and gathered; `onPartial` sees
-    /// the text grow. Cancellation cancels the transport.
+    /// the text grow. Cancellation cancels the transport. With
+    /// `jsonSchema`, the server is asked to constrain its answer to it
+    /// (`response_format: json_schema`); a server that rejects the field
+    /// is asked once more without it, the schema still being in the
+    /// instructions.
     static func respond(base: String, model: String, key: String?,
                         instructions: String?, prompt: String,
+                        jsonSchema: (name: String, schema: [String: Any])? = nil,
+                        temperature: Double? = nil,
                         onPartial: (@MainActor (String) -> Void)? = nil)
         async throws -> String {
         guard let url = URL(string: base + "/v1/chat/completions") else {
@@ -400,15 +506,28 @@ nonisolated enum ChatCompletionsClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let key { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
-        request.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "model": model, "messages": messages, "stream": true,
-        ] as [String: Any])
+        var body: [String: Any] = ["model": model, "messages": messages, "stream": true]
+        if let temperature { body["temperature"] = temperature }
+        if let jsonSchema {
+            body["response_format"] = [
+                "type": "json_schema",
+                "json_schema": ["name": jsonSchema.name, "schema": jsonSchema.schema],
+            ] as [String: Any]
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         let host = URL(string: base)?.host() ?? base
         do {
             let (bytes, response) = try await URLSession.shared.bytes(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             if status == 401 || status == 403 { throw OrigamiLLMError.authRequired(host) }
+            if status == 404 { throw OrigamiLLMError.modelNotFound(model) }
+            if status == 400 || status == 422, jsonSchema != nil {
+                return try await respond(base: base, model: model, key: key,
+                                         instructions: instructions, prompt: prompt,
+                                         jsonSchema: nil, temperature: temperature,
+                                         onPartial: onPartial)
+            }
             guard status == 200 else {
                 throw OrigamiLLMError.generationFailed(
                     "\(host) answered with status \(status).")

@@ -613,14 +613,14 @@ There are two paths. `ACMWordPaper.isPaper(at:)` (~580) chooses between them: it
   - Each statement becomes `Paragraph(text:"Name: statement", speaker:"Name")`, and the document gets `documentType = transcript`.
 - **Summary** (`TranscriptSummarizer.summarize` ~203).
   1. Statements are formatted `[pN] text` and chunked greedily at 9000 characters.
-  2. Each chunk gets a fresh on-device model session with fixed instructions, and guided generation of 2–5 notes `{text, sources[]}`.
+  2. Each chunk is one fresh request with fixed instructions through `OrigamiLLM.generate(TranscriptGeneratedNotes.self, …, transformingContent: true)`, asking for 2–5 notes `{text, sources[]}`. On Apple's model that is guided generation with the permissive content-transformation guardrails; on a chosen server it is the type's JSON Schema.
   3. On context overflow the chunk is halved recursively. A refusal is retried once, then that part is skipped.
   4. Grounding (`validated` ~375): source ids are normalised and must exist, a note with no valid source is dropped, and each note keeps at most 4 sources.
-  5. Notes are sorted by earliest source and de-duplicated. `condense` (~404) writes a 2–3 sentence overview.
+  5. Notes are sorted by earliest source and de-duplicated. `condense` (~404) writes a 2–3 sentence overview through `OrigamiLLM.respond`. If the overview fails, the notes still stand and the reason goes to `TranscriptSummary.overviewError`, which the document view shows (it is not saved).
 
   `makeDocument` (~35) produces a new `LiquidDoc`: title "Summary — …", `documentType = letter`, `aiOnBehalf = true`, a `summarizes` link to the transcript, and notes citing `[transcriptID#pN]`.
 
-  **Note:** this file uses Apple's FoundationModels directly, while the project memory says all AI should route through `OrigamiLLM`. A rebuild should use the app's general LLM router. That is unclear from this file alone.
+  `TranscriptSummarizer.isAvailable` is `OrigamiLLM.shared.canRespond`: a chosen server, or Apple's model.
 - **`TranscriptsView.swift`** is UI only: transcripts list, extracts list and letters list.
 
 ### 3.11 Tabular data: `TabularDataImporter` (`TabularDataImporter.swift`)
@@ -907,7 +907,7 @@ In `visual-meta.json`, `document.title`, `subtitle`, `abstract`, `publication`, 
 - DOI links use `https://doi.org/…`, except that the `10.5555/` prefix links to `dl.acm.org/doi/…`.
 - BibTeX is never put in attributes.
 
-**Colophon** (`colophonHTML` ~1250, profile §8.4).
+**Colophon** (`colophonHTML` ~1250, profile §8.4). The profile makes the colophon SHOULD; a writer may leave it out. Written only when `writesColophon` is on.
 
 ```html
 <section epub:type="colophon" id="origami-publication-info">
@@ -1040,7 +1040,7 @@ All of these checks run before the ZIP is assembled.
 - **Duplicate ids:** avoided by construction (de-duplication), not checked.
 - **Record placement:** guaranteed by construction.
 - **No `<model>`; MathML declared:** both by construction.
-- **Colophon present:** not enforced. A publisher-edition EPUB written with the colophon off has none (see the discrepancies below).
+- **Colophon present:** since the 6 October 2026 revision of the profile the colophon is SHOULD, not MUST, and its absence moved from §18.1 (refuse) to §18.2 (warn). A publisher-edition EPUB written with the colophon off is therefore conforming. The writer does not add the §18.2 warning for a missing colophon to `profileWarnings`. When a colophon is written, every §8.4 rule applies to it.
 
 ### 4.10 Conformance summary
 
@@ -1060,7 +1060,7 @@ All of these checks run before the ZIP is assembled.
 | §7.7 MathML authoritative, `data-latex` derived, index | Yes; display equations indexed |
 | §8.2 bibliography `<section>` | Yes |
 | §8.3 endnotes | `<p epub:type="endnote" role="note">` in the flow, not `<aside>` in an endnotes section |
-| §8.4 colophon | Yes when `writesColophon` |
+| §8.4 colophon (SHOULD) | Yes when `writesColophon`; off by default for publisher editions, which the profile allows |
 | §9–§11 records | Yes |
 | §13 digests | Only `tex-sha256` |
 
@@ -1239,7 +1239,7 @@ The class's own packages (hyperref, graphicx, booktabs, amsmath) are deliberatel
 | `Process` / `NSTask` | TeX, `tar`, `gunzip` | Child-process APIs; prefer a built-in tar/gzip library. Add the timeout and exit-code checks the source lacks. |
 | App Sandbox + `NSUserUnixTask` + Application Scripts | Running TeX from a sandboxed app | Not needed on most platforms. In a browser or sandboxed store app: ship Tectonic or a WASM TeX (SwiftLaTeX / texlive.js), or a server compile, or produce the bundle only. |
 | Security-scoped URLs, `NSOpenPanel`/`NSSavePanel` | Permission to read companions and write beside the source | The platform file picker; Web File System Access API; Android SAF |
-| FoundationModels (on-device LLM) | Transcript summary | Any LLM behind the app's router (the project memory says to route through `OrigamiLLM`, e.g. local Ollama). Keep the chunk budget, grounding validation and refusal handling. |
+| FoundationModels (on-device LLM) | Transcript summary | Any LLM behind the app's router (the app routes through `OrigamiLLM`, e.g. local Ollama, with JSON Schema output for the notes). Keep the chunk budget, grounding validation and refusal handling. |
 | `NSKeyedUnarchiver` | Author `.liquidstore` | No portable decoder. Treat `.liquid` as Apple-only, or read only its JSON/plist members (glossary, DynamicView, Citations) with a plist library (plistlib, plist.js). |
 | NaturalLanguage-style language detection (`LanguageTag.detect`) | `dc:language` when unstated | CLD3, fastText lid.176, franc; return `und` when unsure |
 | System translation / transliteration | Import to Format translated title and abstract (profile App. B) | ICU transliterator; any MT service, marked `relation: "translation"` |
@@ -1284,7 +1284,7 @@ The class's own packages (hyperref, graphicx, booktabs, amsmath) are deliberatel
 
 These are differences between documents and code, or within the code. The rebuild should resolve each one deliberately.
 
-1. **Publisher-edition EPUBs drop the colophon.** `FormatOptions.colophon` defaults to false, and `writeFormatBundle` passes it as `writesColophon`. The "(label).epub" therefore has no `epub:type="colophon"` section, which profile §8.4 and §18.1 make a refuse-to-export error. The writer does not enforce this.
+1. **No warning for a missing colophon.** `FormatOptions.colophon` defaults to false, and `writeFormatBundle` passes it as `writesColophon`, so the "(label).epub" has no `epub:type="colophon"` section. That is conforming under the revised profile (§8.4 SHOULD), but §18.2 asks for a warning, and the writer gives none.
 2. **Nav vs references condition.** The nav adds "References" when `doc.references` is non-empty, but the section is written only when gathered citations are non-empty. If those differ, the nav anchor dangles and export is refused.
 3. **Accessibility summary overclaims.** It says "nested section headings, and ARIA landmarks", but sections are flat, the nav is flat, and there is no landmarks nav.
 4. **§7.4 glossref and §8.1 glossary are not emitted.** Concepts appear only as `<dfn data-concept>` and in the records.
@@ -1297,5 +1297,4 @@ These are differences between documents and code, or within the code. The rebuil
 11. **BibTeX escaping is inconsistent.** `BibTeXWriter` does not escape `{ } ~ ^`; `BITSImporter` replaces braces with parentheses; Word's CSL→BibTeX writes raw values. Only the LaTeX writer's `escaped` covers all ten specials.
 12. **TeX runs have no timeout and ignore exit codes.** A hung `pdflatex` would block the Format run indefinitely.
 13. **Hard-coded contact email** in the User-Agent of CTAN and Crossref requests (`ACMartVersion.swift`, `BibTeX.swift`).
-14. **`TranscriptSummary` calls FoundationModels directly** instead of the app's `OrigamiLLM` router.
-15. **`stableUUID` emits uppercase hex,** while the profile's examples are lowercase. Both are valid UUID text, but a byte-compatible rebuild must match the uppercase form.
+14. **`stableUUID` emits uppercase hex,** while the profile's examples are lowercase. Both are valid UUID text, but a byte-compatible rebuild must match the uppercase form.

@@ -523,10 +523,7 @@ struct KNavView: View {
                 .map { (unitID: $0.unitID,
                         strength: min(max(($0.similarity - floor) / 0.4, 0), 1),
                         stance: ProbeStance?.none) }
-            let modelReady: Bool = {
-                if case .available = SystemLanguageModel.default.availability { return true }
-                return false
-            }()
+            let modelReady = await MainActor.run { OrigamiLLM.shared.canRespond }
             await MainActor.run {
                 probeResult = (text: text, threads: Array(threads))
                 stancesPending = modelReady && !threads.isEmpty
@@ -550,9 +547,8 @@ struct KNavView: View {
                 prompt += "== [\(unit.id)]\n\(String(unit.text.prefix(400)))\n\n"
             }
             do {
-                let session = LanguageModelSession()
-                let response = try await session.respond(to: prompt,
-                                                         generating: GeneratedKeywordStances.self)
+                let response = try await OrigamiLLM.shared.generate(
+                    GeneratedKeywordStances.self, instructions: nil, prompt: prompt)
                 var stanceByID: [String: ProbeStance] = [:]
                 for judged in response.content.stances {
                     let id = judged.address.trimmingCharacters(in: CharacterSet(charactersIn: "[] "))

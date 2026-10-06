@@ -6,7 +6,7 @@ import FoundationModels
 
 // Ported from Knowledge Space's ReadingAI.swift (itself from Augmented
 // Library) — keep synced; a fix here should be carried back.
-// Availability asks the system model directly.
+// Availability asks OrigamiLLM: a chosen server, or Apple's model.
 
 /// An editable AI verb for the reading view: the name the menu shows
 /// and the prompt sent to the on-device model, the selected text
@@ -52,14 +52,11 @@ public nonisolated enum ReadingAI {
     /// Whether a model can answer here — Apple's on-device model, or
     /// (on the Mac) a selected server model, which needs no Apple
     /// Intelligence at all.
+    @MainActor
     public static var isAvailable: Bool {
-        #if os(macOS)
-        if let id = UserDefaults.standard.string(forKey: "selectedModelID"),
-           id.hasPrefix("endpoint|") {
-            return true
-        }
-        #endif
-        #if canImport(FoundationModels)
+        #if os(macOS) || os(visionOS)
+        return OrigamiLLM.shared.canRespond
+        #elseif canImport(FoundationModels)
         return SystemLanguageModel.default.availability == .available
         #else
         return false
@@ -68,7 +65,7 @@ public nonisolated enum ReadingAI {
 
     /// A human-readable reason it cannot, for the UI.
     public static var unavailableReason: String {
-        "The on-device model isn\u{2019}t available on this Mac."
+        "No model is available \u{2014} turn on Apple Intelligence, or choose a server model in Settings \u{25B8} AI."
     }
 
     public struct Unavailable: LocalizedError {
@@ -117,7 +114,7 @@ public nonisolated enum ReadingAI {
     @MainActor
     public static func rewrite(_ text: String,
                                with preset: AIPromptPreset) async throws -> String {
-        #if os(macOS)
+        #if os(macOS) || os(visionOS)
         let (answer, _) = try await OrigamiLLM.shared.respond(
             instructions: nil, to: preset.prompt + "\n\n" + text)
         return answer.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -142,7 +139,7 @@ public nonisolated enum ReadingAI {
     /// came. (17 Sep 2026.)
     @MainActor
     private static func answer(to prompt: String) async throws -> String {
-        #if os(macOS)
+        #if os(macOS) || os(visionOS)
         let (text, _) = try await OrigamiLLM.shared.respond(
             instructions: nil, to: prompt)
         return text

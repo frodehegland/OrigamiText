@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
-import FoundationModels
 
 /// Basic draft editor: title and author fields plus a plain-text body where
 /// each line is a paragraph and #/##/### prefixes mark headings.
@@ -41,8 +40,7 @@ struct DraftEditorView: View {
     }
 
     private var suggestAvailable: Bool {
-        if case .available = SystemLanguageModel.default.availability { return true }
-        return false
+        OrigamiLLM.shared.canRespond
     }
 
     /// One ask of the on-device model; the reply is trimmed to a single
@@ -52,10 +50,10 @@ struct DraftEditorView: View {
         isSuggestingTitle = true
         Task {
             do {
-                let session = LanguageModelSession()
-                let response = try await session.respond(
+                let response = try await OrigamiLLM.shared.respond(
+                    instructions: nil,
                     to: "Generate a title for this text. Reply with the title alone.\n\n\(text)")
-                let title = response.content
+                let title = response.text
                     .components(separatedBy: .newlines)
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .first { !$0.isEmpty }?
@@ -110,7 +108,7 @@ struct DraftEditorView: View {
                     .disabled(isSummarizing || !TranscriptSummarizer.isAvailable)
                     .help(TranscriptSummarizer.isAvailable
                           ? "Summarize this transcript on this Mac — every note links back to the statements that produced it; the summary is saved as a linked draft of its own"
-                          : "Requires Apple Intelligence")
+                          : "Requires Apple Intelligence, or a server model chosen in Settings \u{25B8} AI")
                     if isSummarizing, !summaryProgress.isEmpty {
                         Text(summaryProgress)
                             .font(.caption)
@@ -192,6 +190,7 @@ struct DraftEditorView: View {
                         transcriptSummary = summary
                         transcriptSummaryDoc = saved
                     }
+                    summaryError = summary.overviewError
                 }
             } catch is CancellationError {
             } catch {

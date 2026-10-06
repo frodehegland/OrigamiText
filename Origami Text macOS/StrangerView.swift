@@ -112,14 +112,13 @@ struct StrangerView: View {
 
     var body: some View {
         Group {
-            switch SystemLanguageModel.default.availability {
-            case .available:
+            if OrigamiLLM.shared.canRespond {
                 content
-            case .unavailable(let reason):
+            } else if case .unavailable(let reason) = SystemLanguageModel.default.availability {
                 ContentUnavailableView {
-                    Label("Apple Intelligence Unavailable", systemImage: "person.fill.questionmark")
+                    Label("No AI Model Available", systemImage: "person.fill.questionmark")
                 } description: {
-                    Text("The Stranger uses the on-device model, so no text leaves this Mac. \(describe(reason))")
+                    Text("The Stranger needs a model: choose a server in Settings \u{25B8} AI, or use Apple\u{2019}s on-device model. \(describe(reason))")
                 }
             }
         }
@@ -336,8 +335,8 @@ struct StrangerView: View {
         let requestMode = mode
         Task {
             do {
-                let session = LanguageModelSession()
-                let response = try await session.respond(to: request, generating: GeneratedStrangerReading.self)
+                let response = try await OrigamiLLM.shared.generate(
+                    GeneratedStrangerReading.self, instructions: nil, prompt: request)
                 let generated = response.content
                 reading = StrangerReading(
                     mode: requestMode,

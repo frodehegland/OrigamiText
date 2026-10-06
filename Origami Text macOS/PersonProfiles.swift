@@ -99,11 +99,12 @@ final class PersonProfileStore {
     /// Folds new documents into their authors' profiles: every letter is
     /// credited to its author, every transcript statement to its speaker,
     /// each document exactly once per person. Building must be enabled in
-    /// Settings → AI and requires Apple Intelligence; a call that arrives
+    /// Settings → AI and requires a model (a chosen server, or Apple
+    /// Intelligence); a call that arrives
     /// mid-digestion is remembered and run after.
     func digest(entries: [IndexEntry]) {
         guard isEnabled else { return }
-        guard case .available = SystemLanguageModel.default.availability else { return }
+        guard OrigamiLLM.shared.canRespond else { return }
         if isDigesting {
             pendingEntries = entries
             return
@@ -196,8 +197,8 @@ final class PersonProfileStore {
             prompt += "— \(contribution.title), \(contribution.date.formatted(date: .abbreviated, time: .omitted)):\n\(text)\n\n"
         }
         do {
-            let session = LanguageModelSession()
-            let response = try await session.respond(to: prompt, generating: GeneratedAuthorProfile.self)
+            let response = try await OrigamiLLM.shared.generate(
+                GeneratedAuthorProfile.self, instructions: nil, prompt: prompt)
             profile.summary = response.content.profile
             profile.interests = response.content.interests
             profile.digestedDocIDs.formUnion(contributions.map(\.docID))

@@ -221,8 +221,8 @@ final class BotStore {
     /// the first (and only) candidate is a near-certain match.
     nonisolated static func identify(name: String) async throws -> GeneratedBotIdentification {
         let prompt = Bots.identificationPrompt + "\n\nTHE TYPED NAME: \(name)\n"
-        let session = LanguageModelSession()
-        return try await session.respond(to: prompt, generating: GeneratedBotIdentification.self).content
+        return try await OrigamiLLM.shared.generate(
+            GeneratedBotIdentification.self, instructions: nil, prompt: prompt).content
     }
 
     // MARK: Reading the library
@@ -232,7 +232,7 @@ final class BotStore {
     /// each verdict lands — and is saved — as it arrives. A new call,
     /// same bot or another, replaces the reading in progress.
     func analyze(_ bot: Bot, documents: [LiquidDoc]) {
-        guard case .available = SystemLanguageModel.default.availability else { return }
+        guard OrigamiLLM.shared.canRespond else { return }
         cancelAnalysis()
         let pending = documents.filter { stance(botID: bot.id, docID: $0.id) == nil }
         guard !pending.isEmpty else { return }
@@ -256,7 +256,7 @@ final class BotStore {
     /// in progress is never interrupted; the digest waits its turn.
     func digestAll(documents: [LiquidDoc]) {
         guard !bots.isEmpty else { return }
-        guard case .available = SystemLanguageModel.default.availability else { return }
+        guard OrigamiLLM.shared.canRespond else { return }
         if analysisTask != nil {
             pendingDigest = documents
             return
@@ -283,7 +283,7 @@ final class BotStore {
     /// and the verdict is cached like any other reading.
     func check(_ doc: LiquidDoc, with bot: Bot) async -> BotStance? {
         if let cached = stance(botID: bot.id, docID: doc.id) { return cached }
-        guard case .available = SystemLanguageModel.default.availability else { return nil }
+        guard OrigamiLLM.shared.canRespond else { return nil }
         await judge(doc, as: bot)
         return stance(botID: bot.id, docID: doc.id)
     }
@@ -316,8 +316,8 @@ final class BotStore {
         if !bot.summary.isEmpty { prompt += "\n\(bot.summary)" }
         prompt += "\n\nTHE DOCUMENT:\n\(Self.digest(of: doc, limit: Bots.perDocumentCharacterLimit))"
         do {
-            let session = LanguageModelSession()
-            let response = try await session.respond(to: prompt, generating: GeneratedBotStance.self)
+            let response = try await OrigamiLLM.shared.generate(
+                GeneratedBotStance.self, instructions: nil, prompt: prompt)
             guard !Task.isCancelled else { return }
             let verdict = BotStance.Verdict(rawValue: response.content.verdict) ?? .neutral
             stances[bot.id, default: [:]][doc.id] =
@@ -366,8 +366,7 @@ final class BotStore {
             prompt += digest + "\n\n"
         }
         prompt += "THE QUESTION: \(question)\n"
-        let session = LanguageModelSession()
-        return try await session.respond(to: prompt).content
+        return try await OrigamiLLM.shared.respond(instructions: nil, to: prompt).text
     }
 
     /// A document as a bot reads it: a == line of title, author, date,
@@ -883,8 +882,8 @@ struct BotsView: View {
     private func identifyTypedName() {
         let name = newBotName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
-        guard case .available = SystemLanguageModel.default.availability else {
-            model.showNote("Bots need Apple Intelligence, which is not available on this Mac.")
+        guard OrigamiLLM.shared.canRespond else {
+            model.showNote("Bots need a model: Apple Intelligence is not available on this Mac, and no server model is chosen in Settings \u{25B8} AI.")
             return
         }
         isIdentifying = true
@@ -1009,16 +1008,16 @@ struct BotsView: View {
         hoveredDocID = nil
         let docs = visibleDocs
         guard docs.contains(where: { model.bots.stance(botID: bot.id, docID: $0.id) == nil }) else { return }
-        guard case .available = SystemLanguageModel.default.availability else {
-            model.showNote("Bots need Apple Intelligence, which is not available on this Mac.")
+        guard OrigamiLLM.shared.canRespond else {
+            model.showNote("Bots need a model: Apple Intelligence is not available on this Mac, and no server model is chosen in Settings \u{25B8} AI.")
             return
         }
         model.bots.analyze(bot, documents: docs)
     }
 
     private func ask(_ question: String, of bot: Bot) {
-        guard case .available = SystemLanguageModel.default.availability else {
-            model.showNote("Bots need Apple Intelligence, which is not available on this Mac.")
+        guard OrigamiLLM.shared.canRespond else {
+            model.showNote("Bots need a model: Apple Intelligence is not available on this Mac, and no server model is chosen in Settings \u{25B8} AI.")
             return
         }
         let pending = BotExchange(bot: bot, question: question)

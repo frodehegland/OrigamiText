@@ -58,14 +58,13 @@ struct ThemesView: View {
 
     var body: some View {
         Group {
-            switch SystemLanguageModel.default.availability {
-            case .available:
+            if OrigamiLLM.shared.canRespond {
                 content
-            case .unavailable(let reason):
+            } else if case .unavailable(let reason) = SystemLanguageModel.default.availability {
                 ContentUnavailableView {
-                    Label("Apple Intelligence Unavailable", systemImage: "tag")
+                    Label("No AI Model Available", systemImage: "tag")
                 } description: {
-                    Text("Themes uses the on-device model, so no text leaves this Mac. \(describe(reason))")
+                    Text("Themes needs a model: choose a server in Settings \u{25B8} AI, or use Apple\u{2019}s on-device model. \(describe(reason))")
                 }
             }
         }
@@ -198,8 +197,8 @@ struct ThemesView: View {
         let request = fullPrompt
         Task {
             do {
-                let session = LanguageModelSession()
-                let response = try await session.respond(to: request, generating: GeneratedThemeList.self)
+                let response = try await OrigamiLLM.shared.generate(
+                    GeneratedThemeList.self, instructions: nil, prompt: request)
                 themes = resolve(response.content.themes)
                 unfurled = []
                 hasRun = true

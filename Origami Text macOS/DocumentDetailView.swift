@@ -186,7 +186,7 @@ struct DocumentDetailView: View {
                 .disabled(isJudgingEmotions || !emotionsAvailable)
                 .help(emotionsAvailable
                       ? "Tint paragraphs by emotional tone: positive green, negative red — judged on this Mac, nothing leaves it"
-                      : "Requires Apple Intelligence")
+                      : "Requires Apple Intelligence, or a server model chosen in Settings \u{25B8} AI")
                 Button {
                     withAnimation(.snappy) { flowText.toggle() }
                 } label: {
@@ -357,7 +357,7 @@ struct DocumentDetailView: View {
                 .disabled(isSummarizing || !TranscriptSummarizer.isAvailable)
                 .help(TranscriptSummarizer.isAvailable
                       ? "Summarize this transcript on this Mac — every note links back to the statements that produced it; nothing leaves this Mac"
-                      : "Requires Apple Intelligence")
+                      : "Requires Apple Intelligence, or a server model chosen in Settings \u{25B8} AI")
                 if isSummarizing, !summaryProgress.isEmpty {
                     Text(summaryProgress)
                         .font(.caption)
@@ -417,7 +417,7 @@ struct DocumentDetailView: View {
             .disabled(isJudgingEmotions || !emotionsAvailable)
             .help(emotionsAvailable
                   ? "Tint paragraphs by emotional tone: positive green, negative red — judged on this Mac, nothing leaves it"
-                  : "Requires Apple Intelligence")
+                  : "Requires Apple Intelligence, or a server model chosen in Settings \u{25B8} AI")
             Button {
                 withAnimation(.snappy) { flowText.toggle() }
             } label: {
@@ -682,8 +682,7 @@ struct DocumentDetailView: View {
     }
 
     private var emotionsAvailable: Bool {
-        if case .available = SystemLanguageModel.default.availability { return true }
-        return false
+        OrigamiLLM.shared.canRespond
     }
 
     /// Asks the on-device model which content paragraphs clearly express
@@ -710,8 +709,8 @@ struct DocumentDetailView: View {
         let validIDs = Set(paragraphs.map(\.id))
         Task {
             do {
-                let session = LanguageModelSession()
-                let response = try await session.respond(to: request, generating: GeneratedEmotionJudgement.self)
+                let response = try await OrigamiLLM.shared.generate(
+                    GeneratedEmotionJudgement.self, instructions: nil, prompt: request)
                 let positive = Set(response.content.positive).intersection(validIDs)
                 let negative = Set(response.content.negative).intersection(validIDs)
                 positiveParagraphs = positive.subtracting(negative)
@@ -768,6 +767,7 @@ struct DocumentDetailView: View {
                         transcriptSummary = summary
                         transcriptSummaryDoc = saved
                     }
+                    summaryError = summary.overviewError
                 }
             } catch is CancellationError {
                 // Navigated away mid-read; nothing to report.

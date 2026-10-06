@@ -373,13 +373,11 @@ enum ReadingAnalyzer {
         while cap >= 2_000 {
             let material = kind == .summary
                 ? summaryCorpus(of: doc, cap: cap) : corpus(of: doc, cap: cap)
-            let session = LanguageModelSession(
-                model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
-                instructions: kind.prompt)
             do {
                 if kind == .summary {
-                    let response = try await session.respond(
-                        to: material, generating: GeneratedReadingSummary.self)
+                    let response = try await OrigamiLLM.shared.generate(
+                        GeneratedReadingSummary.self, instructions: kind.prompt,
+                        prompt: material, transformingContent: true)
                     return ReadingAnalysisResult(
                         text: summaryText(aim: response.content.aim,
                                           conclusion: response.content.conclusion,
@@ -392,11 +390,9 @@ enum ReadingAnalyzer {
                                           introduced: $0.introduced)
                         })
                 }
-                var text = ""
-                for try await partial in session.streamResponse(to: material) {
-                    text = partial.content
-                    onPartial(text)
-                }
+                let (text, _) = try await OrigamiLLM.shared.respond(
+                    instructions: kind.prompt, to: material,
+                    transformingContent: true, onPartial: onPartial)
                 return ReadingAnalysisResult(
                     text: text.trimmingCharacters(in: .whitespacesAndNewlines))
             } catch let error as LanguageModelSession.GenerationError {
@@ -441,7 +437,8 @@ enum ReadingAnalyzer {
                 text: text.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         let (text, _) = try await OrigamiLLM.shared.respond(
-            instructions: kind.prompt, to: material, onPartial: onPartial)
+            instructions: kind.prompt, to: material,
+                    transformingContent: true, onPartial: onPartial)
         return ReadingAnalysisResult(
             text: text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
@@ -1372,7 +1369,7 @@ struct ReadingAnalysisScreen: View {
         } catch {
             failure = ReadingAI.isAvailable
                 ? "The model could not read this document: \(error.localizedDescription)"
-                : "The on-device model isn’t available on this Mac — the AI readings need Apple Intelligence."
+                : "No model is available — the AI readings need Apple Intelligence, or a server model chosen in Settings \u{25B8} AI."
         }
     }
 }

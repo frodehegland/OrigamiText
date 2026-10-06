@@ -16,7 +16,7 @@ Read these first. This chapter links to them and does not repeat them:
 - [ORIGAMI-DOCUMENT-FORMAT.md](../ORIGAMI-DOCUMENT-FORMAT.md): the `.origamitext` format. Paragraph ids, addresses and the span-matching rule (case- and diacritic-insensitive) come from here.
 - [ORIGAMI-EPUB-PROFILE-1.0.md](../ORIGAMI-EPUB-PROFILE-1.0.md): the EPUB profile. §6 (Addressing, in particular "Annotation consequence" at the end of §6) and §15 (Authored intent and reader activity) are the normative basis for this chapter: *reader state lives outside the publication, and a conforming reader MUST NOT modify a publication.*
 - [hypothesis-integration-plan.md](../hypothesis-integration-plan.md): the plan for Hypothesis, of which only Phase 1 exists in code (see §5.1).
-- `~/Documents/OrigamiFormat/README.md`: the shared Swift package that holds the format code once, including the **document identity rule (DOI, then `urn:origami:sha256:`, then `urn:origami:local:`)**. **Origami Text does not link this package yet.** It has its own older copies of `WebAnnotation`, `AnnotationStore` and `AnnotationAnchor`. The migration kit is in `OrigamiFormat-migration/` (README, `apply.sh`, `OrigamiFormatExports.swift`, `AnnotationAnchor+LiquidDoc.swift`), and it has not been applied: `OrigamiText.xcodeproj/project.pbxproj` contains no reference to `OrigamiFormat`. (The package README says "Origami Text links it into `LiquidView`". That is not true of the repository today.)
+- `~/Documents/OrigamiFormat/README.md`: the shared Swift package that holds the format code once, including the **document identity rule (DOI, then a globally unique publication identifier, then `urn:origami:sha256:`, then `urn:origami:local:`)**. **Origami Text does not link this package yet.** It has its own copies of `WebAnnotation`, `AnnotationStore` and `AnnotationAnchor`, and `AnnotationStore.swift` now carries a mirror of the package's `DocumentIdentity` (§4). The migration kit is in `OrigamiFormat-migration/` (README, `apply.sh`, `OrigamiFormatExports.swift`, `AnnotationAnchor+LiquidDoc.swift`), and it has not been applied: `OrigamiText.xcodeproj/project.pbxproj` contains no reference to `OrigamiFormat`. (The package README says "Origami Text links it into `LiquidView`". That is not true of the repository today.)
 
 ---
 
@@ -64,9 +64,10 @@ Defined in `WebAnnotation.swift` (struct `WebAnnotation`, header comment
 | `modified` | date, optional | Same format. Set whenever a body or placement is rewritten. |
 | `creator` | `Person {name}`, optional | Encoded as `{"type":"Person","name":…}`. Decoded leniently: if it fails, it is dropped. |
 | `body` | `TextualBody {value, purpose?}`, optional | Encoded as `{"type":"TextualBody","value":…,"format":"text/plain","purpose"?:…}`. |
-| `target` | `Target {source, selectors[]}` | `source` is the document IRI (see §4). The `selector` key is omitted when the list is empty. |
+| `target` | `Target {source, selectors[], preservedSelectors[], extensions}` | `source` is the document IRI (see §4). `preservedSelectors` holds, verbatim as `JSONValue`, every selector the app does not anchor by (§2.2); they are written back after its own. `extensions` holds the target's other properties, verbatim. The `selector` key is omitted when both lists are empty. |
 | `origami:placement` | `{near?, dx, dy}`, optional | Where a page note or slip stands on the page. `near` is a stable element id. `dx`/`dy` are offsets from that element's top-left, or absolute page coordinates when `near` is absent. |
 | `origami:float` | `{x, y, z}`, optional | Where a floated quote stands in the visionOS Map's own space, in metres. |
+| `extensions` | `[String: JSONValue]` | Every other top-level property, for example Reader's `reader:place`. Kept verbatim on decode and written back on encode (`WebAnnotation.knownKeys` lists the properties the app reads itself). |
 
 Constants:
 
@@ -87,8 +88,10 @@ Enum `WebAnnotation.Selector`:
 
 Decoding is lenient (`WebAnnotation.Target.init(from:)`):
 
-- `selector` may be a single object or an array.
-- A selector with an unknown `type` is skipped, never fatal (`Lossy` wrapper).
+- `selector` may be a single object or an array. Each one is first read as a `JSONValue`.
+- A selector the app anchors by is decoded into `WebAnnotation.Selector`.
+- Any other selector is kept verbatim in `Target.preservedSelectors`, never dropped and never fatal. This covers unknown `type`s and **RFC 8118 page selectors** (`Target.isPageSelector`: a `FragmentSelector` whose `conformsTo` is `http://tools.ietf.org/rfc/rfc8118`, or whose `value` is `page=N`). A page selector is therefore never misread as a paragraph id.
+- `JSONValue` (`WebAnnotation.swift`) is a plain JSON enum (null, bool, number, string, array, object). Whole numbers are encoded back as integers.
 - One annotation that fails to decode is skipped and never sinks the sidecar
   (`AnnotationStore.CollectionFile.Lossy`).
 
@@ -196,7 +199,7 @@ escaped. Whitespace does not matter to readers.
           { "end": 31, "start": 0, "type": "TextPositionSelector" },
           { "type": "ProgressionSelector", "value": 0.0425 }
         ],
-        "source": "origamitext://open/f.hegla.093000k"
+        "source": "urn:origami:sha256:50d858e0985ecc7f60418aaf0cc5ab587f42c2570a884095a9e8ccacd0f6545c"
       },
       "type": "Annotation"
     },
@@ -208,7 +211,7 @@ escaped. Whitespace does not matter to readers.
       "modified": "2026-10-05T10:01:17Z",
       "motivation": "commenting",
       "origami:placement": { "dx": 24, "dy": 8, "near": "P-0979114B" },
-      "target": { "source": "origamitext://open/f.hegla.093000k" },
+      "target": { "source": "urn:origami:sha256:50d858e0985ecc7f60418aaf0cc5ab587f42c2570a884095a9e8ccacd0f6545c" },
       "type": "Annotation"
     }
   ],
@@ -224,6 +227,10 @@ Notes on the example:
   above is only for illustration. A rebuild should omit empty context.
 - The second item is a page note. It has no `selector`, so it is never an
   orphan.
+- `source` is what `save` writes for a book with no DOI and no `urn:uuid:` or
+  `urn:isbn:` package identifier: the SHA-256 of its stored `.epub` (§4.1). The
+  sidecar's *file name* stays keyed by the local address. Older files hold
+  `origamitext://open/f.hegla.093000k` until that book is next saved.
 
 ### 2.5 Anchoring: making a target
 
@@ -240,7 +247,7 @@ Notes on the example:
    - If not found: add `.quote(exact, nil, nil)`.
 3. If the paragraph is in the body: add
    `.progression(index / body.count)`.
-4. `source` = `"origamitext://open/" + doc.id`.
+4. `source` = `"origamitext://open/" + doc.id`. This is the in-memory form only: `AnnotationStore.save` replaces it with the book's canonical name (§4.1).
 
 ### 2.6 Re-anchoring: the resolve cascade (native reading modes)
 
@@ -565,17 +572,13 @@ folder), filtered and filed like other documents.
 1. `_seed-links.json` is keyed by `record.id` and written with a plain atomic
    write, not a coordinated one. This breaks the standing rule "shared per-book
    files key by `record.folder`; coordinated access only".
-2. Imported EPUB-Annotations items keep their foreign `target.source`, a
-   content-document path such as `OEBPS/ch1.xhtml`, not
-   `origamitext://open/<address>`. One sidecar can therefore hold two source
-   forms.
-3. An imported `start…end` quote cannot match exactly, and the WebView reader
+2. An imported `start…end` quote cannot match exactly, and the WebView reader
    will only find it if the literal "…" is in the text. In practice it falls
    back to the element id.
-4. `shareAnnotations` re-saves locally only when the **id set** changes. A
+3. `shareAnnotations` re-saves locally only when the **id set** changes. A
    newer remote edit to an existing id reaches this device on the next
    4-second adopt pass, not at once.
-5. `KnowledgeSpaceAnchoring.swift` has nothing to do with Web Annotation
+4. `KnowledgeSpaceAnchoring.swift` has nothing to do with Web Annotation
    anchoring. It is visionOS-only (`#if os(visionOS)`). It persists 3D node
    placements as ARKit world anchors (concept id → anchor UUID in user
    defaults key `knowledgeSpace.anchors`) and snaps dropped cards to detected
@@ -597,7 +600,9 @@ folder), filtered and filed like other documents.
 
 | Context | Identifier written | Source |
 |---|---|---|
-| Annotation `target.source` (every local annotation) | `origamitext://open/<address>`. `<address>` is the `EPUBRecord.id` (Visual-Meta `origami-id`, else file-name identity key such as `f.hegla.093000k`, else file name), or the unpack folder | `AppModel.addAnnotation`, `AnnotationAnchor.target`, `setDocumentAnnotation`, `addMarginNote`, `floatSelection` |
+| Annotation `target.source` in memory, when an annotation is made | `origamitext://open/<address>`. `<address>` is the `EPUBRecord.id` (Visual-Meta `origami-id`, else file-name identity key such as `f.hegla.093000k`, else file name), or the unpack folder | `AppModel.addAnnotation`, `AnnotationAnchor.target`, `setDocumentAnnotation`, `addMarginNote`, `floatSelection` |
+| Annotation `target.source` on disk, for a shelved book | The book's canonical name, per §4.2: `https://doi.org/<bare>`, else the package's `urn:uuid:`/`urn:isbn:` identifier, else `urn:origami:sha256:<hex of the stored .epub>`, else `urn:origami:local:<record.id>`. **Every** annotation in the sidecar is rewritten to it on save, whatever source it came with | `AnnotationStore.save` via `BookIdentities.source(forAddress:)` (`AnnotationStore.swift`) |
+| Annotation `target.source` on disk, for anything else (native documents, Gemini pages) | Kept as written | `BookIdentities.source(forAddress:)` returns nil |
 | Sidecar file name | `<address>.annotations.jsonld` | `AnnotationStore.fileName` |
 | Community sync file | `_annotations/<record.folder>.json` | `AnnotationSync.url(forBookFolder:in:)` |
 | Paragraph links and Markdown links | `origamitext://open/<address>#<fragment>`. A `#` inside the fragment is percent-encoded | `OrigamiCitation.openURL` in `OrigamiReading.swift`, `AppModel.paragraphLink` |
@@ -605,25 +610,58 @@ folder), filtered and filed like other documents.
 | Gemini documents | Document id `g.gmi.<first 10 hex of SHA-256(key)>`. The key is the canonical URL, or `"sha256:" + SHA-256(source)` for local files | `GemtextStore.documentID(forKey:)` in `GemtextSources.swift` |
 | Seed documents | Kept in memory under the canonical `hm://uid/path`. The converted document gets a fresh `LiquidAddress` id and `sourceURL = hm://…` | `AppModel.presentHypermedia` |
 
-So **Origami Text writes neither DOIs nor content hashes into annotation
-targets.** It writes its own local address under its own historical URL scheme.
+So **Origami Text now writes the shared identity rule into the targets of
+shelved books**, though only at the moment a sidecar is saved. Links and
+Markdown exports still use the app's own `origamitext://open/` scheme.
+
+**`BookIdentities`** (`AnnotationStore.swift`) is the table `save` reads:
+
+- A `Mutex`-protected table of `Book {doi, publicationID, epubFile, address}`,
+  so sync can save off the main actor.
+- Replaced by `BookIdentities.update(_:epubFile:)`, called from
+  `AppModel.refreshBookIdentities` at `AppModel.init` and in the `didSet` of
+  `AppModel.epubRecords`. Each book is entered under both `record.id` and
+  `record.folder`, the two addresses sidecars have been keyed by.
+  `publicationID` is `EPUBRecord.packageIdentifier`; `epubFile` is
+  `storedEPUBURL(inFolder:)`.
+- `source(forAddress:)`: with a DOI or a globally unique publication
+  identifier, the canonical name from those. Otherwise the SHA-256 of the
+  stored `.epub` (`DocumentIdentity.contentHash(of:)`), worked out lazily and
+  cached under `path|size|mtime`, so a replaced edition gets its own hash. If
+  the file cannot be read, the local name.
+- Both shelves fill the table: `AppModel.epubRecords` on the Mac and
+  `VisionModel.epubRecords` on the headset (each through a `didSet` and at
+  `init`), so sidecars saved on either name their books the same way.
 
 ### 4.2 The OrigamiFormat package rule
 
 `~/Documents/OrigamiFormat/Sources/OrigamiFormat/DocumentIdentity.swift`,
-`DocumentIdentity.canonical(doi:contentHash:localName:)`:
+`DocumentIdentity.canonical(doi:publicationID:contentHash:localName:)`.
+Origami Text's mirror, `DocumentIdentity` in `AnnotationStore.swift`, follows
+the same rule:
 
-1. `https://doi.org/<bare DOI>` when there is a DOI.
-2. `urn:origami:sha256:<lowercase hex>` when a 64-hex content hash is given,
+1. `https://doi.org/<bare DOI>` when there is a DOI (lowercased; it must start
+   `10.` and contain `/`).
+2. The publication's own identifier when it is globally unique
+   (`globallyUnique`): `urn:uuid:` followed by a valid UUID, lowercased; or
+   `urn:isbn:` with 10 or 13 digits (an `X` allowed), written without
+   hyphens or spaces. Any other package identifier is passed over. This is an Origami
+   Profile 1.0 EPUB's `dc:identifier`, which survives re-export where a hash
+   would not.
+3. `urn:origami:sha256:<lowercase hex>` when a 64-hex content hash is given,
    or when `localName` itself is 64 hex digits.
-3. `urn:origami:local:<localName>`.
-4. `""` when there is nothing.
+4. `urn:origami:local:<localName>`.
+5. `""` when there is nothing.
+
+The package has a test for step 2 (`DocumentIdentityTests.swift`).
 
 Reading is more generous than writing. `normalised(_:)` folds onto one
 comparison key:
 
 - any DOI spelling (`https://doi.org/`, `http://dx.doi.org/`, `doi:`, or a
   bare `10.…` when the whole string is a DOI) becomes `doi:<bare>`;
+- a globally unique `urn:uuid:…` or `urn:isbn:…` becomes `uuid:…` or
+  `isbn:…`;
 - `urn:origami:sha256:` becomes `sha256:`;
 - `urn:origami:local:` becomes `local:`;
 - legacy `urn:x-reader:<x>` and **legacy `origamitext://open/<x>`** become
@@ -637,39 +675,42 @@ targets this way, never as raw strings.
 
 | Aspect | Origami Text (in this repo) | OrigamiFormat package |
 |---|---|---|
-| Target IRI written | `origamitext://open/<address>` | DOI URL, then `urn:origami:sha256:`, then `urn:origami:local:` |
-| Same-document test | String equality of sidecar key (address) | `DocumentIdentity.isSameDocument` |
-| Selectors | fragment, quote, position, progression | Same, plus `.page(n)`, written as `FragmentSelector {value:"page=7", conformsTo:"http://tools.ietf.org/rfc/rfc8118"}` |
-| Extensions | `origami:placement`, `origami:float` | Same, plus `reader:place` (schema.org Place: `{type:"Place", name, latitude?, longitude?}`) |
+| Target IRI written | The same rule, applied on save to shelved books (§4.1); `origamitext://open/<address>` in memory and for non-book documents | DOI URL, then `urn:uuid:`/`urn:isbn:`, then `urn:origami:sha256:`, then `urn:origami:local:` |
+| Same-document test | String equality of sidecar key (address). `DocumentIdentity.isSameDocument` exists in the mirror but nothing calls it | `DocumentIdentity.isSameDocument` |
+| Selectors | Anchors by fragment, quote, position, progression. A page selector, or any other, is kept verbatim in `preservedSelectors` but not anchored by | Same four, plus `.page(n)`, written as `FragmentSelector {value:"page=7", conformsTo:"http://tools.ietf.org/rfc/rfc8118"}` |
+| Extensions | Reads `origami:placement`, `origami:float`; keeps any other property (top-level or on the target) verbatim | Same, plus `reader:place` (schema.org Place: `{type:"Place", name, latitude?, longitude?}`) |
 | Body purpose on passage notes | none for comments | `passageNote` writes `purpose:"commenting"` |
 | `sameElement` (bare id vs `path#id` bridge) | Yes | **No.** The package resolves fragments by exact id only |
 | Store | load/save/loadAll/exportData, fixed folder | Adds `append`/`update`/`remove`, optional folder, security-scoped access |
 | Anchor input | `LiquidDoc` | `[AnchoredParagraph(id, text)]` |
 
-**Round-trip hazards today:**
+**Round-trip state today:**
 
-- A package-written sidecar opened in Origami Text loses `reader:place` the
-  next time Origami Text saves that book. The decoder drops unknown keys.
-- A page selector becomes `.fragment("page=7")` and never resolves, so the
-  annotation shows as unanchored.
-- Package-written targets (`https://doi.org/…`) are not compared with
-  Origami Text's `origamitext://open/…`, because Origami Text keys sidecars by
-  file name, not by target.
+- A package-written sidecar keeps `reader:place` and its page selectors when
+  Origami Text re-saves it (they ride in `extensions` and
+  `preservedSelectors`). A page-only annotation still shows as unanchored in
+  Origami Text, because a page is not a paragraph.
+- Targets are still not *compared* across apps inside Origami Text, because it
+  keys sidecars by file name, not by target. But both apps now write the same
+  names for the same book, so another reader can match Origami Text's.
 
-The migration README states one remaining gap even after migration. Origami
-Text would write the DOI when there is one, but a *local* name otherwise,
-while Reader names a book with no DOI by its content hash. To close it,
-Origami Text must hash the opened file and pass `contentHash:`.
+The migration README's remaining gap (Origami Text naming a book with no DOI by
+a local name, while Reader uses the content hash) is closed in the mirror:
+`BookIdentities` hashes the stored `.epub`. It will need carrying over when the
+package is linked.
 
 **Recommendation for a rebuild:**
 
-- Write `DocumentIdentity.canonical(doi: record.doi, contentHash:
-  sha256(<canonical .epub bytes>), localName: record.id)`.
+- Write `DocumentIdentity.canonical(doi: record.doi, publicationID:
+  record.packageIdentifier, contentHash: sha256(<canonical .epub bytes>),
+  localName: record.id)`, at the moment the annotation is made rather than
+  only at save.
 - Read every historical form through `normalised`.
 - Keep sidecar *file names* keyed by the local address, so existing files
   still open.
-- Carry unknown top-level keys through save untouched, so other apps'
-  extensions survive.
+- Carry unknown top-level and target keys, and unknown selectors, through
+  save untouched, so other apps' extensions survive (as the current code
+  does).
 
 ---
 
@@ -1087,8 +1128,10 @@ Portable equivalent: CalDAV, or reading `.ics` files.
 ### 5.7 Data series
 
 `DataSeriesFetcher.swift`, ported from Liquid Information. Called from
-`SeriesPlanner.swift`, where an on-device model plans *what* to fetch. "The
-on-device model only plans what to fetch and never handles the data itself."
+`SeriesPlanner.swift`, where a model (through `OrigamiLLM.generate`, so
+Apple's or a chosen server) plans *what* to fetch. "The on-device model only
+plans what to fetch and never handles the data itself." That quotation predates
+server routing; the rule itself still holds.
 None of these endpoints needs a key.
 
 | Series | Endpoint | Mapping |
@@ -1149,7 +1192,7 @@ use.**
 
 | Apple piece | Used for | Portable equivalent |
 |---|---|---|
-| `Codable` hand-written JSON-LD | `WebAnnotation` coding | Any JSON library. Keep `@context` on every item, the exact `type` strings, a lenient single-or-array selector, and skip unknown selectors and items |
+| `Codable` hand-written JSON-LD | `WebAnnotation` coding | Any JSON library. Keep `@context` on every item, the exact `type` strings, a lenient single-or-array selector, keep unknown selectors and properties verbatim, and skip items that do not decode |
 | `String.range(of:options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive])` and `folding(…, en_US_POSIX)` | Span matching | Unicode NFKD, strip combining marks (Mn), case-fold (ICU `ucol` at primary strength, or `unicodedata` + `casefold`) |
 | Swift `Character` (grapheme) indexing | Offsets in `position` and `fuzzyMatch` | Use grapheme clusters (ICU BreakIterator, `grapheme` libraries) so offsets agree with existing files |
 | `ISO8601DateFormatter` `.withInternetDateTime` | Dates | RFC 3339 with `Z` and whole seconds on write. Accept fractions on read (`LiquidDoc.parseISO8601`) |
@@ -1177,7 +1220,7 @@ use.**
 
 1. **Model and coding.** `WebAnnotation`, its selectors, the two extensions
    and `ReaderAnnotationKind`, with lenient decoding. Preserve unknown keys
-   (an improvement over the current code).
+   and unknown selectors verbatim, as the current code does.
 2. **Store.** `AnnotationStore` sidecars in `<data>/EPUBs/Annotations/`.
    Delete when empty, atomic writes, fail loudly.
 3. **Target builder and resolve cascade** (§2.5–2.6), with `sameElement` and
@@ -1207,11 +1250,12 @@ use.**
 |---|---|---|
 | A1 | Round-trip: decode the §2.4 example, encode, decode | Every field, including `origami:placement`, is equal. Output has `@context` on the collection and each item, `type` strings exact, `format: text/plain` on bodies |
 | A2 | Single-object `selector` | Decodes as a one-item list |
-| A3 | Unknown selector `{"type":"CssSelector"}` among others | Skipped. The others remain |
+| A3 | Unknown selector `{"type":"CssSelector"}` among others | Not anchored by, kept verbatim, and written back after the others on save. The others remain |
 | A4 | One corrupt item among good ones | Only that item is dropped |
 | A5 | Save an empty list | The sidecar file is deleted |
 | A6 | Missing `id`/`motivation`/`created` | `urn:uuid:` minted, `highlighting`, now |
-| A7 | Package-written sidecar with `reader:place` and a page selector | **Current app:** both are lost or garbled on re-save (known defect). **Rebuild:** both preserved |
+| A7 | Package-written sidecar with `reader:place` and a page selector | Both preserved verbatim on re-save. The page selector is never read as a paragraph id |
+| A8 | Save a sidecar for a shelved book whose items carry `origamitext://open/…` and a foreign `OEBPS/ch1.xhtml` source | Every item's `target.source` is the book's canonical name (§4.1) |
 
 **Anchoring**
 
@@ -1258,6 +1302,8 @@ use.**
 | E1 | `normalised("origamitext://open/f.hegla.093000k") == normalised("urn:origami:local:f.hegla.093000k")` | True |
 | E2 | `normalised("https://doi.org/10.1145/X") == normalised("doi:10.1145/x")` | True |
 | E3 | A 64-hex local name | Written as `urn:origami:sha256:` |
+| E4 | `canonical(publicationID: "urn:uuid:<UPPERCASE UUID>", contentHash: <hash>)` | `urn:uuid:<lowercase uuid>`. A non-unique identifier such as `bookid-42` is passed over for the hash |
+| E5 | A book with neither DOI nor unique identifier, its `.epub` replaced by a new edition | A new hash is computed (cache key includes size and modification date) |
 
 **Network**
 
@@ -1277,23 +1323,23 @@ use.**
 
 ### 7.3 Known discrepancies (summary)
 
-1. Origami Text does not link the OrigamiFormat package. It writes
-   `origamitext://open/<address>`, not the DOI, `sha256` or `local` URN rule.
-2. `reader:place` and page selectors from the package are lost or garbled when
-   Origami Text re-saves a sidecar.
-3. The package's `AnnotationAnchor` lacks Origami Text's `sameElement` bridge.
+1. Origami Text does not link the OrigamiFormat package. It mirrors
+   `DocumentIdentity` in `AnnotationStore.swift` and applies it when a
+   sidecar is saved (Mac and headset); in memory, a new annotation carries
+   `origamitext://open/<address>` until then.
+2. The package's `AnnotationAnchor` lacks Origami Text's `sameElement` bridge.
    The package README claims Origami Text links it; it does not.
-4. The WebView reader's JavaScript anchoring is simpler than the Swift cascade
+3. The WebView reader's JavaScript anchoring is simpler than the Swift cascade
    (lowercase only, no fuzzy match, no context scoring).
-5. The position hint is paragraph-local but is compared with global offsets in
+4. The position hint is paragraph-local but is compared with global offsets in
    step 5 of resolve.
-6. `_seed-links.json` is keyed by `record.id` and written without file
+5. `_seed-links.json` is keyed by `record.id` and written without file
    coordination. The other shared files key by folder and use coordination.
-7. Imported EPUB-Annotations items keep foreign `target.source` values, and
-   `start…end` quotes cannot match exactly.
-8. Native `addHighlight(to:)` and `addComment(_:to:)` omit `creator`; the
+6. Imported EPUB-Annotations `start…end` quotes cannot match exactly. (Their
+   foreign `target.source` is now replaced with the book's name on save.)
+7. Native `addHighlight(to:)` and `addComment(_:to:)` omit `creator`; the
    other paths include it.
-9. `HypothesisClient.canonicalURI` and `hypothesisPublicEnabled` exist but
+8. `HypothesisClient.canonicalURI` and `hypothesisPublicEnabled` exist but
    nothing uses them. No push or fetch exists.
-10. The `DataSeriesFetcher` comment says Stooq; the code uses Yahoo Finance.
-11. Calendar is compiled out (`ORIGAMI_CALENDAR`).
+9. The `DataSeriesFetcher` comment says Stooq; the code uses Yahoo Finance.
+10. Calendar is compiled out (`ORIGAMI_CALENDAR`).

@@ -958,6 +958,7 @@ final class VisionModel {
     private(set) var folderStatus: FolderStatus = .never
 
     init() {
+        Self.refreshBookIdentities(epubRecords)
         restoreFolder()
         rebuildEPUBIndex()
     }
@@ -1066,7 +1067,16 @@ final class VisionModel {
 
     /// The remembered books, newest first — the Mac's manifest, kept here
     /// in this device's own defaults.
-    private(set) var epubRecords: [EPUBRecord] = VisionModel.loadEPUBRecords()
+    private(set) var epubRecords: [EPUBRecord] = VisionModel.loadEPUBRecords() {
+        didSet { Self.refreshBookIdentities(epubRecords) }
+    }
+
+    /// Keeps the annotation store's table of book names in step with the
+    /// shelf, as the Mac does, so sidecars saved on the headset name their
+    /// books the shared way too.
+    private nonisolated static func refreshBookIdentities(_ records: [EPUBRecord]) {
+        BookIdentities.update(records) { epubsRoot.appendingPathComponent($0.folder + ".epub") }
+    }
 
     /// The floated passages: quotes lifted out of readings with Float.
     /// Each is a W3C highlighting annotation carrying `origami:float`
@@ -7057,30 +7067,10 @@ final class VisionBotStore {
     /// Asks the on-device model who a typed name means.
     static func identify(name: String) async throws -> VisionBotIdentification {
         let prompt = identificationPrompt + "\n\nTHE TYPED NAME: \(name)\n"
-        // A chosen server answers in JSON; Apple's model by guided generation.
-        if let reply = try await OrigamiLLM.shared.respondJSON(
-            BotIdentificationJSON.self,
-            instructions: #"Fields: "isConfident" (true or false) and "candidates" (up to five objects with "name", "years", "summary")."#,
-            prompt: prompt) {
-            return VisionBotIdentification(
-                isConfident: reply.isConfident,
-                candidates: reply.candidates.prefix(5).map {
-                    VisionBotCandidate(name: $0.name, years: $0.years, summary: $0.summary)
-                })
-        }
-        let session = LanguageModelSession()
-        return try await session.respond(to: prompt, generating: VisionBotIdentification.self).content
-    }
-
-    private struct BotIdentificationJSON: Decodable {
-        struct Candidate: Decodable { var name: String; var years: String; var summary: String }
-        var isConfident: Bool
-        var candidates: [Candidate]
-    }
-
-    private struct BotStanceJSON: Decodable {
-        var verdict: String
-        var reason: String
+        // A chosen server answers to the type's JSON Schema; Apple's
+        // model by guided generation.
+        return try await OrigamiLLM.shared.generate(
+            VisionBotIdentification.self, instructions: nil, prompt: prompt).content
     }
 
     /// One bot reads the library: every document its judgements do not
@@ -7121,17 +7111,10 @@ final class VisionBotStore {
         if !bot.summary.isEmpty { prompt += "\n\(bot.summary)" }
         prompt += "\n\nTHE DOCUMENT:\n\(Self.digest(of: doc, limit: Self.perDocumentCharacterLimit))"
         do {
-            let reply: (verdict: String, reason: String)
-            if let json = try await OrigamiLLM.shared.respondJSON(
-                BotStanceJSON.self,
-                instructions: #"Fields: "verdict" ("agree", "disagree" or "neutral") and "reason" (one or two sentences in the person's voice)."#,
-                prompt: prompt) {
-                reply = (json.verdict.lowercased(), json.reason)
-            } else {
-                let session = LanguageModelSession()
-                let response = try await session.respond(to: prompt, generating: VisionBotStanceReply.self)
-                reply = (response.content.verdict, response.content.reason)
-            }
+            let response = try await OrigamiLLM.shared.generate(
+                VisionBotStanceReply.self, instructions: nil, prompt: prompt)
+            let reply = (verdict: response.content.verdict.lowercased(),
+                         reason: response.content.reason)
             guard !Task.isCancelled else { return }
             let verdict = VisionBotStance.Verdict(rawValue: reply.verdict) ?? .neutral
             stances[bot.id, default: [:]][doc.id] =

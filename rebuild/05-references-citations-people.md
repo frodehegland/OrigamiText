@@ -20,7 +20,7 @@ This area of the app answers four questions about the document being read:
 1. **What does it cite?** The References page lists every cited work, in the paper's own order (As Cited) or by title, author or date.
 2. **Can those works be trusted?** Each work gets small marks: Retracted, Withdrawn, Expression of Concern, Corrected, Preprint, Replicated / Not Replicated, Unverified, plus importance, kind, use and access words.
 3. **How do the cited works relate to each other?** The Time Map (years left to right) and the Concept Map (eight layouts) draw a line wherever one cited work cites another. To find those lines, the app reads each cited work's own reference list, from the shelf or from online services.
-4. **Who and where?** A people directory (with ORCID), portraits (shared with the Author app), on-device personality profiles, a gazetteer of places, a Locations list and a Map, and AI entity extraction.
+4. **Who and where?** A people directory (with ORCID), portraits (shared with the Author app), AI personality profiles, a gazetteer of places, a Locations list and a Map, and AI entity extraction.
 
 Across the whole shelf, a fifth view, **Lineage**, draws every shelf book and every work their references name as one web through time. An imported **reference dataset** (the ACM Hypertext dataset) adds richer metadata to citation cards.
 
@@ -812,7 +812,7 @@ Then by kind:
 - **Person**: the family names must be equal. Every other query word must match a title word exactly, or by prefix in either direction for words of 3 or more characters ("Doug" → "Douglas"). The title may have at most one extra word.
 - **Place, organisation, concept**: the words must be equal. Or a query of 2–6 upper-case characters must equal the initials of the title's non-minor words ("NACA"). Or, for an organisation, the title may be the query plus one trailing word ("SRI International").
 
-### 5.4 Personality profiles (on-device AI)
+### 5.4 Personality profiles (AI, through `OrigamiLLM`)
 
 `Origami Text macOS/PersonProfiles.swift` (`PersonProfileStore`).
 
@@ -827,7 +827,7 @@ Then by kind:
 
 **The prompt.** The base prompt, which can be edited in Settings → AI. Then "THE PERSON", "EXISTING PROFILE" (or "None yet — this is the first letter."), and "THEIR NEW WRITING". The contributions are given oldest first. Each is capped at 1200 characters, with a total cap of 8000 per person.
 
-**The answer.** Guided generation returns `GeneratedAuthorProfile {profile, interests}`. On any error, the documents stay undigested and are retried on the next pass.
+**The answer.** `OrigamiLLM.generate(GeneratedAuthorProfile.self, …)` returns `GeneratedAuthorProfile {profile, interests}`: guided generation on Apple's model, or the type's JSON Schema on a chosen server. `digest` runs only when `OrigamiLLM.shared.canRespond`. On any error, the documents stay undigested and are retried on the next pass.
 
 **Where it shows.** `personality(for:)` is the hook for views, for example the hover card.
 
@@ -843,9 +843,9 @@ Then by kind:
 
 **Model choice.**
 
-- If the user selected an endpoint model (`OrigamiLLM.shared.selectedEndpointModel()`), it is asked for a JSON object with the keys `concepts`, `keywords`, `people`, `places`, `technologies` and `scientificTerms`. The reply is parsed leniently: the first "{" to the last "}".
-- On failure, or with no endpoint, the app uses Apple's on-device model with guided generation (`PassageExtraction`, with a maximum count per field of 6 or 8).
-- A guardrail refusal skips the chunk.
+- Each chunk is one fresh request through `OrigamiLLM.generate(PassageExtraction.self, …)` (`EntityExtractor.extractChunk`). `PassageExtraction` has the fields `concepts`, `keywords`, `people`, `places`, `technologies` and `scientificTerms`, with a maximum count per field of 6 or 8.
+- With an endpoint model selected, the server gets that type's JSON Schema and its reply is read back into the same type. Apple's model is used only when no endpoint is selected, or when the server or model is missing.
+- A guardrail refusal skips the chunk. A half of a split chunk that still overflows, or is refused, is skipped too. Other errors are thrown.
 
 **Merging.**
 
@@ -1163,7 +1163,7 @@ On visionOS and iOS, `CitationGraph` and `LineageCore` are shared files. The hea
 
 ## Appendix: discrepancies and uncertainties found while reading
 
-- **AI routing.** `PersonProfileStore.revise` (`PersonProfiles.swift`) calls Apple's `LanguageModelSession` directly. It does not go through `OrigamiLLM`, and it ignores any endpoint model the user chose. `EntityExtractor` does honour the endpoint. `AppModel.extractEntities` wraps the extraction in `try?`, so a failure is silently skipped. The project's routing note says to route all AI through OrigamiLLM and never `try?` a refusal.
+- **AI routing.** `PersonProfileStore.revise` and `EntityExtractor` now both go through `OrigamiLLM.generate`. `AppModel.extractEntities` skips a document whose extraction fails and reports the first failure's reason once, through `showNote`.
 - **`isContextOverflow`** (`EntityExtraction.swift`) treats any error whose description contains "context" (case-insensitive) as an overflow. That is broader than the two error enums.
 - **The Citation Tree's inbound match** (`CitationTreeView.findCitedBy`) compares raw lowercased titles. The rest of this area uses normalised titles with year checks, so the tree can miss matches the References page finds.
 - **DOI normalisers differ** (table in 2.3). `ReferenceStatus.cleanDOI` rejects non-`10.` strings; the others do not. `ReferenceKeys.doiKey` strips only the first matching prefix; `CitationLookup.normalizedDOI` strips each prefix in turn.

@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import Synchronization
 
 // Ported from Knowledge Space's AnnotationStore.swift (itself from
 // Augmented Library) — keep synced; a fix here should be carried back.
@@ -67,6 +69,13 @@ public nonisolated enum AnnotationStore {
                     try FileManager.default.removeItem(at: url)
                 }
                 return true
+            }
+            // Every annotation in this sidecar is about this book, so each
+            // is written naming it the shared way (DocumentIdentity) —
+            // whatever an older version, an import or another app wrote.
+            var annotations = annotations
+            if let source = BookIdentities.source(forAddress: address) {
+                for index in annotations.indices { annotations[index].target.source = source }
             }
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -367,5 +376,179 @@ public nonisolated enum AnnotationAnchor {
     private static func folded(_ text: String) -> String {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
                      locale: Locale(identifier: "en_US_POSIX"))
+    }
+}
+
+// MARK: - Document identity
+
+/// What an annotation calls its book, said the way any other reader can
+/// match — the OrigamiFormat package's rule, which this mirrors until
+/// Origami Text links the package (rebuild guide, chapter 3 §4):
+///
+/// 1. **The DOI**, where the work has one — the name the world uses.
+/// 2. **The publication's own identifier**, when it is globally unique
+///    (`urn:uuid:`, `urn:isbn:`) — an Origami Profile 1.0 EPUB's
+///    `dc:identifier`, which survives re-export where a hash would not.
+/// 3. **A content hash** of the EPUB file, `urn:origami:sha256:<hex>`.
+/// 4. **The local address**, `urn:origami:local:<address>`, last.
+///
+/// Reading is more generous than writing: `normalised` folds every form
+/// either app has written — `origamitext://open/…`, `urn:x-reader:…` —
+/// onto one comparable key, so notes already on disk keep matching.
+public nonisolated enum DocumentIdentity {
+    public static let hashScheme = "urn:origami:sha256:"
+    public static let localScheme = "urn:origami:local:"
+    public static let legacyReaderScheme = "urn:x-reader:"
+    public static let legacyOrigamiScheme = "origamitext://open/"
+
+    public static func canonical(doi: String? = nil, publicationID: String? = nil,
+                                 contentHash: String? = nil,
+                                 localName: String? = nil) -> String {
+        if let bare = bareDOI(doi) { return "https://doi.org/" + bare }
+        if let publicationID, let unique = globallyUnique(publicationID) { return unique }
+        if let contentHash, isContentHash(contentHash) {
+            return hashScheme + contentHash.lowercased()
+        }
+        if let localName, !localName.isEmpty {
+            if isContentHash(localName) { return hashScheme + localName.lowercased() }
+            return localScheme + localName
+        }
+        return ""
+    }
+
+    /// A comparable key: two IRIs name the same document exactly when
+    /// their keys are equal.
+    public static func normalised(_ iri: String) -> String {
+        let trimmed = iri.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if let bare = doiPortion(of: trimmed) { return "doi:" + bare }
+        if let unique = globallyUnique(trimmed) {
+            return String(unique.dropFirst(4)).lowercased()   // "uuid:…" / "isbn:…"
+        }
+        if let hash = after(hashScheme, in: trimmed) { return "sha256:" + hash.lowercased() }
+        if let name = after(localScheme, in: trimmed) { return "local:" + name }
+        for legacy in [legacyReaderScheme, legacyOrigamiScheme] {
+            if let name = after(legacy, in: trimmed) {
+                return isContentHash(name) ? "sha256:" + name.lowercased() : "local:" + name
+            }
+        }
+        return trimmed.lowercased()
+    }
+
+    public static func isSameDocument(_ one: String, _ other: String) -> Bool {
+        let a = normalised(one)
+        return !a.isEmpty && a == normalised(other)
+    }
+
+    /// `urn:uuid:` and `urn:isbn:` name one publication everywhere; any
+    /// other package identifier (a bare "bookid", a database key) may
+    /// not, and is passed over rather than trusted.
+    static func globallyUnique(_ identifier: String) -> String? {
+        let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowered = trimmed.lowercased()
+        if lowered.hasPrefix("urn:uuid:"),
+           UUID(uuidString: String(trimmed.dropFirst(9))) != nil {
+            return "urn:uuid:" + String(lowered.dropFirst(9))
+        }
+        if lowered.hasPrefix("urn:isbn:") {
+            let digits = trimmed.dropFirst(9).filter { $0.isNumber || $0 == "X" || $0 == "x" }
+            if digits.count == 10 || digits.count == 13 { return "urn:isbn:" + digits.uppercased() }
+        }
+        return nil
+    }
+
+    static func bareDOI(_ text: String?) -> String? {
+        guard let text else { return nil }
+        var stripped = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["https://doi.org/", "http://doi.org/", "https://dx.doi.org/",
+                       "http://dx.doi.org/", "doi:"]
+        where stripped.lowercased().hasPrefix(prefix) {
+            stripped = String(stripped.dropFirst(prefix.count))
+        }
+        stripped = stripped.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return stripped.hasPrefix("10.") && stripped.contains("/") ? stripped : nil
+    }
+
+    static func doiPortion(of iri: String) -> String? {
+        let lowered = iri.lowercased()
+        if ["https://doi.org/", "http://doi.org/", "https://dx.doi.org/",
+            "http://dx.doi.org/", "doi:", "10."].contains(where: lowered.hasPrefix) {
+            return bareDOI(iri)
+        }
+        return nil
+    }
+
+    public static func isContentHash(_ text: String) -> Bool {
+        text.count == 64 && text.allSatisfy(\.isHexDigit)
+    }
+
+    /// SHA-256 of a file, lowercase hex; nil when it can't be read.
+    static func contentHash(of url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func after(_ prefix: String, in text: String) -> String? {
+        guard text.lowercased().hasPrefix(prefix.lowercased()) else { return nil }
+        let rest = String(text.dropFirst(prefix.count))
+        return rest.isEmpty ? nil : rest
+    }
+}
+
+/// What the store knows of each shelved book, for naming it in its
+/// annotations: refreshed by AppModel whenever the shelf changes, read
+/// by every save — including sync's, off the main actor — hence the lock.
+/// A content hash is worked out only when a book has neither DOI nor a
+/// unique publication identifier, once per file.
+public nonisolated enum BookIdentities {
+    struct Book: Sendable {
+        var doi: String?
+        var publicationID: String?
+        var epubFile: URL
+        var address: String
+    }
+
+    private struct State: Sendable {
+        var books: [String: Book] = [:]
+        var hashes: [String: String] = [:]
+    }
+
+    private static let state = Mutex(State())
+
+    /// Replaces the table; each book is reachable by its record id and
+    /// its folder, the two addresses sidecars have been keyed by.
+    static func update(_ records: [EPUBRecord], epubFile: (EPUBRecord) -> URL) {
+        var books: [String: Book] = [:]
+        for record in records {
+            let book = Book(doi: record.doi, publicationID: record.packageIdentifier,
+                            epubFile: epubFile(record), address: record.id)
+            books[record.folder] = book
+            books[record.id] = book
+        }
+        state.withLock { $0.books = books }
+    }
+
+    /// The name to write for the book at `address`; nil for an address
+    /// that is no shelved book (a native document, a Gemini page), whose
+    /// annotations keep the source they were written with.
+    static func source(forAddress address: String) -> String? {
+        guard let book = state.withLock({ $0.books[address] }) else { return nil }
+        if DocumentIdentity.bareDOI(book.doi) != nil
+            || book.publicationID.flatMap(DocumentIdentity.globallyUnique) != nil {
+            return DocumentIdentity.canonical(doi: book.doi, publicationID: book.publicationID)
+        }
+        // Keyed by the file's size and date too: a replaced edition is a
+        // different file, and gets its own hash.
+        let attributes = try? FileManager.default.attributesOfItem(atPath: book.epubFile.path)
+        let key = [book.epubFile.path,
+                   "\((attributes?[.size] as? Int) ?? 0)",
+                   "\((attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)"]
+            .joined(separator: "|")
+        var hash = state.withLock { $0.hashes[key] }
+        if hash == nil, let computed = DocumentIdentity.contentHash(of: book.epubFile) {
+            hash = computed
+            state.withLock { $0.hashes[key] = computed }
+        }
+        return DocumentIdentity.canonical(contentHash: hash, localName: book.address)
     }
 }

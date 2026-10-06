@@ -25,6 +25,9 @@ nonisolated struct TranscriptSummary {
     /// below — the notes carry the links; this is their reading.
     var overview: String?
     var notes: [Note]
+    /// Why the overview is missing when writing it failed — shown to
+    /// the reader, never saved; the notes stand without it.
+    var overviewError: String? = nil
 
     /// The summary as an ordinary Origami document: the overview, then
     /// one paragraph per note ending in its citations, a `summarizes`
@@ -138,17 +141,10 @@ enum TranscriptSummarizer {
     /// and skipped, never fatal on its own.
     private struct PartDeclined: Error {}
 
+    /// Whether a model can answer: the one chosen in Settings ▸ AI,
+    /// or Apple's built-in model.
     static var isAvailable: Bool {
-        if case .available = SystemLanguageModel.default.availability { return true }
-        return false
-    }
-
-    /// The model, in its content-transformation stance: summarizing the
-    /// reader's own material is exactly what the permissive guardrails
-    /// exist for — ordinary conversation trips the default ones far
-    /// too easily.
-    private static var model: SystemLanguageModel {
-        SystemLanguageModel(guardrails: .permissiveContentTransformations)
+        OrigamiLLM.shared.canRespond
     }
 
     /// Whether Summary & Notes applies: the document declares itself a
@@ -204,7 +200,7 @@ enum TranscriptSummarizer {
                           progress: @escaping @MainActor (String) -> Void)
     async throws -> TranscriptSummary {
         guard isAvailable else {
-            throw Failure(message: "Summary & Notes uses the on-device model; enable Apple Intelligence to run it.")
+            throw Failure(message: "Summary & Notes needs a model; enable Apple Intelligence, or choose a server model in Settings \u{25B8} AI.")
         }
         let items = statements(of: doc)
         guard !items.isEmpty else {
@@ -257,14 +253,22 @@ enum TranscriptSummarizer {
                 : "No notes grounded in the transcript came back — try again.")
         }
         var overview: String?
+        var overviewError: String?
         if notes.count > 1 {
             try Task.checkCancellation()
             progress("Writing the overview…")
             // The overview is a reading of the notes; losing it never
-            // costs the notes themselves.
-            overview = try? await condense(notes)
+            // costs the notes themselves — but the reader is told why.
+            do {
+                overview = try await condense(notes)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                overviewError = "The overview could not be written: \(error.localizedDescription)"
+            }
         }
-        return TranscriptSummary(generated: .now, overview: overview, notes: notes)
+        return TranscriptSummary(generated: .now, overview: overview, notes: notes,
+                                 overviewError: overviewError)
     }
 
     // MARK: The statements
@@ -335,10 +339,10 @@ enum TranscriptSummarizer {
     async throws -> [TranscriptSummary.Note] {
         try Task.checkCancellation()
         do {
-            let session = LanguageModelSession(model: model, instructions: instructions)
             let material = part.map(\.line).joined(separator: "\n")
-            let response = try await session.respond(to: material,
-                                                     generating: TranscriptGeneratedNotes.self)
+            let response = try await OrigamiLLM.shared.generate(
+                TranscriptGeneratedNotes.self, instructions: instructions, prompt: material,
+                transformingContent: true)
             return validated(response.content.notes, against: validIDs)
         } catch where isContextOverflow(error) {
             if part.count > 1 {
@@ -403,10 +407,11 @@ enum TranscriptSummarizer {
     /// short enough to always fit one pass.
     private static func condense(_ notes: [TranscriptSummary.Note]) async throws -> String {
         let list = notes.map(\.text).joined(separator: "\n")
-        let session = LanguageModelSession(model: model)
-        let response = try await session.respond(
-            to: "These are notes from one meeting's transcript. Write a two to three sentence summary of the meeting. Reply with the summary alone.\n\n\(String(list.prefix(6000)))")
-        let overview = response.content
+        let response = try await OrigamiLLM.shared.respond(
+            instructions: nil,
+            to: "These are notes from one meeting's transcript. Write a two to three sentence summary of the meeting. Reply with the summary alone.\n\n\(String(list.prefix(6000)))",
+            transformingContent: true)
+        let overview = response.text
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !overview.isEmpty else {
             throw Failure(message: "The model offered no overview.")

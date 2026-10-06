@@ -77,6 +77,12 @@ public nonisolated struct WebAnnotation: Identifiable, Hashable, Sendable {
         /// for library documents.
         public var source: String
         public var selectors: [Selector]
+        /// Selectors this app does not anchor by — a PDF page
+        /// (`page=7`, RFC 8118) from Reader, or a type it does not know —
+        /// kept verbatim and written back after its own.
+        public var preservedSelectors: [JSONValue] = []
+        /// The target's other properties, kept verbatim.
+        public var extensions: [String: JSONValue] = [:]
 
         public init(source: String, selectors: [Selector]) {
             self.source = source
@@ -135,6 +141,12 @@ public nonisolated struct WebAnnotation: Identifiable, Hashable, Sendable {
 
     /// Where the floated quote stands in the room, when it does.
     public var float: FloatPosition? = nil
+
+    /// Every top-level property this app does not itself read —
+    /// another app's extensions, such as Reader's `reader:place` —
+    /// kept verbatim and written back, so re-saving a sidecar never
+    /// loses what someone else put in it.
+    public var extensions: [String: JSONValue] = [:]
 
     /// The words this annotation stands on, from its quote selector —
     /// the document's own text, not the reader's note (which lives in
@@ -244,7 +256,15 @@ nonisolated extension WebAnnotation: Codable {
         try container.encode(target, forKey: .target)
         try container.encodeIfPresent(placement, forKey: .placement)
         try container.encodeIfPresent(float, forKey: .float)
+        var extra = encoder.container(keyedBy: JSONValue.Key.self)
+        for (key, value) in extensions where !Self.knownKeys.contains(key) {
+            try extra.encode(value, forKey: JSONValue.Key(key))
+        }
     }
+
+    private static let knownKeys: Set<String> = Set(
+        ["@context", "id", "type", "motivation", "created", "modified",
+         "creator", "body", "target", "origami:placement", "origami:float"])
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -261,6 +281,7 @@ nonisolated extension WebAnnotation: Codable {
         target = try container.decode(Target.self, forKey: .target)
         placement = try? container.decodeIfPresent(Placement.self, forKey: .placement)
         float = try? container.decodeIfPresent(FloatPosition.self, forKey: .float)
+        extensions = try JSONValue.unknownProperties(in: decoder, known: Self.knownKeys)
     }
 }
 
@@ -309,30 +330,52 @@ nonisolated extension WebAnnotation.Target: Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(source, forKey: .source)
-        if !selectors.isEmpty {
-            try container.encode(selectors, forKey: .selector)
+        if !selectors.isEmpty || !preservedSelectors.isEmpty {
+            var list = container.nestedUnkeyedContainer(forKey: .selector)
+            for selector in selectors { try list.encode(selector) }
+            for raw in preservedSelectors { try list.encode(raw) }
+        }
+        var extra = encoder.container(keyedBy: JSONValue.Key.self)
+        for (key, value) in extensions where key != "source" && key != "selector" {
+            try extra.encode(value, forKey: JSONValue.Key(key))
         }
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         source = try container.decodeIfPresent(String.self, forKey: .source) ?? ""
-        // The spec allows a single selector or an array; a selector of an
-        // unknown type is skipped, never fatal.
-        if let list = try? container.decode([Lossy].self, forKey: .selector) {
-            selectors = list.compactMap(\.selector)
-        } else if let one = try? container.decode(Lossy.self, forKey: .selector) {
-            selectors = [one.selector].compactMap { $0 }
+        // The spec allows a single selector or an array. A selector this
+        // app anchors by is read; any other — a page, an unknown type —
+        // is kept as it came, never dropped and never misread.
+        let raws: [JSONValue]
+        if let list = try? container.decode([JSONValue].self, forKey: .selector) {
+            raws = list
+        } else if let one = try? container.decode(JSONValue.self, forKey: .selector) {
+            raws = [one]
         } else {
-            selectors = []
+            raws = []
         }
+        selectors = []
+        for raw in raws {
+            if !Self.isPageSelector(raw),
+               let selector = try? raw.decoded(as: WebAnnotation.Selector.self) {
+                selectors.append(selector)
+            } else {
+                preservedSelectors.append(raw)
+            }
+        }
+        extensions = try JSONValue.unknownProperties(in: decoder, known: ["source", "selector"])
     }
 
-    private struct Lossy: Decodable {
-        let selector: WebAnnotation.Selector?
-        init(from decoder: Decoder) throws {
-            selector = try? WebAnnotation.Selector(from: decoder)
-        }
+    /// RFC 8118's PDF page fragment (`page=7`), as Reader writes it — a
+    /// FragmentSelector, but not a paragraph id, so never anchored as one.
+    static func isPageSelector(_ raw: JSONValue) -> Bool {
+        guard case .object(let fields) = raw,
+              fields["type"] == .string("FragmentSelector") else { return false }
+        if fields["conformsTo"] == .string("http://tools.ietf.org/rfc/rfc8118") { return true }
+        if case .string(let value) = fields["value"],
+           value.hasPrefix("page="), Int(value.dropFirst(5)) != nil { return true }
+        return false
     }
 }
 
@@ -386,5 +429,73 @@ nonisolated extension WebAnnotation.Selector: Codable {
         default:
             throw SelectorError.unknownType(type)
         }
+    }
+}
+
+// MARK: - Properties kept verbatim
+
+/// Any JSON value, for the parts of an annotation another app wrote and
+/// this one only carries: decoded as it came, encoded back the same.
+public nonisolated enum JSONValue: Hashable, Sendable, Codable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null }
+        else if let value = try? container.decode(Bool.self) { self = .bool(value) }
+        else if let value = try? container.decode(Double.self) { self = .number(value) }
+        else if let value = try? container.decode(String.self) { self = .string(value) }
+        else if let value = try? container.decode([JSONValue].self) { self = .array(value) }
+        else { self = .object(try container.decode([String: JSONValue].self)) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null: try container.encodeNil()
+        case .bool(let value): try container.encode(value)
+        case .number(let value):
+            // Whole numbers go back as integers, as they most likely came.
+            if value.rounded() == value, abs(value) < 1e15 {
+                try container.encode(Int64(value))
+            } else {
+                try container.encode(value)
+            }
+        case .string(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        }
+    }
+
+    /// Re-reads this value as a typed one, through JSON.
+    func decoded<T: Decodable>(as type: T.Type) throws -> T {
+        try JSONDecoder().decode(T.self, from: JSONEncoder().encode(self))
+    }
+
+    /// A coding key for any property name.
+    public struct Key: CodingKey, Hashable {
+        public let stringValue: String
+        public init(_ string: String) { stringValue = string }
+        public init?(stringValue: String) { self.stringValue = stringValue }
+        public var intValue: Int? { nil }
+        public init?(intValue: Int) { nil }
+    }
+
+    /// The properties of the object being decoded that are not in `known`.
+    static func unknownProperties(in decoder: Decoder,
+                                  known: Set<String>) throws -> [String: JSONValue] {
+        let container = try decoder.container(keyedBy: Key.self)
+        var found: [String: JSONValue] = [:]
+        for key in container.allKeys where !known.contains(key.stringValue) {
+            if let value = try? container.decode(JSONValue.self, forKey: key) {
+                found[key.stringValue] = value
+            }
+        }
+        return found
     }
 }

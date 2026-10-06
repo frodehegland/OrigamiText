@@ -368,7 +368,8 @@ Keys are read only when a request is sent, never at launch. This follows the pro
 - List models: `GET {base}/v1/models` → `data[].id`, sorted. Timeout 2 s.
 - Model sizes (Ollama only): `GET {base}/api/tags` → `models[].{name,size}`. Errors are ignored silently.
 - Chat: `POST {base}/v1/chat/completions` with the body `{"model": m, "messages": [{"role":"system","content":instructions}?, {"role":"user","content":prompt}], "stream": true}`.
-  - No temperature or max-tokens is sent. Timeout 300 s.
+  - `ChatCompletionsClient.respond` takes two optional extras. `temperature` is added to the body only when given. `jsonSchema` (a name and a schema) adds `"response_format": {"type": "json_schema", "json_schema": {"name": …, "schema": …}}`. No max-tokens is sent. Timeout 300 s.
+  - Status 401/403 → `.authRequired`. Status 404 → `.modelNotFound(model)`. Status 400 or 422 while a schema was sent → the request is sent once more without `response_format` (the schema is still in the instructions). Any other non-200 → `.generationFailed`.
   - If a key exists, it is sent as `Authorization: Bearer <key>`.
   - The reply is read as Server-Sent Events: each `data:` line until `[DONE]`, concatenating `choices[0].delta.content`. Each partial result goes to `onPartial(textSoFar)`.
 - **Local detection** (`detectLocalServers`, run only when the settings pane opens): probe `http://localhost:11434` (Ollama) and `http://localhost:1234` (LM Studio) with a 0.8 s timeout.
@@ -383,19 +384,24 @@ Keys are read only when a request is sent, never at launch. This follows the pro
 **Apple path** (`appleRespond`):
 
 - Requires `SystemLanguageModel.default.availability == .available`; otherwise it throws `.appleUnavailable`.
-- Uses `LanguageModelSession(instructions:)`. It streams with `streamResponse(to:)` only when `onPartial` is given; otherwise it calls `respond(to:)`.
-- Uses the default guardrails.
+- Builds its session with `appleSession(instructions:transformingContent:)`. It streams with `streamResponse(to:)` only when `onPartial` is given; otherwise it calls `respond(to:)`.
+- Uses the default guardrails, unless the caller passed `transformingContent: true`. Then the model is `SystemLanguageModel(guardrails: .permissiveContentTransformations)`. Servers ignore the flag.
 
 **Public API:**
 
 ```swift
 func respond(instructions: String?, to prompt: String,
+             transformingContent: Bool = false,
              onPartial: (@MainActor (String) -> Void)? = nil)
     async throws -> (text: String, modelName: String)
+func generate<T: Generable>(_: T.Type, instructions: String?, prompt: String,
+                            options: GenerationOptions = GenerationOptions(),
+                            transformingContent: Bool = false)
+    async throws -> (content: T, modelName: String)   // structured answer from either model
 var canRespond: Bool          // a server is chosen, or Apple's model is .available
 func respondJSON<T: Decodable>(_: T.Type, instructions: String, prompt: String)
-    async throws -> T?         // nil when no server is chosen (caller then uses Apple guided generation)
-var fallbackNotice: String?    // set when a server failed and Apple answered
+    async throws -> T?         // older helper; nil when no server is chosen. No caller left.
+var fallbackNotice: String?    // set when a server was missing and Apple answered
 func addOrUpdateEndpoint(base:models:sizes:key:), removeEndpoint(_:), refreshModels(for:)
 static func classify(_ pasted: String) async -> PasteOutcome
 func detectLocalServers() async -> [(base: String, models: [String])]
@@ -404,11 +410,21 @@ func detectLocalServers() async -> [(base: String, models: [String])]
 **`respond` algorithm:**
 
 1. If a server model is chosen, call it. On success, return `(text, "<hostLabel> · <model>")`.
-2. On `CancellationError`, rethrow.
-3. On **any other** server error, set `fallbackNotice = "<model> wasn't available — used Apple's built-in model instead."` and continue to Apple.
+2. Only when the server error's `OrigamiLLMError.allowsFallback` is true (`.serverUnreachable` or `.modelNotFound`), set `fallbackNotice = "<model> wasn't available — used Apple's built-in model instead."` (`noteFallback(from:)`) and continue to Apple.
+3. Every other error is thrown to the caller: cancellation, a missing API key (`.authRequired`), a refusal, a bad status, a malformed answer.
 4. Call Apple and return `(text, "Apple's built-in model")`. Apple's errors propagate to the caller.
 
-**`respondJSON`:**
+**`generate` algorithm** (the one door for structured answers):
+
+1. If a server model is chosen, turn `T.generationSchema` into a JSON Schema object (`jsonSchema(for:)`: `JSONEncoder` on the schema, then `JSONSerialization`).
+2. Send it twice over: in the system instructions, after the caller's instructions, as "Reply with one JSON object only — no prose, no code fence — matching this JSON Schema:" plus the schema text; and as `response_format` through `ChatCompletionsClient.respond(jsonSchema:temperature:)`, with the temperature from `options`.
+3. Read the reply with `decode(_:from:host:)`: take the outermost `{…}` (first `{` to last `}`), and build `T` through `GeneratedContent(json:)`. No braces, or content that does not fit `T`, throws `.generationFailed` ("…did not answer in the form asked for").
+4. The fallback rule is the same as `respond`'s: only `.serverUnreachable` and `.modelNotFound` go on to Apple.
+5. Apple: guided generation, `session.respond(to:generating:options:)`, with the session from `appleSession` (so `transformingContent` applies). Throws `.appleUnavailable` if the model is not `.available`.
+
+The feature gets the same `T` whichever model answered.
+
+**`respondJSON`** (kept, but no feature calls it now):
 
 - Appends to the instructions: "Reply with one JSON object only — no prose, no code fence."
 - Decodes the text from the first `{` to the last `}`. If that fails, it throws `.generationFailed`.
@@ -420,6 +436,7 @@ func detectLocalServers() async -> [(base: String, models: [String])]
 `OrigamiLLMError` is described in the code as "the canonical copy". Its cases:
 
 - `serverUnreachable(host)` — any transport error;
+- `modelNotFound(model)` — HTTP 404;
 - `authRequired(host)` — HTTP 401 or 403;
 - `appleUnavailable`;
 - `generationFailed(String)` — a non-200 status, an empty reply, or JSON that does not decode.
@@ -451,9 +468,9 @@ The project memory rule "classify FoundationModels errors against both enums" re
 - `TranscriptSummarizer`: retry once on refusal, and split on overflow.
 - `AIInsightsView`: retry once on refusal, then show "Apple Intelligence declined…".
 
-**Guardrails.** `SystemLanguageModel(guardrails: .permissiveContentTransformations)` is used by `ReadingAnalyzer` (Apple path), `TranscriptSummarizer` and `AIInsightsView`. Everything else uses the default.
+**Guardrails.** The permissive content-transformation guardrails are asked for by passing `transformingContent: true` to `OrigamiLLM.respond` or `generate`. `ReadingAnalyzer`, `TranscriptSummarizer` and `AIInsightsView` do this. Everything else uses the default.
 
-**Availability UI.** The Library AI views switch on `SystemLanguageModel.default.availability` and show "Apple Intelligence Unavailable" with the reason: `deviceNotEligible`, `modelNotReady`, or otherwise "Enable Apple Intelligence…". `SeriesPlanner` also handles `appleIntelligenceNotEnabled`. Following the "never hide options" rule, the view stays in the sidebar and explains why it cannot run.
+**Availability UI.** The availability gates ask `OrigamiLLM.shared.canRespond` (a server is chosen, or Apple's model is available). This covers the Library AI views, Bots, the draft title, paragraph emotions, K. Nav stances, person profiles, `TranscriptSummarizer.isAvailable`, `SeriesPlanner.unavailabilityReason` and `ReadingAI.isAvailable` on macOS and visionOS. When nothing can answer, the Library AI views show "No AI Model Available" with Apple's reason: `deviceNotEligible`, `modelNotReady`, or otherwise "Enable Apple Intelligence…". `SeriesPlanner` also handles `appleIntelligenceNotEnabled`. Following the "never hide options" rule, the view stays in the sidebar and explains why it cannot run.
 
 ### 3.3 Grounding techniques (reuse these in any rebuild)
 
@@ -480,44 +497,43 @@ The project memory rule "classify FoundationModels errors against both enums" re
 
 Routing key:
 
-- **LLM** = goes through `OrigamiLLM` (chosen model, with Apple fallback).
-- **APPLE** = calls FoundationModels `LanguageModelSession` directly and ignores the chosen server.
-- **LLM/APPLE** = goes through `OrigamiLLM` on macOS and calls Apple directly on other platforms.
+- **LLM** = goes through `OrigamiLLM` (chosen model; Apple only when the server or model is missing).
+- **LLM/APPLE** = goes through `OrigamiLLM` on macOS and visionOS and calls Apple directly on other platforms.
 
-"Guided" means Apple's `@Generable` structured output. A portable rebuild should use JSON-schema or "JSON mode" output for these.
+"Guided" means a `@Generable` type sent through `OrigamiLLM.generate`: Apple's guided generation, or the type's JSON Schema on a server (3.1). A portable rebuild should use JSON-schema output for these.
 
 | # | Task | Input | Prompt location | Output | Used by |
 |---|---|---|---|---|---|
 | 1 | Selection rewrite ("Simplify Text" and user presets); LLM/APPLE | Selected text | `ReadingAI.rewrite`, prompt = `preset.prompt + "\n\n" + text`. Defaults in `AIPromptPreset.defaultPresets` (id `simplify`: "Rewrite the following text in simpler, clearer language… Return only the rewritten text"). Presets stored as JSON in `@AppStorage("readingAIPrompts")`. | Plain text, trimmed | `OrigamiReadingView.runAI` (selection AI result) |
 | 2 | Paragraph breaks; LLM/APPLE | One paragraph over 350 characters with at least 6 sentences, split by `ReadingAI.flowLines` and numbered | `ReadingAI.paragraphBreaks` ("…Answer with only the numbers of the sentences that START a new paragraph… Never include 1… answer: none.") | Numbers, parsed with `\d+` by `breakStarts`. Each break must leave at least 3 sentences (`minimumRun`) on each side. Segments are rebuilt from the original sentences. | `OrigamiReadingView.computeParagraphSplits`. Cached in memory only. |
 | 3 | Key sentence; LLM/APPLE | Paragraph of at least 3 sentences, numbered | `ReadingAI.keySentence` ("Choose the single sentence with the most to say… Answer with only that sentence's number") | First integer → that sentence, or nil | `computeKeySentences` (Key Statement colouring). Refusals are not cached. |
-| 4 | Reading summary; LLM, Apple guided | `ReadingAnalyzer.summaryCorpus`: ABSTRACT, INTRODUCTION, CONCLUSION, SECTIONS (headings), THE REST. Cap 9000 characters (Apple) or 24000 (server). | `ReadingAnalysisKind.summary.defaultPrompt` in `ReadingAnalysisView.swift`. Override in UserDefaults `"aiReadingSummaryPrompt"`. A relevance sentence is added from `"aiRelevanceTopic"` (default "Hypertext"). | Apple: `GeneratedReadingSummary{aim, conclusion, restOfPaper, summary, names≤10, keywords≤10, glossary:[{term, meaning, introduced}]}`. Server: the same as JSON, parsed leniently with one retry, falling back to prose. Then `verified`. | `ReadingAnalysisScreen` ("AI" tab). Saved, see note A. |
-| 5 | Reading issues; LLM, streamed | Body text minus Visual-Meta (`corpus(of:cap:)`) | `ReadingAnalysisKind.issues.defaultPrompt` (critical reading in three parts: Logic, Factual correctness, Structure). Override `"aiReadingIssuesPrompt"`. | Markdown prose; each block can be dismissed | `ReadingAnalysisScreen`. Saved, see note A. |
+| 4 | Reading summary; LLM, guided on Apple, permissive guardrails | `ReadingAnalyzer.summaryCorpus`: ABSTRACT, INTRODUCTION, CONCLUSION, SECTIONS (headings), THE REST. Cap 9000 characters (Apple) or 24000 (server). | `ReadingAnalysisKind.summary.defaultPrompt` in `ReadingAnalysisView.swift`. Override in UserDefaults `"aiReadingSummaryPrompt"`. A relevance sentence is added from `"aiRelevanceTopic"` (default "Hypertext"). | Apple: `GeneratedReadingSummary{aim, conclusion, restOfPaper, summary, names≤10, keywords≤10, glossary:[{term, meaning, introduced}]}`. Server: the same as JSON, parsed leniently with one retry, falling back to prose. Then `verified`. | `ReadingAnalysisScreen` ("AI" tab). Saved, see note A. |
+| 5 | Reading issues; LLM, streamed, permissive guardrails | Body text minus Visual-Meta (`corpus(of:cap:)`) | `ReadingAnalysisKind.issues.defaultPrompt` (critical reading in three parts: Logic, Factual correctness, Structure). Override `"aiReadingIssuesPrompt"`. | Markdown prose; each block can be dismissed | `ReadingAnalysisScreen`. Saved, see note A. |
 | 6 | Explain in Context; LLM | Selected words, their sentence, and numbered sources (the paragraph, first and last use, glossary, the reader's notes, library hits) | `ContextAI.explain` in `OrigamiLLM.swift` ("…using ONLY the numbered material… Every sentence must contain at least one exact quotation…") | Plain text, split into sentences (`NLTokenizer`). A sentence is kept only if all its quotations verify. | `ContextAISection` (Mac `SelectionContext.swift`; visionOS `OrigamiVision.swift`) |
 | 7 | Check This Claim; LLM | Claim plus up to 8 passages: library passages, and Semantic Scholar passages when `"contextOnlineSemanticScholar"` is on | `ContextAI.checkClaim`, one call per passage | JSON `{"stance": "supports"\|"contradicts"\|"refines"\|"unrelated", "quote": "..."}`. Kept only if the stance is valid and the quote is found in the passage. | Context panel, grouped by stance |
 | 8 | Paper topics ("AI Analyse"); LLM | Title and author | `AppModel.analysePublication(_:)`. Instructions: "Extract topic keywords from academic paper titles. Be concise and specific." Prompt: "List 3 to 5 short topic keywords… Reply with only a comma-separated list" | Comma list → `[String]`, each under 60 characters | `PublicationAnalysis.paperTopics` in `_publication-analyses.json`. Used by Map magnets, the sidebar and `VenueViews`. |
 | 9 | Topic categories; LLM | Unique topics in chunks of 40, plus the categories already coined (seeded with "AI") | `AppModel.categoriseTopics` ("Group academic topic keywords under broad umbrella categories…"; reply lines `topic :: category`) | Lines split on `::`. AI-sounding categories fold into "AI" (`readsAsAI`). Case variants merge. | `PublicationAnalysis.topicCategories` |
-| 10 | Entity and concept extraction; own routing | Paragraphs packed into chunks of about 6500 characters (`EntityExtractor.chunks`) | `EntityExtractor.instructions` in `EntityExtraction.swift`. The server path calls `ChatCompletionsClient.respond` directly, asking for a JSON object with keys `concepts, keywords, people, places, technologies, scientificTerms`. | Server: lenient JSON (`PassageValues(lenientJSON:)`), falling back to Apple. Apple: guided `PassageExtraction` (maxima 6/6/8/6/8/8). Merged across chunks by frequency, top 20 per category, the paper's own authors removed. | `DocumentExtraction` in `_document-extractions.json`. Map facets and magnets. |
+| 10 | Entity and concept extraction; LLM guided | Paragraphs packed into chunks of about 6500 characters (`EntityExtractor.chunks`) | `EntityExtractor.instructions` in `EntityExtraction.swift`. `extractChunk` calls `OrigamiLLM.generate(PassageExtraction.self, …)`, a fresh request per chunk. | `PassageExtraction` (maxima 6/6/8/6/8/8): guided on Apple, its JSON Schema on a server. Merged across chunks by frequency, top 20 per category, the paper's own authors removed. | `DocumentExtraction` in `_document-extractions.json`. Map facets and magnets. |
 | 11 | Ask the Library; LLM, streamed | Top 12 keyword-scored passages (section 4, Ask) | `AskLibraryView.ask` ("You are the librarian of a personal research library. Answer only from the numbered passages… cite… like [3]. If the passages do not answer the question, say so plainly.") | Plain text; `[n]` becomes a link | Ask view; not saved |
-| 12 | Themes; APPLE guided | Library corpus (3.4) | `Themes.defaultPrompt` in `ThemesView.swift`; key `"aiThemesPrompt"` | `GeneratedThemeList{themes:[{name, summary, addresses}]}`, 4–10 themes | Themes view |
-| 13 | Open Questions; APPLE guided | Corpus | `OpenQuestions.defaultPrompt`; key `"aiOpenQuestionsPrompt"` | `GeneratedQuestionList{questions:[{question, status, addresses}]}`, 3–8 questions | Open Questions view |
-| 14 | Agreements; APPLE guided | Corpus | `Agreements.defaultPrompt`; key `"aiAgreementsPrompt"` | `GeneratedAgreementList{agreements:[{topic, consensus, addresses}]}`, at most 6, each with at least 2 real documents | Agreements view |
-| 15 | Disagreements; APPLE guided | Corpus | `Disagreements.defaultPrompt`; key `"aiDisagreementsPrompt"` | `GeneratedDisagreementList{disagreements:[{topic, dispute, firstPosition, firstAddresses, secondPosition, secondAddresses}]}`, at most 6 | Disagreements view |
-| 16 | The Stranger (Challenge/Support); APPLE guided | Corpus, plus (Challenge only) `"SUPPORTED BY LINKS, NEVER CHALLENGED: [id]…"` (up to 8) | `Stranger.defaultChallengePrompt` / `defaultSupportPrompt`; keys `"aiStrangerChallengePrompt"` / `"aiStrangerSupportPrompt"` | `GeneratedStrangerReading{findings≤5:[{topic, position, addresses, answer}], question, suggestsOtherMode, modeSwitchReason}` | Stranger view; optionally saved as a document |
-| 17 | AI Insights; APPLE, permissive guardrails | Corpus passed as the request, prompt as instructions | `AIInsights.defaultPrompt`; key `"aiInsightsPrompt"` | Markdown with five `##` sections; `[address]` links | AI Insights view |
-| 18 | Suggest title; APPLE | First 4000 characters of a draft | `DraftEditorView.suggestTitle` ("Generate a title for this text. Reply with the title alone.") | First non-empty line, quotes stripped | Draft editor |
-| 19 | Paragraph emotions; APPLE guided | Lines `id: text` | `DocumentDetailView.judgeEmotions` ("You judge the emotional tone of the paragraphs…") | `GeneratedEmotionJudgement{positive:[id], negative:[id]}`, intersected with real ids; ids on both sides dropped | Green and red paragraph tints; not saved |
-| 20 | Transcript summary and notes; APPLE, permissive guardrails | Transcript in 9000-character chunks | `TranscriptSummarizer` in `TranscriptSummary.swift`: notes instructions ("…two to five notes… ids…") and `condense` ("Write a two to three sentence summary… Reply with the summary alone.") | `TranscriptGeneratedNotes{notes:[{text, sources}]}` (sources validated: `p12`, `12`, `[p12]`) plus an overview | Saved as a linked document, see note B |
-| 21 | Person profiles; APPLE guided | Up to 1200 characters per document, 8000 per person | `AuthorProfiles.defaultPrompt` in `PersonProfiles.swift`; key `"aiPersonProfilePrompt"`; enabled by `"aiPersonProfilesEnabled"` (on by default) | `GeneratedAuthorProfile{profile, interests}` | Application Support `AuthorProfiles.json` (with `digestedDocIDs`); shown on `AuthorPageView` "Personality" |
-| 22 | Bot identify; APPLE guided (Mac) | Typed name | `Bots.identificationPrompt` (`BotsView.swift`) | `GeneratedBotIdentification{isConfident, candidates≤5:[{name, years, summary}]}` | `BotStore` |
-| 23 | Bot stance; APPLE guided (Mac) | Person, plus a document digest (1500 characters) | `Bots.stancePrompt` | `GeneratedBotStance{verdict: agree\|disagree\|neutral, reason}` | Bot documents |
-| 24 | Bot question; APPLE | Person, library digests (500 characters each, 8000 total), question | `Bots.questionPrompt` | Plain text | Bots view (ctrl-click) |
-| 25 | K. Nav keyword stances; APPLE guided | Keyword plus up to 12 paragraphs of 400 characters, each labelled `== [address]` | `KNavView.computeProbe` | `GeneratedKeywordStances{stances:[{address, stance: positive\|negative\|neutral\|questions}]}` | K. Nav probe colours |
-| 26 | Data-series plan; APPLE guided | Natural-language request plus precomputed dates (today, −30, −183, −365 days) | `SeriesPlanner.plan(for:category:)` ("You translate a user's natural-language request for data lines into a structured fetch plan…") | `SeriesPlan{requests:[{kind, subject, metric, region, startDate, endDate, rangeWasStated, label}], command, commandTarget}` | Time Flows (Graphs) |
-| 27 | Clarifying question; APPLE guided | Request plus the problem | `SeriesPlanner.clarifyingQuestion` | `FollowUpQuestion{question}` | Time Flows, at most 3 rounds |
+| 12 | Themes; LLM guided | Library corpus (3.4) | `Themes.defaultPrompt` in `ThemesView.swift`; key `"aiThemesPrompt"` | `GeneratedThemeList{themes:[{name, summary, addresses}]}`, 4–10 themes | Themes view |
+| 13 | Open Questions; LLM guided | Corpus | `OpenQuestions.defaultPrompt`; key `"aiOpenQuestionsPrompt"` | `GeneratedQuestionList{questions:[{question, status, addresses}]}`, 3–8 questions | Open Questions view |
+| 14 | Agreements; LLM guided | Corpus | `Agreements.defaultPrompt`; key `"aiAgreementsPrompt"` | `GeneratedAgreementList{agreements:[{topic, consensus, addresses}]}`, at most 6, each with at least 2 real documents | Agreements view |
+| 15 | Disagreements; LLM guided | Corpus | `Disagreements.defaultPrompt`; key `"aiDisagreementsPrompt"` | `GeneratedDisagreementList{disagreements:[{topic, dispute, firstPosition, firstAddresses, secondPosition, secondAddresses}]}`, at most 6 | Disagreements view |
+| 16 | The Stranger (Challenge/Support); LLM guided | Corpus, plus (Challenge only) `"SUPPORTED BY LINKS, NEVER CHALLENGED: [id]…"` (up to 8) | `Stranger.defaultChallengePrompt` / `defaultSupportPrompt`; keys `"aiStrangerChallengePrompt"` / `"aiStrangerSupportPrompt"` | `GeneratedStrangerReading{findings≤5:[{topic, position, addresses, answer}], question, suggestsOtherMode, modeSwitchReason}` | Stranger view; optionally saved as a document |
+| 17 | AI Insights; LLM, permissive guardrails | Corpus passed as the request, prompt as instructions | `AIInsights.defaultPrompt`; key `"aiInsightsPrompt"` | Markdown with five `##` sections; `[address]` links | AI Insights view |
+| 18 | Suggest title; LLM | First 4000 characters of a draft | `DraftEditorView.suggestTitle` ("Generate a title for this text. Reply with the title alone.") | First non-empty line, quotes stripped | Draft editor |
+| 19 | Paragraph emotions; LLM guided | Lines `id: text` | `DocumentDetailView.judgeEmotions` ("You judge the emotional tone of the paragraphs…") | `GeneratedEmotionJudgement{positive:[id], negative:[id]}`, intersected with real ids; ids on both sides dropped | Green and red paragraph tints; not saved |
+| 20 | Transcript summary and notes; LLM guided (notes) and LLM (overview), permissive guardrails | Transcript in 9000-character chunks | `TranscriptSummarizer` in `TranscriptSummary.swift`: notes instructions ("…two to five notes… ids…") and `condense` ("Write a two to three sentence summary… Reply with the summary alone.") | `TranscriptGeneratedNotes{notes:[{text, sources}]}` (sources validated: `p12`, `12`, `[p12]`) plus an overview. If the overview fails, `TranscriptSummary.overviewError` carries the reason; it is shown, never saved, and the notes stand. | Saved as a linked document, see note B |
+| 21 | Person profiles; LLM guided | Up to 1200 characters per document, 8000 per person | `AuthorProfiles.defaultPrompt` in `PersonProfiles.swift`; key `"aiPersonProfilePrompt"`; enabled by `"aiPersonProfilesEnabled"` (on by default) | `GeneratedAuthorProfile{profile, interests}` | Application Support `AuthorProfiles.json` (with `digestedDocIDs`); shown on `AuthorPageView` "Personality" |
+| 22 | Bot identify; LLM guided (Mac) | Typed name | `Bots.identificationPrompt` (`BotsView.swift`) | `GeneratedBotIdentification{isConfident, candidates≤5:[{name, years, summary}]}` | `BotStore` |
+| 23 | Bot stance; LLM guided (Mac) | Person, plus a document digest (1500 characters) | `Bots.stancePrompt` | `GeneratedBotStance{verdict: agree\|disagree\|neutral, reason}` | Bot documents |
+| 24 | Bot question; LLM | Person, library digests (500 characters each, 8000 total), question | `Bots.questionPrompt` | Plain text | Bots view (ctrl-click) |
+| 25 | K. Nav keyword stances; LLM guided | Keyword plus up to 12 paragraphs of 400 characters, each labelled `== [address]` | `KNavView.computeProbe` | `GeneratedKeywordStances{stances:[{address, stance: positive\|negative\|neutral\|questions}]}` | K. Nav probe colours |
+| 26 | Data-series plan; LLM guided | Natural-language request plus precomputed dates (today, −30, −183, −365 days) | `SeriesPlanner.plan(for:category:)` ("You translate a user's natural-language request for data lines into a structured fetch plan…") | `SeriesPlan{requests:[{kind, subject, metric, region, startDate, endDate, rangeWasStated, label}], command, commandTarget}` | Time Flows (Graphs) |
+| 27 | Clarifying question; LLM guided | Request plus the problem | `SeriesPlanner.clarifyingQuestion` | `FollowUpQuestion{question}` | Time Flows, at most 3 rounds |
 | 28 | Portraits (images, not a language model) | Name plus a style concept | `PortraitStyle.defaultConcept` / `botConcept`; keys `"portraitStyle"`, `"portraitPrompt"` | PNG in Application Support `PersonPortraits/` | People, Bots, Overview |
 | 29 | visionOS "Summarize This Reading"; LLM, streamed | Title plus the first 12000 characters | `OrigamiVision.swift` ("You summarize academic and literary documents faithfully and plainly…") | Plain text; not saved | Vision reader |
-| 30 | visionOS bots | As tasks 22–23 | `VisionBotStore` | `respondJSON` (`BotIdentificationJSON`, `BotStanceJSON`) when a server is chosen, otherwise guided | Vision bots |
+| 30 | visionOS bots; LLM guided | As tasks 22–23 | `VisionBotStore` | `generate` with `VisionBotIdentification` and `VisionBotStanceReply` | Vision bots |
 
 **Note A — reading analyses.**
 
@@ -542,14 +558,18 @@ Routing key:
 
 ### 3.6 Discrepancies against the stated AI rules
 
-The project rule (memory "AI model routing") is to route all AI through `OrigamiLLM` and never use `try?` on a refusal. The current source departs from it in these ways:
+The project rule (memory "AI model routing") is to route all AI through `OrigamiLLM` and never use `try?` on a refusal. Every feature that used to call FoundationModels directly now goes through `OrigamiLLM.respond` or `generate`. Failures that used to be swallowed now say why:
 
-1. **Tasks 12–27 call `LanguageModelSession` directly.** They ignore a chosen Ollama or LM Studio model and fail on Macs without Apple Intelligence. These calls are in `ThemesView.swift`, `OpenQuestionsView.swift`, `AgreementsView.swift`, `DisagreementsView.swift`, `StrangerView.swift`, `AIInsightsView.swift`, `KNavView.swift`, `BotsView.swift`, `PersonProfiles.swift`, `TranscriptSummary.swift`, `DraftEditorView.swift`, `DocumentDetailView.swift` and `SeriesPlanner.swift`.
-2. **Two calls use `try?` on `OrigamiLLM.respond`:** `AppModel.swift` around line 5745 (paper topics) and around line 5820 (topic categories). A refusal only increments `analysisFailures`, and the reason is lost.
-3. **Fallback hides sign-in errors.** `OrigamiLLM.respond` falls back to Apple on *any* server error, including `authRequired`. A missing API key is reported only as "wasn't available".
-4. **JSON tasks can receive prose.** When `respondJSON`'s server call fails and falls back to Apple, the plain-text reply is then parsed as JSON and usually throws `generationFailed`.
-5. **`ReadingAI.isAvailable` on macOS reads the raw `"selectedModelID"` key** (`hasPrefix("endpoint|")`) instead of calling `selectedEndpointModel()`. A deleted server can therefore read as "available".
-6. **`ORIGAMI-TEXT-OVERVIEW.md` says "No text ever leaves the Mac" and calls the AI "entirely on your Mac".** This holds only while the chosen model is Apple's or a local server. Remote endpoints can be added after an "Add Anyway" confirmation, and Check This Claim can query Semantic Scholar.
+- `AppModel.analysePublication` (paper topics) still skips a paper that fails, but keeps the last reason and shows it with `showNote` ("N of M papers could not be analysed: …", or "…no AI model answered: <reason>…" when none did).
+- `AppModel.categoriseTopics` leaves a failed chunk's topics under Other and says so once, with the reason.
+- Time Flows (`TimeFlowRequestView`) reports both errors when the clarifying question also fails.
+- `TranscriptSummarizer` reports a failed overview through `TranscriptSummary.overviewError`.
+- `AppModel.extractEntities` skips a book whose extraction fails and reports the first reason once.
+
+The current source still departs from the rule in these ways:
+
+1. **`ReadingAI` on iOS calls `LanguageModelSession` directly.** macOS and visionOS go through `OrigamiLLM`. (ReadingAI is not in the iOS target today, so this branch is not compiled.)
+2. **Privacy wording is not conditional on the model.** Several tooltips still say the work happens "on this Mac — nothing leaves this Mac" or "nothing leaves it" (paragraph emotions and transcript summary in `DocumentDetailView`, the title suggestion in `DraftEditorView`, the person-profile caption in `AuthorViews`), even when a server model is chosen. `ORIGAMI-TEXT-OVERVIEW.md` likewise says "No text ever leaves the Mac" and calls the AI "entirely on your Mac". This holds only while the chosen model is Apple's or a local server. Remote endpoints can be added after an "Add Anyway" confirmation, and Check This Claim can query Semantic Scholar.
 
 A rebuild should implement the intended rule:
 
@@ -641,7 +661,7 @@ Not modules at all:
 
 **Common AI view pattern** (Themes, Open Questions, Agreements, Disagreements, Stranger):
 
-- The request is built from the corpus (3.4) and sent with Apple guided generation.
+- The request is built from the corpus (3.4) and sent with `OrigamiLLM.generate` (guided generation on Apple, JSON Schema on a server).
 - Addresses are grounded as in 3.3; results are held in memory only.
 - The prompt is editable and persisted. An "Edit Prompt" button appears before the first run.
 - Layout: a list at most 620 pt wide; rows expand, keyed by topic; each document row shows the title and "author · date" and opens on click.
@@ -971,6 +991,8 @@ The reader pulls 3D figures off the page: drag 40 pt (`pullThreshold`), or doubl
 **AI routing and grounding**
 
 - [ ] With an Ollama server chosen but not running, Ask still answers (from Apple, or fails with Apple's reason) and shows "<model> wasn't available — used Apple's built-in model instead."
+- [ ] With a server chosen that needs a key and has none (HTTP 401), Ask shows the "needs an API key" error. It does not fall back to Apple.
+- [ ] With a server model chosen, Themes sends `response_format: {type: "json_schema"}` and reads the reply into the same `GeneratedThemeList` as Apple's guided generation.
 - [ ] With no Apple model and no server, every AI view stays in the sidebar and explains why it cannot run. No control is hidden.
 - [ ] Themes, Agreements and the others never display a document address that is not in the index. An agreement that grounds to only one document is not shown.
 - [ ] Explain in Context drops any sentence whose quotation is not in the material, and reports how many sentences it dropped.

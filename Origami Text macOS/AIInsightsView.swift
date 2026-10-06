@@ -84,14 +84,13 @@ struct AIInsightsView: View {
 
     var body: some View {
         Group {
-            switch SystemLanguageModel.default.availability {
-            case .available:
+            if OrigamiLLM.shared.canRespond {
                 content
-            case .unavailable(let reason):
+            } else if case .unavailable(let reason) = SystemLanguageModel.default.availability {
                 ContentUnavailableView {
-                    Label("Apple Intelligence Unavailable", systemImage: "sparkles")
+                    Label("No AI Model Available", systemImage: "sparkles")
                 } description: {
-                    Text("AI Insights uses the on-device model, so no text leaves this Mac. \(describe(reason))")
+                    Text("AI Insights needs a model: choose a server in Settings \u{25B8} AI, or use Apple\u{2019}s on-device model. \(describe(reason))")
                 }
             }
         }
@@ -260,22 +259,19 @@ struct AIInsightsView: View {
         let instructions = prompt
         Task {
             do {
-                // permissiveContentTransformations lets the model reason about
-                // documents that might trigger default guardrails — academic
-                // writing, personal notes, and varied subject matter.
-                let llm = SystemLanguageModel(guardrails: .permissiveContentTransformations)
-                let session = LanguageModelSession(model: llm, instructions: instructions)
-                let response = try await session.respond(to: request)
-                output = response.content
+                // The model chosen in Settings ▸ AI answers (Apple's
+                // on-device model when none is chosen or it cannot).
+                output = try await OrigamiLLM.shared.respond(
+                    instructions: instructions, to: request,
+                    transformingContent: true).text
             } catch {
                 if isModelRefusal(error) {
                     // Refusals are often sampling luck — retry once before
                     // giving up and surfacing a clear message.
                     do {
-                        let llm = SystemLanguageModel(guardrails: .permissiveContentTransformations)
-                        let session = LanguageModelSession(model: llm, instructions: instructions)
-                        let response = try await session.respond(to: request)
-                        output = response.content
+                        output = try await OrigamiLLM.shared.respond(
+                            instructions: instructions, to: request,
+                            transformingContent: true).text
                     } catch {
                         errorText = "Apple Intelligence declined to analyze this library. Try rephrasing the prompt in Settings → AI, or wait a moment and try again."
                     }

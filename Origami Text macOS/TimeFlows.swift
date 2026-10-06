@@ -681,12 +681,14 @@ struct TimeFlowRequestView: View {
             } catch where SeriesPlanner.isClarifiable(error)
                 && clarificationRounds < Self.maximumClarificationRounds {
                 status = "Thinking of a follow-up question\u{2026}"
-                if let question = try? await SeriesPlanner.clarifyingQuestion(
-                    for: fullRequest, problem: error.localizedDescription) {
-                    followUpQuestion = question
+                do {
+                    followUpQuestion = try await SeriesPlanner.clarifyingQuestion(
+                        for: fullRequest, problem: error.localizedDescription)
                     followUpOptions = []
-                } else {
-                    errorMessage = error.localizedDescription
+                } catch let followUpError {
+                    // Both reasons: why the plan failed, and why no
+                    // follow-up question could be asked about it.
+                    errorMessage = "\(error.localizedDescription) (No follow-up question: \(followUpError.localizedDescription))"
                 }
             } catch {
                 errorMessage = error.localizedDescription

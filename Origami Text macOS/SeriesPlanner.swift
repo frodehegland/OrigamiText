@@ -127,8 +127,10 @@ nonisolated struct FollowUpQuestion: Sendable {
 /// Turns a natural-language request ("temperature in London for the last
 /// year, and the NASDAQ") into a `SeriesPlan` using the on-device model.
 enum SeriesPlanner {
-    /// nil when the on-device model can be used; otherwise a user-facing reason.
+    /// nil when a model can be used (a server chosen in Settings ▸ AI,
+    /// or the on-device model); otherwise a user-facing reason.
     static var unavailabilityReason: String? {
+        if OrigamiLLM.shared.canRespond { return nil }
         switch SystemLanguageModel.default.availability {
         case .available:
             return nil
@@ -159,7 +161,7 @@ enum SeriesPlanner {
 
         // The small model is unreliable at date arithmetic, so the common
         // relative ranges are precomputed and given verbatim.
-        let session = LanguageModelSession(instructions: """
+        let instructions = """
             You translate a user's natural-language request for data lines into a structured fetch plan.
             You do not produce data values yourself; you only decide what to fetch.
             Today's date is \(today). Use these exact ranges: \
@@ -186,8 +188,9 @@ enum SeriesPlanner {
             the requests and command lockTime.
             If a request fits none of the supported kinds, use kind unknown — never force it into another kind.
             \(category.pinnedKind.map { "The user selected a category: every request must use kind \($0)." } ?? "")
-            """)
-        let plan = try await session.respond(to: request, generating: SeriesPlan.self).content
+            """
+        let plan = try await OrigamiLLM.shared.generate(
+            SeriesPlan.self, instructions: instructions, prompt: request).content
         guard !plan.requests.isEmpty || plan.command != .none else { throw SeriesPlannerError.emptyPlan }
         return plan
     }
@@ -269,7 +272,7 @@ enum SeriesPlanner {
         if let reason = unavailabilityReason {
             throw SeriesPlannerError.unavailable(reason)
         }
-        let session = LanguageModelSession(instructions: """
+        let instructions = """
             You help a user whose data request could not be fulfilled. The app can fetch \
             time-series lines in exactly these domains: weather (temperature, max/min \
             temperature, rainfall, snowfall, wind — for a named place), markets (stock \
@@ -279,9 +282,10 @@ enum SeriesPlanner {
             restate their request as fetchable data — for example by suggesting the \
             nearest supported alternative, or asking which place, market, or country \
             they meant. Refer to what the user actually asked for; do not apologize; just ask.
-            """)
-        let response = try await session.respond(to: "Request: \(request)\nProblem: \(problem)",
-                                                 generating: FollowUpQuestion.self)
+            """
+        let response = try await OrigamiLLM.shared.generate(
+            FollowUpQuestion.self, instructions: instructions,
+            prompt: "Request: \(request)\nProblem: \(problem)")
         return response.content.question
     }
 

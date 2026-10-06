@@ -2,7 +2,7 @@
 
 **Profile identifier:** `https://origamitext.org/profile/1.0`
 **Vocabulary:** `https://origamitext.org/vocab/`
-**Revised:** 25 September 2026
+**Revised:** 6 October 2026
 **Status:** normative text frozen. Changes from here are errata.
 
 ---
@@ -477,7 +477,7 @@ A publication frequently carries third-party material under its own
 terms — a 3D model from a repository, a figure reproduced by permission.
 Where a resource's rights differ from the publication's, the writer
 **MUST** state that in the publication's own text: in the figure's
-caption, or in the colophon.
+caption, or in the colophon where there is one.
 
 1.0 provides no machine-readable per-resource rights vocabulary. This is
 deliberate: rights per resource is a general problem — images, audio,
@@ -1078,7 +1078,7 @@ The trade is worth stating: a reading system that knows nothing of this
 profile cannot offer the file for download from the page. The model is
 still a manifested resource, still in the package, and still
 extractable — by a conforming reader (§7.9.7) or by unzipping, which the
-colophon tells a person how to do (§8.4.3). An invalid publication would
+colophon, where there is one, tells a person how to do (§8.4.3). An invalid publication would
 be the worse bargain.
 
 #### 7.9.1 Finding figures
@@ -1324,8 +1324,8 @@ does not make the record contribute to the rendering, so this does not
 breach §4.4.1. Both hints are **supplementary**: the package (§4.4)
 remains authoritative, because many HTML-to-text pipelines discard
 `<head>` and `<script>`. A writer that wants no argument about it may
-omit the block; §8.4's colophon already tells a human reader that the
-metadata exists.
+omit the block; §8.4's colophon, where present, already tells a human
+reader that the metadata exists.
 
 ---
 
@@ -1391,10 +1391,17 @@ carries the semantics.
 > of this profile. Visual-Meta's founding principle is that a document
 > explains its own augmentation, in words, where a person can see them.
 
-A publication **MUST** contain a rendered Visual-Meta colophon, as a
-`<section epub:type="colophon">`, SHOULD place it in the end matter, and
+A publication **SHOULD** contain a rendered Visual-Meta colophon. The
+colophon is optional because the package and the records (§4.4) already
+carry everything it states; it is the human-readable rendering of them,
+and a writer MAY leave it out — for instance in an edition prepared for a
+publisher whose own front or back matter does the same job.
+
+Where a publication contains a colophon, it MUST be a
+`<section epub:type="colophon">`, SHOULD be placed in the end matter, and
 MUST include three components in this order — four where the publication
-declares any rights. A conforming reader **MUST** be able to display it,
+declares any rights. Every requirement in §8.4.1–§8.4.4 applies to a
+colophon that is present. A conforming reader **MUST** be able to display it,
 which for most readers means not suppressing it, since it is ordinary
 body text.
 
@@ -2378,9 +2385,8 @@ inconsistent:
   `<link rel="record">`, is referenced from a content document, or sits
   in `META-INF/` (§4.4.1, §4.4.2);
 - a content document or a metadata record is encrypted (§4.7.4);
-- there is no `epub:type="colophon"` section, or one whose stated record
-  paths do not resolve, or whose BibTeX self-citation does not parse
-  (§8.4);
+- an `epub:type="colophon"` section whose stated record paths do not
+  resolve, or whose BibTeX self-citation does not parse (§8.4);
 - an author entry has no name (§5.2).
 
 ### 18.2 Warn, but export anyway
@@ -2397,6 +2403,8 @@ the publication deterministic in every one of these cases:
 - a 3D figure over a size budget whose `data-model-source` is absent;
 - no rights statement at all, or a `dcterms:license` that is not a URI
   (§4.7);
+- no `epub:type="colophon"` section (§8.4) — reported, since the
+  colophon is what survives printing and copying, but not refused;
 - a colophon whose rights statement disagrees with the package;
 - several author names joined into one entry (§5.2);
 - subject classification or keywords present as body text rather than
@@ -2461,12 +2469,13 @@ ones this profile exists to prevent regressing:
 - **Record packaging (§4.4.1, §4.4.2).** For each `<link rel="record">`,
   assert the href is not a manifest item, is not under `META-INF/`, and
   is not referenced from any content document. **Error.**
-- **Colophon (§8.4).** Assert the section exists; that it carries an
-  explanatory statement, a `<pre>` BibTeX block that parses, and at
+- **Colophon (§8.4).** Where the section exists, assert that it carries
+  an explanatory statement, a `<pre>` BibTeX block that parses, and at
   least one stated record path; and that **every path it states resolves
   to a declared record**. This is the reason the colophon is
   machine-validated at all: it is prose, so nothing else will ever
-  notice when it goes stale. **Error.**
+  notice when it goes stale. **Error.** A publication with no colophon
+  section: **Warning.**
 - **Encryption (§4.7.4).** Where `META-INF/encryption.xml` is present,
   assert that nothing it encrypts is a content document or a metadata
   record. **Error.** An encrypted font is permitted.

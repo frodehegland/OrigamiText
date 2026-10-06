@@ -169,7 +169,8 @@ nonisolated enum EntityExtractor {
                 // Still too long for the window: split and take both halves.
                 let halves = split(piece)
                 for half in halves {
-                    if let (result, model) = try? await extractChunk(half) {
+                    do {
+                        let (result, model) = try await extractChunk(half)
                         modelName = model
                         fold(result.concepts, into: "concepts")
                         fold(result.keywords, into: "keywords")
@@ -177,6 +178,9 @@ nonisolated enum EntityExtractor {
                         fold(result.places, into: "places")
                         fold(result.technologies, into: "technologies")
                         fold(result.scientificTerms, into: "scientificTerms")
+                    } catch let error where isContextOverflow(error) || isGuardrail(error) {
+                        // A half still too long, or declined — skip it, keep going.
+                        continue
                     }
                 }
             } catch let error where isGuardrail(error) {
@@ -218,56 +222,22 @@ nonisolated enum EntityExtractor {
         return [String(text[..<seam]), String(text[seam...])]
     }
 
-    /// One chunk on the selected model. An endpoint answers JSON we
-    /// parse leniently; Apple's model answers through guided generation,
-    /// which cannot be malformed.
+    /// One chunk on the selected model, through OrigamiLLM: guided
+    /// generation on Apple's model, the same shape as a JSON Schema on
+    /// an endpoint — which falls back to Apple's only when the server
+    /// or model is missing. A fresh request per chunk: single-turn, so
+    /// earlier chunks never crowd the context window.
     @MainActor
     private static func extractChunk(_ passage: String)
         async throws -> (PassageValues, model: String) {
-        if let (endpoint, model) = OrigamiLLM.shared.selectedEndpointModel() {
-            do {
-                let prompt = """
-                    Extract from the passage below. Reply with ONLY a JSON object, \
-                    no prose, with these keys, each an array of short strings: \
-                    "concepts", "keywords", "people", "places", "technologies", \
-                    "scientificTerms". Empty arrays are fine.
-
-                    PASSAGE:
-                    \(passage)
-                    """
-                let text = try await ChatCompletionsClient.respond(
-                    base: endpoint.base, model: model,
-                    key: OrigamiLLM.shared.apiKey(for: endpoint.base),
-                    instructions: instructions, prompt: prompt)
-                if let values = PassageValues(lenientJSON: text) {
-                    return (values, "\(endpoint.hostLabel) \u{00B7} \(model)")
-                }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                // Fall through to Apple's model, as OrigamiLLM does.
-            }
-        }
-        return (try await appleExtract(passage), "Apple\u{2019}s built-in model")
-    }
-
-    @MainActor
-    private static func appleExtract(_ passage: String) async throws -> PassageValues {
         #if canImport(FoundationModels)
-        guard case .available = SystemLanguageModel.default.availability else {
-            throw OrigamiLLMError.appleUnavailable
-        }
-        // A fresh session per chunk: single-turn, so earlier chunks never
-        // crowd the context window.
-        let session = LanguageModelSession(instructions: instructions)
-        let response = try await session.respond(
-            to: "Extract the entities and concepts in this passage:\n\n\(passage)",
-            generating: PassageExtraction.self)
-        let content = response.content
-        return PassageValues(concepts: content.concepts, keywords: content.keywords,
-                             people: content.people, places: content.places,
-                             technologies: content.technologies,
-                             scientificTerms: content.scientificTerms)
+        let (content, model) = try await OrigamiLLM.shared.generate(
+            PassageExtraction.self, instructions: instructions,
+            prompt: "Extract the entities and concepts in this passage:\n\n\(passage)")
+        return (PassageValues(concepts: content.concepts, keywords: content.keywords,
+                              people: content.people, places: content.places,
+                              technologies: content.technologies,
+                              scientificTerms: content.scientificTerms), model)
         #else
         throw OrigamiLLMError.appleUnavailable
         #endif
