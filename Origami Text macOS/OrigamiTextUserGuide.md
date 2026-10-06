@@ -147,6 +147,7 @@ duplicates.
 
 | Place | What it holds |
 |---|---|
+| **Inbox** | The newest arrivals — everything added in the last 30 days, at least the 20 newest — newest first, in bold until you open them. The row is bold while anything waits |
 | **Pinned** | The books (and authors) you have pinned |
 | **Authors** | Everyone who wrote what you read, sorted by the **Name**, **Papers** or **Date** tab |
 | **Papers** | Every book, sorted by the **Title** or **Date** tab — click the chosen tab again to reverse the order. Settings ▸ Layout can call this **Articles** |
@@ -166,7 +167,7 @@ Right-click any book in a list:
 
 - **File Under ▸** a folder, or **New Folder…**; **Remove from Folder**;
 - **Copy to Cite** — its citation, ready to paste into your writing;
-- **Read Beside "…"** — read it next to the book that is open (section 4.11);
+- **Read Beside "…"** — read it next to the book that is open (section 4.12);
 - **Pin** — keep it at the top of every list;
 - **Set Aside** — move it out of the way without deleting it; it waits behind
   the **Set Aside** pill at the foot of the list until you **Bring Back** it;
@@ -248,6 +249,7 @@ left to right:
 | **Horizontal** | Pages side by side, like a printed spread — two, or more on a wide window |
 | **Focus** | One section at a time: **Focus**, **Sentence**, **Paragraph**, **Word** |
 | **References** | Every work the paper cites (section 6) |
+| **Map** | The author's Map of the document, when it carries one (section 4.7) |
 | **Transcript** | For meeting transcripts only: turns grouped by speaker |
 
 The word in bold is the one you are in. Choose a word again, or another
@@ -255,7 +257,7 @@ word, to leave a fold or a page such as References.
 
 At the left of the foot bar: **pin** and **set aside** for the open book. At
 the right: **Contents** (every section, one click away; in Scroll also **Go
-to page**), and the type controls (section 4.8).
+to page**), and the type controls (section 4.9).
 
 ### 4.3 Scroll
 
@@ -266,10 +268,15 @@ The book's own pages, as published, in a comfortable column. In Scroll:
 - the progress readout shows how far you are and how many minutes are left;
 - **Bookmarks** keep places: **Add Bookmark Here**, then choose one to
   return;
+- **Metadata**, at the end of a book that carries Visual-Meta, shows its
+  metadata in full: the package's own details, then the Visual-Meta,
+  interaction and bibliography records, exactly as the book holds them;
 - the **margins** can hold the document's **Outline** or your
-  **Annotation** for the whole document (Settings ▸ Reading ▸ Margins). The
-  Outline margin shows where you are and jumps where you click; margins hide
-  themselves after a few seconds unless you turn that off.
+  **Annotation** for the whole document (Settings ▸ Reading ▸ Margins). As
+  standard, your Annotation is in the left margin — it reads *Annotations
+  for this document* until you write in it — and the Outline is in the
+  right. The Outline margin shows where you are and jumps where you click;
+  margins hide themselves after a few seconds unless you turn that off.
 
 ### 4.4 Outline, Overview and Citations
 
@@ -298,13 +305,48 @@ companions:
 - **Paragraph** — one paragraph at a time;
 - **Word** — speed reading, word by word at the pace you choose.
 
-### 4.7 Full screen
+### 4.7 The author's Map
+
+A book made in Author can carry the author's **Map**: the document's defined
+concepts, arranged where the author placed them. When it does, **Map**
+stands among the foot bar's words, right after **References**. Click it, or
+press **⌘M**, and the Map takes the place of the text. The foot bar then reads
+as Author's does in Map mode: **Ask AI | Views** at the left, the mode words in
+the middle with **Map** in bold, and **Select | Show | Layout** at the right.
+**⌘M**, **Map** again, or any other mode word returns to the reading.
+
+The Map works as Author's does:
+
+- **Click** a concept to select it. Its connections appear: a **solid line**
+  to each concept its definition mentions, a **light line** from each
+  concept whose definition mentions it. Point at a solid line to read the
+  sentence that makes the connection. A connected concept outside the window
+  shows as a small label at the edge; click it to bring it into view.
+- **Shift-click** or **⌘-click** to select more; **drag** across empty space
+  to select a group; click empty space to clear.
+- **Double-click** a concept to read its definition. When the text uses the
+  concept, **Show in Text** returns to the reading folded to every place it
+  is used, highlighted, as Find does (**⌘G** steps through them).
+- **Space** shows only the selection and what it connects to; **Tab** selects
+  what it connects to; **Z** zooms out to see everything, and back; **G**
+  gathers the concepts closer; **⌘F** finds concepts by name or definition.
+  Scroll to move about; pinch to zoom.
+- **Drag** concepts to arrange them your way. **Layout** offers Author's
+  arrangements: **Magnetic Center**, **Islands**, **Spine** and **Orbits**,
+  and align, distribute, sort and gather for a selection. **Views** keeps
+  arrangements under a name. **Ask AI** answers questions about the Map's
+  concepts with the model you chose (section 8).
+
+Your arrangements are yours: they are kept on this Mac and never change the
+book. **Layout ▸ Author's Layout** puts the author's arrangement back.
+
+### 4.8 Full screen
 
 Press **Esc** or use the green window button. In full screen the sidebar
 slides in when you move the pointer to the left edge, and away when you
 leave.
 
-### 4.8 Type, theme and colour
+### 4.9 Type, theme and colour
 
 - **Theme:** the palette button at the foot, or Settings ▸ Reading ▸
   **Theme**. Choose from High Contrast, Sepia, Grey, Gentle, Low Contrast,
@@ -327,25 +369,25 @@ In Horizontal and Focus, more reading aids sit at the foot: text colouring by
 (paragraphs, **Flow**, colour key sentences); **Bionic Reading** and a
 **Reading Ruler**.
 
-### 4.9 Flow and paragraph numbers
+### 4.10 Flow and paragraph numbers
 
 **View ▸ Flow** (⇧⌘F) breaks the text into reading lines at sentence and
 clause marks. **View ▸ Paragraph Numbers** shows numbers in the margin;
 click one to copy a link to that paragraph.
 
-### 4.10 Reading aloud
+### 4.11 Reading aloud
 
 The speaker button at the foot reads the page aloud (Space starts it).
 Choose the voice in Settings ▸ Assistive: Apple's system voices, or a
 neural voice that runs on this Mac.
 
-### 4.11 Reading two documents side by side
+### 4.12 Reading two documents side by side
 
 Right-click a book and choose **Read Beside "…"**, or use **Go ▸ Read in
 Parallel**. **Exit Parallel Reading** returns to one. **Go ▸ Back** (⌘[) and
 **Forward** (⌘]) move through the documents you have opened.
 
-### 4.12 Links, figures and notes
+### 4.13 Links, figures and notes
 
 - **In-document links** ("see Figure 2", "Section 3") jump to their place.
 - **Double-click a figure** to open it in its own window.

@@ -375,6 +375,11 @@ struct SidebarView: View {
         let myLastName = model.authorName.components(separatedBy: " ").last ?? model.authorName
         // No counts beside the rows: the left column names places only.
         Section(isExpanded: isExpanded("Library")) {
+            // The newest arrivals, bold until opened; the row itself
+            // stands bold while any are waiting.
+            Label("Inbox", systemImage: "tray")
+                .fontWeight(model.inboxHasUnopened ? .bold : .regular)
+                .tag(SidebarItem.epubsInbox)
             Label("Pinned", systemImage: "pin")
                 .tag(SidebarItem.epubsTopOfPile)
             // Everyone who wrote what is in the library.

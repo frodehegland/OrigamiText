@@ -50,7 +50,7 @@ Design rules that cut across all four (from the source comments and the project 
 | Venue Map (flat plane of paper cards) | macOS, iOS/iPadOS | `EPUBShelf.swift` → `ProceedingsMapView` (around lines 939–2083) | The Mac's "Map" for a venue. Hosted by `DocumentListView.venueMap` and `pinnedMap`. Also reused by `ReferencesScreen.swift` for the References map. |
 | Hallway Map (walk-in 3D room) | visionOS only | `EPUBMapView.swift` → `EPUBMapView`, `EPUBMapItem` | The whole file is inside `#if os(visionOS)`. Built on `NodeImmersiveView`. See section 5. |
 | Shared map data and algorithms | all | `EPUBShelf.swift` → `EPUBMapSharedLayout`, `EPUBMapViews`, `MapTopics`, `SpatialNotes`, `EPUBStanding` | One algorithm and one set of files, so both rooms show the same layout and topics. |
-| Author's Map (writer's own layout) | macOS | `AuthoredMapView.swift` → `AuthoredMapView`, `AuthoredMapExtras` | The whole file is inside `#if os(macOS)`. Read-only. |
+| Author's Map (writer's own layout) | macOS | `ReaderMapView.swift` → `ReaderMapView`, `ReaderMapStore`, `ReaderMapShortcut`; `ReaderMapLogic.swift` (links, layouts); `AuthoredMapView.swift` → `AuthoredMapExtras` | Behaves as Author's Map; the reader's arrangements are kept apart from the book. |
 | Places map (geography) | all | `PlacesView.swift` (module id `places`, name "Map") | A MapKit map of `doc.location`. |
 | Connections (ego web) | all | `DocumentWebView.swift` (module `connections`) | Two rings around the current document. |
 | Author's Circle | all | `AuthorsCircleView.swift` | A ring of authors with citation lines. |
@@ -242,16 +242,11 @@ Spatial notes (`SpatialNotes`, `SpatialNoteCard`, 150 × 184) are notes placed i
 
 The positions are therefore a last-writer-wins map keyed by card, safe under concurrent writes from several devices. Use the same rule on any sync medium.
 
-### 2.8 Author's Map (`AuthoredMapView.swift`)
+### 2.8 Author's Map in the reader (`ReaderMapView.swift`, `ReaderMapLogic.swift`)
 
-This read-only sheet shows the **writer's own spatial arrangement** of a book, made in the Author app. Profile 1.0 §10.3 and §15 cover it.
+The **writer's own map** of a book, made in the Author app, behaving as Author's Map does (`CanvasViewController` / `CanvasView` in `~/Documents/author_mac_forxcode`). macOS only. It is a central mode: the **Map** word stands among the foot bar's mode words right after References, with a `|` between (`ReadingFootBar.onMap` / `mapWord`, shown only when `LiquidDoc.hasAuthoredMap`). It is opened by that word, by ⌘M (`ReaderMapShortcut`, which takes ⌘M from Minimize in a window whose book has a Map), or by Show Author's Map in the page's context menu. It replaces the whole reading, foot bar included (an `.overlay` on `EPUBReaderScreen` and on `OrigamiReadingView`); ⌘M or the Map word in its own bar returns. While it is up, `AppModel.isReaderMapShown` makes the reading's key, scroll and pinch monitors stand down.
 
-**Inputs:**
-
-- `doc.layouts: [Layout{index, name, positions:[{id,x,y,z}], sourceID}]`
-- `doc.mapConnections: [{from,to}]`
-- `doc.concepts`, `doc.body`, `doc.references`
-- `AuthoredMapExtras{labels: [id: label], yUpViews: Set<String>}`
+**Inputs:** `doc.layouts` (positions), `doc.concepts` (names, definitions), `doc.body`, `doc.references`, `AuthoredMapExtras{labels, yUpViews}`.
 
 **Where the data comes from:**
 
@@ -266,14 +261,17 @@ This read-only sheet shows the **writer's own spatial arrangement** of a book, m
    - `connections[{startNodeIdentifier, endingNodeIdentifier}]` become connections, with duplicates removed;
    - concepts come from `glossary.json` and references from `Citations.plist`.
 
-**Resolving a node.** Strip any `#…` suffix from the ref, then look it up in this order:
+**Canvas.** Positions are node centres from the canvas centre, y down (Author's canvas). A y-up view is flipped once; pre-1.0 maps in 0–1 fractions are spread ×900. Opens at scale 1, centred on the arrangement. Scroll pans; pinch zooms about the pointer (0.25–3); **Z** fits everything shown (40 pt padding, never below 0.25, never in) and **Z** again returns (`ReaderMapLayouts.fitScale`).
 
-1. A concept. The label is `extras.labels[ref]`, or else the concept name. The detail is the concept description.
-2. A body paragraph. The label is truncated to 90 characters plus "…". The kind is "heading" if the paragraph is a heading, otherwise "passage".
-3. A reference. The label is `citedAs` and the detail is the BibTeX.
-4. Otherwise the node has kind "other".
+**Nodes.** Bare text at rest in the reading's body face at 17 pt (Author's default node size), 5/3 pt insets, corner radius 4. Selected: grey fill (#747474 light, #191919 with white border dark), white text. Linked: light fill with a border, text #595959. Headings bold, references italic.
 
-**Lines.** The book's `map.connections` when it has any. Author's export never has any, on purpose, so when the list is empty `AuthoredMapView.mentionConnections(among:)` derives them: two placed concepts are joined when either one's definition names the other's label as a whole word (case-insensitive), once per pair. Derived lines are drawn only, never written back.
+**Lines.** None until something is selected (`ReaderMapLinks.links(forSelection:among:)`, ported from `glossaryNodeLinksFrom/To`): **solid** where the selected concept's definition mentions another as a whole word, case-insensitive, sentence by sentence; **light** where another's definition contains the selected name (Author's plain-substring rule); a light line is dropped where the pair already has a solid one. Straight, centre to centre, 0.5 pt, no arrows. Within 12 pt of a solid line the first mentioning sentence shows at its midpoint. A linked concept off screen shows as a 120×24 pill 10 pt inside the edge where its line leaves; a click scrolls it into view. Stored `map.connections` are drawn as Author never draws them — not at all (the old sheet's derived-lines rule is gone with it).
+
+**Interaction.** Press selects (Shift adds, ⌘ toggles); drag moves the selection; drag on empty space draws a marquee; click on empty space clears; ⌘A all. Double-click reads the definition (with "Mentions …"). **Show in Text** appears only when the body uses the name (`appearsInText`); it closes the Map and runs `AppModel.showFindFold(term:)` — the reading folded to its headings with every use highlighted, as Find does. For a heading or passage member it opens the reading at that paragraph instead. Space = Focus (selection and linked only), Tab = select connected, G = Gather, ⌘F = find over name and definition (selects matches; Esc clears), Esc otherwise toggles full screen. Context menu: Read Definition, Show in Text, Focus, Select Connected, Layout (for a multiple selection), Hide.
+
+**Bar.** The reading's own `ReadingFootBar` in Map mode, laid out as Author's Map bar: `leadingContent` = **Ask AI | Views** (and "Find: term" while a find stands), the mode words in the middle with **Map** bold (`mapActive`; every other word shows inactive, and any of them leaves the Map — References opens rather than toggles), `trailingContent` = **Select | Show | Layout** in place of Contents and Aa. The host builds the bar and hands it to `ReaderMapView.footBar`. Menus: Select (All, Find…, Connected, None) · Show (All, Focus, Only Concepts in the Text, Hide Selection, Reveal Hidden) · Layout (Author's Layout; Magnetic Center, Islands, Spine, Orbits — `ReaderMapLayouts.analysis`; Gather, Align, Distribute, Sort) · Views (the book's views; the reader's saved views; Save View…, Delete View) · Ask AI (every concept as "definition : phrase" plus the question, through `OrigamiLLM.respond`). Timeline and Neighborhoods are ported but not offered: an EPUB map carries no dates or categories.
+
+**What the reader keeps.** Moves and arrangements, per book (`bookKey`: the record folder in Scroll, `doc.id` in the native reader) and per view, in UserDefaults (`ReaderMapStore`, keys `readerMap.positions.<book>.<view>` and `readerMap.views.<book>`), undoable. The book's map is never written (§10.3, §15). Authoring is left out: no new concepts, no edited definitions, no deletions, no drawn connections.
 
 **What Author writes** (Profile 1.0 §10.3): one view, `MAP-1`, whose `ref`s are bare concept UUIDs (the same as `visual-meta.json` `concepts[].id`), x/y in canvas points with an arbitrary origin, `right-handed-y-up`. `z` is depth in metres with 0 meaning unset; the 2D sheet ignores it. Concepts listed in `map.nodes` but placed in no view are left out. Older exports with no map show "No Map in This Document" and need re-exporting from Author; very old ones kept the map in `visual-meta.json` with heading refs and 0–1 coordinates, which the fallback and the fit-to-view still draw.
 
@@ -291,7 +289,6 @@ This read-only sheet shows the **writer's own spatial arrangement** of a book, m
 - Tapping a passage card closes the sheet and opens the reader at that paragraph (`onOpen(paragraphID)`).
 - If the layout is empty, the sheet shows "No Map in This Document".
 - The minimum size is 720 × 520.
-
 ### 2.9 Other relationship maps
 
 **Connections (`DocumentWebView.swift`; built by `WebBuilder.web` in `DocumentWeb.swift`).** An ego web centred on the current document.
@@ -1019,7 +1016,9 @@ The reader pulls 3D figures off the page: drag 40 pt (`pullThreshold`), or doubl
 
 - [ ] For a book with `space.convention: "y-up"`, nodes are mirrored vertically compared with a book without it.
 - [ ] Tapping a passage card opens the reader at that paragraph.
-- [ ] For an Author export (concept refs, no connections), a line joins two concepts exactly when one's definition names the other.
+- [ ] With nothing selected no lines show; selecting a concept draws a solid line to each concept its definition names (whole word) and a light line from each concept whose definition contains its name.
+- [ ] Moving a concept, then reopening the book, keeps the move; Layout ▸ Author's Layout restores the book's positions, and the EPUB is unchanged.
+- [ ] ⌘M opens and closes the Map in a book that has one, and still minimizes in one that doesn't.
 - [ ] A concept in `map.nodes` with no view position is not drawn at (0, 0).
 
 ### 7.3 Open items (unclear from source or not verified)

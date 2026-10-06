@@ -248,6 +248,12 @@ final class AppModel {
     /// in OrigamiTextMacApp. Becomes nil automatically when the window is closed.
     weak var mainNSWindow: NSWindow?
 
+    /// While a reader's Map is up it owns the keyboard, the scroll wheel
+    /// and the pinch — Space, Tab, Z, G, the arrows and Esc mean the Map's
+    /// things there, not the reading's (ReaderMapView). The reading's own
+    /// key monitors stand down while this is set.
+    @ObservationIgnored var isReaderMapShown = false
+
     /// The escape hatch when every column is hidden: restore the full
     /// library layout (and leave full screen if needed).
     func showLibrary() {
@@ -2166,6 +2172,40 @@ final class AppModel {
         isUnread(epubListingDoc(record))
     }
 
+    // MARK: Inbox
+
+    /// The Inbox's own mark: every book that has been opened, whoever
+    /// wrote it. Unread (above) never counts the reader's own work; the
+    /// Inbox shows everything that arrived bold until it is opened, own
+    /// papers too. Begun from the read marks, so nothing already read
+    /// turns bold again.
+    private(set) var openedEPUBIDs: Set<String> = {
+        if let stored = UserDefaults.standard.stringArray(forKey: "inboxOpenedEPUBs") {
+            return Set(stored)
+        }
+        return Set(UserDefaults.standard.stringArray(forKey: "readDocumentIDs") ?? [])
+    }()
+
+    func isUnopened(_ record: EPUBRecord) -> Bool { !openedEPUBIDs.contains(record.id) }
+
+    private func markOpened(_ record: EPUBRecord) {
+        guard openedEPUBIDs.insert(record.id).inserted else { return }
+        UserDefaults.standard.set(openedEPUBIDs.sorted(), forKey: "inboxOpenedEPUBs")
+    }
+
+    /// The Inbox: the most recent arrivals, newest first — everything added
+    /// in the last 30 days, and never fewer than the 20 newest.
+    var inboxEPUBRecords: [EPUBRecord] {
+        let newest = shownEPUBRecords.sorted { $0.openedAt > $1.openedAt }
+        let cutoff = Date.now.addingTimeInterval(-30 * 24 * 3600)
+        let recent = newest.prefix { $0.openedAt >= cutoff }
+        return Array(recent.count >= 20 ? recent : newest.prefix(20))
+    }
+
+    /// Whether the Inbox holds anything not yet opened — its sidebar row
+    /// stands bold then.
+    var inboxHasUnopened: Bool { inboxEPUBRecords.contains { isUnopened($0) } }
+
     /// A lightweight library document standing for an opened EPUB — metadata
     /// only (no body); the words live in the rendered page.
     private func epubListingDoc(_ record: EPUBRecord) -> LiquidDoc {
@@ -3873,6 +3913,7 @@ final class AppModel {
                             chapters: chapters.isEmpty ? [content] : chapters,
                             nav: spine?.nav.map { base.appendingPathComponent($0) })
         markRead(epubListingDoc(record))
+        markOpened(record)
     }
 
     // MARK: - Reading positions (where the reader left each book)

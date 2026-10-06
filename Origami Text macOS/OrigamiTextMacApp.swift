@@ -486,6 +486,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // exiting (.fullScreen in styleMask) — so if collectionBehavior
             // ever gets corrupted again, ESC can still exit full screen.
             guard event.keyCode == 53,   // Escape
+                  self?.model?.isReaderMapShown != true,   // the Map answers its own Esc
                   modifiers.intersection([.command, .option, .control]).isEmpty,
                   let window = event.window,
                   window.isKeyWindow,

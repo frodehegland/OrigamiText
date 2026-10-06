@@ -758,8 +758,30 @@ struct OrigamiReadingView: View {
                 contents: { AnyView(contentsList) },
                 typeMenu: { AnyView(typeMenu) },
                 accessoryContent: { AnyView(accessoryBarContent) },
-                focusContent: { AnyView(focusGroup) })
+                focusContent: { AnyView(focusGroup) },
+                onMap: doc.hasAuthoredMap ? { showsAuthoredMap = true } : nil)
         }
+        // The book's Map stands in place of the reading, foot and all,
+        // as Author's Map replaces its text; ⌘M or the Map word returns.
+        .overlay {
+            if showsAuthoredMap {
+                ReaderMapView(doc: doc, extras: model.authoredMapExtras(for: doc), bookKey: doc.id,
+                              onShowInText: { model.pendingReaderFragment = $0 },
+                              onClose: { showsAuthoredMap = false },
+                              footBar: { left, right in
+                                  AnyView(ReadingFootBar(
+                                      modes: availableModes,
+                                      leadingContent: { left },
+                                      focusContent: { AnyView(focusGroup) },
+                                      onMap: { showsAuthoredMap = false },
+                                      mapActive: true,
+                                      trailingContent: { right }))
+                              })
+            }
+        }
+        .modifier(ReaderMapShortcut(available: doc.hasAuthoredMap && !showsAuthoredMap) {
+            showsAuthoredMap = true
+        })
         // A fold asked for from the foot (or ⌘−/⌘+) resets the opened
         // sections — the shape changed under them.
         .onChange(of: model.readerFoldLevel) {
@@ -826,7 +848,8 @@ struct OrigamiReadingView: View {
         // definitions a click away — unless something is being edited.
         .onAppear {
             tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard event.keyCode == 48,   // Tab
+                guard !model.isReaderMapShown,
+                      event.keyCode == 48,   // Tab
                       event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
                       let window = NSApp.keyWindow,
                       window.windowNumber == windowState.windowNumber,
@@ -843,7 +866,8 @@ struct OrigamiReadingView: View {
             // Bare p, f, and b — the reading functions — and Esc,
             // Author's door in and out of full screen.
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                guard !self.model.isReaderMapShown,
+                      event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
                       let window = NSApp.keyWindow,
                       window.windowNumber == windowState.windowNumber,
                       window.attachedSheet == nil
@@ -894,7 +918,8 @@ struct OrigamiReadingView: View {
             // Pinch in folds the reading into its Overview — never a
             // popup — and pinch out opens the whole reading again.
             pinchMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { event in
-                guard event.window?.windowNumber == windowState.windowNumber else {
+                guard !model.isReaderMapShown,
+                      event.window?.windowNumber == windowState.windowNumber else {
                     return event
                 }
                 if event.phase == .began { pinchAccumulator = 0 }
@@ -917,7 +942,8 @@ struct OrigamiReadingView: View {
             // than two columns stand across — a clearly sideways
             // movement only, one turn per gesture.
             swipeMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-                guard event.window?.windowNumber == windowState.windowNumber,
+                guard !model.isReaderMapShown,
+                      event.window?.windowNumber == windowState.windowNumber,
                       readerMode == .horizontal, foldLevel == 0,
                       event.hasPreciseScrollingDeltas else { return event }
                 let shown = horizontalPageCount(width: horizontalViewWidth,
@@ -987,11 +1013,6 @@ struct OrigamiReadingView: View {
             // A book's structured document keeps its unpacked folder here.
             EquationsSheet(base: doc.fileURL, bookAddress: doc.id) { href in
                 model.pendingReaderFragment = href
-            }
-        }
-        .sheet(isPresented: $showsAuthoredMap) {
-            AuthoredMapView(doc: doc, extras: model.authoredMapExtras(for: doc)) { paragraphID in
-                model.pendingReaderFragment = paragraphID
             }
         }
         .sheet(isPresented: $showsDocumentAnnotation) {
@@ -4160,6 +4181,14 @@ struct ReadingFootBar: View {
     /// The Focus mode's sub-options — Single Word and Sentence — rendered
     /// beside the Focus word when Focus is active. Nil hides the group.
     var focusContent: (() -> AnyView)? = nil
+    /// Opens the book's Map (ReaderMapView) — the Map word stands after
+    /// References; present only when the book carries one, nil hides it.
+    var onMap: (() -> Void)? = nil
+    /// The Map is up: its word stands bold, and clicking it returns.
+    var mapActive = false
+    /// Replaces the bar's right-hand controls — the Map's Select, Show
+    /// and Layout while the Map is up. Nil keeps contents and type.
+    var trailingContent: (() -> AnyView)? = nil
 
     private var readerMode: EPUBReaderMode {
         EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
@@ -4238,6 +4267,11 @@ struct ReadingFootBar: View {
                             separator
                             referencesWord
                         }
+                        // Map, a central mode, right after References.
+                        if mode == .focus, let onMap {
+                            separator
+                            mapWord(onMap)
+                        }
                         // In EPUBReaderView, Full Width is its own mode word
                         // and the Outline group rides beside it as before.
                         if mode == .scroll, outlineAvailable {
@@ -4255,6 +4289,10 @@ struct ReadingFootBar: View {
                                 if readerMode != .focus { separator }
                                 referencesWord
                             }
+                            if let onMap {
+                                separator
+                                mapWord(onMap)
+                            }
                         }
                     }
                 }
@@ -4262,6 +4300,11 @@ struct ReadingFootBar: View {
             .fixedSize()
             HStack(spacing: 14) {
                 Spacer(minLength: 0)
+                // In Map mode the right holds the Map's own tools, as
+                // Author's bar does (Select | Show | Layout).
+                if let trailingContent {
+                    trailingContent()
+                } else {
                 if let contents, let showContents {
                     Button {
                         showContents.wrappedValue = true
@@ -4294,6 +4337,7 @@ struct ReadingFootBar: View {
                         .frame(width: 1, height: 14)
                     accessoryContent()
                 }
+                }
             }
             .frame(maxWidth: .infinity)
         }
@@ -4320,6 +4364,8 @@ struct ReadingFootBar: View {
     /// heading ink, the others resting quiet.
     private func modeWord(_ mode: EPUBReaderMode) -> some View {
         Button {
+            // From the Map, any mode word is the way back to the reading.
+            if mapActive { onMap?() }
             withAnimation(Self.modeSwitch) {
                 readerModeRaw = mode.rawValue
                 // A mode word always shows its own view: any standing
@@ -4337,7 +4383,7 @@ struct ReadingFootBar: View {
             // A standing outline (or find-fold, or AI reading) owns the
             // bar: no word outside its group may read as active.
             let foldFree = model.readerFoldLevel == 0 && model.readerFindFoldTerm == nil
-            let isActive = readerMode == mode
+            let isActive = readerMode == mode && !mapActive
                 && model.readingAnalysisKind == nil
                 && !model.readingOverviewOn
                 && !model.readingReferencesOn
@@ -4356,15 +4402,34 @@ struct ReadingFootBar: View {
 
     /// The References word: the open document's cited works as a whole
     /// page; chosen again, back to the reading.
+    /// The Map word: the book's Map in place of the reading
+    /// (ReaderMapView), whose own bar carries the same word, bold, back.
+    private func mapWord(_ open: @escaping () -> Void) -> some View {
+        Button(action: open) {
+            Text("Map")
+                .font(.callout.weight(mapActive ? .semibold : .regular))
+                .foregroundStyle(mapActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(mapActive ? "Back to the text (\u{2318}M)" : "The author\u{2019}s Map of this document (\u{2318}M)")
+    }
+
     private var referencesWord: some View {
         Button {
+            // From the Map, References opens (it never toggles off).
+            if mapActive {
+                onMap?()
+                model.readingReferencesOn = true
+                return
+            }
             withAnimation(Self.modeSwitch) {
                 model.readingReferencesOn.toggle()
             }
         } label: {
             Text("References")
-                .font(.callout.weight(model.readingReferencesOn ? .semibold : .regular))
-                .foregroundStyle(model.readingReferencesOn ? AnyShapeStyle(.primary)
+                .font(.callout.weight(model.readingReferencesOn && !mapActive ? .semibold : .regular))
+                .foregroundStyle(model.readingReferencesOn && !mapActive ? AnyShapeStyle(.primary)
                                  : AnyShapeStyle(.secondary))
                 .contentShape(Rectangle())
         }
@@ -4445,9 +4510,9 @@ struct ReadingFootBar: View {
             }
         } label: {
             Text(kind.displayName)
-                .font(.callout.weight(model.readingAnalysisKind == kind
+                .font(.callout.weight(model.readingAnalysisKind == kind && !mapActive
                                       ? .semibold : .regular))
-                .foregroundStyle(model.readingAnalysisKind == kind
+                .foregroundStyle(model.readingAnalysisKind == kind && !mapActive
                                  ? AnyShapeStyle(.primary)
                                  : AnyShapeStyle(.secondary))
                 .contentShape(Rectangle())
@@ -4462,6 +4527,7 @@ struct ReadingFootBar: View {
         if !defaultShowsExpanded {
             // The "Scroll" word: the column reading, nothing nested.
             Button {
+                if mapActive { onMap?() }
                 withAnimation(Self.modeSwitch) {
                     readerModeRaw = EPUBReaderMode.faithful.rawValue
                     model.readerFoldLevel = 0
@@ -4476,6 +4542,7 @@ struct ReadingFootBar: View {
                     && !model.readingReferencesOn
                     && model.readerFoldLevel == 0
                     && model.readerFindFoldTerm == nil
+                    && !mapActive
                 Text("Scroll")
                     .font(.callout.weight(isActive ? .semibold : .regular))
                     .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
@@ -4512,7 +4579,7 @@ struct ReadingFootBar: View {
                         model.readerFindFoldTerm = nil
                     }
                 } label: {
-                    let quiet = model.readerFoldLevel > 0
+                    let quiet = model.readerFoldLevel > 0 || mapActive
                         || model.readingAnalysisKind != nil
                         || model.readerFindFoldTerm != nil
                     Text("Scrolling")
@@ -4534,7 +4601,7 @@ struct ReadingFootBar: View {
                         model.readerFindFoldTerm = nil
                     }
                 } label: {
-                    let quietWide = model.readerFoldLevel > 0
+                    let quietWide = model.readerFoldLevel > 0 || mapActive
                         || model.readingAnalysisKind != nil
                         || model.readerFindFoldTerm != nil
                     Text("Full Width")
@@ -4610,8 +4677,8 @@ struct ReadingFootBar: View {
             choose(shape)
         } label: {
             Text(title)
-                .font(.callout.weight(outlineShape == shape ? .semibold : .regular))
-                .foregroundStyle(outlineShape == shape ? AnyShapeStyle(.primary)
+                .font(.callout.weight(outlineShape == shape && !mapActive ? .semibold : .regular))
+                .foregroundStyle(outlineShape == shape && !mapActive ? AnyShapeStyle(.primary)
                                  : AnyShapeStyle(.secondary))
                 .contentShape(Rectangle())
         }

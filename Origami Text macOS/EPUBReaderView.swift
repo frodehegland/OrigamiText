@@ -410,7 +410,7 @@ struct EPUBReaderScreen: View {
     private var effectiveMeasure: Double { measure > 0 ? measure : 38 }
     /// What each margin beside the column holds, and whether the margins
     /// fade 4 seconds after the pointer leaves — Author's three settings.
-    @AppStorage(ReaderMarginMode.leftKey) private var leftMarginRaw = ReaderMarginMode.nothing.rawValue
+    @AppStorage(ReaderMarginMode.leftKey) private var leftMarginRaw = ReaderMarginMode.annotation.rawValue
     @AppStorage(ReaderMarginMode.rightKey) private var rightMarginRaw = ReaderMarginMode.outline.rawValue
     @AppStorage(ReaderMarginMode.autoHideKey) private var marginsAutoHide = true
     /// The element id of the heading at the top of the page (from the
@@ -716,6 +716,18 @@ struct EPUBReaderScreen: View {
     @State private var commentSelection: ReaderSelection?
     /// The author's own map of the book (§10.3), in a sheet.
     @State private var showsAuthoredMap = false
+
+    /// The Map word's action: present when the book carries a Map.
+    private var mapAction: (() -> Void)? {
+        model.readingDoc(forBook: book)?.hasAuthoredMap == true ? { showsAuthoredMap = true } : nil
+    }
+
+    /// Whether this screen, not the native reading inside it, carries the
+    /// foot: the faithful page, and the AI, Overview and References pages.
+    private var hostsOwnFoot: Bool {
+        readerMode == .faithful || model.readingAnalysisKind != nil
+            || model.readingOverviewOn || model.readingReferencesOn
+    }
     /// The book's details and accessibility, in a sheet.
     @State private var showsBookInfo = false
     /// The passage whose citing places are listed.
@@ -1002,7 +1014,8 @@ struct EPUBReaderScreen: View {
                     .overlay(alignment: .topLeading) { liftSlipsLayer }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         ReadingFootBar(modes: availableModes,
-                                       outlineAvailable: model.readingDoc(forBook: book) != nil)
+                                       outlineAvailable: model.readingDoc(forBook: book) != nil,
+                                       onMap: mapAction)
                     }
             } else if model.readingOverviewOn, let doc = model.readingDoc(forBook: book) {
                 // Overview takes the whole page, as an AI reading does;
@@ -1011,7 +1024,8 @@ struct EPUBReaderScreen: View {
                     .id(book.id)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         ReadingFootBar(modes: availableModes,
-                                       outlineAvailable: true)
+                                       outlineAvailable: true,
+                                       onMap: mapAction)
                     }
             } else if model.readingReferencesOn {
                 // References takes the whole page too; the foot stays.
@@ -1019,7 +1033,8 @@ struct EPUBReaderScreen: View {
                     .id(book.id)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         ReadingFootBar(modes: availableModes,
-                                       outlineAvailable: model.readingDoc(forBook: book) != nil)
+                                       outlineAvailable: model.readingDoc(forBook: book) != nil,
+                                       onMap: mapAction)
                     }
             } else if readerMode == .faithful {
                 // The slips stand above the WebView, where the reader
@@ -1029,9 +1044,6 @@ struct EPUBReaderScreen: View {
                 // comments on headings, which float rather than ink the
                 // heading.
                 faithfulReader
-                    // Author's margins beside the column: the Outline on
-                    // whichever side Settings ▸ Reading ▸ Margins puts it.
-                    .overlay { marginsLayer }
                     .overlay(alignment: .topLeading) { liftSlipsLayer }
                     .overlay(alignment: .topLeading) { commentSlipsLayer }
                     // After following a link inside the book: the way back.
@@ -1177,22 +1189,39 @@ struct EPUBReaderScreen: View {
                 findStamp += 1
             }
         }
-        .sheet(isPresented: $showsAuthoredMap) {
-            let doc = model.readingDoc(forBook: book)
-                ?? LiquidDoc(format: LiquidDoc.knownFormat, id: book.id, title: book.title,
-                             author: "", created: .now, body: [], links: [], wraps: nil,
-                             fileURL: book.base)
-            AuthoredMapView(doc: doc, extras: model.authoredMapExtras(for: doc)) { paragraphID in
-                // A page holds bare ids; a profile book's address is path#id.
-                let bare = paragraphID.split(separator: "#").last.map(String.init) ?? paragraphID
-                if chapters.count > 1, let index = chapterIndex(containing: bare) {
-                    chapterIndex = index
-                }
-                initialFraction = nil
-                requestedFragment = paragraphID
-                fragmentStamp += 1
+        // The book's Map stands in place of the reading, foot and all,
+        // as Author's Map replaces its text; ⌘M or the Map word returns.
+        .overlay {
+            if showsAuthoredMap, let doc = model.readingDoc(forBook: book) {
+                ReaderMapView(doc: doc, extras: model.authoredMapExtras(for: doc), bookKey: book.id,
+                              onShowInText: { paragraphID in
+                                  // A page holds bare ids; a profile book's address is path#id.
+                                  let bare = paragraphID.split(separator: "#").last.map(String.init) ?? paragraphID
+                                  if chapters.count > 1, let index = chapterIndex(containing: bare) {
+                                      chapterIndex = index
+                                  }
+                                  initialFraction = nil
+                                  requestedFragment = paragraphID
+                                  fragmentStamp += 1
+                              },
+                              onClose: { showsAuthoredMap = false },
+                              footBar: { left, right in
+                                  AnyView(ReadingFootBar(
+                                      modes: availableModes,
+                                      outlineAvailable: true,
+                                      leadingContent: { left },
+                                      onMap: { showsAuthoredMap = false },
+                                      mapActive: true,
+                                      trailingContent: { right }))
+                              })
             }
         }
+        // The native styles carry their own foot and ⌘M; this screen
+        // answers only where its own foot stands.
+        .modifier(ReaderMapShortcut(available: mapAction != nil && !showsAuthoredMap
+                                        && hostsOwnFoot) {
+            showsAuthoredMap = true
+        })
         .sheet(item: $citedHereTarget) { target in
             VStack(spacing: 0) {
                 CitedHereList(citations: citedHereMap[target.id] ?? []) { citedHereTarget = nil }
@@ -1315,8 +1344,8 @@ struct EPUBReaderScreen: View {
     /// padding either side, at the body's size. A margin too narrow to
     /// hold a heading is not drawn.
     @ViewBuilder private var marginsLayer: some View {
-        let left = ReaderMarginMode(rawValue: leftMarginRaw) ?? .nothing
-        let right = ReaderMarginMode(rawValue: rightMarginRaw) ?? .nothing
+        let left = ReaderMarginMode(rawValue: leftMarginRaw) ?? .annotation
+        let right = ReaderMarginMode(rawValue: rightMarginRaw) ?? .outline
         if left != .nothing || right != .nothing,
            !(left != .annotation && right != .annotation && tocEntries.isEmpty),
            !model.rendition(inUnpackedFolder: book.base).fixedLayout {
@@ -1532,7 +1561,8 @@ struct EPUBReaderScreen: View {
             ) { event in
                 // Arrow keys always wear .function and .numericPad —
                 // only the true modifiers may stand the monitor down.
-                guard event.modifierFlags
+                guard !model.isReaderMapShown,
+                      event.modifierFlags
                     .intersection([.command, .option, .control, .shift]).isEmpty,
                       !(NSApp.keyWindow?.firstResponder is NSTextView),
                       EPUBReaderMode(rawValue: readerModeRaw) == .faithful
@@ -1550,6 +1580,11 @@ struct EPUBReaderScreen: View {
             if let arrowMonitor { NSEvent.removeMonitor(arrowMonitor) }
             arrowMonitor = nil
         }
+        // Author's margins beside the column: the Outline on whichever
+        // side Settings ▸ Reading ▸ Margins puts it. Laid over the page
+        // before the foot is inset, so a margin ends where the foot begins
+        // and never covers it.
+        .overlay { marginsLayer }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // The same foot the native styles carry — clicking Full Width
             // (or an Outline shape) leaves the faithful page. The
@@ -1561,7 +1596,8 @@ struct EPUBReaderScreen: View {
                            showContents: $showsContents,
                            contents: { AnyView(faithfulContents) },
                            accessoryContent: { AnyView(faithfulTypeControls) },
-                           leadingContent: { AnyView(faithfulPileControls) })
+                           leadingContent: { AnyView(faithfulPileControls) },
+                           onMap: mapAction)
         }
     }
 
@@ -2052,7 +2088,8 @@ struct EPUBReaderView: NSViewRepresentable {
     /// bridge, so a marker click never doubles as a Step 0 activation), the
     /// Step 0 semantic bridge, and the quote-link enhancer.
     private static func installUserScripts(into controller: WKUserContentController, themeCSS: String,
-                                           noteFolds: Bool, fixedLayout: Bool = false) {
+                                           noteFolds: Bool, fixedLayout: Bool = false,
+                                           bookFolder: URL? = nil) {
         if fixedLayout {
             controller.addUserScript(WKUserScript(source: fixedLayoutScript,
                                                   injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -2071,7 +2108,8 @@ struct EPUBReaderView: NSViewRepresentable {
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: hideScript,
                                               injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        controller.addUserScript(WKUserScript(source: toggleButtonScript,
+        controller.addUserScript(WKUserScript(source: Self.toggleButtonScript(
+                                                records: bookFolder.map(Self.metadataRecords(in:)) ?? []),
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: glossaryScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -2237,7 +2275,7 @@ struct EPUBReaderView: NSViewRepresentable {
         let controller = WKUserContentController()
         let noteFolds = ReaderNoteStyle.current == .fold
         Self.installUserScripts(into: controller, themeCSS: css, noteFolds: noteFolds,
-                                    fixedLayout: rendition.fixedLayout)
+                                    fixedLayout: rendition.fixedLayout, bookFolder: book.base)
         controller.add(context.coordinator, name: Self.bridgeName)
         context.coordinator.themeCSS = css
         context.coordinator.noteFolds = noteFolds
@@ -2468,7 +2506,7 @@ struct EPUBReaderView: NSViewRepresentable {
             let controller = webView.configuration.userContentController
             controller.removeAllUserScripts()
             Self.installUserScripts(into: controller, themeCSS: css, noteFolds: noteFolds,
-                                    fixedLayout: rendition.fixedLayout)
+                                    fixedLayout: rendition.fixedLayout, bookFolder: book.base)
             webView.evaluateJavaScript(Self.themeScript(css: css))
             // The marks swap live too — the guard at the script's top
             // makes a re-run a re-application, never a second listener.
@@ -3049,13 +3087,69 @@ struct EPUBReaderView: NSViewRepresentable {
     })();
     """
 
+    /// The book's metadata in full, for the Metadata button: the
+    /// package's own `<metadata>` (authoritative, §4), then every record
+    /// it declares — visual-meta.json, origami.json, references.bib —
+    /// each as written. The content document only carries Visual-Meta as
+    /// a hidden JSON payload, which a page never shows, so the button
+    /// used to reveal no more than "@visual-meta-start".
+    static func metadataRecords(in base: URL) -> [[String: String]] {
+        var out: [[String: String]] = []
+        let container = (try? String(contentsOf: base.appendingPathComponent("META-INF/container.xml"),
+                                     encoding: .utf8)) ?? ""
+        let opfPath = container.range(of: #"full-path="[^"]+""#, options: .regularExpression)
+            .map { String(container[$0].dropFirst(11).dropLast()) } ?? "package.opf"
+        if let opf = try? String(contentsOf: base.appendingPathComponent(opfPath), encoding: .utf8),
+           let open = opf.range(of: "<metadata"), let close = opf.range(of: "</metadata>") {
+            out.append(["title": "Package metadata", "file": opfPath,
+                        "text": String(opf[open.lowerBound..<close.upperBound])])
+        }
+        let records = [("origami:visual-meta", "visual-meta.json", "Visual-Meta: bibliographic and structural identity"),
+                       ("origami:interaction", "origami.json", "Interaction and layout"),
+                       ("origami:bibliography", "references.bib", "Bibliography")]
+        for (properties, name, title) in records {
+            guard let data = OrigamiEPUBImporter.recordData(inUnpackedFolder: base, properties: properties,
+                                                            fileName: name),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            out.append(["title": title, "file": name,
+                        "text": text.replacingOccurrences(of: "\\/", with: "/")])
+        }
+        return out
+    }
+
     /// Inserts a horizontally-centered toggle button in the document flow,
     /// just before the Visual-Meta appendix. Hidden by default, it reads
-    /// "Metadata"; revealed, it reads "Hide Metadata".
-    private static let toggleButtonScript = """
+    /// "Metadata"; revealed, it reads "Hide Metadata" and shows the book's
+    /// metadata in full (metadataRecords) after the appendix's own words.
+    private static func toggleButtonScript(records: [[String: String]]) -> String {
+        let json = (try? JSONSerialization.data(withJSONObject: records))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        return """
     (function(){
       var vm = document.getElementById('visual-meta');
       if (!vm || document.getElementById('origami-vm-toggle')) return;
+      var records = \(json);
+      function showRecords() {
+        if (document.getElementById('origami-vm-records') || !records.length) return;
+        var box = document.createElement('div');
+        box.id = 'origami-vm-records';
+        records.forEach(function(r){
+          var h = document.createElement('h3');
+          h.textContent = r.title;
+          var file = document.createElement('span');
+          file.textContent = '  ' + r.file;
+          file.style.cssText = 'font-weight:normal;opacity:0.6;font-size:0.8em;';
+          h.appendChild(file);
+          var pre = document.createElement('pre');
+          pre.textContent = r.text;
+          pre.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;font-size:0.8em;'
+            + 'line-height:1.35;padding:0.8em;border-radius:6px;'
+            + 'border:1px solid color-mix(in srgb, currentColor 20%, transparent);';
+          box.appendChild(h);
+          box.appendChild(pre);
+        });
+        vm.appendChild(box);
+      }
       var btn = document.createElement('button');
       btn.id = 'origami-vm-toggle';
       btn.type = 'button';
@@ -3066,8 +3160,10 @@ struct EPUBReaderView: NSViewRepresentable {
       btn.addEventListener('click', function(){
         // The export ships the section hidden (the attribute); older
         // books shipped it bare — cover both.
-        var isHidden = vm.hasAttribute('hidden') || vm.style.display === 'none';
+        var isHidden = vm.hasAttribute('hidden') || vm.style.display === 'none'
+          || getComputedStyle(vm).display === 'none';
         if (isHidden) {
+          showRecords();
           vm.removeAttribute('hidden');
           vm.style.display = 'block';
           btn.textContent = 'Hide Metadata';
@@ -3080,6 +3176,7 @@ struct EPUBReaderView: NSViewRepresentable {
       vm.parentNode.insertBefore(btn, vm);
     })();
     """
+    }
 
     /// Glossary terms are not links. Author exports them as anchors
     /// (`a[epub:type="glossref"]` into the backmatter glossary), and this
@@ -4137,7 +4234,7 @@ struct ReaderAnnotationMargin: View {
                 .scrollContentBackground(.hidden)
                 .focused($focused)
             if text.isEmpty {
-                Text("Write about this document\u{2026}")
+                Text("Annotations for this document")
                     .font(.custom(bodyFont, size: 15, relativeTo: .body))
                     .foregroundStyle(textColor.opacity(0.4))
                     .padding(.leading, 5)

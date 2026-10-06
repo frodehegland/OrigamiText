@@ -160,8 +160,7 @@ struct EPUBLibraryListView: View {
         case .folder(let name):
             return model.pinnedFirst(model.epubRecords(inFolder: name))
         case .inbox:
-            return model.pinnedFirst(
-                model.epubRecords(inFolder: nil).filter { model.isUnread($0) })
+            return model.inboxEPUBRecords
         case .topOfPile:
             return model.epubRecords(inFolder: nil).filter { model.isTopOfPile($0) }
         case .timeline:
@@ -290,7 +289,7 @@ struct EPUBLibraryListView: View {
                     .opacity(model.isTopOfPile(record) ? 1 : 0)
                 Text(record.title)
                     .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
-                    .fontWeight(model.isUnread(record) ? .bold : .regular)
+                    .fontWeight(isBold(record) ? .bold : .regular)
                     .lineLimit(2)
             }
             HStack(alignment: .firstTextBaseline, spacing: 5) {
@@ -361,10 +360,17 @@ struct EPUBLibraryListView: View {
         .listRowBackground(Color.clear)
     }
 
+    /// Bold: in the Inbox, not yet opened (whoever wrote it); elsewhere,
+    /// unread.
+    private func isBold(_ record: EPUBRecord) -> Bool {
+        if case .inbox = mode { return model.isUnopened(record) }
+        return model.isUnread(record)
+    }
+
     private var emptyTitle: String {
         switch mode {
         case .folder: "Empty Folder"
-        case .inbox: "Nothing Unread"
+        case .inbox: "Nothing New"
         case .topOfPile: "Nothing Pinned"
         case .setAside: "Nothing Set Aside"
         case .myEPUBs: "No EPUBs by You"
@@ -377,7 +383,7 @@ struct EPUBLibraryListView: View {
         case .folder(let name):
             "File EPUBs into \u{201C}\(name)\u{201D} from any book's context menu (File Under)."
         case .inbox:
-            "Every opened EPUB has been read. New arrivals gather here until they are opened."
+            "Books you add appear here, newest first, in bold until you open them."
         case .topOfPile:
             "Right-click a book and choose Pin — it gathers here and floats first in every list."
         case .setAside:

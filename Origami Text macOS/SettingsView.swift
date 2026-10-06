@@ -456,7 +456,7 @@ private struct ReadingSettingsView: View {
     @AppStorage(CitationLookup.enabledKey) private var lookupCitedWorks = true
     @AppStorage(AppSettings.tripleClickSelectsSentenceKey) private var tripleClickSelectsSentence = true
     @AppStorage(CitationLookup.openAlexKeyKey) private var openAlexKey = ""
-    @AppStorage(ReaderMarginMode.leftKey) private var leftMarginRaw = ReaderMarginMode.nothing.rawValue
+    @AppStorage(ReaderMarginMode.leftKey) private var leftMarginRaw = ReaderMarginMode.annotation.rawValue
     @AppStorage(ReaderMarginMode.rightKey) private var rightMarginRaw = ReaderMarginMode.outline.rawValue
     @AppStorage(ReaderMarginMode.autoHideKey) private var marginsAutoHide = true
     /// The References page's sources — see ReferenceStatus.swift.
@@ -1288,13 +1288,17 @@ private struct OpenSourceSettingsView: View {
                     }
                 }
                 LabeledContent("Source") {
-                    Link("github.com/frodehegland/OrigamiFormat",
-                         destination: URL(string: "https://github.com/frodehegland/OrigamiFormat")!)
+                    Link("github.com/frodehegland/OrigamiText",
+                         destination: URL(string: "https://github.com/frodehegland/OrigamiText")!)
+                }
+                LabeledContent("Rebuild Guide") {
+                    Link("The whole app, described for your AI",
+                         destination: URL(string: "https://github.com/frodehegland/OrigamiText/tree/main/rebuild")!)
                 }
             } header: {
                 Text("Prompts for Your AI")
             } footer: {
-                Text("The EPUB profile says what an Origami EPUB is — its records, its colophon, its links — and the brief says how a reader of them behaves. Copy as Prompt puts the whole document on the clipboard with a short instruction in front, ready to paste into your own AI to understand the format or to build a reader of your own. Open Source, MIT License.")
+                Text("The EPUB profile says what an Origami EPUB is — its records, its colophon, its links — and the brief says how a reader of them behaves. Copy as Prompt puts the whole document on the clipboard with a short instruction in front, ready to paste into your own AI to understand the format or to build a reader of your own. Source holds the full code of this app and the format's documents; the Rebuild Guide describes the whole app, chapter by chapter, closely enough for your AI to build it again on any platform. Open Source, MIT License.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

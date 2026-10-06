@@ -293,7 +293,7 @@ synced folder).
 | `faithfulJustify`, `faithfulHyphenate`, `faithfulPublisherStyles` | false | Scroll-mode page options |
 | `readingMeasure` | 680 | Native windowed column width in points (380…1200, steps of 40) |
 | `fullScreenWidthInternal` / `fullScreenWidthExternal` | 67 / 45 | Native full-screen column as a % of the display width (25…100, steps of 4); minimum 300 pt |
-| `readerLeftMarginMode` | `nothing` | Left margin: `nothing`, `outline` or `annotation` |
+| `readerLeftMarginMode` | `annotation` | Left margin: `nothing`, `outline` or `annotation`. An empty Annotation margin shows the grey prompt "Annotations for this document". |
 | `readerRightMarginMode` | `outline` | Right margin |
 | `readerMarginsAutoHide` | true | Margins fade 4 s after the pointer leaves |
 | `readerTheme` | `highContrast` | Theme (§6) |
@@ -424,7 +424,7 @@ register click listeners in the capture phase and call
 | 1 | `themeScript` | start | §4.2 |
 | 2 | `themeScript` | end | Moves the theme style to the end of `<head>` |
 | 3 | `hideScript` | start | `<style id="origami-vm-style">#visual-meta{display:none}</style>` |
-| 4 | `toggleButtonScript` | end | Inserts a centred "Metadata" button before `#visual-meta`. It toggles `hidden` and `display`; the label becomes "Hide Metadata" while open. |
+| 4 | `toggleButtonScript(records:)` | end | Inserts a centred "Metadata" button before `#visual-meta`. It toggles `hidden` and `display`; the label becomes "Hide Metadata" while open. Opening it also appends the book's metadata in full (`metadataRecords(in:)`): the OPF's `<metadata>`, then `visual-meta.json`, `origami.json` and `references.bib` as written, each as a titled `<pre>` — the appendix itself only carries Visual-Meta as a hidden JSON `<script>`, which never renders. |
 | 5 | `glossaryScript` | end | Cancels clicks on `a[data-glossary-id], a[role="doc-glossref"]`. Definitions are reached through Show Definition in the context menu, not by clicking. |
 | 6 | `endnoteScript(foldMarks:popups:)` | end | Note marks (§5.9). Must come before stretchtext so a note-mark click unfolds rather than jumps. |
 | 7 | `stretchtextScript` | end | `a.ot-stretchtext` toggles (§5.9); exposes `origamiRevealStretchtext(id)` |

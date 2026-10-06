@@ -107,7 +107,7 @@ The enum still contains every historical place. What the sidebar actually render
 | Section (header) | Rows (label → item) | Condition |
 |---|---|---|
 | (title) | "Origami Text" button | With a venue in focus shows a chevron; click = `leaveVenueFocus()`. |
-| EPUB | Pinned → `.epubsTopOfPile`; Authors → `.authors`; *Papers label* → `.epubsTimeline` (context menu: "Unread" toggle); *Venue label* → `.epubJournals`; *user's surname* → `.myEPUBs`; To Acquire → `.acquisitions` | To Acquire only when the acquisitions list is non-empty. |
+| EPUB | Inbox → `.epubsInbox` (bold while `inboxHasUnopened`; the list is `AppModel.inboxEPUBRecords`: added in the last 30 days by `openedAt`, never fewer than the 20 newest, newest first; a row is bold while `isUnopened` — the Inbox's own `inboxOpenedEPUBs` mark, set on every open whoever the author, seeded from `readDocumentIDs`); Pinned → `.epubsTopOfPile`; Authors → `.authors`; *Papers label* → `.epubsTimeline` (context menu: "Unread" toggle); *Venue label* → `.epubJournals`; *user's surname* → `.myEPUBs`; To Acquire → `.acquisitions` | To Acquire only when the acquisitions list is non-empty. |
 | Hypermedia | one row per followed space → `.hypermediaSpace(domain)`; Timeline, Pinned; "Add Space"/"Edit" (opens Settings ▸ Hypermedia) | Timeline/Pinned only when documents have been read from spaces. |
 | Folders | one row per EPUB folder → `.epubFolder(name)`; "Add Folder" | — |
 | XR | Graphs → `.timeFlows`; Timelines → `.timelines` | — |
@@ -955,7 +955,7 @@ AI, View Modules, Open Source. Window width 1040.
 | Verify references with Crossref | `verifyReferencesCrossref` | true | Preflight source. |
 | Full screen text width | `fullScreenContentWidth` | 760 (480–1200, step 20) | Text measure in full screen (reader and editor). |
 | **Reading** Theme | `readerTheme` | `highContrast` | App-wide colours (chapter 02). Edit Theme Colors → `ThemeColorOverrides`, tick `themeColorOverridesTick`. |
-| Left / Right Margin | `readerLeftMarginMode` / `readerRightMarginMode` | `nothing` / `outline` | Chapter 02. |
+| Left / Right Margin | `readerLeftMarginMode` / `readerRightMarginMode` | `annotation` / `outline` | Chapter 02. |
 | Auto Hide Margins after 4 sec | `readerMarginsAutoHide` | true | Chapter 02. |
 | Citations | `origamiCitationStyle` | `authorDate` (numeric, superscript) | Chapter 02. |
 | Endnotes & Footnotes | `origamiNoteStyle` | `superscript` (bracketed, dagger, stretch) | Chapter 02. |
