@@ -176,6 +176,28 @@ but `sections` returns only `[("", received)]`.
 - The find bar ("Find" field, wide-list toggle, New Document button) sits at the foot of the list column,
   except where a venue view provides its own.
 
+**iPad** (`Origami Text/PadHomeView.swift`). The iOS app chooses its home by idiom: iPad gets `PadHomeView`,
+iPhone keeps `ReadHomeView` (the one-screen shelf with its Articles / Journals / Guide picker). `PadHomeView` is a
+two-column `NavigationSplitView`. On the left is the Mac's sidebar, with the same title, sections (EPUB, Hypermedia,
+Folders, XR, Views), rows, ember icons (`PadEmberLabelStyle`), foot (Intro, Settings, Contact) and fold keys
+(`collapsedSidebarSections`, `sidebarFoldsXRAndViews`). The selection is `enum PadPlace`, and the default is
+Papers. On the right is a `NavigationStack` that is rebuilt for each place (`.id(place)`):
+- Inbox: `PhoneModel.inboxRecords`, with the Mac's 30-day / 20-newest rule. A row is bold while `isUnopened`, using
+  the same `inboxOpenedEPUBs` key. `PhoneReaderView.onAppear` marks the book opened.
+- Pinned: the pinned books.
+- Authors: every author with a count, sorted by folded surname. Tapping one pushes that author's papers.
+- Papers: a Title / Date picker (`padPapersByDate`), plus the Set Aside fold.
+- Journals: pushes `PhoneJournalView`.
+- *Surname* (from the `authorName` key, or "Mine" if unset): the books by that author.
+- Lineage: `PhoneLineageView`.
+- Intro: `PhoneGuideView`.
+
+Every other row (Add Space, Add Folder, Graphs, Timelines, Annotations, People, Add Person, Concept Space,
+Tracked Concepts, Add Concept, Ask, Glossary, Edit Views) shows a pane saying the place is on the Mac for now. The
+row is never hidden. A `+` toolbar menu holds Open EPUB… and the community folder choice, and Find is a
+`.searchable` field. While a book is open (`PhoneModel.isReading`), the column folds to `.detailOnly`, and it comes
+back when the reader closes.
+
 **History** (`AppModel.history`, `historyPosition`): a browser-style back/forward list of `Destination
 {doc, fragment}`.
 - `open(doc, fragment, span)`: clears `openEPUB`; commits the pending "read" mark of the previous document; if

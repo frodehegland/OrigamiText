@@ -329,6 +329,39 @@ final class PhoneModel {
         epubRecords.filter { epubSetAsideIDs.contains($0.id) }
     }
 
+    // MARK: - The Inbox (iPad's left column)
+
+    /// Books this reader has opened — the Mac's "inboxOpenedEPUBs" key
+    /// and rule (AppModel's Inbox section is the sibling; keep in step):
+    /// an arrival stands bold in the Inbox until it is opened.
+    private(set) var openedEPUBIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "inboxOpenedEPUBs") ?? [])
+
+    func isUnopened(_ record: EPUBRecord) -> Bool { !openedEPUBIDs.contains(record.id) }
+
+    func markOpened(id: String) {
+        guard openedEPUBIDs.insert(id).inserted else { return }
+        UserDefaults.standard.set(openedEPUBIDs.sorted(), forKey: "inboxOpenedEPUBs")
+    }
+
+    /// The most recent arrivals, newest first — everything added in the
+    /// last 30 days, and never fewer than the 20 newest.
+    var inboxRecords: [EPUBRecord] {
+        let newest = epubRecords.filter { !isSetAside($0) }
+            .sorted { $0.openedAt > $1.openedAt }
+        let cutoff = Date.now.addingTimeInterval(-30 * 24 * 3600)
+        let recent = newest.prefix { $0.openedAt >= cutoff }
+        return Array(recent.count >= 20 ? recent : newest.prefix(20))
+    }
+
+    /// Whether the Inbox holds anything not yet opened — its row stands
+    /// bold then, as on the Mac.
+    var inboxHasUnopened: Bool { inboxRecords.contains { isUnopened($0) } }
+
+    /// Whether a book is open in the reader — the iPad's split view folds
+    /// its left column away while reading takes the screen.
+    var isReading = false
+
     // MARK: - Annotations (the reader's highlights and notes)
 
     /// Sidecars live in one folder beside the unpacked books, keyed by

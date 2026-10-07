@@ -242,13 +242,16 @@ struct ReadHomeView: View {
 /// title and author, the pin's mark when it leads the pile, and the
 /// pile verbs three ways — swipe right to pin, swipe left to set
 /// aside, or hold for the menu. The Mac's EPUBPileMenu is the sibling.
-private struct PhoneShelfRow: View {
+struct PhoneShelfRow: View {
     @Environment(PhoneModel.self) private var model
     let record: EPUBRecord
     /// Set, the row pushes its reader from where it stands (a journal's
     /// list), so Back returns there — not to the shelf's top. Nil, the
     /// row uses the shelf's own destination at the stack's root.
     var opensLocally: Binding<String?>? = nil
+    /// The title stands bold — the iPad Inbox's mark of a book not yet
+    /// opened, as on the Mac.
+    var emphasised = false
     /// The whole-document note being written or rewritten.
     @State private var editingNote = false
     @State private var noteDraft = ""
@@ -268,7 +271,9 @@ private struct PhoneShelfRow: View {
                         .foregroundStyle(.orange)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(record.title).lineLimit(2)
+                    Text(record.title)
+                        .fontWeight(emphasised ? .bold : .regular)
+                        .lineLimit(2)
                     Text(record.author)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -476,11 +481,23 @@ struct PhoneSettingsView: View {
     /// must mean exactly one thing, never citations and notes at once.
     @AppStorage(ReaderNoteStyle.defaultsKey)
     private var noteStyleRaw = ReaderNoteStyle.superscript.rawValue
+    /// Who the reader is — the Mac's Settings ▸ Author key: it names the
+    /// iPad's own-papers row and signs highlights and notes.
+    @AppStorage("authorName") private var authorName = ""
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    TextField("Your name, as your papers carry it", text: $authorName)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Your Name")
+                } footer: {
+                    Text("Signs your highlights and notes, and finds the papers you wrote.")
+                }
                 Section {
                     Picker("Citations", selection: $citationStyleRaw) {
                         ForEach(OrigamiCitationStyle.allCases) { style in
@@ -781,6 +798,13 @@ struct PhoneReaderView: View {
                     .presentationDetents([.medium, .large])
             }
         }
+        // Opening a book takes it out of the Inbox's bold, and tells the
+        // iPad's split view to give the page the whole screen.
+        .onAppear {
+            model.markOpened(id: docID)
+            model.isReading = true
+        }
+        .onDisappear { model.isReading = false }
     }
 
     private struct TappedCitation: Identifiable {
@@ -2122,7 +2146,7 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
 
 /// The shelf's third face: how to read here — one screen of it, no
 /// setup, readable before the first book ever arrives.
-private struct PhoneGuideView: View {
+struct PhoneGuideView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {

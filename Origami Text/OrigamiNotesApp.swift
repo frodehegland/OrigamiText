@@ -26,7 +26,15 @@ struct OrigamiLettersApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ReadHomeView()
+            // iPad carries the Mac's left column beside the shelf; the
+            // iPhone keeps its one-screen shelf.
+            Group {
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    PadHomeView()
+                } else {
+                    ReadHomeView()
+                }
+            }
                 .environment(shelf)
                 // An EPUB from Files or a share opens straight into
                 // reading — imported on this phone, no Mac, no folder
