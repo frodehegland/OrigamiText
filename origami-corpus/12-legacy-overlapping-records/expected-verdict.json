@@ -1,0 +1,65 @@
+{
+  "legacy.epub": {
+    "conforms": false,
+    "errors": [
+      {
+        "code": "PROFILE-MISSING",
+        "section": "§4.2"
+      },
+      {
+        "code": "ID-WORK",
+        "section": "§4.3"
+      },
+      {
+        "code": "REC-DESCRIBES",
+        "section": "§9.1, §17.1"
+      },
+      {
+        "code": "REC-SCHEMA",
+        "section": "§19.1"
+      },
+      {
+        "code": "REC-DIGEST",
+        "section": "§13.2"
+      },
+      {
+        "code": "REC-SEPARATION",
+        "section": "§10.0, §15"
+      },
+      {
+        "code": "REC-BIBTEX",
+        "section": "§11"
+      },
+      {
+        "code": "REC-UNDECLARED",
+        "section": "§4.4"
+      },
+      {
+        "code": "META-UNRESOLVED",
+        "section": "§17.1, §18.1"
+      }
+    ],
+    "warnings": [
+      {
+        "code": "PKG-PREFIX-UNUSED",
+        "section": "§4.1"
+      },
+      {
+        "code": "RIGHTS-NONE",
+        "section": "§4.7"
+      },
+      {
+        "code": "FM-JOINED-AUTHORS",
+        "section": "§5.2, §18.2"
+      },
+      {
+        "code": "FM-BODY-TEXT",
+        "section": "§5.3, §18.2"
+      },
+      {
+        "code": "COLOPHON-NONE",
+        "section": "§8.4, §18.2"
+      }
+    ]
+  }
+}

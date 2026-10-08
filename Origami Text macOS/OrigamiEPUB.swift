@@ -80,8 +80,26 @@ nonisolated enum OrigamiEPUBExporter {
 
     // MARK: The records (Profile 1.0 §9–§11)
 
+    /// Where the profile's identifiers live: the public repository, whose
+    /// `profile/1.0` folder resolves to the specification (§4.2).
+    static let profileBase = "https://github.com/frodehegland/OrigamiText/tree/main/profile/"
+
     /// The profile this writer conforms to (§4.2, §16.1).
-    static let profileURI = "https://origamitext.org/profile/1.0"
+    static let profileURI = profileBase + "1.0"
+
+    /// The `origami:` prefix's vocabulary (§4.1).
+    static let vocabularyURI = "https://github.com/frodehegland/OrigamiText/blob/main/profile/vocab.md#"
+
+    /// The identifier exports declared before 8 October 2026, under a
+    /// domain that was never registered. Those publications still name
+    /// this profile, so a reader treats the two alike (§4.2).
+    static let legacyProfileBase = "https://origamitext.org/profile/"
+
+    /// Whether a `dcterms:conformsTo` value names this profile, at any
+    /// version, under either identifier.
+    static func namesProfile(_ value: String) -> Bool {
+        value.hasPrefix(profileBase) || value.hasPrefix(legacyProfileBase)
+    }
 
     /// The package-relative path of the one content document — the path
     /// half of every canonical address (§6.1).
@@ -2855,7 +2873,7 @@ nonisolated enum OrigamiEPUBExporter {
             imageItems += (imageItems.isEmpty ? "" : "\n")
                 + "        <item id=\"font\(index + 1)\" href=\"content/fonts/\(font.file)\" media-type=\"font/woff2\"/>"
         }
-        var prefixes = "origami: https://origamitext.org/vocab/"
+        var prefixes = "origami: \(vocabularyURI)"
         if attributionName(of: doc) != nil { prefixes += " cc: http://creativecommons.org/ns#" }
         let recordLinks = records.map { record in
             "    <link rel=\"record\" href=\"\(attributeEscaped(record.href))\""

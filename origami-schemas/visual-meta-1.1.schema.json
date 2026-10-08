@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://origamitext.org/schema/1.0/visual-meta-1.1.schema.json",
+  "$id": "https://github.com/frodehegland/OrigamiText/blob/main/origami-schemas/visual-meta-1.1.schema.json",
   "title": "Origami EPUB Profile 1.0 — the semantic record (Visual-Meta)",
   "description": "Schema for the record declared with properties=\"origami:visual-meta\". Authoritative for concepts, citations, structure, endnotes, cross-document relationships and lineage. See profile §8. The forbidden-members rule of §9.0 is enforced structurally at the end of this schema: tables, map and models belong to the interaction record and a record carrying them is rejected here rather than by a validator's own walk.",
   "type": "object",
@@ -404,9 +404,9 @@
     },
 
     "profileURI": {
-      "description": "The profile identifier (§4.2).",
+      "description": "The profile identifier (§4.2). The origamitext.org form is what publications written before 8 October 2026 declare, and names the same profile.",
       "type": "string",
-      "pattern": "^https://origamitext\\.org/profile/[0-9]+\\.[0-9]+$"
+      "pattern": "^https://(github\\.com/frodehegland/OrigamiText/tree/main|origamitext\\.org)/profile/[0-9]+\\.[0-9]+$"
     },
 
     "publicationIdentifier": {

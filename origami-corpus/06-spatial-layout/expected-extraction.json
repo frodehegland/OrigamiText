@@ -1,0 +1,205 @@
+{
+  "spatial-layout.epub": {
+    "bibliography": [],
+    "citations": [],
+    "colophon": {
+      "address": "backmatter.xhtml#origami-publication-info",
+      "present": true,
+      "recordPaths": [
+        "visual-meta.json",
+        "origami.json"
+      ],
+      "selfCitation": {
+        "fields": {
+          "author": "Writer, A.",
+          "title": "A spatial layout",
+          "year": "2026"
+        },
+        "key": "writer2026corpus",
+        "type": "misc"
+      }
+    },
+    "concepts": [
+      {
+        "address": "backmatter.xhtml#gloss-aaaaaaaa-aaaa-4aaa-8aaa-a6a6a6a6a6a6",
+        "citations": [],
+        "definition": "Where things are, as distinct from time.",
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-a6a6a6a6a6a6",
+        "tag": "concept",
+        "term": "space"
+      },
+      {
+        "address": "backmatter.xhtml#gloss-bbbbbbbb-bbbb-4bbb-8bbb-b6b6b6b6b6b6",
+        "citations": [],
+        "definition": "When things are, as distinct from space.",
+        "id": "bbbbbbbb-bbbb-4bbb-8bbb-b6b6b6b6b6b6",
+        "tag": "concept",
+        "term": "time"
+      }
+    ],
+    "disagreements": [],
+    "documents": [
+      "content.xhtml",
+      "backmatter.xhtml"
+    ],
+    "elements": [
+      "content.xhtml#H-title",
+      "content.xhtml#P-22222222-2222-4222-8222-222222222222",
+      "content.xhtml#P-33333333-3333-4333-8333-333333333333",
+      "backmatter.xhtml#gloss-aaaaaaaa-aaaa-4aaa-8aaa-a6a6a6a6a6a6",
+      "backmatter.xhtml#gloss-bbbbbbbb-bbbb-4bbb-8bbb-b6b6b6b6b6b6",
+      "backmatter.xhtml#origami-publication-info"
+    ],
+    "endnotes": [],
+    "equations": [],
+    "extraction": "1.0",
+    "frontMatter": {
+      "authors": [
+        {
+          "name": {
+            "lang": "en",
+            "value": "A. Writer"
+          }
+        }
+      ],
+      "title": {
+        "lang": "en",
+        "value": "A spatial layout"
+      }
+    },
+    "headings": [
+      {
+        "address": "content.xhtml#H-title",
+        "level": 1,
+        "text": "A spatial layout"
+      }
+    ],
+    "identity": {
+      "edition": "urn:uuid:66666666-6666-4666-8666-000000000006",
+      "isReplacedBy": [],
+      "modified": "2026-10-08T12:00:00Z",
+      "release": null,
+      "replaces": [],
+      "work": "urn:uuid:77777777-7777-4777-8777-aaaaaaaa0006"
+    },
+    "layouts": {
+      "connections": [],
+      "members": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-a6a6a6a6a6a6",
+          "kind": "concept",
+          "label": "space",
+          "target": {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-a6a6a6a6a6a6"
+          }
+        },
+        {
+          "id": "bbbbbbbb-bbbb-4bbb-8bbb-b6b6b6b6b6b6",
+          "kind": "concept",
+          "label": "time",
+          "target": {
+            "id": "bbbbbbbb-bbbb-4bbb-8bbb-b6b6b6b6b6b6"
+          }
+        },
+        {
+          "id": "content.xhtml#P-33333333-3333-4333-8333-333333333333",
+          "kind": "paragraph",
+          "label": "The second claim",
+          "target": {
+            "address": "content.xhtml#P-33333333-3333-4333-8333-333333333333"
+          }
+        }
+      ],
+      "unplaced": [
+        "content.xhtml#P-33333333-3333-4333-8333-333333333333"
+      ],
+      "views": [
+        {
+          "id": "V-1",
+          "name": "The argument",
+          "placements": [
+            {
+              "depthMetres": null,
+              "ref": "content.xhtml#P-22222222-2222-4222-8222-222222222222",
+              "target": {
+                "address": "content.xhtml#P-22222222-2222-4222-8222-222222222222"
+              },
+              "x": 0.24,
+              "y": -0.1
+            },
+            {
+              "depthMetres": 0.35,
+              "ref": "aaaaaaaa-aaaa-4aaa-8aaa-a6a6a6a6a6a6",
+              "target": {
+                "id": "aaaaaaaa-aaaa-4aaa-8aaa-a6a6a6a6a6a6"
+              },
+              "x": 120,
+              "y": 40
+            },
+            {
+              "depthMetres": null,
+              "ref": "bbbbbbbb-bbbb-4bbb-8bbb-b6b6b6b6b6b6",
+              "target": {
+                "id": "bbbbbbbb-bbbb-4bbb-8bbb-b6b6b6b6b6b6"
+              },
+              "x": -80,
+              "y": 40
+            }
+          ],
+          "units": "points",
+          "yUp": true
+        }
+      ]
+    },
+    "lineage": [],
+    "links": [],
+    "metadata": {
+      "accessRights": null,
+      "attributionName": "A. Writer",
+      "attributionURL": null,
+      "creators": [
+        "A. Writer"
+      ],
+      "identifiers": [
+        "urn:uuid:66666666-6666-4666-8666-000000000006"
+      ],
+      "isPartOf": [],
+      "language": "en",
+      "license": "https://creativecommons.org/licenses/by/4.0/",
+      "rights": "© 2026 A. Writer.",
+      "rightsHolder": null,
+      "subjects": [],
+      "title": "A spatial layout"
+    },
+    "mode": "profile",
+    "models": [],
+    "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
+    "records": [
+      {
+        "declared": true,
+        "href": "visual-meta.json",
+        "kind": "visual-meta",
+        "trusted": true
+      },
+      {
+        "declared": true,
+        "href": "origami.json",
+        "kind": "interaction",
+        "trusted": true
+      }
+    ],
+    "sources": {
+      "bibliography": null,
+      "citations": null,
+      "concepts": "semantic.concepts",
+      "endnotes": null,
+      "equations": "content",
+      "headings": "content",
+      "layouts": "interaction.map",
+      "tables": null
+    },
+    "stretchtext": [],
+    "tables": [],
+    "unresolved": []
+  }
+}

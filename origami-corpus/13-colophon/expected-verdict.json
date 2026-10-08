@@ -1,0 +1,46 @@
+{
+  "absent.epub": {
+    "conforms": true,
+    "errors": [],
+    "warnings": [
+      {
+        "code": "COLOPHON-NONE",
+        "section": "§8.4, §18.2"
+      }
+    ]
+  },
+  "conforming.epub": {
+    "conforms": true,
+    "errors": [],
+    "warnings": []
+  },
+  "meta-inf.epub": {
+    "conforms": false,
+    "errors": [
+      {
+        "code": "REC-META-INF",
+        "section": "§4.4.2"
+      },
+      {
+        "code": "COLOPHON-META-INF",
+        "section": "§8.4.3"
+      }
+    ],
+    "warnings": []
+  },
+  "wrong-path.epub": {
+    "conforms": false,
+    "errors": [
+      {
+        "code": "COLOPHON-PATH-UNRESOLVED",
+        "section": "§8.4.3, §18.1"
+      }
+    ],
+    "warnings": [
+      {
+        "code": "COLOPHON-PATH-MISSING",
+        "section": "§8.4.3"
+      }
+    ]
+  }
+}

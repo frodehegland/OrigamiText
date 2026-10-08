@@ -1,0 +1,135 @@
+{
+  "equations.epub": {
+    "bibliography": [],
+    "citations": [],
+    "colophon": {
+      "address": "backmatter.xhtml#origami-publication-info",
+      "present": true,
+      "recordPaths": [
+        "visual-meta.json"
+      ],
+      "selfCitation": {
+        "fields": {
+          "author": "Writer, A.",
+          "title": "Equations",
+          "year": "2026"
+        },
+        "key": "writer2026corpus",
+        "type": "misc"
+      }
+    },
+    "concepts": [],
+    "disagreements": [],
+    "documents": [
+      "content.xhtml",
+      "backmatter.xhtml"
+    ],
+    "elements": [
+      "content.xhtml#H-title",
+      "content.xhtml#H-77777777-7777-4777-8777-777777777777",
+      "content.xhtml#P-88888888-8888-4888-8888-888888888888",
+      "content.xhtml#E-11111111-1111-4111-8111-111111111111",
+      "content.xhtml#P-99999999-9999-4999-8999-999999999999",
+      "content.xhtml#E-22222222-2222-4222-8222-222222222222",
+      "content.xhtml#P-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "backmatter.xhtml#origami-publication-info"
+    ],
+    "endnotes": [],
+    "equations": [
+      {
+        "address": "content.xhtml#E-11111111-1111-4111-8111-111111111111",
+        "alttext": "E = mc^2",
+        "display": "block",
+        "label": "1",
+        "tex": "E = mc^2"
+      },
+      {
+        "address": "content.xhtml#E-22222222-2222-4222-8222-222222222222",
+        "alttext": "a^2 + b^2 = c^2",
+        "display": "inline",
+        "label": null,
+        "tex": null
+      }
+    ],
+    "extraction": "1.0",
+    "frontMatter": {
+      "authors": [
+        {
+          "name": {
+            "lang": "en",
+            "value": "A. Writer"
+          }
+        }
+      ],
+      "title": {
+        "lang": "en",
+        "value": "Equations"
+      }
+    },
+    "headings": [
+      {
+        "address": "content.xhtml#H-title",
+        "level": 1,
+        "text": "Equations"
+      },
+      {
+        "address": "content.xhtml#H-77777777-7777-4777-8777-777777777777",
+        "level": 2,
+        "text": "Energy"
+      }
+    ],
+    "identity": {
+      "edition": "urn:uuid:55555555-5555-4555-8555-000000000005",
+      "isReplacedBy": [],
+      "modified": "2026-10-08T12:00:00Z",
+      "release": null,
+      "replaces": [],
+      "work": "urn:uuid:66666666-6666-4666-8666-aaaaaaaa0005"
+    },
+    "layouts": null,
+    "lineage": [],
+    "links": [],
+    "metadata": {
+      "accessRights": null,
+      "attributionName": "A. Writer",
+      "attributionURL": null,
+      "creators": [
+        "A. Writer"
+      ],
+      "identifiers": [
+        "urn:uuid:55555555-5555-4555-8555-000000000005"
+      ],
+      "isPartOf": [],
+      "language": "en",
+      "license": "https://creativecommons.org/licenses/by/4.0/",
+      "rights": "© 2026 A. Writer.",
+      "rightsHolder": null,
+      "subjects": [],
+      "title": "Equations"
+    },
+    "mode": "profile",
+    "models": [],
+    "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
+    "records": [
+      {
+        "declared": true,
+        "href": "visual-meta.json",
+        "kind": "visual-meta",
+        "trusted": true
+      }
+    ],
+    "sources": {
+      "bibliography": null,
+      "citations": null,
+      "concepts": null,
+      "endnotes": null,
+      "equations": "semantic.equations",
+      "headings": "content",
+      "layouts": null,
+      "tables": null
+    },
+    "stretchtext": [],
+    "tables": [],
+    "unresolved": []
+  }
+}

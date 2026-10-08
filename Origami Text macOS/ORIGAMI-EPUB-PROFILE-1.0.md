@@ -1,8 +1,8 @@
 # Origami EPUB Profile 1.0
 
-**Profile identifier:** `https://origamitext.org/profile/1.0`
-**Vocabulary:** `https://origamitext.org/vocab/`
-**Revised:** 6 October 2026
+**Profile identifier:** `https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0`
+**Vocabulary:** `https://github.com/frodehegland/OrigamiText/blob/main/profile/vocab.md#`
+**Revised:** 8 October 2026
 **Status:** normative text frozen. Changes from here are errata.
 
 ---
@@ -26,6 +26,11 @@ publication (§15) and are governed by the W3C Web Annotation Data Model.
 
 Appendix B states what the reference implementations currently do, which
 is not the same as what this document requires.
+
+Published with this document, in the same repository
+(https://github.com/frodehegland/OrigamiText): `origami-schemas/`, the
+JSON Schemas (§19.1) and the reference validator and extractor (§19.3);
+and `origami-corpus/`, the conformance corpus (§20).
 
 ---
 
@@ -74,9 +79,10 @@ something these forbid, these govern.
 13. **Self-identifying records.** Every standalone Origami metadata
     record MUST identify its format, its version and the publication it
     describes.
-14. **Metadata is visible to people.** A publication MUST carry a
+14. **Metadata is visible to people.** A publication SHOULD carry a
     human-readable statement of what machine-readable metadata it has
-    and where, and of its rights (§8.4). Metadata that exists only in a
+    and where, and of its rights (§8.4), and where it carries one that
+    statement MUST be true. Metadata that exists only in a
     hidden payload does not survive printing, copy-pasting, plain-text
     extraction, or a reading system that has never heard of this
     profile.
@@ -154,7 +160,7 @@ EPUB does not predeclare:
 ```xml
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
          unique-identifier="pub-id" xml:lang="en"
-         prefix="origami: https://origamitext.org/vocab/
+         prefix="origami: https://github.com/frodehegland/OrigamiText/blob/main/profile/vocab.md#
                  cc: http://creativecommons.org/ns#">
 ```
 
@@ -164,12 +170,23 @@ entry. A publication SHOULD NOT declare a prefix it does not use.
 ### 4.2 Profile declaration
 
 ```xml
-<meta property="dcterms:conformsTo">https://origamitext.org/profile/1.0</meta>
+<meta property="dcterms:conformsTo">https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0</meta>
 ```
 
 REQUIRED. The value is the profile identifier, whose last path segment
-is `MAJOR.MINOR`. It SHOULD resolve to human-readable documentation, but
-a reader MUST NOT require network access to interpret a publication.
+is `MAJOR.MINOR`. It resolves to human-readable documentation — the
+`profile/1.0` folder of the public repository, which leads to this
+document — but a reader MUST NOT require network access to interpret a
+publication.
+
+**The first identifier.** Publications written before 8 October 2026
+declare `https://origamitext.org/profile/1.0` and bind `origami:` to
+`https://origamitext.org/vocab/`. That domain was never registered, so
+neither resolves; both name this same profile and vocabulary. A reader
+MUST treat `https://origamitext.org/profile/MAJOR.MINOR` exactly as the
+identifier above with the same `MAJOR.MINOR`, and the old vocabulary as
+this one. A writer MUST declare the current identifiers, and a validator
+reports the first ones as a warning, not an error.
 
 A publication MUST NOT use `origami:profile`.
 
@@ -286,14 +303,16 @@ and the interaction record are both `application/json`, so the media
 type cannot distinguish the two records it would most need to. A reader
 MUST NOT determine a record's kind from its filename.
 
-Where a reader cannot determine a kind — a pre-1.0 file, or an
-unrecognised `properties` value — it MAY read the record's mandatory
-self-identification block (§9.1, §10.1) and take the `format` value it
-finds there. A record stating its own kind is a legitimate fallback;
-guessing from the media type is not.
+Where a reader cannot determine a kind because there is no `properties`
+value to read — a pre-1.0 file, or a record found by §17.2 — it MAY read
+the record's mandatory self-identification block (§9.1, §10.1) and take
+the `format` value it finds there. A record stating its own kind is a
+legitimate fallback; guessing from the media type is not.
 
 A reader MUST ignore a `<link rel="record">` whose `properties` it does
-not recognise.
+not recognise, and MUST NOT fall back to its self-identification: an
+unrecognised value is a kind this reader does not implement (§16.3), not
+a kind it failed to read.
 
 #### 4.4.1 A record is a linked resource, not a publication resource
 
@@ -917,6 +936,15 @@ resolving to a bibliography entry (§8.2). The href fragment's identifier
 is the citation's key, and is the same key used in the bibliography
 record (§11) and in `citations[].id` (§9.5).
 
+**The key is the fragment without a leading `bib-`**: `#bib-232A9EED-…`
+has the key `232A9EED-…`, and `#hegland2026` the key `hegland2026`. A
+writer MUST write the bibliography entry's `id` as `bib-` plus the key,
+or as the key itself where the key is already an NCName that does not
+begin with `bib-`. A concept's `id` relates to its glossary entry the
+same way, with `gloss-` (§9.4). This is the one place a reader removes a
+prefix, and it removes it to recover an identifier, never to infer what
+the element is (§6.2).
+
 `data-citation-key` and `data-citation-number` MAY be present; both
 duplicate information available elsewhere and a reader MUST NOT require
 either.
@@ -1006,6 +1034,13 @@ like every other record (§4.4).
 checksums let a reader detect a damaged `tex` round trip; where a
 checksum fails, **the MathML in the body governs** (§12.4). `tex` is a
 derived representation (§12.3), not an authority.
+
+`tex-sha256` is the SHA-256, in lowercase hex, of `tex` encoded as
+UTF-8. A reader whose computed value differs MUST NOT use that `tex`.
+`mathml-sha256` is computed over the writer's own serialisation of the
+`math` element, which XML lets another tool re-serialise without changing
+it; it is informative only, and a reader or validator MUST NOT reject an
+equation because it does not match.
 
 A reader that finds no index MUST be able to proceed: scanning the
 content documents for `math` elements carrying an `id` yields the same
@@ -1293,7 +1328,7 @@ A content document MAY declare the profile in its `<head>`. The href is
 an external identifier rather than a package resource, so this is safe:
 
 ```html
-<link rel="profile" href="https://origamitext.org/profile/1.0"/>
+<link rel="profile" href="https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0"/>
 ```
 
 A content document **MUST NOT** reference a metadata record with an
@@ -1309,7 +1344,7 @@ never a copy of the semantic graph:
 <script type="application/json" id="origami-metadata-discovery">
 {
   "format": "origami-text",
-  "profile": "https://origamitext.org/profile/1.0",
+  "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
   "metadata": [
     { "kind": "visual-meta",  "href": "visual-meta.json", "mediaType": "application/json" },
     { "kind": "interaction",  "href": "origami.json",     "mediaType": "application/json" },
@@ -1526,7 +1561,7 @@ publication itself, this is one of the two places that MUST say so
     Commons Attribution 4.0 International</a>.</p>
 
   <p>This publication conforms to the Origami Text 1.0 profile
-    (https://origamitext.org/profile/1.0).</p>
+    (https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0).</p>
 </section>
 ```
 
@@ -1578,7 +1613,7 @@ identifiable.
   "visual-meta": {
     "format": "visual-meta",
     "version": "1.1",
-    "profile": "https://origamitext.org/profile/1.0",
+    "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
     "describes": "urn:uuid:97d7808d-d373-4ba7-a350-f6a7895c8811",
     "generator": "Author (macOS)"
   }
@@ -1652,6 +1687,14 @@ A `document.digest` member MUST NOT be present (§13.2). A
 parsing the body. `address` is the positional label, informative only
 (§6.2).
 
+`level` is the heading's place in the outline: its rank — the `n` of
+`<hn>` — less one constant for the whole record. A writer whose
+publication title is the only `<h1>` MAY therefore number its sections
+from 1 under it; another MAY use the rank itself, as Appendix A does. A
+reader MUST use `level` only relatively — to nest one heading under
+another — and a validator reports a warning where the levels are not
+the body's ranks less one constant (§18.2).
+
 ### 9.4 Concepts
 
 ```json
@@ -1691,6 +1734,11 @@ A citation entry MAY mirror individual fields of its BibTeX entry, named
 as BibTeX names them — an `abstract`, say, so the reference can be read
 without opening `references.bib` (§11). Where a mirrored field and the
 BibTeX differ, the BibTeX governs.
+
+`id`, `number`, `href`, `concepts`, `lang` and `alternate` are the
+entry's own members and are never mirrored fields. In particular
+`number` is the citation's ordinal in this publication, not BibTeX's
+`number` (an issue number), which therefore cannot be mirrored.
 
 A citation entry MAY carry `lang` — the cited work's language — and
 `alternate`, its title's other forms (§5.5.2). These are not bibliographic
@@ -1829,7 +1877,7 @@ be identifiable on its own (§1.13). It is governed by §12.
   "origami": {
     "format": "origami-text",
     "version": "1.0",
-    "profile": "https://origamitext.org/profile/1.0",
+    "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
     "describes": "urn:uuid:97d7808d-…",
     "created": "2026-09-24T09:30:57Z",
     "generator": "Author (macOS)"
@@ -1885,11 +1933,13 @@ back to `value`.
 ```
 
 `ref`, `from` and `to` are element addresses (§6.1), or the bare `id`
-of a concept in the semantic record (`concepts[].id`, §9) — the same id
-the glossary's `<dt id="gloss-<id>">` and the text's concept links carry.
-A map of concepts, which is what Author writes, uses the second form. A
-reader MUST resolve a reference against both. Every concept `ref` MUST
-name a concept that exists.
+of an entry in the semantic record — `concepts[].id`, `citations[].id`,
+`structure.headings[].id` or `endnotes[].id` (§9). For a concept that is
+the same id the glossary's `<dt id="gloss-<id>">` and the text's concept
+links carry. A map of concepts and citations, which is what Author
+writes, uses the second form. A reader MUST resolve a reference against
+both. Every bare `ref` MUST name an entry that exists, and every address
+an element that exists (§18.1).
 
 `nodes` (OPTIONAL) lists the map's members with a display `label` and a
 `kind`, keyed by the same `id` as the views' `ref`. A member listed in
@@ -1945,7 +1995,9 @@ A **convenience copy** of §7.9's carrier attributes, joined by
 `id` ↔ `data-model-id`. `extent` is an array of three numbers here and a
 space-separated string in the attribute; the two MUST agree, and the
 carrier governs (§12.4). `units` and `extent` MUST appear together or
-not at all.
+not at all. A `poster` naming no resource in the package is a
+disagreement with the carrier, whose own `src` is what renders: a
+validator reports a warning, and a reader uses the carrier.
 
 ---
 
@@ -2424,7 +2476,9 @@ the publication deterministic in every one of these cases:
 - a bibliographic field on a citation entry differing from its BibTeX
   entry (§11);
 - a heading list differing from the content documents;
-- a 3D figure over a size budget whose `data-model-source` is absent;
+- a 3D figure over a size budget whose `data-model-source` is absent —
+  the budget is the writer's or the validator's to set, and the reference
+  validator's default is 50 MiB;
 - no rights statement at all, or a `dcterms:license` that is not a URI
   (§4.7);
 - no `epub:type="colophon"` section (§8.4) — reported, since the
@@ -2507,14 +2561,34 @@ ones this profile exists to prevent regressing:
 It MUST be runnable as a command-line tool independent of any reading
 application, and MUST exit non-zero on any error.
 
+### 19.3 The reference validator **[I]**
+
+`origami-schemas/origami-validate.py`, published with this
+specification, is a validator meeting §19.2. It needs Python 3.9 and the
+`jsonschema` package, reads an `.epub` or an unpacked directory, and
+reads the source of no reading application:
+
+```sh
+python3 origami-validate.py validate Publication.epub          # exit 1 on any error
+python3 origami-validate.py validate Publication.epub --json   # the report as JSON
+python3 origami-validate.py extract  Publication.epub          # the §20.1 extraction
+```
+
+`check-validator.py` beside it changes one thing at a time in a
+conforming publication — one case per §18.1 error, one per §18.2
+warning — and asserts the finding; `check-schemas.py` does the same for
+the schemas of §19.1. EPUBCheck is still required for the other half of
+§19.
+
 ---
 
 ## 20. Conformance corpus
 
-Published with this specification: fourteen minimal publications, each
-demonstrating one feature, each accompanied by its **expected extraction
-as JSON** — or, for `11`, `13` and `14`, its expected validator
-verdicts — so an implementer can diff rather than guess.
+Published with this specification: fourteen items of minimal
+publications, each item demonstrating one feature. Every publication is
+accompanied by its **expected validator verdict**, and every publication
+outside `11` and `13` by its **expected extraction as JSON** (§20.1), so
+an implementer can diff rather than guess.
 
 ```
 01-basic-addressing    08-combined
@@ -2548,18 +2622,72 @@ verdicts — so an implementer can diff rather than guess.
   `document.license`, string authors with the name-keyed dictionaries,
   "CCS Concepts:" as a body paragraph, and a `document.digest`. Its
   expected extraction fixes §17.2 and §17.3's outcome.
-- `13` MUST test the colophon: one conforming publication, and three
-  non-conforming — no colophon, a colophon naming a path that does not
-  resolve, and a colophon whose records sit in `META-INF/`.
+- `13` MUST test the colophon: one conforming publication; one with no
+  colophon, which **conforms with a warning** (§8.4, §18.2); and two
+  non-conforming — a colophon naming a path that does not resolve, and a
+  colophon whose records sit in `META-INF/`.
 - `14` MUST carry the full scholarly front matter of §5 — structured
   authors with affiliation, email and ORCID, venue, DOI, subject
   classification, keywords and a publisher's self-citation — with none
   of it present as body text.
 
 **Every publication in the corpus MUST additionally pass EPUBCheck, and
-the corpus build MUST run it.** The corpus is where these rules stop
+the corpus build MUST run it** — with the one exception whose purpose is
+to fail it: `11`'s record that is both a link and a manifest item, which
+MUST fail with exactly `OPF-067`. The corpus is where these rules stop
 being prose: a reader that merges duplicated records passes every prose
 reading of §12.1 and fails `12`.
+
+The corpus is published beside this specification as `origami-corpus/`:
+25 publications in the fourteen items, each item's
+`expected-extraction.json` and `expected-verdict.json`, and
+`build-corpus.py`, which writes every file of every publication
+deterministically and runs EPUBCheck and the reference validator over
+them. Its README states what each publication is for and what a reader
+must make of it. Where the corpus and this text disagree, this text
+governs and the corpus has a defect.
+
+### 20.1 The extraction
+
+An **extraction** is what a reader takes from one publication by the
+algorithm of §17, written as one JSON object so that two implementations
+can be compared by diffing. It is a test artefact, not a format a
+publication carries. Members are listed here in alphabetical order, as
+the reference extractor writes them; array order is document order
+unless stated.
+
+| Member | Contents |
+|---|---|
+| `extraction` | `"1.0"`, this definition's version. |
+| `mode` | `profile` (§17.1), `pre-1.0` (§17.2), or `ordinary-epub` — an unknown MAJOR, §16.2, in which case only `identity`, `documents`, `elements`, `headings`, `metadata` and a `notice` are present. |
+| `profile` | The `dcterms:conformsTo` value, or `null`. |
+| `identity` | `edition`, `work`, `modified`, `release`, `replaces[]`, `isReplacedBy[]` — §4.3, from the package. |
+| `documents` | Spine content documents, as paths relative to the package document. |
+| `elements` | The address (§6.1) of every element with an `id`, in spine and document order. |
+| `headings` | `{address, level, text}` from the content documents — the rank as `level` — omitting headings without an `id` and those inside the colophon. |
+| `metadata` | Package metadata after §12.4: `title`, `language`, `creators[]`, `identifiers[]`, `isPartOf[]`, `subjects[]`, `rights`, `license` (a URI or `null`, never prose, §4.7.2), `rightsHolder`, `accessRights`, `attributionName`, `attributionURL`. |
+| `frontMatter` | §5 from the semantic record: `authors[]` (each `name` in the §5.5.2 shape, with `affiliation`, `email`, `orcid` where present), and where present `title`, `subtitle`, `abstract`, `publication`, `journal` (§5.5.2 shape), `doi`, `isbn`, `keywords`, `ccsConcepts`, `acmReference`. In `pre-1.0` mode, string authors are split and joined to the name-keyed dictionaries, and "CCS Concepts:" / "Keywords:" paragraphs are read (§17.2). |
+| `records` | Each record found: `kind` (`null` and `ignored: true` for an unknown kind), `href`, `declared` (by `<link rel="record">`), and for the JSON records `trusted` (§17.1 step 5). |
+| `sources` | For each fact of §17.3 — `concepts`, `citations`, `bibliography`, `headings`, `endnotes`, `equations`, `tables`, `layouts` — where it was taken from: `semantic.<member>`, `interaction.<member>`, `bibliography`, `content`, or `null` where nothing yielded it. **This is how a reader shows it did not merge.** |
+| `concepts` | `{id, address, term, definition, tag, citations[]}`; `term` and `definition` from the XHTML glossary where the entry resolves (§12.4). |
+| `citations` | `{key, number, address, citedFrom[], concepts[]}`, plus `lang` and `alternate` where present. `citedFrom` lists the address of the nearest element with an `id` around each `biblioref` to that entry, once each, in spine order. |
+| `bibliography` | `{key, type, fields}` per entry, from the source `sources.bibliography` names. Field values have braces removed and whitespace collapsed; `@string` macros, `#` concatenation and the month macros (`sep` → `September`) are expanded. |
+| `endnotes` | `{address, anchor, text}`; `text` from the content document where the note resolves. |
+| `equations` | Every `math` element with an `id`, in spine order: `{address, display, alttext, tex, label}`; `tex` only from an index entry whose `tex-sha256` matches (§7.7.1). |
+| `tables` | Every `<table>` that has or is inside an addressed element: `{address, identifier, values, formulas}`; `values` row by row from the XHTML, `formulas` keyed by A1 reference from the interaction record. |
+| `models` | Every `[data-model-src]` carrier (§7.9.8): `{address, id, src, mediaType, displayable, filename, bytes, up, extentMetres, poster, description, source, joined}`. `extentMetres` is `null` unless `data-model-units="m"` accompanies the extent; `description` is the `<figcaption>`, else a non-empty `alt`, else `null` — **never the file name**. |
+| `layouts` | §10.3, resolved: `views[]` of `{id, name, units, yUp, placements[]}`, each placement `{ref, target, x, y, depthMetres}` with `target` either `{address}` or `{id}` and `depthMetres` `null` for an absent or zero `z`; `members[]`; `unplaced[]`, the members no view places; `connections[]` as declared, never derived. |
+| `links`, `lineage` | §9.6 and §9.7 as written; each lineage entry carries `claim: true`. |
+| `stretchtext` | `{address, text}` for each contracted passage. |
+| `colophon` | `{present}`, and where present `address`, `recordPaths[]` as stated, and `selfCitation` parsed as in `bibliography`. |
+| `unresolved` | `{from, ref}` for each reference that resolved to nothing (§17.1 step 9), never repaired. |
+| `disagreements` | What §12.3 and §17.3 say to log rather than show. |
+
+A reader passes an item when its extraction equals the expected one. The
+members exist to make the reader's decisions visible — the address it
+formed, the source it chose, the description it would announce — so an
+implementation that produces richer output need only produce these
+members alike.
 
 ---
 
@@ -2592,7 +2720,7 @@ application/epub+zip
 <?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0"
          unique-identifier="pub-id" xml:lang="en"
-         prefix="origami: https://origamitext.org/vocab/
+         prefix="origami: https://github.com/frodehegland/OrigamiText/blob/main/profile/vocab.md#
                  cc: http://creativecommons.org/ns#">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="pub-id">urn:uuid:11111111-2222-3333-4444-555555555555</dc:identifier>
@@ -2600,7 +2728,7 @@ application/epub+zip
     <dc:language>en</dc:language>
     <dc:creator>A. Writer</dc:creator>
     <meta property="dcterms:modified">2026-09-24T12:00:00Z</meta>
-    <meta property="dcterms:conformsTo">https://origamitext.org/profile/1.0</meta>
+    <meta property="dcterms:conformsTo">https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0</meta>
     <meta property="dcterms:isVersionOf">urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</meta>
     <meta property="schema:version">1</meta>
     <dc:rights>© 2026 A. Writer.</dc:rights>
@@ -2647,7 +2775,7 @@ application/epub+zip
       xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en" lang="en">
 <head>
   <title>A minimal Origami publication</title>
-  <link rel="profile" href="https://origamitext.org/profile/1.0"/>
+  <link rel="profile" href="https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0"/>
 </head>
 <body>
   <h1 id="P-title">A minimal Origami publication</h1>
@@ -2727,7 +2855,7 @@ application/epub+zip
       Commons Attribution 4.0 International</a>. When reusing this work,
       credit A. Writer.</p>
     <p>This publication conforms to the Origami Text 1.0 profile
-      (https://origamitext.org/profile/1.0).</p>
+      (https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0).</p>
   </section>
 </body>
 </html>
@@ -2758,7 +2886,7 @@ application/epub+zip
 {
   "visual-meta": {
     "format": "visual-meta", "version": "1.1",
-    "profile": "https://origamitext.org/profile/1.0",
+    "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
     "describes": "urn:uuid:11111111-2222-3333-4444-555555555555",
     "generator": "Example writer 1.0"
   },
@@ -2801,7 +2929,7 @@ application/epub+zip
 {
   "origami": {
     "format": "origami-text", "version": "1.0",
-    "profile": "https://origamitext.org/profile/1.0",
+    "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
     "describes": "urn:uuid:11111111-2222-3333-4444-555555555555",
     "created": "2026-09-24T12:00:00Z",
     "generator": "Example writer 1.0"
@@ -2833,9 +2961,15 @@ application/epub+zip
 
 ## Appendix B — implementation status **[I]**
 
-As of 25 September 2026. This specification describes the format; the
+As of 8 October 2026. This specification describes the format; the
 implementations are catching up to it, and this appendix says where they
 are so nobody mistakes the two.
+
+**The specification is complete.** Its three machine-checkable parts are
+published with it: the schemas (§19.1), the reference validator (§19.3),
+and the conformance corpus (§20), whose 25 publications pass EPUBCheck
+5.2.1 with 0 errors and 0 warnings (save the one built to fail it) and
+whose expected results the build regenerates byte for byte.
 
 **AuthorKit** is the shared writer used by every Author app. It
 **conforms**: 40 tests, EPUBCheck 5.2.1 reporting 0 errors and 0
@@ -2873,11 +3007,25 @@ language, and — in
 Import to Format — transliteration, the system's translation of the
 title and abstract, and `acmart`'s translated front matter for languages
 pdfLaTeX sets. The §19.1 semantic-record schema describes §5.5.
-EPUBCheck has not yet been run on its output, so it is not yet claimed
-to conform.
+On 8 October 2026 its writer **conforms**: five exports — four Author
+documents from the golden corpus (mixed content, a map, an image,
+endnotes) and an HT ’26 paper from its LaTeX source, with 24 references
+and six figures — pass EPUBCheck 5.2.1 with 0 errors and 0 warnings and
+the §19.3 validator with 0 errors. The validator's warnings on them are
+editorial: no rights statement where the source gave none, and, for the
+LaTeX paper, "CCS Concepts:" and "Keywords:" kept as body paragraphs
+rather than moved into `document.ccsConcepts` and `document.keywords`
+(§5.3 — a SHOULD for a converting writer).
 
-**Owed:** the §19.2 validator beyond the schemas, and thirteen of the
-fourteen corpus publications with their expected extractions.
+**AuthorKit**'s sample, re-checked by the §19.3 validator, conforms; its
+two warnings are the sample's placeholder models, whose stated
+`data-model-bytes` are the real models' sizes.
+
+**Owed by implementations, not by this specification:** Author for
+macOS adopting AuthorKit; Origami Text's LaTeX import moving the
+classification and keywords out of the body; Origami Text's BibTeX
+inspection, which reads a `#`-concatenated field (`sep # " 04, 2020"`) as
+a field name in `bibliography.conventions.nonStandardFields`.
 
 ### B.1 Errata this specification has absorbed **[I]**
 
@@ -2893,6 +3041,23 @@ corpus.
 | A posterless 3D carrier as `<a href="…usdz">` | `RSC-010`; a manifest fallback does **not** clear it | any element bearing `data-model-src`, no `href` (§7.9) |
 | Nothing about declaring MathML | `OPF-014` | `properties="mathml"` (§4.5) |
 | An affiliation as a single opaque line | `acmart` requires a country and errors without one | read the line from the end: institution, city, country (§C.2) |
+
+Writing the validator and the corpus on 8 October 2026 found nine more:
+places where two careful readers of the text would have built different
+things. None changes what a conforming publication written to the
+earlier text contains, except where a statement contradicted another.
+
+| Earlier text said | Problem | Now |
+|---|---|---|
+| §1.14: a publication MUST carry the human-readable statement | §8.4 makes the colophon a SHOULD, and §18.2 its absence a warning | SHOULD, and MUST be true where present (§1.14); §20's `13` has the colophon-less publication conforming with a warning |
+| §4.4: fall back to self-identification for "an unrecognised `properties` value" | the same section and §16.3 say such a link MUST be ignored | self-identification only where there is no `properties` to read (§4.4) |
+| §7.3: "the href fragment's identifier is the citation's key" | `#bib-K` and key `K` in every implementation, but nothing said how one becomes the other | the key is the fragment less a leading `bib-`; `gloss-` likewise (§7.3) |
+| §9.3: `level`, undefined, with examples using the `<hn>` rank | both writers number sections from 1 under an `<h1>` title | the rank less one constant, read only relatively (§9.3) |
+| §9.5 and §11: mirrored fields "named as BibTeX names them" | a citation's `number` is its ordinal, BibTeX's `number` an issue | the entry's own members are listed and never mirrored (§9.5) |
+| §10.3: a map `ref` is an address or a concept id | both writers also put citations in the map | any semantic-record entry id: concept, citation, heading, endnote (§10.3) |
+| §7.7.1: `tex-sha256` and `mathml-sha256`, undefined | no stated input, so no two implementations could agree | `tex-sha256` over UTF-8 `tex`; `mathml-sha256` informative only (§7.7.1) |
+| §20: expected extractions, undefined; every corpus publication passes EPUBCheck | nothing to diff against; `11` must fail it once | §20.1 defines the extraction; the one deliberate `OPF-067` is stated |
+| §4.1–§4.2: identifiers under `https://origamitext.org/` | the domain was never registered, so neither resolved, though §4.2 says the identifier SHOULD | identifiers in the public repository; the first ones read as the same profile (§4.2) |
 
 ---
 

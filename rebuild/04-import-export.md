@@ -13,8 +13,9 @@ Source paths are relative to the repository root. Unless another path is given, 
 | [`AUTHOR-EXPORT-FRONT-MATTER.md`](../AUTHOR-EXPORT-FRONT-MATTER.md) | How Author (the sibling writing app) should write authors, affiliations, rights and references, so that this app can render them. |
 | [`Origami Text macOS/LATEX-IMPORT-PIPELINE.md`](../Origami%20Text%20macOS/LATEX-IMPORT-PIPELINE.md) | Why the LaTeX importer's stage order is what it is, plus the verification layers and the backlog. |
 | [`Origami Text macOS/CITATION-EPUB-SPEC.md`](../Origami%20Text%20macOS/CITATION-EPUB-SPEC.md) | The contract for Copy to Cite on the clipboard, and what Author must embed for citations. |
-| [`origami-schemas/README.md`](../origami-schemas/README.md) | The JSON Schemas for `visual-meta.json` and `origami.json`, and how to run them. |
-| [`origami-packaging-tests/RUN-THIS.md`](../origami-packaging-tests/RUN-THIS.md) | The five packaging variants and their EPUBCheck results. Variant B (records declared only with `<link rel="record">`) is the conforming shape. |
+| [`origami-schemas/README.md`](../origami-schemas/README.md) | The JSON Schemas for `visual-meta.json` and `origami.json`, the reference validator and extractor (`origami-validate.py`, profile §19.3), their test suites, and how to run them. |
+| [`origami-corpus/README.md`](../origami-corpus/README.md) | The conformance corpus (profile §20): 25 publications in fourteen items, each with its expected extraction and verdict. `11-packaging/B-link-only` (records declared only with `<link rel="record">`) is the conforming packaging shape. |
+| [`origami-packaging-tests/RUN-THIS.md`](../origami-packaging-tests/RUN-THIS.md) | The 24 September packaging test that settled §4.4, kept for its record. Superseded by `origami-corpus/11-packaging`. |
 
 ---
 
@@ -148,7 +149,7 @@ This is the importer the reader and Import to Format both use. A paper is theref
    - `dc:title`, every `dc:creator`, `dc:date`, `dc:identifier`, `dc:language`, `dc:subject` (fallback keywords), `dc:rights` and `dcterms:license`;
    - the venue, from `belongs-to-collection`, then `dcterms:isPartOf`, then `calibre:series`;
    - the DOI (`extractDOI` ~1323), from `scheme="doi"`, `opf:scheme`, `prism:doi`, `schema:doi`, or any `10.NNNN/` identifier;
-   - the profile, from `dcterms:conformsTo` starting `https://origamitext.org/profile/`. A major version above 1 is read as a plain EPUB (~210).
+   - the profile, from `dcterms:conformsTo` starting `https://github.com/frodehegland/OrigamiText/tree/main/profile/`. A major version above 1 is read as a plain EPUB (~210).
 3. The spine: every spine document is read, with `linear="no"` items placed last (`spineContentHrefs` ~1351).
 4. The semantic record:
    - First, `<link rel="record" properties="origami:visual-meta">` (`recordHref` ~1475).
@@ -748,7 +749,7 @@ This differs from the profile's informative layout in §4.8 (`OEBPS/content.opf`
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id"
-         xml:lang="en" prefix="origami: https://origamitext.org/vocab/ cc: http://creativecommons.org/ns#">
+         xml:lang="en" prefix="origami: https://github.com/frodehegland/OrigamiText/blob/main/profile/vocab.md# cc: http://creativecommons.org/ns#">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="pub-id">urn:uuid:3F2A…</dc:identifier>
     <dc:title>Paper title</dc:title>
@@ -764,7 +765,7 @@ This differs from the profile's informative layout in §4.8 (`OEBPS/content.opf`
     <dc:language>en</dc:language>
     <dc:date>2026-09-14</dc:date>
     <meta property="dcterms:modified">2026-10-06T09:30:57Z</meta>
-    <meta property="dcterms:conformsTo">https://origamitext.org/profile/1.0</meta>
+    <meta property="dcterms:conformsTo">https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0</meta>
     <meta property="dcterms:isVersionOf">urn:uuid:9C1D…</meta>
     <meta property="schema:accessMode">textual</meta>
     <meta property="schema:accessMode">visual</meta>                 <!-- when images -->
@@ -929,7 +930,7 @@ In `visual-meta.json`, `document.title`, `subtitle`, `abstract`, `publication`, 
       <li>Bibliography: <code>references.bib</code></li></ul>
   <p>To inspect the raw records, … change the <code>.epub</code> extension to <code>.zip</code> …</p>
   <h3>Rights</h3><p>… Licensed under <a href="…">…</a>. When reusing this work, credit ….</p>
-  <p>This publication is <code>urn:uuid:…</code> and conforms to the Origami Text 1.0 profile (https://origamitext.org/profile/1.0).</p>
+  <p>This publication is <code>urn:uuid:…</code> and conforms to the Origami Text 1.0 profile (https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0).</p>
 </section>
 ```
 
@@ -956,7 +957,7 @@ Both JSON records are encoded with sorted keys, pretty-printed, slashes escaped,
 ```json
 {
   "visual-meta": { "format": "visual-meta", "version": "1.1",
-                   "profile": "https://origamitext.org/profile/1.0",
+                   "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
                    "describes": "urn:uuid:3F2A…", "generator": "Origami Text for macOS",
                    "introduction": "This is Visual-Meta: … See https://visual-meta.info." },
   "document": {
@@ -991,7 +992,7 @@ Both JSON records are encoded with sorted keys, pretty-printed, slashes escaped,
 
 ```json
 {
-  "origami": { "format": "origami-text", "version": "1.0", "profile": "https://origamitext.org/profile/1.0",
+  "origami": { "format": "origami-text", "version": "1.0", "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
                "describes": "urn:uuid:3F2A…", "created": "<modified>", "generator": "Origami Text for macOS" },
   "tables": [ {"identifier": "tex-table-1", "href": "content/paper.html#P-…", "rowCount": 3, "columnCount": 2,
                "cells": [[{"value": "Year"}, {"value": "Total"}],
@@ -1047,7 +1048,7 @@ All of these checks run before the ZIP is assembled.
 | Profile requirement | Writer behaviour |
 |---|---|
 | §4.1 `version="3.0"`, `unique-identifier`, prefixes | Yes; `cc:` only when used |
-| §4.2 `dcterms:conformsTo` | `https://origamitext.org/profile/1.0` |
+| §4.2 `dcterms:conformsTo` | `https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0` |
 | §4.3 work / edition / release | `isVersionOf` / `dc:identifier` / `modified`; no `schema:version`, no `dcterms:replaces` |
 | §4.4 records via `<link rel="record">`, not manifest, not META-INF | Yes (packaging variant B) |
 | §4.6 accessibility | `schema:` access mode, features, hazard, summary |
@@ -1064,7 +1065,7 @@ All of these checks run before the ZIP is assembled.
 | §9–§11 records | Yes |
 | §13 digests | Only `tex-sha256` |
 
-Appendix B of the profile records that EPUBCheck has not yet been run on this writer's output.
+On 8 October 2026 five of this writer's exports (four Author golden documents and the HT '26 paper `ht26-8` from LaTeX) passed EPUBCheck 5.2.1 with 0 errors and 0 warnings, and the profile validator with 0 errors (profile Appendix B).
 
 ---
 
@@ -1268,8 +1269,9 @@ The class's own packages (hyperref, graphicx, booktabs, amsmath) are deliberatel
 | Check | How | Bar |
 |---|---|---|
 | Record schemas | `origami-schemas/check-schemas.py` (the schema self-test) and `validate-records.py <unpacked epub>` (README: venv + `jsonschema`) | All pass. Validation picks the schema by the record's own `format`, not its filename. |
-| Packaging | `origami-packaging-tests/` variants A–E with EPUBCheck 5.2.1 (commands in RUN-THIS.md) | Only B conforms; C gives `OPF-067`. The writer's output must look like B. |
-| EPUBCheck | Run on the writer's output | 0 errors. **Never yet run on this writer** (profile App. B). |
+| Profile validator | `origami-schemas/origami-validate.py validate <epub>` on the writer's output; `check-validator.py` for the validator itself | 0 errors (exit 0). Warnings are read, not ignored. 60/60. |
+| Conformance corpus | `origami-corpus/build-corpus.py --check` with `EPUBCHECK` set; then the rebuilt reader's own extraction of each publication against `expected-extraction.json` | Identical. `11-packaging/B-link-only` is the shape the writer's output must have. |
+| EPUBCheck | Run on the writer's output | 0 errors, 0 warnings. Passed on five exports, 8 Oct 2026 (profile App. B). |
 | Writer self-checks | §4.9 refusals | No false refusals on the corpus; a fabricated dead note is refused (pipeline doc §7.1) |
 | Structural digest | Pipeline doc §5.1: leaked label keys (`sec:\|fig:\|tab:` shapes), duplicate ids, orphan `[cite:]`, unresolved figure markers, PDF assets, raw-TeX residue | Zero on every paper |
 | Anchor integrity | Unzip; every `href="#X"` has `id="X"` | Zero broken anchors |
@@ -1293,7 +1295,9 @@ These are differences between documents and code, or within the code. The rebuil
 7. **[`LATEX-IMPORT-PIPELINE.md`](../Origami%20Text%20macOS/LATEX-IMPORT-PIPELINE.md) §4 is stale.** It describes `id` = positional "purple number" with the stable id in `data-id`, and citations linking `#ref-<n>`. The 1.0 writer does the reverse: `id` = stable id, `data-origami-address` = position, no `data-id`, citations to `#bib-<key>`.
 8. **[`ORIGAMI-EPUB-CONFORMANCE-PLAN.md`](../ORIGAMI-EPUB-CONFORMANCE-PLAN.md) OT-3 is stale.** It says `data-latex` is blocked, but the writer now emits `data-latex` on `<math>` and the importer reads it.
 9. **[`AUTHOR-EXPORT-FRONT-MATTER.md`](../AUTHOR-EXPORT-FRONT-MATTER.md) §2 shows `authors[].name` as a plain string.** Profile §5.5.2 (and this writer) require the `{value, lang, alternate}` object. The note predates §5.5.
-10. **`origami-schemas/README.md` cites profile section numbers from an earlier draft** (§8 and §9 for the records; the profile now uses §9 and §10). It also gives both "58 cases" and "51/51".
+10. *(Resolved 8 Oct 2026: `origami-schemas/README.md` now cites the 1.0 section numbers and the current case counts.)*
+15. **The LaTeX import keeps "CCS Concepts:" and "Keywords:" as body paragraphs** and writes neither `document.ccsConcepts` nor `document.keywords`; the validator warns `FM-BODY-TEXT` (profile §5.3).
+16. **`bibliographyConventions` misreads `#` concatenation.** For `lastaccessed = sep # " 04, 2020"` it lists `2020",\n    year` among `nonStandardFields`.
 11. **BibTeX escaping is inconsistent.** `BibTeXWriter` does not escape `{ } ~ ^`; `BITSImporter` replaces braces with parentheses; Word's CSL→BibTeX writes raw values. Only the LaTeX writer's `escaped` covers all ten specials.
 12. **TeX runs have no timeout and ignore exit codes.** A hung `pdflatex` would block the Format run indefinitely.
 13. **Hard-coded contact email** in the User-Agent of CTAN and Crossref requests (`ACMartVersion.swift`, `BibTeX.swift`).

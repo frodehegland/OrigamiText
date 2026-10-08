@@ -370,9 +370,8 @@ nonisolated enum OrigamiEPUBImporter {
         // resolve. This is a property of the migration, not of the format.
         let declaresProfile = firstCapture(
             in: opf,
-            pattern: "<meta[^>]*property=\"dcterms:conformsTo\"[^>]*>\\s*([^<]+)")?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .hasPrefix("https://origamitext.org/profile/") ?? false
+            pattern: "<meta[^>]*property=\"dcterms:conformsTo\"[^>]*>\\s*([^<]+)")
+            .map { OrigamiEPUBExporter.namesProfile($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? false
             && !newerProfile
         let readable: [(href: String, xhtml: String)] = spineContentHrefs(in: opf)
             .compactMap { href in
@@ -1907,9 +1906,8 @@ nonisolated enum OrigamiEPUBImporter {
                                     encoding: .utf8) else { return [] }
         let opfDirectory = (opfSubpath as NSString).deletingLastPathComponent
         let declaresProfile = firstCapture(
-            in: opf, pattern: "<meta[^>]*property=\"dcterms:conformsTo\"[^>]*>([^<]*)</meta>")?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .hasPrefix("https://origamitext.org/profile/") ?? false
+            in: opf, pattern: "<meta[^>]*property=\"dcterms:conformsTo\"[^>]*>([^<]*)</meta>")
+            .map { OrigamiEPUBExporter.namesProfile($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? false
         let documents: [(href: String, xhtml: String)] = spineContentHrefs(in: opf).compactMap { href in
             let path = joinedPath(opfDirectory, href.removingPercentEncoding ?? href)
             guard let xhtml = try? String(contentsOf: folder.appendingPathComponent(path),
@@ -2126,7 +2124,7 @@ nonisolated enum OrigamiEPUBImporter {
         guard let value = firstCapture(
             in: opf, pattern: "<meta[^>]*property=\"dcterms:conformsTo\"[^>]*>\\s*([^<]+)")?
             .trimmingCharacters(in: .whitespacesAndNewlines),
-              value.hasPrefix("https://origamitext.org/profile/") else { return nil }
+              OrigamiEPUBExporter.namesProfile(value) else { return nil }
         return value.split(separator: "/").last.map(String.init)
     }
 

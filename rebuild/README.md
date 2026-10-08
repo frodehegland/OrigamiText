@@ -32,8 +32,9 @@ Read in this order. Paths are from the repository root.
 | Document | What it defines |
 |---|---|
 | [ORIGAMI-EPUB-PROFILE-1.0.md](../ORIGAMI-EPUB-PROFILE-1.0.md) | **The main format.** How an Origami document travels as a conforming EPUB 3: package, metadata, records, citations, identifiers. Normative. |
-| [origami-schemas/](../origami-schemas/) | JSON Schemas for the profile's records (`visual-meta-1.1`, `origami-interaction-1.0`), their validators, and a conforming sample EPUB. |
-| [origami-packaging-tests/](../origami-packaging-tests/) | The first conformance corpus item: five packaging variants and their EPUBCheck results. |
+| [origami-schemas/](../origami-schemas/) | JSON Schemas for the profile's records (`visual-meta-1.1`, `origami-interaction-1.0`), the reference validator and extractor (§19.3, §20.1), their test suites, and a conforming sample EPUB. |
+| [origami-corpus/](../origami-corpus/) | The conformance corpus (§20): 25 publications, each with what a reader must extract and what a validator must say. A rebuilt reader is done when its extractions match. |
+| [origami-packaging-tests/](../origami-packaging-tests/) | The September packaging test that settled §4.4. Superseded by `origami-corpus/11-packaging`. |
 | [ORIGAMI-DOCUMENT-FORMAT.md](../ORIGAMI-DOCUMENT-FORMAT.md) | The native `.origamitext` JSON document: blocks, addresses, relations, Visual-Meta. |
 | [Origami Text macOS/CITATION-EPUB-SPEC.md](../Origami%20Text%20macOS/CITATION-EPUB-SPEC.md) | The citation contract shared with the Author app: clipboard payload, BibTeX fields, back-matter list. |
 | [ORIGAMI-EPUB-CONFORMANCE-PLAN.md](../ORIGAMI-EPUB-CONFORMANCE-PLAN.md) | What the reader supports of EPUB 3 itself, and what is still planned. |
@@ -76,7 +77,7 @@ either side:
 - Chapter 1 §9 — file naming, fields missing from the spec, module sources
 - Chapter 2 §10 — reading-mode names, citation class names, reading-position keys
 - Chapter 3 §3.6, §4 and §7.3 — sync-file keys, where the identity rule is applied, how the OrigamiFormat package and the app differ
-- Chapter 4 §7.3 — the writer against Profile 1.0 (revised 6 October 2026), stale pipeline documents
+- Chapter 4 §7.3 — the writer against Profile 1.0 (revised 8 October 2026), stale pipeline documents
 - Chapter 5 appendix — DOI cleaners, the one remaining `try?` on extraction
 - Chapter 6 §3.6 and §7.3 — what is left of the AI routing rule (one `try?`, iOS reading AI, privacy wording), where the Map code lives
 

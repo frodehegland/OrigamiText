@@ -1,0 +1,169 @@
+{
+  "glossary.epub": {
+    "bibliography": [
+      {
+        "fields": {
+          "author": "Nelson, Theodor H.",
+          "title": "Literary Machines",
+          "year": "1981"
+        },
+        "key": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        "type": "book"
+      }
+    ],
+    "citations": [
+      {
+        "address": "backmatter.xhtml#bib-dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        "citedFrom": [
+          "content.xhtml#P-22222222-2222-4222-8222-222222222222"
+        ],
+        "concepts": [
+          "cccccccc-cccc-4ccc-8ccc-c1c1c1c1c1c1"
+        ],
+        "key": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        "number": 1
+      }
+    ],
+    "colophon": {
+      "address": "backmatter.xhtml#origami-publication-info",
+      "present": true,
+      "recordPaths": [
+        "visual-meta.json",
+        "references.bib"
+      ],
+      "selfCitation": {
+        "fields": {
+          "author": "Writer, A.",
+          "title": "Glossary",
+          "year": "2026"
+        },
+        "key": "writer2026corpus",
+        "type": "misc"
+      }
+    },
+    "concepts": [
+      {
+        "address": "backmatter.xhtml#gloss-aaaaaaaa-aaaa-4aaa-8aaa-a1a1a1a1a1a1",
+        "citations": [],
+        "definition": "Text with machine-followable links between its parts.",
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-a1a1a1a1a1a1",
+        "tag": "concept",
+        "term": "hypertext"
+      },
+      {
+        "address": "backmatter.xhtml#gloss-bbbbbbbb-bbbb-4bbb-8bbb-b1b1b1b1b1b1",
+        "citations": [],
+        "definition": "A connection from one place in a text to another.",
+        "id": "bbbbbbbb-bbbb-4bbb-8bbb-b1b1b1b1b1b1",
+        "tag": "concept",
+        "term": "link"
+      },
+      {
+        "address": "backmatter.xhtml#gloss-cccccccc-cccc-4ccc-8ccc-c1c1c1c1c1c1",
+        "citations": [
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        ],
+        "definition": "The inclusion of part of one document in another by reference, so that it shows what it points at.",
+        "id": "cccccccc-cccc-4ccc-8ccc-c1c1c1c1c1c1",
+        "tag": "technique",
+        "term": "transclusion"
+      }
+    ],
+    "disagreements": [],
+    "documents": [
+      "content.xhtml",
+      "backmatter.xhtml"
+    ],
+    "elements": [
+      "content.xhtml#H-title",
+      "content.xhtml#P-22222222-2222-4222-8222-222222222222",
+      "backmatter.xhtml#gloss-aaaaaaaa-aaaa-4aaa-8aaa-a1a1a1a1a1a1",
+      "backmatter.xhtml#gloss-bbbbbbbb-bbbb-4bbb-8bbb-b1b1b1b1b1b1",
+      "backmatter.xhtml#gloss-cccccccc-cccc-4ccc-8ccc-c1c1c1c1c1c1",
+      "backmatter.xhtml#bib-dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "backmatter.xhtml#origami-publication-info"
+    ],
+    "endnotes": [],
+    "equations": [],
+    "extraction": "1.0",
+    "frontMatter": {
+      "authors": [
+        {
+          "name": {
+            "lang": "en",
+            "value": "A. Writer"
+          }
+        }
+      ],
+      "title": {
+        "lang": "en",
+        "value": "Glossary"
+      }
+    },
+    "headings": [
+      {
+        "address": "content.xhtml#H-title",
+        "level": 1,
+        "text": "Glossary"
+      }
+    ],
+    "identity": {
+      "edition": "urn:uuid:33333333-3333-4333-8333-000000000003",
+      "isReplacedBy": [],
+      "modified": "2026-10-08T12:00:00Z",
+      "release": null,
+      "replaces": [],
+      "work": "urn:uuid:44444444-4444-4444-8444-aaaaaaaa0003"
+    },
+    "layouts": null,
+    "lineage": [],
+    "links": [],
+    "metadata": {
+      "accessRights": null,
+      "attributionName": "A. Writer",
+      "attributionURL": null,
+      "creators": [
+        "A. Writer"
+      ],
+      "identifiers": [
+        "urn:uuid:33333333-3333-4333-8333-000000000003"
+      ],
+      "isPartOf": [],
+      "language": "en",
+      "license": "https://creativecommons.org/licenses/by/4.0/",
+      "rights": "© 2026 A. Writer.",
+      "rightsHolder": null,
+      "subjects": [],
+      "title": "Glossary"
+    },
+    "mode": "profile",
+    "models": [],
+    "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
+    "records": [
+      {
+        "declared": true,
+        "href": "visual-meta.json",
+        "kind": "visual-meta",
+        "trusted": true
+      },
+      {
+        "declared": true,
+        "href": "references.bib",
+        "kind": "bibliography"
+      }
+    ],
+    "sources": {
+      "bibliography": "bibliography",
+      "citations": "semantic.citations",
+      "concepts": "semantic.concepts",
+      "endnotes": null,
+      "equations": "content",
+      "headings": "content",
+      "layouts": null,
+      "tables": null
+    },
+    "stretchtext": [],
+    "tables": [],
+    "unresolved": []
+  }
+}

@@ -1,0 +1,193 @@
+{
+  "scholarly-front-matter.epub": {
+    "bibliography": [],
+    "citations": [],
+    "colophon": {
+      "address": "backmatter.xhtml#origami-publication-info",
+      "present": true,
+      "recordPaths": [
+        "visual-meta.json"
+      ],
+      "selfCitation": {
+        "fields": {
+          "author": "Rimington, Bob and 王, 小明 and Hargood, Charlie",
+          "doi": "10.1145/3800935.3830844",
+          "journal": "New Review of Hypermedia and Multimedia",
+          "title": "Linked Locative Ludonarrative",
+          "year": "2026"
+        },
+        "key": "rimington2026linked",
+        "type": "article"
+      }
+    },
+    "concepts": [],
+    "disagreements": [],
+    "documents": [
+      "content.xhtml",
+      "backmatter.xhtml"
+    ],
+    "elements": [
+      "content.xhtml#H-title",
+      "content.xhtml#P-subtitle",
+      "content.xhtml#P-authors",
+      "content.xhtml#S-abstract",
+      "content.xhtml#H-abstract",
+      "content.xhtml#P-22222222-2222-4222-8222-222222222222",
+      "content.xhtml#H-33333333-3333-4333-8333-333333333333",
+      "content.xhtml#P-44444444-4444-4444-8444-444444444444",
+      "backmatter.xhtml#origami-publication-info"
+    ],
+    "endnotes": [],
+    "equations": [],
+    "extraction": "1.0",
+    "frontMatter": {
+      "abstract": {
+        "lang": "en",
+        "value": "Hypertext narrative has found itself in new ludic domains."
+      },
+      "acmReference": "Bob Rimington, Xiaoming Wang, and Charlie Hargood. 2026. Linked Locative Ludonarrative. In Proceedings of the 37th ACM Conference on Hypertext and Social Media (HT ’26). ACM, New York, NY, USA, 10 pages. https://doi.org/10.1145/3800935.3830844",
+      "authors": [
+        {
+          "affiliation": "University of Southampton, Southampton, UK",
+          "email": "e.m.rimington@soton.ac.uk",
+          "name": {
+            "lang": "en",
+            "value": "Bob Rimington"
+          },
+          "orcid": "0000-0002-1825-0097"
+        },
+        {
+          "affiliation": "Peking University, Beijing, China",
+          "name": {
+            "alternate": [
+              {
+                "lang": "zh-Latn",
+                "relation": "transliteration",
+                "value": "Wang Xiaoming"
+              },
+              {
+                "lang": "en",
+                "relation": "display",
+                "value": "Xiaoming Wang"
+              }
+            ],
+            "lang": "zh-Hans",
+            "value": "王小明"
+          },
+          "orcid": "0000-0001-5109-3700"
+        },
+        {
+          "affiliation": "Bournemouth University, Poole, UK",
+          "name": {
+            "lang": "en",
+            "value": "Charlie Hargood"
+          }
+        }
+      ],
+      "ccsConcepts": [
+        "Human-centered computing → User studies",
+        "Human-centered computing → Mixed / augmented reality"
+      ],
+      "doi": "10.1145/3800935.3830844",
+      "journal": {
+        "lang": "en",
+        "value": "New Review of Hypermedia and Multimedia"
+      },
+      "keywords": [
+        "Locative Hypertext",
+        "Ludonarrative"
+      ],
+      "publication": {
+        "lang": "en",
+        "value": "37th ACM Conference on Hypertext and Social Media"
+      },
+      "subtitle": {
+        "lang": "en",
+        "value": "A study in locative hypertext"
+      },
+      "title": {
+        "lang": "en",
+        "value": "Linked Locative Ludonarrative"
+      }
+    },
+    "headings": [
+      {
+        "address": "content.xhtml#H-title",
+        "level": 1,
+        "text": "Linked Locative Ludonarrative"
+      },
+      {
+        "address": "content.xhtml#H-abstract",
+        "level": 2,
+        "text": "Abstract"
+      },
+      {
+        "address": "content.xhtml#H-33333333-3333-4333-8333-333333333333",
+        "level": 2,
+        "text": "Introduction"
+      }
+    ],
+    "identity": {
+      "edition": "urn:uuid:eeeeeeee-eeee-4eee-8eee-000000000014",
+      "isReplacedBy": [],
+      "modified": "2026-10-08T12:00:00Z",
+      "release": null,
+      "replaces": [],
+      "work": "urn:uuid:ffffffff-ffff-4fff-8fff-aaaaaaaa0014"
+    },
+    "layouts": null,
+    "lineage": [],
+    "links": [],
+    "metadata": {
+      "accessRights": "open access",
+      "attributionName": "Bob Rimington, 王小明 and Charlie Hargood",
+      "attributionURL": "https://doi.org/10.1145/3800935.3830844",
+      "creators": [
+        "Bob Rimington",
+        "王小明",
+        "Charlie Hargood"
+      ],
+      "identifiers": [
+        "urn:uuid:eeeeeeee-eeee-4eee-8eee-000000000014",
+        "10.1145/3800935.3830844"
+      ],
+      "isPartOf": [
+        "37th ACM Conference on Hypertext and Social Media",
+        "New Review of Hypermedia and Multimedia"
+      ],
+      "language": "en",
+      "license": "https://creativecommons.org/licenses/by/4.0/",
+      "rights": "© 2026 Copyright held by the owner/author(s).",
+      "rightsHolder": "Association for Computing Machinery",
+      "subjects": [
+        "Locative Hypertext",
+        "Ludonarrative"
+      ],
+      "title": "Linked Locative Ludonarrative"
+    },
+    "mode": "profile",
+    "models": [],
+    "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
+    "records": [
+      {
+        "declared": true,
+        "href": "visual-meta.json",
+        "kind": "visual-meta",
+        "trusted": true
+      }
+    ],
+    "sources": {
+      "bibliography": null,
+      "citations": null,
+      "concepts": null,
+      "endnotes": null,
+      "equations": "content",
+      "headings": "content",
+      "layouts": null,
+      "tables": null
+    },
+    "stretchtext": [],
+    "tables": [],
+    "unresolved": []
+  }
+}

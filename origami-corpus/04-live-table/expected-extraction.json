@@ -1,0 +1,151 @@
+{
+  "live-table.epub": {
+    "bibliography": [],
+    "citations": [],
+    "colophon": {
+      "address": "backmatter.xhtml#origami-publication-info",
+      "present": true,
+      "recordPaths": [
+        "visual-meta.json",
+        "origami.json"
+      ],
+      "selfCitation": {
+        "fields": {
+          "author": "Writer, A.",
+          "title": "A live table",
+          "year": "2026"
+        },
+        "key": "writer2026corpus",
+        "type": "misc"
+      }
+    },
+    "concepts": [],
+    "disagreements": [],
+    "documents": [
+      "content.xhtml",
+      "backmatter.xhtml"
+    ],
+    "elements": [
+      "content.xhtml#H-title",
+      "content.xhtml#P-22222222-2222-4222-8222-222222222222",
+      "content.xhtml#P-44444444-4444-4444-8444-444444444444",
+      "backmatter.xhtml#origami-publication-info"
+    ],
+    "endnotes": [],
+    "equations": [],
+    "extraction": "1.0",
+    "frontMatter": {
+      "authors": [
+        {
+          "name": {
+            "lang": "en",
+            "value": "A. Writer"
+          }
+        }
+      ],
+      "title": {
+        "lang": "en",
+        "value": "A live table"
+      }
+    },
+    "headings": [
+      {
+        "address": "content.xhtml#H-title",
+        "level": 1,
+        "text": "A live table"
+      }
+    ],
+    "identity": {
+      "edition": "urn:uuid:44444444-4444-4444-8444-000000000004",
+      "isReplacedBy": [],
+      "modified": "2026-10-08T12:00:00Z",
+      "release": null,
+      "replaces": [],
+      "work": "urn:uuid:55555555-5555-4555-8555-aaaaaaaa0004"
+    },
+    "layouts": null,
+    "lineage": [],
+    "links": [],
+    "metadata": {
+      "accessRights": null,
+      "attributionName": "A. Writer",
+      "attributionURL": null,
+      "creators": [
+        "A. Writer"
+      ],
+      "identifiers": [
+        "urn:uuid:44444444-4444-4444-8444-000000000004"
+      ],
+      "isPartOf": [],
+      "language": "en",
+      "license": "https://creativecommons.org/licenses/by/4.0/",
+      "rights": "© 2026 A. Writer.",
+      "rightsHolder": null,
+      "subjects": [],
+      "title": "A live table"
+    },
+    "mode": "profile",
+    "models": [],
+    "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
+    "records": [
+      {
+        "declared": true,
+        "href": "visual-meta.json",
+        "kind": "visual-meta",
+        "trusted": true
+      },
+      {
+        "declared": true,
+        "href": "origami.json",
+        "kind": "interaction",
+        "trusted": true
+      }
+    ],
+    "sources": {
+      "bibliography": null,
+      "citations": null,
+      "concepts": null,
+      "endnotes": null,
+      "equations": "content",
+      "headings": "content",
+      "layouts": null,
+      "tables": "interaction.tables"
+    },
+    "stretchtext": [],
+    "tables": [
+      {
+        "address": "content.xhtml#P-44444444-4444-4444-8444-444444444444",
+        "formulas": {
+          "B4": "=SUM(B2:B3)",
+          "C2": "=B2/B4",
+          "C3": "=B3/B4",
+          "C4": "=ROUND(C2+C3, 2)"
+        },
+        "identifier": "T-99999999-9999-4999-8999-999999999999",
+        "values": [
+          [
+            "Year",
+            "Papers",
+            "Share"
+          ],
+          [
+            "2024",
+            "120",
+            "0.48"
+          ],
+          [
+            "2025",
+            "130",
+            "0.52"
+          ],
+          [
+            "Total",
+            "250",
+            "1"
+          ]
+        ]
+      }
+    ],
+    "unresolved": []
+  }
+}

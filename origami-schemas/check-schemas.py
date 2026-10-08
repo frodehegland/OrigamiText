@@ -24,7 +24,7 @@ INTERACTION = json.loads((HERE / "origami-interaction-1.0.schema.json").read_tex
 
 UUID = "urn:uuid:97d7808d-d373-4ba7-a350-f6a7895c8811"
 WORK = "urn:uuid:0f2c6a51-1111-2222-3333-444455556666"
-PROFILE = "https://origamitext.org/profile/1.0"
+PROFILE = "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0"
 
 
 def semantic(**overrides):

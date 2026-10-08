@@ -1,0 +1,36 @@
+{
+  "edge-cases.epub": {
+    "conforms": true,
+    "errors": [],
+    "warnings": [
+      {
+        "code": "M3D-POSTER-MISSING",
+        "section": "§10.5, §12.4"
+      }
+    ]
+  },
+  "legacy-identifier.epub": {
+    "conforms": true,
+    "errors": [],
+    "warnings": [
+      {
+        "code": "PROFILE-LEGACY-ID",
+        "section": "§4.2"
+      },
+      {
+        "code": "PKG-PREFIX-LEGACY",
+        "section": "§4.1"
+      }
+    ]
+  },
+  "unknown-major.epub": {
+    "conforms": false,
+    "errors": [
+      {
+        "code": "PROFILE-MAJOR",
+        "section": "§16.2"
+      }
+    ],
+    "warnings": []
+  }
+}

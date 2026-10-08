@@ -1,0 +1,214 @@
+{
+  "citations.epub": {
+    "bibliography": [
+      {
+        "fields": {
+          "author": "Nelson, Theodor H.",
+          "booktitle": "Proceedings of the 1965 20th National Conference",
+          "doi": "10.1145/800197.806036",
+          "pages": "84--100",
+          "title": "A File Structure for the Complex, the Changing and the Indeterminate",
+          "year": "1965"
+        },
+        "key": "55555555-5555-4555-8555-555555555555",
+        "type": "article"
+      },
+      {
+        "fields": {
+          "abstract": "How a document can carry its own metadata where a person can see it.",
+          "author": "Hegland, Frode and Writer, A.",
+          "booktitle": "ACM Conference on Hypertext and Social Media (HT '26)",
+          "month": "September",
+          "title": "Visual-Meta in Practice",
+          "year": "2026"
+        },
+        "key": "66666666-6666-4666-8666-666666666666",
+        "type": "inproceedings"
+      },
+      {
+        "fields": {
+          "author": "王小明",
+          "langid": "chinese",
+          "publisher": "Example Press",
+          "title": "数字文本与知识组织",
+          "year": "2024"
+        },
+        "key": "77777777-7777-4777-8777-777777777777",
+        "type": "book"
+      }
+    ],
+    "citations": [
+      {
+        "address": "backmatter.xhtml#bib-55555555-5555-4555-8555-555555555555",
+        "citedFrom": [
+          "content.xhtml#P-22222222-2222-4222-8222-222222222222",
+          "content.xhtml#P-33333333-3333-4333-8333-333333333333"
+        ],
+        "concepts": [],
+        "key": "55555555-5555-4555-8555-555555555555",
+        "number": 1
+      },
+      {
+        "address": "backmatter.xhtml#bib-66666666-6666-4666-8666-666666666666",
+        "citedFrom": [
+          "content.xhtml#P-22222222-2222-4222-8222-222222222222",
+          "content.xhtml#P-33333333-3333-4333-8333-333333333333"
+        ],
+        "concepts": [],
+        "key": "66666666-6666-4666-8666-666666666666",
+        "number": 2
+      },
+      {
+        "address": "backmatter.xhtml#bib-77777777-7777-4777-8777-777777777777",
+        "alternate": [
+          {
+            "lang": "zh-Latn",
+            "relation": "transliteration",
+            "value": "Shuzi Wenben yu Zhishi Zuzhi"
+          },
+          {
+            "lang": "en",
+            "relation": "translation",
+            "value": "Digital Text and Knowledge Organization"
+          }
+        ],
+        "citedFrom": [
+          "content.xhtml#P-33333333-3333-4333-8333-333333333333"
+        ],
+        "concepts": [],
+        "key": "77777777-7777-4777-8777-777777777777",
+        "lang": "zh-Hans",
+        "number": 3
+      }
+    ],
+    "colophon": {
+      "address": "backmatter.xhtml#origami-publication-info",
+      "present": true,
+      "recordPaths": [
+        "visual-meta.json",
+        "references.bib"
+      ],
+      "selfCitation": {
+        "fields": {
+          "author": "Writer, A.",
+          "title": "Citations",
+          "year": "2026"
+        },
+        "key": "writer2026corpus",
+        "type": "misc"
+      }
+    },
+    "concepts": [],
+    "disagreements": [],
+    "documents": [
+      "content.xhtml",
+      "backmatter.xhtml"
+    ],
+    "elements": [
+      "content.xhtml#H-title",
+      "content.xhtml#H-11111111-1111-4111-8111-111111111111",
+      "content.xhtml#P-22222222-2222-4222-8222-222222222222",
+      "content.xhtml#P-33333333-3333-4333-8333-333333333333",
+      "backmatter.xhtml#bib-55555555-5555-4555-8555-555555555555",
+      "backmatter.xhtml#bib-66666666-6666-4666-8666-666666666666",
+      "backmatter.xhtml#bib-77777777-7777-4777-8777-777777777777",
+      "backmatter.xhtml#origami-publication-info"
+    ],
+    "endnotes": [],
+    "equations": [],
+    "extraction": "1.0",
+    "frontMatter": {
+      "authors": [
+        {
+          "name": {
+            "lang": "en",
+            "value": "A. Writer"
+          }
+        }
+      ],
+      "title": {
+        "lang": "en",
+        "value": "Citations"
+      }
+    },
+    "headings": [
+      {
+        "address": "content.xhtml#H-title",
+        "level": 1,
+        "text": "Citations"
+      },
+      {
+        "address": "content.xhtml#H-11111111-1111-4111-8111-111111111111",
+        "level": 2,
+        "text": "Sources"
+      }
+    ],
+    "identity": {
+      "edition": "urn:uuid:22222222-2222-4222-8222-000000000002",
+      "isReplacedBy": [],
+      "modified": "2026-10-08T12:00:00Z",
+      "release": null,
+      "replaces": [],
+      "work": "urn:uuid:33333333-3333-4333-8333-aaaaaaaa0002"
+    },
+    "layouts": null,
+    "lineage": [],
+    "links": [
+      {
+        "action": "origamitext://open/5a1c0000-0000-4000-8000-000000000001#P-9f2a0000-0000-4000-8000-000000000001",
+        "fromAddress": "content.xhtml#P-33333333-3333-4333-8333-333333333333",
+        "quotedText": "the document explains itself",
+        "rel": "cites",
+        "toAddress": "content.xhtml#P-9f2a0000-0000-4000-8000-000000000001",
+        "toEdition": "urn:uuid:5a1c0000-0000-4000-8000-000000000001"
+      }
+    ],
+    "metadata": {
+      "accessRights": null,
+      "attributionName": "A. Writer",
+      "attributionURL": null,
+      "creators": [
+        "A. Writer"
+      ],
+      "identifiers": [
+        "urn:uuid:22222222-2222-4222-8222-000000000002"
+      ],
+      "isPartOf": [],
+      "language": "en",
+      "license": "https://creativecommons.org/licenses/by/4.0/",
+      "rights": "© 2026 A. Writer.",
+      "rightsHolder": null,
+      "subjects": [],
+      "title": "Citations"
+    },
+    "mode": "profile",
+    "models": [],
+    "profile": "https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0",
+    "records": [
+      {
+        "declared": true,
+        "href": "visual-meta.json",
+        "kind": "visual-meta",
+        "trusted": true
+      },
+      {
+        "declared": true,
+        "href": "references.bib",
+        "kind": "bibliography"
+      }
+    ],
+    "sources": {
+      "bibliography": "bibliography",
+      "citations": "semantic.citations",
+      "concepts": null,
+      "endnotes": null,
+      "equations": "content",
+      "headings": "content",
+      "layouts": null,
+      "tables": null
+    },
+    "stretchtext": [],
+    "tables": [],
+    "unresolved": []
+  }
+}

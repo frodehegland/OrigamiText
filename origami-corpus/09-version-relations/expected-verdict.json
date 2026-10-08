@@ -1,0 +1,17 @@
+{
+  "edition1-release1.epub": {
+    "conforms": true,
+    "errors": [],
+    "warnings": []
+  },
+  "edition1-release2.epub": {
+    "conforms": true,
+    "errors": [],
+    "warnings": []
+  },
+  "edition2.epub": {
+    "conforms": true,
+    "errors": [],
+    "warnings": []
+  }
+}

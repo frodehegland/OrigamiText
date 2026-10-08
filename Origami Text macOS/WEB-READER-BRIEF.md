@@ -27,7 +27,7 @@ smarts required for v1: static hosting over a folder of `.epub` files
 ## 2. The document format (what the exporter writes)
 
 The format itself is defined by the **Origami EPUB Profile 1.0**
-(`ORIGAMI-EPUB-PROFILE-1.0.md`, https://origamitext.org/profile/1.0;
+(`ORIGAMI-EPUB-PROFILE-1.0.md`, https://github.com/frodehegland/OrigamiText/tree/main/profile/1.0;
 source at https://github.com/frodehegland/OrigamiText, with the full
 app and its rebuild guide). Where this
 section and the profile disagree, the profile wins.

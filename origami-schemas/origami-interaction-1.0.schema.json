@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://origamitext.org/schema/1.0/origami-interaction-1.0.schema.json",
+  "$id": "https://github.com/frodehegland/OrigamiText/blob/main/origami-schemas/origami-interaction-1.0.schema.json",
   "title": "Origami EPUB Profile 1.0 — the interaction record",
   "description": "Schema for the record declared with properties=\"origami:interaction\". Authoritative for table formulas, authored layouts, interaction declarations and the 3D model index. See profile §9.\n\nTwo things this schema exists to prevent. First, §9.0's separation: the semantic members are declared forbidden below, so a record carrying them is rejected by the schema itself rather than by a validator's own walk — deletion, not renaming, because a renamed member is a second copy waiting to diverge. Second, §14's boundary: this record holds what the WRITER authored, never reader state. Reading position, chosen view, personal layouts and highlights belong in external W3C Web Annotation documents, and the known reader-state member names are forbidden here too.",
   "type": "object",
@@ -221,7 +221,7 @@
 
     "profileURI": {
       "type": "string",
-      "pattern": "^https://origamitext\\.org/profile/[0-9]+\\.[0-9]+$"
+      "pattern": "^https://(github\\.com/frodehegland/OrigamiText/tree/main|origamitext\\.org)/profile/[0-9]+\\.[0-9]+$"
     },
 
     "publicationIdentifier": {
