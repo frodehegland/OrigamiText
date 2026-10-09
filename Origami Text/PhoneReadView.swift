@@ -175,7 +175,9 @@ struct ReadHomeView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(.bar)
+                // The list's own ground, so the foot reads as part of
+                // the shelf rather than a grey band under it.
+                .background(Color(uiColor: .systemBackground))
             }
             .navigationDestination(item: $model.readerRecordID) { recordID in
                 PhoneReaderView(docID: recordID)
@@ -508,6 +510,12 @@ struct PhoneSettingsView: View {
     @AppStorage("authorName") private var authorName = ""
     /// What shows while a book is still arriving.
     @AppStorage(LoadingStyle.defaultsKey) private var loadingStyleRaw = LoadingStyle.animation.rawValue
+    /// How the reading screen meets the edges.
+    @AppStorage(ReaderChrome.defaultsKey) private var chromeRaw = ReaderChrome.pill.rawValue
+    /// Focus's type.
+    @AppStorage(FocusFace.defaultsKey) private var focusFaceRaw = FocusFace.iowan.rawValue
+    @AppStorage(FocusTypography.justifyKey) private var focusJustified = false
+    @AppStorage(FocusTypography.rareLigaturesKey) private var focusRareLigatures = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -520,7 +528,7 @@ struct PhoneSettingsView: View {
                 } header: {
                     Text("Your Name")
                 } footer: {
-                    Text("Signs your highlights and notes, and finds the papers you wrote.")
+                    Text("First name, middle name, last name — as in “Frode Alexander Hegland”, the order your papers print it. Signs your highlights and notes, and finds the papers you wrote.")
                 }
                 Section {
                     Picker("Citations", selection: $citationStyleRaw) {
@@ -547,6 +555,37 @@ struct PhoneSettingsView: View {
                     Text("Endnotes & Footnotes")
                 } footer: {
                     Text("How note marks read: the raised number the paper prints (the default), bracketed, a quiet ‡, or the [] fold. A raised number must mean exactly one thing, so choosing Superscript for one moves the other off it.")
+                }
+                Section {
+                    Picker("Face", selection: $focusFaceRaw) {
+                        ForEach(FocusFace.allCases) { face in
+                            Text(face.displayName)
+                                .font(face.swiftUIFont(size: 17, weight: .regular))
+                                .tag(face.rawValue)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                    Toggle("Justify", isOn: $focusJustified)
+                    Toggle("Rare & Historical Ligatures", isOn: $focusRareLigatures)
+                        .disabled(!(FocusFace(rawValue: focusFaceRaw) ?? .iowan).hasRareLigatures)
+                } header: {
+                    Text("Focus Type")
+                } footer: {
+                    Text("How Focus sets its words: always hyphenated, never a lone word on a last line, figures in old style, and acronyms in true small capitals (Iowan Old Style and New York). Rare and historical ligatures — ct, st and their kin — are Hoefler Text's and Baskerville's: lovely in a sentence, tiring over a long section.")
+                }
+                Section {
+                    Picker("Reading Screen", selection: $chromeRaw) {
+                        ForEach(ReaderChrome.allCases) { style in
+                            Text(style.displayName).tag(style.rawValue)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } header: {
+                    Text("Reading Screen")
+                } footer: {
+                    Text("Pill: the page runs to the top, the toolbar fades after four quiet seconds, and a black pill at the foot — the Dynamic Island's twin — brings it back. Framed: a black band at the top; the toolbar fades the same way, and a tap where it was brings it back.")
                 }
                 Section {
                     Picker("On Loading", selection: $loadingStyleRaw) {
@@ -669,6 +708,9 @@ struct PhoneReaderView: View {
     /// Whether the bottom bars are showing; they fade after four quiet
     /// seconds. `barsWake` restarts the count.
     @State private var barsShown = true
+    /// Whether the page has scrolled off its top — the top band's fade
+    /// shows only then, so a page at rest keeps its first line clear.
+    @State private var pageScrolled = false
     @State private var barsWake = 0
     /// The brief word a To Read press answers with ("To Read", or
     /// "Removed from To Read"); nil when nothing is showing.
@@ -742,6 +784,19 @@ struct PhoneReaderView: View {
     }
     private var bodySize: CGFloat { 17 + fontDelta }
 
+    /// Settings ▸ Focus Type.
+    @AppStorage(FocusFace.defaultsKey) private var focusFaceRaw = FocusFace.iowan.rawValue
+    @AppStorage(FocusTypography.justifyKey) private var focusJustified = false
+    @AppStorage(FocusTypography.rareLigaturesKey) private var focusRareLigatures = false
+    private var focusTypography: FocusTypography {
+        FocusTypography(face: FocusFace(rawValue: focusFaceRaw) ?? .iowan,
+                        justified: focusJustified, rareLigatures: focusRareLigatures)
+    }
+
+    /// Settings ▸ Reading Screen.
+    @AppStorage(ReaderChrome.defaultsKey) private var chromeRaw = ReaderChrome.pill.rawValue
+    private var chrome: ReaderChrome { ReaderChrome(rawValue: chromeRaw) ?? .pill }
+
     /// Settings ▸ On Loading.
     @AppStorage(LoadingStyle.defaultsKey) private var loadingStyleRaw = LoadingStyle.animation.rawValue
     private var loadingStyle: LoadingStyle { LoadingStyle(rawValue: loadingStyleRaw) ?? .animation }
@@ -767,15 +822,21 @@ struct PhoneReaderView: View {
                 // some seconds. Its title page floats in space meanwhile,
                 // to touch and shake; no bars until there is a page for
                 // them to work on.
-                if loadingStyle == .animation,
-                   let record = model.epubRecords.first(where: { $0.id == docID }) {
-                    LoadingTitleView(title: record.title,
-                                     author: (record.authors ?? [record.author]).joined(separator: ", "),
-                                     date: Self.loadingDate(record.dateISO))
-                } else {
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Always on black, whatever the reading theme: the book's
+                // own page has not arrived yet.
+                Group {
+                    if loadingStyle == .animation,
+                       let record = model.epubRecords.first(where: { $0.id == docID }) {
+                        LoadingTitleView(title: record.title,
+                                         author: (record.authors ?? [record.author]).joined(separator: ", "),
+                                         date: Self.loadingDate(record.dateISO))
+                    } else {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
+                .background(Color.black.ignoresSafeArea())
+                .environment(\.colorScheme, .dark)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -785,18 +846,69 @@ struct PhoneReaderView: View {
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(true)
-        // On iPhone the sensor housing sits in a black band of its own,
-        // matching the foot bar — the page never flows around the notch.
-        // iPad's top is flat and stays bare.
+        // On iPhone the page's colour runs up behind the sensor housing,
+        // edge to edge; the words still stop below it, so they never flow
+        // around the cut-out. iPad's top is flat and stays bare.
         .overlay(alignment: .top) {
             if UIDevice.current.userInterfaceIdiom == .phone, notchInset > 0 {
-                Color.black
-                    .frame(maxWidth: .infinity)
-                    .frame(height: notchInset)
-                    .offset(y: -notchInset)
-                    .allowsHitTesting(false)
+                VStack(spacing: 0) {
+                    // Black while the book loads; the page's colour once
+                    // it is here.
+                    (model.index.byID[docID]?.doc == nil || chrome == .framed
+                        ? Color.black : pageColor)
+                        .frame(height: notchInset)
+                    // Once the page is scrolled, the words fade into the
+                    // band as they do into the foot's — not sliced by it.
+                    LinearGradient(colors: [pageColor, pageColor.opacity(0)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: 28)
+                        .opacity(pageScrolled && chrome == .pill ? 1 : 0)
+                        .animation(.easeOut(duration: 0.2), value: pageScrolled)
+                }
+                .frame(maxWidth: .infinity)
+                .offset(y: -notchInset)
+                .allowsHitTesting(false)
             }
         }
+        // The island's twin at the foot, while the toolbar is faded: the
+        // same black pill, as far from the bottom and the sides as the
+        // Dynamic Island is from the top and the sides — and the way to
+        // bring the toolbar back. iOS's home line steps aside meanwhile.
+        .overlay {
+            if UIDevice.current.userInterfaceIdiom == .phone, notchInset > 0,
+               chrome == .pill, !barsShown, model.index.byID[docID]?.doc != nil {
+                ZStack(alignment: .bottom) {
+                    // A band of page as deep as the top's, so the words
+                    // end above the pill as they begin below the island,
+                    // softened where they meet it.
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        LinearGradient(colors: [pageColor.opacity(0), pageColor],
+                                       startPoint: .top, endPoint: .bottom)
+                            .frame(height: 28)
+                        pageColor.frame(height: notchInset)
+                    }
+                    .allowsHitTesting(false)
+                    // The pill takes taps on itself and a little round it —
+                    // never the page's own.
+                    Capsule()
+                        // Black, as the island is — but on High Contrast's
+                        // pure black page a black pill would vanish.
+                        .fill(readerTheme == .highContrast && readingScheme == .dark
+                              ? Color(white: 0.2) : .black)
+                        .frame(width: IslandTwin.width, height: IslandTwin.height)
+                        .contentShape(Rectangle().inset(by: -12))
+                        .onTapGesture { showBars() }
+                        .accessibilityElement()
+                        .accessibilityLabel("Show the toolbar")
+                        .accessibilityAddTraits(.isButton)
+                        .padding(.bottom, IslandTwin.edgeGap)
+                }
+                .ignoresSafeArea()
+                .transition(.opacity)
+            }
+        }
+        .persistentSystemOverlays(barsShown ? .automatic : .hidden)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if model.index.byID[docID]?.doc != nil {
                 VStack(spacing: 0) {
@@ -826,6 +938,10 @@ struct PhoneReaderView: View {
             }
         }
         .onChange(of: modeRaw) { showBars() }
+        // A change of Reading Screen shows the bars, freshly timed.
+        .onChange(of: chromeRaw) { showBars() }
+        // A new page or a new view begins at its top: no fade until it moves.
+        .onChange(of: focusIndex) { pageScrolled = false }
         .onChange(of: assistRaw) { showBars() }
         // A citation's tap opens the source's card, a dagger's its
         // endnote — never the browser. Anything else opens normally.
@@ -903,12 +1019,13 @@ struct PhoneReaderView: View {
                     .presentationDetents([.medium])
             }
         }
-        .sheet(item: Binding(
+        // A figure opens full screen, as a picture does in Messages: the
+        // image alone on black; a tap shows the X and the caption.
+        .fullScreenCover(item: Binding(
             get: { jumpFigureID.map { TappedFigure(id: $0) } },
             set: { jumpFigureID = $0?.id })) { tapped in
             if let doc = model.index.byID[docID]?.doc {
                 PhoneFigureCard(doc: doc, paragraphID: tapped.id)
-                    .presentationDetents([.medium, .large])
             }
         }
         // Opening a book takes it out of the Inbox's bold, and tells the
@@ -1145,6 +1262,9 @@ struct PhoneReaderView: View {
                 .frame(maxWidth: 680)
                 .frame(maxWidth: .infinity)
             }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top > 4
+            } action: { _, scrolled in pageScrolled = scrolled }
             // A heading tapped in the outline lands here.
             .onChange(of: scrollJumpID) {
                 guard let id = scrollJumpID else { return }
@@ -1233,9 +1353,14 @@ struct PhoneReaderView: View {
             Text(OrigamiReading.inlineAttributed(heading.text, in: doc,
                                                  citations: citationStyle,
                                                  appearance: readingScheme))
-                .font(.system(size: bodySize + CGFloat(max(0, 4 - section.level) * 2),
-                              weight: .semibold, design: .serif))
+                .font(mode == .focus
+                      ? focusTypography.face.swiftUIFont(
+                          size: bodySize + CGFloat(max(0, 4 - section.level) * 2), weight: .semibold)
+                      : .system(size: bodySize + CGFloat(max(0, 4 - section.level) * 2),
+                                weight: .semibold, design: .serif))
                 .foregroundStyle(inkStyle)
+                .lineSpacing(mode == .focus
+                             ? focusTypography.face.extraLeading(size: bodySize) + 2 : 0)
                 .id(heading.id)
                 .padding(.top, 8)
                 .modifier(ToReadPress { toggleToRead(at: heading) })
@@ -1417,6 +1542,9 @@ struct PhoneReaderView: View {
     private func selectableText(_ text: String, of paragraph: LiquidDoc.Paragraph,
                                 doc: LiquidDoc, size: CGFloat,
                                 lineSpacing: CGFloat) -> some View {
+        // Focus is set as a book; the other readings keep their plain text.
+        let typography = (mode == .focus) ? focusTypography : nil
+        return
             PhoneSelectableParagraph(
                 attributed: rendered(text, doc: doc, paragraphID: paragraph.id),
                 baseSize: size,
@@ -1449,7 +1577,8 @@ struct PhoneReaderView: View {
                         paragraph: paragraph, doc: doc, selected: selected,
                         prefix: prefix, suffix: suffix, anchor: anchor)
                 },
-                clearSelectionToken: selectionClearToken)
+                clearSelectionToken: selectionClearToken,
+                typography: typography)
     }
 
     private struct SelectionNoteTarget: Identifiable {
@@ -1550,13 +1679,36 @@ struct PhoneReaderView: View {
                         LazyVStack(alignment: .leading, spacing: 14) {
                             sectionView(sections[index], doc: doc)
                         }
-                        .padding(.horizontal, 20)
+                        // Clear of the edge strips (a tenth of the width
+                        // each), so a press on a line's end never turns
+                        // the page.
+                        .padding(.horizontal, 8)
+                        .containerRelativeFrame(.horizontal) { width, _ in width * 0.8 }
+                        .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
+                    }
+                    // The page's foot fades rather than slicing a line of
+                    // type in half where the reading area ends — a longer,
+                    // gentler fade while the toolbar is hidden.
+                    .contentMargins(.bottom, barsShown ? 28 : 56, for: .scrollContent)
+                    .onScrollGeometryChange(for: Bool.self) { geometry in
+                        geometry.contentOffset.y + geometry.contentInsets.top > 4
+                    } action: { _, scrolled in pageScrolled = scrolled }
+                    .mask {
+                        VStack(spacing: 0) {
+                            Color.black
+                            LinearGradient(colors: [.black, .clear],
+                                           startPoint: .top, endPoint: .bottom)
+                                .frame(height: barsShown ? 28 : 56)
+                        }
                     }
                     // A new section is a new page: it opens at its top,
                     // not at the last one's scroll, and is not morphed in.
                     .id(sections[index].id)
                     .transaction { $0.animation = nil }
+                    // The edges turn the page here too: the next section,
+                    // or the one before.
+                    .modifier(TapSides { step($0, sections: sections, index: index) })
                 case .sentence:
                     let sentences = sentences(of: sections[index])
                     let at = min(max(sentenceIndex, 0), max(sentences.count - 1, 0))
@@ -1565,49 +1717,40 @@ struct PhoneReaderView: View {
                     unitDisplay(sentence,
                                 of: sections[index].paragraphs.first { $0.text.contains(sentence) }
                                     ?? sections[index].paragraphs.first,
-                                doc: doc, place: nil)
+                                doc: doc, place: nil, enlarged: true)
                         .modifier(TapSides { step($0, sections: sections, index: index) })
                 case .paragraph:
                     let paragraphs = sections[index].paragraphs
                     let at = min(max(paragraphIndex, 0), max(paragraphs.count - 1, 0))
                     unitDisplay(paragraphs.isEmpty ? "" : paragraphs[at].text,
                                 of: paragraphs.isEmpty ? nil : paragraphs[at],
-                                doc: doc, place: nil)
+                                doc: doc, place: nil, enlarged: false)
                         .modifier(TapSides { step($0, sections: sections, index: index) })
                 }
-                stepBar(sections, doc: doc, index: index)
-                    // The ‹ title › bar fades with the toolbar, and a tap
-                    // where it stood brings both back.
-                    .opacity(barsShown ? 1 : 0)
-                    .allowsHitTesting(barsShown)
-                    .simultaneousGesture(TapGesture().onEnded { showBars() })
-                    .overlay {
-                        if !barsShown {
-                            Color.clear
-                                .contentShape(Rectangle())
-                                .onTapGesture { showBars() }
-                        }
-                    }
             }
         }
     }
 
     /// One sentence or paragraph alone on the page, big enough to settle
     /// into — the Mac's assists, sized for the hand.
+    /// `enlarged`: a sentence alone is set larger; a paragraph keeps the
+    /// reading size.
     private func unitDisplay(_ text: String, of paragraph: LiquidDoc.Paragraph?,
-                             doc: LiquidDoc, place: String?) -> some View {
-        VStack(spacing: 16) {
+                             doc: LiquidDoc, place: String?, enlarged: Bool) -> some View {
+        let size = enlarged ? bodySize + 4 : bodySize
+        let spacing: CGFloat = enlarged ? 6 : 4
+        return VStack(spacing: 16) {
             Spacer()
             Group {
                 if let paragraph {
                     // Selectable, with the card — Highlight, Note, To Read.
                     selectableText(text, of: paragraph, doc: doc,
-                                   size: bodySize + 4, lineSpacing: 6)
+                                   size: size, lineSpacing: spacing)
                 } else {
                     Text(rendered(text, doc: doc))
-                        .font(.system(size: bodySize + 4, design: .serif))
+                        .font(.system(size: size, design: .serif))
                         .foregroundStyle(inkStyle)
-                        .lineSpacing(6)
+                        .lineSpacing(spacing)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1624,44 +1767,6 @@ struct PhoneReaderView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// Previous/Next step whatever Focus is showing: the section, its
-    /// sentences, or its paragraphs — crossing into the next section at
-    /// the edges.
-    private func stepBar(_ sections: [OrigamiSection], doc: LiquidDoc, index: Int) -> some View {
-        HStack {
-            Button { step(-1, sections: sections, index: index) } label: {
-                Label("Previous", systemImage: "chevron.left")
-                    .foregroundStyle(Self.inactiveBarGrey)
-            }
-            Spacer()
-            // The heading being read, so stepping is by the book's own
-            // sections, named as its contents names them.
-            VStack(spacing: 1) {
-                Text(sections[index].title.replacingOccurrences(of: "*", with: ""))
-                    .font(.callout.weight(.medium))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                    .foregroundStyle(Self.inactiveBarGrey)
-                // Counts stay out of Sentence and Paragraph, whose point
-                // is the one unit; the heading alone says where it stands.
-                if assist == .section {
-                    Text("\(index + 1) of \(sections.count)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            Button { step(1, sections: sections, index: index) } label: {
-                Label("Next", systemImage: "chevron.right")
-                    .foregroundStyle(Self.inactiveBarGrey)
-            }
-        }
-        .labelStyle(.iconOnly)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
     }
 
     /// No animation: the next section, sentence or paragraph replaces
@@ -2073,7 +2178,8 @@ struct PhoneReaderView: View {
         .environment(\.colorScheme, .dark)
     }
 
-    /// Focus's second row: [ Section | Sentence | Paragraph | Word ] —
+    /// Focus's second row: [ Section | Paragraph | Sentence | Word ] —
+    /// from the largest unit to the smallest —
     /// the Mac's assists, in the same black dress as the foot bar. A
     /// section is a heading and everything under it until the next one.
     private var assistBar: some View {
@@ -2083,14 +2189,14 @@ struct PhoneReaderView: View {
                 assistRaw = Assist.section.rawValue
             }
             separator
-            modeWord("Sentence", chosen: assist == .sentence) {
-                sentenceIndex = 0
-                assistRaw = Assist.sentence.rawValue
-            }
-            separator
             modeWord("Paragraph", chosen: assist == .paragraph) {
                 paragraphIndex = 0
                 assistRaw = Assist.paragraph.rawValue
+            }
+            separator
+            modeWord("Sentence", chosen: assist == .sentence) {
+                sentenceIndex = 0
+                assistRaw = Assist.sentence.rawValue
             }
             separator
             modeWord("Word", chosen: showsRSVP) {
@@ -2295,6 +2401,8 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
     let onSelectionMenu: (String, String?, String?, CGRect) -> Void
     /// Bumped by the reader when its menu closes: the selection drops.
     var clearSelectionToken: Int = 0
+    /// Focus's book typography; nil sets the plain reading text.
+    var typography: FocusTypography? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -2302,6 +2410,8 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
         var parent: PhoneSelectableParagraph
         /// The last clear ask this paragraph has answered.
         var clearedSelectionToken = 0
+        /// Held here: a layout manager keeps its delegate weakly.
+        let noLoneLastWord = NoLoneLastWord()
         init(_ parent: PhoneSelectableParagraph) { self.parent = parent }
 
         func textView(_ textView: UITextView, shouldInteractWith url: URL,
@@ -2346,7 +2456,10 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+        // Focus's book typography keeps no lone word on a last line, which
+        // takes the classic text system's line-break veto (NoLoneLastWord).
+        let view = typography == nil ? UITextView() : UITextView(usingTextLayoutManager: false)
+        if typography != nil { view.layoutManager.delegate = context.coordinator.noLoneLastWord }
         view.isEditable = false
         view.isSelectable = true
         view.isScrollEnabled = false
@@ -2396,14 +2509,17 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
         let out = NSMutableAttributedString()
         for run in attributed.runs {
             let text = String(attributed.characters[run.range])
-            var font = serif
+            var font = typography?.font(size: baseSize, traits: []) ?? serif
             if let intent = run.inlinePresentationIntent {
-                if intent.contains(.code) {
-                    font = .monospacedSystemFont(ofSize: baseSize * 0.92, weight: .regular)
-                }
                 var traits: UIFontDescriptor.SymbolicTraits = []
                 if intent.contains(.stronglyEmphasized) { traits.insert(.traitBold) }
                 if intent.contains(.emphasized) { traits.insert(.traitItalic) }
+                if intent.contains(.code) {
+                    font = .monospacedSystemFont(ofSize: baseSize * 0.92, weight: .regular)
+                } else if let typography {
+                    font = typography.font(size: baseSize, traits: traits)
+                    traits = []
+                }
                 if !traits.isEmpty,
                    let descriptor = font.fontDescriptor.withSymbolicTraits(
                        font.fontDescriptor.symbolicTraits.union(traits)) {
@@ -2411,8 +2527,12 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
                 }
             }
             let ink = run.foregroundColor.map(UIColor.init) ?? inkColor ?? .label
-            let paragraphStyle = NSMutableParagraphStyle()
-            paragraphStyle.lineSpacing = lineSpacing
+            let paragraphStyle = (typography?.paragraphStyle(lineSpacing: lineSpacing, size: baseSize)
+                .mutableCopy() as? NSMutableParagraphStyle) ?? {
+                    let plainStyle = NSMutableParagraphStyle()
+                    plainStyle.lineSpacing = lineSpacing
+                    return plainStyle
+                }()
             var attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
                 .foregroundColor: ink,
@@ -2440,6 +2560,35 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
                 }
             }
             out.append(NSAttributedString(string: text, attributes: attributes))
+        }
+        // Acronyms in small capitals, a breath of tracking between them —
+        // the same characters, drawn at the lowercase's height.
+        // Ordinals keep plain ligatures: 21st, never 21ﬆ.
+        if let typography, typography.rareLigatures, typography.face.hasRareLigatures {
+            for range in FocusTypography.ordinalRanges(in: out.string) {
+                out.enumerateAttribute(.font, in: range) { value, sub, _ in
+                    guard let font = value as? UIFont else { return }
+                    let traits = font.fontDescriptor.symbolicTraits
+                        .intersection([.traitBold, .traitItalic])
+                    out.addAttribute(.font, value: typography.font(size: baseSize, traits: traits,
+                                                                   plainLigatures: true),
+                                     range: sub)
+                }
+            }
+        }
+        if let typography, typography.face.smallCapsFromCapitals {
+            for range in FocusTypography.acronymRanges(in: out.string) {
+                out.enumerateAttribute(.font, in: range) { value, sub, _ in
+                    guard let font = value as? UIFont,
+                          !font.fontDescriptor.symbolicTraits.contains(.traitMonoSpace) else { return }
+                    let traits = font.fontDescriptor.symbolicTraits
+                        .intersection([.traitBold, .traitItalic])
+                    out.addAttribute(.font, value: typography.font(size: baseSize, traits: traits,
+                                                                   smallCapsFromCapitals: true),
+                                     range: sub)
+                    out.addAttribute(.kern, value: baseSize * 0.04, range: sub)
+                }
+            }
         }
         return out
     }
@@ -2613,6 +2762,27 @@ private struct PhoneCitationCard: View {
                         } label: {
                             Label("Open", systemImage: "book")
                         }
+                    } else if model.acquisitionIDs.contains(key) {
+                        // Not on the shelf, and already asked for.
+                        Label("Listed to Acquire", systemImage: "checkmark")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        // Not on the shelf: list it for the Mac's To Acquire,
+                        // as the headset does. The list lives in the
+                        // community folder — without one, say so.
+                        Button {
+                            model.requestAcquisition(
+                                key: key, title: title, author: author,
+                                year: Int(year.prefix(4)), doi: doi)
+                        } label: {
+                            Label("Acquire", systemImage: "tray.and.arrow.down")
+                        }
+                        .disabled(!model.canAcquire)
+                        if !model.canAcquire {
+                            Text("Choose a community folder to list books to acquire.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     if let doi, !doi.isEmpty,
                        let url = URL(string: doi.hasPrefix("http")
@@ -2666,38 +2836,110 @@ private struct PhoneFigureCard: View {
     let paragraphID: String
     @Environment(\.dismiss) private var dismiss
 
+    /// The X and the caption: hidden until a tap asks for them.
+    @State private var showsChrome = false
+    @State private var scale: CGFloat = 1
+    @State private var settledScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var settledOffset: CGSize = .zero
+
+    private var figure: (image: UIImage, caption: String?)? {
+        guard let paragraph = doc.body?.first(where: { $0.id == paragraphID }),
+              let reference = LiquidDoc.imageReference(in: paragraph.text),
+              let asset = doc.assets.first(where: { $0.id == reference.id }),
+              let image = decodedImage(for: asset) else { return nil }
+        let caption = asset.alt.flatMap { $0.isEmpty ? nil : $0 }
+            ?? (reference.alt.isEmpty ? nil : reference.alt)
+        return (image, caption)
+    }
+
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 12) {
-                    if let paragraph = doc.body?.first(where: { $0.id == paragraphID }),
-                       let reference = LiquidDoc.imageReference(in: paragraph.text),
-                       let asset = doc.assets.first(where: { $0.id == reference.id }),
-                       let image = decodedImage(for: asset) {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFit()
-                        if let caption = asset.alt, !caption.isEmpty {
-                            Text(caption)
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if let figure {
+                Image(uiImage: figure.image)
+                    .resizable()
+                    .scaledToFit()
+                    .scaleEffect(scale)
+                    .offset(offset)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    // Pinch to look closer; drag to move about when closer.
+                    .gesture(MagnifyGesture()
+                        .onChanged { value in scale = max(1, min(settledScale * value.magnification, 6)) }
+                        .onEnded { _ in
+                            settledScale = scale
+                            if scale <= 1 { resetZoom() }
+                        })
+                    .simultaneousGesture(DragGesture()
+                        .onChanged { value in
+                            guard scale > 1 else { return }
+                            offset = CGSize(width: settledOffset.width + value.translation.width,
+                                            height: settledOffset.height + value.translation.height)
                         }
-                    } else {
-                        Text("The figure is not in this copy of the document.")
-                            .foregroundStyle(.secondary)
+                        .onEnded { value in
+                            if scale > 1 {
+                                settledOffset = offset
+                            } else if value.translation.height > 120 {
+                                // A swipe down, unzoomed, puts it away.
+                                dismiss()
+                            }
+                        })
+                    // Double-tap: closer, or back to the whole picture.
+                    .onTapGesture(count: 2) {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            if scale > 1 { resetZoom() } else { scale = 2.5; settledScale = 2.5 }
+                        }
                     }
+                    .onTapGesture {
+                        withAnimation(.easeOut(duration: 0.2)) { showsChrome.toggle() }
+                    }
+                    .accessibilityLabel(figure.caption ?? "Figure")
+                if showsChrome, let caption = figure.caption {
+                    VStack {
+                        Spacer()
+                        Text(caption)
+                            .font(.callout)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(16)
+                            .background(.black.opacity(0.55))
+                    }
+                    .ignoresSafeArea(edges: .bottom)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
                 }
-                .padding(16)
-            }
-            .navigationTitle("Figure")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
+            } else {
+                Text("The figure is not in this copy of the document.")
+                    .foregroundStyle(.white.opacity(0.7))
+                    .onTapGesture { withAnimation { showsChrome = true } }
             }
         }
+        .overlay(alignment: .topTrailing) {
+            if showsChrome || figure == nil {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(.white.opacity(0.18), in: Circle())
+                }
+                .accessibilityLabel("Close")
+                .padding(.top, 8)
+                .padding(.trailing, 16)
+                .transition(.opacity)
+            }
+        }
+        .statusBarHidden(true)
+        // VoiceOver needs the way out at once, not behind a tap.
+        .onAppear { if UIAccessibility.isVoiceOverRunning { showsChrome = true } }
+    }
+
+    private func resetZoom() {
+        scale = 1; settledScale = 1
+        offset = .zero; settledOffset = .zero
     }
 }
 
@@ -2769,8 +3011,8 @@ enum LoadingStyle: String, CaseIterable, Identifiable {
 
 // MARK: - Tapping the sides
 
-/// In Focus's Sentence and Paragraph: a tap in the right edge's strip
-/// steps on, in the left edge's strip steps back — the way a page is
+/// In Focus — Section, Sentence and Paragraph: a tap in the right edge's
+/// strip steps on, in the left edge's strip steps back — the way a page is
 /// turned. Each strip is a tenth of the width, so the words between stay
 /// free to select.
 private struct TapSides: ViewModifier {
@@ -2797,6 +3039,35 @@ private struct TapSides: ViewModifier {
                         .accessibilityAddTraits(.isButton)
                 }
             }
+        }
+    }
+}
+
+// MARK: - The island's twin
+
+/// The Dynamic Island's measure, for the pill that mirrors it at the foot
+/// of the page. Taken from the iPhone 17 Pro's display mask (simctl
+/// screenshot --mask=black, 9 Oct 2026): 125.3 × 36.7 points, 14.0 points
+/// from the top edge, centred. iOS does not report the island's frame, so
+/// these are the measured figures; phones with a notch rather than an
+/// island get a pill of the same proportions.
+enum IslandTwin {
+    static let width: CGFloat = 125.3
+    static let height: CGFloat = 36.7
+    static let edgeGap: CGFloat = 14.0
+}
+
+/// Settings ▸ Reading Screen: how the reader meets the screen's edges.
+enum ReaderChrome: String, CaseIterable, Identifiable {
+    case pill
+    /// Stored under its first name, so an earlier choice still holds.
+    case framed = "blackToolbar"
+    static let defaultsKey = "iosReaderChrome"
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .pill: "Pill"
+        case .framed: "Framed"
         }
     }
 }

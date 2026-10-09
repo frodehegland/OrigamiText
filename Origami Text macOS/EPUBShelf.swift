@@ -196,6 +196,71 @@ nonisolated enum EPUBStanding {
     }
 }
 
+/// The reader's name ("authorName", Settings on every device) kept the
+/// same on all of one person's devices through iCloud's key-value store —
+/// the person's own iCloud, never the community folder, which other
+/// people may share. Newest change wins: each side carries the time it
+/// was set. Lives here because this file is compiled into all three apps.
+///
+/// Needs the iCloud Key-Value Storage capability on each app target; all
+/// three share one bundle identifier, so they share one store. Without the
+/// capability the store simply stays local and nothing breaks.
+@MainActor
+enum ReaderNameSync {
+    static let key = "authorName"
+    private static let modifiedKey = "authorNameModified"
+    private static var lastSeen: String?
+    private static var observers: [NSObjectProtocol] = []
+
+    /// Starts keeping the name in step. Call once at launch.
+    static func start() {
+        guard observers.isEmpty else { return }
+        let cloud = NSUbiquitousKeyValueStore.default
+        cloud.synchronize()
+        lastSeen = UserDefaults.standard.string(forKey: key)
+        reconcile()
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: cloud, queue: .main) { _ in
+                MainActor.assumeIsolated { reconcile() }
+            })
+        // A local edit (Settings writes UserDefaults): stamp it and send it.
+        observers.append(NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    let now = UserDefaults.standard.string(forKey: key)
+                    guard now != lastSeen else { return }
+                    lastSeen = now
+                    let stamp = Date().timeIntervalSince1970
+                    UserDefaults.standard.set(stamp, forKey: modifiedKey)
+                    cloud.set(now ?? "", forKey: key)
+                    cloud.set(stamp, forKey: modifiedKey)
+                }
+            })
+    }
+
+    /// Takes iCloud's name when it is newer than this device's, and sends
+    /// this device's when it is newer than iCloud's.
+    private static func reconcile() {
+        let cloud = NSUbiquitousKeyValueStore.default
+        let defaults = UserDefaults.standard
+        let cloudName = cloud.string(forKey: key)
+        let cloudStamp = cloud.double(forKey: modifiedKey)
+        let localName = defaults.string(forKey: key)
+        let localStamp = defaults.double(forKey: modifiedKey)
+        if let cloudName, !cloudName.isEmpty,
+           cloudStamp > localStamp || (localName ?? "").isEmpty {
+            guard cloudName != localName else { return }
+            lastSeen = cloudName
+            defaults.set(cloudName, forKey: key)
+            defaults.set(cloudStamp, forKey: modifiedKey)
+        } else if let localName, !localName.isEmpty, localStamp >= cloudStamp {
+            cloud.set(localName, forKey: key)
+            cloud.set(max(localStamp, 1), forKey: modifiedKey)
+        }
+    }
+}
+
 /// To Read: a book marked to come back to, and the place to come back
 /// to — marked on the phone in a spare minute, read on the Mac, the iPad
 /// or the headset later, or the other way round. Not a pin: a pin says

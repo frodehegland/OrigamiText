@@ -18,6 +18,8 @@ struct OrigamiTextMacApp: App {
         // platform views, dynamic column widths, animated swaps) is
         // already removed; this is the net under the OS regression.
         UserDefaults.standard.set(false, forKey: "NSApplicationCrashOnExceptions")
+        // Your name follows your Apple ID to your other devices.
+        ReaderNameSync.start()
     }
 
     var body: some Scene {

@@ -678,6 +678,11 @@ struct VisionFigureWindow: View {
 struct OrigamiVisionApp: App {
     @State private var model = VisionModel()
 
+    init() {
+        // Your name follows your Apple ID to your other devices.
+        ReaderNameSync.start()
+    }
+
     // SwiftUI.Scene spelled out: RealityKit (the arm menus) brings its
     // own Scene type into the file.
     var body: some SwiftUI.Scene {

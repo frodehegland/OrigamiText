@@ -380,6 +380,27 @@ final class PhoneModel {
         toRead.first(records.filter { isTopOfPile($0) } + records.filter { !isTopOfPile($0) })
     }
 
+    // MARK: - To Acquire
+
+    /// Cited works the reader wants as books: the community folder's
+    /// shared list (EPUBAcquisitions), which the Mac's To Acquire shows and
+    /// the headset adds to as well. By citation key.
+    private(set) var acquisitionIDs: Set<String> = []
+
+    var canAcquire: Bool { folderURL != nil }
+
+    func requestAcquisition(key: String, title: String, author: String,
+                            year: Int?, doi: String?) {
+        guard let folder = folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        EPUBAcquisitions.add(
+            EPUBAcquisitions.Wanted(id: key, title: title, author: author,
+                                    year: year, doi: doi, added: .now),
+            in: folder)
+        acquisitionIDs.insert(key)
+    }
+
     // MARK: - To Read
 
     /// Books marked to come back to, with the paragraph to come back to.
@@ -588,12 +609,27 @@ final class PhoneModel {
     /// The reader's one note describing the whole document — a
     /// "describing" annotation with no selectors, one per book. The
     /// Mac's documentAnnotation is the sibling; keep in step.
+    /// Every shelf row asks for its book's note on every redraw — opening
+    /// Settings, a pin arriving — so the answers are kept until an
+    /// annotation changes. Reading and decoding each sidecar per row per
+    /// redraw, on the main thread, was what made Settings slow to open
+    /// on a full shelf.
+    @ObservationIgnored private var documentNotes: [String: WebAnnotation?] = [:]
+    @ObservationIgnored private var documentNotesStamp = -1
+
     func documentNote(forAddress address: String) -> WebAnnotation? {
-        _ = annotationsStamp
-        return AnnotationStore.load(for: address, in: Self.annotationsRoot).first {
+        let stamp = annotationsStamp   // observed: a change redraws, and clears
+        if stamp != documentNotesStamp {
+            documentNotes = [:]
+            documentNotesStamp = stamp
+        }
+        if let known = documentNotes[address] { return known }
+        let note = AnnotationStore.load(for: address, in: Self.annotationsRoot).first {
             $0.motivation == WebAnnotation.Motivation.describing
                 && $0.target.selectors.isEmpty
         }
+        documentNotes[address] = .some(note)
+        return note
     }
 
     /// Writes or rewrites the document note; empty text removes it.
@@ -792,6 +828,7 @@ final class PhoneModel {
         epubSetAsideIDs = EPUBStanding.localIDs(from: epubSetAsideIDs,
                                                 records: epubRecords)
         toRead.translate(records: epubRecords)
+        acquisitionIDs = Set(EPUBAcquisitions.read(from: folder).map(\.id))
         if placeholdersRemain {
             Task {
                 try? await Task.sleep(for: .seconds(8))
@@ -827,6 +864,8 @@ final class PhoneModel {
         }
         UserDefaults.standard.set(epubTopOfPile.sorted(), forKey: "epubTopOfPile")
         UserDefaults.standard.set(epubSetAsideIDs.sorted(), forKey: "epubSetAside")
+        // Sidecars moved to their successors: annotations have changed.
+        annotationsStamp += 1
         persistEPUBRecords()
         rebuildEPUBIndex()
     }

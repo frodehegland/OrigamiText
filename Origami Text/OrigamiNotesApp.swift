@@ -24,6 +24,11 @@ struct OrigamiLettersApp: App {
     /// letters composer remains in the codebase for its return.
     @State private var shelf = PhoneModel()
 
+    init() {
+        // Your name follows your Apple ID to your other devices.
+        ReaderNameSync.start()
+    }
+
     var body: some Scene {
         WindowGroup {
             // iPad carries the Mac's left column beside the shelf; the
@@ -36,6 +41,12 @@ struct OrigamiLettersApp: App {
                 }
             }
                 .environment(shelf)
+                // Reading takes the whole screen: no clock, Wi-Fi or
+                // battery over the page. Hidden here, at the root, because
+                // iOS takes the status bar from the screen's root view —
+                // the reader's own request, inside a pushed view, went
+                // unheard.
+                .statusBarHidden(shelf.isReading)
                 // An EPUB from Files or a share opens straight into
                 // reading — imported on this phone, no Mac, no folder
                 // required.

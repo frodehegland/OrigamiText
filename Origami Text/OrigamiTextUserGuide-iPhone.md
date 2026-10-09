@@ -126,23 +126,23 @@ need is in the **foot bar** at the bottom:
   half of every word in bold.
 - **Aa** makes the words Bigger or Smaller, or resets them.
 
-After four seconds without a touch, the foot bar — and in Focus the
-heading bar above it — fades from the page so the words have it to
-themselves. Tap where a bar was and they come back.
+After four seconds without a touch, the foot bar fades from the page so
+the words have it to themselves. On iPhone the page then runs edge to edge,
+with a black pill at the foot that mirrors the Dynamic Island at the top —
+tap it (or anywhere along the foot) and the bar comes back.
 
 **Scroll** lays the whole text in one clean column.
 
 **Focus** holds one section at a time — a heading and everything under it
-until the next heading — with **Previous** and **Next** at the bottom and,
-between them, the section's heading and where you are ("3 of 12"). A
-second row appears above the foot bar with Focus's assists:
+until the next heading. Tap the right edge of the page for the next, the
+left edge for the one before. A second row appears above the foot bar with Focus's assists:
 
 - **Section** — the whole section, heading and all.
-- **Sentence** — one sentence at a time.
 - **Paragraph** — one paragraph at a time.
+- **Sentence** — one sentence at a time.
 
-  In Sentence and Paragraph, tap the right edge of the page to go on and
-  the left edge to go back. The words between can be selected as anywhere
+  In Section, Sentence and Paragraph, tap the right edge of the page to go
+  on and the left edge to go back. The words between can be selected as anywhere
   else, for Highlight, Note… and To Read.
 
 - **Word** — the text played one word after another in the middle of the
@@ -186,6 +186,9 @@ and its source appears as a card: title, authors, year and venue, with:
 - **Open** — when the cited document is on your shelf (this guide, cited
   by the Introduction, for one), it opens right there. The back chevron
   brings you back to where you were reading.
+- **Acquire** — when the cited work is not on your shelf: lists it in the
+  community folder's To Acquire, which the Mac shows, so you can get it
+  there. **Listed to Acquire** shows once it is asked for.
 - **DOI** and **Web** — the source online, when it has them.
 - **Online** — a web search for the work.
 - **Copy BibTeX** — the full reference, ready for a bibliography.
@@ -194,7 +197,9 @@ and its source appears as a card: title, authors, year and venue, with:
 note appears as a card. Notes in the **Fold [ ]** style open in place,
 inside the sentence; tap again to fold them away.
 
-**Figures.** Double-tap a figure to lift it into a card with its caption.
+**Figures.** Double-tap a figure and it opens full screen on black. Tap once
+for the **X** and the caption; pinch or double-tap to look closer; tap the X
+or swipe down to close.
 A figure made from a live view carries a small label in its corner: tap
 it to open that view; touch and hold for Show Image and Show Reference.
 
@@ -213,7 +218,9 @@ answer. Tap any found paragraph and the reading opens right there. The
 
 Tap the gear at the foot of the shelf and choose Settings…
 
-- **Your Name** — as your papers carry it. It signs your highlights and
+- **Your Name** — as your papers carry it: first name, middle name, last name
+  ("Frode Alexander Hegland"). It follows your Apple ID to your Mac, iPhone,
+  iPad and Vision Pro. It signs your highlights and
   notes.
 - **Citations** — how citations read: **(Author Date)**, **[Number]** or
   **Superscript**. The tap, and the source it shows, are the same in every
@@ -223,6 +230,18 @@ Tap the gear at the foot of the shelf and choose Settings…
   **Fold [ ]**. A raised number must mean exactly one thing, so choosing
   Superscript for citations moves notes off it, and the other way round.
 
+- **Focus Type** — how Focus sets its words: the face (**Iowan Old Style**,
+  the default; **New York**; **Hoefler Text**; **Baskerville**), **Justify**,
+  and **Rare & Historical Ligatures** — ct, st and their kin, in Hoefler Text
+  and Baskerville. Focus is always hyphenated, never leaves a lone word on a
+  paragraph's last line, sets figures in old style and, in Iowan Old Style
+  and New York, acronyms such as EPUB in true small capitals. The book's
+  characters are never changed, so highlights and notes still find their
+  place.
+- **Reading Screen** — **Pill** (the default): the page runs to the top,
+  the toolbar fades after four quiet seconds and a black pill at the foot
+  brings it back. **Framed**: a black band at the top; the toolbar
+  fades the same way, and a tap where it was brings it back.
 - **On Loading** — what shows while a book arrives: a plain **Spinner**, or
   the **Animation** — its title, author and date floating in space, which
   a touch pushes and a shake scatters.

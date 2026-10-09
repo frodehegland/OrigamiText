@@ -49,6 +49,7 @@ struct LoadingTitleView: View {
         VStack(spacing: 12) {
             Text(title).font(.system(.title, design: .serif, weight: .semibold))
             Text(author).font(.system(.body, design: .serif))
+            Text("loading…").font(.system(.callout, design: .serif)).foregroundStyle(.secondary)
             if let date { Text(date).font(.system(.callout, design: .serif)).foregroundStyle(.secondary) }
         }
         .multilineTextAlignment(.center)
@@ -66,6 +67,8 @@ struct LoadingTitleView: View {
     private var pieces: [TypeField.Line] {
         var lines = [TypeField.Line(text: title, size: 30, weight: .semibold, ink: 1)]
         if !author.isEmpty { lines.append(.init(text: author, size: 19, weight: .regular, ink: 0.85)) }
+        // Says what the floating is for, in the same space as the rest.
+        lines.append(.init(text: "loading…", size: 15, weight: .regular, ink: 0.5))
         if let date, !date.isEmpty { lines.append(.init(text: date, size: 15, weight: .regular, ink: 0.6)) }
         return lines
     }
