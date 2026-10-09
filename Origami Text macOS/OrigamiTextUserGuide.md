@@ -2,7 +2,7 @@
 title: Origami Text User Guide
 subtitle: For macOS
 author: Future Text Lab
-date: 2026-10-06
+date: 2026-10-09
 ---
 
 # Origami Text User Guide
@@ -168,12 +168,16 @@ Right-click any book in a list:
 - **File Under ▸** a folder, or **New Folder…**; **Remove from Folder**;
 - **Copy to Cite** — its citation, ready to paste into your writing;
 - **Read Beside "…"** — read it next to the book that is open (section 4.12);
+- **To Read** — mark it to come back to; To Read books lead every list,
+  newest first, ahead of the pinned, with a teal bookmark. A book marked To
+  Read on the iPhone or iPad opens here at the paragraph it was marked at.
+  **Remove from To Read** takes it off;
 - **Pin** — keep it at the top of every list;
 - **Set Aside** — move it out of the way without deleting it; it waits behind
   the **Set Aside** pill at the foot of the list until you **Bring Back** it;
 - **Move to Trash**.
 
-Pins and Set Aside travel to your iPad and Vision Pro.
+To Read, Pins and Set Aside travel to your iPhone, iPad and Vision Pro.
 
 ### 3.3 Journals and proceedings
 
@@ -255,7 +259,8 @@ left to right:
 The word in bold is the one you are in. Choose a word again, or another
 word, to leave a fold or a page such as References.
 
-At the left of the foot bar: **pin** and **set aside** for the open book. At
+At the left of the foot bar: **To Read** (the bookmark), **pin** and **set
+aside** for the open book. At
 the right: **Contents** (every section, one click away; in Scroll also **Go
 to page**), and the type controls (section 4.9).
 

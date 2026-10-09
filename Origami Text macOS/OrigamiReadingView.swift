@@ -1305,7 +1305,15 @@ struct OrigamiReadingView: View {
     /// journal, or set it aside without walking back to the list.
     @ViewBuilder private var pageBarPileControls: some View {
         if let record = model.epubRecord(forAddress: doc.id) {
-            Button { model.toggleTopOfPile(record) } label: {
+            Button { model.toggleToRead(record) } label: {
+                Image(systemName: model.isToRead(record) ? "bookmark.fill" : "bookmark")
+                    .foregroundStyle(model.isToRead(record) ? Color.teal : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(model.isToRead(record) ? "Remove from To Read" : "To Read — first in every list, on every device")
+            .accessibilityLabel(model.isToRead(record) ? "Remove from To Read" : "To Read")
+
+Button { model.toggleTopOfPile(record) } label: {
                 Image(systemName: model.isTopOfPile(record) ? "pin.fill" : "pin")
                     .foregroundStyle(model.isTopOfPile(record)
                                      ? Color.accentColor : .secondary)

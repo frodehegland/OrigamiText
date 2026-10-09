@@ -84,10 +84,18 @@ struct PadHomeView: View {
             // A new place starts its own stack, as a Mac sidebar click does.
             .id(place)
         }
-        // Reading takes the screen; the column returns with the shelf.
-        .onChange(of: model.isReading) {
+        // Reading takes the screen; the column returns with the shelf —
+        // after a beat, so stepping back from a cited book to the citing
+        // one (a reader leaving as another returns) never flashes it.
+        .task(id: model.isReading) {
+            if !model.isReading {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, !model.isReading else { return }
+            }
             withAnimation { columns = model.isReading ? .detailOnly : .all }
         }
+        // The app's first page, once: the Introduction.
+        .task { model.openIntroductionOnFirstLaunch() }
         // ReadHomeView's chores, kept in step: import, the community
         // folder, failures spoken, the scan and the standing's beat.
         .fileImporter(isPresented: $choosingEPUB,
@@ -165,10 +173,27 @@ struct PadHomeView: View {
             // The foot, under a rule: the guide, Settings, and Contact.
             VStack(alignment: .leading, spacing: 14) {
                 Divider()
+                // The Introduction, as on the Mac; the one-screen guide
+                // stands in while this copy of the app lacks it.
                 Button {
-                    place = .intro
+                    if let intro = model.introductionRecord {
+                        model.readerRecordID = intro.id
+                    } else {
+                        place = .intro
+                    }
                 } label: {
                     Label("Intro", systemImage: "book")
+                }
+                // The iPad's own guide — the Mac's Help ▸ Origami Text
+                // Guide, which has no menu bar to live in here.
+                Button {
+                    if let guide = model.userGuideRecord {
+                        model.readerRecordID = guide.id
+                    } else {
+                        place = .intro
+                    }
+                } label: {
+                    Label("User Guide", systemImage: "questionmark.circle")
                 }
                 Button {
                     showsSettings = true

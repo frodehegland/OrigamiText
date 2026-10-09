@@ -146,9 +146,11 @@ struct ReadHomeView: View {
                         Button("Settings…") { showsSettings = true }
                     } label: {
                         Image(systemName: "gear")
-                            .font(.subheadline)
-                            .imageScale(.small)
+                            .font(.title2)
                             .foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                            .accessibilityLabel("Settings and Open")
                     }
                     HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass")
@@ -234,6 +236,8 @@ struct ReadHomeView: View {
             PhoneSettingsView()
                 .presentationDetents([.medium, .large])
         }
+        // The app's first page, once: the Introduction.
+        .task { model.openIntroductionOnFirstLaunch() }
     }
 
 }
@@ -265,6 +269,12 @@ struct PhoneShelfRow: View {
             }
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if model.isToRead(record) {
+                    Image(systemName: "bookmark.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.teal)
+                        .accessibilityLabel("To Read")
+                }
                 if model.isTopOfPile(record) {
                     Image(systemName: "pin.fill")
                         .font(.caption2)
@@ -292,6 +302,9 @@ struct PhoneShelfRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // The line under a row starts at the row's edge, whether or not a
+        // bookmark or pin stands before its title.
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
                 model.toggleTopOfPile(record)
@@ -319,6 +332,15 @@ struct PhoneShelfRow: View {
             }
         }
         .contextMenu {
+            if model.isToRead(record) {
+                Button("Remove from To Read", systemImage: "bookmark.slash") {
+                    model.removeFromToRead(id: record.id)
+                }
+            } else {
+                Button("To Read", systemImage: "bookmark") {
+                    model.markToRead(id: record.id, at: nil, quote: nil)
+                }
+            }
             Toggle("Pin", isOn: Binding(
                 get: { model.isTopOfPile(record) },
                 set: { _ in model.toggleTopOfPile(record) }))
@@ -484,6 +506,8 @@ struct PhoneSettingsView: View {
     /// Who the reader is — the Mac's Settings ▸ Author key: it names the
     /// iPad's own-papers row and signs highlights and notes.
     @AppStorage("authorName") private var authorName = ""
+    /// What shows while a book is still arriving.
+    @AppStorage(LoadingStyle.defaultsKey) private var loadingStyleRaw = LoadingStyle.animation.rawValue
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -524,6 +548,19 @@ struct PhoneSettingsView: View {
                 } footer: {
                     Text("How note marks read: the raised number the paper prints (the default), bracketed, a quiet ‡, or the [] fold. A raised number must mean exactly one thing, so choosing Superscript for one moves the other off it.")
                 }
+                Section {
+                    Picker("On Loading", selection: $loadingStyleRaw) {
+                        ForEach(LoadingStyle.allCases) { style in
+                            Text(style.displayName).tag(style.rawValue)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } header: {
+                    Text("On Loading")
+                } footer: {
+                    Text("While a book arrives — some seconds over a slow network — a plain spinner, or its title, author and date floating in space, to touch and to shake.")
+                }
                 .onChange(of: citationStyleRaw) {
                     if citationStyleRaw == OrigamiCitationStyle.superscript.rawValue,
                        noteStyleRaw == ReaderNoteStyle.superscript.rawValue {
@@ -553,6 +590,9 @@ struct PhoneSettingsView: View {
 struct PhoneReaderView: View {
     @Environment(PhoneModel.self) private var model
     let docID: String
+    /// Opened over another book, from a citation: the way back leads to
+    /// that book, not to the documents, so it stays a chevron.
+    var opensOverBook = false
 
     /// The Mac's reading views, sized for the hand: Scroll (one clean
     /// column) and Focus — and on iPad, Horizontal, the sections side
@@ -623,6 +663,19 @@ struct PhoneReaderView: View {
     /// The words being sought — Find paints every occurrence and the
     /// Outline narrows to the sections that answer.
     @State private var findQuery: String?
+    /// A cited document on the shelf, opened over this one from its
+    /// citation card (or an origamitext:// link).
+    @State private var linkedDocID: String?
+    /// Whether the bottom bars are showing; they fade after four quiet
+    /// seconds. `barsWake` restarts the count.
+    @State private var barsShown = true
+    @State private var barsWake = 0
+    /// The brief word a To Read press answers with ("To Read", or
+    /// "Removed from To Read"); nil when nothing is showing.
+    @State private var toReadNotice: String?
+    /// Whether this opening has already gone to the To Read place — once
+    /// per opening, so reading on is never pulled back.
+    @State private var landedAtToRead = false
 
     private struct SelectionMenuState {
         let paragraph: LiquidDoc.Paragraph
@@ -634,8 +687,10 @@ struct PhoneReaderView: View {
     }
     /// Focus's assists — the Mac's: one sentence, one paragraph, or one
     /// word (RSVP) at a time.
-    private enum Assist: String { case none, sentence, paragraph }
-    @State private var assistRaw = Assist.none.rawValue
+    /// Focus's units: the section — a heading and what it heads — then
+    /// its sentences, or its paragraphs.
+    private enum Assist: String { case section, sentence, paragraph }
+    @State private var assistRaw = Assist.section.rawValue
     @State private var sentenceIndex = 0
     @State private var paragraphIndex = 0
     @State private var showsRSVP = false
@@ -667,7 +722,7 @@ struct PhoneReaderView: View {
     private var readerTheme: ReaderTheme {
         ReaderTheme(rawValue: readerThemeRaw) ?? .highContrast
     }
-    private var assist: Assist { Assist(rawValue: assistRaw) ?? .none }
+    private var assist: Assist { Assist(rawValue: assistRaw) ?? .section }
     /// The page behind the words: the colour theme's, else plain by
     /// appearance; and the ink the theme asks for, else the scheme's.
     private var pageColor: Color {
@@ -687,13 +742,40 @@ struct PhoneReaderView: View {
     }
     private var bodySize: CGFloat { 17 + fontDelta }
 
+    /// Settings ▸ On Loading.
+    @AppStorage(LoadingStyle.defaultsKey) private var loadingStyleRaw = LoadingStyle.animation.rawValue
+    private var loadingStyle: LoadingStyle { LoadingStyle(rawValue: loadingStyleRaw) ?? .animation }
+
+    /// "8 October 2026" from the record's ISO date, or its year alone.
+    private static func loadingDate(_ iso: String?) -> String? {
+        guard let iso, iso.count >= 4 else { return nil }
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy-MM-dd"
+        if iso.count >= 10, let date = parser.date(from: String(iso.prefix(10))) {
+            return date.formatted(.dateTime.day().month(.wide).year())
+        }
+        return String(iso.prefix(4))
+    }
+
     var body: some View {
         Group {
             if let doc = model.index.byID[docID]?.doc {
                 reading(doc)
             } else {
-                // The index is parsing the book — moments, not minutes.
-                ProgressView()
+                // The book is still arriving — over a slow network, for
+                // some seconds. Its title page floats in space meanwhile,
+                // to touch and shake; no bars until there is a page for
+                // them to work on.
+                if loadingStyle == .animation,
+                   let record = model.epubRecords.first(where: { $0.id == docID }) {
+                    LoadingTitleView(title: record.title,
+                                     author: (record.authors ?? [record.author]).joined(separator: ", "),
+                                     date: Self.loadingDate(record.dateISO))
+                } else {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -716,11 +798,35 @@ struct PhoneReaderView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                if mode == .focus, !showsRSVP { assistBar }
-                footBar
+            if model.index.byID[docID]?.doc != nil {
+                VStack(spacing: 0) {
+                    if mode == .focus, !showsRSVP { assistBar }
+                    footBar
+                }
+                // After four quiet seconds the bars fade from the page;
+                // their place stays, and a tap there brings them back.
+                .opacity(barsShown ? 1 : 0)
+                .allowsHitTesting(barsShown)
+                .simultaneousGesture(TapGesture().onEnded { showBars() })
+                .overlay {
+                    if !barsShown {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { showBars() }
+                            .accessibilityElement()
+                            .accessibilityLabel("Show the toolbar")
+                            .accessibilityAddTraits(.isButton)
+                    }
+                }
+                .task(id: barsWake) {
+                    try? await Task.sleep(for: .seconds(4))
+                    guard !Task.isCancelled, !UIAccessibility.isVoiceOverRunning else { return }
+                    withAnimation(.easeOut(duration: 0.6)) { barsShown = false }
+                }
             }
         }
+        .onChange(of: modeRaw) { showBars() }
+        .onChange(of: assistRaw) { showBars() }
         // A citation's tap opens the source's card, a dagger's its
         // endnote — never the browser. Anything else opens normally.
         .environment(\.openURL, OpenURLAction { url in
@@ -743,13 +849,20 @@ struct PhoneReaderView: View {
                 return .handled
             }
             if followJump(url) { return .handled }
+            // A link to a document on the shelf opens it here; one that
+            // is not here has nowhere to go, rather than the system.
+            if url.scheme?.lowercased() == "origamitext" {
+                if let recordID = shelfRecordID(forOrigamiLink: url) { linkedDocID = recordID }
+                return .handled
+            }
             return .systemAction
         })
         .sheet(item: Binding(
             get: { citationKey.map { TappedCitation(key: $0) } },
             set: { citationKey = $0?.key })) { tapped in
             if let doc = model.index.byID[docID]?.doc {
-                PhoneCitationCard(doc: doc, key: tapped.key)
+                PhoneCitationCard(doc: doc, key: tapped.key,
+                                  openOnShelf: { linkedDocID = $0 })
                     .presentationDetents([.medium, .large])
             }
         }
@@ -802,9 +915,23 @@ struct PhoneReaderView: View {
         // iPad's split view to give the page the whole screen.
         .onAppear {
             model.markOpened(id: docID)
-            model.isReading = true
+            model.openReaders += 1
         }
-        .onDisappear { model.isReading = false }
+        .onDisappear { model.openReaders -= 1 }
+        // A cited book on the shelf opens over this one; the foot bar's
+        // chevron comes back here, to the citing page.
+        .navigationDestination(item: $linkedDocID) { recordID in
+            PhoneReaderView(docID: recordID, opensOverBook: true)
+        }
+    }
+
+    /// The shelf book an origamitext://open/<address> link names — by
+    /// record id or by its shelf folder — or nil when it is not here.
+    private func shelfRecordID(forOrigamiLink url: URL) -> String? {
+        guard url.scheme?.lowercased() == "origamitext" else { return nil }
+        let address = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !address.isEmpty else { return nil }
+        return model.epubRecords.first { $0.id == address || $0.folder == address }?.id
     }
 
     private struct TappedCitation: Identifiable {
@@ -847,7 +974,8 @@ struct PhoneReaderView: View {
             return true
         }
         if mode == .focus {
-            withAnimation { focusIndex = index }
+            // The section appears at once, as a turned page does.
+            withTransaction(Transaction(animation: nil)) { focusIndex = index }
         } else {
             scrollJumpID = sections[index].id
         }
@@ -879,6 +1007,12 @@ struct PhoneReaderView: View {
         })
         // The readings stand on the theme's page, its scheme riding along.
         .background { pageColor.ignoresSafeArea() }
+        .task { landAtToRead(doc) }
+        .overlay(alignment: .top) {
+            if toReadNotice != nil {
+                toReadNoticeView.padding(.top, 24)
+            }
+        }
         .overlay {
             if mode == .outline {
                 outlineBody(sections, doc: doc)
@@ -911,6 +1045,11 @@ struct PhoneReaderView: View {
                         closeSelectionMenu()
                         copySelectionCitation(menu.doc, paragraph: menu.paragraph,
                                               selected: menu.selected)
+                    },
+                    isToRead: model.toReadItem(id: docID) != nil,
+                    onToRead: {
+                        closeSelectionMenu()
+                        toggleToRead(at: menu.paragraph)
                     },
                     onHighlight: { kind in
                         closeSelectionMenu()
@@ -1099,9 +1238,84 @@ struct PhoneReaderView: View {
                 .foregroundStyle(inkStyle)
                 .id(heading.id)
                 .padding(.top, 8)
+                .modifier(ToReadPress { toggleToRead(at: heading) })
         }
         ForEach(section.paragraphs) { paragraph in
             paragraphView(paragraph, doc: doc)
+                .id(paragraph.id)
+                .modifier(ToReadPress { toggleToRead(at: paragraph) })
+        }
+    }
+
+    /// Brings the bars back and starts their four seconds again.
+    private func showBars() {
+        withAnimation(.easeOut(duration: 0.2)) { barsShown = true }
+        barsWake += 1
+    }
+
+    // MARK: To Read
+
+    /// The press: To Read at this paragraph, or — when the book is already
+    /// To Read — off again. A haptic and a brief word answer it.
+    private func toggleToRead(at paragraph: LiquidDoc.Paragraph) {
+        if model.toReadItem(id: docID) != nil {
+            model.removeFromToRead(id: docID)
+            showToReadNotice("Removed from To Read")
+        } else {
+            model.markToRead(id: docID, at: paragraph.id,
+                             quote: paragraph.text)
+            showToReadNotice("To Read")
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    private func showToReadNotice(_ words: String) {
+        withAnimation(.easeOut(duration: 0.2)) { toReadNotice = words }
+        Task {
+            try? await Task.sleep(for: .seconds(1.6))
+            if toReadNotice == words {
+                withAnimation(.easeIn(duration: 0.3)) { toReadNotice = nil }
+            }
+        }
+    }
+
+    private var toReadNoticeView: some View {
+        Label(toReadNotice ?? "", systemImage: toReadNotice == "To Read" ? "bookmark.fill" : "bookmark.slash")
+            .font(.headline)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(.regularMaterial, in: Capsule())
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            .allowsHitTesting(false)
+    }
+
+    /// Opening a To Read book goes to the marked paragraph — found by its
+    /// id, else by its opening words — on whatever device marked it.
+    private func landAtToRead(_ doc: LiquidDoc) {
+        guard !landedAtToRead else { return }
+        landedAtToRead = true
+        guard let item = model.toReadItem(id: docID) else { return }
+        let body = doc.body ?? []
+        var target = body.first { $0.id == item.at }?.id
+        if target == nil, let quote = item.quote, quote.count >= 12 {
+            let opening = String(quote.prefix(40))
+            target = body.first { $0.text.contains(opening) }?.id
+        }
+        guard let target else { return }
+        let sections = OrigamiSection.build(from: doc)
+        guard let index = sections.firstIndex(where: { section in
+            section.heading?.id == target || section.paragraphs.contains { $0.id == target }
+        }) else { return }
+        if mode == .focus {
+            withTransaction(Transaction(animation: nil)) { focusIndex = index }
+        } else {
+            // The section first — a lazy stack has not built the
+            // paragraph yet — then the paragraph itself once it has.
+            scrollJumpID = sections[index].id
+            Task {
+                try? await Task.sleep(for: .milliseconds(400))
+                scrollJumpID = target
+            }
         }
     }
 
@@ -1191,11 +1405,23 @@ struct PhoneReaderView: View {
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
                 .id(paragraph.id)
         } else {
+            selectableText(paragraph.text, of: paragraph, doc: doc,
+                           size: bodySize, lineSpacing: 4)
+                .id(paragraph.id)
+        }
+    }
+
+    /// Words the reader can select, with the selection card — Scroll's
+    /// paragraphs, and Focus's one sentence or one paragraph alike. The
+    /// selection belongs to `paragraph`, which a sentence is part of.
+    private func selectableText(_ text: String, of paragraph: LiquidDoc.Paragraph,
+                                doc: LiquidDoc, size: CGFloat,
+                                lineSpacing: CGFloat) -> some View {
             PhoneSelectableParagraph(
-                attributed: rendered(paragraph.text, doc: doc, paragraphID: paragraph.id),
-                baseSize: bodySize,
+                attributed: rendered(text, doc: doc, paragraphID: paragraph.id),
+                baseSize: size,
                 inkColor: inkUIColor,
-                lineSpacing: 4,
+                lineSpacing: lineSpacing,
                 onLink: { url in
                     if let key = OrigamiReading.citationKey(from: url) {
                         citationKey = key
@@ -1224,8 +1450,6 @@ struct PhoneReaderView: View {
                         prefix: prefix, suffix: suffix, anchor: anchor)
                 },
                 clearSelectionToken: selectionClearToken)
-                .id(paragraph.id)
-        }
     }
 
     private struct SelectionNoteTarget: Identifiable {
@@ -1321,7 +1545,7 @@ struct PhoneReaderView: View {
                 ContentUnavailableView("Nothing to Read", systemImage: "doc.text")
             } else {
                 switch assist {
-                case .none:
+                case .section:
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 14) {
                             sectionView(sections[index], doc: doc)
@@ -1329,36 +1553,74 @@ struct PhoneReaderView: View {
                         .padding(.horizontal, 20)
                         .padding(.vertical, 16)
                     }
+                    // A new section is a new page: it opens at its top,
+                    // not at the last one's scroll, and is not morphed in.
+                    .id(sections[index].id)
+                    .transaction { $0.animation = nil }
                 case .sentence:
                     let sentences = sentences(of: sections[index])
                     let at = min(max(sentenceIndex, 0), max(sentences.count - 1, 0))
-                    unitDisplay(sentences.isEmpty ? "" : sentences[at],
-                                doc: doc, place: "\(at + 1) of \(sentences.count)")
+                    // A sentence stands alone: no "5 of 22" beside it.
+                    let sentence = sentences.isEmpty ? "" : sentences[at]
+                    unitDisplay(sentence,
+                                of: sections[index].paragraphs.first { $0.text.contains(sentence) }
+                                    ?? sections[index].paragraphs.first,
+                                doc: doc, place: nil)
+                        .modifier(TapSides { step($0, sections: sections, index: index) })
                 case .paragraph:
                     let paragraphs = sections[index].paragraphs
                     let at = min(max(paragraphIndex, 0), max(paragraphs.count - 1, 0))
                     unitDisplay(paragraphs.isEmpty ? "" : paragraphs[at].text,
-                                doc: doc, place: "\(at + 1) of \(paragraphs.count)")
+                                of: paragraphs.isEmpty ? nil : paragraphs[at],
+                                doc: doc, place: nil)
+                        .modifier(TapSides { step($0, sections: sections, index: index) })
                 }
                 stepBar(sections, doc: doc, index: index)
+                    // The ‹ title › bar fades with the toolbar, and a tap
+                    // where it stood brings both back.
+                    .opacity(barsShown ? 1 : 0)
+                    .allowsHitTesting(barsShown)
+                    .simultaneousGesture(TapGesture().onEnded { showBars() })
+                    .overlay {
+                        if !barsShown {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onTapGesture { showBars() }
+                        }
+                    }
             }
         }
     }
 
     /// One sentence or paragraph alone on the page, big enough to settle
     /// into — the Mac's assists, sized for the hand.
-    private func unitDisplay(_ text: String, doc: LiquidDoc, place: String) -> some View {
+    private func unitDisplay(_ text: String, of paragraph: LiquidDoc.Paragraph?,
+                             doc: LiquidDoc, place: String?) -> some View {
         VStack(spacing: 16) {
             Spacer()
-            Text(rendered(text, doc: doc))
-                .font(.system(size: bodySize + 4, design: .serif))
-                .foregroundStyle(inkStyle)
-                .lineSpacing(6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24)
-            Text(place)
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
+            Group {
+                if let paragraph {
+                    // Selectable, with the card — Highlight, Note, To Read.
+                    selectableText(text, of: paragraph, doc: doc,
+                                   size: bodySize + 4, lineSpacing: 6)
+                } else {
+                    Text(rendered(text, doc: doc))
+                        .font(.system(size: bodySize + 4, design: .serif))
+                        .foregroundStyle(inkStyle)
+                        .lineSpacing(6)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Clear of the tap strips at each edge (a tenth of the width),
+            // so pressing a line's last word never turns the page.
+            .padding(.horizontal, 8)
+            .containerRelativeFrame(.horizontal) { width, _ in width * 0.8 }
+            .frame(maxWidth: .infinity)
+            if let place {
+                Text(place)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1371,13 +1633,30 @@ struct PhoneReaderView: View {
         HStack {
             Button { step(-1, sections: sections, index: index) } label: {
                 Label("Previous", systemImage: "chevron.left")
+                    .foregroundStyle(Self.inactiveBarGrey)
             }
             Spacer()
-            Text("\(index + 1) of \(sections.count)")
-                .font(.callout).foregroundStyle(.secondary)
+            // The heading being read, so stepping is by the book's own
+            // sections, named as its contents names them.
+            VStack(spacing: 1) {
+                Text(sections[index].title.replacingOccurrences(of: "*", with: ""))
+                    .font(.callout.weight(.medium))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .foregroundStyle(Self.inactiveBarGrey)
+                // Counts stay out of Sentence and Paragraph, whose point
+                // is the one unit; the heading alone says where it stands.
+                if assist == .section {
+                    Text("\(index + 1) of \(sections.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer()
             Button { step(1, sections: sections, index: index) } label: {
                 Label("Next", systemImage: "chevron.right")
+                    .foregroundStyle(Self.inactiveBarGrey)
             }
         }
         .labelStyle(.iconOnly)
@@ -1385,10 +1664,12 @@ struct PhoneReaderView: View {
         .padding(.vertical, 8)
     }
 
+    /// No animation: the next section, sentence or paragraph replaces
+    /// the last at once, rather than rising into place.
     private func step(_ delta: Int, sections: [OrigamiSection], index: Int) {
-        withAnimation {
+        withTransaction(Transaction(animation: nil)) {
             switch assist {
-            case .none:
+            case .section:
                 focusIndex = min(max(index + delta, 0), sections.count - 1)
             case .sentence:
                 let count = sentences(of: sections[index]).count
@@ -1693,11 +1974,22 @@ struct PhoneReaderView: View {
 
     private var footBar: some View {
         HStack(spacing: 6) {
+            // The way back, said in words: to the documents.
             Button {
                 dismiss()
             } label: {
-                Image(systemName: "chevron.backward")
-                    .foregroundStyle(.secondary)
+                if opensOverBook {
+                    Image(systemName: "chevron.backward")
+                        .foregroundStyle(Self.inactiveBarGrey)
+                        .accessibilityLabel("Back to the citing document")
+                } else {
+                    Text("Documents")
+                        .font(.subheadline)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .foregroundStyle(Self.inactiveBarGrey)
+                        .accessibilityHint("Back to the document list")
+                }
             }
             .buttonStyle(.plain)
             // Horizontal reads like a spread: the document's title
@@ -1781,13 +2073,14 @@ struct PhoneReaderView: View {
         .environment(\.colorScheme, .dark)
     }
 
-    /// Focus's second row: [ Focus | Sentence | Paragraph | Word ] —
-    /// the Mac's assists, in the same black dress as the foot bar.
+    /// Focus's second row: [ Section | Sentence | Paragraph | Word ] —
+    /// the Mac's assists, in the same black dress as the foot bar. A
+    /// section is a heading and everything under it until the next one.
     private var assistBar: some View {
         HStack(spacing: 6) {
             Text("[").foregroundStyle(.tertiary)
-            modeWord("Focus", chosen: assist == .none) {
-                assistRaw = Assist.none.rawValue
+            modeWord("Section", chosen: assist == .section) {
+                assistRaw = Assist.section.rawValue
             }
             separator
             modeWord("Sentence", chosen: assist == .sentence) {
@@ -1821,6 +2114,10 @@ struct PhoneReaderView: View {
             .frame(width: 1, height: 14)
     }
 
+    /// The grey of a toolbar word not chosen — shared by the step bar's
+    /// section title and arrows, so they read as part of the toolbar.
+    private static let inactiveBarGrey = Color(white: 0.45)
+
     private func modeWord(_ word: String, chosen: Bool, act: @escaping () -> Void) -> some View {
         Button(action: act) {
             Text(word)
@@ -1829,7 +2126,7 @@ struct PhoneReaderView: View {
                 .fixedSize()
                 // Quiet greys on the black bar — words a shade darker
                 // than the bar's icons, present without shouting.
-                .foregroundStyle(chosen ? Color(white: 0.72) : Color(white: 0.45))
+                .foregroundStyle(chosen ? Color(white: 0.72) : Self.inactiveBarGrey)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1846,6 +2143,9 @@ private struct SelectionMenuCard: View {
     let highlightsPresent: Bool
     let onFind: () -> Void
     let onCopyCitation: () -> Void
+    /// Whether the book is already To Read — the row then takes it off.
+    let isToRead: Bool
+    let onToRead: () -> Void
     let onHighlight: (ReaderAnnotationKind) -> Void
     let onRemoveHighlights: () -> Void
     let onNote: () -> Void
@@ -1859,7 +2159,7 @@ private struct SelectionMenuCard: View {
             let frame = geo.frame(in: .global)
             let width: CGFloat = 240
             let rowHeight: CGFloat = 40
-            let height = rowHeight * 5
+            let height = rowHeight * 6
                 + (showsKinds ? rowHeight * CGFloat(ReaderAnnotationKind.allCases.count + 1) : 0)
             // Beside the words: below when there is room, above otherwise,
             // clamped to the reading's edges.
@@ -1880,6 +2180,9 @@ private struct SelectionMenuCard: View {
                     row("Find", symbol: "magnifyingglass", action: onFind)
                     Divider()
                     row("Copy Citation", symbol: "quote.opening", action: onCopyCitation)
+                    Divider()
+                    row(isToRead ? "Remove from To Read" : "To Read",
+                        symbol: isToRead ? "bookmark.slash" : "bookmark", action: onToRead)
                     Divider()
                     Button {
                         withAnimation(.snappy) { showsKinds.toggle() }
@@ -2147,9 +2450,25 @@ private struct PhoneSelectableParagraph: UIViewRepresentable {
 /// The shelf's third face: how to read here — one screen of it, no
 /// setup, readable before the first book ever arrives.
 struct PhoneGuideView: View {
+    @Environment(PhoneModel.self) private var model
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                // The two books shipped with the app, opened in the
+                // reader like any other — the summary below is the
+                // one-screen version.
+                VStack(spacing: 0) {
+                    bookRow("Introduction", symbol: "book",
+                            detail: "Welcome to Origami Text",
+                            record: model.introductionRecord)
+                    Divider().padding(.leading, 44)
+                    bookRow("User Guide", symbol: "questionmark.circle",
+                            detail: UIDevice.current.userInterfaceIdiom == .pad
+                                ? "Everything the iPad does" : "Everything the iPhone does",
+                            record: model.userGuideRecord)
+                }
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
                 Text("Origami Text reads research papers and letters whose citations, notes and structure stay alive — EPUBs published from Origami Text on the Mac, from Author, or any EPUB you have.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -2170,6 +2489,37 @@ struct PhoneGuideView: View {
             }
             .padding(20)
         }
+    }
+
+    /// One shipped book: tap and it opens in the reader. Greyed when the
+    /// book is not in this copy of the app.
+    private func bookRow(_ title: String, symbol: String, detail: String,
+                         record: EPUBRecord?) -> some View {
+        Button {
+            if let record { model.readerRecordID = record.id }
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: symbol)
+                    .font(.title3)
+                    .foregroundStyle(.tint)
+                    .frame(width: 30)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.headline)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(record == nil)
     }
 
     private func guideRow(_ symbol: String, _ title: String, _ text: String) -> some View {
@@ -2197,8 +2547,33 @@ struct PhoneGuideView: View {
 private struct PhoneCitationCard: View {
     let doc: LiquidDoc
     let key: String
+    /// Opens a cited document that is on the shelf, over the citing one.
+    let openOnShelf: (String) -> Void
+    @Environment(PhoneModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+
+    /// The cited document on this shelf, if it is here — named by the
+    /// reference's vm-id, by an origamitext://open/<address> url, or by
+    /// the citation key itself (an internal citation's key is the cited
+    /// document's address). The Mac's Open Original, here.
+    private func shelfRecord(fields: [String: String]) -> EPUBRecord? {
+        var addresses: [String] = []
+        if let vmID = fields["vm-id"] { addresses.append(vmID) }
+        if let url = fields["url"].flatMap(URL.init(string:)),
+           url.scheme?.lowercased() == "origamitext" {
+            addresses.append(url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+        }
+        addresses.append(key)
+        for address in addresses where !address.isEmpty {
+            if let record = model.epubRecords.first(where: {
+                $0.id == address || $0.folder == address
+            }) {
+                return record
+            }
+        }
+        return nil
+    }
 
     var body: some View {
         // An internal citation's key is the cited document's address —
@@ -2212,7 +2587,11 @@ private struct PhoneCitationCard: View {
         let year = fields["year"] ?? ""
         let venue = fields["journal"] ?? fields["booktitle"] ?? fields["publisher"] ?? ""
         let doi = fields["doi"]
-        let urlField = fields["url"]
+        // An app link is not a web page: Open stands in for it.
+        let urlField = fields["url"].flatMap {
+            URL(string: $0)?.scheme?.lowercased() == "origamitext" ? nil : $0
+        }
+        let onShelf = shelfRecord(fields: fields)
         NavigationStack {
             List {
                 Section {
@@ -2227,6 +2606,14 @@ private struct PhoneCitationCard: View {
                     }
                 }
                 Section {
+                    if let onShelf {
+                        Button {
+                            dismiss()
+                            openOnShelf(onShelf.id)
+                        } label: {
+                            Label("Open", systemImage: "book")
+                        }
+                    }
                     if let doi, !doi.isEmpty,
                        let url = URL(string: doi.hasPrefix("http")
                                      ? doi : "https://doi.org/" + doi) {
@@ -2339,6 +2726,75 @@ private struct PhoneEndnoteCard: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - The To Read press
+
+/// A one-second press on the page around a paragraph — its margins and
+/// the gaps either side — marks To Read there. It sits BEHIND the words:
+/// a press on the words themselves goes to them and selects, as always,
+/// and the selection card carries To Read for that case.
+private struct ToReadPress: ViewModifier {
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        content.background {
+            Color.clear
+                // Out into the side margins and half of each gap between
+                // paragraphs, so blank page space is all covered.
+                .padding(.vertical, -7)
+                .padding(.horizontal, -20)
+                .contentShape(Rectangle())
+                .onLongPressGesture(minimumDuration: 1, perform: action)
+        }
+    }
+}
+
+/// Settings ▸ On Loading: what the reader shows while a book arrives.
+enum LoadingStyle: String, CaseIterable, Identifiable {
+    case spinner, animation
+    static let defaultsKey = "iosLoadingStyle"
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .spinner: "Spinner"
+        case .animation: "Animation"
+        }
+    }
+}
+
+// MARK: - Tapping the sides
+
+/// In Focus's Sentence and Paragraph: a tap in the right edge's strip
+/// steps on, in the left edge's strip steps back — the way a page is
+/// turned. Each strip is a tenth of the width, so the words between stay
+/// free to select.
+private struct TapSides: ViewModifier {
+    let step: (Int) -> Void
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            GeometryReader { geometry in
+                let strip = geometry.size.width * 0.1
+                HStack(spacing: 0) {
+                    Color.clear
+                        .frame(width: strip)
+                        .contentShape(Rectangle())
+                        .onTapGesture { step(-1) }
+                        .accessibilityLabel("Previous")
+                        .accessibilityAddTraits(.isButton)
+                    Spacer(minLength: 0)
+                        .allowsHitTesting(false)
+                    Color.clear
+                        .frame(width: strip)
+                        .contentShape(Rectangle())
+                        .onTapGesture { step(1) }
+                        .accessibilityLabel("Next")
+                        .accessibilityAddTraits(.isButton)
                 }
             }
         }

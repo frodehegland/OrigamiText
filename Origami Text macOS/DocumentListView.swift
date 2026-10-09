@@ -68,6 +68,10 @@ struct EPUBPileMenu: View {
             }
         }
         Divider()
+        // To Read: back to it later, here or on the phone, iPad or headset.
+        Button(model.isToRead(record) ? "Remove from To Read" : "To Read") {
+            model.toggleToRead(record)
+        }
         Toggle("Pin", isOn: Binding(
             get: { model.isTopOfPile(record) },
             set: { _ in model.toggleTopOfPile(record) }))
@@ -283,10 +287,11 @@ struct EPUBLibraryListView: View {
     private func bookRow(_ record: EPUBRecord, match: AppModel.EPUBTextMatch?) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Image(systemName: "pin.fill")
+                // To Read's bookmark, else the pin — To Read leads the list.
+                Image(systemName: model.isToRead(record) ? "bookmark.fill" : "pin.fill")
                     .font(.caption)
-                    .foregroundStyle(EmberIconLabelStyle.ember)
-                    .opacity(model.isTopOfPile(record) ? 1 : 0)
+                    .foregroundStyle(model.isToRead(record) ? Color.teal : EmberIconLabelStyle.ember)
+                    .opacity(model.isToRead(record) || model.isTopOfPile(record) ? 1 : 0)
                 Text(record.title)
                     .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
                     .fontWeight(isBold(record) ? .bold : .regular)
@@ -499,10 +504,11 @@ struct EPUBRecordRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Image(systemName: "pin.fill")
+                // To Read's bookmark, else the pin — To Read leads the list.
+                Image(systemName: model.isToRead(record) ? "bookmark.fill" : "pin.fill")
                     .font(.caption)
-                    .foregroundStyle(EmberIconLabelStyle.ember)
-                    .opacity(model.isTopOfPile(record) ? 1 : 0)
+                    .foregroundStyle(model.isToRead(record) ? Color.teal : EmberIconLabelStyle.ember)
+                    .opacity(model.isToRead(record) || model.isTopOfPile(record) ? 1 : 0)
                 Text(record.title)
                     .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
                     .fontWeight(model.isUnread(record) ? .bold : .regular)

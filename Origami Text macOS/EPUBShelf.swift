@@ -196,6 +196,172 @@ nonisolated enum EPUBStanding {
     }
 }
 
+/// To Read: a book marked to come back to, and the place to come back
+/// to — marked on the phone in a spare minute, read on the Mac, the iPad
+/// or the headset later, or the other way round. Not a pin: a pin says
+/// "this matters", To Read says "I am not finished here". To Read books
+/// lead every list, newest mark first, ahead of the pinned.
+///
+/// It travels in its own file in the community folder,
+/// `origami-to-read.json`, rather than in `origami-standing.json`: builds
+/// that predate To Read rewrite the standing file whole whenever they pin,
+/// and would drop a member they do not know. Like the standing it is
+/// whole-file, last writer wins, keyed by community file name
+/// (EPUBRecord.folder) and read coordinated.
+nonisolated struct EPUBToRead: Equatable, Sendable {
+
+    struct Item: Codable, Hashable, Sendable {
+        /// Locally the record id; in the shared file the community file name.
+        var name: String
+        /// The paragraph (element id) the reader marked, to land on.
+        var at: String?
+        /// The paragraph's opening words, so the place can be found again
+        /// when an edition renumbers its paragraphs.
+        var quote: String?
+        var marked: Date
+    }
+
+    private struct State: Codable {
+        var items: [Item]
+        var modified: Date
+    }
+
+    static let fileName = "origami-to-read.json"
+    private static let defaultsKey = "epubToRead"
+
+    private(set) var items: [Item]
+    /// When this device last wrote the shared file — an older file read
+    /// back never clobbers a newer local change.
+    private(set) var writtenAt: Date = .distantPast
+
+    /// The device's own copy, from UserDefaults.
+    static func loadLocal() -> EPUBToRead {
+        let data = UserDefaults.standard.data(forKey: defaultsKey)
+        let items = data.flatMap { try? JSONDecoder().decode([Item].self, from: $0) } ?? []
+        return EPUBToRead(items: items)
+    }
+
+    private func saveLocal() {
+        if let data = try? JSONEncoder().encode(items) {
+            UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        }
+    }
+
+    // MARK: Asking
+
+    func contains(_ id: String) -> Bool { items.contains { $0.name == id } }
+
+    func item(for id: String) -> Item? { items.first { $0.name == id } }
+
+    /// To Read first, newest mark first; then the given order unchanged.
+    func first(_ records: [EPUBRecord]) -> [EPUBRecord] {
+        let marked = Dictionary(items.map { ($0.name, $0.marked) }, uniquingKeysWith: max)
+        let reading = records.filter { marked[$0.id] != nil }
+            .sorted { (marked[$0.id] ?? .distantPast) > (marked[$1.id] ?? .distantPast) }
+        return reading + records.filter { marked[$0.id] == nil }
+    }
+
+    // MARK: Changing — each saves locally; the model then publishes
+
+    mutating func mark(_ id: String, at paragraph: String?, quote: String?) {
+        items.removeAll { $0.name == id }
+        let opening = quote.map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)) }
+        items.append(Item(name: id, at: paragraph, quote: opening, marked: .now))
+        saveLocal()
+    }
+
+    mutating func remove(_ id: String) {
+        items.removeAll { $0.name == id }
+        saveLocal()
+    }
+
+    /// A re-published edition takes over the old copy's mark.
+    mutating func move(from old: String, to successor: String) {
+        guard let index = items.firstIndex(where: { $0.name == old }) else { return }
+        items[index].name = successor
+        saveLocal()
+    }
+
+    /// Names that arrived before their book become local ids once it has.
+    mutating func translate(records: [EPUBRecord]) {
+        var idByFolder: [String: String] = [:]
+        for record in records { idByFolder[record.folder] = record.id }
+        let translated = items.map { item -> Item in
+            var item = item
+            item.name = idByFolder[item.name] ?? item.name
+            return item
+        }
+        guard translated != items else { return }
+        items = translated
+        saveLocal()
+    }
+
+    // MARK: The shared file
+
+    /// Writes the list to the community folder in community file names.
+    /// A name with no record here passes through, so a book this device
+    /// does not hold keeps its mark everywhere else.
+    mutating func publish(to folder: URL, records: [EPUBRecord]) {
+        var folderByID: [String: String] = [:]
+        for record in records { folderByID[record.id] = record.folder }
+        let shared = items.map { item -> Item in
+            var item = item
+            item.name = folderByID[item.name] ?? item.name
+            return item
+        }
+        let state = State(items: shared.sorted { $0.marked > $1.marked }, modified: .now)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // Fractional seconds: two devices writing within one second must
+        // still tell which wrote last.
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(date.formatted(.iso8601.year().month().day()
+                .time(includingFractionalSeconds: true).timeZone(separator: .omitted)))
+        }
+        if let data = try? encoder.encode(state) {
+            try? data.write(to: folder.appendingPathComponent(Self.fileName), options: .atomic)
+            writtenAt = state.modified
+        }
+    }
+
+    /// The shared file's items and date, read coordinated — an iCloud
+    /// item read plainly serves stale bytes. Call off the main actor.
+    static func readShared(from folder: URL) -> (items: [Item], modified: Date)? {
+        let url = folder.appendingPathComponent(fileName)
+        var data: Data?
+        var coordinationError: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [],
+                                       error: &coordinationError) { readURL in
+            data = try? Data(contentsOf: readURL)
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let text = try decoder.singleValueContainer().decode(String.self)
+            if let date = try? Date(text, strategy: .iso8601.year().month().day()
+                .time(includingFractionalSeconds: true).timeZone(separator: .omitted)) { return date }
+            if let date = try? Date(text, strategy: .iso8601) { return date }
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "Not an ISO 8601 date: \(text)"))
+        }
+        guard let data, let state = try? decoder.decode(State.self, from: data) else { return nil }
+        return (state.items, state.modified)
+    }
+
+    /// Adopts a shared list another device wrote more recently than this
+    /// one did. Returns whether anything changed.
+    @discardableResult
+    mutating func adopt(_ shared: (items: [Item], modified: Date), records: [EPUBRecord]) -> Bool {
+        guard shared.modified > writtenAt else { return false }
+        writtenAt = shared.modified
+        let before = items
+        items = shared.items
+        translate(records: records)
+        saveLocal()
+        return items != before
+    }
+}
+
 /// Persists user-written definitions and category overrides for merged
 /// concepts. Stored in Application Support (personal, not community folder)
 /// so the user's annotations are never overwritten by shared library state.

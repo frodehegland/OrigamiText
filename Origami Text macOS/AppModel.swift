@@ -3484,7 +3484,8 @@ final class AppModel {
         openStoredEPUB(record)
         // Set after opening: openStoredEPUB clears any stale fragment, and the
         // reader is (re)built reading this one for the book it just opened.
-        pendingReaderFragment = (fragment?.isEmpty == false) ? fragment : nil
+        // A link with no fragment leaves a To Read place standing.
+        if let fragment, !fragment.isEmpty { pendingReaderFragment = fragment }
     }
 
     /// What a book's records add to its authored map: the map's own node
@@ -3942,6 +3943,8 @@ final class AppModel {
                             chapters: chapters.isEmpty ? [content] : chapters,
                             nav: spine?.nav.map { base.appendingPathComponent($0) })
         markRead(epubListingDoc(record))
+        // A To Read book opens where it was marked, on whichever device.
+        if let fragment = toReadFragment(for: record) { pendingReaderFragment = fragment }
         markOpened(record)
     }
 
@@ -5047,6 +5050,9 @@ final class AppModel {
         Task.detached(priority: .utility) {
             let scoped = folder.startAccessingSecurityScopedResource()
             defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            if let shared = EPUBToRead.readShared(from: folder) {
+                await MainActor.run { self.toRead.adopt(shared, records: self.epubRecords) }
+            }
             guard let state = EPUBStanding.read(from: folder) else { return }
             await MainActor.run { self.applyStanding(state) }
         }
@@ -5079,9 +5085,43 @@ final class AppModel {
         epubRecords.filter { epubSetAsideIDs.contains($0.id) }
     }
 
-    /// Top of Pile first, otherwise keeping the given order.
+    /// To Read first (newest mark first), then Top of Pile, otherwise
+    /// keeping the given order.
     func pinnedFirst(_ records: [EPUBRecord]) -> [EPUBRecord] {
-        records.filter { isTopOfPile($0) } + records.filter { !isTopOfPile($0) }
+        toRead.first(records.filter { isTopOfPile($0) } + records.filter { !isTopOfPile($0) })
+    }
+
+    // MARK: - To Read
+
+    /// Books marked to come back to, with the paragraph to come back to —
+    /// marked on the phone, read here, or the other way round. Shared
+    /// through origami-to-read.json (EPUBToRead; the phone's PhoneModel
+    /// and the headset hold siblings — keep in step).
+    private(set) var toRead = EPUBToRead.loadLocal()
+
+    func isToRead(_ record: EPUBRecord) -> Bool { toRead.contains(record.id) }
+
+    func toggleToRead(_ record: EPUBRecord) {
+        if toRead.contains(record.id) {
+            toRead.remove(record.id)
+        } else {
+            toRead.mark(record.id, at: nil, quote: nil)
+        }
+        publishToRead()
+    }
+
+    private func publishToRead() {
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        toRead.publish(to: folder, records: epubRecords)
+    }
+
+    /// The element a To Read book was marked at, as the reader's page
+    /// knows it: the paragraph's id without its document path.
+    func toReadFragment(for record: EPUBRecord) -> String? {
+        guard let at = toRead.item(for: record.id)?.at, !at.isEmpty else { return nil }
+        return at.split(separator: "#").last.map(String.init)
     }
 
     /// Opened EPUBs the lists show, all of them or just those filed
@@ -5610,6 +5650,7 @@ final class AppModel {
                                               records: epubRecords)
         epubSetAsideIDs = EPUBStanding.localIDs(from: epubSetAsideIDs,
                                                 records: epubRecords)
+        toRead.translate(records: epubRecords)
         // The headset's wishes: cited works asked for as books, shown
         // in the Time view until acquired or dismissed.
         acquisitions = EPUBAcquisitions.read(from: folder)

@@ -7057,6 +7057,15 @@ struct MapReaderPanel: View {
                 // The paper's standing, across the title from how it is
                 // held: Pin brings it first in the pile, Set Aside lays
                 // it in the quiet row. The Map answers either change.
+                // To Read: back to it later, here or on another device.
+                let toRead = model.isToRead(docID)
+                Button {
+                    model.toggleToRead(docID)
+                } label: {
+                    Image(systemName: toRead ? "bookmark.fill" : "bookmark")
+                }
+                .buttonBorderShape(.circle)
+                .help(toRead ? "Remove from To Read" : "To Read — first in every list, on every device")
                 let pinned = model.pinnedIDs.contains(docID)
                 Button {
                     model.togglePinned(docID)

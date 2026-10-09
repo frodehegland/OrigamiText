@@ -23,7 +23,62 @@ final class PhoneModel {
 
     init() {
         restoreFolder()
+        installBundledBooks()
         rebuildEPUBIndex()
+    }
+
+    // MARK: Shipped with the app: the Introduction and the user guide
+
+    /// The user guide's library address — the Mac's userGuideID. Never
+    /// change it: the Introduction cites the guide by it (vm-id, and
+    /// origamitext://open/origami-text-user-guide). Both device guides
+    /// carry it; each device shelves its own.
+    static let userGuideID = "origami-text-user-guide"
+
+    /// The guide written for this device. RELEASE NOTE: the guides'
+    /// Markdown beside these EPUBs is the source — update it for every
+    /// App Store build and re-convert (RELEASE-CHECKLIST.md).
+    private static var userGuideResource: String {
+        UIDevice.current.userInterfaceIdiom == .pad
+            ? "OrigamiTextUserGuide-iPad" : "OrigamiTextUserGuide-iPhone"
+    }
+
+    /// The shelf folders the bundled books unpack into (their file names).
+    private static let bundledFolders: Set<String> =
+        ["Introduction", "OrigamiTextUserGuide-iPad", "OrigamiTextUserGuide-iPhone"]
+
+    func isBundled(_ record: EPUBRecord) -> Bool {
+        Self.bundledFolders.contains(record.folder)
+    }
+
+    /// Frode's Introduction — absent until Introduction.epub ships in
+    /// this target.
+    var introductionRecord: EPUBRecord? {
+        epubRecords.first { $0.folder == "Introduction" }
+    }
+
+    var userGuideRecord: EPUBRecord? {
+        epubRecords.first { $0.id == Self.userGuideID }
+    }
+
+    /// Puts the Introduction and this device's guide on the shelf from
+    /// the app bundle. importEPUB keeps an unchanged copy and re-unpacks
+    /// when a new build ships a newer file, so this is cheap after the
+    /// first launch.
+    private func installBundledBooks() {
+        for name in ["Introduction", Self.userGuideResource] {
+            guard let url = Bundle.main.url(forResource: name, withExtension: "epub") else { continue }
+            importEPUB(at: url)
+        }
+    }
+
+    /// The app's first page, once: the Introduction, as on the Mac.
+    func openIntroductionOnFirstLaunch() {
+        let key = "iosIntroductionShown"
+        guard !UserDefaults.standard.bool(forKey: key),
+              let intro = introductionRecord else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        readerRecordID = intro.id
     }
 
     // MARK: The store
@@ -319,9 +374,38 @@ final class PhoneModel {
         publishStanding()
     }
 
-    /// Top of Pile first, otherwise keeping the given order — the Mac's.
+    /// To Read first (newest mark first), then Top of Pile, otherwise
+    /// keeping the given order — the Mac's.
     func pinnedFirst(_ records: [EPUBRecord]) -> [EPUBRecord] {
-        records.filter { isTopOfPile($0) } + records.filter { !isTopOfPile($0) }
+        toRead.first(records.filter { isTopOfPile($0) } + records.filter { !isTopOfPile($0) })
+    }
+
+    // MARK: - To Read
+
+    /// Books marked to come back to, with the paragraph to come back to.
+    /// Shared through origami-to-read.json (EPUBToRead; AppModel and the
+    /// headset hold siblings — keep in step).
+    private(set) var toRead = EPUBToRead.loadLocal()
+
+    func isToRead(_ record: EPUBRecord) -> Bool { toRead.contains(record.id) }
+
+    func toReadItem(id: String) -> EPUBToRead.Item? { toRead.item(for: id) }
+
+    func markToRead(id: String, at paragraph: String?, quote: String?) {
+        toRead.mark(id, at: paragraph, quote: quote)
+        publishToRead()
+    }
+
+    func removeFromToRead(id: String) {
+        toRead.remove(id)
+        publishToRead()
+    }
+
+    private func publishToRead() {
+        guard let folder = folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        toRead.publish(to: folder, records: epubRecords)
     }
 
     /// The Set Aside shelf's records, in library order.
@@ -358,9 +442,17 @@ final class PhoneModel {
     /// bold then, as on the Mac.
     var inboxHasUnopened: Bool { inboxRecords.contains { isUnopened($0) } }
 
+    /// How many readers stand in the navigation stack — a cited book
+    /// opened from a citation card stacks a second over the first.
+    /// Counted, not flagged: popping the inner reader must not read as
+    /// leaving the book still open beneath it.
+    var openReaders = 0 {
+        didSet { if openReaders < 0 { openReaders = 0 } }
+    }
+
     /// Whether a book is open in the reader — the iPad's split view folds
     /// its left column away while reading takes the screen.
-    var isReading = false
+    var isReading: Bool { openReaders > 0 }
 
     // MARK: - Annotations (the reader's highlights and notes)
 
@@ -593,6 +685,10 @@ final class PhoneModel {
         Task.detached(priority: .utility) {
             let scoped = folder.startAccessingSecurityScopedResource()
             defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            let shared = EPUBToRead.readShared(from: folder)
+            if let shared {
+                await MainActor.run { self.toRead.adopt(shared, records: self.epubRecords) }
+            }
             guard let state = EPUBStanding.read(from: folder) else { return }
             await MainActor.run { self.applyStanding(state) }
         }
@@ -695,6 +791,7 @@ final class PhoneModel {
                                               records: epubRecords)
         epubSetAsideIDs = EPUBStanding.localIDs(from: epubSetAsideIDs,
                                                 records: epubRecords)
+        toRead.translate(records: epubRecords)
         if placeholdersRemain {
             Task {
                 try? await Task.sleep(for: .seconds(8))
@@ -707,8 +804,10 @@ final class PhoneModel {
     /// EPUBSupersession): standing and annotations move to the
     /// successor; the old unpack and record leave the shelf.
     private func retireSuperseded(presentFolders: Set<String>) {
+        // The app's own books never live in the community folder; a
+        // same-titled copy there (an exported guide) must not retire them.
         let retirements = EPUBSupersession.retirements(
-            records: epubRecords, presentFolders: presentFolders)
+            records: epubRecords.filter { !isBundled($0) }, presentFolders: presentFolders)
         guard !retirements.isEmpty else { return }
         for (old, successor) in retirements {
             let oldSidecar = Self.annotationsRoot
@@ -721,6 +820,7 @@ final class PhoneModel {
             }
             if epubTopOfPile.remove(old.id) != nil { epubTopOfPile.insert(successor.id) }
             if epubSetAsideIDs.remove(old.id) != nil { epubSetAsideIDs.insert(successor.id) }
+            toRead.move(from: old.id, to: successor.id)
             try? FileManager.default.removeItem(
                 at: Self.epubsRoot.appendingPathComponent(old.folder, isDirectory: true))
             epubRecords.removeAll { $0.id == old.id }

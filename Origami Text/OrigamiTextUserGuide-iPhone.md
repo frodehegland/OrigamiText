@@ -2,7 +2,7 @@
 title: Origami Text User Guide
 subtitle: For iPhone
 author: Future Text Lab
-date: 2026-10-07
+date: 2026-10-09
 ---
 
 # Origami Text User Guide
@@ -74,9 +74,21 @@ The foot of the shelf holds the **gear** (Open EPUB…, the community folder,
 Settings…) and **Find**: type and Articles narrow to titles and authors
 that match, Journals to names that match.
 
+**To Read.** Hold your finger on the page for a second — in the margin or
+the space between paragraphs, not on the words — and **To Read** appears:
+the book is marked to come back to, at that paragraph. Holding on the
+words still selects them; their card has **To Read** too. To Read books
+lead every list, newest first, ahead of the pinned, with a teal bookmark
+beside the title. Open one on any of your devices — the Mac, the iPad,
+the iPhone or the headset — and it opens at the paragraph you marked.
+It stays To Read until you take it off: the same press again, or touch
+and hold the book in a list for **Remove from To Read**. A list's menu
+can also mark a book To Read without a place.
+
 **Pin and set aside.** Swipe a book to the right to pin it to the top of
 every list; swipe to the left to set it aside. Or touch and hold the book
-for the menu: Pin, Set Aside (or Bring Back), and **Note…**.
+for the menu: To Read (or Remove from To Read), Pin, Set Aside (or Bring
+Back), and **Note…**.
 
 **A note on the whole book.** Note… writes a few words about the book
 itself — no text selected, none needed. The note shows in quiet italics
@@ -105,7 +117,8 @@ Reading takes the whole screen. On iPhone the camera housing sits in a
 black band of its own, so the page never flows around it. Everything you
 need is in the **foot bar** at the bottom:
 
-- **‹** on the left goes back to the shelf.
+- **Documents** on the left goes back to the shelf. (In a cited book opened
+  over the one you were reading, it is a **‹** and goes back to that book.)
 - **Scroll | Focus** in the middle choose how the book reads.
 - **◐** (the half circle) holds the looks: **Light** or **Dark**, the
   colour **Theme** — the Mac's full set, from sepia to the dyslexia- and
@@ -113,15 +126,25 @@ need is in the **foot bar** at the bottom:
   half of every word in bold.
 - **Aa** makes the words Bigger or Smaller, or resets them.
 
+After four seconds without a touch, the foot bar — and in Focus the
+heading bar above it — fades from the page so the words have it to
+themselves. Tap where a bar was and they come back.
+
 **Scroll** lays the whole text in one clean column.
 
-**Focus** holds one section at a time, with **Previous** and **Next** at
-the bottom and where you are ("3 of 12"). A second row appears above the
-foot bar with Focus's assists:
+**Focus** holds one section at a time — a heading and everything under it
+until the next heading — with **Previous** and **Next** at the bottom and,
+between them, the section's heading and where you are ("3 of 12"). A
+second row appears above the foot bar with Focus's assists:
 
-- **Focus** — the whole section.
+- **Section** — the whole section, heading and all.
 - **Sentence** — one sentence at a time.
 - **Paragraph** — one paragraph at a time.
+
+  In Sentence and Paragraph, tap the right edge of the page to go on and
+  the left edge to go back. The words between can be selected as anywhere
+  else, for Highlight, Note… and To Read.
+
 - **Word** — the text played one word after another in the middle of the
   screen. The **−** and **+** set the pace in words per minute (60 to
   800); **Close** returns to the page.
@@ -140,6 +163,8 @@ A card of verbs appears beside them:
 - **Find** — looks for these words through the whole book (section 8).
 - **Copy Citation** — copies the passage with a full citation to this
   exact spot in the book, ready to paste into Author or any document.
+- **To Read** — marks the book to come back to, at this paragraph (or
+  takes it off, when it is already To Read).
 - **Highlight** — unfolds the kinds: Important, Quotable, Great, Disagree,
   Language Issue, Problematic, What is this?, Highlight and Strikethrough,
   each in its own colour. **Remove** clears the highlights on the selected
@@ -198,7 +223,11 @@ Tap the gear at the foot of the shelf and choose Settings…
   **Fold [ ]**. A raised number must mean exactly one thing, so choosing
   Superscript for citations moves notes off it, and the other way round.
 
-The choices are shared with the Mac and the headset.
+- **On Loading** — what shows while a book arrives: a plain **Spinner**, or
+  the **Animation** — its title, author and date floating in space, which
+  a touch pushes and a shake scatters.
+
+Citation and note choices are shared with the Mac and the headset.
 
 ## 10. Sharing between your devices
 
@@ -207,6 +236,8 @@ from one library:
 
 - Everything published into the folder from a Mac appears on the phone's
   shelf.
+- **To Read** travels with its place: mark a paragraph on one device and
+  the book opens there on the others.
 - **Pin** and **Set Aside** travel: a book pinned on the Mac is pinned
   here within seconds, and the other way round.
 - The journals' **Maps** share their layout.

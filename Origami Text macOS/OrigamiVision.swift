@@ -1183,6 +1183,26 @@ final class VisionModel {
         publishStanding()
     }
 
+    // MARK: To Read
+
+    /// Books marked to come back to, with the paragraph — marked on the
+    /// phone, read here, or the other way round. Shared through
+    /// origami-to-read.json (EPUBToRead; AppModel and the phone's
+    /// PhoneModel hold siblings — keep in step).
+    private(set) var toRead = EPUBToRead.loadLocal()
+
+    func isToRead(_ id: String) -> Bool { toRead.contains(id) }
+
+    func toReadItem(id: String) -> EPUBToRead.Item? { toRead.item(for: id) }
+
+    func toggleToRead(_ id: String) {
+        if toRead.contains(id) { toRead.remove(id) } else { toRead.mark(id, at: nil, quote: nil) }
+        guard let folder = index.folderURL else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        toRead.publish(to: folder, records: epubRecords)
+    }
+
     func toggleSetAside(_ id: String) {
         if setAsideIDs.remove(id) == nil { setAsideIDs.insert(id) }
         UserDefaults.standard.set(setAsideIDs.sorted(), forKey: "epubSetAside")
@@ -1375,6 +1395,9 @@ final class VisionModel {
             // The map's shared X/Y ride the same folder — pull a newer copy
             // into the mirror the layout store reads at Map open.
             EPUBMapSharedLayout.refreshMirror(community: folder)
+            if let shared = EPUBToRead.readShared(from: folder) {
+                await MainActor.run { self.toRead.adopt(shared, records: self.epubRecords) }
+            }
             guard let state = EPUBStanding.read(from: folder) else { return }
             await MainActor.run { self.applyStanding(state) }
         }
@@ -1416,11 +1439,11 @@ final class VisionModel {
         return matches
     }
 
-    /// The pinned books simply first, order otherwise kept — the Mac's
-    /// pinnedFirst.
+    /// To Read first (newest mark first), then the pinned, order
+    /// otherwise kept — the Mac's pinnedFirst.
     func pinnedFirstRecords(_ records: [EPUBRecord]) -> [EPUBRecord] {
-        records.filter { pinnedIDs.contains($0.id) }
-            + records.filter { !pinnedIDs.contains($0.id) }
+        toRead.first(records.filter { pinnedIDs.contains($0.id) }
+            + records.filter { !pinnedIDs.contains($0.id) })
     }
 
 
@@ -1665,6 +1688,7 @@ final class VisionModel {
                                           records: epubRecords)
         setAsideIDs = EPUBStanding.localIDs(from: setAsideIDs,
                                             records: epubRecords)
+        toRead.translate(records: epubRecords)
         if let citationEntries { CitationGraph.adopt(citationEntries) }
         if let sankey, !sankey.series.isEmpty { self.sankey = sankey }
         seedDefaultTimeflows()
@@ -1709,6 +1733,7 @@ final class VisionModel {
             }
             if pinnedIDs.remove(old.id) != nil { pinnedIDs.insert(successor.id) }
             if setAsideIDs.remove(old.id) != nil { setAsideIDs.insert(successor.id) }
+            toRead.move(from: old.id, to: successor.id)
             try? FileManager.default.removeItem(
                 at: Self.epubsRoot.appendingPathComponent(old.folder, isDirectory: true))
             epubRecords.removeAll { $0.id == old.id }
@@ -3385,6 +3410,14 @@ struct VisionReaderView: View {
             .onChange(of: readAloud.paragraphID) {
                 guard let id = readAloud.paragraphID else { return }
                 withAnimation { proxy.scrollTo(id, anchor: .center) }
+            }
+            // A To Read book opens at the paragraph it was marked at, on
+            // whichever device marked it — once, when the page appears.
+            .task(id: docID) {
+                guard let at = model.toReadItem(id: docID)?.at,
+                      (doc.body ?? []).contains(where: { $0.id == at }) else { return }
+                try? await Task.sleep(for: .milliseconds(500))
+                proxy.scrollTo(at, anchor: .top)
             }
         }
     }

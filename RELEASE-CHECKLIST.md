@@ -20,6 +20,23 @@ Do these before archiving a build for App Store submission.
 - [ ] In a fresh install (or after removing the shelf copies), click the
   guide citation in the Introduction — Open Original should open the guide.
 
+## Bundled documents (iPad and iPhone)
+
+- [ ] **Update both iOS guides** — `Origami Text/OrigamiTextUserGuide-iPad.md`
+  and `Origami Text/OrigamiTextUserGuide-iPhone.md` (written separately;
+  the iPhone has no left column and no Horizontal view). Bump each `date:`.
+- [ ] **Re-convert them to EPUB** — the iOS app cannot convert Markdown, so
+  the `.epub` beside each `.md` is what ships. Convert with the Mac's
+  `MarkdownImporter.importFile` + `OrigamiEPUBExporter.write`, document id
+  `origami-text-user-guide` (RunCodeSnippet on the macOS scheme in the
+  context of `MarkdownImporter.swift`; the snippet host is sandboxed, so
+  serve the `.md` from `python3 -m http.server` on 127.0.0.1 and return
+  the EPUB as base64). Keep the file names — `PhoneModel` looks them up.
+- [ ] **Introduction.epub** ships to iOS through its target membership
+  (Origami Text iOS ticked on the macOS folder's file) — nothing to copy.
+- [ ] On an iPad and an iPhone: Intro opens the Introduction; its guide
+  citation's card shows **Open**, which opens that device's guide.
+
 ## Rebuild guide
 
 - [ ] **Bring `rebuild/` up to date** — for every feature added or changed

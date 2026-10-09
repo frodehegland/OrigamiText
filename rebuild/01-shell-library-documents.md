@@ -195,8 +195,29 @@ Papers. On the right is a `NavigationStack` that is rebuilt for each place (`.id
 Every other row (Add Space, Add Folder, Graphs, Timelines, Annotations, People, Add Person, Concept Space,
 Tracked Concepts, Add Concept, Ask, Glossary, Edit Views) shows a pane saying the place is on the Mac for now. The
 row is never hidden. A `+` toolbar menu holds Open EPUB… and the community folder choice, and Find is a
-`.searchable` field. While a book is open (`PhoneModel.isReading`), the column folds to `.detailOnly`, and it comes
-back when the reader closes.
+`.searchable` field. While a book is open (`PhoneModel.isReading`, true while `openReaders > 0`; each
+`PhoneReaderView` counts itself in on appear and out on disappear), the column folds to `.detailOnly`. It comes back
+300 ms after the last reader closes, so stepping back from a cited book to the citing one never flashes it. The
+foot holds Intro, **User Guide**, Settings and Contact.
+
+**Bundled books on iOS.** `PhoneModel.init` runs `installBundledBooks()`, which passes `Introduction.epub` and the
+device's guide (`OrigamiTextUserGuide-iPad.epub` or `-iPhone.epub`, by idiom) to `importEPUB`. That function keeps an
+unchanged copy and re-unpacks when the bundled file is newer. Both guides carry `origami-id` `origami-text-user-guide`
+(`PhoneModel.userGuideID`, the Mac's `userGuideID`), so the Introduction's citation (`vm-id` and
+`origamitext://open/origami-text-user-guide`) lands on whichever guide the device shelved. The Introduction has no
+origami-id; it shelves as id and folder `Introduction` (`introductionRecord`). Bundled books are excluded from
+`retireSuperseded`, so a same-titled book in the community folder cannot retire them. The guides' `.md` files beside
+the EPUBs are the source. The iOS target cannot convert Markdown, so the EPUBs are converted on the Mac
+(RELEASE-CHECKLIST.md). `openIntroductionOnFirstLaunch()` (key `iosIntroductionShown`) opens the Introduction once,
+from both homes. The iPhone's Guide tab (`PhoneGuideView`) leads with Introduction and User Guide rows, which are
+disabled when the book is absent.
+
+**Citation card Open (iOS).** `PhoneCitationCard` shows **Open** when the cited document is on the shelf. It is found
+by the reference's `vm-id`, then an `origamitext://` `url`, then the citation key, each matched against record id or
+folder. Open dismisses the card and pushes a second `PhoneReaderView` over the citing one
+(`linkedDocID` → `navigationDestination`), so the foot bar's chevron returns to the citing page. An `origamitext://`
+url is never offered as Web. A tapped `origamitext://open/<address>` link in the text opens the same way, or does
+nothing if the book is not on the shelf.
 
 **History** (`AppModel.history`, `historyPosition`): a browser-style back/forward list of `Destination
 {doc, fragment}`.
@@ -304,6 +325,7 @@ across devices by whatever syncs the folder.
 | `**/*.epub` | read (recursive) | Imported to the shelf on every scan; new ones arrive unread. |
 | `<folder>.epub` mirrored | write | `mirrorShelfToCommunityFolder()`: shelf books the folder lacks are published into it (chapter 02 details). |
 | `origami-standing.json` | read/write | `{pinned:[fileName], setAside:[fileName], concepts:[String]?, modified:Date}` — pins and set-asides keyed by community file name (`EPUBRecord.folder`), last-writer-wins by `modified`. Written on every change; adopted on every scan and every 4 s (`ContentView` loop). |
+| `origami-to-read.json` | read/write | `{items:[{name:fileName, at:paragraphID?, quote:String?, marked:Date}], modified:Date}`, dates ISO 8601 with fractional seconds. To Read books (`EPUBToRead` in EPUBShelf.swift), keyed by community file name, last-writer-wins by `modified`, adopted on the same beat as the standing. A separate file because builds predating To Read rewrite `origami-standing.json` whole and would drop a member they do not know. |
 | `origami-acquisitions.json` | read/write | `{wanted:[{id,title,author,year?,doi?,added}], modified}` — books asked for from the headset. |
 | `_publication-analyses.json`, `_document-extractions.json`, `_seed-links.json`, `origami-citation-graph.json`, `origami-sankey.json`, floor-history files, `origami-concept-overrides.json`, `origami-map-layout.json`, `origami-spatial-notes.json` | read/write | Owned by chapters 05/06. Legacy `publicationAnalyses` UserDefaults data is migrated into `_publication-analyses.json` once. |
 | `People.json`, `Localities.json` | read/write | Shared contact directory and gazetteer (chapter 05). On choosing a folder the user's own person record is created if missing and the directory attached (`shareContacts`). |
@@ -336,6 +358,7 @@ Settings shown in the Settings window are in §6. These keys hold app state:
 | `mutedAuthors` | [String] | Muted names (case-insensitive match). |
 | `epubFolders`, `epubFiling` | [String], {recordID: folder} | Shelf folders. |
 | `epubTopOfPile`, `epubSetAside` | [String] (sorted) | Pinned / set-aside record ids (mirrored to `origami-standing.json`). |
+| `epubToRead` | JSON `[EPUBToRead.Item]` | To Read items by record id (mirrored to `origami-to-read.json`). |
 | `viewPeople`, `viewConcepts` | [String] | Curated People and Tracked Concepts rows. |
 | `venueAliases` | {String: String} | Merged venue names (chapter 05). |
 | `collapsedSidebarSections`, `sidebarFoldsXRAndViews`, `expandedTopicCategories` | various | Sidebar fold state. |
@@ -710,6 +733,7 @@ The main library in today's UI. Records come from `epubRecords` (manifest), newe
   (Side by Side), Pin, Set Aside / Bring Back, (DEBUG/EDITOR: Show in Finder, Show PDF, Save a Copy as EPUB…,
   Export with DOI Name(s)…, Edit Document…), Move to Trash.
 - Pins and set-asides persist locally and in `origami-standing.json` (§3.2). Set Aside closes the book if open.
+- **To Read** (`AppModel.toRead`, an `EPUBToRead`): `pinnedFirst` puts To Read books first, newest mark first, then the pinned. Rows show a teal `bookmark.fill` in the pin's place; the row menu and the reader's foot bar toggle it (the Mac marks without a place). `openStoredEPUB` sets `pendingReaderFragment` to the item's `at` (the part after `#`), so a book marked on the phone opens at its paragraph; a link's own fragment still wins.
 - Empty states have specific texts (e.g. "Nothing Unread", "No EPUBs by You").
 - A just-imported book is revealed: leave venue focus, clear Find, clear Unread-only if the book is read,
   select Papers, scroll to and select its row after 150 ms.

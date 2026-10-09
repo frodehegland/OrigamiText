@@ -273,6 +273,7 @@ synced folder).
 | `CF/_annotations/<folder>.json` | `{annotations: [WebAnnotation], deleted: {id: Date}}`, ISO 8601 dates; merged per annotation, newest wins | folder | `AnnotationSync` (coordinated reads) |
 | `CF/_reading-positions.json` | `{folder: {chapter, fraction, t}}` | folder | `AnnotationSync.positionsURL` |
 | `CF/origami-standing.json` | `{pinned: [folder], setAside: [folder], concepts?, modified}` | folder (converted from local ids on write) | `EPUBStanding` (coordinated read) |
+| `CF/origami-to-read.json` | `{items: [{name: folder, at?, quote?, marked}], modified}` | folder (converted from local ids on write) | `EPUBToRead` (coordinated read). iOS marks with a 1 s press behind a paragraph (`ToReadPress` in PhoneReadView.swift) or the selection card; opening lands at `at`, else at the paragraph whose text contains the first 40 characters of `quote`. |
 | `CF/origami-acquisitions.json`, `CF/_map-views.json`, `CF/` + `AS/` `origami-map-layout.json`, `origami-spatial-notes.json`, `AS/origami-concept-overrides.json` | The shelf and Map stores | see `EPUBShelf.swift` | Covered by the library/Map chapter. Listed here only so a rebuild knows they exist. |
 | Shared App Group container `…/Library/Application Support/Overview Pictures/index.json` plus image files | The picture cache for Overview, shared with the Author app | name key | `OverviewPictureStore` (§5.5) |
 | `~/Library/Application Support/Origami Text/Voices/qwen3-tts-0.6b-customvoice-bf16/` | The neural voice model and `manifest.json` | — | `VoiceInstaller` (§5.2) |
