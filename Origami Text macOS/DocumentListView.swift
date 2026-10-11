@@ -133,23 +133,38 @@ struct EPUBLibraryListView: View {
     @AppStorage("papersSortAscending") private var papersSortAscending = false
     @AppStorage("mineSortKey") private var mineSortKey = "date"
     @AppStorage("mineSortAscending") private var mineSortAscending = false
+    @AppStorage("pinnedSortKey") private var pinnedSortKey = "date"
+    @AppStorage("pinnedSortAscending") private var pinnedSortAscending = false
 
     /// Whether this list offers the Title | Date tabs.
     private var isSortable: Bool {
         switch mode {
-        case .timeline, .myEPUBs: true
+        case .timeline, .myEPUBs, .topOfPile: true
         default: false
         }
     }
 
-    /// Records in the order the tabs ask for: by title A–Z, or by date
-    /// newest first — each reversed by a second click on its tab.
+    /// Records in the order the tabs ask for: by title A–Z, by the first
+    /// author's surname A–Z, or by date newest first — each reversed by a
+    /// second click on its tab.
     private func sortedByChoice(_ records: [EPUBRecord], key: String,
                                 ascending: Bool) -> [EPUBRecord] {
         let sorted: [EPUBRecord]
         if key == "title" {
             sorted = records.sorted {
                 $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+            return ascending ? sorted : sorted.reversed()
+        }
+        if key == "author" {
+            func surname(_ record: EPUBRecord) -> String {
+                let first = record.authorList.first ?? record.author
+                return (first.split(separator: " ").last.map(String.init) ?? first)
+                    .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            }
+            sorted = records.sorted {
+                let a = surname($0), b = surname($1)
+                return a == b ? $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending : a < b
             }
             return ascending ? sorted : sorted.reversed()
         }
@@ -166,7 +181,8 @@ struct EPUBLibraryListView: View {
         case .inbox:
             return model.inboxEPUBRecords
         case .topOfPile:
-            return model.epubRecords(inFolder: nil).filter { model.isTopOfPile($0) }
+            return sortedByChoice(model.epubRecords(inFolder: nil).filter { model.isTopOfPile($0) },
+                                  key: pinnedSortKey, ascending: pinnedSortAscending)
         case .timeline:
             return model.pinnedFirst(sortedByChoice(
                 model.epubRecords(inFolder: nil).filter { !timelineUnreadOnly || model.isUnread($0) },
@@ -197,9 +213,11 @@ struct EPUBLibraryListView: View {
     var body: some View {
         VStack(spacing: 0) {
             if case .timeline = mode {
-                ListSortTabs(key: $papersSortKey, ascending: $papersSortAscending)
+                AuthorSortTabs(key: $papersSortKey, ascending: $papersSortAscending, tabs: SortTab.works)
             } else if case .myEPUBs = mode {
-                ListSortTabs(key: $mineSortKey, ascending: $mineSortAscending)
+                AuthorSortTabs(key: $mineSortKey, ascending: $mineSortAscending, tabs: SortTab.works)
+            } else if case .topOfPile = mode {
+                AuthorSortTabs(key: $pinnedSortKey, ascending: $pinnedSortAscending, tabs: SortTab.works)
             }
             bookList
         }
@@ -208,16 +226,17 @@ struct EPUBLibraryListView: View {
     private var bookList: some View {
         let query = model.searchText.trimmingCharacters(in: .whitespaces)
         let split = model.searchSplitEPUBs(unsearchedRecords)
-        let textIDs = Set(split.inText.map(\.record.id))
         let records = split.named + split.inText.map(\.record)
         // Selection IS the open book: the row highlights natively, and
-        // selecting a row opens it in the reader. A text match opens the
-        // book already searching for the words.
+        // selecting a row opens it in the reader. While Find holds words,
+        // any result opens already searching for them — at the first
+        // place they stand, as Find inside the book does — whether it
+        // was found by its title or in its text.
         let base = epubListSelection(model)
         let selection = Binding<Set<String>>(
             get: { base.wrappedValue },
             set: { ids in
-                if ids.count == 1, let id = ids.first, textIDs.contains(id) {
+                if ids.count == 1, let id = ids.first, !query.isEmpty {
                     if id == model.openEPUBRecordID {
                         model.requestReaderFind(query)
                     } else {
@@ -409,16 +428,20 @@ struct EPUBLibraryListView: View {
 /// A list's selection when Find has text matches in it: choosing a book
 /// Find met only in its text opens it already searching for the words,
 /// as the Library's own list does.
+/// A list's selection while its Find holds words: any result opens
+/// already searching for them, as Find inside the book does — found by
+/// title or in the text alike.
 func epubFindSelection(_ model: AppModel, textIDs: Set<String>, query: String) -> Binding<Set<String>> {
     let base = epubListSelection(model)
+    let words = query.trimmingCharacters(in: .whitespaces)
     return Binding(
         get: { base.wrappedValue },
         set: { ids in
-            if ids.count == 1, let id = ids.first, textIDs.contains(id) {
+            if ids.count == 1, let id = ids.first, !words.isEmpty {
                 if id == model.openEPUBRecordID {
-                    model.requestReaderFind(query)
+                    model.requestReaderFind(words)
                 } else {
-                    model.pendingBookFind = (id, query)
+                    model.pendingBookFind = (id, words)
                 }
             }
             base.wrappedValue = ids
@@ -501,8 +524,14 @@ struct EPUBRecordRow: View {
     /// line can be dropped.
     var showsSubtitle: Bool = true
 
+    /// The chosen book wears a bar at the list's right edge instead of
+    /// the system's full-row fill (10 Oct 2026).
+    private var isChosen: Bool { model.epubListSelectionIDs.contains(record.id) }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        // Set flush right, against the reading it opens beside, a point
+        // larger than the system's list type.
+        VStack(alignment: .trailing, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 // To Read's bookmark, else the pin — To Read leads the list.
                 Image(systemName: model.isToRead(record) ? "bookmark.fill" : "pin.fill")
@@ -510,17 +539,21 @@ struct EPUBRecordRow: View {
                     .foregroundStyle(model.isToRead(record) ? Color.teal : EmberIconLabelStyle.ember)
                     .opacity(model.isToRead(record) || model.isTopOfPile(record) ? 1 : 0)
                 Text(record.title)
-                    .font(listTitleFamily.isEmpty ? .body : Font.custom(listTitleFamily, size: 13))
+                    .font(listTitleFamily.isEmpty ? .system(size: 14) : Font.custom(listTitleFamily, size: 14))
                     .fontWeight(model.isUnread(record) ? .bold : .regular)
                     .lineLimit(2)
             }
             if showsSubtitle {
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Image(systemName: "pin.fill")
-                        .font(.caption)
-                        .opacity(0)
+                HStack(spacing: 4) {
+                    // A letter from Author wears an envelope: the title
+                    // above is its subject.
+                    if record.isLetter {
+                        Image(systemName: "envelope")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
                     Text(record.author)
-                        .font(.caption)
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -528,20 +561,30 @@ struct EPUBRecordRow: View {
             // The reader's whole-document annotation, quiet lines
             // under the author.
             if let note = model.documentAnnotationNote(forRecordID: record.id) {
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Image(systemName: "pin.fill")
-                        .font(.caption)
-                        .opacity(0)
-                    Text(note)
-                        .font(.caption)
-                        .italic()
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(2)
-                }
+                Text(note)
+                    .font(.system(size: 11))
+                    .italic()
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .multilineTextAlignment(.trailing)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.trailing, 10)
         .padding(.vertical, 6)
+        // The selection, quietly: a bar at the right edge.
+        .overlay(alignment: .trailing) {
+            if isChosen {
+                Capsule()
+                    .fill(Color.accentColor)
+                    .frame(width: 3)
+                    .padding(.vertical, 4)
+            }
+        }
+        // No full-row fill, and the ink stays the page's own rather than
+        // turning to the selection's white.
+        .environment(\.backgroundProminence, .standard)
+        .background(NoListSelectionFill())
         .tag(record.id)
         .contextMenu {
             EPUBPileMenu(record: record)
@@ -553,8 +596,42 @@ struct EPUBRecordRow: View {
             return parts.joined(separator: ", ")
         }())
         .accessibilityHint("Double-tap to open")
+        .accessibilityAddTraits(isChosen ? .isSelected : [])
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
+    }
+}
+
+/// Turns off the list's own selection fill. A SwiftUI List on the Mac is
+/// an AppKit table, and SwiftUI offers no way to restyle its selection;
+/// the table itself can be told to draw none. Selection still works —
+/// click, arrow keys, ⌘-click — only its paint is gone, so a row can show
+/// its choice its own way.
+private struct NoListSelectionFill: NSViewRepresentable {
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ view: Probe, context: Context) { view.apply() }
+
+    final class Probe: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+        }
+
+        /// Walks up to the table the row lives in, once laid out.
+        func apply() {
+            DispatchQueue.main.async { [weak self] in
+                var node = self?.superview
+                while let current = node {
+                    if let table = current as? NSTableView {
+                        if table.selectionHighlightStyle != .none {
+                            table.selectionHighlightStyle = .none
+                        }
+                        return
+                    }
+                    node = current.superview
+                }
+            }
+        }
     }
 }
 
@@ -580,7 +657,7 @@ struct AuthorsListView: View {
         let firstDates = model.epubAuthorFirstDates
         let pinned = Set(model.globalPinnedAuthors)
         let setAside = Set(model.globalSetAsideAuthors)
-        let everyone = model.epubAuthors
+        let everyone = model.epubAuthors.filter(model.matchesFind)
         let sorted = everyone.filter { !setAside.contains($0) }.sorted { a, b in
             // Pinned people float first, whatever the order.
             let ap = pinned.contains(a), bp = pinned.contains(b)
@@ -677,12 +754,17 @@ struct AuthorsListView: View {
 struct AuthorSortTabs: View {
     @Binding var key: String
     @Binding var ascending: Bool
+    /// The tabs: Authors' own by default; lists of works pass `.works`.
+    var tabs: [SortTab] = SortTab.authors
+    @AppStorage(AppSettings.readerThemeKey) private var themeRaw = ReaderTheme.highContrast.rawValue
+    /// Edited theme colours repaint live.
+    @AppStorage(ThemeColorOverrides.tickKey) private var themeTick = 0
+    @Environment(\.colorScheme) private var colorScheme
+    private var theme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .highContrast }
 
     var body: some View {
         HStack(spacing: 2) {
-            tab("Name", value: "name", startsAscending: true)
-            tab("Papers", value: "papers", startsAscending: false)
-            tab("Date", value: "date", startsAscending: true)
+            ForEach(tabs, id: \.value) { tab($0.title, value: $0.value, startsAscending: $0.startsAscending) }
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 7).fill(Color.secondary.opacity(0.12)))
@@ -705,14 +787,35 @@ struct AuthorSortTabs: View {
             .font(.callout)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 3)
+            .foregroundStyle(theme.textColor(for: colorScheme) ?? Color.primary)
             .background(RoundedRectangle(cornerRadius: 5)
-                .fill(chosen ? Color(nsColor: .controlBackgroundColor) : .clear)
+                // The chosen tab wears the theme's own page, not the
+                // system's white — High Contrast, untouched, keeps it.
+                .fill(chosen ? (theme.background(for: colorScheme)
+                                ?? Color(nsColor: .controlBackgroundColor)) : .clear)
                 .shadow(color: .black.opacity(chosen ? 0.12 : 0), radius: 1, y: 0.5))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(chosen ? "Click again to reverse" : "Sort by \(title.lowercased())")
     }
+}
+
+/// One tab of a list's sort: its label, its key, and which way it starts.
+struct SortTab: Hashable {
+    let title: String
+    let value: String
+    let startsAscending: Bool
+
+    /// Authors: Name A–Z by surname, Papers most first, Date oldest first.
+    static let authors = [SortTab(title: "Name", value: "name", startsAscending: true),
+                          SortTab(title: "Papers", value: "papers", startsAscending: false),
+                          SortTab(title: "Date", value: "date", startsAscending: true)]
+    /// Lists of works — Papers, Pinned, Books: Title A–Z, Author A–Z by
+    /// the first author's surname, Date newest first.
+    static let works = [SortTab(title: "Title", value: "title", startsAscending: true),
+                        SortTab(title: "Author", value: "author", startsAscending: true),
+                        SortTab(title: "Date", value: "date", startsAscending: false)]
 }
 
 /// Views ▸ Authors ▸ one author: what they authored, newest first. The
@@ -761,7 +864,7 @@ struct JournalsListView: View {
     @AppStorage(AppSettings.venueLabelKey) private var venueLabel = "Journals"
 
     var body: some View {
-        let venues = model.epubPublications
+        let venues = model.epubPublications.filter(model.matchesFind)
         // One pass over the shelf for every badge, not one per row.
         let counts = model.epubPublicationCounts
         List {
@@ -1068,7 +1171,17 @@ struct JournalBooksListView: View {
         }
     }
 
-    private var documentsList: some View {
+    /// A meeting series or a correspondence reads as its timeline; a
+    /// journal as its papers.
+    @ViewBuilder private var documentsList: some View {
+        if model.isDialogueSeries(name) {
+            MeetingSeriesList(name: name)
+        } else {
+            papersList
+        }
+    }
+
+    private var papersList: some View {
         // The foot Find alone cuts this list: the model-wide find bar
         // never stands over the papers now, and applying its text here
         // would empty the list with no visible cause.
@@ -1204,7 +1317,7 @@ struct AcquisitionsListView: View {
     @State private var enrichments: [String: CitationLookup.Enrichment] = [:]
 
     var body: some View {
-        let items = model.acquisitions
+        let items = model.acquisitions.filter { model.matchesFind($0.title + " " + $0.author) }
         List {
             ForEach(items) { wanted in
                 AcquisitionRow(
@@ -1444,7 +1557,7 @@ struct PeopleListView: View {
 
     var body: some View {
         List {
-            ForEach(model.viewPeople, id: \.self) { name in
+            ForEach(model.viewPeople.filter(model.matchesFind), id: \.self) { name in
                 Label(name, systemImage: "person")
                     .tag(SidebarItem.person(name))
                     .contextMenu {
@@ -1485,7 +1598,7 @@ struct ConceptsListView: View {
 
     var body: some View {
         List {
-            ForEach(model.viewConcepts, id: \.self) { name in
+            ForEach(model.viewConcepts.filter(model.matchesFind), id: \.self) { name in
                 Label(name, systemImage: "tag")
                     .tag(SidebarItem.concept(name))
                     .contextMenu {
@@ -2156,50 +2269,3 @@ struct PinnedFacesView: View {
     }
 }
 
-/// Title | Date above a book list: a click chooses the sort, a second
-/// click on the chosen tab reverses it. Title starts A–Z, Date newest
-/// first; the chosen tab shows its direction.
-struct ListSortTabs: View {
-    @Binding var key: String
-    @Binding var ascending: Bool
-
-    var body: some View {
-        HStack(spacing: 2) {
-            tab("Title", value: "title", startsAscending: true)
-            tab("Date", value: "date", startsAscending: false)
-        }
-        .padding(2)
-        .background(RoundedRectangle(cornerRadius: 7).fill(Color.secondary.opacity(0.12)))
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-    }
-
-    private func tab(_ title: String, value: String, startsAscending: Bool) -> some View {
-        let chosen = key == value
-        return Button {
-            if chosen {
-                ascending.toggle()
-            } else {
-                key = value
-                ascending = startsAscending
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(title)
-                if chosen {
-                    Image(systemName: ascending ? "chevron.up" : "chevron.down")
-                        .font(.caption2.weight(.semibold))
-                }
-            }
-            .font(.callout)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 3)
-            .background(RoundedRectangle(cornerRadius: 5)
-                .fill(chosen ? Color(nsColor: .controlBackgroundColor) : .clear)
-                .shadow(color: .black.opacity(chosen ? 0.12 : 0), radius: 1, y: 0.5))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(chosen ? "Click again to reverse" : "Sort by \(title.lowercased())")
-    }
-}

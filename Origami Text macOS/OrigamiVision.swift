@@ -11,7 +11,7 @@ import os
 
 /// Decoded figure images by asset id: an asset's base64 becomes a
 /// UIImage once, not once per render pass — a reading redraws on every
-/// fold of the Origami View and every drag of a slider, and a figure
+/// scroll and every drag of a slider, and a figure
 /// is measured as well as drawn. NSCache empties itself under memory
 /// pressure. (The Mac reading's figureImageCache, for this platform.)
 private let visionFigureCache = NSCache<NSString, UIImage>()
@@ -941,6 +941,23 @@ final class FigureGeometry {
     }
 }
 
+/// Where each citing passage stands on its page while Transpoint is up,
+/// in the page's own points — written during layout and scroll, read
+/// each frame by the lines. Not observed, for the reason FigureGeometry
+/// is not.
+@MainActor
+final class TranspointGeometry {
+    private var frames: [String: CGRect] = [:]
+
+    func note(document docID: String, paragraph id: String, frame: CGRect) {
+        frames[docID + "|" + id] = frame
+    }
+    func frame(document docID: String, paragraph id: String) -> CGRect? {
+        frames[docID + "|" + id]
+    }
+    func clear() { frames = [:] }
+}
+
 @MainActor @Observable
 final class VisionModel {
     let index = LibraryIndex()
@@ -1232,6 +1249,21 @@ final class VisionModel {
     /// Toggled from the reader panel's own toolbar.
     var readingDeskDocID: String?
 
+    /// Transpoint: the document whose cited works stand behind it, 5 cm
+    /// back and to the sides, with lines from its citing passages —
+    /// in honour of Ted Nelson's transpointing windows. It reads alone,
+    /// as on the Reading Desk. Set from a paper's verbs or the panel's
+    /// title bar; nil ends it.
+    var transpointDocID: String?
+    /// The passages whose place on their page the lines need — the
+    /// citing passages and the cited sections, by document. Only these
+    /// report their geometry.
+    var transpointReport: [String: Set<String>] = [:]
+    @ObservationIgnored let transpointGeometry = TranspointGeometry()
+    /// A reading asked to open at a passage — a cited section tapped on
+    /// a Transpoint card. Taken by the reading as it appears.
+    var readerJump: [String: String] = [:]
+
     /// Each panel's pose: standing, tilted like a drafting board, or
     /// flat on the reading surface — cycled from the panel's toolbar.
     var panelPoses: [String: PanelPose] = [:]
@@ -1403,6 +1435,9 @@ final class VisionModel {
             if let shared = EPUBToRead.readShared(from: folder) {
                 await MainActor.run { self.toRead.adopt(shared, records: self.epubRecords) }
             }
+            // What the Mac learned of every cited work — read, never
+            // fetched: the headset asks no reference service itself.
+            await ReferenceStatus.adoptShared(from: folder)
             guard let state = EPUBStanding.read(from: folder) else { return }
             await MainActor.run { self.applyStanding(state) }
         }
@@ -1482,6 +1517,11 @@ final class VisionModel {
     /// is a small price for a room that every EPUB can reach.
     static let noJournalVenue = "Not in a Journal"
 
+    /// The Library room: every paper on the shelf, whatever its journal,
+    /// with every work they cite as one card each — the room the opening
+    /// panel's Library button stands up.
+    static let libraryVenue = "Library"
+
     /// The venues the shelf's books declare, most-stocked first — the
     /// opening window's journals — and last, when any book names none,
     /// the room those books share. A book without a journal used to
@@ -1514,6 +1554,7 @@ final class VisionModel {
     }
 
     func records(inVenue venue: String) -> [EPUBRecord] {
+        if venue == Self.libraryVenue { return epubRecords }
         guard venue != Self.noJournalVenue else {
             return epubRecords.filter { $0.venue == nil }
         }
@@ -2437,6 +2478,19 @@ struct VisionOpeningView: View {
                     case .articles: articlesList
                     case .journals: journalsList
                     }
+                    // The whole shelf as one room: every paper, and every
+                    // work they cite, each its own card.
+                    Divider()
+                    Button {
+                        model.openJournalVenue = VisionModel.libraryVenue
+                        dismissWindow(id: "library")
+                    } label: {
+                        Label("Library", systemImage: "books.vertical")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .help("Every paper, and every work they cite, in one room")
+                    .padding(.horizontal)
+                    .padding(.vertical, 10)
                 }
             }
         }
@@ -3148,11 +3202,6 @@ struct VisionReaderView: View {
     @State private var aiModelName: String?
     /// One point either way for every reading, remembered — the Aa menu.
     @AppStorage("visionReaderFontDelta") private var fontDelta = 0.0
-    /// The Origami View: which fold stands open — nil, and the whole
-    /// sheet is creased shut — and how tightly the rest pleat. The
-    /// tightness is remembered; which fold is open is this sitting's.
-    @State private var openFacet: Int? = 0
-    @AppStorage("visionOrigamiFold") private var foldDepth = 0.6
     /// The desk theme — when this reading IS the desk, the Horizontal
     /// columns wear its paper instead of the room's glass.
     @AppStorage("readingDeskTheme") private var deskThemeRaw =
@@ -3226,7 +3275,7 @@ struct VisionReaderView: View {
     /// The Mac's reading views, here: Default (the EPUB's own pages),
     /// Scroll, Horizontal, Focus, Outline, and AI.
     private enum Mode: String, CaseIterable {
-        case faithful, scroll, horizontal, focus, outline, ai, origami, references
+        case faithful, scroll, horizontal, focus, outline, ai, references
 
         var word: String {
             switch self {
@@ -3236,7 +3285,6 @@ struct VisionReaderView: View {
             case .focus: "Focus"
             case .outline: "Outline"
             case .ai: "AI"
-            case .origami: "Origami"
             case .references: "References"
             }
         }
@@ -3269,8 +3317,6 @@ struct VisionReaderView: View {
                     focusView(doc)
                 case .ai:
                     aiView(doc)
-                case .origami:
-                    origamiView(doc)
                 case .scroll, .outline:
                     scrollBody(doc)
                 case .references:
@@ -3419,6 +3465,14 @@ struct VisionReaderView: View {
             // A To Read book opens at the paragraph it was marked at, on
             // whichever device marked it — once, when the page appears.
             .task(id: docID) {
+                // A cited section asked for from a Transpoint card.
+                if let jump = model.readerJump[docID],
+                   (doc.body ?? []).contains(where: { $0.id == jump }) {
+                    model.readerJump[docID] = nil
+                    try? await Task.sleep(for: .milliseconds(500))
+                    proxy.scrollTo(jump, anchor: .top)
+                    return
+                }
                 guard let at = model.toReadItem(id: docID)?.at,
                       (doc.body ?? []).contains(where: { $0.id == at }) else { return }
                 try? await Task.sleep(for: .milliseconds(500))
@@ -3598,338 +3652,6 @@ struct VisionReaderView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             footBar(doc, proxy: nil)
         }
-    }
-
-    // MARK: Origami — the paper folded into space
-
-    /// One facet of the folded sheet: the paragraphs written on it,
-    /// where its hinge stands in the room, which way its crease turns,
-    /// and how wide the panel runs.
-    private struct Facet: Identifiable {
-        let index: Int
-        let paragraphs: [LiquidDoc.Paragraph]
-        /// The crease this facet hangs from, in points across and in
-        /// depth — placed where the facet before it came to an end, so
-        /// the creases actually MEET rather than merely looking folded.
-        let hingeX: CGFloat
-        let hingeZ: CGFloat
-        /// Signed: mountain one way, valley the other. Zero for the
-        /// facet lying open.
-        let angle: Double
-        let width: CGFloat
-        /// Settled here, once, against the sheet's real length — a fold
-        /// remembered from a longer document cannot point past the end
-        /// of a shorter one.
-        let isOpen: Bool
-        var id: Int { index }
-    }
-
-    /// The widest a pleat stands, and the width the open facet takes.
-    /// A long document folds TIGHTER, as paper does — the pleat narrows
-    /// as the sections multiply.
-    private static let pleatWidest: CGFloat = 180
-    private static let pleatNarrowest: CGFloat = 44
-    private static let openFacetWidth: CGFloat = 520
-    /// How wide the whole folded sheet may stand. The reading rides a
-    /// render texture: attachments draw at 2×, and past 8192px the body
-    /// simply fails to appear (the Horizontal view learned this the
-    /// hard way). Every pleat width below is a share of this.
-    private static let spreadBudget: CGFloat = 3600
-    /// And how much of that sheet stands in front of the reader at
-    /// once. Spread flat, a long screen is wider than a room; the panel
-    /// holds this much — about a metre and a quarter — and the rest of
-    /// the sheet walks by swipe, as the Horizontal columns do.
-    private static let sheetWindow: CGFloat = 1700
-    /// Fully folded, a crease turns this far. Kept off 90° so a pleat
-    /// never stands edge-on and vanishes, and low enough that the
-    /// deepest crease (pleat × sin) stays about 15 cm off the plane —
-    /// a window's own volume has to hold it.
-    private static let foldAngleMax: Double = 58
-
-    private func pleatWidth(count: Int) -> CGFloat {
-        guard count > 1 else { return Self.pleatWidest }
-        let share = (Self.spreadBudget - Self.openFacetWidth) / CGFloat(count - 1)
-        return max(Self.pleatNarrowest, min(Self.pleatWidest, share))
-    }
-
-    /// How many facets the sheet can hold at its tightest pleat.
-    private var mostFacets: Int {
-        Int((Self.spreadBudget - Self.openFacetWidth) / Self.pleatNarrowest) + 1
-    }
-
-    /// The document creased into facets. Past what the sheet can hold
-    /// even folded tight, the tail rides together on the last facet:
-    /// FEWER CREASES, never fewer words — a sheet with more folds than
-    /// it has room for is still one uncut sheet.
-    private func creased(_ doc: LiquidDoc) -> [[LiquidDoc.Paragraph]] {
-        let pages = horizontalPages(of: doc)
-        let most = mostFacets
-        guard pages.count > most, most > 1 else { return pages }
-        let tail = pages[(most - 1)...].flatMap { $0 }
-        return Array(pages[..<(most - 1)]) + [tail]
-    }
-
-    /// The sheet creased at its headings and nowhere else — origami's
-    /// own rule, one sheet and no cuts, so every paragraph lands on
-    /// some facet. (The Horizontal view's section rule exactly: a bare
-    /// heading rides atop the section that follows it.)
-    private func facets(of doc: LiquidDoc) -> [Facet] {
-        let pages = creased(doc)
-        let pleat = pleatWidth(count: pages.count)
-        let angle = Self.foldAngleMax * min(max(foldDepth, 0), 1)
-        let openIndex = openFacet.map { min($0, pages.count - 1) }
-        var out: [Facet] = []
-        var x: CGFloat = 0
-        var z: CGFloat = 0
-        for (index, page) in pages.enumerated() {
-            let isOpen = openIndex == index
-            let width = isOpen ? Self.openFacetWidth : pleat
-            // 山, 谷, 山 — mountain, valley, mountain. The alternation
-            // is the whole trick: it is what lets a flat sheet stand
-            // up in space instead of lying down.
-            let turn: Double = index.isMultiple(of: 2) ? 1 : -1
-            let facetAngle = isOpen ? 0 : turn * angle
-            out.append(Facet(index: index, paragraphs: page,
-                             hingeX: x, hingeZ: z,
-                             angle: facetAngle, width: width, isOpen: isOpen))
-            // Where this facet ends is where the next one hinges. A
-            // positive turn about Y sends the far edge away from the
-            // reader, so depth carries the minus.
-            let radians = facetAngle * .pi / 180
-            x += width * CGFloat(cos(radians))
-            z -= width * CGFloat(sin(radians))
-        }
-        return out
-    }
-
-    /// The Origami View (折り紙): the reading standing in the room as a
-    /// folding screen — a 屏風 byōbu of one's own document.
-    ///
-    /// One facet lies open, flat and facing the reader, carrying its
-    /// words at reading size. The rest stand as narrow pleats, each
-    /// wearing its section's name along the fold the way a book wears
-    /// its spine — so the shape of the whole document stays in view
-    /// while one part of it is being read. Tap a pleat and that crease
-    /// opens as the last one folds away; fold the sheet shut and the
-    /// document is a slim concertina, a folded letter, title outward.
-    private func origamiView(_ doc: LiquidDoc) -> some View {
-        let sheet = facets(of: doc)
-        let spread = (sheet.last?.hingeX ?? 0)
-            + (sheet.last.map { $0.width * CGFloat(cos($0.angle * .pi / 180)) } ?? 0)
-        return VStack(spacing: 0) {
-            ScrollView(.horizontal) {
-                ZStack(alignment: .topLeading) {
-                    ForEach(sheet) { facet in
-                        facetView(facet, doc: doc, of: sheet.count)
-                    }
-                }
-                // The pleats lean out of the plane both ways; the frame
-                // has to own that depth or the screen is clipped flat.
-                .frame(width: max(spread, Self.openFacetWidth),
-                       height: 660, alignment: .topLeading)
-                .frame(depth: Self.pleatWidest, alignment: .center)
-                .padding(.horizontal, 24)
-                .padding(.top, 18)
-            }
-            // The pleats lean out of the plane, so the scroll must not
-            // shear them off at its edges.
-            .scrollClipDisabled()
-            .frame(width: min(max(spread, Self.openFacetWidth) + 48,
-                              Self.sheetWindow))
-            foldBar(doc, sheet: sheet)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            footBar(doc, proxy: nil)
-        }
-    }
-
-    /// One facet in its place: hinged on its leading edge, turned by
-    /// its crease, and stood where the fold before it left off.
-    @ViewBuilder private func facetView(_ facet: Facet, doc: LiquidDoc,
-                                        of count: Int) -> some View {
-        let face = Group {
-            if facet.isOpen {
-                openFacetView(facet, doc: doc, of: count)
-            } else {
-                pleatView(facet, doc: doc)
-            }
-        }
-        face
-            .frame(width: facet.width, height: 620, alignment: .topLeading)
-            .background(facetPaper(facet))
-            // Every fold is a hinge on the facet's OWN leading edge —
-            // the true 3D rotation, not a perspective projection: on
-            // visionOS the anchored form is the one that really turns a
-            // view in space (Apple's own note on rotation3DEffect).
-            // The anchor's TYPE chooses the modifier: UnitPoint3D takes
-            // the true 3D rotation, a plain UnitPoint the flat
-            // perspective projection. Spelled out, because the paper
-            // has to really turn in the room.
-            .rotation3DEffect(.degrees(facet.angle), axis: (x: 0, y: 1, z: 0),
-                              anchor: UnitPoint3D.leading)
-            .offset(x: facet.hingeX)
-            .offset(z: facet.hingeZ)
-            .animation(.smooth(duration: 0.45), value: facet.angle)
-            .animation(.smooth(duration: 0.45), value: facet.hingeX)
-    }
-
-    /// The facet lying open: its section at reading size, as any other
-    /// view of this document would set it.
-    private func openFacetView(_ facet: Facet, doc: LiquidDoc,
-                               of count: Int) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                if facet.index == 0 {
-                    Text(doc.title)
-                        .font(AppFonts.heading((26 + fontDelta) * typeScale))
-                        .padding(.bottom, 4)
-                    Text("\(doc.displayAuthor) · \(doc.listedDateText)")
-                        .foregroundStyle(.secondary)
-                        .padding(.bottom, 16)
-                }
-                flowView(facet.paragraphs, doc: doc)
-                if facet.index == count - 1 {
-                    referencesSection(doc)
-                }
-            }
-            .padding(22)
-        }
-    }
-
-    /// A pleat: the section's name turned along its fold, read up the
-    /// crease as a spine is read, with the weight of the section under
-    /// it in fine print. The whole panel is the button that opens it.
-    private func pleatView(_ facet: Facet, doc: LiquidDoc) -> some View {
-        // The section's weight as its PARAGRAPH count, not its words:
-        // the fold slider redraws every pleat as it moves, and counting
-        // words means splitting the whole document on every frame of
-        // the drag.
-        let weight = facet.paragraphs.count
-        return Button {
-            open(facet.index)
-        } label: {
-            VStack(spacing: 10) {
-                Text(facetName(facet, doc: doc))
-                    .font(AppFonts.body(15 * typeScale, weight: .regular))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .frame(width: 520, alignment: .leading)
-                    .fixedSize()
-                    // Turned a quarter, so the name reads UP the fold.
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: facet.width, height: 540, alignment: .center)
-                Text("¶\(weight)")
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(.tertiary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Open this fold — \(facetName(facet, doc: doc))")
-    }
-
-    /// A facet's name: its own first heading, or — for the sheet's
-    /// opening facet, which often has none — the document's title.
-    private func facetName(_ facet: Facet, doc: LiquidDoc) -> String {
-        if let heading = facet.paragraphs.first(where: { $0.effectiveHeading != nil }) {
-            return heading.text
-        }
-        return facet.index == 0 ? doc.title : "…"
-    }
-
-    /// The paper itself. A mountain fold catches the light along its
-    /// crease; a valley runs into shadow — which is all a folded sheet
-    /// really is to the eye, and what tells the two folds apart.
-    @ViewBuilder private func facetPaper(_ facet: Facet) -> some View {
-        let isMountain = facet.angle >= 0
-        let page = isDesk ? deskTheme.page : Color(white: 0.96)
-        RoundedRectangle(cornerRadius: 3)
-            .fill(page)
-            .overlay {
-                LinearGradient(
-                    colors: isMountain
-                        ? [.white.opacity(0.55), .clear, .black.opacity(0.10)]
-                        : [.black.opacity(0.12), .clear, .white.opacity(0.35)],
-                    startPoint: .leading, endPoint: .trailing)
-                    .blendMode(.plusLighter)
-                    .opacity(facet.isOpen ? 0.25 : 1)
-            }
-            .overlay(alignment: isMountain ? .leading : .trailing) {
-                // The crease itself: one bright hair of light where the
-                // paper turns.
-                Rectangle()
-                    .fill(.white.opacity(0.7))
-                    .frame(width: 0.75)
-            }
-            .shadow(color: .black.opacity(0.28), radius: 7, x: 0, y: 3)
-    }
-
-    /// The fold's own controls: how tightly the sheet pleats, the way
-    /// from fold to fold, and the word that shuts it.
-    private func foldBar(_ doc: LiquidDoc, sheet: [Facet]) -> some View {
-        HStack(spacing: 14) {
-            Button {
-                step(-1, of: sheet.count)
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .disabled((openFacet ?? 0) <= 0)
-            .help("The fold before this one")
-            if let open = openFacet {
-                Text("Fold \(open + 1) of \(sheet.count)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            } else {
-                Text("Folded shut · \(sheet.count) folds")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Button {
-                step(1, of: sheet.count)
-            } label: {
-                Image(systemName: "chevron.right")
-            }
-            .disabled(openFacet == nil || (openFacet ?? 0) >= sheet.count - 1)
-            .help("The fold after this one")
-            separator
-            // 開く and 折る — spread the screen flat, or crease it home.
-            Image(systemName: "rectangle.split.3x1")
-                .foregroundStyle(.tertiary)
-            Slider(value: $foldDepth, in: 0...1)
-                .frame(width: 180)
-                .help("How tightly the sheet folds — spread flat, or creased home")
-            separator
-            Button(openFacet == nil ? "Open a Fold" : "Fold Shut") {
-                withAnimation(.smooth(duration: 0.5)) {
-                    openFacet = openFacet == nil ? 0 : nil
-                }
-            }
-            .buttonStyle(.plain)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .help(openFacet == nil
-                  ? "Open the first fold and read it"
-                  : "Fold the whole sheet shut — the document as a folded letter")
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-    }
-
-    /// Opening a fold closes whichever stood open — one crease flat at
-    /// a time, as a folding screen behaves.
-    private func open(_ index: Int) {
-        withAnimation(.smooth(duration: 0.5)) {
-            openFacet = openFacet == index ? nil : index
-        }
-    }
-
-    private func step(_ by: Int, of count: Int) {
-        guard count > 0 else { return }
-        let next = min(max((openFacet ?? 0) + by, 0), count - 1)
-        withAnimation(.smooth(duration: 0.5)) { openFacet = next }
     }
 
     // MARK: AI — the on-device reading
@@ -4607,6 +4329,19 @@ struct VisionReaderView: View {
         // The paragraph with the dot draws above its neighbours, so the
         // dot's menu is never covered by the next paragraph.
         .zIndex(dotSelection?.paragraphID == paragraph.id ? 1 : 0)
+        // Transpoint: a citing passage, or a cited section, tells the
+        // room where it stands on the page, so its lines meet it as
+        // the page scrolls.
+        .background {
+            if model.transpointReport[docID]?.contains(paragraph.id) == true {
+                Color.clear
+                    .onGeometryChange(for: CGRect.self) { proxy in
+                        proxy.frame(in: .named(FigureGeometry.pageSpace))
+                    } action: { frame in
+                        model.transpointGeometry.note(document: docID, paragraph: paragraph.id, frame: frame)
+                    }
+            }
+        }
         .id(paragraph.id)   // the contents land here
     }
 
@@ -4833,7 +4568,7 @@ struct VisionReaderView: View {
     private func footBar(_ doc: LiquidDoc, proxy: ScrollViewProxy?) -> some View {
         let headings = (doc.body ?? []).filter { $0.effectiveHeading != nil }
         let modes: [Mode] = [.faithful, .scroll, .horizontal, .focus,
-                             .outline, .ai, .origami, .references]
+                             .outline, .ai, .references]
         return HStack(spacing: 12) {
             Spacer()
             ForEach(Array(modes.enumerated()), id: \.offset) { index, word in
@@ -5156,11 +4891,90 @@ struct VisionMarkPill: View {
     }
 }
 
+/// What is known of a cited work, as the Mac gathered it into the shared
+/// record: its standing (each keyword with what it means), its abstract
+/// or one-line summary, how later papers cite it, its topics, and where
+/// it can be read free. Shown on every card a cited work opens on the
+/// headset — owned or not, the reader knows what they are looking at.
+struct VisionCitedWorkFacts: View {
+    let doi: String?
+    let title: String
+    let year: Int?
+    /// The reference's own abstract, which wins when it has one.
+    var ownAbstract: String? = nil
+
+    var body: some View {
+        let work = ReferenceStatus.sharedWork(doi: doi, title: title)
+        let live = ReferenceStatus.cachedLive(doi: doi) ?? work?.live
+        let marks = ReferenceStatus.marks(for: .init(doi: doi, title: title, year: year))
+        let abstract = (ownAbstract?.isEmpty == false ? ownAbstract : nil) ?? work?.abstract
+        VStack(alignment: .leading, spacing: 10) {
+            if !marks.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(marks, id: \.self) { mark in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            VisionMarkPill(mark: mark)
+                            if !mark.meaning.isEmpty {
+                                Text(mark.meaning)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            if let summary = work?.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.callout.weight(.medium))
+            }
+            if let abstract {
+                Text(abstract)
+                    .font(.callout)
+                if let source = ownAbstract?.isEmpty == false ? nil : work?.abstractSource {
+                    Text("Abstract via \(source)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            } else {
+                Text(work == nil
+                     ? "Not yet checked — Check Library Now on your Mac (Settings ▸ References) gathers what is known."
+                     : "No abstract on record.")
+                    .font(.callout)
+                    .italic()
+                    .foregroundStyle(.secondary)
+            }
+            if let topics = live?.topics, !topics.isEmpty {
+                Text("Topics: " + topics.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let byYear = live?.citationsByYear, let latest = byYear.first, latest.count > 0 {
+                Text("Cited \(latest.count.formatted())× in \(String(latest.year))"
+                     + (byYear.count > 1 ? ", \(byYear[1].count.formatted())× in \(String(byYear[1].year))" : ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let free = live?.openAccessURL, live?.isOpenAccess == true {
+                Text("Free to read: \(free)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            if let checked = work?.checked {
+                Text("Checked on your Mac, \(checked.formatted(date: .abbreviated, time: .omitted))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
 /// The References page: the open paper's cited works listed as cited,
 /// by title, author or date, or laid out on the Time Map (years left to
 /// right) and the Concept Map (cards the hand arranges, kept per paper).
 /// A card opens the citation card.
 struct VisionReferencesView: View {
+    @Environment(VisionModel.self) private var model
     let doc: LiquidDoc
     let docID: String
     let onCard: (String) -> Void
@@ -5470,20 +5284,11 @@ struct VisionReferencesView: View {
             positions = stored.compactMapValues { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil }
         }
         refreshMarks()
-        // The standing's sources, asked only now the page is open: the
-        // Retraction Watch copy held here (refreshed when a week old),
-        // then each DOI's live answer, cached.
-        await ReferenceStatus.loadIndexIfNeeded()
+        // The standing comes from the Mac: it checks every cited work and
+        // writes origami-cited-works.json to the community folder; the
+        // headset reads that, and asks no service itself.
+        await ReferenceStatus.adoptShared(from: model.index.folderURL)
         refreshMarks()
-        await ReferenceStatus.refreshIndexIfStale()
-        refreshMarks()
-        for entry in entries {
-            if Task.isCancelled { return }
-            let doi = VisionReferenceStanding.doi(of: entry.reference)
-            guard ReferenceStatus.needsLive(doi: doi) else { continue }
-            _ = await ReferenceStatus.checkLive(doi: doi)
-            refreshMarks()
-        }
     }
 
     private func refreshMarks() {
@@ -5586,40 +5391,15 @@ private struct VisionCitationSheet: View {
                         .joined(separator: ", "))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    if let abstract = fields["abstract"], !abstract.isEmpty {
-                        Text(abstract)
-                            .font(.callout)
-                    } else {
-                        Text("No abstract on record.")
-                            .font(.callout)
-                            .italic()
-                            .foregroundStyle(.secondary)
-                    }
+                    // Everything the Mac gathered of the work: its standing,
+                    // abstract, how it is cited, its topics.
+                    VisionCitedWorkFacts(doi: fields["doi"], title: title, year: year,
+                                         ownAbstract: fields["abstract"])
                     if let doi, !doi.isEmpty {
                         Text("doi: \(doi)")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                             .textSelection(.enabled)
-                    }
-                    // The work's standing, with what each keyword means.
-                    if let reference {
-                        let marks = VisionReferenceStanding.marks(for: reference, in: doc,
-                                                                 inLibrary: false)
-                        if !marks.isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(marks, id: \.self) { mark in
-                                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                        VisionMarkPill(mark: mark)
-                                        if !mark.meaning.isEmpty {
-                                            Text(mark.meaning)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(.top, 4)
-                        }
                     }
                 }
                 .padding(16)

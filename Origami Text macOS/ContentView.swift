@@ -78,9 +78,12 @@ struct ContentView: View {
                         peekSidebar
                     }
                 }
-            } else if LibraryViewRegistry.module(for: model.sidebarSelection)?.hidesDocumentList == true {
+            } else if LibraryViewRegistry.module(for: model.sidebarSelection)?.hidesDocumentList == true
+                        || model.paperListFolded {
                 // Whole-library views keep the sidebar — the way to every
                 // other place — and give the canvas the list column's room.
+                // So does a paper list folded away by a click on its place:
+                // the reading takes the width.
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .toolbar(removing: .sidebarToggle)
@@ -206,16 +209,18 @@ struct ContentView: View {
         .sheet(isPresented: $model.showXRExport) {
             ExportToXRSheet()
         }
-        // A launch with nothing selected opens the Introduction, so the
-        // window never stands empty. A book the launch itself opened
-        // (double-clicked in Finder, or restored), a selected document or
-        // a draft keeps the page; the Introduction then waits. The user
+        // The very first launch opens the Introduction; every launch
+        // after it leaves the page to the empty pane's own "Open
+        // Introduction". A book the first launch itself opened
+        // (double-clicked in Finder), a selected document or a draft keeps
+        // the page, and the Introduction waits for the next. The user
         // guide joins the shelf quietly first, so a citation to it — the
         // Introduction's — can be followed at once.
         .task {
             try? await Task.sleep(for: .seconds(1))
             model.ensureUserGuide()
-            guard model.openEPUB == nil, model.current == nil,
+            guard !UserDefaults.standard.bool(forKey: "introShownOnce"),
+                  model.openEPUB == nil, model.current == nil,
                   model.draftEditor == nil else { return }
             UserDefaults.standard.set(true, forKey: "introShownOnce")
             model.openIntroduction()
@@ -329,6 +334,13 @@ struct ContentView: View {
                         Divider()
                         listPane(papersOnly: true)
                             .scrollContentBackground(.hidden)
+                            // Every list carries the foot Find — but the
+                            // venue's papers ride with their own.
+                            .safeAreaInset(edge: .bottom, spacing: 0) {
+                                if !(venueIsSelected && model.venueViewMode == .documents) {
+                                    findBar
+                                }
+                            }
                             // To Acquire carries whole rows of scholarly
                             // detail — title, byline, the doors to the
                             // copy — a list's strip cuts them off.
@@ -493,6 +505,14 @@ struct ContentView: View {
             HypermediaDocsListView(pinnedOnly: true)
         } else if model.sidebarSelection == .acquisitions {
             AcquisitionsListView()
+        } else if model.sidebarSelection == .citedWorks {
+            CitedWorksListView()
+        } else if model.sidebarSelection == .books {
+            BooksListView()
+        } else if model.sidebarSelection == .meetings {
+            DialogueSeriesListView(kind: .transcript)
+        } else if model.sidebarSelection == .letters {
+            DialogueSeriesListView(kind: .letter)
         } else if model.sidebarSelection == .epubsSetAside {
             EPUBLibraryListView(mode: .setAside)
         } else if case .epubFolder(let folder)? = model.sidebarSelection {
@@ -621,6 +641,16 @@ struct ContentView: View {
                     description: Text("Select a draft, or create a new document (⌘N).")
                 )
             }
+        } else if model.sidebarSelection == .books {
+            BooksDetailView()
+        } else if model.sidebarSelection == .citedWorks {
+            if let key = model.selectedCitedWorkKey {
+                CitedWorkDetailView(key: key)
+                    .id(key)
+            } else {
+                ContentUnavailableView("No Reference Selected", systemImage: "quote.opening",
+                                       description: Text("Choose a work to see everything known of it."))
+            }
         } else if let destination = model.current, let parallel = model.parallelDoc {
             ParallelReadingView(leftDoc: destination.doc, rightDoc: parallel)
                 .id("\(destination.doc.id)-\(parallel.id)")
@@ -631,11 +661,21 @@ struct ContentView: View {
             DocumentDetailView(destination: destination)
                 .id(destination.doc.id)
         } else {
-            ContentUnavailableView(
-                "No Document Selected",
-                systemImage: "doc.text",
-                description: Text("Select a document from the list, or follow a link.")
-            )
+            // Nothing open: the app's name, and the way into it — centred
+            // in the pane the reading would fill.
+            VStack(spacing: 10) {
+                Text("Origami Text")
+                    .font(.largeTitle.weight(.semibold))
+                Button { model.openIntroduction() } label: {
+                    Text("Introduction")
+                        .underline()
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .font(.title3)
+                .pointerStyle(.link)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

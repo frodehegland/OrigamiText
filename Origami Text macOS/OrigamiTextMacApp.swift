@@ -49,6 +49,9 @@ struct OrigamiTextMacApp: App {
         }
         .defaultSize(width: 1240, height: 864)
         .commands {
+            // File ▸ Import from iPhone or iPad: Continuity Camera — a
+            // shelf photographed with the phone lands in Books.
+            ImportFromDevicesCommands()
             CommandGroup(replacing: .appInfo) {
                 Button("About Origami Text") { showAboutPanel() }
             }
@@ -455,6 +458,35 @@ private struct TabBarRemover: NSViewRepresentable {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var model: AppModel? { didSet { flushPending() } }
     private var pending: [URL] = []
+    /// Set as quitting begins, so the windows closing on the way out do
+    /// not bring the library back.
+    private var isTerminating = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        isTerminating = true
+        return .terminateNow
+    }
+
+    /// Whether any real window stands: titled, visible or in the Dock.
+    private var hasWindow: Bool {
+        NSApp.windows.contains { window in
+            (window.isVisible || window.isMiniaturized)
+                && window.styleMask.contains(.titled) && !(window is NSPanel)
+        }
+    }
+
+    /// No window open, as Author does it: the library comes back — at a
+    /// launch that restored none (the main window was closed before
+    /// quitting), and when the last other window closes (a quick look, a
+    /// figure). Only while the app is the one in front: a launch Author
+    /// started in the background to deliver a letter stays quiet. The
+    /// library's own close is left alone, as closing Author's Library is.
+    private func showLibraryIfNoWindow(after delay: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, !self.isTerminating, NSApp.isActive, !self.hasWindow else { return }
+            self.showLibrary()
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One window is the app: window tabs would only duplicate it, so
@@ -466,6 +498,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // itself is declared in Info.plist (NSServices).
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
+
+        // A launch that restored no window still shows the library.
+        showLibraryIfNoWindow(after: 1.0)
+        // The last other window gone: the library again.
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let closing = note.object as? NSWindow
+            MainActor.assumeIsolated {
+                guard let self, let closing, closing.styleMask.contains(.titled),
+                      !(closing is NSPanel), closing !== self.model?.mainNSWindow else { return }
+                self.showLibraryIfNoWindow(after: 0.3)
+            }
+        }
 
         // Handled here rather than via menu shortcuts so they work even when
         // a text view has focus (text views claim keys like ⌘L for

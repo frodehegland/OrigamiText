@@ -71,6 +71,11 @@ struct EPUBMapItem: ItemProtocol {
     /// Two papers raised: a citation they do NOT share stands dimmed
     /// and out of reach, so the shared ones read at once. (29 Sep 2026.)
     var isFaded = false
+    /// A cited work's gravest warning — Retracted, Withdrawn, Expression
+    /// of Concern — worn on its card; nil for a sound work. Read from the
+    /// record the Mac gathers (origami-cited-works.json).
+    var warning: String?
+    var warningIsAlarm = false
 
     var isAttachmentsEnabled: Bool {
         // Concepts carry Focus/Hide; documents and citations carry
@@ -91,7 +96,7 @@ struct EPUBMapItem: ItemProtocol {
             && abstract == other.abstract && visionTheme == other.visionTheme
             && isGhost == other.isGhost && showsAbstract == other.showsAbstract
             && isLifted == other.isLifted && lengthShare == other.lengthShare
-            && isFaded == other.isFaded
+            && isFaded == other.isFaded && warning == other.warning
     }
 }
 
@@ -185,6 +190,14 @@ struct EPUBMapView: View {
     /// The fist: close either hand to grab the whole space and carry
     /// it; open the hand to set it down.
     @State private var fistGrab = FistGrab()
+    /// The chits a closed fist offers: what it should carry.
+    @State private var fistChooser = FistChooser()
+    /// How far in depth the fist may carry the citations or the papers
+    /// before one would pass the other.
+    @State private var fistDepth = FistDepthLimit()
+    /// The journal's documents carried on their own, apart from the
+    /// corridor — added to their seed so a reload keeps them there.
+    @State private var documentsShift = SIMD3<Float>.zero
 
     /// The Timeflows standing along the corridor's own Z axis — every
     /// year's data point at the same depth as that year's citations.
@@ -253,6 +266,12 @@ struct EPUBMapView: View {
     /// Faint purple lines from each open panel to the hallway cards it
     /// cites — visible in hallway mode, hidden on the Reading Desk.
     @State private var citationLines = CitationLineManager()
+    /// Transpoint: a reading's cited works standing behind it, and the
+    /// lines from its citing passages.
+    @State private var transpoint = TranspointLayer()
+    /// The reading view Transpoint stepped away from — its lines need
+    /// the native page, whose passages can say where they stand.
+    @State private var modeBeforeTranspoint: String?
     /// Per-document colored lines to shared citations (3+ selected).
     @State private var selectedCitationLines = SelectedCitationLines()
     /// Blue lines from each concept card to the articles it was extracted from.
@@ -412,6 +431,10 @@ struct EPUBMapView: View {
         // The floats travel in the same sidecars the highlights do.
         model.adoptFloats(for: records)
         let inJournal = Set(records.map(\.id))
+        // The Library room: the whole shelf, its citations read through
+        // the master list.
+        let isLibrary = venue == VisionModel.libraryVenue
+        let shelf = Transpoint.Shelf(records: records)
 
         // The cited works, deduplicated across the whole journal, each
         // with its year — the Z axis reads it.
@@ -480,14 +503,40 @@ struct EPUBMapView: View {
                         continue
                     }
                 }
-                let title = fields["title"] ?? reference.citedAs ?? ""
+                var title = fields["title"].map(BibTeXParser.displayText) ?? reference.citedAs ?? ""
                 guard !title.isEmpty else { continue }
-                let author = fields["author"] ?? ""
-                let year = fields["year"].flatMap {
+                var author = fields["author"].map(BibTeXParser.displayText) ?? ""
+                var year = fields["year"].flatMap {
                     Int($0.filter(\.isNumber).prefix(4))
                 }
-                let key = (title + "|" + author).lowercased()
+                var key = (title + "|" + author).lowercased()
                     .replacingOccurrences(of: " ", with: "")
+                var doi = fields["doi"]?.lowercased()
+                // The Library room reads every citation through the Mac's
+                // master list (origami-cited-works.json): a work is one
+                // card however many papers cite it, and however each
+                // wrote it — keyed by its DOI (found by its title when the
+                // citing paper gave none) or its folded title, and
+                // wearing its registry's title, authors and year. A cited
+                // work on the shelf is its own paper's card.
+                if isLibrary {
+                    let given = ReferenceStatus.cleanDOI(fields["doi"])
+                    let known = ReferenceStatus.sharedWork(doi: given, title: title)
+                    let canonical = given ?? known?.doi
+                    if let owned = canonical.flatMap(shelf.record(forDOI:))
+                        ?? shelf.record(forTitle: known?.title ?? title),
+                       owned.id != record.id, inJournal.contains(owned.id) {
+                        cited.append(owned.id)
+                        continue
+                    }
+                    if let shared = ReferenceStatus.sharedKey(doi: canonical, title: title) {
+                        key = shared
+                    }
+                    title = known?.title ?? title
+                    author = known?.authors.map { $0.joined(separator: ", ") } ?? author
+                    year = known?.year ?? year
+                    doi = canonical ?? doi
+                }
                 let citedID: String
                 if let known = citedIDByKey[key] {
                     citedID = known
@@ -499,7 +548,7 @@ struct EPUBMapView: View {
                     // What the double-tap card shows beyond the face.
                     facts[citedID] = CitedFacts(
                         abstract: fields["abstract"],
-                        doi: fields["doi"]?.lowercased())
+                        doi: doi)
                 }
                 cited.append(citedID)
             }
@@ -561,12 +610,21 @@ struct EPUBMapView: View {
             let seed = SIMD3<Float>(
                 (Float(column) - Float(columns - 1) / 2) * Self.columnPitch,
                 seedTop - Float(row) * Self.rowPitch,
-                depth) + spaceShift
+                depth) + spaceShift + documentsShift
             yearZ[record.id] = seed.z
             // A card left elsewhere keeps its place on the plane — the
             // year reclaims only its depth. A lifted card escapes even
             // that: free in every axis until it is Put Back.
             var position = placed[record.id] ?? seed
+            // A place remembered out of reach — under the floor, through
+            // the ceiling, rooms away — gives the card back its seat on
+            // the wall. A carried room's shift is not remembered across
+            // launches while its cards' places are, so a room carried
+            // down once left its papers standing under the floor.
+            if liftedCards[record.id] == nil,
+               !Self.withinReach(position - spaceShift - documentsShift) {
+                position = seed
+            }
             if liftedCards[record.id] == nil { position.z = seed.z }
             var item = EPUBMapItem(
                 id: record.id,
@@ -596,7 +654,7 @@ struct EPUBMapView: View {
             let seed = SIMD3<Float>(
                 (Float(column) - Float(asideColumns - 1) / 2) * 0.24,
                 0.15 + Float(row) * 0.07,
-                -1.2) + spaceShift
+                -1.2) + spaceShift + documentsShift
             var position = placed[record.id] ?? seed
             if position.y > 0.85 { position = seed }
             return EPUBMapItem(
@@ -686,6 +744,9 @@ struct EPUBMapView: View {
             // owns its depth — so a depth pinch re-spaces the years
             // without touching where the hand left anything.
             var position = placed[work.id] ?? seed
+            if liftedCards[work.id] == nil, !Self.withinReach(position - spaceShift) {
+                position = seed
+            }
             if liftedCards[work.id] == nil { position.z = seed.z }
             var item = EPUBMapItem(
                 id: work.id,
@@ -700,11 +761,23 @@ struct EPUBMapView: View {
             item.isLifted = liftedCards[work.id] != nil
             item.isFaded = fadesUnshared && !sharedIDs.contains(work.id)
                 && !item.isLifted
+            if let warning = ReferenceStatus.standingWarning(
+                doi: facts[work.id]?.doi, title: work.title, year: work.year) {
+                item.warning = warning.text
+                item.warningIsAlarm = warning.tone == .alarm
+            }
             return item
         })
         citedTimelineZ = timelineZ
         citedFacts = facts
         return result
+    }
+
+    /// Whether a card's place, taken back to the room's own frame, is
+    /// somewhere a reader can see it: above the floor, below the
+    /// ceiling, within a few steps either side.
+    private static func withinReach(_ place: SIMD3<Float>) -> Bool {
+        (0.15...3.0).contains(place.y) && abs(place.x) <= 6
     }
 
     /// Whether a paragraph standing under the Abstract heading is no
@@ -1252,7 +1325,7 @@ struct EPUBMapView: View {
     /// right forearm, the choosing rides the left. Nothing of the Map's
     /// own is in the air any more — the toolbar is gone, and both arms
     /// carry what it held.
-    @State private var armMenu = ArmMenu(chips: [
+    @State private var armMenu = ArmMenu(chips: ([
         // Over the right forearm, the room's shape: Layout unfolds
         // Author's whole align-and-sort house, Gather draws the spread
         // in, and the three view verbs keep, recall and undo an
@@ -1303,7 +1376,11 @@ struct EPUBMapView: View {
         // order is the mirror of the reading order, so a change asked
         // for in reading terms is made backwards here.)
         ArmMenu.Chip(id: EPUBMapView.showAllChipID, title: "A", side: .left),
-        ArmMenu.Chip(id: EPUBMapView.showChipID, title: "Show", side: .left),
+        // Show stands beneath the left forearm now, beside Focus, with
+        // only Timelines and Graphs unfolding below it (10 Oct 2026);
+        // its other families are away with the top rows.
+        ArmMenu.Chip(id: EPUBMapView.showChipID, title: "Show", side: .left,
+                     underside: true),
         ArmMenu.Chip(id: EPUBMapView.selectChipID, title: "Select", side: .left),
         ArmMenu.Chip(id: EPUBMapView.deselectAllChipID, title: "D", side: .left),
         ArmMenu.Chip(id: EPUBMapView.selectCitationsChipID, title: "Citations",
@@ -1324,9 +1401,9 @@ struct EPUBMapView: View {
         ArmMenu.Chip(id: EPUBMapView.topicsChipID, title: "Topics",
                      side: .left, group: EPUBMapView.showChipID),
         ArmMenu.Chip(id: EPUBMapView.timelinesChipID, title: "Timelines",
-                     side: .left, group: EPUBMapView.showChipID),
+                     side: .left, underside: true, group: EPUBMapView.showChipID),
         ArmMenu.Chip(id: EPUBMapView.graphsChipID, title: "Graphs",
-                     side: .left, group: EPUBMapView.showChipID),
+                     side: .left, underside: true, group: EPUBMapView.showChipID),
         ArmMenu.Chip(id: EPUBMapView.conceptsChipID, title: "Concepts",
                      side: .left, group: EPUBMapView.showChipID),
         ArmMenu.Chip(id: EPUBMapView.revealConceptsChipID, title: "Reveal All Concepts",
@@ -1337,7 +1414,15 @@ struct EPUBMapView: View {
                      side: .left, group: EPUBMapView.showChipID),
         // The graphs' data moved off the arms: it lives in Settings'
         // Graph Data tab now.
-    ] + EPUBMapView.savedViewChips,
+    ] + EPUBMapView.savedViewChips)
+        // The rows on top of both forearms are away for now (10 Oct
+        // 2026): only the undersides stand — Documents, Settings and
+        // Introduction under the right arm; Focus and Show (Timelines,
+        // Graphs) under the left. The
+        // top rows and their lists stay declared above, ready to come
+        // back by dropping this filter; a chip the menu was not given
+        // simply ignores its show, title and active calls.
+        .filter(\.underside),
        tracksPlanes: true,   // the flat pose finds the actual desk
        inverted: UserDefaults.standard.bool(forKey: "armMenuInverted"))
 
@@ -1639,6 +1724,11 @@ struct EPUBMapView: View {
             // modifiers inside `engine` return the engine view and must
             // run first.
             .onChange(of: model.openJournalVenue) {
+                // Another proceedings is another room: whatever stood
+                // alone in the last one — Transpoint, the Reading Desk —
+                // gives the new one back its cards.
+                model.transpointDocID = nil
+                model.readingDeskDocID = nil
                 reload()
                 // Another journal, another set of shared views.
                 sharedViews = [:]
@@ -1684,6 +1774,9 @@ struct EPUBMapView: View {
             .onChange(of: model.openDocCitations) {
                 reload()
             }
+            .onChange(of: model.transpointDocID) { old, new in
+                transpointChanged(from: old, to: new)
+            }
             // The pile can change from the Mac (the standing file in
             // the community folder) as well as the arm chips.
             .onChange(of: model.pinnedIDs) {
@@ -1706,7 +1799,12 @@ struct EPUBMapView: View {
                     let shared = await Task.detached(priority: .utility) {
                         EPUBMapSharedLayout.load(community: folder)
                     }.value
-                    if shared.modified > sharedLayoutAdoptedAt {
+                    // A newer record of the cited works (the Mac's Check
+                    // Library Now): their cards wear what it found.
+                    let citedBefore = ReferenceStatus.sharedModified
+                    await ReferenceStatus.adoptShared(from: model.index.folderURL)
+                    if shared.modified > sharedLayoutAdoptedAt
+                        || ReferenceStatus.sharedModified != citedBefore {
                         reload()
                     }
                 }
@@ -1734,6 +1832,12 @@ struct EPUBMapView: View {
                 // ladder folds, and the reload re-evaluates every
                 // card's standing through the engine's enable hook.
                 readerPanels.hideAll(except: model.readingDeskDocID)
+                // Leaving the desk for the Hallway, or another document
+                // taking it, ends a Transpoint.
+                if let transpointDocID = model.transpointDocID,
+                   model.readingDeskDocID != transpointDocID {
+                    model.transpointDocID = nil
+                }
                 if model.readingDeskDocID != nil {
                     conceptLadder.close()
                     if conceptSpaceMode {
@@ -1744,6 +1848,11 @@ struct EPUBMapView: View {
                 reload()
             }
             .onAppear {
+                // The floor's timelines and the graph walls start away
+                // each time the room opens; Show brings them in. Each
+                // lane keeps its theme for when it does.
+                setTimelinesShown(false)
+                setGraphsShown(false)
                 citedSpace.depth = min(
                     max(Float(citedDepthSetting), CitedSpace.depthRange.lowerBound),
                     CitedSpace.depthRange.upperBound)
@@ -2198,6 +2307,7 @@ struct EPUBMapView: View {
             readerPanels.install(in: content)
             spatialModels.install(in: content)
             citationLines.install(in: content)
+            transpoint.install(in: content)
             selectedCitationLines.install(in: content)
             conceptConnectionLines.install(in: content)
             citedToDeepLines.install(in: content)
@@ -2229,22 +2339,46 @@ struct EPUBMapView: View {
                                            minimumBounds: SIMD2<Float>(0.4, 0.4)))
             content.add(desk)
             deskAnchor = desk
+            fistChooser.install(in: content)
             fistGrab.install(
                 in: content,
-                move: { delta in
-                    // Live: carry every card by the fist's motion. The
-                    // lines follow on their own each frame. A card
+                grip: { palm in
+                    fistChooser.show(above: palm, facing: faceTurner.headPosition())
+                    fistDepth.begin(items: items,
+                                    citationsNearPlane: citedSpace.z(agePlace: 0) + spaceShift.z)
+                },
+                settle: {
+                    fistChooser.hide()
+                },
+                move: { proposed, part in
+                    // Time keeps its order: the citations stand behind
+                    // the papers that cite them, however either is carried.
+                    let delta = fistDepth.allowed(proposed, carrying: part)
+                    // Live: carry the chosen part by the fist's motion.
+                    // The lines follow on their own each frame. A card
                     // stuck to a real surface stays with the room, not
                     // the carried space.
+                    let documents = Set(items.filter { $0.kind == .article }.map(\.id))
                     for entity in content.entities
                     where entity.components.has(MapSpaceNodeComponent.self) {
-                        if let id = entity.components[EPUBNodeIDComponent.self]?.id,
-                           liftedCards[id]?.stuck != nil { continue }
+                        let id = entity.components[EPUBNodeIDComponent.self]?.id
+                        if let id, liftedCards[id]?.stuck != nil { continue }
+                        let isDocument = id.map(documents.contains) ?? false
+                        switch part {
+                        case .everything: break
+                        case .documents: if !isDocument { continue }
+                        case .citations: if isDocument { continue }
+                        }
                         entity.position += delta
                     }
+                    return delta
                 },
-                release: { carried in
-                    commitSpaceShift(carried)
+                release: { carried, part in
+                    switch part {
+                    case .everything: commitSpaceShift(carried)
+                    case .documents: commitDocumentsShift(carried)
+                    case .citations: commitCorridorShift(carried)
+                    }
                 })
         }
         view = view.onTapEntity { entity in
@@ -2448,6 +2582,18 @@ struct EPUBMapView: View {
                 Text(selected ? item.author : shortByline(item.author))
                     .font(.system(size: 5.5 * s))
                     .foregroundStyle(Color.white.opacity(0.65))
+                // A cited work's gravest warning, worn where it is seen
+                // from across the room.
+                if let warning = item.warning {
+                    Text(warning)
+                        .font(.system(size: 5 * s, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 3 * s)
+                        .padding(.vertical, 1 * s)
+                        .background(Capsule().fill(item.warningIsAlarm
+                                                   ? Color(red: 0.82, green: 0.16, blue: 0.16)
+                                                   : Color(red: 0.88, green: 0.52, blue: 0.10)))
+                }
                 // The abstract waits to be asked for — a chosen paper's
                 // Abstract button does it now, as a citation's always
                 // has (29 Sep 2026; the paper used to open it with
@@ -2597,6 +2743,22 @@ struct EPUBMapView: View {
                                            roughness: 0.5, isMetallic: false)])
             depth.position = SIMD3<Float>(0, 0, -0.008)
             holder.addChild(depth)
+        }
+
+        // A chosen citation is solid in the room, not only in paint: an
+        // opaque slab between its faces, the colour of its dark pane,
+        // so the lines it draws stop at it instead of showing through.
+        // (The pane is drawn on a see-through attachment, which hides
+        // nothing behind it on its own.)
+        if item.isSelected, item.kind == .cited || item.kind == .citedDeep,
+           !item.isLifted {
+            let width = extents.x * grown
+            let height = extents.y * grown
+            let slab = ModelEntity(
+                mesh: .generateBox(size: SIMD3<Float>(width, height, 0.002),
+                                   cornerRadius: min(0.008 * grown, min(width, height) * 0.45)),
+                materials: [UnlitMaterial(color: UIColor(white: 0.12, alpha: 1))])
+            holder.addChild(slab)
         }
 
         // Set Aside slips fade whole — glass and words together.
@@ -2899,6 +3061,8 @@ struct EPUBMapView: View {
                     toggleLift(item)
                 }
             }
+            // The paper alone, with what it cites standing behind it.
+            Button("Transpoint") { model.transpointDocID = item.id }
             // Set Aside and Pin moved to the open reading's title bar,
             // right of the title (5 Oct 2026).
         }
@@ -3587,6 +3751,56 @@ struct EPUBMapView: View {
         sharedLayoutAdoptedAt = Date()
     }
 
+    /// The fist carried the documents alone: the journal's papers take
+    /// the carry, the citations and their corridor stay.
+    private func commitDocumentsShift(_ delta: SIMD3<Float>) {
+        guard delta != .zero else { return }
+        documentsShift += delta
+        articleYearZ = articleYearZ.mapValues { $0 + delta.z }
+        let documents = Set(items.filter { $0.kind == .article }.map(\.id))
+        commitPlaces(delta) { documents.contains($0) }
+    }
+
+    /// The fist carried the citations: they take the carry with their
+    /// whole time corridor — the shared shift the Timeflows, the floor
+    /// and the decade lines stand on — and the documents stay, their
+    /// own shift taking the difference back.
+    private func commitCorridorShift(_ delta: SIMD3<Float>) {
+        guard delta != .zero else { return }
+        spaceShift += delta
+        documentsShift -= delta
+        citedTimelineZ = citedTimelineZ.mapValues { $0 + delta.z }
+        let documents = Set(items.filter { $0.kind == .article }.map(\.id))
+        commitPlaces(delta) { !documents.contains($0) }
+    }
+
+    /// Folds a carry into the chosen cards' places, their remembered
+    /// placements and their lifted homes — surface-stuck cards keep
+    /// their wall — and saves, as the whole-space commit does.
+    private func commitPlaces(_ delta: SIMD3<Float>, of carried: (String) -> Bool) {
+        for index in items.indices where carried(items[index].id) {
+            if let position = items[index].position,
+               liftedCards[items[index].id]?.stuck == nil {
+                items[index].position = position + delta
+            }
+        }
+        for (id, position) in placed where carried(id) && liftedCards[id]?.stuck == nil {
+            placed[id] = position + delta
+        }
+        for id in liftedCards.keys where carried(id) {
+            liftedCards[id]?.home += delta
+        }
+        saveLiftedCards()
+        for item in items where carried(item.id) {
+            if let position = item.position {
+                placed[item.id] = position
+            }
+        }
+        EPUBMapLayoutStore.save(placed, community: model.index.folderURL,
+                                sharedKeys: sharedKeyByID)
+        sharedLayoutAdoptedAt = Date()
+    }
+
     /// Align to Room: the whole space slides (the fist-carry's own
     /// commit) until its right flank rests a hand's breadth off the
     /// wall standing nearest the right arm — the arm wearing the chip.
@@ -3777,6 +3991,9 @@ struct EPUBMapView: View {
     /// the spatial ✕ beside the pill: the desk ends if it was this
     /// document's, the panel goes, the card returns.
     private func closeReader(_ docID: String) {
+        if model.transpointDocID == docID {
+            model.transpointDocID = nil
+        }
         if model.readingDeskDocID == docID {
             model.readingDeskDocID = nil
         }
@@ -3820,6 +4037,11 @@ struct EPUBMapView: View {
     }
 
     private func handleArmTap(on entity: Entity) -> Bool {
+        // A chit above a closed fist: what the fist carries.
+        if let part = fistChooser.part(for: entity) {
+            fistGrab.choose(part)
+            return true
+        }
         // A rung of the open Concepts ladder: picking one folds the
         // ladder and highlights every article carrying the concept.
         if let concept = conceptLadder.concept(for: entity) {
@@ -4099,6 +4321,106 @@ struct EPUBMapView: View {
             view: panelView(docID: docID, title: title),
             onClose: { closeReader(docID) })
         model.openDocIDs.insert(docID)
+    }
+
+    // MARK: Transpoint
+
+    /// Transpoint begun or ended — from a paper's verbs or the panel's
+    /// title bar, both of which only set `model.transpointDocID`.
+    ///
+    /// Begun: the reading opens if it is not open, takes the native page
+    /// (the publisher's own pages are a web view, whose passages cannot
+    /// say where they stand), stands alone as on the Reading Desk, and
+    /// its cited works rise behind it. Ended: they go, and the reading
+    /// view and the room come back as they were.
+    private func transpointChanged(from old: String?, to new: String?) {
+        transpoint.clear()
+        model.transpointGeometry.clear()
+        model.transpointReport = [:]
+        guard let docID = new else {
+            if let before = modeBeforeTranspoint {
+                modeBeforeTranspoint = nil
+                readerModeRaw = before
+            }
+            if let old, model.readingDeskDocID == old {
+                model.readingDeskDocID = nil
+            }
+            return
+        }
+        // The reading's own default is the publisher's pages, not this
+        // view's "scroll" — so read what the reading will really show.
+        let shown = UserDefaults.standard.string(forKey: "visionReaderMode") ?? "faithful"
+        if shown != "scroll" && shown != "outline" {
+            modeBeforeTranspoint = modeBeforeTranspoint ?? shown
+            readerModeRaw = "scroll"
+        }
+        if !model.openDocIDs.contains(docID) {
+            openReading(docID: docID, title: readingTitle(for: docID))
+        }
+        model.readingDeskDocID = docID
+        guard let doc = model.index.byID[docID]?.doc else { return }
+        let works = Transpoint.works(citedBy: doc, records: model.epubRecords) {
+            model.index.byID[$0]?.doc
+        }
+        // Every citation on stage — the page's, and its sources' among
+        // themselves and back to it.
+        let links = Transpoint.links(page: docID, works: works,
+                                     records: model.epubRecords) {
+            model.index.byID[$0]?.doc
+        }
+        model.transpointReport = Transpoint.reporting(links)
+        let geometry = model.transpointGeometry
+        let figures = model.figureGeometry
+        let panels = readerPanels
+        transpoint.show(
+            docID: docID, works: works, links: links,
+            lookup: TranspointLayer.Lookup(
+                // Open is a panel standing in the room; a hidden one
+                // counts as closed.
+                root: { id in panels.root(of: id).flatMap { $0.isEnabled ? $0 : nil } },
+                pageWidth: { panels.pageWidthInMetres(of: $0) },
+                pageSize: { figures.size(ofPage: $0) },
+                paragraphFrame: { geometry.frame(document: $0, paragraph: $1) }),
+            card: { work in
+                AnyView(TranspointCard(work: work) { section in
+                    openTranspointWork(work, at: section)
+                }
+                .environment(model))
+            })
+    }
+
+    /// A cited work opened from its Transpoint card: a library book as a
+    /// reading standing just in front of its card, at the section tapped;
+    /// a work the library lacks as its record card, Acquire and all.
+    private func openTranspointWork(_ work: TranspointWork, at section: String?) {
+        guard let origin = model.transpointDocID else { return }
+        let normal = readerPanels.pageNormal(of: origin) ?? SIMD3<Float>(0, 0, 1)
+        let place = (transpoint.worldPosition(of: work.id)
+                     ?? readerPanels.worldPosition(of: origin)
+                     ?? SIMD3<Float>(0, 1.4, -1.0) + spaceShift)
+            + normal * 0.12
+        guard let recordID = work.recordID else {
+            let cardID = "cite-card:" + work.id
+            readerPanels.open(
+                docID: cardID, at: place, facing: normal,
+                view: AnyView(
+                    CitationCardPanel(citationKey: work.citationKey ?? work.id,
+                                      title: work.title, author: work.authors,
+                                      year: work.year, abstract: work.abstract,
+                                      doi: work.doi) {
+                        readerPanels.close(docID: cardID)
+                    }
+                    .environment(model)),
+                onClose: { readerPanels.close(docID: cardID) })
+            return
+        }
+        if let section { model.readerJump[recordID] = section }
+        readerPanels.open(
+            docID: recordID, at: place, facing: normal,
+            home: readingPlace(for: recordID),
+            view: panelView(docID: recordID, title: work.title),
+            onClose: { closeReader(recordID) })
+        model.openDocIDs.insert(recordID)
     }
 
     /// In front of the reader: a comfortable reading distance along
@@ -4599,10 +4921,10 @@ struct EPUBMapView: View {
                    Self.graphsChipID, Self.conceptsChipID] {
             armMenu.setChipVisible(id, showOpen)
         }
+        // Show brightens for what it offers now: the floor's timelines
+        // and the graph walls.
         armMenu.setChipActive(Self.showChipID,
-                              showOpen || !raisedArticleIDs.isEmpty
-                                || topicSpaceMode || conceptSpaceMode
-                                || !documentsShown || timelinesStand
+                              showOpen || timelinesStand
                                 || timeflowLeftShown || timeflowRightShown)
         armMenu.setChipActive(Self.showCitationsChipID, !raisedArticleIDs.isEmpty)
         armMenu.setChipActive(Self.showDocumentsChipID, documentsShown)
@@ -4815,8 +5137,29 @@ final class FistGrab {
     /// The carry so far, handed to `release` when the fist opens.
     private var carried = SIMD3<Float>.zero
     private var subscription: EventSubscription?
-    private var move: ((SIMD3<Float>) -> Void)?
-    private var release: ((SIMD3<Float>) -> Void)?
+    /// Carries a step and answers how much of it was taken — the room
+    /// may hold part of it back (a citation never passes the papers).
+    private var move: ((SIMD3<Float>, FistCarry) -> SIMD3<Float>)?
+    private var release: ((SIMD3<Float>, FistCarry) -> Void)?
+    /// The fist has closed: the chits may stand above it (its palm).
+    private var grip: ((SIMD3<Float>) -> Void)?
+    /// The fist has chosen, or opened: the chits go.
+    private var settle: (() -> Void)?
+    /// What this fist carries — chosen on its chits by the other hand,
+    /// or Everything once the fist moves off without a choice.
+    private var choice: FistCarry?
+    /// The hand's own travel while it waits for a choice, ungeared.
+    private var waited = SIMD3<Float>.zero
+    /// A fist that moves this far before anything is chosen carries
+    /// everything, as the fist always has. Generous: the fist drifts
+    /// while the other hand reaches for a chit.
+    private static let chooseWithin: Float = 0.10
+    /// While its chits stand, a fist that loosens or slips from the
+    /// cameras for a moment keeps them — reaching across with the other
+    /// hand often does both.
+    private static let choosingGrace: Double = 0.6
+    /// When the choosing fist was first seen open or lost.
+    private var looseSince: Double?
 
     /// A fist closes when the finger tips draw within this of the palm
     /// — and re-opens past the wider bound, so the grip cannot flicker.
@@ -4843,9 +5186,13 @@ final class FistGrab {
     private static let carryGain: Float = 2.5
 
     func install(in content: RealityViewContent,
-                 move: @escaping (SIMD3<Float>) -> Void,
-                 release: @escaping (SIMD3<Float>) -> Void) {
+                 grip: @escaping (SIMD3<Float>) -> Void,
+                 settle: @escaping () -> Void,
+                 move: @escaping (SIMD3<Float>, FistCarry) -> SIMD3<Float>,
+                 release: @escaping (SIMD3<Float>, FistCarry) -> Void) {
         MapSpaceNodeComponent.registerComponent()
+        self.grip = grip
+        self.settle = settle
         self.move = move
         self.release = release
 
@@ -4877,7 +5224,7 @@ final class FistGrab {
             // the anchor must be live, and its place real.
             let palm = hands[index].palm.position(relativeTo: nil)
             guard hands[index].palm.isAnchored, palm != .zero else {
-                letGo(index)
+                if !holdsWhileChoosing(index, now: now) { letGo(index) }
                 continue
             }
 
@@ -4931,13 +5278,23 @@ final class FistGrab {
             }
 
             if closedNow {
+                if driving == index { looseSince = nil }
                 if hands[index].isFist {
                     guard driving == index, let last = hands[index].lastPalm else { continue }
-                    let delta = (palm - last) * Self.carryGain
                     hands[index].lastPalm = palm
-                    if delta != .zero {
-                        carried += delta
-                        move?(delta)
+                    // Still choosing: nothing moves. A fist that sets off
+                    // without a choice carries everything, from here.
+                    guard let carrying = choice else {
+                        waited += palm - last
+                        if simd_length(waited) > Self.chooseWithin {
+                            choice = .everything
+                            settle?()
+                        }
+                        continue
+                    }
+                    let delta = (palm - last) * Self.carryGain
+                    if delta != .zero, let taken = move?(delta, carrying) {
+                        carried += taken
                     }
                 } else {
                     // Held long enough? Then the hand takes the room —
@@ -4950,13 +5307,25 @@ final class FistGrab {
                     if driving == nil {
                         driving = index
                         carried = .zero
+                        choice = nil
+                        waited = .zero
+                        grip?(palm)
                     }
                 }
             } else {
                 hands[index].closedSince = nil
-                letGo(index)
+                if !holdsWhileChoosing(index, now: now) { letGo(index) }
             }
         }
+    }
+
+    /// Whether a choosing fist that has loosened (or left the cameras)
+    /// still holds its chits: for `choosingGrace`, it does.
+    private func holdsWhileChoosing(_ index: Int, now: Double) -> Bool {
+        guard driving == index, hands[index].isFist, choice == nil else { return false }
+        let since = looseSince ?? now
+        looseSince = since
+        return now - since < Self.choosingGrace
     }
 
     /// The hand sets the space down — the fist opened, or the cameras
@@ -4969,8 +5338,146 @@ final class FistGrab {
         hands[index].lastPalm = nil
         guard driving == index else { return }
         driving = nil
-        release?(carried)
+        looseSince = nil
+        settle?()
+        if let choice { release?(carried, choice) }
+        choice = nil
         carried = .zero
+    }
+
+    /// The other hand's choice, from the chits: the fist carries this
+    /// part of the room from now until it opens.
+    func choose(_ part: FistCarry) {
+        guard driving != nil, choice == nil else { return }
+        choice = part
+        settle?()
+    }
+}
+
+/// Time keeps its order in the room: a citation is older than the paper
+/// that cites it, so the citations always stand behind the proceedings'
+/// papers — `Transpoint.behind` (5 cm) at the least. Carrying the
+/// citations forward stops there; so does carrying the papers back.
+/// Everything carried together changes nothing between them.
+@MainActor
+final class FistDepthLimit {
+    /// How far forward (+z) the citations may still come, and how far
+    /// back (−z) the papers may still go, in this carry.
+    private var citationsForward: Float = .infinity
+    private var papersBack: Float = -.infinity
+    /// The depth carried so far in this carry.
+    private var carriedZ: Float = 0
+
+    /// Measured as the fist closes, from where the cards stand — and
+    /// from the corridor's near plane, where the newest citation would
+    /// rise, so a corridor carried with no citations raised still keeps
+    /// the ones raised later behind the papers.
+    func begin(items: [EPUBMapItem], citationsNearPlane: Float) {
+        carriedZ = 0
+        let citations = items.filter { $0.kind == .cited || $0.kind == .citedDeep }
+            .compactMap { $0.position?.z } + [citationsNearPlane]
+        let papers = items.filter { $0.kind == .article }.compactMap { $0.position?.z }
+        guard let frontCitation = citations.max(), let rearPaper = papers.min() else {
+            citationsForward = .infinity
+            papersBack = -.infinity
+            return
+        }
+        let room = (rearPaper - Transpoint.behind) - frontCitation
+        // Already too close (or crossed): no nearer, but free to part.
+        citationsForward = max(room, 0)
+        papersBack = min(-room, 0)
+    }
+
+    /// The part of a step the order allows.
+    func allowed(_ step: SIMD3<Float>, carrying part: FistCarry) -> SIMD3<Float> {
+        var step = step
+        let wanted = carriedZ + step.z
+        let held: Float
+        switch part {
+        case .everything: held = wanted
+        case .citations: held = min(wanted, citationsForward)
+        case .documents: held = max(wanted, papersBack)
+        }
+        step.z = held - carriedZ
+        carriedZ = held
+        return step
+    }
+}
+
+/// What a fist can carry: the whole room, the journal's documents on
+/// their own, or the citations with the time corridor they stand on —
+/// the Timeflows, the floor's history and the decade lines share the
+/// citations' year depth, so they travel together.
+enum FistCarry: String, CaseIterable {
+    case everything, documents, citations
+
+    var title: String {
+        switch self {
+        case .everything: "Everything"
+        case .documents: "Documents"
+        case .citations: "Citations"
+        }
+    }
+}
+
+/// The fist's chits: the parts it can carry, standing a hand's height
+/// above the fist where it closed — still, so the other hand can touch
+/// one — and gone the moment the fist has its answer.
+@MainActor
+final class FistChooser {
+    private var root: Entity?
+    private var chits: [FistCarry: Entity] = [:]
+    private static let namePrefix = "fistChit."
+    /// Above the fist, and between chits.
+    private static let lift: Float = 0.09
+    private static let spacing: Float = 0.12
+
+    func install(in content: RealityViewContent) {
+        let root = Entity()
+        root.isEnabled = false
+        content.add(root)
+        self.root = root
+        for (index, part) in FistCarry.allCases.enumerated() {
+            let chit = Entity()
+            chit.name = Self.namePrefix + part.rawValue
+            chit.components.set(CollisionComponent(
+                shapes: [.generateBox(size: SIMD3<Float>(0.11, 0.045, 0.04))]))
+            chit.components.set(InputTargetComponent())
+            chit.components.set(HoverEffectComponent())
+            let face = Entity()
+            face.components.set(ViewAttachmentComponent(rootView: ArmChip(text: part.title)))
+            // Attachments render life-size; the chips' own scale.
+            face.scale = SIMD3<Float>(repeating: 0.32)
+            chit.addChild(face)
+            chit.position = SIMD3<Float>(
+                (Float(index) - Float(FistCarry.allCases.count - 1) / 2) * Self.spacing, 0, 0)
+            root.addChild(chit)
+            chits[part] = chit
+        }
+    }
+
+    /// Stands the chits above the palm, the row turned to the reader.
+    func show(above palm: SIMD3<Float>, facing head: SIMD3<Float>?) {
+        guard let root else { return }
+        root.position = palm + SIMD3<Float>(0, Self.lift, 0)
+        if let head {
+            root.orientation = ReaderPanels.yaw(facing: head - root.position)
+        }
+        root.isEnabled = true
+    }
+
+    func hide() { root?.isEnabled = false }
+
+    /// The part a touched chit names.
+    func part(for entity: Entity) -> FistCarry? {
+        var node: Entity? = entity
+        while let current = node {
+            if current.name.hasPrefix(Self.namePrefix) {
+                return FistCarry(rawValue: String(current.name.dropFirst(Self.namePrefix.count)))
+            }
+            node = current.parent
+        }
+        return nil
     }
 }
 
@@ -6020,6 +6527,434 @@ final class ReaderPanels {
         guard let root = roots[docID] else { return nil }
         return root.convert(position: point, to: nil)
     }
+
+    /// The panel's root — what Transpoint hangs its cards and lines on,
+    /// so they go wherever the page goes, in whatever pose.
+    func root(of docID: String) -> Entity? { roots[docID] }
+}
+
+/// Transpoint, in honour of Ted Nelson's transpointing windows — with
+/// the time his windows left out. A citation looks back, so the works a
+/// document cites stand **behind** it (`Transpoint.behind`, 5 cm), as
+/// older works stand deeper in the Hallway, and to either side, oldest
+/// first.
+///
+/// Every citation between the documents on stage is a line — the page's
+/// to its sources, and the sources' among themselves and back to the
+/// page. Each end meets its document as the document stands: a closed
+/// work (a card) at its side — the cited section's row when known, the
+/// title when not — and an open one (a reading panel) at the citing
+/// passage on the citing side, the cited section on the cited side,
+/// level with it on the page's edge while it is in view.
+///
+/// The cards hang on the reading panel's root, in the page's own space,
+/// so a moved, tilted or flattened page carries its past with it. The
+/// lines span panels, so they live in the room's own space.
+@MainActor
+final class TranspointLayer {
+    /// What the layer asks of the room, each frame.
+    struct Lookup {
+        /// An open reading's panel root, or nil while the document is
+        /// closed (or hidden).
+        let root: (String) -> Entity?
+        /// A page's real width in metres, once the attachment knows it.
+        let pageWidth: (String) -> Float?
+        /// A page's size in its own points.
+        let pageSize: (String) -> CGSize?
+        /// A passage's frame on its page, in the page's points.
+        let paragraphFrame: (_ docID: String, _ paragraphID: String) -> CGRect?
+    }
+
+    private struct Place {
+        var centre: SIMD3<Float>
+        var heightPoints: CGFloat
+    }
+
+    private var subscription: EventSubscription?
+    /// The cards, on the page's root.
+    private var container: Entity?
+    /// The lines, in the room.
+    private var lineRoot: Entity?
+    private var cards: [String: Entity] = [:]
+    private var places: [String: Place] = [:]
+    private var lines: [String: ModelEntity] = [:]
+    private var cardMetresPerPoint: [String: Float] = [:]
+    private var works: [String: TranspointWork] = [:]
+    /// The works as first laid out, oldest first.
+    private var ordered: [TranspointWork] = []
+    private var links: [TranspointLink] = []
+    private(set) var docID: String?
+    private var lookup: Lookup?
+    private var laidOutWidth: Float = 0
+
+    /// Attachments render at about this many points to the metre.
+    private static let pointsPerMetre: Float = 1360
+    /// The reading panel's height, in its points (MapReaderPanel).
+    private static let pageHeightPoints: Float = 800
+    /// The page's own width before the attachment has measured itself.
+    private static let fallbackPageWidth: Float = 640 / pointsPerMetre
+    /// Air between the page's edge and the first column, between
+    /// columns, and between cards in a column.
+    private static let gapFromPage: Float = 0.05
+    private static let columnGap: Float = 0.03
+    private static let rowGap: Float = 0.018
+    /// How far below the page a column may run before the next begins.
+    private static let columnOverhang: Float = 0.18
+    /// The page's title bar above and foot bar below: a passage under
+    /// either is out of view.
+    private static let hiddenTop: CGFloat = 70
+    private static let hiddenBottom: CGFloat = 80
+    /// A passage's line meets it level with its first line of words.
+    private static let firstLine: CGFloat = 14
+
+    func install(in content: RealityViewContent) {
+        let lineRoot = Entity()
+        lineRoot.name = "transpoint.lines"
+        content.add(lineRoot)
+        self.lineRoot = lineRoot
+        subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+    }
+
+    func show(docID: String, works: [TranspointWork], links: [TranspointLink],
+              lookup: Lookup, card: (TranspointWork) -> AnyView) {
+        clear()
+        guard let root = lookup.root(docID) else { return }
+        self.docID = docID
+        self.works = Dictionary(works.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        self.ordered = works
+        self.links = links
+        self.lookup = lookup
+        let container = Entity()
+        container.name = "transpoint"
+        root.addChild(container)
+        self.container = container
+        for work in works {
+            let entity = Entity()
+            entity.components.set(ViewAttachmentComponent(rootView: card(work)))
+            container.addChild(entity)
+            cards[work.id] = entity
+        }
+        layout(works, pageWidth: lookup.pageWidth(docID) ?? Self.fallbackPageWidth)
+    }
+
+    func clear() {
+        container?.removeFromParent()
+        container = nil
+        for line in lines.values { line.removeFromParent() }
+        lines = [:]
+        cards = [:]
+        places = [:]
+        cardMetresPerPoint = [:]
+        works = [:]
+        ordered = []
+        links = []
+        docID = nil
+        lookup = nil
+        laidOutWidth = 0
+    }
+
+    /// A card's place in the room, for opening its work in front of it.
+    func worldPosition(of workID: String) -> SIMD3<Float>? {
+        cards[workID]?.position(relativeTo: nil)
+    }
+
+    /// Oldest first, alternating sides, each side top-down; a column
+    /// that runs too far below the page starts another further out.
+    private func layout(_ ordered: [TranspointWork], pageWidth: Float) {
+        laidOutWidth = pageWidth
+        let top = Self.pageHeightPoints / Self.pointsPerMetre / 2
+        let cardWidth = Float(TranspointCard.width) / Self.pointsPerMetre
+        var column: [Float: Int] = [-1: 0, 1: 0]
+        var y: [Float: Float] = [-1: top, 1: top]
+        for (index, work) in ordered.enumerated() {
+            let side: Float = index.isMultiple(of: 2) ? -1 : 1
+            let heightPoints = TranspointCard.height(for: work)
+            let height = Float(heightPoints) / Self.pointsPerMetre
+            if y[side, default: top] < top,
+               y[side, default: top] - height < -top - Self.columnOverhang {
+                column[side, default: 0] += 1
+                y[side] = top
+            }
+            let x = side * (pageWidth / 2 + Self.gapFromPage + cardWidth / 2
+                            + Float(column[side, default: 0]) * (cardWidth + Self.columnGap))
+            let centre = SIMD3<Float>(x, y[side, default: top] - height / 2, -Transpoint.behind)
+            y[side] = y[side, default: top] - height - Self.rowGap
+            cards[work.id]?.position = centre
+            places[work.id] = Place(centre: centre, heightPoints: heightPoints)
+        }
+    }
+
+    private func tick() {
+        guard let docID, let lookup, container != nil else { return }
+        // The page measured itself, or was measured afresh (the margin,
+        // a change of view): the cards keep their distance from its edge.
+        if let width = lookup.pageWidth(docID), abs(width - laidOutWidth) > 0.01 {
+            layout(ordered, pageWidth: width)
+        }
+        var live = Set<String>()
+        for link in links {
+            guard let fromCentre = centre(of: link.from),
+                  let toCentre = centre(of: link.to) else { continue }
+            let fromOpen = lookup.root(link.from) != nil
+            let toOpen = lookup.root(link.to) != nil
+            // The citing end: its passage while its page is open (no
+            // passage in view, no line), its side while it is a card.
+            let start: SIMD3<Float>?
+            if fromOpen {
+                start = pagePoint(of: link.from, at: link.paragraphID, toward: toCentre,
+                                  passageRequired: link.paragraphID != nil)
+            } else {
+                start = cardPoint(of: link.from, rowY: TranspointCard.titleRow, toward: toCentre)
+            }
+            guard let start else { continue }
+            // The cited end: its section on the open page, else the
+            // page's side; on a card, the section's row, else the title.
+            let end: SIMD3<Float>?
+            if toOpen {
+                end = pagePoint(of: link.to, at: link.sectionID, toward: start,
+                                passageRequired: false)
+            } else if let work = works[link.to] {
+                end = cardPoint(of: link.to,
+                                rowY: TranspointCard.rowCentre(for: link.sectionID, in: work),
+                                toward: start)
+            } else {
+                end = nil
+            }
+            guard let end else { continue }
+            // A closed citing work meets every line at the same place:
+            // one line per landing, not one per passage.
+            let fromKey = fromOpen ? (link.paragraphID ?? "") : "card"
+            let toKey = toOpen ? "page|\(link.sectionID ?? "")" : "card|\(link.sectionID ?? "")"
+            let key = "\(link.from)|\(fromKey)>\(link.to)|\(toKey)"
+            guard live.insert(key).inserted else { continue }
+            let line: ModelEntity
+            if let existing = lines[key] {
+                line = existing
+            } else {
+                line = Self.makeLine(landsOnSection: link.sectionID != nil)
+                lineRoot?.addChild(line)
+                lines[key] = line
+            }
+            Self.place(line, from: start, to: end)
+        }
+        for (key, line) in lines where !live.contains(key) {
+            line.isEnabled = false
+        }
+    }
+
+    /// Where a document stands in the room: its open page, else its card.
+    private func centre(of id: String) -> SIMD3<Float>? {
+        if let root = lookup?.root(id) { return root.position(relativeTo: nil) }
+        return cards[id]?.position(relativeTo: nil)
+    }
+
+    /// A point on an open page's edge — the edge facing `toward` — level
+    /// with a passage while it is in view. Without one (or out of view)
+    /// the edge's middle, unless the passage is the whole point.
+    private func pagePoint(of id: String, at paragraphID: String?,
+                           toward other: SIMD3<Float>,
+                           passageRequired: Bool) -> SIMD3<Float>? {
+        guard let lookup, let root = lookup.root(id),
+              let size = lookup.pageSize(id), size.width > 1 else { return nil }
+        let width = lookup.pageWidth(id) ?? Self.fallbackPageWidth
+        let metresPerPoint = width / Float(size.width)
+        let side: Float = root.convert(position: other, from: nil).x >= 0 ? 1 : -1
+        var y: Float = 0
+        if let paragraphID, let frame = lookup.paragraphFrame(id, paragraphID),
+           case let lineY = frame.minY + Self.firstLine,
+           lineY > Self.hiddenTop, lineY < size.height - Self.hiddenBottom {
+            y = Float(size.height / 2 - lineY) * metresPerPoint
+        } else if passageRequired {
+            return nil
+        }
+        return root.convert(position: SIMD3<Float>(side * width / 2, y, 0.002), to: nil)
+    }
+
+    /// A point on a card's side — the side facing `toward` — at a row.
+    private func cardPoint(of id: String, rowY: CGFloat,
+                           toward other: SIMD3<Float>) -> SIMD3<Float>? {
+        guard let container, let place = places[id] else { return nil }
+        let cardWidth = Float(TranspointCard.width) / Self.pointsPerMetre
+        let local = container.convert(position: other, from: nil)
+        let side: Float = local.x >= place.centre.x ? 1 : -1
+        let point = place.centre + SIMD3<Float>(
+            side * cardWidth / 2,
+            Float(place.heightPoints / 2 - rowY) * metresPerPoint(ofCard: id),
+            0)
+        return container.convert(position: point, to: nil)
+    }
+
+    /// A card's own measure once it has laid out; the usual figure
+    /// until then.
+    private func metresPerPoint(ofCard id: String) -> Float {
+        if let known = cardMetresPerPoint[id] { return known }
+        guard let card = cards[id], card.scene != nil else { return 1 / Self.pointsPerMetre }
+        let width = card.visualBounds(relativeTo: card).extents.x
+        guard width.isFinite, width > 0.05 else { return 1 / Self.pointsPerMetre }
+        let measured = width / Float(TranspointCard.width)
+        cardMetresPerPoint[id] = measured
+        return measured
+    }
+
+    /// A line that lands on a section reads strong; one to a whole work,
+    /// faint — known, but not where.
+    private static func makeLine(landsOnSection: Bool) -> ModelEntity {
+        var material = UnlitMaterial()
+        material.color = .init(tint: landsOnSection
+            ? UIColor(red: 0.20, green: 0.72, blue: 0.80, alpha: 0.85)
+            : UIColor(white: 1, alpha: 0.40))
+        let thickness: Float = landsOnSection ? 0.0018 : 0.0012
+        return ModelEntity(
+            mesh: .generateBox(size: SIMD3<Float>(1, thickness, thickness)),
+            materials: [material])
+    }
+
+    private static func place(_ entity: ModelEntity,
+                              from a: SIMD3<Float>, to b: SIMD3<Float>) {
+        let difference = b - a
+        let length = simd_length(difference)
+        guard length > 0.005 else { entity.isEnabled = false; return }
+        entity.isEnabled = true
+        entity.position = (a + b) / 2
+        entity.scale = SIMD3<Float>(length, 1, 1)
+        let direction = difference / length
+        let axis = simd_cross(SIMD3<Float>(1, 0, 0), direction)
+        let axisLength = simd_length(axis)
+        let dot = simd_dot(SIMD3<Float>(1, 0, 0), direction)
+        entity.orientation = axisLength < 1e-6
+            ? simd_quatf(angle: dot < 0 ? .pi : 0, axis: SIMD3<Float>(0, 1, 0))
+            : simd_quatf(angle: acos(max(-1, min(1, dot))), axis: axis / axisLength)
+    }
+}
+
+/// One cited work standing behind a Transpoint page: its title and
+/// byline, and — when the library holds it — its sections, the ones
+/// this page cites marked. Every height is fixed, so the lines know
+/// where each row is without measuring.
+struct TranspointCard: View {
+    @Environment(VisionModel.self) private var model
+    let work: TranspointWork
+    /// Open the work — at a section, or from its start.
+    let onOpen: (String?) -> Void
+
+    static let width: CGFloat = 340
+    static let header: CGFloat = 92
+    static let row: CGFloat = 30
+    static let acquireRow: CGFloat = 46
+    static let bottom: CGFloat = 12
+    /// Where a line meets a card when no section is known: its title.
+    static let titleRow: CGFloat = 34
+
+    static func height(for work: TranspointWork) -> CGFloat {
+        header + (work.isInLibrary ? CGFloat(work.sections.count) * row : acquireRow) + bottom
+    }
+
+    /// Where a line lands on the card, down from its top: the cited
+    /// section's row, or the title when the section is not known.
+    static func rowCentre(for sectionID: String?, in work: TranspointWork) -> CGFloat {
+        if let sectionID, let index = work.sections.firstIndex(where: { $0.id == sectionID }) {
+            return header + (CGFloat(index) + 0.5) * row
+        }
+        return titleRow
+    }
+
+    private var landed: Set<String> { Set(work.origins.compactMap(\.sectionID)) }
+
+    private var byline: String {
+        [work.authors, work.year.map(String.init) ?? ""]
+            .filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { onOpen(nil) } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(work.title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    HStack(spacing: 6) {
+                        if let warning = ReferenceStatus.standingWarning(
+                            doi: work.doi, title: work.title, year: work.year) {
+                            Text(warning.text)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(warning.tone == .alarm
+                                                           ? Color(red: 0.82, green: 0.16, blue: 0.16)
+                                                           : Color(red: 0.88, green: 0.52, blue: 0.10)))
+                        }
+                        Text(byline)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(height: Self.header, alignment: .top)
+            if work.isInLibrary {
+                let topLevel = work.sections.map(\.level).min() ?? 1
+                ForEach(work.sections) { section in
+                    let cited = landed.contains(section.id)
+                    Button { onOpen(section.id) } label: {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(cited ? Color(red: 0.20, green: 0.72, blue: 0.80)
+                                            : Color.secondary.opacity(0.35))
+                                .frame(width: 6, height: 6)
+                            Text(section.title)
+                                .font(.system(size: 13, weight: cited ? .semibold : .regular))
+                                .lineLimit(1)
+                        }
+                        .padding(.leading, 16 + CGFloat(section.level - topLevel) * 14)
+                        .padding(.trailing, 12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .frame(height: Self.row)
+                }
+            } else {
+                HStack {
+                    Text("Not in your library")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if let key = work.citationKey {
+                        if model.acquisitionIDs.contains(key) {
+                            Label("Listed", systemImage: "checkmark")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Button("Acquire") {
+                                model.requestAcquisition(key: key, title: work.title,
+                                                         author: work.authors, year: work.year,
+                                                         doi: work.doi)
+                            }
+                            .controlSize(.small)
+                            .disabled(model.index.folderURL == nil)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .frame(height: Self.acquireRow)
+            }
+        }
+        .padding(.bottom, Self.bottom)
+        .frame(width: Self.width, height: Self.height(for: work), alignment: .top)
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 18))
+        // A work in the references the text never cites stands quieter:
+        // it has no line to draw.
+        .opacity(work.origins.isEmpty ? 0.55 : 1)
+    }
 }
 
 /// Draws faint lines from each open reader panel to the hallway cards
@@ -6912,11 +7847,9 @@ struct MapReaderPanel: View {
     /// The reading view inside, shared with VisionReaderView — the
     /// Horizontal view earns a panel wide enough for whole pages.
     @AppStorage("visionReaderMode") private var readerModeRaw = "scroll"
-    /// The reading the Origami View was entered from, so the same
-    /// button unfolds the paper back to it.
-    @AppStorage("visionReaderModeBeforeOrigami") private var modeBeforeOrigami = "scroll"
 
     private var isDesk: Bool { model.readingDeskDocID == docID }
+    private var isTranspoint: Bool { model.transpointDocID == docID }
     private var theme: ReadingDeskTheme {
         ReadingDeskTheme(rawValue: deskThemeRaw) ?? .light
     }
@@ -6936,11 +7869,10 @@ struct MapReaderPanel: View {
         case .flat: "Stand the page back up"
         }
     }
-    /// Horizontal hugs its columns' full breadth, and the folded sheet
-    /// its own spread (each reader sizes itself); every other view
-    /// keeps the page width.
+    /// Horizontal hugs its columns' full breadth (the reader sizes
+    /// itself); every other view keeps the page width.
     private var panelWidth: CGFloat? {
-        if isHorizontal || isOrigami { return nil }
+        if isHorizontal { return nil }
         // The margin column earns its width beside the flowing page.
         let flowing = readerModeRaw == "scroll" || readerModeRaw == "outline"
         return marginOn && flowing ? 921 : 640   // the page as before, plus the 280 margin and its rule
@@ -6950,7 +7882,6 @@ struct MapReaderPanel: View {
     @AppStorage("visionReaderMargin") private var marginOn = false
 
     private var isHorizontal: Bool { readerModeRaw == "horizontal" }
-    private var isOrigami: Bool { readerModeRaw == "origami" }
 
     var body: some View {
         if isDesk {
@@ -6961,7 +7892,7 @@ struct MapReaderPanel: View {
             panel
                 .background(RoundedRectangle(cornerRadius: 24).fill(theme.page))
                 .environment(\.colorScheme, theme.scheme)
-        } else if isHorizontal || isOrigami {
+        } else if isHorizontal {
             // Horizontal in the room curves its columns, each wearing
             // its own glass inside the reader — the panel adds no flat
             // slab for the text to stick out of.
@@ -6973,10 +7904,8 @@ struct MapReaderPanel: View {
     }
 
     /// Whether the panel stands as separate floating pieces — the
-    /// room's curved Horizontal, or the Origami View, whose facets
-    /// carry their own paper and must not stand on a glass slab —
-    /// rather than one dressed sheet.
-    private var isLoose: Bool { (isHorizontal || isOrigami) && !isDesk }
+    /// room's curved Horizontal — rather than one dressed sheet.
+    private var isLoose: Bool { isHorizontal && !isDesk }
 
     private var panel: some View {
         VStack(spacing: isLoose ? 12 : 0) {
@@ -7020,6 +7949,17 @@ struct MapReaderPanel: View {
                 }
                 .buttonBorderShape(.circle)
                 .help(isDesk ? "Back to the Hallway" : "Reading Desk — just this document")
+                // Transpoint: this document alone, with the works it
+                // cites standing behind it and lines from its citations.
+                Button {
+                    model.transpointDocID = isTranspoint ? nil : docID
+                } label: {
+                    Image(systemName: isTranspoint
+                          ? "point.3.filled.connected.trianglepath.dotted"
+                          : "point.3.connected.trianglepath.dotted")
+                }
+                .buttonBorderShape(.circle)
+                .help(isTranspoint ? "End Transpoint" : "Transpoint — what this document cites, behind it")
                 // The pose cycle: standing → the 45° drafting board →
                 // flat on the table → standing again.
                 Button {
@@ -7033,24 +7973,6 @@ struct MapReaderPanel: View {
                 }
                 .buttonBorderShape(.circle)
                 .help(poseHelp)
-                // The Origami View: the page folded into space as a
-                // folding screen. Beside the document and the pose,
-                // because it is a third way to hold the same paper —
-                // and the way back is the same button.
-                Button {
-                    if isOrigami {
-                        readerModeRaw = modeBeforeOrigami
-                    } else {
-                        modeBeforeOrigami = readerModeRaw
-                        readerModeRaw = "origami"
-                    }
-                } label: {
-                    Image(systemName: "rectangle.split.3x1")
-                }
-                .buttonBorderShape(.circle)
-                .help(isOrigami
-                      ? "Unfold the paper — back to the reading"
-                      : "Origami View — fold the paper into space")
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
@@ -7138,15 +8060,10 @@ struct CitationCardPanel: View {
                         .joined(separator: ", "))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    if let abstract, !abstract.isEmpty {
-                        Text(abstract)
-                            .font(.callout)
-                    } else {
-                        Text("No abstract on record.")
-                            .font(.callout)
-                            .italic()
-                            .foregroundStyle(.secondary)
-                    }
+                    // Everything the Mac gathered of the work: its standing,
+                    // abstract, how it is cited, its topics.
+                    VisionCitedWorkFacts(doi: doi, title: title, year: year,
+                                         ownAbstract: abstract)
                     if let doi, !doi.isEmpty {
                         Text("doi: \(doi)")
                             .font(.caption)
@@ -7237,14 +8154,12 @@ enum FloorShow: String, CaseIterable, Identifiable {
 /// them like tiles underfoot. Wikidata's most widely carried events
 /// win the floor space when years crowd.
 @MainActor
-/// How the floor timeline looks — one place to tune it. Lowered contrast
-/// and a lighter floor (5 Oct 2026): a pale wash over the timeline's
-/// stretch of floor, soft pale beds, dark grey words, grey rules.
+/// How the floor timeline looks — one place to tune it. No wash over
+/// the floor (10 Oct 2026; the pale sheet of 5 Oct read too strong):
+/// a white pill under each title and year, dark grey words, grey rules.
 enum FloorLook {
-    /// The pale sheet over the floor: higher is lighter.
-    static let washOpacity: CGFloat = 0.22
-    /// The beds under events and years.
-    static let bed = Color(white: 0.96).opacity(0.78)
+    /// The pill under each event and year.
+    static let bed = Color.white
     static let eventInk = Color(white: 0.22)
     static let yearInk = Color(white: 0.38)
     /// Decade rules across the floor.
@@ -7401,18 +8316,8 @@ final class FloorDecadeLines {
         let step = max(10, Int((Double(span) / 400).rounded(.up)) * 10)
         let root = Entity()
         root.components.set(MapSpaceNodeComponent())
-        // The floor lightened under the timeline (5 Oct 2026): one pale,
-        // translucent sheet across the whole stretch, so the room reads
-        // soft and light rather than words on a dark carpet.
-        var wash = UnlitMaterial()
-        wash.color = .init(tint: UIColor(white: 1, alpha: FloorLook.washOpacity))
-        wash.blending = .transparent(opacity: 1.0)
-        let sheet = ModelEntity(
-            mesh: .generatePlane(width: Self.halfSpan * 2, depth: citedSpace.depth),
-            materials: [wash])
-        sheet.position = SIMD3<Float>(0, -0.001,
-                                      citedSpace.origin.z - citedSpace.depth / 2 + shift.z)
-        root.addChild(sheet)
+        // No pale sheet over the floor for now (10 Oct 2026): the white
+        // read too strong. Each title wears its own white pill instead.
         // Quiet grey hairlines: they must show on the pale sheet, where
         // the old white rules vanished.
         var material = UnlitMaterial()
@@ -7487,11 +8392,12 @@ struct FloorHistoryView: View {
                     let bedX = yearAnchor == .leading
                         ? yearX - 6
                         : yearX - yearSize.width - 6
+                    let yearBed = CGRect(
+                        x: bedX, y: rule - 14 - yearSize.height / 2 - 3,
+                        width: yearSize.width + 12,
+                        height: yearSize.height + 6)
                     context.fill(
-                        Path(roundedRect: CGRect(
-                            x: bedX, y: rule - 14 - yearSize.height / 2 - 3,
-                            width: yearSize.width + 12,
-                            height: yearSize.height + 6), cornerRadius: 6),
+                        Path(roundedRect: yearBed, cornerRadius: yearBed.height / 2),
                         with: .color(FloorLook.bed))
                     context.draw(resolvedYear,
                                  at: CGPoint(x: yearX, y: rule - 14),
@@ -7533,9 +8439,9 @@ struct FloorHistoryView: View {
                 let bed = CGRect(x: bedX, y: row - measured.height / 2 - 5,
                                  width: measured.width + 24,
                                  height: measured.height + 10)
-                // A soft pale bed, dark grey words: legible on any floor
-                // without the hard black-and-white of before.
-                context.fill(Path(roundedRect: bed, cornerRadius: 8),
+                // A white pill, dark grey words: each title legible on
+                // any floor, with no sheet laid over the floor itself.
+                context.fill(Path(roundedRect: bed, cornerRadius: bed.height / 2),
                              with: .color(FloorLook.bed))
                 context.draw(resolved, at: CGPoint(x: textX, y: row), anchor: textAnchor)
             }

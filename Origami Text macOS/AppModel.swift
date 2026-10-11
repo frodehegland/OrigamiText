@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import CryptoKit
 
 /// Library views are exchangeable modules: see LibraryViewModule.swift for
 /// the recipe. They appear here as `.view(id)`.
@@ -44,6 +45,15 @@ enum SidebarItem: Hashable {
     case epubsSetAside
     case epubFolder(String)
     case acquisitions
+    /// The master list of every work the library cites.
+    case citedWorks
+    /// Every book the reader has, in any form: in print, Apple Books,
+    /// Kindle, an open copy, the library's own EPUB.
+    case books
+    /// The meeting series, and the correspondences, as Proceedings lists
+    /// its journals.
+    case meetings
+    case letters
     // Hypermedia: the followed spaces, each its own list, and the ways
     // through everything read from them.
     case hypermediaSpace(String)
@@ -130,9 +140,32 @@ final class AppModel {
     // The app opens onto the Timeline — every book, newest first.
     var sidebarSelection: SidebarItem? = .epubsTimeline {
         didSet {
-            if oldValue != sidebarSelection { previousSidebarSelection = oldValue }
+            if oldValue != sidebarSelection {
+                previousSidebarSelection = oldValue
+                // Another place brings its list back.
+                paperListFolded = false
+                sidebarSelectionChangedAt = .now
+            }
         }
     }
+    /// The cited work chosen in References — its key in the master list.
+    var selectedCitedWorkKey: String?
+
+    /// Books: the entries and the shelf-photo spines still unsure, as the
+    /// books file holds them (BookShelf.swift; the logic is in BooksModel).
+    var booksState: BooksFile.State = BooksFile.read(from: BooksFile.localFolder) ?? .init()
+    /// The book (or unsure spine, "unsure:<id>") chosen in Books.
+    var selectedBookID: String?
+    /// What a shelf-photo pass is doing, while it runs.
+    var booksStatus: String?
+
+    /// The paper list folded away — a click on the place already chosen
+    /// (Inbox, Pinned…) gives the reading the list's width; the same
+    /// click brings it back.
+    var paperListFolded = false
+    /// When the chosen place last changed, so the click that chose it is
+    /// never read as the click that folds it.
+    @ObservationIgnored var sidebarSelectionChangedAt = Date.distantPast
     /// The journal or proceedings in focus, when one is: the sidebar then
     /// shows only that venue's own section.
     var venueInFocus: String? {
@@ -907,6 +940,11 @@ final class AppModel {
             // and joins only through Import.
             if epubJoinsLibraryOnOpen(url) {
                 openEPUBFile(at: url)
+            } else if Self.isAuthorLetter(at: url) {
+                // A letter Author hands over (Send, with Origami Text as
+                // the reader): into the Inbox, quietly — no window, no
+                // focus taken.
+                receiveLetter(at: url)
             } else {
                 quickViewEPUB(at: url)
             }
@@ -2211,7 +2249,26 @@ final class AppModel {
         let newest = shownEPUBRecords.sorted { $0.openedAt > $1.openedAt }
         let cutoff = Date.now.addingTimeInterval(-30 * 24 * 3600)
         let recent = newest.prefix { $0.openedAt >= cutoff }
-        return Array(recent.count >= 20 ? recent : newest.prefix(20))
+        let arrivals = Array(recent.count >= 20 ? recent : newest.prefix(20))
+        // A conversation's letters stand together, newest first, where its
+        // newest letter arrived — the earlier letters with it, however
+        // long ago they came.
+        guard arrivals.contains(where: \.isLetter) else { return arrivals }
+        var byThread: [String: [EPUBRecord]] = [:]
+        for record in newest {
+            if let thread = record.letterThread { byThread[thread, default: []].append(record) }
+        }
+        var placed = Set<String>()
+        var out: [EPUBRecord] = []
+        for record in arrivals {
+            if let thread = record.letterThread {
+                guard placed.insert(thread).inserted else { continue }
+                out.append(contentsOf: byThread[thread] ?? [record])
+            } else {
+                out.append(record)
+            }
+        }
+        return out
     }
 
     /// Whether the Inbox holds anything not yet opened — its sidebar row
@@ -2247,6 +2304,8 @@ final class AppModel {
             let meta: OrigamiEPUBImporter.PackageMetadata
             let contentSubpath: String
             let originalFilename: String
+            /// A transcript's or letter's own facts, when it is one.
+            var dialogue: DialogueInfo? = nil
         }
         struct Enrich: Sendable {
             let publication: String?
@@ -2364,7 +2423,8 @@ final class AppModel {
             folder: safe, identity: identity,
             fresh: .init(title: unpacked.title, meta: meta,
                          contentSubpath: contentSubpath,
-                         originalFilename: url.lastPathComponent),
+                         originalFilename: url.lastPathComponent,
+                         dialogue: OrigamiEPUBImporter.dialogueInfo(inUnpackedFolder: directory)),
             enrich: nil)
     }
 
@@ -2378,7 +2438,8 @@ final class AppModel {
     /// title-plus-author gate below would read as the same page twice.
     private func applyPreparedImport(_ prepared: PreparedEPUBImport,
                                      deferHousekeeping: Bool = false,
-                                     dedupe: Bool = true) -> EPUBRecord? {
+                                     dedupe: Bool = true,
+                                     letter: LetterArrival? = nil) -> EPUBRecord? {
         guard let fresh = prepared.fresh else {
             guard let existing = epubRecords.first(where: { $0.folder == prepared.folder })
             else { return nil }
@@ -2405,7 +2466,9 @@ final class AppModel {
         }
         let meta = fresh.meta
         var prepared = prepared
-        var bookID = meta.origamiID ?? prepared.identity
+        // A letter is its own record, always: the next in its thread,
+        // never the newer text of an earlier one.
+        var bookID = letter != nil ? prepared.identity : (meta.origamiID ?? prepared.identity)
         // A re-export: the same publication (its package identifier, which
         // Author keeps across exports) under a new filename. It is the
         // book's newer text, never a duplicate — it takes the standing
@@ -2418,11 +2481,11 @@ final class AppModel {
         // duplicate kept the old text forever — the bundled Introduction
         // opened an earlier "Welcome to Origami Text" this way.
         var refreshedFrom: EPUBRecord?
-        if let identifier = meta.identifier, !identifier.isEmpty,
+        if letter == nil, let identifier = meta.identifier, !identifier.isEmpty,
            let standing = epubRecords.first(where: {
-               $0.packageIdentifier == identifier && $0.folder != prepared.folder
+               !$0.isLetter && $0.packageIdentifier == identifier && $0.folder != prepared.folder
            }) ?? epubRecords.first(where: {
-               ($0.packageIdentifier ?? "").isEmpty && $0.folder != prepared.folder
+               !$0.isLetter && ($0.packageIdentifier ?? "").isEmpty && $0.folder != prepared.folder
                    && Self.epubDuplicateMatch(record: $0, title: fresh.title, meta: meta)
            }) {
             let root = Self.epubsRoot
@@ -2445,8 +2508,8 @@ final class AppModel {
         // package's own dc:identifier, the DOI, then title plus first
         // author. The same folder or bookID is a refresh (below),
         // never a duplicate.
-        if dedupe, refreshedFrom == nil, let twin = epubRecords.first(where: { record in
-            record.folder != prepared.folder && record.id != bookID
+        if dedupe, letter == nil, refreshedFrom == nil, let twin = epubRecords.first(where: { record in
+            !record.isLetter && record.folder != prepared.folder && record.id != bookID
                 && Self.epubDuplicateMatch(record: record,
                                            title: fresh.title, meta: meta)
         }) {
@@ -2468,7 +2531,7 @@ final class AppModel {
         if let refreshedFrom, refreshedFrom.title != fresh.title {
             showNote("Updated \u{201C}\(refreshedFrom.title)\u{201D} to the newer export, \u{201C}\(fresh.title)\u{201D}")
         }
-        let record = EPUBRecord(id: bookID, title: fresh.title,
+        var record = EPUBRecord(id: bookID, title: fresh.title,
                                 author: authors.count > 1
                                     ? authors.joined(separator: ", ")
                                     : (authors.first ?? meta.author ?? "Unknown"),
@@ -2479,14 +2542,18 @@ final class AppModel {
                                 doi: meta.doi,
                                 originalFilename: fresh.originalFilename,
                                 packageIdentifier: meta.identifier)
+        record.letterThread = letter?.thread
+        record.letterHash = letter?.fingerprint
+        record.dialogue = fresh.dialogue
         epubRecords.removeAll { $0.id == bookID || $0.folder == prepared.folder }
         epubRecords.insert(record, at: 0)
-        // When this book carries a DOI that matches a pending
-        // acquisition, the wish is fulfilled — remove it.
-        if let doi = meta.doi {
-            for wanted in acquisitions where wanted.doi == doi {
-                removeAcquisition(wanted.id)
-            }
+        // A book that answers a To Acquire wish — by DOI, or by title
+        // under the same author — fulfils it: the wish is crossed off.
+        if letter == nil {
+            linkLibraryCopy(record)
+            crossOffAcquisitions(title: fresh.title, authors: authors.isEmpty
+                                     ? [meta.author ?? ""] : authors,
+                                 doi: meta.doi)
         }
         // A fresh unpack means a new spine — drop the cached one.
         spineCache.removeValue(forKey: prepared.folder)
@@ -2499,6 +2566,9 @@ final class AppModel {
             persistEPUBRecords()
             rebuildEPUBIndex()
         }
+        // A meeting or a letter: its series' analysis (the unlabeled ones
+        // have a room of their own), beside the EPUBs, for every device.
+        if record.dialogue != nil { refreshDialogueAnalyses() }
         return record
     }
 
@@ -2508,6 +2578,139 @@ final class AppModel {
     /// prepare/apply halves themselves so the heavy half runs off-main.
     /// Already-imported, still-unpacked books are reused as-is. Returns the
     /// record, or nil on failure.
+    // MARK: - Letters from Author
+
+    /// When each letter file was last handed over, by path.
+    @ObservationIgnored private var lettersReceivedAt: [String: Date] = [:]
+
+    /// A letter's arrival: the conversation it belongs to, and its content's
+    /// fingerprint.
+    struct LetterArrival: Sendable {
+        let thread: String
+        let fingerprint: String
+    }
+
+    /// Whether an EPUB is a letter from Author: its Visual-Meta (or
+    /// interaction record) names Author as the software that made it —
+    /// "Author for macOS", or the older "Author (macOS)".
+    nonisolated static func isAuthorLetter(at url: URL) -> Bool {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let zip = try? ZipReader(url: url) else { return false }
+        for (suffix, key) in [("visual-meta.json", "visual-meta"), ("origami.json", "origami")] {
+            guard let name = zip.entryNames.first(where: { $0.hasSuffix(suffix) }),
+                  let data = zip.entry(name),
+                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let generator = (object[key] as? [String: Any])?["generator"] as? String
+            else { continue }
+            return generator.hasPrefix("Author")
+        }
+        return false
+    }
+
+    /// The package's `dc:type`, lowercased — "transcript", "letter", or nil.
+    nonisolated static func packageType(at url: URL) -> String? {
+        guard let zip = try? ZipReader(url: url),
+              let opfName = zip.entryNames.first(where: { $0.hasSuffix(".opf") }),
+              let opf = zip.entry(opfName).map({ String(decoding: $0, as: UTF8.self) }),
+              let regex = try? NSRegularExpression(pattern: #"<dc:type[^>]*>\s*([^<]+?)\s*</dc:type>"#),
+              let match = regex.firstMatch(in: opf, range: NSRange(opf.startIndex..., in: opf)),
+              let range = Range(match.range(at: 1), in: opf)
+        else { return nil }
+        return opf[range].lowercased()
+    }
+
+    /// The letter's thread (its package identifier) and a fingerprint of
+    /// its content: every entry but the package record and the container
+    /// files, which Author restamps at every send — so the same letter
+    /// sent twice fingerprints alike.
+    nonisolated static func letterArrival(at url: URL) -> LetterArrival? {
+        guard let zip = try? ZipReader(url: url) else { return nil }
+        var hasher = SHA256()
+        for name in zip.entryNames.sorted()
+        where !name.hasSuffix(".opf") && !name.hasPrefix("META-INF/") && name != "mimetype" {
+            hasher.update(data: Data(name.utf8))
+            if let data = zip.entry(name) { hasher.update(data: data) }
+        }
+        let fingerprint = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard let opfName = zip.entryNames.first(where: { $0.hasSuffix(".opf") }),
+              let opf = zip.entry(opfName).map({ String(decoding: $0, as: UTF8.self) }),
+              let regex = try? NSRegularExpression(
+                  pattern: #"<dc:identifier[^>]*>\s*([^<]+?)\s*</dc:identifier>"#),
+              let match = regex.firstMatch(in: opf, range: NSRange(opf.startIndex..., in: opf)),
+              let range = Range(match.range(at: 1), in: opf)
+        else { return LetterArrival(thread: "letter:" + fingerprint, fingerprint: fingerprint) }
+        return LetterArrival(thread: String(opf[range]), fingerprint: fingerprint)
+    }
+
+    /// A letter from Author, received quietly. The file is copied in at
+    /// once — Author is sandboxed, and the access its open request lent
+    /// may not last — then unpacked and shelved in the background: into
+    /// the Inbox, bold until opened, titled as the letter's subject. No
+    /// window comes forward and no note shows. A letter whose thread
+    /// already holds the same content (Send pressed twice) is not added
+    /// again; any other letter of a known thread joins it as the next.
+    func receiveLetter(at url: URL) {
+        // One open request can reach the app by two doors (the delegate
+        // and the scene's URL handler): the same file twice in a moment
+        // is one letter.
+        let key = url.standardizedFileURL.path
+        if let last = lettersReceivedAt[key], Date.now.timeIntervalSince(last) < 5 { return }
+        lettersReceivedAt[key] = .now
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Letters", isDirectory: true)
+        try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        let held = staging.appendingPathComponent(UUID().uuidString + ".epub")
+        let scoped = url.startAccessingSecurityScopedResource()
+        let copied = (try? FileManager.default.copyItem(at: url, to: held)) != nil
+        if scoped { url.stopAccessingSecurityScopedResource() }
+        guard copied else { return }
+
+        let root = Self.epubsRoot
+        let snapshot = epubImportSnapshot
+        let threads = Set(epubRecords.compactMap { record -> String? in
+            guard let thread = record.letterThread, let hash = record.letterHash else { return nil }
+            return thread + "|" + hash
+        })
+        let originalName = url.lastPathComponent
+        Task {
+            let outcome = await Task.detached(priority: .utility) { () -> (PreparedEPUBImport, LetterArrival?)? in
+                defer { try? FileManager.default.removeItem(at: held) }
+                // A meeting's transcript is no letter: a re-export of the
+                // same meeting is its newer text, as a book's is. It joins
+                // the library through the ordinary rules — quietly still.
+                if Self.packageType(at: held) == "transcript" {
+                    let named = staging.appendingPathComponent(originalName)
+                    try? FileManager.default.removeItem(at: named)
+                    guard (try? FileManager.default.moveItem(at: held, to: named)) != nil else { return nil }
+                    defer { try? FileManager.default.removeItem(at: named) }
+                    guard let prepared = try? Self.prepareEPUBImport(
+                        at: named, epubsRoot: root, existing: snapshot) else { return nil }
+                    return (prepared, nil)
+                }
+                guard let arrival = Self.letterArrival(at: held),
+                      !threads.contains(arrival.thread + "|" + arrival.fingerprint) else { return nil }
+                // Each letter its own folder: the thread's short name and
+                // the moment it arrived.
+                let short = SHA256.hash(data: Data(arrival.thread.utf8))
+                    .prefix(6).map { String(format: "%02x", $0) }.joined()
+                let stamp = ISO8601DateFormatter.string(
+                    from: .now, timeZone: .gmt,
+                    formatOptions: [.withYear, .withMonth, .withDay, .withTime])
+                let named = staging.appendingPathComponent("letter-\(short)-\(stamp).epub")
+                guard (try? FileManager.default.moveItem(at: held, to: named)) != nil else { return nil }
+                defer { try? FileManager.default.removeItem(at: named) }
+                guard let prepared = try? Self.prepareEPUBImport(
+                    at: named, epubsRoot: root, existing: snapshot) else { return nil }
+                return (prepared, arrival)
+            }.value
+            guard let (prepared, arrival) = outcome,
+                  applyPreparedImport(prepared, dedupe: arrival == nil, letter: arrival) != nil
+            else { return }
+            mirrorShelfToCommunityFolder()
+        }
+    }
+
     @discardableResult
     func importEPUB(at url: URL, dedupe: Bool = true) -> EPUBRecord? {
         do {
@@ -4238,6 +4441,15 @@ final class AppModel {
         return true
     }
 
+    /// How many numbered references the import read from a plain book's
+    /// own References list — from what is already in memory, never by
+    /// importing, so a page can ask while it draws.
+    func numberedReferenceCount(forBook book: OpenEPUB) -> Int {
+        let doc = readingDocCache.last(where: { $0.bookID == book.id })?.doc
+            ?? epubIndexMemo[book.id]?.doc
+        return NumberedReferences.count(in: doc)
+    }
+
     func readingDoc(forBook book: OpenEPUB) -> LiquidDoc? {
         if let cached = readingDocCache.last(where: { $0.bookID == book.id }) {
             return cached.doc
@@ -5250,7 +5462,9 @@ final class AppModel {
     /// Journals view.
     var epubPublications: [String] {
         var names: [String] = []
-        for record in shownEPUBRecords {
+        // A meeting series or a correspondence is not a journal: it stands
+        // under Meetings or Letters instead.
+        for record in shownEPUBRecords where record.dialogue?.series == nil {
             guard let venue = record.venue.map(canonicalVenue) else { continue }
             if !names.contains(where: { $0.caseInsensitiveCompare(venue) == .orderedSame }) {
                 names.append(venue)
@@ -5414,6 +5628,66 @@ final class AppModel {
 
     /// The opened EPUBs that are part of a given journal or proceedings,
     /// under whichever of its names their pages carry.
+    // MARK: Dialogue series (ORIGAMI-DIALOGUE-PROFILE.md)
+
+    /// The room for the transcripts (or letters) that name no series.
+    static let unlabeledMeetings = "Unlabeled Meetings"
+    static let unlabeledLetters = "Unlabeled Letters"
+
+    static func unlabeled(_ kind: DialogueInfo.Kind) -> String {
+        kind == .letter ? unlabeledLetters : unlabeledMeetings
+    }
+
+    /// A record's series, or the unlabeled room of its kind.
+    nonisolated static func seriesName(of info: DialogueInfo) -> String {
+        info.series ?? (info.kind == .letter ? "Unlabeled Letters" : "Unlabeled Meetings")
+    }
+
+    /// How many of a kind name no series.
+    func unlabeledDialogueCount(_ kind: DialogueInfo.Kind) -> Int {
+        shownEPUBRecords.filter { $0.dialogue?.kind == kind && $0.dialogue?.series == nil }.count
+    }
+
+    /// The meeting series (or correspondences) on the shelf, by name.
+    func dialogueSeries(_ kind: DialogueInfo.Kind) -> [String] {
+        var names: [String] = []
+        for record in shownEPUBRecords where record.dialogue?.kind == kind {
+            guard let series = record.dialogue?.series,
+                  !names.contains(where: { $0.caseInsensitiveCompare(series) == .orderedSame })
+            else { continue }
+            names.append(series)
+        }
+        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// Whether a venue name is a dialogue series rather than a journal.
+    func isDialogueSeries(_ name: String) -> Bool {
+        if name == Self.unlabeledMeetings || name == Self.unlabeledLetters { return true }
+        return shownEPUBRecords.contains {
+            $0.dialogue?.series?.caseInsensitiveCompare(name) == .orderedSame
+        }
+    }
+
+    /// A series' meetings or letters on its timeline: the newest first,
+    /// by the date each took place.
+    func dialogueRecords(inSeries name: String) -> [EPUBRecord] {
+        shownEPUBRecords
+            .filter { record in
+                guard let info = record.dialogue else { return false }
+                return Self.seriesName(of: info).caseInsensitiveCompare(name) == .orderedSame
+            }
+            .sorted {
+                ($0.dialogue?.eventDate ?? $0.openedAt, $0.dialogue?.number ?? 0)
+                    > ($1.dialogue?.eventDate ?? $1.openedAt, $1.dialogue?.number ?? 0)
+            }
+    }
+
+    /// Keeps every series' analysis current, beside the EPUBs.
+    func refreshDialogueAnalyses() {
+        DialogueAnalyst.shared.refresh(records: epubRecords, epubsRoot: Self.epubsRoot,
+                                       community: index.folderURL)
+    }
+
     func epubRecords(inPublication name: String) -> [EPUBRecord] {
         let wanted = canonicalVenue(name)
         return shownEPUBRecords.filter {
@@ -5654,6 +5928,13 @@ final class AppModel {
         // The headset's wishes: cited works asked for as books, shown
         // in the Time view until acquired or dismissed.
         acquisitions = EPUBAcquisitions.read(from: folder)
+        adoptBooks(from: folder)
+        // A wish whose book is already here — imported on another device,
+        // or before the wish was made — is fulfilled already.
+        for record in epubRecords where !record.isLetter && !acquisitions.isEmpty {
+            crossOffAcquisitions(title: record.title, authors: record.authorList,
+                                 doi: record.doi)
+        }
         // Publication analyses live in the shared folder so visionOS reads the same data.
         // Migrate from UserDefaults once if the file doesn't exist yet.
         var analysesFile = AnalysesFile.read(from: folder)
@@ -6292,6 +6573,86 @@ final class AppModel {
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
         EPUBAcquisitions.remove(id: id, in: folder)
         acquisitions.removeAll { $0.id == id }
+    }
+
+    /// Crosses off every To Acquire wish the arriving work answers, and
+    /// says so. Every way a work comes in calls this — EPUBs (and the
+    /// PDFs and papers converted to them) as they shelve, PDFs and other
+    /// documents as they import, and the shelf as a whole at each scan.
+    func crossOffAcquisitions(title: String, authors: [String], doi: String?,
+                              text: String? = nil) {
+        let doi = doi.flatMap { $0.isEmpty ? nil : $0 } ?? text.flatMap(Self.firstDOI(in:))
+        let met = acquisitions.filter {
+            Self.acquisitionMatch($0, title: title, authors: authors, doi: doi)
+        }
+        guard !met.isEmpty else { return }
+        for wanted in met { removeAcquisition(wanted.id) }
+        let names = met.map { "\u{201C}\($0.title)\u{201D}" }.joined(separator: ", ")
+        showNote("Now in the library \u{2014} crossed \(names) off To Acquire")
+    }
+
+    /// Whether a work answers a wish: the same DOI (however written), or
+    /// the same title — a subtitle either side allowed — under the wish's
+    /// first author. A wish naming no author matches on a title long
+    /// enough to be its own.
+    nonisolated static func acquisitionMatch(_ wanted: EPUBAcquisitions.Wanted,
+                                             title: String, authors: [String],
+                                             doi: String?) -> Bool {
+        if let mine = wanted.doi.map(normalizedDOI), !mine.isEmpty,
+           let theirs = doi.map(normalizedDOI), !theirs.isEmpty {
+            return mine == theirs
+        }
+        let wantedTitle = acquisitionTitle(wanted.title)
+        let arriving = acquisitionTitle(title)
+        guard !wantedTitle.isEmpty, !arriving.isEmpty else { return false }
+        let (shorter, longer) = wantedTitle.count <= arriving.count
+            ? (wantedTitle, arriving) : (arriving, wantedTitle)
+        let sameTitle = shorter == longer
+            || (shorter.count >= 20 && longer.hasPrefix(shorter + " "))
+        guard sameTitle else { return false }
+        guard let surname = firstSurname(wanted.author) else { return shorter.count >= 20 }
+        let names = acquisitionTitle(authors.joined(separator: " "))
+        return (" " + names + " ").contains(" " + surname + " ")
+    }
+
+    /// A DOI bare and lowercased: no resolver, no "doi:" prefix.
+    nonisolated static func normalizedDOI(_ doi: String) -> String {
+        var value = doi.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for prefix in ["https://doi.org/", "http://doi.org/", "https://dx.doi.org/",
+                       "http://dx.doi.org/", "doi.org/", "doi:"] where value.hasPrefix(prefix) {
+            value = String(value.dropFirst(prefix.count))
+        }
+        return value.trimmingCharacters(in: CharacterSet(charactersIn: " .;,"))
+    }
+
+    /// The first DOI a document prints — a PDF's front matter usually
+    /// carries one, though its metadata rarely does.
+    nonisolated static func firstDOI(in text: String) -> String? {
+        guard let match = text.range(of: #"10\.\d{4,9}/[^\s"<>]+"#, options: .regularExpression)
+        else { return nil }
+        return normalizedDOI(String(text[match]))
+    }
+
+    /// A title (or names) as words only: lowercased, letters and digits,
+    /// single spaces.
+    private nonisolated static func acquisitionTitle(_ value: String) -> String {
+        value.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    /// The wish's first author's surname — "Nelson, Ted and …" and
+    /// "Ted Nelson, …" both give "nelson".
+    private nonisolated static func firstSurname(_ author: String) -> String? {
+        let first = author.components(separatedBy: " and ").first ?? author
+        let parts = first.split(separator: ",", maxSplits: 1).map(String.init)
+        let name = parts.count > 1 && parts[0].split(separator: " ").count == 1
+            ? parts[0]
+            : (first.components(separatedBy: CharacterSet(charactersIn: ",;")).first ?? first)
+                .split(separator: " ").last.map(String.init) ?? ""
+        let surname = acquisitionTitle(name)
+        return surname.count >= 2 ? surname : nil
     }
 
     func addAcquisition(key: String, title: String, author: String, year: Int?, doi: String?) {
@@ -7916,6 +8277,11 @@ final class AppModel {
                                 assets: assets,
                                 fileURL: drafts.fileURL(for: id))
             try drafts.save(doc)
+            // A PDF (or any document) that answers a To Acquire wish
+            // fulfils it — its DOI is read from the text it prints.
+            crossOffAcquisitions(
+                title: title, authors: [author], doi: nil,
+                text: body.prefix(60).map(\.text).joined(separator: "\n"))
             // The draft opens where its kind lives on the sidebar.
             switch documentType {
             case LiquidDoc.DocumentType.book.rawValue:

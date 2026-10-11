@@ -25,6 +25,9 @@ struct ReadHomeView: View {
     @Environment(PhoneModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
     @State private var shelf: Shelf = .articles
+    /// The Guide was chosen for the reader because the shelf was empty —
+    /// so the first books to arrive bring Articles back.
+    @State private var guideForEmptyShelf = false
     @State private var choosingEPUB = false
     @State private var choosingFolder = false
     @State private var showsSettings = false
@@ -132,26 +135,21 @@ struct ReadHomeView: View {
                     .pickerStyle(.segmented)
                 }
             }
-            // The shelf's foot: the gear on the left, the Find field
-            // beside it — titles, authors and journal names narrow as
-            // the words are typed.
+            // The shelf's foot: the gear on the left (Settings, at a tap),
+            // the Find field beside it — titles, authors and journal names
+            // narrow as the words are typed — and Open on the right.
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack(spacing: 10) {
-                    Menu {
-                        Button("Open EPUB…") { choosingEPUB = true }
-                        Button(model.folderURL == nil
-                               ? "Choose Community Folder…"
-                               : "Change Community Folder…") { choosingFolder = true }
-                        Divider()
-                        Button("Settings…") { showsSettings = true }
+                    Button {
+                        showsSettings = true
                     } label: {
                         Image(systemName: "gear")
                             .font(.title2)
                             .foregroundStyle(.secondary)
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
-                            .accessibilityLabel("Settings and Open")
                     }
+                    .accessibilityLabel("Settings")
                     HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass")
                             .font(.subheadline)
@@ -172,6 +170,17 @@ struct ReadHomeView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
                     .background(.quaternary.opacity(0.5), in: Capsule())
+                    // Open: an EPUB from Files.
+                    Button {
+                        choosingEPUB = true
+                    } label: {
+                        Image(systemName: "folder")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Open EPUB")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
@@ -240,6 +249,23 @@ struct ReadHomeView: View {
         }
         // The app's first page, once: the Introduction.
         .task { model.openIntroductionOnFirstLaunch() }
+        // No EPUBs: the Guide, which has something to say; the first books
+        // to arrive bring the reader back to Articles.
+        .onAppear { showGuideIfShelfIsEmpty() }
+        .onChange(of: model.epubRecords.isEmpty) { showGuideIfShelfIsEmpty() }
+        .onChange(of: shelf) { _, new in if new != .guide { guideForEmptyShelf = false } }
+    }
+
+    private func showGuideIfShelfIsEmpty() {
+        if model.epubRecords.isEmpty {
+            if shelf != .guide {
+                shelf = .guide
+                guideForEmptyShelf = true
+            }
+        } else if guideForEmptyShelf, shelf == .guide {
+            guideForEmptyShelf = false
+            shelf = .articles
+        }
     }
 
 }
@@ -474,15 +500,30 @@ struct PhoneJournalView: View {
 // MARK: - The reading theme
 
 /// The reading's dress — ReadingDeskTheme's phone twin (that type
-/// lives in a visionOS-only file): the same two themes, the same
-/// "readingDeskTheme" key, so the choice travels. Keep in step.
+/// lives in a visionOS-only file): the same themes, the same
+/// "readingDeskTheme" key, so the choice travels. Keep in step. System,
+/// the default, follows the phone's own Light or Dark.
 enum PhoneReadingTheme: String, CaseIterable, Identifiable {
+    case system
     case light
     case dark
 
     var id: String { rawValue }
-    var displayName: String { self == .light ? "Light" : "Dark" }
-    var scheme: ColorScheme { self == .light ? .light : .dark }
+    var displayName: String {
+        switch self {
+        case .system: "System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+    /// The scheme to read in, given the device's own.
+    func scheme(device: ColorScheme) -> ColorScheme {
+        switch self {
+        case .system: device
+        case .light: .light
+        case .dark: .dark
+        }
+    }
 
     /// The page behind the words — warm paper, or a quiet near-black.
     var page: Color {
@@ -517,6 +558,8 @@ struct PhoneSettingsView: View {
     @AppStorage(FocusTypography.justifyKey) private var focusJustified = false
     @AppStorage(FocusTypography.rareLigaturesKey) private var focusRareLigatures = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(PhoneModel.self) private var model
+    @State private var choosingFolder = false
 
     var body: some View {
         NavigationStack {
@@ -585,7 +628,7 @@ struct PhoneSettingsView: View {
                 } header: {
                     Text("Reading Screen")
                 } footer: {
-                    Text("Pill: the page runs to the top, the toolbar fades after four quiet seconds, and a black pill at the foot — the Dynamic Island's twin — brings it back. Framed: a black band at the top; the toolbar fades the same way, and a tap where it was brings it back.")
+                    Text("Pill: the page runs up round the Dynamic Island, shading softly towards it; the toolbar fades after four quiet seconds, and a tap where it was brings it back. Framed: a black band at the top; the toolbar fades the same way.")
                 }
                 Section {
                     Picker("On Loading", selection: $loadingStyleRaw) {
@@ -612,6 +655,19 @@ struct PhoneSettingsView: View {
                         citationStyleRaw = OrigamiCitationStyle.numeric.rawValue
                     }
                 }
+                Section {
+                    LabeledContent("Folder", value: model.folderURL?.lastPathComponent ?? "None chosen")
+                    Button(model.folderURL == nil
+                           ? "Choose Community Folder\u{2026}"
+                           : "Change Community Folder\u{2026}") { choosingFolder = true }
+                } header: {
+                    Text("Community Folder")
+                } footer: {
+                    Text("The iCloud folder your devices and community share: everything published from a Mac appears here, and your pins, notes and places travel with it.")
+                }
+            }
+            .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+                if case .success(let url) = result { model.openFolder(url) }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -657,7 +713,9 @@ struct PhoneReaderView: View {
     @AppStorage("phoneReaderMode") private var modeRaw = Mode.scroll.rawValue
     @AppStorage("phoneReaderFontDelta") private var fontDelta = 0.0
     /// The reading's appearance — the headset's Reading Desk choice, same key.
-    @AppStorage("readingDeskTheme") private var themeRaw = PhoneReadingTheme.light.rawValue
+    @AppStorage("readingDeskTheme") private var themeRaw = PhoneReadingTheme.system.rawValue
+    /// The phone's own Light or Dark, for the System appearance.
+    @Environment(\.colorScheme) private var deviceScheme
     /// The colour theme — the Mac's full set, same "readerTheme" key:
     /// sepia to Solarized, the dyslexia and Irlen palettes among them.
     @AppStorage("readerTheme") private var readerThemeRaw = ReaderTheme.highContrast.rawValue
@@ -708,6 +766,9 @@ struct PhoneReaderView: View {
     /// Whether the bottom bars are showing; they fade after four quiet
     /// seconds. `barsWake` restarts the count.
     @State private var barsShown = true
+    /// The toolbar's height as laid out — it floats over the words, so
+    /// the reading needs it for its fade and its last scroll.
+    @State private var barsHeight: CGFloat = 0
     /// Whether the page has scrolled off its top — the top band's fade
     /// shows only then, so a page at rest keeps its first line clear.
     @State private var pageScrolled = false
@@ -749,6 +810,28 @@ struct PhoneReaderView: View {
         return chosen
     }
     private var outlineReturnMode: Mode { Mode(rawValue: outlineReturnRaw) ?? .scroll }
+    /// Two lines of the reading's type — the depth of the foot's fade.
+    private var fadeLines: CGFloat { (bodySize * 1.2 + 4) * 2 }
+
+    /// Pill mode's top edge: one soft fade across the island's band,
+    /// darkest at the screen's edge and gone where the words begin — the
+    /// scroll column's top inset below the band — so the first line is
+    /// never dimmed. Never solid black; eased, so no line marks where it
+    /// starts.
+    private func edgeFade(fromTop: Bool) -> some View {
+        let height = notchInset + 16
+        // At most a little over half black, at the very edge: a shading,
+        // not a band.
+        return LinearGradient(stops: [.init(color: .black.opacity(0.55), location: 0),
+                                      .init(color: .black.opacity(0.37), location: 0.3),
+                                      .init(color: .black.opacity(0.17), location: 0.6),
+                                      .init(color: .black.opacity(0.05), location: 0.85),
+                                      .init(color: .black.opacity(0), location: 1)],
+                              startPoint: fromTop ? .top : .bottom,
+                              endPoint: fromTop ? .bottom : .top)
+            .frame(height: height)
+    }
+
     /// The window's top safe-area inset — the notch band's height on
     /// iPhone; 0 on flat-topped screens.
     private var notchInset: CGFloat {
@@ -759,7 +842,7 @@ struct PhoneReaderView: View {
             .safeAreaInsets.top ?? 0
     }
     private var theme: PhoneReadingTheme {
-        PhoneReadingTheme(rawValue: themeRaw) ?? .light
+        PhoneReadingTheme(rawValue: themeRaw) ?? .system
     }
     private var readerTheme: ReaderTheme {
         ReaderTheme(rawValue: readerThemeRaw) ?? .highContrast
@@ -778,7 +861,7 @@ struct PhoneReaderView: View {
     /// Everything that colours ink — the environment AND the attributed
     /// text, whose colours are baked at build time — reads this, never
     /// the raw colorScheme (the visionOS lesson).
-    private var readingScheme: ColorScheme { theme.scheme }
+    private var readingScheme: ColorScheme { theme.scheme(device: deviceScheme) }
     private var citationStyle: OrigamiCitationStyle {
         OrigamiCitationStyle(rawValue: citationStyleRaw) ?? .authorDate
     }
@@ -851,72 +934,32 @@ struct PhoneReaderView: View {
         // around the cut-out. iPad's top is flat and stays bare.
         .overlay(alignment: .top) {
             if UIDevice.current.userInterfaceIdiom == .phone, notchInset > 0 {
-                VStack(spacing: 0) {
-                    // Black while the book loads; the page's colour once
-                    // it is here.
-                    (model.index.byID[docID]?.doc == nil || chrome == .framed
-                        ? Color.black : pageColor)
-                        .frame(height: notchInset)
-                    // Once the page is scrolled, the words fade into the
-                    // band as they do into the foot's — not sliced by it.
-                    LinearGradient(colors: [pageColor, pageColor.opacity(0)],
-                                   startPoint: .top, endPoint: .bottom)
-                        .frame(height: 28)
-                        .opacity(pageScrolled && chrome == .pill ? 1 : 0)
-                        .animation(.easeOut(duration: 0.2), value: pageScrolled)
+                Group {
+                    if chrome == .pill, model.index.byID[docID]?.doc != nil {
+                        // Pill: black round the island, fading to the page
+                        // where the words begin — scrolled words fade into it.
+                        edgeFade(fromTop: true)
+                    } else {
+                        // Framed, and while the book loads: a black band.
+                        Color.black.frame(height: notchInset)
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .offset(y: -notchInset)
                 .allowsHitTesting(false)
             }
         }
-        // The island's twin at the foot, while the toolbar is faded: the
-        // same black pill, as far from the bottom and the sides as the
-        // Dynamic Island is from the top and the sides — and the way to
-        // bring the toolbar back. iOS's home line steps aside meanwhile.
-        .overlay {
-            if UIDevice.current.userInterfaceIdiom == .phone, notchInset > 0,
-               chrome == .pill, !barsShown, model.index.byID[docID]?.doc != nil {
-                ZStack(alignment: .bottom) {
-                    // A band of page as deep as the top's, so the words
-                    // end above the pill as they begin below the island,
-                    // softened where they meet it.
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        LinearGradient(colors: [pageColor.opacity(0), pageColor],
-                                       startPoint: .top, endPoint: .bottom)
-                            .frame(height: 28)
-                        pageColor.frame(height: notchInset)
-                    }
-                    .allowsHitTesting(false)
-                    // The pill takes taps on itself and a little round it —
-                    // never the page's own.
-                    Capsule()
-                        // Black, as the island is — but on High Contrast's
-                        // pure black page a black pill would vanish.
-                        .fill(readerTheme == .highContrast && readingScheme == .dark
-                              ? Color(white: 0.2) : .black)
-                        .frame(width: IslandTwin.width, height: IslandTwin.height)
-                        .contentShape(Rectangle().inset(by: -12))
-                        .onTapGesture { showBars() }
-                        .accessibilityElement()
-                        .accessibilityLabel("Show the toolbar")
-                        .accessibilityAddTraits(.isButton)
-                        .padding(.bottom, IslandTwin.edgeGap)
-                }
-                .ignoresSafeArea()
-                .transition(.opacity)
-            }
-        }
         .persistentSystemOverlays(barsShown ? .automatic : .hidden)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        // The toolbar is a layer over the words, not a band beneath them.
+        .overlay(alignment: .bottom) {
             if model.index.byID[docID]?.doc != nil {
                 VStack(spacing: 0) {
                     if mode == .focus, !showsRSVP { assistBar }
                     footBar
                 }
-                // After four quiet seconds the bars fade from the page;
-                // their place stays, and a tap there brings them back.
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { barsHeight = $0 }
+                // After four quiet seconds the bars fade from the page; a
+                // tap where they were brings them back.
                 .opacity(barsShown ? 1 : 0)
                 .allowsHitTesting(barsShown)
                 .simultaneousGesture(TapGesture().onEnded { showBars() })
@@ -1112,6 +1155,19 @@ struct PhoneReaderView: View {
                 horizontalBody(sections, doc: doc)
             case .focus:
                 focusBody(sections, doc: doc)
+            }
+        }
+        // The toolbar floats over the words rather than cropping them:
+        // the text runs to the foot, its last two lines fading out — just
+        // above the toolbar while it shows, at the screen's foot once it
+        // has faded. The end of a document scrolls clear of both.
+        .contentMargins(.bottom, barsHeight + fadeLines, for: .scrollContent)
+        .mask {
+            VStack(spacing: 0) {
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: fadeLines)
+                Color.clear.frame(height: barsShown ? barsHeight : 0)
             }
         }
         // Links and citations wear the body's ink, never link-blue —
@@ -1687,21 +1743,11 @@ struct PhoneReaderView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
                     }
-                    // The page's foot fades rather than slicing a line of
-                    // type in half where the reading area ends — a longer,
-                    // gentler fade while the toolbar is hidden.
-                    .contentMargins(.bottom, barsShown ? 28 : 56, for: .scrollContent)
+                    // The foot's fade and margin are the reading's own,
+                    // laid over every view (see reading(_:)).
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentOffset.y + geometry.contentInsets.top > 4
                     } action: { _, scrolled in pageScrolled = scrolled }
-                    .mask {
-                        VStack(spacing: 0) {
-                            Color.black
-                            LinearGradient(colors: [.black, .clear],
-                                           startPoint: .top, endPoint: .bottom)
-                                .frame(height: barsShown ? 28 : 56)
-                        }
-                    }
                     // A new section is a new page: it opens at its top,
                     // not at the last one's scroll, and is not morphed in.
                     .id(sections[index].id)
@@ -1739,8 +1785,26 @@ struct PhoneReaderView: View {
                              doc: LiquidDoc, place: String?, enlarged: Bool) -> some View {
         let size = enlarged ? bodySize + 4 : bodySize
         let spacing: CGFloat = enlarged ? 6 : 4
-        return VStack(spacing: 16) {
-            Spacer()
+        // Centred when it fits; scrolled within the screen when it does
+        // not. Unscrolled, a paragraph taller than the screen grew the
+        // reading past it and pushed the toolbar — and its way back —
+        // off the foot.
+        return GeometryReader { geometry in
+            ScrollView {
+                unitColumn(text, of: paragraph, doc: doc, place: place,
+                           size: size, spacing: spacing)
+                    .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            // Each unit opens at its top, never at the last one's scroll.
+            .id((paragraph?.id ?? "") + "|" + text)
+        }
+    }
+
+    private func unitColumn(_ text: String, of paragraph: LiquidDoc.Paragraph?,
+                            doc: LiquidDoc, place: String?,
+                            size: CGFloat, spacing: CGFloat) -> some View {
+        VStack(spacing: 16) {
             Group {
                 if let paragraph {
                     // Selectable, with the card — Highlight, Note, To Read.
@@ -1764,9 +1828,8 @@ struct PhoneReaderView: View {
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 16)
     }
 
     /// No animation: the next section, sentence or paragraph replaces
@@ -3041,20 +3104,6 @@ private struct TapSides: ViewModifier {
             }
         }
     }
-}
-
-// MARK: - The island's twin
-
-/// The Dynamic Island's measure, for the pill that mirrors it at the foot
-/// of the page. Taken from the iPhone 17 Pro's display mask (simctl
-/// screenshot --mask=black, 9 Oct 2026): 125.3 × 36.7 points, 14.0 points
-/// from the top edge, centred. iOS does not report the island's frame, so
-/// these are the measured figures; phones with a notch rather than an
-/// island get a pill of the same proportions.
-enum IslandTwin {
-    static let width: CGFloat = 125.3
-    static let height: CGFloat = 36.7
-    static let edgeGap: CGFloat = 14.0
 }
 
 /// Settings ▸ Reading Screen: how the reader meets the screen's edges.

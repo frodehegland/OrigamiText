@@ -682,6 +682,18 @@ nonisolated enum OrigamiEPUBImporter {
             }
         }
 
+        // A plain publisher EPUB names its references in no record: they
+        // stand only as a References list at the end of the text, cited
+        // in the body as [1], [3, 7] or [2–5]. Read that list into
+        // references, and the numbers into citations, so a click on [1]
+        // opens what it cites. Only when nothing else gave references,
+        // and only when a real list is found.
+        if references.isEmpty,
+           let numbered = NumberedReferences.infer(in: body) {
+            references = numbered.references
+            body = numbered.body
+        }
+
         return ImportResult(unreadableDocuments: unreadable,
             title: multilingualText(document?["title"]) ?? origamiDoc?["title"] as? String ?? title ?? "Untitled",
             subtitle: multilingualText(document?["subtitle"]).flatMap { $0.isEmpty ? nil : $0 },
@@ -1291,6 +1303,96 @@ nonisolated enum OrigamiEPUBImporter {
             doi: doiFromMeta ?? extractDOI(from: opf),
             identifier: packageID,
             work: editionInfo(inOPF: opf).work)
+    }
+
+    /// A dialogue publication's facts (ORIGAMI-DIALOGUE-PROFILE.md): the
+    /// Visual-Meta `dialogue` block first, the package's EPUB 3 metadata
+    /// for whatever it leaves out. Nil when the publication is neither a
+    /// transcript nor a letter.
+    static func dialogueInfo(inUnpackedFolder folder: URL) -> DialogueInfo? {
+        let containerURL = folder.appendingPathComponent("META-INF/container.xml")
+        let opfSubpath = (try? String(contentsOf: containerURL, encoding: .utf8))
+            .flatMap { firstCapture(in: $0, pattern: "full-path=\"([^\"]+)\"") }
+            ?? "package.opf"
+        let opf = (try? String(contentsOf: folder.appendingPathComponent(opfSubpath),
+                               encoding: .utf8)) ?? ""
+        let visualMeta = recordData(inUnpackedFolder: folder,
+                                    properties: "origami:visual-meta",
+                                    fileName: "visual-meta.json")
+            .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+        let block = (visualMeta?["document"] as? [String: Any])?["dialogue"] as? [String: Any]
+        return dialogueInfo(opf: opf, block: block)
+    }
+
+    /// The rule itself, over the package text and the Visual-Meta block.
+    static func dialogueInfo(opf: String, block: [String: Any]?) -> DialogueInfo? {
+        func clean(_ text: String?) -> String? {
+            let value = text.map(xmlUnescaped)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value?.isEmpty == false ? value : nil
+        }
+        let typeText = (block?["type"] as? String) ?? firstTagText(in: opf, tag: "dc:type")
+        guard let kind = typeText.flatMap({ DialogueInfo.Kind(rawValue: $0.lowercased()
+                .trimmingCharacters(in: .whitespacesAndNewlines)) }) else { return nil }
+
+        // The series: Visual-Meta's, else the EPUB 3 collection — its id
+        // refined by group-position for the meeting's number.
+        let series = block?["series"] as? [String: Any]
+        var seriesName = clean(series?["name"] as? String)
+        var number = (series?["number"] as? NSNumber)?.intValue
+        if let collection = firstMatchGroups(
+            in: opf, pattern: "<meta[^>]*property=\"belongs-to-collection\"[^>]*>([^<]*)</meta>") {
+            seriesName = seriesName ?? clean(collection.text)
+            if number == nil, let id = collection.id {
+                number = firstCapture(in: opf, pattern:
+                    "<meta[^>]*refines=\"#\(id)\"[^>]*property=\"group-position\"[^>]*>([^<]*)</meta>")
+                    .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            }
+        }
+
+        // The participants: Visual-Meta's list, else the package's
+        // contributors (with their MARC roles).
+        var participants: [DialogueInfo.Participant] = []
+        for entry in block?["participants"] as? [[String: Any]] ?? [] {
+            guard let name = clean(entry["name"] as? String) else { continue }
+            participants.append(DialogueInfo.Participant(
+                id: clean(entry["id"] as? String) ?? "p\(participants.count + 1)",
+                name: name,
+                role: clean(entry["role"] as? String),
+                orcid: clean(entry["orcid"] as? String),
+                aliases: (entry["aliases"] as? [String])?.compactMap(clean)))
+        }
+        if participants.isEmpty, let regex = try? NSRegularExpression(
+            pattern: #"<dc:contributor(?:\s+id="([^"]+)")?[^>]*>([^<]+)</dc:contributor>"#) {
+            let ns = opf as NSString
+            for match in regex.matches(in: opf, range: NSRange(location: 0, length: ns.length)) {
+                let id = match.range(at: 1).location != NSNotFound
+                    ? ns.substring(with: match.range(at: 1)) : "p\(participants.count + 1)"
+                guard let name = clean(ns.substring(with: match.range(at: 2))) else { continue }
+                let role = firstCapture(in: opf, pattern:
+                    "<meta[^>]*refines=\"#\(id)\"[^>]*property=\"role\"[^>]*>([^<]*)</meta>")
+                participants.append(DialogueInfo.Participant(
+                    id: id, name: name, role: clean(role), orcid: nil, aliases: nil))
+            }
+        }
+        return DialogueInfo(
+            kind: kind,
+            date: clean(block?["date"] as? String) ?? firstTagText(in: opf, tag: "dc:date"),
+            duration: clean(block?["duration"] as? String),
+            place: clean(block?["place"] as? String),
+            series: seriesName,
+            number: number,
+            participants: participants)
+    }
+
+    /// The text of the first match of an element pattern, and its id.
+    private static func firstMatchGroups(in text: String, pattern: String) -> (text: String, id: String?)? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+        else { return nil }
+        let ns = text as NSString
+        let whole = ns.substring(with: match.range)
+        let id = firstCapture(in: whole, pattern: "\\sid=\"([^\"]+)\"")
+        return (ns.substring(with: match.range(at: 1)), id)
     }
 
     // MARK: Package plumbing
@@ -3729,3 +3831,309 @@ nonisolated final class ZipReader {
         return Data(data[base..<base + length])
     }
 }
+
+/// Numbered references read from a plain EPUB's own text — the papers
+/// whose publishers ship no bibliography record, only a "References"
+/// heading and its entries ("[1] A. Author. 2020. Title. Venue."), cited
+/// in the body as [1], [3, 7] or [2–5].
+///
+/// The list becomes `LiquidDoc.Reference`s numbered as printed, each
+/// with a BibTeX record of what could be read from its entry — authors,
+/// year, title, DOI, URL — and the entry's whole text as its note. The
+/// body's bracketed numbers become `[cite:refN]` tokens for the numbers
+/// the list holds, so every reading view's citation card opens on a
+/// click. Nothing changes unless a list of at least three entries is
+/// found, most of which look like references.
+nonisolated enum NumberedReferences {
+
+    struct Inferred {
+        var references: [LiquidDoc.Reference]
+        var body: [LiquidDoc.Paragraph]
+    }
+
+    /// The heading words a references section goes by.
+    private static let headingWords: Set<String> = [
+        "references", "reference", "reference list", "bibliography", "works cited",
+        "literature cited", "literature", "sources", "cited works", "references and notes",
+        "bibliographic references", "citations"]
+
+    /// The highest refN the document holds as an inferred numbered
+    /// reference — 0 when it holds none.
+    static func count(in doc: LiquidDoc?) -> Int {
+        (doc?.references ?? [])
+            .filter { reference in reference.number.map { "ref\($0)" } == reference.id }
+            .compactMap(\.number).max() ?? 0
+    }
+
+    static func infer(in body: [LiquidDoc.Paragraph]) -> Inferred? {
+        // The last heading that names the section — the references close
+        // a paper; an earlier "Sources" in a methods section does not.
+        guard let headingIndex = body.indices.last(where: { index in
+                  guard body[index].effectiveHeading != nil else { return false }
+                  return headingWords.contains(headingKey(body[index].displayText))
+              }),
+              let level = body[headingIndex].effectiveHeading else { return nil }
+
+        // Its entries: everything up to the next heading of its rank.
+        var entryIndices: [Int] = []
+        var index = headingIndex + 1
+        while index < body.count {
+            if let next = body[index].effectiveHeading, next <= level { break }
+            if body[index].effectiveHeading == nil,
+               !readable(body[index].text).isEmpty {
+                entryIndices.append(index)
+            }
+            index += 1
+        }
+        guard entryIndices.count >= 3 else { return nil }
+
+        // Numbered as printed: "[12] …" or "12. …"; by position when the
+        // list prints no numbers. The publisher's apparatus after the list
+        // (©, ISBN, the paper's own DOI) is no entry — and where the list
+        // prints its numbers, nor is any unnumbered line.
+        let texts = entryIndices.map { readable(body[$0].text) }
+            .filter { !isApparatus($0) }
+        let printed = texts.filter { leadingNumber($0) != nil }.count
+        let numbersPrinted = printed * 2 > texts.count
+        var parsed: [(number: Int, text: String)] = []
+        for text in texts {
+            if let (number, rest) = leadingNumber(text) {
+                parsed.append((number, rest))
+            } else if !numbersPrinted {
+                parsed.append((parsed.count + 1, text))
+            }
+        }
+        guard parsed.count >= 3 else { return nil }
+        // A list, not prose: most entries show a year or a DOI.
+        let looksCited = parsed.filter { year(in: $0.text) != nil || doi(in: $0.text) != nil }.count
+        guard looksCited * 2 >= parsed.count else { return nil }
+
+        var references: [LiquidDoc.Reference] = []
+        var seen = Set<Int>()
+        for entry in parsed where seen.insert(entry.number).inserted {
+            references.append(LiquidDoc.Reference(
+                id: "ref\(entry.number)",
+                bibtex: bibtex(for: entry.text, key: "ref\(entry.number)"),
+                citedAs: "[\(entry.number)]",
+                number: entry.number))
+        }
+        let known = seen
+        let listed = Set(entryIndices)
+        var newBody = body
+        for i in newBody.indices where !listed.contains(i) && i != headingIndex
+            && newBody[i].effectiveHeading == nil && newBody[i].tableID == nil {
+            let cited = citing(newBody[i].text, known: known)
+            if cited != newBody[i].text { newBody[i].text = cited }
+        }
+        return Inferred(references: references, body: newBody)
+    }
+
+    /// A line of the publisher's apparatus, not a reference.
+    static func isApparatus(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.hasPrefix("©") || lower.hasPrefix("copyright") || lower.hasPrefix("doi:")
+            || lower.hasPrefix("acm isbn") || lower.hasPrefix("isbn")
+            || lower.hasPrefix("permission to make") || lower.hasPrefix("received ")
+            || lower.hasPrefix("accepted ") || lower.hasPrefix("published ")
+    }
+
+    // MARK: The body's citations
+
+    /// The paragraph with its bracketed numbers made citations — for the
+    /// numbers the list holds, and only bracket groups that are wholly
+    /// numbers, commas and ranges.
+    static func citing(_ text: String, known: Set<Int>) -> String {
+        guard text.contains("[") else { return text }
+        var out = text
+        // A publisher's jump link into its list, "[[63](origami-jump:#bib63)]",
+        // first reads as the bare number it labels.
+        if let jump = try? NSRegularExpression(
+            pattern: #"\[(\d{1,4})\]\(origami-jump:[^)]*(?:bib|ref|cit)[^)]*\)"#,
+            options: [.caseInsensitive]) {
+            out = jump.stringByReplacingMatches(
+                in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "$1")
+        }
+        // One work and where in it: "[83, Ch.2]", "[12, p. 4]".
+        if let located = try? NSRegularExpression(
+            pattern: #"\[(\d{1,4})\s*,\s*((?:p|pp|ch|chap|chapter|sec|section|§|fig|figure|table|vol|n|no|para|ll?)\.?\s*[\w.–—-]+)\](?!\()"#,
+            options: [.caseInsensitive]) {
+            let ns = out as NSString
+            for match in located.matches(in: out, range: NSRange(location: 0, length: ns.length)).reversed() {
+                guard let number = Int(ns.substring(with: match.range(at: 1))),
+                      known.contains(number) else { continue }
+                let locator = ns.substring(with: match.range(at: 2))
+                out = (out as NSString).replacingCharacters(
+                    in: match.range, with: "[cite:ref\(number)] (\(locator))")
+            }
+        }
+        guard let group = try? NSRegularExpression(
+            pattern: #"\[(\s*\d{1,4}(?:\s*[,;–—-]\s*\d{1,4})*\s*)\](?!\()"#) else { return out }
+        let ns = out as NSString
+        var result = ""
+        var cursor = 0
+        for match in group.matches(in: out, range: NSRange(location: 0, length: ns.length)) {
+            let inner = ns.substring(with: match.range(at: 1))
+            guard let numbers = numbers(in: inner), numbers.allSatisfy(known.contains) else { continue }
+            result += ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+            result += numbers.map { "[cite:ref\($0)]" }.joined(separator: " ")
+            cursor = match.range.location + match.range.length
+        }
+        guard cursor > 0 else { return out }
+        result += ns.substring(from: cursor)
+        return result
+    }
+
+    /// "3, 7" → [3, 7]; "2–5" → [2, 3, 4, 5]. Nil for a range too wide to
+    /// be a citation run, or one running backwards.
+    static func numbers(in inner: String) -> [Int]? {
+        var out: [Int] = []
+        for part in inner.split(whereSeparator: { $0 == "," || $0 == ";" }) {
+            let bounds = part.split(whereSeparator: { "–—-".contains($0) })
+                .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            if bounds.count == 1 {
+                out.append(bounds[0])
+            } else if bounds.count == 2, bounds[0] <= bounds[1], bounds[1] - bounds[0] <= 30 {
+                out.append(contentsOf: bounds[0]...bounds[1])
+            } else {
+                return nil
+            }
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    // MARK: Reading one entry
+
+    /// "[12] …", "12. …" or "12 …" — the printed number and the rest.
+    static func leadingNumber(_ text: String) -> (Int, String)? {
+        guard let regex = try? NSRegularExpression(pattern: #"^\s*(?:\[(\d{1,4})\]|(\d{1,4})[.)])\s+"#),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+        else { return nil }
+        let ns = text as NSString
+        let digits = match.range(at: 1).location != NSNotFound
+            ? ns.substring(with: match.range(at: 1)) : ns.substring(with: match.range(at: 2))
+        guard let number = Int(digits) else { return nil }
+        return (number, ns.substring(from: match.range.location + match.range.length))
+    }
+
+    /// The entry read into BibTeX: authors, year, title, DOI and URL where
+    /// they can be found, and the whole entry as its note.
+    static func bibtex(for entry: String, key: String) -> String {
+        let fields = fields(of: entry)
+        var lines = ["@misc{\(key),"]
+        func add(_ name: String, _ value: String?) {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return }
+            let clean = value.replacingOccurrences(of: "{", with: "")
+                .replacingOccurrences(of: "}", with: "")
+            lines.append("  \(name) = {\(clean)},")
+        }
+        add("author", fields.authors)
+        add("title", fields.title)
+        add("year", fields.year)
+        add("doi", fields.doi)
+        add("url", fields.url)
+        add("note", entry)
+        lines.append("}")
+        return lines.joined(separator: "\n")
+    }
+
+    struct Fields: Equatable {
+        var authors: String?
+        var title: String?
+        var year: String?
+        var doi: String?
+        var url: String?
+    }
+
+    /// The common styles, in turn: a quoted title (IEEE, Chicago);
+    /// "Authors. Year. Title. Venue." (ACM); "Authors (Year). Title."
+    /// (APA); else the first sentence the authors, the next the title.
+    static func fields(of entry: String) -> Fields {
+        var out = Fields(year: year(in: entry), doi: doi(in: entry), url: url(in: entry))
+        let text = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+        func first(_ pattern: String) -> [String]? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+            else { return nil }
+            let ns = text as NSString
+            return (1..<match.numberOfRanges).map {
+                match.range(at: $0).location == NSNotFound ? "" : ns.substring(with: match.range(at: $0))
+            }
+        }
+        if let quoted = first(#"^(.*?)[,.]?\s*[“"](.+?)[,.]?[”"]"#) {
+            out.authors = quoted[0]
+            out.title = quoted[1]
+        } else if let acm = first(#"^(.+?)\.\s+(?:1[5-9]\d\d|20\d\d)[a-z]?\.\s+(.+?)\.(?:\s|$)"#) {
+            out.authors = acm[0]
+            out.title = acm[1]
+        } else if let apa = first(#"^(.+?)\s*\((?:1[5-9]\d\d|20\d\d)[a-z]?\)\.?\s+(.+?)\.(?:\s|$)"#) {
+            out.authors = apa[0]
+            out.title = apa[1]
+        } else if let plain = first(#"^(.+?)\.\s+(.+?)\.(?:\s|$)"#) {
+            out.authors = plain[0]
+            out.title = plain[1]
+        } else {
+            out.title = text
+        }
+        out.authors = out.authors.map(bibtexAuthors)
+        // A title that is really a venue or a year has not been found.
+        if let title = out.title, title.count < 4 || year(in: title) == title { out.title = text }
+        return out
+    }
+
+    /// "A. Smith, B. Jones, and C. Doe" → "A. Smith and B. Jones and C.
+    /// Doe". Names written surname-first ("Smith, J., Jones, K.") are left
+    /// as printed, where a comma cannot be told from a separator.
+    static func bibtexAuthors(_ raw: String) -> String {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " & ", with: " and ")
+        let parts = text
+            .replacingOccurrences(of: ", and ", with: ", ")
+            .replacingOccurrences(of: " and ", with: ", ")
+            .components(separatedBy: ", ")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard parts.count > 1, parts.allSatisfy({ $0.contains(" ") }) else { return text }
+        return parts.joined(separator: " and ")
+    }
+
+    static func year(in text: String) -> String? {
+        firstMatch(#"\b(1[5-9]\d\d|20\d\d)[a-z]?\b"#, in: text, group: 1)
+    }
+
+    static func doi(in text: String) -> String? {
+        firstMatch(#"\b(10\.\d{4,9}/[^\s\]\)>,;]+)"#, in: text, group: 1)
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
+    }
+
+    static func url(in text: String) -> String? {
+        firstMatch(#"(https?://[^\s\]\)>]+)"#, in: text, group: 1)
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".,;")) }
+    }
+
+    private static func firstMatch(_ pattern: String, in text: String, group: Int) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.range(at: group).location != NSNotFound else { return nil }
+        return (text as NSString).substring(with: match.range(at: group))
+    }
+
+    /// A paragraph's words as read: link labels kept, emphasis dropped.
+    static func readable(_ text: String) -> String {
+        var out = text.replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1",
+                                            options: .regularExpression)
+        out = out.replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: #"(?<![\w*])[*_]([^*_]+)[*_](?![\w*])"#, with: "$1",
+                                  options: .regularExpression)
+        return out.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A heading's words, folded: "7 References" and "REFERENCES" alike.
+    private static func headingKey(_ text: String) -> String {
+        readable(text).lowercased()
+            .replacingOccurrences(of: #"^[\divxlc]+[.)]?\s+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " .:"))
+    }
+}
+

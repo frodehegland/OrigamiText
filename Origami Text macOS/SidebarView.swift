@@ -147,6 +147,9 @@ struct SidebarView: View {
                 // The List clears its selection during row updates;
                 // only a real click on a row moves the app.
                 guard let newValue else { return }
+                // A click on the place already chosen folds or unfolds its
+                // list (FoldsPaperList) and must leave the book open.
+                guard newValue != model.sidebarSelection else { return }
                 // Choosing a place leaves the open book: the reader
                 // otherwise keeps the whole detail pane and the click
                 // would appear to do nothing.
@@ -166,6 +169,8 @@ struct SidebarView: View {
             true
         case .acquisitions:
             !model.acquisitions.isEmpty
+        case .citedWorks, .meetings, .letters, .books:
+            true
         case .epubPublicationAuthor, .epubPublicationTopic:
             true
         case .epubFolder(let name):
@@ -380,26 +385,52 @@ struct SidebarView: View {
             Label("Inbox", systemImage: "tray")
                 .fontWeight(model.inboxHasUnopened ? .bold : .regular)
                 .tag(SidebarItem.epubsInbox)
+                .foldsPaperList(SidebarItem.epubsInbox)
             Label("Pinned", systemImage: "pin")
                 .tag(SidebarItem.epubsTopOfPile)
+                .foldsPaperList(SidebarItem.epubsTopOfPile)
             // Everyone who wrote what is in the library.
-            Label("Authors", systemImage: "person.2")
+            Label("Authors", systemImage: "person")
                 .tag(SidebarItem.authors)
+                .foldsPaperList(SidebarItem.authors)
             // Every book in the library, sorted by Title or Date from the
             // tabs above the list.
             Label(papersLabel, systemImage: "doc.text")
                 .tag(SidebarItem.epubsTimeline)
+                .foldsPaperList(SidebarItem.epubsTimeline)
                 .contextMenu {
                     Toggle("Unread", isOn: $timelineUnreadOnly)
                 }
+            // Every book held in any form — print, Apple Books, Kindle,
+            // an open copy, the library's own EPUB.
+            Label("Books", systemImage: "books.vertical")
+                .tag(SidebarItem.books)
+                .foldsPaperList(SidebarItem.books)
             Label(venueLabel, systemImage: "newspaper")
                 .tag(SidebarItem.epubJournals)
+                .foldsPaperList(SidebarItem.epubJournals)
+            // Meetings and Letters, as Proceedings lists its journals: each
+            // opens a list of its series — and the ones that name none.
+            Label("Meetings", systemImage: "person.2")
+                .tag(SidebarItem.meetings)
+                .foldsPaperList(SidebarItem.meetings)
+            Label("Letters", systemImage: "envelope")
+                .tag(SidebarItem.letters)
+                .foldsPaperList(SidebarItem.letters)
             Label(myLastName, systemImage: "person.fill")
                 .tag(SidebarItem.myEPUBs)
+                .foldsPaperList(SidebarItem.myEPUBs)
+            // Every work the library cites, each once: the master list.
+            // Lines of text with a quote mark, outlined — the weight of
+            // its neighbours' glyphs (the solid quote mark drew heavy).
+            Label("References", systemImage: "text.quote")
+                .tag(SidebarItem.citedWorks)
+                .foldsPaperList(SidebarItem.citedWorks)
             // Import lives in the File menu (and drag-and-drop), not here.
             if !model.acquisitions.isEmpty {
                 Label("To Acquire", systemImage: "arrow.down.circle")
                     .tag(SidebarItem.acquisitions)
+                .foldsPaperList(SidebarItem.acquisitions)
             }
         } header: {
             Text("EPUB")
@@ -704,6 +735,7 @@ struct SidebarView: View {
             ForEach(model.epubFolders, id: \.self) { folder in
                 Label(folder, systemImage: "folder")
                     .tag(SidebarItem.epubFolder(folder))
+                .foldsPaperList(SidebarItem.epubFolder(folder))
             }
             Button {
                 model.promptNewEPUBFolder()
@@ -727,13 +759,16 @@ struct SidebarView: View {
             ForEach(model.hypermedia.spaces) { space in
                 Label(space.title, systemImage: "globe")
                     .tag(SidebarItem.hypermediaSpace(space.domain))
+                .foldsPaperList(SidebarItem.hypermediaSpace(space.domain))
                     .help(space.domain)
             }
             if !model.hypermediaDocs.isEmpty {
                 Label("Timeline", systemImage: "clock")
                     .tag(SidebarItem.hypermediaTimeline)
+                .foldsPaperList(SidebarItem.hypermediaTimeline)
                 Label("Pinned", systemImage: "pin")
                     .tag(SidebarItem.hypermediaPinned)
+                .foldsPaperList(SidebarItem.hypermediaPinned)
             }
             Button {
                 model.settingsTab = .hypermedia
@@ -763,6 +798,7 @@ struct SidebarView: View {
                 .fontWeight(place.item == .inbox && model.hasUnreadInbox
                             ? .bold : .regular)
                 .tag(place.item)
+                .foldsPaperList(place.item)
                 .contextMenu {
                     if place.item == .bookDrafts {
                         Button("New Book") { model.newBook() }
@@ -834,6 +870,33 @@ struct SidebarView: View {
                 UserDefaults.standard.set(Array(collapsed), forKey: "collapsedSidebarSections")
             }
         )
+    }
+}
+
+/// A click on the place already chosen folds its paper list away, so the
+/// reading has the list's width; the same click brings it back. The click
+/// that chooses a place never folds it — choosing is its own act.
+private struct FoldsPaperList: ViewModifier {
+    @Environment(AppModel.self) private var model
+    let item: SidebarItem
+
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(TapGesture().onEnded {
+            guard model.sidebarSelection == item,
+                  Date.now.timeIntervalSince(model.sidebarSelectionChangedAt) > 0.4
+            else { return }
+            // The layouts swap without animation: a moving split view over
+            // the sidebar's list is the macOS 27 layout crash's shape.
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { model.paperListFolded.toggle() }
+        })
+    }
+}
+
+private extension View {
+    func foldsPaperList(_ item: SidebarItem) -> some View {
+        modifier(FoldsPaperList(item: item))
     }
 }
 

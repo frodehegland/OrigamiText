@@ -55,6 +55,24 @@ struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
     /// no DOI is available.
     var packageIdentifier: String? = nil
 
+    /// A letter sent from Author: the conversation it belongs to — the
+    /// package identifier its Author document keeps across every letter.
+    /// Letters with the same thread are the conversation's letters, each
+    /// kept, never one replacing another. nil for every book.
+    var letterThread: String? = nil
+    /// A fingerprint of the letter's content (everything but the package
+    /// record, which Author restamps at every send), so a letter sent
+    /// twice arrives once.
+    var letterHash: String? = nil
+
+    /// Whether this is a letter from Author rather than a book.
+    var isLetter: Bool { letterThread != nil }
+
+    /// A meeting transcript or a letter written to the dialogue profile
+    /// (ORIGAMI-DIALOGUE-PROFILE.md): its own date, its series and its
+    /// participants. nil for every other book.
+    var dialogue: DialogueInfo? = nil
+
     /// The authors to list the book under: the full list when known,
     /// else the single author of record.
     var authorList: [String] { authors ?? [author] }
@@ -63,6 +81,217 @@ struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
     var venue: String? {
         let name = publication?.trimmingCharacters(in: .whitespaces) ?? ""
         return name.isEmpty ? nil : name
+    }
+}
+
+/// A dialogue publication's own facts (ORIGAMI-DIALOGUE-PROFILE.md §2–3):
+/// what it is, when the meeting took place (not when it was exported),
+/// the series it belongs to, and who took part.
+struct DialogueInfo: Codable, Hashable, Sendable {
+    enum Kind: String, Codable, Sendable { case transcript, letter }
+
+    struct Participant: Codable, Hashable, Sendable {
+        /// Local to the publication: what each turn's data-speaker names.
+        var id: String
+        var name: String
+        var role: String?
+        var orcid: String?
+        var aliases: [String]?
+
+        /// Every name this person goes by here, the full one first.
+        var names: [String] { [name] + (aliases ?? []) }
+    }
+
+    var kind: Kind
+    /// The meeting's (or letter's) date and time, ISO 8601.
+    var date: String?
+    /// ISO 8601 duration, e.g. "PT1H32M".
+    var duration: String?
+    var place: String?
+    var series: String?
+    var number: Int?
+    var participants: [Participant] = []
+
+    /// The date as a Date, for ordering a timeline; nil when unreadable.
+    var eventDate: Date? {
+        guard let date else { return nil }
+        if let full = try? Date(date, strategy: .iso8601) { return full }
+        let day = DateFormatter()
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.timeZone = .gmt
+        day.dateFormat = "yyyy-MM-dd"
+        return day.date(from: String(date.prefix(10)))
+    }
+}
+
+/// What the Mac found in one meeting, without any model
+/// (ORIGAMI-DIALOGUE-PROFILE.md §7): who spoke how much, who answered and
+/// mentioned whom, what was linked and cited, the terms used. Every item
+/// points at turn ids — the paragraph ids of the transcript — as its
+/// evidence. Written beside the EPUBs as
+/// `Dialogue/<series>/<meeting>.analysis.json`; every device reads it.
+struct MeetingAnalysis: Codable, Sendable {
+    /// Raised when the analysis asks something new; older files are
+    /// analysed again.
+    static let currentVersion = 1
+
+    struct Speaker: Codable, Hashable, Sendable {
+        /// The person across meetings (DialoguePeople.key).
+        var person: String
+        var name: String
+        var turns: Int
+        var words: Int
+        /// Of the meeting's words, 0…1.
+        var share: Double
+        var firstTurn: String?
+    }
+    struct Turn: Codable, Hashable, Sendable {
+        var id: String
+        var person: String
+        var words: Int
+        /// The section (heading id) the turn falls in.
+        var section: String?
+    }
+    /// `from` answered `to` — the turn after another speaker's — `count` times.
+    struct Exchange: Codable, Hashable, Sendable {
+        var from: String
+        var to: String
+        var count: Int
+    }
+    struct Mention: Codable, Hashable, Sendable {
+        var by: String
+        var of: String
+        var turns: [String]
+    }
+    struct Link: Codable, Hashable, Sendable {
+        /// A web address, a citation key, or an Origami address.
+        var target: String
+        var kind: String
+        var person: String
+        var turn: String
+    }
+    struct Term: Codable, Hashable, Sendable {
+        var term: String
+        var count: Int
+        var people: [String]
+        var turns: [String]
+    }
+    struct Section: Codable, Hashable, Sendable {
+        var id: String
+        var title: String
+        var firstTurn: String?
+        var turns: Int
+    }
+
+    var version: Int
+    /// The record's unpack folder — the meeting's name in the files.
+    var meeting: String
+    var recordID: String
+    var title: String
+    var date: String?
+    var number: Int?
+    var contentHash: String
+    var analysed: Date
+    var speakers: [Speaker]
+    var turns: [Turn]
+    var exchanges: [Exchange]
+    var mentions: [Mention]
+    var links: [Link]
+    var terms: [Term]
+    var sections: [Section]
+}
+
+/// A series as a whole: its meetings in date order, the people across
+/// them, how they answer one another, and the terms that recur.
+/// `Dialogue/<series>/series.json`.
+struct SeriesAnalysis: Codable, Sendable {
+    struct Meeting: Codable, Hashable, Sendable {
+        var meeting: String
+        var recordID: String
+        var title: String
+        var date: String?
+        var number: Int?
+        var turns: Int
+        var words: Int
+        var people: [String]
+    }
+    struct Person: Codable, Hashable, Sendable {
+        var person: String
+        var name: String
+        var orcid: String?
+        var aliases: [String]
+        /// The meetings they spoke in, by meeting name.
+        var meetings: [String]
+        var turns: Int
+        var words: Int
+        /// Of the series' words, 0…1.
+        var share: Double
+    }
+    struct Term: Codable, Hashable, Sendable {
+        var term: String
+        var count: Int
+        var meetings: [String]
+        var people: [String]
+    }
+
+    var version: Int
+    var series: String
+    var kind: DialogueInfo.Kind
+    var analysed: Date
+    var meetings: [Meeting]
+    var people: [Person]
+    var exchanges: [MeetingAnalysis.Exchange]
+    var terms: [Term]
+}
+
+/// Where the dialogue analyses live in the community folder, and how
+/// any device reads them.
+enum DialogueFiles {
+    static let folderName = "Dialogue"
+
+    /// A series' folder name: its name, made safe for a path.
+    static func seriesFolder(_ series: String) -> String {
+        let safe = series.map { "/:\\?%*|\"<>".contains($0) ? "_" : $0 }
+        return String(safe).trimmingCharacters(in: .whitespaces)
+    }
+
+    static func seriesURL(_ series: String, in community: URL) -> URL {
+        community.appendingPathComponent(folderName, isDirectory: true)
+            .appendingPathComponent(seriesFolder(series), isDirectory: true)
+    }
+
+    static func readSeries(_ series: String, in community: URL) -> SeriesAnalysis? {
+        read(seriesURL(series, in: community).appendingPathComponent("series.json"))
+    }
+
+    static func readMeeting(_ meeting: String, series: String, in community: URL) -> MeetingAnalysis? {
+        read(seriesURL(series, in: community).appendingPathComponent(meeting + ".analysis.json"))
+    }
+
+    static func read<T: Decodable>(_ url: URL) -> T? {
+        var data: Data?
+        var failure: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &failure) { at in
+            data = try? Data(contentsOf: at)
+        }
+        guard let data else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(T.self, from: data)
+    }
+
+    static func write<T: Encodable>(_ value: T, to url: URL) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(value) else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        var failure: NSError?
+        NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing,
+                                       error: &failure) { at in
+            try? data.write(to: at, options: .atomic)
+        }
     }
 }
 

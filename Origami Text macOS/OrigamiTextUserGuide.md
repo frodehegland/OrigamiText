@@ -147,12 +147,16 @@ duplicates.
 
 | Place | What it holds |
 |---|---|
-| **Inbox** | The newest arrivals — everything added in the last 30 days, at least the 20 newest — newest first, in bold until you open them. The row is bold while anything waits |
-| **Pinned** | The books (and authors) you have pinned |
+| **Inbox** | The newest arrivals — everything added in the last 30 days, at least the 20 newest — newest first, in bold until you open them. The row is bold while anything waits. **Letters** sent from Author arrive here quietly, without bringing Origami Text forward, each with an envelope under its title (the letter's subject). A conversation's letters stand together, newest first; each is kept, and a letter sent twice arrives once |
+| **Pinned** | The books (and authors) you have pinned, sorted by the **Title**, **Author** or **Date** tab |
 | **Authors** | Everyone who wrote what you read, sorted by the **Name**, **Papers** or **Date** tab |
-| **Papers** | Every book, sorted by the **Title** or **Date** tab — click the chosen tab again to reverse the order. Settings ▸ Layout can call this **Articles** |
+| **Papers** | Every book, sorted by the **Title**, **Author** or **Date** tab — click the chosen tab again to reverse the order. Settings ▸ Layout can call this **Articles** |
+| **Books** | Every book you have, in print, Apple Books, Kindle, a free copy or the library — fill it by photographing your shelves (section 3.7) |
 | **Journals** | Books grouped by the journal or proceedings they belong to. Settings ▸ Layout can call this **Proceedings** |
+| **Meetings** | Meeting transcripts from Author, listed by series as Proceedings lists its journals — each with how many meetings it holds — and **Unlabeled** for transcripts that name none. A series opens to its timeline: the people across it with their share of the speaking, its meetings newest first, and the terms that recur |
+| **Letters** | Correspondences, the same way |
 | *Your name* | The papers you wrote |
+| **References** | Every work your library cites, each once — however many of your papers cite it — with its warning (Retracted, Expression of Concern…). Sort by the **Title**, **Author** or **Date** tab, and click the chosen tab again to reverse: by title the rows show titles, by author the authors' names, by date both, with the year. Choose one to see everything known of it: its marks and what they mean, abstract, topics, citations by year, a free copy, and the papers on your shelf that cite it. Filled by **Check Library Now** (Settings ▸ Reading ▸ References), and read by your Vision Pro's Library room |
 | **To Acquire** | Works you have asked to get (it appears when there is something on it) |
 | **Hypermedia** | The Seed spaces you follow (section 13) |
 | **Folders** | Your own groupings; **Add Folder** makes one |
@@ -160,6 +164,11 @@ duplicates.
 | **Views** | Annotations, People, Concept Space, Tracked Concepts and the library views (section 9) |
 
 Right-click **Papers** to show only unread books.
+
+**More room to read.** Click the place you are in — **Inbox**, **Pinned**,
+**Papers**, a folder — again, and its list of papers folds away, so the
+reading takes its width. Click it once more and the list comes back.
+Choosing another place brings its list back too.
 
 ### 3.2 A book's menu
 
@@ -224,7 +233,44 @@ them.
 
 A work you ask to get — from a citation card's **Acquire** — waits here, with
 buttons to look for it: **DOI**, **Open Copy**, **Scholar**, **Books** and
-**Open Library**. Dismiss a wish once you have it.
+**Open Library**. When the work arrives in your library — as an EPUB or a PDF,
+on this Mac or another device — Origami Text recognises it by its DOI, or by
+its title and first author, crosses it off the list and tells you so. You can
+still dismiss a wish by hand.
+
+### 3.7 Books
+
+**Books** lists every book you have, in whatever form: on your shelves in
+print, in Apple Books, in Kindle, as a free open-rights copy, or as an EPUB in
+your library (the library's own book EPUBs appear here by themselves).
+
+- **Drop a photo of books** on the list — a shelf of spines (straight on,
+  readable) or a single cover; from Finder, Photos, a browser or a screenshot.
+  Or take one now with your iPhone: click the list, then **File ▸ Import from
+  iPhone or iPad ▸ Take Photo**. Origami Text reads the spines, looks each one
+  up, and adds the books it is sure of as books in print. The spines it is
+  not sure of wait under **Not Sure**, each with its picture, what it read, the
+  books it might be (**This Is It** adds one), a search, and buttons to look in
+  Apple Books, the Kindle Store, Open Library and the web. **Not a Book** clears
+  one.
+- The **Title**, **Author** and **Date** tabs sort the list; **Find** at the
+  foot narrows it.
+- A book's page shows the forms you have it in, each opening where it lives:
+  **Open in Books** (Apple Books opens the book if you own it there, otherwise
+  its Store page), **Open in Kindle** (the Kindle app, or Kindle for Web when
+  the app is not installed), and **Open** for the library's copy. **Search**
+  under *Find It Digitally* finds it in the Apple Books Store (**Link** the
+  right one), and finds free copies at Project Gutenberg and the Internet
+  Archive — **Download to Library** brings an EPUB straight in. For Kindle,
+  **Search Kindle Store**, then paste the book's Amazon link to link it.
+- **Annotations**, as for an EPUB: give the printed page, the words there
+  (optional) and your note. Words with no note are a highlight; a note with no
+  page is about the whole book. They are kept as standard W3C Web Annotations
+  (JSON-LD) beside your books and shared with your other devices through the
+  community folder; **Export Annotations…** saves them as a file. Each names
+  the book by its ISBN, so other apps can tell which book they are about.
+
+A book added in any form crosses it off To Acquire.
 
 ---
 
@@ -469,6 +515,15 @@ From the card:
 When a work has marks (section 6.3), the card lists each with what it means
 and its evidence.
 
+**Books from other publishers.** A book that is not an Origami EPUB usually
+cites only by number — [1], [3, 7], [2–5] — with its References printed at
+the end. Origami reads that list when it imports the book, picking out each
+entry's authors, year, title and DOI where it can, so a click on [1] opens
+that entry's card like any other — with an abstract looked up online, and
+Acquire. It works in Scrolling and in the native views. It only happens when
+the book has a References (or Bibliography) section with at least three
+entries; a number that is not in the list stays as printed.
+
 ### 6.2 The References page
 
 **References**, at the right of the foot bar, shows every work the paper
@@ -523,9 +578,18 @@ document that cites it. **Restore** in the same card brings it back.
 
 **Where the marks come from:** the Retraction Watch database and FORRT's
 replication database, both kept on your Mac and checked offline; Crossref,
-the DOI system, DataCite, Unpaywall and OpenCitations, asked once a month
-per work. Turn any of them off in Settings ▸ Reading ▸ References
-(section 16).
+the DOI system, DataCite, Unpaywall, OpenCitations, OpenAlex and scite,
+asked once a month per work. **Supported N · Disputed M** is scite's count
+of the later papers' statements that back the work or contest it. Turn any
+of them off in Settings ▸ Reading ▸ References (section 16).
+
+**For the whole library at once — and for your headset:** Settings ▸
+Reading ▸ References ▸ **Check Library Now** looks up every work your
+library cites, politely and one at a time, and writes what it finds to the
+community folder. Your Vision Pro reads it there: each cited work's card in
+the room wears its warning (Retracted, Withdrawn, Expression of Concern…),
+and opening it shows its standing, abstract, topics and how it is cited —
+owned or not. A work is checked again after a month.
 
 ### 6.4 The Time Map
 
@@ -750,6 +814,8 @@ still written.
 
 ---
 
+**Every list** — Papers, Pinned, Books, Authors, Journals, Meetings, References, To Acquire and the rest — has **Find** at its foot, in full screen too: type, and the list keeps only what matches.
+
 ## 13. Sharing between your devices, and Hypermedia
 
 **File ▸ Choose Community Folder…** (⇧⌘O) picks a folder — usually in iCloud
@@ -821,7 +887,8 @@ never asks you to sign in to anything when it starts.
 | When | What is asked | Of whom |
 |---|---|---|
 | A citation card lacks an abstract | The work's title or DOI | Crossref, Semantic Scholar, OpenAlex (with your key) |
-| The References page opens | Each cited work's DOI, once a month | Crossref, the DOI system, DataCite, Unpaywall, OpenCitations; OpenAlex with your key |
+| The References page opens | Each cited work's DOI, once a month | Crossref, the DOI system, DataCite, Unpaywall, OpenCitations, OpenAlex, scite |
+| You choose Check Library Now | Every cited work's DOI or title, once a month | The same services; the answers go to the community folder for your other devices |
 | The References page opens, once a week | The Retraction Watch and FORRT replication databases are downloaded | Crossref (GitLab), FORRT (GitHub) |
 | The Maps read who cites whom | Each cited work's reference list | Semantic Scholar, OpenAlex, Crossref, OpenCitations |
 | You make an ACM PDF | The current `acmart` version, at most daily | CTAN |

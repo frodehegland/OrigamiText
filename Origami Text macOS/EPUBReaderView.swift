@@ -1527,6 +1527,7 @@ Button { model.toggleTopOfPile(record) } label: {
                 }
                 if !key.isEmpty { citationCard = FaithfulCitation(key: key) }
             },
+            numberedReferences: model.numberedReferenceCount(forBook: book),
             initialFragment: model.pendingReaderFragment,
             requestedFragment: requestedFragment,
             fragmentStamp: fragmentStamp,
@@ -2002,6 +2003,10 @@ struct EPUBReaderView: NSViewRepresentable {
     /// full-resolution reference (`data-origami-ref`, empty when the
     /// citation is external). The screen answers with the citation card.
     var onCitation: (_ key: String, _ ref: String) -> Void = { _, _ in }
+    /// How many numbered references the import read from a plain book's
+    /// own References list (refN) — the page lets a click on "[N]" open
+    /// its card when N is among them. 0 for every other book.
+    var numberedReferences: Int = 0
     /// A paragraph to scroll to and flash once this book finishes loading —
     /// set when the reader was opened by following a quote link.
     var initialFragment: String? = nil
@@ -2284,6 +2289,8 @@ struct EPUBReaderView: NSViewRepresentable {
         let noteFolds = ReaderNoteStyle.current == .fold
         Self.installUserScripts(into: controller, themeCSS: css, noteFolds: noteFolds,
                                     fixedLayout: rendition.fixedLayout, bookFolder: book.base)
+        controller.addUserScript(Self.numberedReferencesScript(numberedReferences))
+        context.coordinator.numberedReferences = numberedReferences
         controller.add(context.coordinator, name: Self.bridgeName)
         context.coordinator.themeCSS = css
         context.coordinator.noteFolds = noteFolds
@@ -2506,6 +2513,12 @@ struct EPUBReaderView: NSViewRepresentable {
         // reader's scroll position holds.
         let noteFolds = ReaderNoteStyle.current == .fold
         let notePopups = ReaderNoteStyle.opensAsPopup
+        // The book's numbered references arrived (the import finished
+        // after the page opened): the page learns at once.
+        if coordinator.numberedReferences != numberedReferences {
+            coordinator.numberedReferences = numberedReferences
+            webView.evaluateJavaScript("window.origamiNumberedReferences = \(numberedReferences);")
+        }
         if coordinator.themeCSS != css || coordinator.noteFolds != noteFolds
             || coordinator.notePopups != notePopups {
             coordinator.themeCSS = css
@@ -2515,6 +2528,7 @@ struct EPUBReaderView: NSViewRepresentable {
             controller.removeAllUserScripts()
             Self.installUserScripts(into: controller, themeCSS: css, noteFolds: noteFolds,
                                     fixedLayout: rendition.fixedLayout, bookFolder: book.base)
+            controller.addUserScript(Self.numberedReferencesScript(numberedReferences))
             webView.evaluateJavaScript(Self.themeScript(css: css))
             // The marks swap live too — the guard at the script's top
             // makes a re-run a re-application, never a second listener.
@@ -2584,6 +2598,8 @@ struct EPUBReaderView: NSViewRepresentable {
         var resolveTransclusion: (_ address: String, _ fragment: String?) -> String? = { _, _ in nil }
         var resolveEndnote: (String) -> String? = { _ in nil }
         var onCitation: (_ key: String, _ ref: String) -> Void = { _, _ in }
+        /// The count the page was last told.
+        var numberedReferences = 0
         var onHighlight: (ReaderSelection) -> Void = { _ in }
         var onAnnotate: (ReaderAnnotationKind, ReaderSelection) -> Void = { _, _ in }
         var onAddComment: (ReaderSelection) -> Void = { _ in }
@@ -3206,6 +3222,13 @@ struct EPUBReaderView: NSViewRepresentable {
     /// never a jump down to the References list. The key and the
     /// full-resolution reference (internal citations) go to Swift; the
     /// screen shows the card, or opens the cited book.
+    /// How many numbered references the page may answer for — read by
+    /// citationScript's numbered clicks.
+    static func numberedReferencesScript(_ count: Int) -> WKUserScript {
+        WKUserScript(source: "window.origamiNumberedReferences = \(count);",
+                     injectionTime: .atDocumentStart, forMainFrameOnly: true)
+    }
+
     private static let citationScript = """
     (function(){
       var bridge = window.webkit && window.webkit.messageHandlers
@@ -3225,9 +3248,53 @@ struct EPUBReaderView: NSViewRepresentable {
         if ((a.getAttribute('epub:type') || '').indexOf('biblioref') >= 0) return true;
         return false;
       }
+      // A plain publisher's book cites by number — "[12]", "[3, 7]",
+      // "[2–5]", or "[<a href="#bib12">12</a>]". The importer read its
+      // References list into refN references; the app says how many
+      // (window.origamiNumberedReferences), and a click on a number the
+      // list holds answers with its card. Any other book: untouched.
+      function numberedAt(e){
+        var max = window.origamiNumberedReferences || 0;
+        if (!max || !document.caretRangeFromPoint) return 0;
+        var r = document.caretRangeFromPoint(e.clientX, e.clientY);
+        if (!r || !r.startContainer || r.startContainer.nodeType !== 3) return 0;
+        var node = r.startContainer;
+        var block = node.parentElement && node.parentElement.closest(
+          'p,li,td,th,dd,dt,figcaption,blockquote,h1,h2,h3,h4,h5,h6,div');
+        if (!block) return 0;
+        // Where the click falls in the block's words.
+        var walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+        var at = -1, sum = 0, t;
+        while ((t = walker.nextNode())) {
+          if (t === node) { at = sum + r.startOffset; break; }
+          sum += t.nodeValue.length;
+        }
+        if (at < 0) return 0;
+        var text = block.textContent;
+        var re = /\\[(\\s*\\d{1,4}(?:\\s*[,;–—-]\\s*\\d{1,4})*)(?:\\s*,\\s*[^\\]]{1,24})?\\s*\\]/g, m;
+        while ((m = re.exec(text))) {
+          if (at < m.index || at > m.index + m[0].length) continue;
+          // The number under the click; else the group's first.
+          var digits = /\\d{1,4}/g, d, best = 0, base = m.index + 1;
+          while ((d = digits.exec(m[1]))) {
+            var start = base + d.index, end = start + d[0].length;
+            if (!best) best = parseInt(d[0], 10);
+            if (at >= start && at <= end) { best = parseInt(d[0], 10); break; }
+          }
+          return best >= 1 && best <= max ? best : 0;
+        }
+        return 0;
+      }
       document.addEventListener('click', function(e){
         var a = e.target.closest ? e.target.closest('a') : null;
-        if (!isCitation(a)) return;
+        if (!isCitation(a)) {
+          var number = numberedAt(e);
+          if (!number) return;
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          if (bridge) bridge.postMessage({event:'citation', key: 'ref' + number, ref: ''});
+          return;
+        }
         e.preventDefault();
         e.stopImmediatePropagation();
         if (!bridge) return;

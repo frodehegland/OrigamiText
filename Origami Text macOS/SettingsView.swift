@@ -465,7 +465,24 @@ private struct ReadingSettingsView: View {
     @AppStorage(ReferenceStatus.openAccessKey) private var referencesOpenAccess = true
     @AppStorage(ReferenceStatus.citationCountsKey) private var referencesCitationCounts = true
     @AppStorage(ReferenceStatus.replicationsKey) private var referencesReplications = true
+    @AppStorage(ReferenceStatus.sciteKey) private var referencesScite = true
+    @AppStorage(ReferenceStatus.openAlexKey) private var referencesOpenAlex = true
     @State private var retractionWatchBeat = 0
+    /// The library's references, for Check Library Now.
+    @Environment(AppModel.self) private var model
+    private var citedWorks: CitedWorksCheck { CitedWorksCheck.shared }
+
+    /// What the shared record holds, or what the pass is doing.
+    private var citedWorksState: String {
+        if citedWorks.isRunning {
+            return "Checking \(citedWorks.done.formatted()) of \(citedWorks.total.formatted()) cited works…"
+        }
+        var line = "\(citedWorks.recorded.formatted()) cited works in the shared record"
+        if let last = citedWorks.lastChecked {
+            line += ", checked \(last.formatted(date: .abbreviated, time: .shortened))"
+        }
+        return line
+    }
 
     private let families = NSFontManager.shared.availableFontFamilies.sorted()
 
@@ -635,16 +652,34 @@ private struct ReadingSettingsView: View {
                 Toggle("Check each DOI with Crossref for retractions and corrections", isOn: $referencesCrossrefNotices)
                 Toggle("Show which works are free to read (Unpaywall)", isOn: $referencesOpenAccess)
                 Toggle("Show how often each work is cited (OpenCitations)", isOn: $referencesCitationCounts)
+                Toggle("Show how later papers cite each work — supporting or disputing (scite)", isOn: $referencesScite)
+                Toggle("Ask OpenAlex about each work — retracted, topics, authors, abstract", isOn: $referencesOpenAlex)
+                HStack {
+                    Text(citedWorksState)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if citedWorks.isRunning {
+                        Button("Stop") { citedWorks.cancel() }
+                    } else {
+                        Button("Check Library Now") {
+                            citedWorks.start(docs: model.index.allByID.mapValues(\.doc),
+                                             folder: model.index.folderURL)
+                        }
+                        .disabled(model.index.folderURL == nil)
+                    }
+                }
             } header: {
                 Text("References")
             } footer: {
-                Text("The References page, beside Focus at the reading's foot, marks each cited work. Pills tell whether it can be trusted — Retracted, Withdrawn, Expression of Concern, Corrected, Replicated, Not Replicated, Preprint, Unverified; words say what it is and how it is used — Foundational (cited by the paper's other references), Top 1% Cited, Classic, Data, Review, Key, Self, In Library, Open Access. The Retraction Watch database (about 67 MB, updated daily) and FORRT's replication database (about 10 MB) are kept on this Mac and checked offline; both are fetched when References first opens and refreshed when over a week old — never at launch. The live checks (Crossref, the DOI system, Unpaywall, OpenCitations) are free and need no account; each DOI is asked once a month. Top 1% Cited needs the OpenAlex key above. Foundational and the map's lines come from Look up cited works online.")
+                Text("The References page, beside Focus at the reading's foot, marks each cited work. Pills tell whether it can be trusted — Retracted, Withdrawn, Expression of Concern, Corrected, Replicated, Not Replicated, Preprint, Unverified; words say what it is and how it is used — Foundational (cited by the paper's other references), Top 1% Cited, Classic, Data, Review, Key, Self, In Library, Open Access. The Retraction Watch database (about 67 MB, updated daily) and FORRT's replication database (about 10 MB) are kept on this Mac and checked offline; both are fetched when References first opens and refreshed when over a week old — never at launch. The live checks (Crossref, the DOI system, Unpaywall, OpenCitations) are free and need no account; each DOI is asked once a month. OpenAlex and scite are asked about each DOI too, without an account: OpenAlex for its retracted flag, topics, authors with their ORCID iDs, citations by year and an abstract; scite for how later papers cite the work — Supported and Disputed count the citing statements that back or contest it. Foundational and the map's lines come from Look up cited works online. Check Library Now asks all of this, politely and one work at a time, for every work your library cites, and writes it to the community folder as origami-cited-works.json — the headset reads it there and asks no service itself. A work is checked again after a month.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .task {
                 await ReferenceStatus.loadIndexIfNeeded()
                 await ReferenceStatus.loadReplicationsIfNeeded()
+                await citedWorks.refreshCount(folder: model.index.folderURL)
                 retractionWatchBeat += 1
             }
             Section {

@@ -15,8 +15,12 @@ import Foundation
 ///    themselves, which can reach Crossref before the database.
 ///  - Unpaywall — whether a legal free copy exists, and where.
 ///  - OpenCitations — how many works cite this one.
+///  - scite — how later papers cite it: statements supporting it,
+///    disputing it, or only mentioning it; and its editorial notices.
+///  - OpenAlex, one keyless lookup per DOI — its retracted flag, topics,
+///    authors with ORCID iDs, citations by year, a free copy, abstract.
 ///
-/// All four are free and keyless. Live answers cache beside the unpacked
+/// All are free and keyless. Live answers cache beside the unpacked
 /// books and refresh after a month; nothing is asked twice in a reading.
 @MainActor
 enum ReferenceStatus {
@@ -28,6 +32,12 @@ enum ReferenceStatus {
     static let openAccessKey = "referencesOpenAccess"
     static let citationCountsKey = "referencesCitationCounts"
     static let replicationsKey = "referencesReplications"
+    static let sciteKey = "referencesScite"
+    static let openAlexKey = "referencesOpenAlex"
+
+    /// Who is asking — the polite pools want an address to write to.
+    nonisolated static let contactEmail = "frode@hegland.com"
+    nonisolated static let userAgent = "OrigamiText/1.0 (mailto:\(contactEmail))"
 
     private static func isOn(_ key: String) -> Bool {
         UserDefaults.standard.object(forKey: key) as? Bool ?? true
@@ -40,6 +50,8 @@ enum ReferenceStatus {
     nonisolated struct Notice: Codable, Hashable, Sendable {
         nonisolated enum Kind: String, Codable, Sendable {
             case retraction, expressionOfConcern, correction, withdrawal, reinstatement
+            /// A newer version of the work has been registered.
+            case newVersion
         }
         var kind: Kind
         /// The notice's date, ISO yyyy-MM-dd when known.
@@ -47,7 +59,7 @@ enum ReferenceStatus {
         /// Retraction Watch's reasons, semicolon-joined as recorded.
         var reason: String?
         var noticeDOI: String?
-        /// "Retraction Watch" or "Crossref".
+        /// "Retraction Watch", "Crossref", "scite" or "OpenAlex".
         var source: String
     }
 
@@ -93,10 +105,38 @@ enum ReferenceStatus {
         var dataCiteType: String?
         /// Which questions this answer asked; older answers are asked again.
         var version: Int?
+
+        /// How later papers cite it, per scite's citation statements.
+        var sciteSupporting: Int?
+        var sciteContradicting: Int?
+        var sciteMentioning: Int?
+        /// OpenAlex's view of the work, asked by DOI without a key.
+        var openAlexRetracted: Bool?
+        var topics: [String]?
+        var authors: [Author]?
+        /// Citations per year, newest first, as OpenAlex counts them.
+        var citationsByYear: [YearCount]?
+        var abstract: String?
+        var abstractSource: String?
+        /// The work as its registry describes it — Crossref first, then
+        /// OpenAlex — not as one citing paper happened to write it.
+        var canonicalTitle: String?
+        var canonicalAuthors: [String]?
+        var canonicalYear: Int?
+        var canonicalVenue: String?
+
+        nonisolated struct Author: Codable, Hashable, Sendable {
+            var name: String
+            var orcid: String?
+        }
+        nonisolated struct YearCount: Codable, Hashable, Sendable {
+            var year: Int
+            var count: Int
+        }
     }
 
     /// The questions a live answer asks now — raised when a new one joins.
-    private static let liveVersion = 3
+    private static let liveVersion = 5
 
     // MARK: The Retraction Watch index
 
@@ -163,7 +203,7 @@ enum ReferenceStatus {
         indexError = nil
         defer { isRefreshingIndex = false }
         var request = URLRequest(url: csvURL, timeoutInterval: 120)
-        request.setValue("OrigamiText/1.0 (mailto:frode@hegland.com)",
+        request.setValue(Self.userAgent,
                          forHTTPHeaderField: "User-Agent")
         do {
             let (file, response) = try await URLSession.shared.download(for: request)
@@ -338,7 +378,12 @@ enum ReferenceStatus {
     /// The database's notices for a work: by DOI, else by title with a
     /// year that agrees (within one) when both are known.
     static func indexNotices(doi: String?, title: String, year: Int?) -> [Notice] {
-        guard isOn(retractionWatchKey), let index = retractionIndex else { return [] }
+        guard isOn(retractionWatchKey) else { return [] }
+        // A device without the database (the headset) reads the notices
+        // the Mac found for the work.
+        guard let index = retractionIndex else {
+            return sharedKey(doi: doi, title: title).flatMap { shared[$0]?.notices } ?? []
+        }
         if let doi = cleanDOI(doi), let hits = index.byDOI[doi] { return hits }
         let key = normalizedTitle(title)
         guard key.count >= 24, let hits = index.byTitle[key] else { return [] }
@@ -399,7 +444,7 @@ enum ReferenceStatus {
         isRefreshingReplications = true
         defer { isRefreshingReplications = false }
         var request = URLRequest(url: replicationsURL, timeoutInterval: 60)
-        request.setValue("OrigamiText/1.0 (mailto:frode@hegland.com)",
+        request.setValue(Self.userAgent,
                          forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return }
@@ -475,7 +520,8 @@ enum ReferenceStatus {
     }
 
     static func cachedLive(doi: String?) -> Live? {
-        cleanDOI(doi).flatMap { liveCache[$0] }
+        guard let doi = cleanDOI(doi) else { return nil }
+        return liveCache[doi] ?? shared[doi]?.live
     }
 
     /// Whether a DOI's live answers are missing or over a month old.
@@ -496,11 +542,19 @@ enum ReferenceStatus {
         async let work = isOn(crossrefNoticesKey) ? crossrefWork(doi) : nil
         async let access = isOn(openAccessKey) ? unpaywall(doi) : nil
         async let count = isOn(citationCountsKey) ? openCitationsCount(doi) : nil
-        async let percentile = openAlexPercentile(doi)
-        let (w, a, c, p) = await (work, access, count, percentile)
+        async let openAlex = isOn(openAlexKey) ? openAlexWork(doi) : nil
+        async let tallies = isOn(sciteKey) ? sciteTallies(doi) : nil
+        async let sciteNotes = isOn(sciteKey) ? sciteNotices(doi) : nil
+        let (w, a, c, p) = await (work, access, count, openAlex)
+        let (t, n) = await (tallies, sciteNotes)
         var live = liveCache[doi] ?? Live(fetched: .now)
+        var notices: [Notice] = []
         if let w {
-            live.notices = w.notices
+            notices = w.notices
+            live.canonicalTitle = w.title.map(BibTeXParser.displayText)
+            live.canonicalAuthors = w.authors.isEmpty ? nil : w.authors
+            live.canonicalYear = w.year
+            live.canonicalVenue = w.venue
             live.workType = w.type
             live.workSubtype = w.subtype
             live.hasPublishedVersion = w.hasPublishedVersion
@@ -522,7 +576,42 @@ enum ReferenceStatus {
             live.inTop1Percent = p.top1
             live.inTop10Percent = p.top10
             live.openAlexType = p.type
+            live.openAlexRetracted = p.retracted
+            live.topics = p.topics
+            live.authors = p.authors
+            live.citationsByYear = p.byYear
+            if live.citedBy == nil { live.citedBy = p.citedBy }
+            if live.openAccessURL == nil, let free = p.openAccessURL {
+                live.openAccessURL = free
+                live.isOpenAccess = true
+            }
+            if let abstract = p.abstract {
+                live.abstract = abstract
+                live.abstractSource = "OpenAlex"
+            }
+            if live.canonicalTitle == nil { live.canonicalTitle = p.title }
+            if live.canonicalAuthors == nil, !p.authors.isEmpty {
+                live.canonicalAuthors = p.authors.map(\.name)
+            }
+            if live.canonicalYear == nil { live.canonicalYear = p.year }
+            if live.canonicalVenue == nil { live.canonicalVenue = p.venue }
+            if p.retracted, !notices.contains(where: { $0.kind == .retraction }) {
+                notices.append(Notice(kind: .retraction, date: nil, reason: nil,
+                                      noticeDOI: nil, source: "OpenAlex"))
+            }
         }
+        if let t {
+            live.sciteSupporting = t.supporting
+            live.sciteContradicting = t.contradicting
+            live.sciteMentioning = t.mentioning
+        }
+        for notice in n ?? [] where !notices.contains(where: {
+            $0.kind == notice.kind
+                && ($0.noticeDOI == nil || notice.noticeDOI == nil || $0.noticeDOI == notice.noticeDOI)
+        }) {
+            notices.append(notice)
+        }
+        if w != nil || p != nil || n != nil { live.notices = notices }
         live.version = liveVersion
         live.fetched = .now
         liveCache[doi] = live
@@ -538,6 +627,10 @@ enum ReferenceStatus {
         var type: String?
         var subtype: String?
         var hasPublishedVersion: Bool
+        var title: String?
+        var authors: [String] = []
+        var year: Int?
+        var venue: String?
     }
 
     private static func crossrefWork(_ doi: String) async -> CrossrefWork? {
@@ -547,10 +640,22 @@ enum ReferenceStatus {
         else { return nil }
         let relation = message["relation"] as? [String: Any] ?? [:]
         let published = (relation["is-preprint-of"] as? [Any])?.isEmpty == false
+        let authors = (message["author"] as? [[String: Any]] ?? []).compactMap { author -> String? in
+            let family = (author["family"] as? String) ?? (author["name"] as? String)
+            guard let family, !family.isEmpty else { return nil }
+            let given = (author["given"] as? String) ?? ""
+            return given.isEmpty ? family : "\(given) \(family)"
+        }
+        let issued = ((message["issued"] as? [String: Any])?["date-parts"] as? [[Int]])?.first?.first
+            ?? ((message["published"] as? [String: Any])?["date-parts"] as? [[Int]])?.first?.first
         return CrossrefWork(notices: crossrefNotices(in: message),
                             type: message["type"] as? String,
                             subtype: message["subtype"] as? String,
-                            hasPublishedVersion: published)
+                            hasPublishedVersion: published,
+                            title: (message["title"] as? [String])?.first,
+                            authors: authors,
+                            year: issued,
+                            venue: (message["container-title"] as? [String])?.first)
     }
 
     /// The DOI system's own answer: does this DOI exist at all?
@@ -558,7 +663,7 @@ enum ReferenceStatus {
         guard let encoded = doi.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               let url = URL(string: "https://doi.org/api/handles/\(encoded)") else { return nil }
         var request = URLRequest(url: url, timeoutInterval: 20)
-        request.setValue("OrigamiText/1.0 (mailto:frode@hegland.com)",
+        request.setValue(Self.userAgent,
                          forHTTPHeaderField: "User-Agent")
         guard let (data, _) = try? await URLSession.shared.data(for: request),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -582,25 +687,134 @@ enum ReferenceStatus {
         return types["resourceTypeGeneral"] as? String
     }
 
-    /// OpenAlex's citation percentile for the work's field and year —
-    /// only with the reader's key (Settings ▸ Cited Works).
-    private static func openAlexPercentile(_ doi: String) async -> (top1: Bool, top10: Bool, type: String?)? {
+    /// What OpenAlex knows of the work, asked by DOI. A single work by
+    /// DOI costs nothing on its 2026 pricing, so no key is needed; the
+    /// reader's key, when set (Settings ▸ Cited Works), rides along.
+    private struct OpenAlexWork {
+        var top1: Bool
+        var top10: Bool
+        var type: String?
+        var retracted: Bool
+        var topics: [String]
+        var authors: [Live.Author]
+        var byYear: [Live.YearCount]
+        var citedBy: Int?
+        var openAccessURL: String?
+        var abstract: String?
+        var title: String?
+        var year: Int?
+        var venue: String?
+    }
+
+    private static func openAlexWork(_ doi: String) async -> OpenAlexWork? {
         let key = (UserDefaults.standard.string(forKey: "openAlexAPIKey") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty,
-              let encoded = doi.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-              let url = URL(string: "https://api.openalex.org/works/doi:\(encoded)?select=type,citation_normalized_percentile&api_key=\(key)"),
+        let fields = "type,is_retracted,citation_normalized_percentile,cited_by_count,"
+            + "counts_by_year,primary_topic,topics,authorships,open_access,abstract_inverted_index,"
+            + "display_name,publication_year,primary_location"
+        guard let encoded = doi.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "https://api.openalex.org/works/doi:\(encoded)?select=\(fields)"
+                            + (key.isEmpty ? "" : "&api_key=\(key)")),
               let object = await json(from: url) as? [String: Any]
         else { return nil }
         let percentile = object["citation_normalized_percentile"] as? [String: Any]
-        return (percentile?["is_in_top_1_percent"] as? Bool ?? false,
-                percentile?["is_in_top_10_percent"] as? Bool ?? false,
-                object["type"] as? String)
+        var topics: [String] = []
+        if let primary = (object["primary_topic"] as? [String: Any])?["display_name"] as? String {
+            topics.append(primary)
+        }
+        for topic in object["topics"] as? [[String: Any]] ?? [] {
+            if let name = topic["display_name"] as? String, !topics.contains(name) {
+                topics.append(name)
+            }
+        }
+        let authors = (object["authorships"] as? [[String: Any]] ?? []).compactMap { authorship -> Live.Author? in
+            guard let author = authorship["author"] as? [String: Any],
+                  let name = author["display_name"] as? String else { return nil }
+            let orcid = (author["orcid"] as? String)?
+                .replacingOccurrences(of: "https://orcid.org/", with: "")
+            return Live.Author(name: name, orcid: orcid)
+        }
+        let byYear = (object["counts_by_year"] as? [[String: Any]] ?? []).compactMap { entry -> Live.YearCount? in
+            guard let year = entry["year"] as? Int, let count = entry["cited_by_count"] as? Int
+            else { return nil }
+            return Live.YearCount(year: year, count: count)
+        }.sorted { $0.year > $1.year }
+        let access = object["open_access"] as? [String: Any]
+        return OpenAlexWork(
+            top1: percentile?["is_in_top_1_percent"] as? Bool ?? false,
+            top10: percentile?["is_in_top_10_percent"] as? Bool ?? false,
+            type: object["type"] as? String,
+            retracted: object["is_retracted"] as? Bool ?? false,
+            topics: Array(topics.prefix(4)),
+            authors: authors,
+            byYear: byYear,
+            citedBy: object["cited_by_count"] as? Int,
+            openAccessURL: (access?["is_oa"] as? Bool) == true ? access?["oa_url"] as? String : nil,
+            abstract: (object["abstract_inverted_index"] as? [String: [Int]]).flatMap(abstractText),
+            title: object["display_name"] as? String,
+            year: object["publication_year"] as? Int,
+            venue: ((object["primary_location"] as? [String: Any])?["source"] as? [String: Any])?["display_name"] as? String)
+    }
+
+    /// OpenAlex keeps abstracts as word → positions; laid back in order.
+    nonisolated static func abstractText(_ inverted: [String: [Int]]) -> String? {
+        var words: [(Int, String)] = []
+        for (word, places) in inverted {
+            for place in places { words.append((place, word)) }
+        }
+        guard !words.isEmpty else { return nil }
+        return words.sorted { $0.0 < $1.0 }.map(\.1).joined(separator: " ")
+    }
+
+    /// scite's tally of how later papers cite the work.
+    private static func sciteTallies(_ doi: String) async -> (supporting: Int, contradicting: Int, mentioning: Int)? {
+        guard let encoded = doi.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "https://api.scite.ai/tallies/\(encoded)"),
+              let object = await json(from: url) as? [String: Any]
+        else { return nil }
+        func count(_ key: String) -> Int { (object[key] as? Int) ?? 0 }
+        return (count("supporting"), count("contradicting"), count("mentioning"))
+    }
+
+    /// scite's editorial notices for the work — retractions, corrections,
+    /// expressions of concern — gathered from publishers and PubMed.
+    private static func sciteNotices(_ doi: String) async -> [Notice]? {
+        guard let encoded = doi.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "https://api.scite.ai/papers/\(encoded)"),
+              let object = await json(from: url) as? [String: Any]
+        else { return nil }
+        var notices = (object["editorialNotices"] as? [[String: Any]] ?? []).compactMap { entry -> Notice? in
+            let status = (entry["status"] as? String ?? "").lowercased()
+            let kind: Notice.Kind
+            if status.contains("retract") { kind = .retraction }
+            else if status.contains("withdraw") { kind = .withdrawal }
+            else if status.contains("concern") { kind = .expressionOfConcern }
+            else if status.contains("correct") || status.contains("erratum") { kind = .correction }
+            else { return nil }
+            let date = (entry["date"] as? String).map { String($0.prefix(10)) }
+            return Notice(kind: kind, date: date, reason: nil,
+                          noticeDOI: cleanDOI(entry["noticeDoi"] as? String), source: "scite")
+        }
+        if (object["retracted"] as? Bool) == true, !notices.contains(where: { $0.kind == .retraction }) {
+            notices.append(Notice(kind: .retraction, date: nil, reason: nil,
+                                  noticeDOI: nil, source: "scite"))
+        }
+        return notices
     }
 
     private static func crossrefNotices(in message: [String: Any]) -> [Notice] {
-        let updates = message["updated-by"] as? [[String: Any]] ?? []
-        return updates.compactMap { update in
+        // `updated-by` carries the notices registered against the work.
+        // Some publishers instead mark the original itself, in its own
+        // `update-to`, pointing at its own DOI — read those too. (An
+        // `update-to` naming ANOTHER DOI means this record is itself a
+        // notice, and says nothing of this work's standing.)
+        let own = cleanDOI(message["DOI"] as? String)
+        let selfMarked = (message["update-to"] as? [[String: Any]] ?? []).filter {
+            own != nil && cleanDOI($0["DOI"] as? String) == own
+        }
+        let updates = (message["updated-by"] as? [[String: Any]] ?? []) + selfMarked
+        var seen = Set<String>()
+        return updates.compactMap { update -> Notice? in
             let type = (update["type"] as? String ?? "").lowercased()
             let kind: Notice.Kind
             switch type {
@@ -609,6 +823,7 @@ enum ReferenceStatus {
             case "withdrawal": kind = .withdrawal
             case "correction", "erratum", "corrigendum", "addendum": kind = .correction
             case "reinstatement": kind = .reinstatement
+            case "new_version", "new_edition": kind = .newVersion
             default: return nil
             }
             let parts = ((update["updated"] as? [String: Any])?["date-parts"] as? [[Int]])?.first ?? []
@@ -617,14 +832,17 @@ enum ReferenceStatus {
                 : parts.first.map { String($0) }
             let source = (update["source"] as? String) == "retraction-watch"
                 ? "Retraction Watch via Crossref" : "Crossref"
+            let noticeDOI = cleanDOI(update["DOI"] as? String)
+            // The same notice, registered twice, is one notice.
+            guard seen.insert("\(kind.rawValue)|\(noticeDOI ?? date ?? "")").inserted else { return nil }
             return Notice(kind: kind, date: date, reason: nil,
-                          noticeDOI: cleanDOI(update["DOI"] as? String), source: source)
+                          noticeDOI: noticeDOI == own ? nil : noticeDOI, source: source)
         }
     }
 
     private static func unpaywall(_ doi: String) async -> (isOpen: Bool, url: String?)? {
         guard let encoded = doi.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-              let url = URL(string: "https://api.unpaywall.org/v2/\(encoded)?email=frode@hegland.com"),
+              let url = URL(string: "https://api.unpaywall.org/v2/\(encoded)?email=\(contactEmail)"),
               let object = await json(from: url) as? [String: Any],
               let isOpen = object["is_oa"] as? Bool
         else { return nil }
@@ -644,12 +862,155 @@ enum ReferenceStatus {
 
     private static func json(from url: URL) async -> Any? {
         var request = URLRequest(url: url, timeoutInterval: 20)
-        request.setValue("OrigamiText/1.0 (mailto:frode@hegland.com)",
+        request.setValue(Self.userAgent,
                          forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200
         else { return nil }
         return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    // MARK: Cited works, shared with the other devices
+
+    /// Everything known of one cited work, gathered on the Mac and read
+    /// by every device: its live answers, every notice (the database's
+    /// and the services' together), its replications, and its abstract.
+    /// The headset asks no service itself — it reads this.
+    nonisolated struct CitedWork: Codable, Sendable {
+        var live: Live?
+        var notices: [Notice] = []
+        var replication: ReplicationIndex.Tally?
+        var abstract: String?
+        var abstractSource: String?
+        /// Semantic Scholar's one-line summary, when it has one.
+        var summary: String?
+        var venue: String?
+        var checked: Date
+        /// The master list: the work's DOI (found by its title when the
+        /// citing paper gave none), its authoritative title, authors and
+        /// year, and the library papers that cite it.
+        var doi: String?
+        var title: String?
+        var authors: [String]?
+        var year: Int?
+        var citedBy: [String]?
+    }
+
+    /// The community folder's copy: `origami-cited-works.json`.
+    nonisolated struct CitedWorks: Codable, Sendable {
+        var modified: Date
+        var works: [String: CitedWork]
+    }
+
+    nonisolated static let sharedFileName = "origami-cited-works.json"
+
+    /// The records read from the community folder, by work key.
+    private(set) static var shared: [String: CitedWork] = [:]
+    private(set) static var sharedModified: Date?
+
+    /// A work's key in the shared record: its DOI, or its folded title
+    /// for a reference that carries none.
+    nonisolated static func sharedKey(doi: String?, title: String) -> String? {
+        if let doi = cleanDOI(doi) { return doi }
+        let folded = normalizedTitle(title)
+        return folded.count >= 12 ? "title:" + folded : nil
+    }
+
+    /// The shared record of one work, when the Mac has written one.
+    static func sharedWork(doi: String?, title: String) -> CitedWork? {
+        sharedKey(doi: doi, title: title).flatMap { shared[$0] }
+    }
+
+    /// What this device knows of a work, folded into one record — the
+    /// Mac's side of the shared file.
+    static func record(doi: String?, title: String, year: Int?,
+                       abstract: String?, abstractSource: String?,
+                       summary: String?, venue: String?) -> CitedWork {
+        let live = cachedLive(doi: doi)
+        var work = CitedWork(live: live,
+                             notices: notices(doi: doi, title: title, year: year),
+                             replication: cleanDOI(doi).flatMap { replicationIndex?.byDOI[$0] },
+                             abstract: abstract ?? live?.abstract,
+                             abstractSource: abstract != nil ? abstractSource : live?.abstractSource,
+                             summary: summary, venue: venue, checked: .now)
+        // The abstract rides once, in the record, not twice.
+        work.live?.abstract = nil
+        work.doi = cleanDOI(doi)
+        // The registry's title when there is one; the citing paper's
+        // otherwise, so every entry in the master list has a name.
+        work.title = live?.canonicalTitle
+            ?? (title.isEmpty ? nil : BibTeXParser.displayText(title))
+        work.authors = live?.canonicalAuthors
+        work.year = live?.canonicalYear ?? year
+        if work.venue == nil { work.venue = live?.canonicalVenue }
+        return work
+    }
+
+    /// The file's own date when last read, so an unchanged file is not
+    /// decoded again on every beat.
+    private static var sharedFileDate: Date?
+
+    /// Reads the community folder's record, coordinated with iCloud —
+    /// only when the file has changed since it was last read.
+    static func adoptShared(from folder: URL?) async {
+        guard let folder else { return }
+        let url = folder.appendingPathComponent(sharedFileName)
+        let known = sharedFileDate
+        let read = await Task.detached(priority: .utility) { () -> (CitedWorks, Date?)? in
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+            if let date, date == known { return nil }
+            var data: Data?
+            var failure: NSError?
+            NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &failure) { at in
+                data = try? Data(contentsOf: at)
+            }
+            guard let data else { return nil }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return (try? decoder.decode(CitedWorks.self, from: data)).map { ($0, date) }
+        }.value
+        guard let (works, date) = read else { return }
+        sharedFileDate = date
+        guard works.modified != sharedModified else { return }
+        shared = works.works
+        sharedModified = works.modified
+    }
+
+    /// Writes the record to the community folder, coordinated. The Mac
+    /// is its only writer; the whole set is written each time.
+    nonisolated static func publish(_ works: [String: CitedWork], to folder: URL) async {
+        let url = folder.appendingPathComponent(sharedFileName)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(CitedWorks(modified: .now, works: works)) else { return }
+        await Task.detached(priority: .utility) {
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            var failure: NSError?
+            NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing,
+                                           error: &failure) { at in
+                try? data.write(to: at, options: .atomic)
+            }
+        }.value
+    }
+
+    /// The Mac's own copy of what it last published, so a pass adds to
+    /// it rather than starting again.
+    static func adoptOwn(_ works: [String: CitedWork]) {
+        shared = works
+        sharedModified = .now
+    }
+
+    /// The one warning a small card in the room carries: its gravest
+    /// trust keyword (Retracted, Withdrawn, Not Replicated…), then its
+    /// gravest caution (Expression of Concern…). Nil for a sound work.
+    static func standingWarning(doi: String?, title: String, year: Int?) -> Mark? {
+        let pills = marks(for: MarkInput(doi: doi, title: title, year: year)).filter(\.pill)
+        return pills.first { $0.tone == .alarm } ?? pills.first { $0.tone == .caution }
     }
 
     // MARK: The keywords
@@ -726,7 +1087,7 @@ enum ReferenceStatus {
                               tone: .quiet, detail: detail(first), pill: true))
         }
         if isOn(replicationsKey), let doi = cleanDOI(input.doi),
-           let tally = replicationIndex?.byDOI[doi] {
+           let tally = replicationIndex?.byDOI[doi] ?? shared[doi]?.replication {
             let attempts = tally.successful + tally.failed + tally.mixed
             let account = "\(attempts) replication attempt\(attempts == 1 ? "" : "s"): \(tally.successful) successful, \(tally.failed) failed, \(tally.mixed) mixed (FORRT)"
             if tally.failed == 0 && tally.mixed == 0 {
@@ -736,6 +1097,10 @@ enum ReferenceStatus {
             } else {
                 marks.append(Mark(text: "Replication Mixed", tone: .caution, detail: account, pill: true))
             }
+        }
+        if let version = notices.first(where: { $0.kind == .newVersion }) {
+            marks.append(Mark(text: "New Version", tone: .info,
+                              detail: detail(version), pill: true))
         }
         // A preprint shows as one — unless its reviewed version exists,
         // and then nothing shows.
@@ -780,6 +1145,16 @@ enum ReferenceStatus {
         if isOn(citationCountsKey), let cited = live?.citedBy, cited > 0 {
             marks.append(Mark(text: "Cited \(cited.formatted())×", tone: .quiet,
                               detail: "Works citing it, per OpenCitations"))
+        }
+        // How it is cited: later papers' statements that support it or
+        // dispute it. Disputed more than supported reads as a caution.
+        if isOn(sciteKey), let supporting = live?.sciteSupporting,
+           let contradicting = live?.sciteContradicting, supporting + contradicting > 0 {
+            let mentioning = live?.sciteMentioning ?? 0
+            marks.append(Mark(
+                text: "Supported \(supporting) · Disputed \(contradicting)",
+                tone: contradicting > supporting && contradicting >= 3 ? .caution : .quiet,
+                detail: "Citing statements, per scite: \(supporting) supporting, \(contradicting) contradicting, \(mentioning) mentioning"))
         }
 
         // 3. Kind — a word.
@@ -832,6 +1207,8 @@ enum ReferenceStatus {
             return "Later attempts to repeat this work disagree: some found the result, some did not."
         case "Preprint":
             return "Shared before peer review, and not yet published in a reviewed version."
+        case "New Version":
+            return "A newer version of this work has been registered; the one cited may be out of date."
         case "Unverified":
             return "This reference could not be confirmed to exist. It may be mistyped, or invented; check it before relying on it."
         case "Foundational":
@@ -867,6 +1244,9 @@ enum ReferenceStatus {
             }
             if mark.text.hasPrefix("Cited ") {
                 return "How many works cite it."
+            }
+            if mark.text.hasPrefix("Supported ") {
+                return "How later papers cite it: statements that support its findings, and statements that dispute them (scite)."
             }
             return ""
         }

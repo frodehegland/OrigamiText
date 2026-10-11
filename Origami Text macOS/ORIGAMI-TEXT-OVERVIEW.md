@@ -84,6 +84,22 @@ walkable corridor whose depth IS time.
 - **History underfoot**: the physical floor carries a chosen history —
   world, hypertext, hypertext people, environmental, space, computing,
   or discoveries — each event lying at its year's depth.
+- **Transpoint**, in honour of Ted Nelson's transpointing windows,
+  with the time academia adds to them: a paper's **Transpoint** verb
+  (under its chosen card, or the dotted-triangle button in its reading's
+  title bar) stands it alone in the room, in the native Scroll view,
+  with every work it cites standing **5 cm behind it** (a citation looks
+  back, and back is the Hallway's past) and to either side, oldest
+  first. Lines leave the page's edge level with each citing passage in
+  view and run to the section cited, when the citation names a passage
+  or quotes words found in a library book, or to the work as a whole.
+  Library books list their sections, the cited ones marked, and open at
+  a tapped section; other works carry Acquire. Where the documents on
+  stage cite each other — a source citing another source, or the page
+  itself — those citations are lines too. Each end meets its document as
+  it stands: a closed work at the side of its card, an open one at the
+  citing passage, or at the cited section when that is known. The same
+  button ends it.
 - **The body is the interface**: arm chips command it all, a fist
   carries the whole space, a two-hand pinch stretches the corridor's
   depth (the rows gathering toward walking height), and readings open

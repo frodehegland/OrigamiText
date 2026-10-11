@@ -48,10 +48,11 @@ Books arrive three ways, all on the phone itself — no Mac required:
 
 - **From Files or a share sheet.** Open any `.epub` with Origami Text and it
   opens straight into reading, in Scroll view.
-- **Open EPUB…** Tap the gear at the foot of the shelf and choose Open
-  EPUB… to pick one or several books.
-- **The community folder.** Tap the gear and choose Choose Community
-  Folder… — the iCloud folder your group shares. Every EPUB in it joins the
+- **Open.** Tap the folder icon at the foot of the shelf, right of Find, to
+  pick one or several books.
+- **The community folder.** Tap the gear for Settings, and at the bottom
+  choose Choose Community Folder… (or Change Community Folder…) — the iCloud
+  folder your group shares. Every EPUB in it joins the
   shelf, and new ones arrive whenever the app comes to the front. Books
   still downloading from iCloud are fetched and picked up a few seconds
   later.
@@ -70,9 +71,9 @@ The shelf has three tabs at the top:
   best stocked first, each with its count. Tap one to open it (section 4).
 - **Guide** — the Introduction, this guide and the quick summary.
 
-The foot of the shelf holds the **gear** (Open EPUB…, the community folder,
-Settings…) and **Find**: type and Articles narrow to titles and authors
-that match, Journals to names that match.
+The foot of the shelf holds the **gear** (Settings), **Find** — type and
+Articles narrow to titles and authors that match, Journals to names that
+match — and the **folder** icon, which opens an EPUB from Files.
 
 **To Read.** Hold your finger on the page for a second — in the margin or
 the space between paragraphs, not on the words — and **To Read** appears:
@@ -120,16 +121,16 @@ need is in the **foot bar** at the bottom:
 - **Documents** on the left goes back to the shelf. (In a cited book opened
   over the one you were reading, it is a **‹** and goes back to that book.)
 - **Scroll | Focus** in the middle choose how the book reads.
-- **◐** (the half circle) holds the looks: **Light** or **Dark**, the
+- **◐** (the half circle) holds the looks: **System** (the default —
+  following your iPhone's Light or Dark), **Light** or **Dark**, the
   colour **Theme** — the Mac's full set, from sepia to the dyslexia- and
   Irlen-friendly palettes — and **Bionic Reading**, which sets the first
   half of every word in bold.
 - **Aa** makes the words Bigger or Smaller, or resets them.
 
 After four seconds without a touch, the foot bar fades from the page so
-the words have it to themselves. On iPhone the page then runs edge to edge,
-with a black pill at the foot that mirrors the Dynamic Island at the top —
-tap it (or anywhere along the foot) and the bar comes back.
+the words have it to themselves, running to the foot of the screen. Tap
+along the foot, where the bar was, and it comes back.
 
 **Scroll** lays the whole text in one clean column.
 
@@ -216,7 +217,8 @@ answer. Tap any found paragraph and the reading opens right there. The
 
 ## 9. Settings
 
-Tap the gear at the foot of the shelf and choose Settings…
+Tap the gear at the foot of the shelf. The community folder is chosen or
+changed at the bottom of Settings.
 
 - **Your Name** — as your papers carry it: first name, middle name, last name
   ("Frode Alexander Hegland"). It follows your Apple ID to your Mac, iPhone,
@@ -238,9 +240,9 @@ Tap the gear at the foot of the shelf and choose Settings…
   and New York, acronyms such as EPUB in true small capitals. The book's
   characters are never changed, so highlights and notes still find their
   place.
-- **Reading Screen** — **Pill** (the default): the page runs to the top,
-  the toolbar fades after four quiet seconds and a black pill at the foot
-  brings it back. **Framed**: a black band at the top; the toolbar
+- **Reading Screen** — **Pill** (the default): the page runs up round the
+  Dynamic Island, shading softly towards it; the toolbar fades after four
+  quiet seconds, and a tap where it was brings it back. **Framed**: a black band at the top; the toolbar
   fades the same way, and a tap where it was brings it back.
 - **On Loading** — what shows while a book arrives: a plain **Spinner**, or
   the **Animation** — its title, author and date floating in space, which

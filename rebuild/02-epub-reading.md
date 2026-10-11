@@ -993,6 +993,14 @@ A figure's own image link is excluded. The screen
    Visual-Meta citation pool alone (`AppModel.citationCardDoc`). The card
    is described in WEB-READER-BRIEF §4.
 
+**Numbered citations in plain EPUBs (10 Oct 2026).** A publisher's EPUB carrying no Origami records has no reference pool, only a printed list. `NumberedReferences.infer(in:)` (end of `OrigamiEPUBImport.swift`) runs at the end of `importDocument` when `references` is still empty:
+- **Section:** the *last* heading whose folded text (leading numbering stripped) is one of references, reference, reference list, bibliography, works cited, literature cited, literature, sources, cited works, references and notes, bibliographic references, citations. Entries are the non-heading paragraphs up to the next heading of the same or higher rank.
+- **Entries:** `[n] …`, `n. …` or `n) …` gives the printed number. Publisher apparatus (©, Copyright, DOI:, ISBN, ACM ISBN, Permission to make…, Received/Accepted/Published) is dropped. When most entries print a number, unnumbered lines are dropped; otherwise entries are numbered by position. Needs ≥ 3 entries, at least half showing a year (1500–2099) or a DOI.
+- **Fields:** a quoted title (IEEE, Chicago) splits authors/title; else ACM `Authors. Year. Title.`; else APA `Authors (Year). Title.`; else first sentence authors, second title. Authors "A, B, and C" become BibTeX `and`-lists when every part has a space; surname-first lists stay as printed. DOI and URL by pattern. Each becomes `@misc{refN, author, title, year, doi, url, note = whole entry}`, `citedAs "[n]"`, `number n`.
+- **Body:** outside the list, `[[n](origami-jump:…bib|ref|cit…)]` first reads as `[n]`; `[n, locator]` (p., pp., ch., sec., §, fig., table, vol., no., para., l.) becomes `[cite:refN] (locator)`; a bracket group of only numbers, commas, semicolons and ranges (≤ 30 wide), not followed by `(`, becomes `[cite:refA] [cite:refB]…` when every number is in the list.
+- **Scrolling view:** `citationScript` also answers a click inside a bracketed number when `window.origamiNumberedReferences` (set at document start from `AppModel.numberedReferenceCount(forBook:)`, which reads only cached imports) covers it: the caret's offset in its block's text is matched against the same bracket pattern, the number under the caret (else the group's first) posts `{event:'citation', key:'refN'}`, and the existing path opens the card.
+- Verified on `Beyond_The_Page-Break.epub` (ACM, plain): 83 references (the five apparatus lines after the list excluded), 78 citations, `[83, Ch.2]` with its locator.
+
 **Quote links** (see the roadmap's on-disk schema):
 - Every `origamitext://` anchor gets class `origami-quote` and a
   following `[]` control.

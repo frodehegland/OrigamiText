@@ -508,3 +508,379 @@ enum CitationGraph {
         return abs(candidate - wanted) <= 1
     }
 }
+
+// MARK: - Transpoint
+
+/// One work a document cites, as Transpoint stands it beside the page:
+/// what it is, whether the library holds it, its sections when it does,
+/// and every passage of the citing document that points at it — each
+/// landing on a section where the citation says which, or on the whole
+/// work where it does not.
+///
+/// In honour of Ted Nelson's transpointing windows — with the one thing
+/// academia adds to them: a citation runs back in time. The cited stand
+/// behind the citing page, as the Hallway's older works stand deeper.
+nonisolated struct TranspointWork: Identifiable, Hashable, Sendable {
+    struct Section: Identifiable, Hashable, Sendable {
+        let id: String
+        let title: String
+        let level: Int
+    }
+    /// A passage of the citing document that cites the work, and the
+    /// section of the work it lands on, when that is known.
+    struct Origin: Hashable, Sendable {
+        let paragraphID: String
+        let sectionID: String?
+    }
+
+    let id: String
+    let title: String
+    let authors: String
+    let year: Int?
+    /// The library book, when the work is one.
+    let recordID: String?
+    /// The citing document's reference key — Acquire's handle.
+    let citationKey: String?
+    let doi: String?
+    let abstract: String?
+    var sections: [Section]
+    var origins: [Origin]
+
+    var isInLibrary: Bool { recordID != nil }
+}
+
+/// One citation between two documents on a Transpoint stage: the
+/// citing document and its passage (nil when it is cited only in the
+/// references), and the cited document and its section when known.
+nonisolated struct TranspointLink: Hashable, Sendable {
+    let from: String
+    let paragraphID: String?
+    let to: String
+    let sectionID: String?
+}
+
+nonisolated enum Transpoint {
+
+    /// How far behind the citing page the cited works stand, in metres:
+    /// a citation looks back in time, and back is the Hallway's past.
+    static let behind: Float = 0.05
+
+    /// Every work `doc` cites, oldest first, with the passages citing it.
+    ///
+    /// A work is resolved to a library book by the citation's own
+    /// address (`vm-id` / `origami-id`), its DOI, or its title. The
+    /// section is known when the citation names a passage — the address's
+    /// `#fragment`, an `[address#paragraph]` token, an `origamitext://`
+    /// link — or when words the citing paragraph quotes are found in the
+    /// book. Otherwise the line goes to the work as a whole.
+    static func works(citedBy doc: LiquidDoc, records: [EPUBRecord],
+                      document: (String) -> LiquidDoc?) -> [TranspointWork] {
+        let shelf = Shelf(records: records)
+        let selfIDs: Set<String> = [doc.id, LiquidAddress.canonical(doc.id)]
+        var works: [String: TranspointWork] = [:]
+        var order: [String] = []
+        var workByKey: [String: String] = [:]
+        var fragmentByKey: [String: String] = [:]
+        var targetDocs: [String: LiquidDoc] = [:]
+
+        func targetDoc(_ recordID: String) -> LiquidDoc? {
+            if let known = targetDocs[recordID] { return known }
+            let found = document(recordID)
+            if let found { targetDocs[recordID] = found }
+            return found
+        }
+
+        func add(_ work: TranspointWork) {
+            guard works[work.id] == nil else { return }
+            works[work.id] = work
+            order.append(work.id)
+        }
+
+        func bookWork(_ record: EPUBRecord, key: String?, fields: [String: String]) -> TranspointWork {
+            let target = targetDoc(record.id)
+            return TranspointWork(
+                id: record.id,
+                title: record.title,
+                authors: record.author,
+                year: record.dateISO.flatMap { Int($0.prefix(4)) }
+                    ?? fields["year"].flatMap { Int($0.filter(\.isNumber).prefix(4)) },
+                recordID: record.id,
+                citationKey: key,
+                doi: record.doi ?? fields["doi"],
+                abstract: target?.abstract ?? fields["abstract"],
+                sections: target.map(sections(of:)) ?? [],
+                origins: [])
+        }
+
+        // The reference list: one work per entry, a book where the
+        // library holds it.
+        for reference in doc.references {
+            let bib = BibTeXRecord.records(in: reference.bibtex).first
+            let fields = bib?.fields ?? [:]
+            let address = fields["vm-id"] ?? fields["origami-id"]
+            let parts = address.map { $0.split(separator: "#", maxSplits: 1).map(String.init) } ?? []
+            if parts.count == 2 { fragmentByKey[reference.id] = parts[1] }
+            let title = bib?.title.isEmpty == false ? bib!.title : (reference.citedAs ?? "")
+            let record = parts.first.flatMap(shelf.record(forAddress:))
+                ?? shelf.record(forDOI: fields["doi"])
+                ?? shelf.record(forTitle: title)
+            if let record {
+                guard !selfIDs.contains(record.id) else { continue }
+                add(bookWork(record, key: reference.id, fields: fields))
+                workByKey[reference.id] = record.id
+            } else {
+                guard !title.isEmpty else { continue }
+                let id = "cite:" + reference.id
+                add(TranspointWork(
+                    id: id, title: title,
+                    authors: bib?.displayAuthors ?? "",
+                    year: Int((bib?.year ?? "").filter(\.isNumber).prefix(4)),
+                    recordID: nil, citationKey: reference.id,
+                    doi: fields["doi"], abstract: fields["abstract"],
+                    sections: [], origins: []))
+                workByKey[reference.id] = id
+            }
+        }
+
+        // The text: every paragraph that cites, and where each citation lands.
+        var originSeen = Set<String>()
+        func cite(_ workID: String, from paragraphID: String, section: String?) {
+            guard works[workID] != nil,
+                  originSeen.insert("\(workID)|\(paragraphID)|\(section ?? "")").inserted
+            else { return }
+            works[workID]?.origins.append(
+                TranspointWork.Origin(paragraphID: paragraphID, sectionID: section))
+        }
+        for paragraph in doc.body ?? [] where paragraph.effectiveHeading == nil {
+            let text = paragraph.text
+            guard text.contains("[") || text.contains("origamitext") else { continue }
+            let quotes = quotations(in: text)
+
+            for key in citationKeys(in: text) {
+                guard let workID = workByKey[key] else { continue }
+                var section: String?
+                if let recordID = works[workID]?.recordID, let target = targetDoc(recordID) {
+                    if let fragment = fragmentByKey[key] {
+                        section = sectionID(containing: fragment, in: target)
+                    }
+                    if section == nil {
+                        section = quotes.lazy
+                            .compactMap { quoteSection($0, in: target) }.first
+                    }
+                }
+                cite(workID, from: paragraph.id, section: section)
+            }
+
+            for passage in passageLinks(in: text) {
+                guard let record = shelf.record(forAddress: passage.address),
+                      !selfIDs.contains(record.id) else { continue }
+                add(bookWork(record, key: nil, fields: [:]))
+                let section = targetDoc(record.id).flatMap {
+                    sectionID(containing: passage.fragment, in: $0)
+                }
+                cite(record.id, from: paragraph.id, section: section)
+            }
+        }
+
+        return order.compactMap { works[$0] }.sorted {
+            ($0.year ?? Int.max, $0.title) < ($1.year ?? Int.max, $1.title)
+        }
+    }
+
+    /// Every citation among the documents on stage: the page's to each
+    /// work it cites, and — where those works are library books — theirs
+    /// to one another and back to the page. Documents cite each other;
+    /// every such citation is a line.
+    static func links(page pageID: String, works: [TranspointWork],
+                      records: [EPUBRecord],
+                      document: (String) -> LiquidDoc?) -> [TranspointLink] {
+        var links: [TranspointLink] = []
+        for work in works {
+            for origin in work.origins {
+                links.append(TranspointLink(from: pageID, paragraphID: origin.paragraphID,
+                                            to: work.id, sectionID: origin.sectionID))
+            }
+        }
+        let stage = Set(works.map(\.id)).union([pageID])
+        for work in works {
+            guard let recordID = work.recordID, let doc = document(recordID) else { continue }
+            for cited in Transpoint.works(citedBy: doc, records: records, document: document)
+            where cited.id != work.id && stage.contains(cited.id) {
+                if cited.origins.isEmpty {
+                    links.append(TranspointLink(from: work.id, paragraphID: nil,
+                                                to: cited.id, sectionID: nil))
+                }
+                for origin in cited.origins {
+                    links.append(TranspointLink(from: work.id, paragraphID: origin.paragraphID,
+                                                to: cited.id, sectionID: origin.sectionID))
+                }
+            }
+        }
+        return links
+    }
+
+    /// The passages each document must report its place for: the citing
+    /// passages, and the cited sections, by document.
+    static func reporting(_ links: [TranspointLink]) -> [String: Set<String>] {
+        var report: [String: Set<String>] = [:]
+        for link in links {
+            if let paragraph = link.paragraphID { report[link.from, default: []].insert(paragraph) }
+            if let section = link.sectionID { report[link.to, default: []].insert(section) }
+        }
+        return report
+    }
+
+    // MARK: Sections
+
+    /// The headings a work's card lists: its top two levels — enough to
+    /// land on, few enough to read across a room.
+    static func sections(of doc: LiquidDoc) -> [TranspointWork.Section] {
+        let headings = (doc.body ?? []).compactMap { paragraph -> TranspointWork.Section? in
+            guard let level = paragraph.effectiveHeading else { return nil }
+            let title = paragraph.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return nil }
+            return TranspointWork.Section(id: paragraph.id, title: title, level: level)
+        }
+        let top = headings.map(\.level).min() ?? 1
+        return Array(headings.filter { $0.level <= top + 1 }.prefix(maxSections))
+    }
+
+    static let maxSections = 18
+
+    /// The listed section a passage of `doc` falls in: the last listed
+    /// heading at or before it. Nil before the first heading, or when the
+    /// passage is not in the document.
+    static func sectionID(containing fragment: String, in doc: LiquidDoc) -> String? {
+        let bare = fragment.split(separator: "#").last.map(String.init) ?? fragment
+        let listed = Set(sections(of: doc).map(\.id))
+        var current: String?
+        for paragraph in doc.body ?? [] {
+            if listed.contains(paragraph.id) { current = paragraph.id }
+            if paragraph.id == bare { return current }
+        }
+        return nil
+    }
+
+    // MARK: Reading the citing text
+
+    /// The keys of every `[cite:…]` / `[cites:…]` in a paragraph, in order.
+    static func citationKeys(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"\[cites?:([^\]]+)\]"#) else { return [] }
+        let ns = text as NSString
+        var keys: [String] = []
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            for raw in ns.substring(with: match.range(at: 1)).split(separator: ",") {
+                let key = raw.trimmingCharacters(in: .whitespaces)
+                if !key.isEmpty, !keys.contains(key) { keys.append(key) }
+            }
+        }
+        return keys
+    }
+
+    /// Links into a passage of another document: `[address#paragraph]`
+    /// tokens (a relation may lead, `[supports:address#p]`) and
+    /// `origamitext://open/address#paragraph` links or their web carrier.
+    static func passageLinks(in text: String) -> [(address: String, fragment: String)] {
+        let range = NSRange(text.startIndex..., in: text)
+        var out: [(String, String)] = []
+        if let tokens = try? NSRegularExpression(pattern: #"\[([^\[\]\s#]+)#([^\[\]\s]+)\]"#) {
+            for match in tokens.matches(in: text, range: range) {
+                guard let a = Range(match.range(at: 1), in: text),
+                      let f = Range(match.range(at: 2), in: text) else { continue }
+                var address = String(text[a])
+                if let colon = address.firstIndex(of: ":"),
+                   DocumentRelation(rawValue: String(address[..<colon])) != nil {
+                    address = String(address[address.index(after: colon)...])
+                }
+                out.append((address, String(text[f])))
+            }
+        }
+        if let links = try? NSRegularExpression(
+            pattern: #"(?:origamitext://open/|https://origamitext\.app/o/)([^)\s#]+)#([^)\s]+)"#) {
+            for match in links.matches(in: text, range: range) {
+                guard let a = Range(match.range(at: 1), in: text),
+                      let f = Range(match.range(at: 2), in: text) else { continue }
+                let address = String(text[a]).removingPercentEncoding ?? String(text[a])
+                out.append((address, String(text[f])))
+            }
+        }
+        return out
+    }
+
+    /// Words a paragraph quotes — long enough to be worth finding.
+    static func quotations(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"[“"]([^”"]{24,600})[”"]"#) else { return [] }
+        let ns = text as NSString
+        return regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            .map { normalized(ns.substring(with: $0.range(at: 1))) }
+            .filter { $0.split(separator: " ").count >= 5 }
+    }
+
+    /// The listed section of `doc` whose passage holds the quoted words.
+    static func quoteSection(_ quote: String, in doc: LiquidDoc) -> String? {
+        for paragraph in doc.body ?? [] where paragraph.effectiveHeading == nil {
+            if normalized(paragraph.text).contains(quote) {
+                return sectionID(containing: paragraph.id, in: doc)
+            }
+        }
+        return nil
+    }
+
+    /// Letters and figures only, single-spaced, lower case — so a quote
+    /// survives the citing text's tokens, emphasis and curly punctuation.
+    static func normalized(_ text: String) -> String {
+        var cleaned = text.replacingOccurrences(of: #"\[[^\]]*\]"#, with: " ",
+                                                options: .regularExpression)
+        cleaned = cleaned.lowercased().map { $0.isLetter || $0.isNumber ? $0 : " " }
+            .reduce(into: "") { $0.append($1) }
+        return cleaned.split(separator: " ").joined(separator: " ")
+    }
+
+    // MARK: The shelf
+
+    /// The library, looked up the three ways a citation names a book.
+    struct Shelf {
+        private var byAddress: [String: EPUBRecord] = [:]
+        private var byDOI: [String: EPUBRecord] = [:]
+        private var byTitle: [String: EPUBRecord] = [:]
+
+        init(records: [EPUBRecord]) {
+            for record in records {
+                for address in [record.id, LiquidAddress.canonical(record.id), record.folder,
+                                record.packageIdentifier ?? ""] where !address.isEmpty {
+                    byAddress[address.lowercased()] = byAddress[address.lowercased()] ?? record
+                }
+                if let doi = Self.cleanDOI(record.doi) { byDOI[doi] = byDOI[doi] ?? record }
+                let title = Transpoint.normalized(record.title)
+                if title.count >= 12 { byTitle[title] = byTitle[title] ?? record }
+            }
+        }
+
+        func record(forAddress address: String) -> EPUBRecord? {
+            let trimmed = address.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return nil }
+            return byAddress[trimmed.lowercased()]
+                ?? byAddress[LiquidAddress.canonical(trimmed).lowercased()]
+        }
+
+        func record(forDOI doi: String?) -> EPUBRecord? {
+            Self.cleanDOI(doi).flatMap { byDOI[$0] }
+        }
+
+        func record(forTitle title: String) -> EPUBRecord? {
+            let key = Transpoint.normalized(BibTeXParser.displayText(title))
+            return key.count >= 12 ? byTitle[key] : nil
+        }
+
+        static func cleanDOI(_ doi: String?) -> String? {
+            guard var value = doi?.trimmingCharacters(in: .whitespaces).lowercased(),
+                  !value.isEmpty else { return nil }
+            for prefix in ["https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "doi:"]
+            where value.hasPrefix(prefix) {
+                value = String(value.dropFirst(prefix.count))
+            }
+            return value.isEmpty ? nil : value
+        }
+    }
+}

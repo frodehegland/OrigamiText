@@ -284,7 +284,7 @@ struct TimeFlowsListView: View {
     var body: some View {
         // The revision read makes this view live to mirror changes.
         let _ = model.timeFlowsRevision
-        let pairs = model.timeFlowPairs()
+        let pairs = model.timeFlowPairs().filter { model.matchesFind($0.name) }
         List {
             if pairs.isEmpty {
                 ContentUnavailableView {
