@@ -346,16 +346,22 @@ nonisolated enum ReaderMapLayouts {
     /// when they exist: a creation date per node id, and a category per
     /// node id ("section", "concept", "citation", "note" or a user
     /// category; missing means "concept", as in Author).
+    ///
+    /// `links`, when given, are what the views score and cluster by in
+    /// place of `referenceLinks` — a map whose members are joined by
+    /// something other than what their definitions mention (the library's
+    /// citations: a paper and the works it cites).
     static func analysis(_ kind: ReaderMapAnalysis, nodes: [ReaderMapNode],
                          sections: [(title: String, text: String)],
-                         dates: [String: Date], categories: [String: String]) -> [String: CGPoint] {
+                         dates: [String: Date], categories: [String: String],
+                         links: [String: Set<String>]? = nil) -> [String: CGPoint] {
         switch kind {
-        case .magneticCenter: return magneticPositions(nodes)
-        case .islands: return islandPositions(nodes)
-        case .spine: return spinePositions(nodes, sections: sections)
-        case .orbits: return orbitPositions(nodes)
+        case .magneticCenter: return magneticPositions(nodes, links: links)
+        case .islands: return islandPositions(nodes, links: links)
+        case .spine: return spinePositions(nodes, sections: sections, links: links)
+        case .orbits: return orbitPositions(nodes, links: links)
         case .timeline: return timelinePositions(nodes, dates: dates, categories: categories)
-        case .neighborhoods: return neighborhoodPositions(nodes, categories: categories)
+        case .neighborhoods: return neighborhoodPositions(nodes, categories: categories, links: links)
         }
     }
 
@@ -432,9 +438,10 @@ nonisolated enum ReaderMapLayouts {
     /// apart, at least 160 of arc per node), zero scores in the outermost
     /// band. A lone top scorer sits exactly at the centre. Not recentred,
     /// as in Author.
-    private static func magneticPositions(_ nodes: [ReaderMapNode]) -> [String: CGPoint] {
+    private static func magneticPositions(_ nodes: [ReaderMapNode],
+                                          links given: [String: Set<String>]? = nil) -> [String: CGPoint] {
         guard !nodes.isEmpty else { return [:] }
-        let links = referenceLinks(among: nodes)
+        let links = given ?? referenceLinks(among: nodes)
         var scores: [String: Int] = [:]
         for node in nodes { scores[node.id] = links[node.id]?.count ?? 0 }
 
@@ -475,9 +482,10 @@ nonisolated enum ReaderMapLayouts {
     /// treated undirected), biggest first, each laid out as its own small
     /// Magnetic Center on a square-ish grid; unconnected nodes gather in
     /// an orphan band beneath.
-    private static func islandPositions(_ nodes: [ReaderMapNode]) -> [String: CGPoint] {
+    private static func islandPositions(_ nodes: [ReaderMapNode],
+                                        links given: [String: Set<String>]? = nil) -> [String: CGPoint] {
         guard !nodes.isEmpty else { return [:] }
-        let links = referenceLinks(among: nodes)
+        let links = given ?? referenceLinks(among: nodes)
         var adjacency: [String: Set<String>] = [:]
         for (source, targets) in links {
             for target in targets {
@@ -518,7 +526,7 @@ nonisolated enum ReaderMapLayouts {
         var layouts: [[String: CGPoint]] = []
         var radii: [CGFloat] = []
         for island in islands {
-            let layout = magneticPositions(island)
+            let layout = magneticPositions(island, links: given)
             let radius = layout.values.map { sqrt($0.x * $0.x + $0.y * $0.y) }.max() ?? 0
             layouts.append(layout)
             radii.append(max(radius + xPitch / 2, 90))
@@ -563,9 +571,10 @@ nonisolated enum ReaderMapLayouts {
     /// returned under `sectionKey(index)`; they take part in the
     /// recentring, as Author's Section nodes do.
     private static func spinePositions(_ nodes: [ReaderMapNode],
-                                       sections: [(title: String, text: String)]) -> [String: CGPoint] {
+                                       sections: [(title: String, text: String)],
+                                       links: [String: Set<String>]? = nil) -> [String: CGPoint] {
         guard !nodes.isEmpty || !sections.isEmpty else { return [:] }
-        guard !sections.isEmpty else { return magneticPositions(nodes) }
+        guard !sections.isEmpty else { return magneticPositions(nodes, links: links) }
 
         let termed = nodes.map { ($0, terms(of: $0)) }
         var fans: [[ReaderMapNode]] = []
@@ -621,9 +630,10 @@ nonisolated enum ReaderMapLayouts {
     /// radius; each node orbits the strongest hub it references. Systems
     /// sit on a square-ish grid, free nodes in a band beneath; with no
     /// hubs this falls back to Magnetic Center.
-    private static func orbitPositions(_ nodes: [ReaderMapNode]) -> [String: CGPoint] {
+    private static func orbitPositions(_ nodes: [ReaderMapNode],
+                                       links given: [String: Set<String>]? = nil) -> [String: CGPoint] {
         guard !nodes.isEmpty else { return [:] }
-        let links = referenceLinks(among: nodes)
+        let links = given ?? referenceLinks(among: nodes)
         var referencedBy: [String: Set<String>] = [:]
         for (source, targets) in links {
             for target in targets { referencedBy[target, default: []].insert(source) }
@@ -631,7 +641,7 @@ nonisolated enum ReaderMapLayouts {
 
         let byID = nodeMap(nodes)
         var hubs = nodes.filter { (referencedBy[$0.id]?.count ?? 0) >= 2 }
-        guard !hubs.isEmpty else { return magneticPositions(nodes) }
+        guard !hubs.isEmpty else { return magneticPositions(nodes, links: given) }
 
         hubs.sort {
             let a = referencedBy[$0.id]?.count ?? 0
@@ -764,9 +774,10 @@ nonisolated enum ReaderMapLayouts {
     /// alphabetically — side by side 40 apart, each ordered by magnetic
     /// score so the best-connected lead their block.
     private static func neighborhoodPositions(_ nodes: [ReaderMapNode],
-                                              categories: [String: String]) -> [String: CGPoint] {
+                                              categories: [String: String],
+                                              links given: [String: Set<String>]? = nil) -> [String: CGPoint] {
         guard !nodes.isEmpty else { return [:] }
-        let links = referenceLinks(among: nodes)
+        let links = given ?? referenceLinks(among: nodes)
 
         var groups: [String: [ReaderMapNode]] = [:]
         for node in nodes { groups[categories[node.id] ?? "concept", default: []].append(node) }

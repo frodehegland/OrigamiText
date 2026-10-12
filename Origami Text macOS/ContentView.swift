@@ -644,13 +644,7 @@ struct ContentView: View {
         } else if model.sidebarSelection == .books {
             BooksDetailView()
         } else if model.sidebarSelection == .citedWorks {
-            if let key = model.selectedCitedWorkKey {
-                CitedWorkDetailView(key: key)
-                    .id(key)
-            } else {
-                ContentUnavailableView("No Reference Selected", systemImage: "quote.opening",
-                                       description: Text("Choose a work to see everything known of it."))
-            }
+            CitedWorksDetailPane()
         } else if let destination = model.current, let parallel = model.parallelDoc {
             ParallelReadingView(leftDoc: destination.doc, rightDoc: parallel)
                 .id("\(destination.doc.id)-\(parallel.id)")

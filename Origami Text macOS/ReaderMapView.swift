@@ -78,6 +78,11 @@ struct ReaderMapView: View {
     /// Author lays its Map bar out — the mode words stay in the middle,
     /// Map bold. Nil draws a stand-alone bar (previews).
     var footBar: ((AnyView, AnyView) -> AnyView)? = nil
+    /// Opens one of `extras.openable` — on a double-click, or Open.
+    var onOpen: ((String) -> Void)? = nil
+    /// A member chosen elsewhere (a list beside the map): selected, and
+    /// brought into view.
+    var focusID: String? = nil
 
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var colorScheme
@@ -103,6 +108,13 @@ struct ReaderMapView: View {
     @State private var hidden: Set<String> = []
     @State private var focusMode = false
     @State private var onlyInText = false
+    /// Show ▸ the map's own narrowing (`extras.narrowing`) is in force.
+    @State private var narrowed = false
+    /// The shape last chosen from the Shapes list, and its captions —
+    /// until another arrangement replaces it.
+    @State private var activeShape: String?
+    @State private var shapeCaptions: [MapShape.Caption] = []
+    @State private var showsShapes = false
     @State private var scale: CGFloat = 1
     @State private var offset: CGSize = .zero
     /// Z's other state: where the view stood before it fitted.
@@ -164,12 +176,14 @@ struct ReaderMapView: View {
         .onChange(of: model.readingOverviewOn) { onClose() }
         .onChange(of: model.readingAnalysisKind) { onClose() }
         .onChange(of: viewIndex) { loadPositions(); recentre() }
+        .onChange(of: focusID) { _, id in focus(on: id) }
     }
 
     // MARK: The canvas
 
     private var canvas: some View {
         let shown = visibleItems
+        let shownIDs = Set(shown.map(\.id))
         let sizes = Dictionary(uniqueKeysWithValues: items.map { ($0.id, size(of: $0)) })
         let linked = linkedIDs
         let hoveredLink = hoverPoint.flatMap { link(near: $0) }
@@ -182,7 +196,7 @@ struct ReaderMapView: View {
             Canvas { context, _ in
                 for link in links {
                     guard let a = positions[link.from], let b = positions[link.to],
-                          isShown(link.from, in: shown), isShown(link.to, in: shown) else { continue }
+                          shownIDs.contains(link.from), shownIDs.contains(link.to) else { continue }
                     var path = Path()
                     path.move(to: screen(a))
                     path.addLine(to: screen(b))
@@ -202,6 +216,16 @@ struct ReaderMapView: View {
                         .position(screen(point))
                         .allowsHitTesting(false)
                 }
+            }
+
+            ForEach(Array(shapeCaptions.enumerated()), id: \.offset) { _, caption in
+                Text(caption.title)
+                    .font(AppFonts.heading(Self.fontSize + 3, weight: .bold))
+                    .foregroundStyle(ink.opacity(0.55))
+                    .fixedSize()
+                    .scaleEffect(scale)
+                    .position(screen(caption.point))
+                    .allowsHitTesting(false)
             }
 
             ForEach(shown) { item in
@@ -230,7 +254,7 @@ struct ReaderMapView: View {
                     .allowsHitTesting(false)
             }
 
-            offscreenPills(shown: shown, sizes: sizes)
+            offscreenPills(shown: shownIDs, sizes: sizes)
         }
         .coordinateSpace(name: "map")
         .onContinuousHover(coordinateSpace: .named("map")) { phase in
@@ -243,20 +267,23 @@ struct ReaderMapView: View {
         let found = activeFind != nil && selected
         var font = AppFonts.body(Self.fontSize, weight: item.kind == .heading ? .bold : nil)
         if item.kind == .reference { font = font.italic() }
+        // A pill (the Document Space's tags) keeps a thin outline at rest,
+        // so it is not mistaken for a document, and round ends.
+        let pill = extras.pills.contains(item.id)
+        let shape = RoundedRectangle(cornerRadius: pill ? 100 : 4)
+        let restingBorder = pill ? ink.opacity(0.4) : Color.clear
         return Text(item.label)
             .font(font)
             .lineLimit(1)
             .fixedSize()
-            .padding(.horizontal, 5)
+            .padding(.horizontal, pill ? 9 : 5)
             .padding(.vertical, 3)
             .foregroundStyle(selected ? Color.white : (linked ? linkedInk : ink))
             .background(
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(selected ? selectedFill : (linked ? linkedFill : Color.clear)))
+                shape.fill(selected ? selectedFill : (linked ? linkedFill : Color.clear)))
             .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(selected ? selectedBorder : (linked ? linkedBorder : Color.clear),
-                                  lineWidth: found ? 1.5 : 1))
+                shape.strokeBorder(selected ? selectedBorder : (linked ? linkedBorder : restingBorder),
+                                   lineWidth: found ? 1.5 : (selected || linked || !pill ? 1 : 0.5)))
             .opacity(hidden.contains(item.id) ? 0.75 : 1)
             .help(item.definition.isEmpty ? item.label : item.definition)
     }
@@ -303,7 +330,13 @@ struct ReaderMapView: View {
                 }
                 if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
                     selection = [item.id]
-                    definitionFor = item.id
+                    // A document opens on a double-click, as in the
+                    // Document Space; anything else shows its definition.
+                    if let onOpen, extras.openable.contains(item.id) {
+                        onOpen(item.id)
+                    } else {
+                        definitionFor = item.id
+                    }
                 } else if NSEvent.modifierFlags.intersection([.shift, .command]).isEmpty {
                     selection = [item.id]
                 }
@@ -341,9 +374,16 @@ struct ReaderMapView: View {
     // MARK: Menus
 
     @ViewBuilder private func nodeMenu(_ item: Item) -> some View {
+        if let onOpen, extras.openable.contains(item.id) {
+            Button("Open") { onOpen(item.id) }
+        }
         Button("Read Definition") { selection = [item.id]; definitionFor = item.id }
         if appearsInText(item) {
             Button("Show in Text") { showInText(item) }
+        }
+        if extras.pills.contains(item.id) {
+            // The Document Space's tag pill: Show Only its documents.
+            Button("Show Only") { selection = [item.id]; recomputeLinks(); focusMode = true }
         }
         Divider()
         Button("Focus") { if !selection.contains(item.id) { selection = [item.id] }; focusMode.toggle() }
@@ -384,6 +424,15 @@ struct ReaderMapView: View {
                 .popover(isPresented: $showsAskAI) { askAIForm }
             toolSeparator
             viewsMenu
+            if !extras.shapes.isEmpty {
+                toolSeparator
+                Button("Shapes") { showsShapes = true }
+                    .popover(isPresented: $showsShapes, arrowEdge: .top) { shapesList }
+                    .help("Ways of seeing these members, each with its groups named")
+                if let activeShape {
+                    Text(activeShape).foregroundStyle(.primary)
+                }
+            }
             if let activeFind {
                 toolSeparator
                 Text("Find: \(activeFind)")
@@ -432,9 +481,13 @@ struct ReaderMapView: View {
 
     private var showMenu: some View {
         Menu("Show") {
-            Button("All") { focusMode = false; onlyInText = false }
+            Button("All") { focusMode = false; onlyInText = false; narrowed = false }
             Toggle("Focus", isOn: $focusMode).disabled(selection.isEmpty)
-            Toggle("Only Concepts in the Text", isOn: $onlyInText)
+            if let narrowing = extras.narrowing {
+                Toggle(narrowing.title, isOn: $narrowed)
+            } else {
+                Toggle("Only Concepts in the Text", isOn: $onlyInText)
+            }
             Divider()
             Button("Hide Selection") { hideSelection(including: nil) }.disabled(selection.isEmpty)
             Button("Reveal Hidden") { hidden = [] }.disabled(hidden.isEmpty)
@@ -443,7 +496,7 @@ struct ReaderMapView: View {
 
     private var layoutMenu: some View {
         Menu("Layout") {
-            Button("Author\u{2019}s Layout") { restoreAuthorsLayout() }
+            Button(extras.originalLayoutName) { restoreAuthorsLayout() }
             Divider()
             ForEach([ReaderMapAnalysis.magneticCenter, .islands, .spine, .orbits]) { kind in
                 Button(kind.title) { analyse(kind) }
@@ -511,7 +564,8 @@ struct ReaderMapView: View {
     }
 
     private func definitionCard(_ item: Item) -> some View {
-        let mentions = ReaderMapLinks.links(forSelection: [item.id], among: mapNodes)
+        // A map joined by connections says so in its definitions.
+        let mentions = extras.connections != nil ? [] : ReaderMapLinks.links(forSelection: [item.id], among: mapNodes)
             .filter(\.solid).compactMap { link in items.first { $0.id == link.to }?.label }
         return VStack(alignment: .leading, spacing: 10) {
             Text(item.label).font(AppFonts.heading(17, weight: .bold))
@@ -534,6 +588,46 @@ struct ReaderMapView: View {
         }
         .padding(16)
         .frame(width: 340)
+    }
+
+    /// The Shapes pop-up list: each shape under the thinker it comes
+    /// from, its sentence beneath; a click arranges the map so.
+    private var shapesList: some View {
+        let groups = extras.shapes.reduce(into: [String]()) { if !$0.contains($1.group) { $0.append($1.group) } }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(groups, id: \.self) { group in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(group)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+                        ForEach(extras.shapes.filter { $0.group == group }) { shape in
+                            Button {
+                                showsShapes = false
+                                applyShape(shape)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(shape.title)
+                                        .font(.body.weight(activeShape == shape.title ? .semibold : .regular))
+                                    Text(shape.explanation)
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 4)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 400)
+        .frame(maxHeight: 560)
     }
 
     private var saveViewForm: some View {
@@ -577,7 +671,7 @@ struct ReaderMapView: View {
     /// stands as a 120×24 pill 10 pt inside the edge where its line
     /// leaves; a click brings it into view (the reader's version of Bring
     /// Node Here — the book's arrangement is not changed).
-    @ViewBuilder private func offscreenPills(shown: [Item], sizes: [String: CGSize]) -> some View {
+    @ViewBuilder private func offscreenPills(shown: Set<String>, sizes: [String: CGSize]) -> some View {
         let pills = offscreenTargets(shown: shown, sizes: sizes)
         ForEach(pills, id: \.id) { pill in
             Text(pill.label)
@@ -597,14 +691,15 @@ struct ReaderMapView: View {
 
     private struct Pill { let id: String; let label: String; let point: CGPoint }
 
-    private func offscreenTargets(shown: [Item], sizes: [String: CGSize]) -> [Pill] {
+    private func offscreenTargets(shown: Set<String>, sizes: [String: CGSize]) -> [Pill] {
         guard !selection.isEmpty, viewport.width > 0 else { return [] }
         let bounds = CGRect(origin: .zero, size: viewport)
         let inner = bounds.insetBy(dx: 10 + Self.pillSize.width / 2, dy: 10 + Self.pillSize.height / 2)
+        let labels = Dictionary(items.map { ($0.id, $0.label) }, uniquingKeysWith: { first, _ in first })
         var pills: [Pill] = []
         for link in links {
             let (near, far) = selection.contains(link.from) ? (link.from, link.to) : (link.to, link.from)
-            guard !selection.contains(far), isShown(far, in: shown),
+            guard !selection.contains(far), shown.contains(far),
                   let farPoint = positions[far], let nearPoint = positions[near],
                   !pills.contains(where: { $0.id == far }) else { continue }
             let target = screen(farPoint)
@@ -618,7 +713,7 @@ struct ReaderMapView: View {
                 point.y += Self.pillSize.height + 4
                 if point.y > inner.maxY { point.y = inner.minY; point.x -= Self.pillSize.width + 4 }
             }
-            pills.append(Pill(id: far, label: items.first { $0.id == far }?.label ?? far, point: point))
+            pills.append(Pill(id: far, label: labels[far] ?? far, point: point))
         }
         return pills
     }
@@ -686,10 +781,13 @@ struct ReaderMapView: View {
     private var items: [Item] {
         guard let layout = doc.layouts[safe: viewIndex] else { return [] }
         let body = doc.body ?? []
+        // Looked up by id, not searched, for a map of a thousand members
+        // (the library's citations).
+        let concepts = Dictionary(doc.concepts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return layout.positions.map { position in
             let ref = position.id
             let bare = ref.split(separator: "#").last.map(String.init) ?? ref
-            if let concept = doc.concepts.first(where: { $0.id == ref || $0.id == bare }) {
+            if let concept = concepts[ref] ?? concepts[bare] {
                 let definition = concept.userDefinition.flatMap { $0.isEmpty ? nil : $0 } ?? concept.description
                 return Item(id: ref, label: extras.labels[ref] ?? concept.name, kind: .concept,
                             definition: definition, paragraphID: nil)
@@ -724,15 +822,14 @@ struct ReaderMapView: View {
     private var visibleItems: [Item] {
         let inText = onlyInText ? bodyTextLowercased : nil
         let focusSet = focusMode && !selection.isEmpty ? selection.union(linkedIDs) : nil
+        let leftOut = narrowed ? extras.narrowing?.leavesOut ?? [] : []
         return items.filter { item in
-            if hidden.contains(item.id) { return false }
+            if hidden.contains(item.id) || leftOut.contains(item.id) { return false }
             if let focusSet, !focusSet.contains(item.id) { return false }
             if let inText, item.kind == .concept, !inText.contains(item.label.lowercased()) { return false }
             return true
         }
     }
-
-    private func isShown(_ id: String, in shown: [Item]) -> Bool { shown.contains { $0.id == id } }
 
     private var linkedIDs: Set<String> {
         Set(links.flatMap { [$0.from, $0.to] }).subtracting(selection)
@@ -769,7 +866,8 @@ struct ReaderMapView: View {
         let font = item.kind == .heading
             ? NSFontManager.shared.convert(base, toHaveTrait: .boldFontMask) : base
         let measured = (item.label as NSString).size(withAttributes: [.font: font])
-        return CGSize(width: ceil(measured.width) + 10, height: ceil(measured.height) + 6)
+        let inset: CGFloat = extras.pills.contains(item.id) ? 18 : 10
+        return CGSize(width: ceil(measured.width) + inset, height: ceil(measured.height) + 6)
     }
 
     // MARK: Coordinates
@@ -814,6 +912,7 @@ struct ReaderMapView: View {
         loadPositions()
         recentre()
         if !initialSelection.isEmpty { selection = initialSelection; recomputeLinks() }
+        focus(on: focusID)
         installMonitors()
     }
 
@@ -834,8 +933,54 @@ struct ReaderMapView: View {
     }
 
     private func recomputeLinks() {
-        links = selection.isEmpty ? [] : ReaderMapLinks.links(forSelection: selection, among: mapNodes)
+        if selection.isEmpty {
+            links = []
+        } else if let connections = extras.connections {
+            links = Self.connectionLinks(forSelection: selection, in: connections)
+        } else {
+            links = ReaderMapLinks.links(forSelection: selection, among: mapNodes)
+        }
         if selection.isEmpty { focusMode = false }
+    }
+
+    /// The Document Space's lines: a selected member to each it is
+    /// connected to, either way round — a paper to the works it cites, a
+    /// work to the papers citing it. Every one is solid: it is a fact,
+    /// not a mention.
+    private static func connectionLinks(forSelection selection: Set<String>,
+                                        in connections: [String: Set<String>]) -> [ReaderMapLink] {
+        var result: [ReaderMapLink] = []
+        var seen = Set<String>()
+        func add(_ from: String, _ to: String) {
+            guard from != to, seen.insert(from + "\u{1}" + to).inserted else { return }
+            result.append(ReaderMapLink(from: from, to: to, solid: true, sentences: []))
+        }
+        for (from, targets) in connections {
+            if selection.contains(from) {
+                for to in targets { add(from, to) }
+            } else {
+                for to in targets where selection.contains(to) { add(from, to) }
+            }
+        }
+        return result
+    }
+
+    /// Both ways round, for the layouts: a citation joins the two.
+    private var undirectedConnections: [String: Set<String>]? {
+        guard let connections = extras.connections else { return nil }
+        var out = connections
+        for (from, targets) in connections {
+            for to in targets { out[to, default: []].insert(from) }
+        }
+        return out
+    }
+
+    /// A member chosen beside the map: selected alone and centred.
+    private func focus(on id: String?) {
+        guard let id, positions[id] != nil else { return }
+        hidden.remove(id)
+        selection = [id]
+        centre(on: id)
     }
 
     /// Opening as Author's Map opens: at actual size, centred — here on
@@ -990,8 +1135,26 @@ struct ReaderMapView: View {
         }
     }
 
+    /// A shape from the list: every member to its place (undoable, kept as
+    /// the reader's arrangement), its groups captioned, all of it in view.
+    private func applyShape(_ shape: MapShape) {
+        arrange(action: shape.title) { current in current.merging(shape.positions) { _, new in new } }
+        shapeCaptions = shape.captions
+        activeShape = shape.title
+        unzoomed = nil
+        toggleZoom()
+    }
+
+    private func clearShape() {
+        activeShape = nil
+        shapeCaptions = []
+    }
+
     private func analyse(_ kind: ReaderMapAnalysis) {
-        let computed = ReaderMapLayouts.analysis(kind, nodes: mapNodes, sections: sections)
+        clearShape()
+        let computed = ReaderMapLayouts.analysis(kind, nodes: mapNodes, sections: sections,
+                                                 dates: [:], categories: [:],
+                                                 links: undirectedConnections)
         arrange(action: kind.title) { current in
             // Spine's section labels join; any earlier ones go.
             current.filter { !$0.key.hasPrefix("section:") }.merging(computed) { _, new in new }
@@ -1000,6 +1163,7 @@ struct ReaderMapView: View {
     }
 
     private func restoreAuthorsLayout() {
+        clearShape()
         let before = positions
         withAnimation(.easeInOut(duration: 0.3)) { positions = authoredPositions }
         ReaderMapStore.setPositions(nil, book: bookKey, view: viewKey)
@@ -1007,7 +1171,7 @@ struct ReaderMapView: View {
             positions = before
             ReaderMapStore.setPositions(before, book: bookKey, view: viewKey)
         }
-        undoManager?.setActionName("Author\u{2019}s Layout")
+        undoManager?.setActionName(extras.originalLayoutName)
         recentre()
     }
 
@@ -1020,6 +1184,7 @@ struct ReaderMapView: View {
     }
 
     private func apply(_ saved: ReaderMapStore.SavedView) {
+        clearShape()
         let restored = saved.positions.compactMapValues { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil }
         arrange(action: saved.name) { current in current.merging(restored) { _, saved in saved } }
         recentre()
