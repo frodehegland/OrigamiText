@@ -115,7 +115,10 @@ enum ReaderTheme: String, CaseIterable, Identifiable, Sendable {
     /// CSS injected into the faithful (WebView) rendering. High Contrast
     /// keeps the EPUB's own black-on-white (until its colours are
     /// edited); every other theme overrides background and text so the
-    /// page matches the rest of the app.
+    /// page matches the rest of the app. `!important`, because a book may
+    /// paint its body through a class (Google Docs exports carry
+    /// `<body class="c5">` with `.c5 { background-color: #ffffff }`),
+    /// which outranks a plain `html, body` rule.
     var css: String {
         if self == .highContrast,
            !ThemeColorOverrides.hasOverride(backgroundOverrideKey),
@@ -125,9 +128,9 @@ enum ReaderTheme: String, CaseIterable, Identifiable, Sendable {
         let fallback = ReaderTheme.highContrastEditorPalette
         return """
         :root { color-scheme: light dark; }
-        html, body { background-color: \(effectiveBackgroundHex(dark: false) ?? fallback.lightBackground); color: \(effectiveTextHex(dark: false) ?? fallback.lightText); }
+        html, body { background-color: \(effectiveBackgroundHex(dark: false) ?? fallback.lightBackground) !important; color: \(effectiveTextHex(dark: false) ?? fallback.lightText) !important; }
         @media (prefers-color-scheme: dark) {
-          html, body { background-color: \(effectiveBackgroundHex(dark: true) ?? fallback.darkBackground); color: \(effectiveTextHex(dark: true) ?? fallback.darkText); }
+          html, body { background-color: \(effectiveBackgroundHex(dark: true) ?? fallback.darkBackground) !important; color: \(effectiveTextHex(dark: true) ?? fallback.darkText) !important; }
         }
         """
     }

@@ -2161,9 +2161,9 @@ struct EPUBReaderView: NSViewRepresentable {
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(source: readAloudScript,
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        // After the theme's style stands: a book's unreadable greys —
-        // author lines, copyright blocks — take the body ink. Never on a
-        // designed fixed-layout page.
+        // After the theme's style stands: a book's own paper and ink —
+        // white grounds, black type, unreadable greys — give way to the
+        // theme's. Never on a designed fixed-layout page.
         if !fixedLayout {
             controller.addUserScript(WKUserScript(source: greyContrastScript,
                                                   injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -3067,13 +3067,24 @@ struct EPUBReaderView: NSViewRepresentable {
         """
     }
 
-    /// A book's greys in the theme's ink: any element an EPUB paints in
-    /// grey that cannot be read against the theme's page — computed
-    /// colour against computed background, greys alone, so a book's
-    /// coloured links and inks stay its own — is re-inked to inherit
-    /// the body colour. Author lines and copyright blocks are the usual
-    /// culprits, unreadable on the dark themes. Runs after load and
-    /// after every live theme change; a second run is a re-application.
+    /// The book's paper and ink give way to the theme's, its design
+    /// stays. Word processors and many producers write black ink and
+    /// white paper into every rule (a Google Docs export colours `p`,
+    /// `li`, `h1`–`h6` and each span `#000000`, and paints white through
+    /// classes), so the chosen theme never shows. Each element, in
+    /// document order:
+    ///  - a neutral (white, grey, black) opaque background is cleared,
+    ///    so the theme's page shows through; a coloured one — a callout,
+    ///    a highlight — is the book's design and stays;
+    ///  - neutral ink that is near-black or near-white (the "default"
+    ///    ink a producer assumed), or any grey that cannot be read
+    ///    against the theme's page, inherits the body colour. Coloured
+    ///    links and inks stay the book's own, and so does any text
+    ///    standing on a background the book keeps (white on navy).
+    /// Fonts, sizes, spacing and alignment are never touched. The
+    /// reader's own page furniture (`origami…` ids, `ot-…` classes) is
+    /// left alone. Runs after load and after every live theme change; a
+    /// second run is a re-application.
     private static let greyContrastScript = """
     (function(){
       if (!document.body) return;
@@ -3085,18 +3096,36 @@ struct EPUBReaderView: NSViewRepresentable {
         var m=/rgba?\\(([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)(?:,\\s*([\\d.]+))?\\)/.exec(s);
         return m?[+m[1],+m[2],+m[3],m[4]===undefined?1:+m[4]]:null;
       }
+      function neutral(c){return Math.max(c[0],c[1],c[2])-Math.min(c[0],c[1],c[2])<=16;}
       var bg=parse(getComputedStyle(document.body).backgroundColor);
       if(!bg||bg[3]===0){bg=[255,255,255,1];}
       var bgL=lum(bg);
       function contrast(c){var L=lum(c);var hi=Math.max(L,bgL),lo=Math.min(L,bgL);return (hi+0.05)/(lo+0.05);}
+      var media={IMG:1,SVG:1,svg:1,VIDEO:1,CANVAS:1,PICTURE:1,IFRAME:1,OBJECT:1,EMBED:1};
+      var furniture='[id^="origami"],[class^="ot-"],[class*=" ot-"],[class^="origami"],[class*=" origami"]';
+      // Elements standing on a background the book keeps — their ink is
+      // chosen against that background, not the page.
+      var onKept=new Set();
       var els=document.body.getElementsByTagName('*');
       for(var i=0;i<els.length;i++){
-        var c=parse(getComputedStyle(els[i]).color);
-        if(!c)continue;
-        var sat=Math.max(c[0],c[1],c[2])-Math.min(c[0],c[1],c[2]);
-        if(sat>16)continue;
-        if(contrast(c)>=3)continue;
-        els[i].style.setProperty('color','inherit','important');
+        var el=els[i];
+        if(media[el.tagName]||el.closest(furniture))continue;
+        if(el.closest('svg, math'))continue;
+        var cs=getComputedStyle(el);
+        var b=parse(cs.backgroundColor);
+        var kept=el.parentElement&&onKept.has(el.parentElement);
+        if(b&&b[3]>=0.5){
+          if(neutral(b)){
+            if(el.tagName==='PRE')el.style.setProperty('background-color','rgba(127,127,127,0.12)','important');
+            else el.style.setProperty('background-color','transparent','important');
+          }else{kept=true;}
+        }
+        if(kept){onKept.add(el);continue;}
+        var c=parse(cs.color);
+        if(!c||!neutral(c))continue;
+        var extreme=Math.max(c[0],c[1],c[2])<=0x33||Math.min(c[0],c[1],c[2])>=0xE0;
+        if(!extreme&&contrast(c)>=3)continue;
+        el.style.setProperty('color','inherit','important');
       }
     })();
     """
