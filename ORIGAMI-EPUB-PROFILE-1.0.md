@@ -1934,7 +1934,8 @@ back to `value`.
 
 `ref`, `from` and `to` are element addresses (§6.1), or the bare `id`
 of an entry in the semantic record — `concepts[].id`, `citations[].id`,
-`structure.headings[].id` or `endnotes[].id` (§9). For a concept that is
+`structure.headings[].id` or `endnotes[].id` (§9) — or of a background
+concept, `map.context[].id` (§10.3.1). For a concept that is
 the same id the glossary's `<dt id="gloss-<id>">` and the text's concept
 links carry. A map of concepts and citations, which is what Author
 writes, uses the second form. A reader MUST resolve a reference against
@@ -1964,6 +1965,39 @@ into this structure.
 
 **A reader MUST NOT write reader-created positions into this
 structure** (§1.11, §15).
+
+#### 10.3.1 Background concepts
+
+```json
+"map": {
+  "context": [
+    { "id": "6F1C…", "label": "Doug Engelbart", "tag": "person",
+      "description": "…", "defined-in": "Hypertext '23",
+      "linked-from": ["C-1"] }
+  ]
+}
+```
+
+`context` (OPTIONAL) lists concepts the document does **not** use but its
+own concepts link to, one hop: one's definition names the other. They are
+the map's background — the writer's wider body of concepts, shown so the
+document's concepts stand among what they relate to.
+
+A background concept **is not one of the document's terms.** It MUST NOT
+appear in `concepts`, in the glossary, or as a concept link in the text,
+and a reader MUST NOT list it among the document's concepts or index it
+as the document's vocabulary. A reader that draws the map SHOULD show
+background concepts as subordinate — quieter than the document's own —
+and MAY show one only while a concept named in its `linked-from` is
+selected.
+
+`label` is REQUIRED. `description`, `tag` (as `concepts[].tag`),
+`defined-in` (the name of the document that defines it) and
+`linked-from` (ids of `concepts[]` it is one hop from) are OPTIONAL. Where
+the writer keeps one library of concepts across documents, `id` SHOULD be
+that library's id, so a reader holding several of a writer's documents
+can recognise the same background concept in each. A background concept
+MAY be placed in a view and listed in `nodes` with `kind` `"context"`.
 
 ### 10.4 Interaction declarations
 
