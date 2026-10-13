@@ -106,7 +106,7 @@ nonisolated enum OverviewEntities {
                     default: return true
                     }
                     let name = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard acceptable(name, kind: kind) else { return true }
+                    guard acceptable(name, kind: kind), !isInBrackets(range, of: text) else { return true }
                     let entity = OverviewEntity(name: name, kind: kind, anchor: paragraph.id)
                     if seen.insert(entity.key).inserted { found.append(entity) }
                     return true
@@ -123,6 +123,41 @@ nonisolated enum OverviewEntities {
         guard sections.count >= 4 else { return perSection }
         let limit = sections.count / 2
         return perSection.map { $0.filter { (sectionsMentioning[$0.key] ?? 0) <= limit } }
+    }
+
+    /// Whether a stretch of text stands inside brackets — "(Jordan)",
+    /// "[Smith 2020]" — where a name is as likely a person's as a country's,
+    /// or a citation's (13 Oct 2026): no picture is made for it. Inside means
+    /// an opening bracket before it and a closing one after, in the same
+    /// paragraph, with none between them closing first.
+    static func isInBrackets(_ range: Range<String.Index>, of text: String) -> Bool {
+        var depth = 0
+        var opened = false
+        var index = range.lowerBound
+        while index > text.startIndex {
+            index = text.index(before: index)
+            let character = text[index]
+            if character == "\n" { break }
+            if character == ")" || character == "]" { depth += 1 }
+            if character == "(" || character == "[" {
+                if depth == 0 { opened = true; break }
+                depth -= 1
+            }
+        }
+        guard opened else { return false }
+        depth = 0
+        index = range.upperBound
+        while index < text.endIndex {
+            let character = text[index]
+            if character == "\n" { break }
+            if character == "(" || character == "[" { depth += 1 }
+            if character == ")" || character == "]" {
+                if depth == 0 { return true }
+                depth -= 1
+            }
+            index = text.index(after: index)
+        }
+        return false
     }
 
     private static func acceptable(_ name: String, kind: OverviewEntityKind) -> Bool {
