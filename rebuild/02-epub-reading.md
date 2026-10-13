@@ -439,7 +439,7 @@ register click listeners in the capture phase and call
 | 15 | `quoteLinkScript` | end | Decorates `origamitext://` links with a `[]` transclusion control. Exposes `origamiApplyQuoteLinks`, `origamiMarkCitedHere`, `origamiInsertTransclusion`. |
 | 16 | `progressScript` | end | Posts `progress` (400 ms throttle). Exposes `origamiScrollToFraction`. |
 | 17 | `readAloudScript` | end | Exposes `origamiReadAloudUnits`, `origamiReadAloudMark`, `origamiOverlayMark` |
-| 18 | `greyContrastScript` (not for fixed layout) | end | For every element with a grey colour (channel spread ≤ 16) whose WCAG contrast against the body background is under 3, sets `color: inherit !important`. Coloured inks are left alone. |
+| 18 | `greyContrastScript` (not for fixed layout) | end | The book's paper and ink give way to the theme's. Walks `body *` in document order, skipping media (`img`, `svg`, `video`, `canvas`, `picture`, `iframe`, `object`, `embed`), anything inside `svg`/`math`, and the reader's own furniture (ids starting `origami`, classes starting `ot-` or `origami`). A neutral (channel spread ≤ 16) background with alpha ≥ 0.5 becomes `transparent !important` (`pre` gets `rgba(127,127,127,0.12)` instead); a coloured background is kept, and that element and its descendants keep their ink. Otherwise a neutral ink that is near-black (max channel ≤ 0x33), near-white (min channel ≥ 0xE0), or under WCAG contrast 3 against the body background gets `color: inherit !important`. Coloured inks, fonts, sizes and spacing are never touched. |
 
 **Live changes without reloading.** When the CSS, note style or popup
 setting changes, `updateNSView` removes all user scripts, reinstalls
@@ -1275,11 +1275,15 @@ front-matter blocks inherit the text colour.
 
 ```
 :root { color-scheme: light dark; }
-html, body { background-color: <bgLight>; color: <textLight>; }
+html, body { background-color: <bgLight> !important; color: <textLight> !important; }
 @media (prefers-color-scheme: dark) {
-  html, body { background-color: <bgDark>; color: <textDark>; }
+  html, body { background-color: <bgDark> !important; color: <textDark> !important; }
 }
 ```
+
+The `!important` is required: Google Docs exports paint the body through
+a class (`<body class="c5">`, `.c5 { background-color: #ffffff }`), which
+outranks a plain `html, body` rule.
 
 An untouched High Contrast theme emits only
 `:root { color-scheme: light; }`, which leaves the system colours.
@@ -1504,7 +1508,10 @@ Each check can be tested by hand or automatically.
     link is `origamitext://open/<record.id>?q=…`.
 18. **Faint greys become readable.** Under the Night theme (dark), a
     grey author line with contrast under 3 is re-inked to the body
-    colour; a red link keeps its colour.
+    colour; a red link keeps its colour. A Google Docs EPUB (black `p`
+    and spans, `<body class="c5">` painted white) takes the theme's page
+    and ink, keeps its 26 pt Arial title, and a navy box keeps its white
+    text.
 19. **Look-only books leave nothing behind.** Opening a file from
     Downloads shows Import to Library. Closing the window leaves no
     record and deletes its temporary folder.
