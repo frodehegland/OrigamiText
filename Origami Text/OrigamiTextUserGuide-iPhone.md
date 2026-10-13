@@ -2,7 +2,7 @@
 title: Origami Text User Guide
 subtitle: For iPhone
 author: Future Text Lab
-date: 2026-10-09
+date: 2026-10-11
 ---
 
 # Origami Text User Guide
@@ -128,9 +128,12 @@ need is in the **foot bar** at the bottom:
   half of every word in bold.
 - **Aa** makes the words Bigger or Smaller, or resets them.
 
-After four seconds without a touch, the foot bar fades from the page so
-the words have it to themselves, running to the foot of the screen. Tap
-along the foot, where the bar was, and it comes back.
+The foot bar lies over the words rather than cutting them off: the text
+runs on beneath it, its last two lines fading out just above the bar.
+After four seconds without a touch the bar fades from the page, and the
+words run to the foot of the screen, fading out over their last two lines.
+Tap along the foot, where the bar was, and it comes back. The end of a book
+always scrolls clear of the bar.
 
 **Scroll** lays the whole text in one clean column.
 
@@ -144,7 +147,8 @@ left edge for the one before. A second row appears above the foot bar with Focus
 
   In Section, Sentence and Paragraph, tap the right edge of the page to go
   on and the left edge to go back. The words between can be selected as anywhere
-  else, for Highlight, Note… and To Read.
+  else, for Highlight, Note… and To Read. A paragraph or sentence too long
+  for the screen scrolls within it; one that fits stands centred.
 
 - **Word** — the text played one word after another in the middle of the
   screen. The **−** and **+** set the pace in words per minute (60 to
@@ -247,6 +251,10 @@ changed at the bottom of Settings.
 - **On Loading** — what shows while a book arrives: a plain **Spinner**, or
   the **Animation** — its title, author and date floating in space, which
   a touch pushes and a shake scatters.
+
+- **Community Folder**, at the bottom — the folder this iPhone reads from,
+  and **Choose Community Folder…** or **Change Community Folder…** to pick
+  another.
 
 Citation and note choices are shared with the Mac and the headset.
 

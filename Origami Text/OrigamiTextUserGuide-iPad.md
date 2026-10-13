@@ -2,7 +2,7 @@
 title: Origami Text User Guide
 subtitle: For iPad
 author: Future Text Lab
-date: 2026-10-09
+date: 2026-10-11
 ---
 
 # Origami Text User Guide
@@ -152,16 +152,19 @@ at the bottom:
   opened over the one you were reading, it is a **‹** and goes back to that
   book.)
 - **Scroll | Horizontal | Focus** in the middle choose how the book reads.
-- **◐** (the half circle) holds the looks: **Light** or **Dark**, the
+- **◐** (the half circle) holds the looks: **System** (the default —
+  following your iPad's Light or Dark), **Light** or **Dark**, the
   colour **Theme** — the Mac's full set, from sepia to the dyslexia- and
   Irlen-friendly palettes — and **Bionic Reading**, which sets the first
   half of every word in bold.
 - **Aa** makes the words Bigger or Smaller, or resets them.
 
-After four seconds without a touch, the foot bar fades from the page so
-the words have it to themselves. On iPhone the page then runs edge to edge,
-with a black pill at the foot that mirrors the Dynamic Island at the top —
-tap it (or anywhere along the foot) and the bar comes back.
+The foot bar lies over the words rather than cutting them off: the text
+runs on beneath it, its last two lines fading out just above the bar.
+After four seconds without a touch the bar fades from the page, and the
+words run to the foot of the screen, fading out over their last two lines.
+Tap along the foot, where the bar was, and it comes back. The end of a book
+always scrolls clear of the bar.
 
 **Scroll** lays the whole text in one column, held to a book's width and
 centred.
@@ -180,7 +183,8 @@ left edge for the one before. A second row appears above the foot bar with Focus
 
   In Section, Sentence and Paragraph, tap the right edge of the page to go
   on and the left edge to go back. The words between can be selected as anywhere
-  else, for Highlight, Note… and To Read.
+  else, for Highlight, Note… and To Read. A paragraph or sentence too long
+  for the screen scrolls within it; one that fits stands centred.
 
 - **Word** — the text played one word after another in the middle of the
   screen. The **−** and **+** set the pace in words per minute (60 to
@@ -279,13 +283,18 @@ answer. Tap any found paragraph and the reading opens right there. The
   and New York, acronyms such as EPUB in true small capitals. The book's
   characters are never changed, so highlights and notes still find their
   place.
-- **Reading Screen** — **Pill** (the default): the page runs to the top,
-  the toolbar fades after four quiet seconds and a black pill at the foot
-  brings it back. **Framed**: a black band at the top; the toolbar
-  fades the same way, and a tap where it was brings it back.
+- **Reading Screen** — how the reading meets the top of an iPhone's
+  screen: **Pill** (the default) runs the page up round the Dynamic Island,
+  **Framed** puts a black band there. On iPad, whose top is flat, both read
+  the same; the toolbar fades after four quiet seconds either way, and a tap
+  where it was brings it back.
 - **On Loading** — what shows while a book arrives: a plain **Spinner**, or
   the **Animation** — its title, author and date floating in space, which
   a touch pushes and a shake scatters.
+
+- **Community Folder**, at the bottom — the folder this iPad reads from, and
+  **Choose Community Folder…** or **Change Community Folder…** to pick
+  another (section 11).
 
 Citation and note choices are shared with the Mac and the headset.
 
