@@ -1067,6 +1067,28 @@ All of these checks run before the ZIP is assembled.
 
 On 8 October 2026 five of this writer's exports (four Author golden documents and the HT '26 paper `ht26-8` from LaTeX) passed EPUBCheck 5.2.1 with 0 errors and 0 warnings, and the profile validator with 0 errors (profile Appendix B).
 
+### 4.11 Binding: `EPUBBinder.swift`, `EPUBBinderViews.swift` (Origami Binding Profile, 24 October 2026)
+
+A *binding* is an EPUB made from shelved EPUBs without re-rendering: each chosen work's own content document, notes, references and images are carried over, plus a plain-text cover, the glossary entries the works reach, a colophon, the records and the package. `EPUBWorks.read(unpackedFolder:)` lists a shelved book's works: those it declares (profile §3.3, one `<collection role="distributable-object">` per article), or, when it declares none, the articles its **level 1 headings** mark out (`worksInferred == true`). `EPUBBinderWriter.write(_:to:)` writes the binding from `[BinderPart]`, where a part is a record and either `nil` (the whole book as one work) or the chosen work ids.
+
+**Inferring articles from headings** (`EPUBWorks.inferredWorks`): the articles' heading level is that of the first heading a `<p class="byline work-authors">` follows (Author's books: the title is the h1, each article an h2 with its authors under it; `BinderText.bylineHeadingLevel`), else 1. Every heading of that level in the spine's content documents (cover and records-only back-matter documents skipped, comments blanked first) starts an article that runs to the next such heading, taking in any following documents that carry no heading of their own. A lone heading is the book's title, so one heading yields no works. Each inferred work carries a `Fragment` (document, ordinal among that document's `<h1>`s, continuation documents) and a stable `urn:uuid:` from edition + document + heading id/ordinal + title. Authors come from the first byline-like element under the heading (class, `epub:type` or `role` containing author/byline/contributor/creator, or `<address>`), split on commas, semicolons and "and".
+
+**Cutting an article out** (`BinderText.cut(_:toHeading:level:fallbackID:)`): the writer gives each heading-found article its own copy of the shared document, named `s<n>-a<m>-<file>`, cut from its heading (plus the `section`/`article`/`header`/`div` openers standing directly before it) to the next heading of that level (less that heading's own openers) or the body's end. `rewrite` first drops characters XML 1.0 forbids (U+0000–U+0008, U+000B, U+000C, U+000E–U+001F): Author exports have carried form feeds. Elements open at the cut's start are reopened before it and those left open at its end are closed after, so the result is well-formed XHTML; the heading keeps its id or takes `binder-a<m>`. Assets and links are then rewritten as for any carried document. Verified 24 October 2026 by snippet: both cuts of a two-article document parse as XML, and a two-article selection from "The Notebooks of Leonardo Da Vinci" wrote an EPUB whose every content document parses.
+
+The verbs sit on a book's context menu in the library (`BinderMenuItems`, after the file verbs):
+
+- **Export Full Document…** copies the book's own `.epub` through a save panel.
+- **Export Selection…** (books with several works) opens the works chooser for that one book and writes a binding of the chosen articles.
+- **New Binder** starts an app-wide binder (`BinderModel.shared.parts`, nil when none is being made) and opens the **Binder window**. On a book of several works it also opens the chooser. While a binder is active the menu offers **Add to Binder** / **Add Whole Book to Binder** / **Add Articles to Binder…** / **Remove from Binder** on every book.
+
+Every binder surface is a window, never a bar in the library column and never a SwiftUI sheet hung off it (both came out compressed and cropped in the narrow column). `BinderDialog` (an enum of static presenters) hosts each SwiftUI view in a titled, closable `NSPanel` via `NSHostingController` with `sizingOptions = [.preferredContentSize]`, so the window takes the view's fixed width and list height:
+
+- **Binder** (`BinderWindowView`): floating panel placed to the right of the library window, top-aligned, or inside its right edge when the screen has no room; `hidesOnDeactivate`. Lists the parts with a minus on each, and offers Cancel, Export As Binder, Export As Binder with Cover… (default action). One instance; `showBinder` brings it forward. Closing it with the red button cancels the binder; when the binder becomes inactive (Cancel, or `exportBinder` succeeding) the view closes the window itself.
+- **Export Selection / Add Articles to Binder** (`BinderWorksChooser`): centred over the library window; All / None, a toggle per work, and for Export Selection a title field and cover text. Export closes the dialog *before* running the save panel.
+- **Export As Binder with Cover** (`BinderCoverSheet`): centred over the library window; title and a cover paragraph.
+
+`AppModel.exportBinder(_:coverText:title:)` runs the save panel, writes the binding, cancels the binder, imports the result onto the shelf and reveals it. Views take a `close` closure from the presenter rather than SwiftUI's `dismiss`, which does nothing in a hosted window.
+
 ---
 
 ## 5. Publisher formats ("Import to Format")

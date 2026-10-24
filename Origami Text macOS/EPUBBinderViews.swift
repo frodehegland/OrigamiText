@@ -19,7 +19,8 @@ struct BinderMenuItems: View {
         Button("Export Full Document…") { model.exportFullDocument(record) }
         if let info, info.hasWorks {
             Button("Export Selection…") {
-                binder.chooser = BinderChooserRequest(record: record, info: info, purpose: .exportSelection)
+                BinderDialog.showChooser(BinderChooserRequest(record: record, info: info, purpose: .exportSelection),
+                                         model: model)
             }
         }
         if binder.isActive {
@@ -27,7 +28,8 @@ struct BinderMenuItems: View {
                 Button("Remove from Binder") { binder.remove(record) }
             } else if let info, info.hasWorks {
                 Button("Add Articles to Binder…") {
-                    binder.chooser = BinderChooserRequest(record: record, info: info, purpose: .addToBinder)
+                    BinderDialog.showChooser(BinderChooserRequest(record: record, info: info, purpose: .addToBinder),
+                                             model: model)
                 }
                 Button("Add Whole Book to Binder") { binder.add(BinderPart(record: record, workIDs: nil)) }
             } else {
@@ -36,8 +38,11 @@ struct BinderMenuItems: View {
         } else {
             Button("New Binder") {
                 binder.start()
+                // The Binder window first, so the chooser lands over it.
+                BinderDialog.showBinder(model: model)
                 if let info, info.hasWorks {
-                    binder.chooser = BinderChooserRequest(record: record, info: info, purpose: .addToBinder)
+                    BinderDialog.showChooser(BinderChooserRequest(record: record, info: info, purpose: .addToBinder),
+                                             model: model)
                 } else {
                     binder.add(BinderPart(record: record, workIDs: nil))
                 }
@@ -46,50 +51,204 @@ struct BinderMenuItems: View {
     }
 }
 
-// MARK: - The binder bar and its sheets
+// MARK: - The Binder window
 
-/// Shown under the library list while a binder is being made: what is
-/// in it, and Export As Binder, Export As Binder with Cover…, Cancel.
-/// Also presents the works chooser and the cover sheet for every surface.
-struct BinderBar: View {
+/// The binder being made, in a window of its own: what is in it so far,
+/// a minus on each item, and Cancel, Export As Binder, Export As Binder
+/// with Cover…. It floats beside the library while the reader
+/// control-clicks more books to add them; closing it cancels the binder,
+/// and it goes on its own once the binder is exported or cancelled.
+struct BinderWindowView: View {
     @Environment(AppModel.self) private var model
+    /// Closes the window this view stands in.
+    let close: () -> Void
+    @State private var isDropTargeted = false
     private var binder: BinderModel { BinderModel.shared }
 
     var body: some View {
-        @Bindable var binder = BinderModel.shared
-        Group {
-            if let parts = binder.parts {
-                VStack(alignment: .leading, spacing: 6) {
+        let parts = binder.parts ?? []
+        VStack(alignment: .leading, spacing: 12) {
+            Text(parts.isEmpty
+                 ? "Control-click books in the library to add them to this binder, or drag them here — from the library or from the Finder. A book of several articles asks which."
+                 : "\(parts.count) \(parts.count == 1 ? "item" : "items"). Control-click or drag more books here to add them.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            List {
+                ForEach(parts) { part in
+                    let title = part.title(model.epubWorks(for: part.record))
                     HStack {
-                        Text(parts.isEmpty ? "New Binder — control-click books to add them"
-                             : "Binder: \(parts.count) \(parts.count == 1 ? "item" : "items")")
-                            .font(.system(size: 12, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title)
+                            // A selection of articles: the book they came from.
+                            if part.workIDs != nil, title != part.record.title {
+                                Text(part.record.title)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Spacer()
-                        Button("Cancel") { binder.cancel() }
-                        Button("Export As Binder") { model.exportBinder(parts, coverText: nil, title: nil) }
-                            .disabled(parts.isEmpty)
-                        Button("Export As Binder with Cover…") { binder.coverRequest = true }
-                            .disabled(parts.isEmpty)
-                            .keyboardShortcut(.defaultAction)
-                    }
-                    if !parts.isEmpty {
-                        Text(parts.map { $0.title(model.epubWorks(for: $0.record)) }.joined(separator: " · "))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                        Button {
+                            binder.remove(part.record)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Remove from Binder")
                     }
                 }
-                .padding(10)
-                .background(.regularMaterial)
-                .overlay(alignment: .top) { Divider() }
+            }
+            .frame(height: 240)
+            .overlay {
+                if isDropTargeted {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            HStack {
+                Button("Cancel") { binder.cancel() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Export As Binder") { model.exportBinder(parts, coverText: nil, title: nil) }
+                    .disabled(parts.isEmpty)
+                Button("Export As Binder with Cover…") { BinderDialog.showCover(model: model) }
+                    .disabled(parts.isEmpty)
+                    .keyboardShortcut(.defaultAction)
             }
         }
-        .sheet(item: $binder.chooser) { request in
-            BinderWorksChooser(request: request)
+        .padding(20)
+        .frame(width: 500)
+        // Books dragged in: a library row (its stored .epub) or any file
+        // the importer reads. Each is parsed for its articles.
+        .dropDestination(for: URL.self) { urls, _ in
+            model.addToBinder(dropped: urls)
+            return true
+        } isTargeted: { isDropTargeted = $0 }
+        // Exported or cancelled — from here, the menu, or the save
+        // panel's success — the window goes with the binder.
+        .onChange(of: binder.isActive) { _, active in
+            if !active { close() }
         }
-        .sheet(isPresented: $binder.coverRequest) {
-            BinderCoverSheet()
+    }
+}
+
+// MARK: - The dialogs
+
+/// The binder's dialogs are windows of their own, not a bar in the
+/// library column or SwiftUI sheets hung off it, which came out
+/// compressed and cropped. The Binder window floats beside the library
+/// while books are added; the works chooser and the cover dialog are
+/// titled, closable panels centred over it. Escape cancels, Return
+/// confirms.
+@MainActor
+enum BinderDialog {
+    private static var open: [NSPanel] = []
+    private static var closeWatchers: [ObjectIdentifier: NSObjectProtocol] = [:]
+    /// The one Binder window, while a binder is being made.
+    private static weak var binderPanel: NSPanel?
+
+    /// The Binder window: shown on New Binder, brought forward thereafter.
+    static func showBinder(model: AppModel) {
+        if let panel = binderPanel {
+            panel.makeKeyAndOrderFront(nil)
+            return
         }
+        binderPanel = present(title: "Binder", model: model, floating: true, placement: .besideLibrary,
+                              onClose: {
+                                  // The red button cancels; an export or Cancel
+                                  // has already emptied the binder by now.
+                                  if BinderModel.shared.isActive { BinderModel.shared.cancel() }
+                              }) { close in
+            BinderWindowView(close: close)
+        }
+    }
+
+    /// Export Selection… or Add Articles to Binder…: which of the book's
+    /// articles.
+    static func showChooser(_ request: BinderChooserRequest, model: AppModel) {
+        _ = present(title: request.purpose == .exportSelection ? "Export Selection" : "Add Articles to Binder",
+                    model: model) { close in
+            BinderWorksChooser(request: request, close: close)
+        }
+    }
+
+    /// Export As Binder with Cover…: the binder's title and cover text.
+    static func showCover(model: AppModel) {
+        _ = present(title: "Export As Binder with Cover", model: model) { close in
+            BinderCoverSheet(close: close)
+        }
+    }
+
+    private enum Placement {
+        /// Centred over the library window — a dialog about one thing.
+        case overLibrary
+        /// To the right of the library window, top-aligned, so the
+        /// library stays clear for control-clicking; inside its right
+        /// edge when the screen has no room.
+        case besideLibrary
+    }
+
+    @discardableResult
+    private static func present<Content: View>(title: String, model: AppModel,
+                                               floating: Bool = false,
+                                               placement: Placement = .overLibrary,
+                                               onClose: (() -> Void)? = nil,
+                                               @ViewBuilder content: (@escaping () -> Void) -> Content) -> NSPanel {
+        let panel = NSPanel(contentRect: .zero, styleMask: [.titled, .closable],
+                            backing: .buffered, defer: false)
+        let close: () -> Void = { [weak panel] in panel?.close() }
+        let hosting = NSHostingController(rootView: content(close).environment(model))
+        // The window takes the view's own size — the fixed width and the
+        // list's height — rather than squeezing it.
+        hosting.sizingOptions = [.preferredContentSize]
+        panel.contentViewController = hosting
+        panel.title = title
+        panel.isReleasedWhenClosed = false
+        panel.animationBehavior = .utilityWindow
+        // A floating panel stays over the library while books are
+        // clicked, and steps aside with the app.
+        panel.isFloatingPanel = floating
+        panel.level = floating ? .floating : .normal
+        panel.hidesOnDeactivate = floating
+
+        let size = panel.frame.size
+        if let main = model.mainNSWindow, main.isVisible {
+            switch placement {
+            case .overLibrary:
+                panel.setFrameOrigin(NSPoint(x: main.frame.midX - size.width / 2,
+                                             y: main.frame.midY - size.height / 2))
+            case .besideLibrary:
+                let screen = (main.screen ?? NSScreen.main)?.visibleFrame
+                var x = main.frame.maxX + 12
+                if let screen, x + size.width > screen.maxX {
+                    x = main.frame.maxX - size.width - 24
+                }
+                var y = main.frame.maxY - size.height - 48
+                if let screen { y = max(screen.minY, min(y, screen.maxY - size.height)) }
+                panel.setFrameOrigin(NSPoint(x: x, y: y))
+            }
+        } else {
+            panel.center()
+        }
+
+        // Kept alive until it closes, then let go.
+        open.append(panel)
+        let key = ObjectIdentifier(panel)
+        closeWatchers[key] = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: panel, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                onClose?()
+                open.removeAll { $0 === panel }
+                if let token = closeWatchers.removeValue(forKey: key) {
+                    NotificationCenter.default.removeObserver(token)
+                }
+            }
+        }
+        NSApp.activate()
+        panel.makeKeyAndOrderFront(nil)
+        return panel
     }
 }
 
@@ -97,8 +256,9 @@ struct BinderBar: View {
 /// binder. Title and cover text ride along for the export.
 struct BinderWorksChooser: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
     let request: BinderChooserRequest
+    /// Closes the dialog window this view stands in.
+    let close: () -> Void
     @State private var selected: Set<String> = []
     @State private var title = ""
     @State private var coverText = ""
@@ -110,6 +270,12 @@ struct BinderWorksChooser: View {
             Text(request.record.title)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+            if request.info.worksInferred {
+                Text("The book declares no articles of its own; these are what its level 1 headings mark out. Each is cut from the book at its heading.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Button("All") { selected = Set(request.info.works.map(\.id)) }
                 Button("None") { selected = [] }
@@ -134,7 +300,7 @@ struct BinderWorksChooser: View {
                     }
                 }
             }
-            .frame(minHeight: 220)
+            .frame(height: 280)
             if request.purpose == .exportSelection {
                 TextField("Title", text: $title)
                 Text("Cover text (optional):")
@@ -147,10 +313,12 @@ struct BinderWorksChooser: View {
             }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { close() }
                     .keyboardShortcut(.cancelAction)
                 Button(request.purpose == .exportSelection ? "Export…" : "Add") {
                     let ids = request.info.works.map(\.id).filter { selected.contains($0) }
+                    // The dialog goes first, so the save panel stands alone.
+                    close()
                     switch request.purpose {
                     case .addToBinder:
                         BinderModel.shared.add(BinderPart(record: request.record, workIDs: ids))
@@ -161,7 +329,6 @@ struct BinderWorksChooser: View {
                         model.exportBinder([part], coverText: cover.isEmpty ? nil : cover,
                                            title: name.isEmpty ? nil : name)
                     }
-                    dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(selected.isEmpty)
@@ -180,7 +347,8 @@ struct BinderWorksChooser: View {
 /// its cover page.
 struct BinderCoverSheet: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+    /// Closes the dialog window this view stands in.
+    let close: () -> Void
     @State private var title = ""
     @State private var coverText = ""
 
@@ -198,13 +366,13 @@ struct BinderCoverSheet: View {
                 .border(Color.secondary.opacity(0.3))
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { close() }
                     .keyboardShortcut(.cancelAction)
                 Button("Export…") {
                     let parts = BinderModel.shared.parts ?? []
                     let cover = coverText.trimmingCharacters(in: .whitespacesAndNewlines)
                     let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
-                    dismiss()
+                    close()
                     model.exportBinder(parts, coverText: cover.isEmpty ? nil : cover, title: name.isEmpty ? nil : name)
                 }
                 .keyboardShortcut(.defaultAction)
@@ -231,6 +399,72 @@ extension AppModel {
         formatter.dateStyle = .long
         formatter.timeStyle = .none
         return "Binder, \(formatter.string(from: Date()))"
+    }
+
+    /// Files dropped on the Binder window. A shelved book's own .epub
+    /// (a library row dragged over) is that book; any other file joins
+    /// the library first, as a drop on the Inbox does, since a binder is
+    /// made from shelved books. Then, as with the menu: a book of several
+    /// articles — declared, or found by its level 1 headings — opens the
+    /// chooser; a single work goes in whole.
+    func addToBinder(dropped urls: [URL]) {
+        if !BinderModel.shared.isActive { BinderModel.shared.start() }
+        var pending: [URL] = []
+        for url in urls {
+            let ext = url.pathExtension.lowercased()
+            if ext == "epub" {
+                if let record = shelvedRecord(forStoredEPUB: url) {
+                    offerToBinder(record)
+                } else {
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    if let record = importEPUB(at: url) { offerToBinder(record) }
+                }
+            } else if Self.importableExtensions.contains(ext) || ext == "json" {
+                pending.append(url)
+            } else {
+                showNote("“\(url.lastPathComponent)” is not a kind Origami Text can bind.")
+            }
+        }
+        guard !pending.isEmpty else { return }
+        // Converted kinds (Word, Markdown, PDF, LaTeX…) report no record
+        // of their own and some convert off the main actor, so the shelf
+        // is watched for what they add.
+        let before = Set(epubRecords.map(\.id))
+        openFiles(pending, importing: true)
+        Task { @MainActor in
+            var offered: Set<String> = []
+            for _ in 0..<20 {
+                for record in epubRecords where !before.contains(record.id) && !offered.contains(record.id) {
+                    offered.insert(record.id)
+                    offerToBinder(record)
+                }
+                if offered.count >= pending.count { break }
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            if offered.isEmpty {
+                showNote("Nothing new reached the library from the drop, so nothing was added to the binder.")
+            }
+        }
+    }
+
+    /// The shelved book whose stored .epub this is, if any.
+    private func shelvedRecord(forStoredEPUB url: URL) -> EPUBRecord? {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        return epubRecords.first {
+            Self.storedEPUBURL(inFolder: $0.folder).standardizedFileURL.resolvingSymlinksInPath().path == path
+        }
+    }
+
+    /// Into the binder, as the menu would put it: the chooser for a
+    /// book of articles, else the whole book.
+    private func offerToBinder(_ record: EPUBRecord) {
+        guard !BinderModel.shared.contains(record) else { return }
+        if let info = epubWorks(for: record), info.hasWorks {
+            BinderDialog.showChooser(BinderChooserRequest(record: record, info: info, purpose: .addToBinder), model: self)
+        } else {
+            BinderModel.shared.add(BinderPart(record: record, workIDs: nil))
+        }
     }
 
     /// Export Full Document…: the book's own .epub, as it is on the shelf.

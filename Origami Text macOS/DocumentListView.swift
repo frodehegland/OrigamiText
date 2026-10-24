@@ -223,8 +223,8 @@ struct EPUBLibraryListView: View {
                 AuthorSortTabs(key: $pinnedSortKey, ascending: $pinnedSortAscending, tabs: SortTab.works)
             }
             bookList
-            // The binder being made, and its sheets (EPUBBinderViews.swift).
-            BinderBar()
+            // A binder being made shows in its own window (BinderDialog,
+            // EPUBBinderViews.swift), not in this column.
         }
     }
 
@@ -371,6 +371,9 @@ struct EPUBLibraryListView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 6)
         .tag(record.id)
+        // A row drags as the book's own .epub: onto the Binder window
+        // (EPUBBinderViews.swift), or out to the Finder as a copy.
+        .draggable(AppModel.storedEPUBURL(inFolder: record.folder))
         .contextMenu {
             Menu("File Under") {
                 ForEach(model.epubFolders, id: \.self) { name in

@@ -3,10 +3,11 @@ import CryptoKit
 
 // MARK: - What a shelved book holds
 
-/// The works a shelved EPUB declares (Origami Binding Profile §3.3): one
+/// The works a shelved EPUB holds (Origami Binding Profile §3.3): one
 /// `collection` with the distributable-object role per article, each with
-/// its title, authors and files — and the package's own facts, so a plain
-/// publication with no works can be bound whole as one.
+/// its title, authors and files — or, when the package declares none, the
+/// articles its level 1 headings mark out — and the package's own facts,
+/// so a plain publication with no works can be bound whole as one.
 nonisolated struct EPUBWorks: Sendable {
 
     struct Work: Identifiable, Hashable, Sendable {
@@ -25,6 +26,25 @@ nonisolated struct EPUBWorks: Sendable {
         let section: String?
         /// The compiler's word on it, from the record.
         let note: String?
+        /// For an article found by its level 1 heading rather than
+        /// declared: where it stands, so the writer can cut it out of a
+        /// document it shares with others. Nil for declared works.
+        var fragment: Fragment? = nil
+    }
+
+    /// An article's place in a content document that holds several.
+    struct Fragment: Hashable, Sendable {
+        /// The content document holding the heading, relative to the
+        /// package root.
+        let document: String
+        /// The heading's level — 1 for an `<h1>`, 2 for the `<h2>` an
+        /// Author book gives each article under its h1 title.
+        let level: Int
+        /// This heading's ordinal among the document's headings of that
+        /// level.
+        let ordinal: Int
+        /// Whole documents that follow before the next article begins.
+        let continuation: [String]
     }
 
     /// The package document's path within the folder, "package.opf" or
@@ -42,6 +62,9 @@ nonisolated struct EPUBWorks: Sendable {
     /// package root, the navigation document left out.
     let spine: [String]
     let works: [Work]
+    /// True when the works were found by level 1 headings, the package
+    /// declaring none.
+    let worksInferred: Bool
     /// `origami:binding`, when the package says it is one.
     let bindingKind: String?
     let coverText: String?
@@ -117,9 +140,90 @@ nonisolated struct EPUBWorks: Sendable {
                 note: fromRecord?["note"] as? String))
         }
 
+        // Nothing declared: the articles are what the level 1 headings
+        // say they are — a journal issue, proceedings, an anthology.
+        var inferred = false
+        if works.isEmpty {
+            works = inferredWorks(folder: folder, spine: spine, edition: edition ?? folder.lastPathComponent)
+            inferred = !works.isEmpty
+        }
+
         return EPUBWorks(opfPath: opfPath, title: title, authors: authors, language: language, date: date,
-                         edition: edition, binding: binding, spine: spine, works: works,
+                         edition: edition, binding: binding, spine: spine, works: works, worksInferred: inferred,
                          bindingKind: kind, coverText: coverText)
+    }
+
+    /// The articles a book's level 1 headings mark out: every heading at
+    /// the articles' level in the spine's content documents starts one,
+    /// which runs to the next heading — across whole documents that carry
+    /// no heading of their own. A lone heading is the book's title, not
+    /// an article, so one is never returned. Cover and back-matter
+    /// documents are skipped.
+    ///
+    /// The articles' level is the level of the headings a `work-authors`
+    /// byline follows — Author's books put the title in the h1, so each
+    /// article is an h2 with its authors under it — and `<h1>` where no
+    /// byline says otherwise.
+    private static func inferredWorks(folder: URL, spine: [String], edition: String) -> [Work] {
+        struct Found {
+            let document: String
+            let ordinal: Int
+            let headingID: String?
+            let title: String
+            let authors: [String]
+        }
+        var texts: [(path: String, text: String)] = []
+        for path in spine {
+            guard let text = try? String(contentsOf: folder.appendingPathComponent(path), encoding: .utf8) else { continue }
+            if text.contains("epub:type=\"cover\"") { continue }
+            if text.contains("epub:type=\"colophon\"") && !text.contains("<main") { continue }
+            texts.append((path, text))
+        }
+        let level = texts.lazy.compactMap { BinderText.bylineHeadingLevel(in: $0.text) }.first ?? 1
+
+        var found: [Found] = []
+        var headed: Set<String> = []
+        var considered: [String] = []
+        for (path, text) in texts {
+            considered.append(path)
+            let headings = BinderText.headings(level: level, in: text)
+            guard !headings.isEmpty else { continue }
+            headed.insert(path)
+            for (ordinal, heading) in headings.enumerated() {
+                guard !heading.title.isEmpty else { continue }
+                let end = ordinal + 1 < headings.count ? headings[ordinal + 1].location : (text as NSString).length
+                found.append(Found(document: path, ordinal: ordinal, headingID: heading.id, title: heading.title,
+                                   authors: BinderText.authors(in: text, after: heading.end, before: end)))
+            }
+        }
+        guard found.count > 1 else { return [] }
+
+        var works: [Work] = []
+        for (index, article) in found.enumerated() {
+            // Documents after this one, up to the next article's, that
+            // have no heading of their own belong to this article.
+            var continuation: [String] = []
+            if let start = considered.firstIndex(of: article.document) {
+                let stop = index + 1 < found.count
+                    ? (considered.firstIndex(of: found[index + 1].document) ?? considered.count)
+                    : considered.count
+                for path in considered[(start + 1)..<max(start + 1, stop)] where !headed.contains(path) {
+                    continuation.append(path)
+                }
+            }
+            let seed = "\(edition)|\(article.document)#\(article.headingID ?? "h\(level)-\(article.ordinal)")|\(article.title)"
+            works.append(Work(
+                id: "urn:uuid:\(EPUBBinderWriter.stableUUID(from: seed))",
+                title: article.title,
+                authors: article.authors,
+                files: [article.document] + continuation,
+                sourceBinding: nil, sourceEdition: nil, year: nil,
+                section: article.headingID,
+                note: nil,
+                fragment: Fragment(document: article.document, level: level, ordinal: article.ordinal,
+                                   continuation: continuation)))
+        }
+        return works
     }
 
     /// The Visual-Meta record, by the package's declaration first.
@@ -165,10 +269,6 @@ final class BinderModel {
 
     /// Nil when no binder is being made.
     var parts: [BinderPart]?
-    /// What the works chooser is open for.
-    var chooser: BinderChooserRequest?
-    /// The cover sheet, before Export As Binder with Cover.
-    var coverRequest: Bool = false
 
     var isActive: Bool { parts != nil }
 
@@ -191,10 +291,9 @@ final class BinderModel {
 }
 
 /// The works chooser: for one book — Export Selection…, or adding
-/// articles to the binder.
-struct BinderChooserRequest: Identifiable {
+/// articles to the binder (BinderDialog, EPUBBinderViews.swift).
+struct BinderChooserRequest {
     enum Purpose { case exportSelection, addToBinder }
-    let id = UUID()
     let record: EPUBRecord
     let info: EPUBWorks
     let purpose: Purpose
@@ -281,15 +380,22 @@ nonisolated enum EPUBBinderWriter {
                 selected.append((nil, docs))
             }
 
-            // The files each selected work brings, under new names.
+            // The files each selected work brings, under new names. A
+            // document several heading-found articles share is not named
+            // here: each article gets its own cut of it below.
             var renamed: [String: String] = [:]   // source path → binder path
-            for (_, files) in selected {
-                for file in files where renamed[file] == nil {
+            for (work, files) in selected {
+                for file in files where renamed[file] == nil && work?.fragment?.document != file {
                     renamed[file] = newPath(for: file, prefix: prefix)
                 }
             }
 
-            for (work, files) in selected {
+            for (articleNumber, (work, files)) in selected.enumerated() {
+                // The article's own copy of a shared document, cut to it.
+                var localRenamed = renamed
+                if let fragment = work?.fragment {
+                    localRenamed[fragment.document] = newPath(for: fragment.document, prefix: "\(prefix)a\(articleNumber + 1)-")
+                }
                 var piece = Piece(
                     id: work?.id ?? info.binding ?? info.edition ?? "urn:uuid:\(stableUUID(from: folder.lastPathComponent))",
                     title: work?.title ?? info.title,
@@ -302,14 +408,28 @@ nonisolated enum EPUBBinderWriter {
                     note: work?.note)
                 piece.headingID = work?.section
                 for file in files {
-                    guard let target = renamed[file] else { continue }
+                    guard let target = localRenamed[file] else { continue }
                     let source = folder.appendingPathComponent(file)
                     guard fileManager.fileExists(atPath: source.path) else { continue }
                     if isContentDocument(file) {
-                        guard let text = try? String(contentsOf: source, encoding: .utf8) else { continue }
+                        guard var text = try? String(contentsOf: source, encoding: .utf8) else { continue }
+                        if let fragment = work?.fragment, fragment.document == file {
+                            // Only this article's run of the document, its
+                            // heading given an id if it had none.
+                            let cut = BinderText.cut(text, toHeading: fragment.ordinal, level: fragment.level,
+                                                     fallbackID: "binder-a\(articleNumber + 1)")
+                            text = cut.text
+                            piece.headingID = cut.headingID
+                        }
                         let rewritten = rewrite(text, sourcePath: file, folder: folder, prefix: prefix,
-                                                renamed: &renamed, glossary: sourceGlossary,
+                                                renamed: &localRenamed, glossary: sourceGlossary,
                                                 collected: &glossary, images: &piece.images, root: root)
+                        // Assets named while rewriting are shared by every
+                        // article of this book.
+                        for (sourcePath, binderPath) in localRenamed
+                        where renamed[sourcePath] == nil && sourcePath != work?.fragment?.document {
+                            renamed[sourcePath] = binderPath
+                        }
                         try Data(rewritten.utf8).write(to: root.appendingPathComponent(target), options: .atomic)
                         piece.documents.append(target)
                         if piece.headingID == nil {
@@ -414,7 +534,10 @@ nonisolated enum EPUBBinderWriter {
                                 glossary: [String: (term: String, definition: String)],
                                 collected: inout [(id: String, term: String, definition: String)],
                                 images: inout [String], root: URL) -> String {
-        var out = text
+        // Characters XML 1.0 forbids — form feeds from page breaks, stray
+        // control characters — would make the binder's copy unreadable
+        // even where the source got away with them.
+        var out = BinderText.removing(in: text, "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]")
         out = BinderText.removing(in: out, "(?s)<section\\b[^>]*epub:type=\"colophon\"[^>]*>.*?</section>\\s*")
         out = BinderText.removing(in: out, "(?s)<section\\b[^>]*id=\"visual-meta\"[^>]*>.*?</section>\\s*")
         let directory = (sourcePath as NSString).deletingLastPathComponent
@@ -962,6 +1085,182 @@ nonisolated enum BinderText {
             out = (out as NSString).replacingCharacters(in: match.range(at: 1), with: replaced)
         }
         return out
+    }
+
+    // MARK: Headings and articles
+
+    struct Heading {
+        let id: String?
+        /// The heading's words, tags removed.
+        let title: String
+        /// Where the opening tag starts, and where the closing tag ends,
+        /// as NSString offsets.
+        let location: Int
+        let end: Int
+    }
+
+    /// Comments and CDATA blanked to spaces of the same length, so what
+    /// they hold is not read as markup while every offset stays as it
+    /// was in the original.
+    static func blankingComments(_ text: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: "(?s)<!--.*?-->|<!\\[CDATA\\[.*?\\]\\]>") else { return text }
+        let whole = text as NSString
+        let out = NSMutableString(string: text)
+        for match in expression.matches(in: text, range: NSRange(location: 0, length: whole.length)).reversed() {
+            out.replaceCharacters(in: match.range, with: String(repeating: " ", count: match.range.length))
+        }
+        return out as String
+    }
+
+    /// The level of the first heading a work's byline follows — the
+    /// `<p class="byline work-authors">` Author writes under an article's
+    /// heading (Binding Profile §3.1) — or nil where no heading has one.
+    static func bylineHeadingLevel(in text: String) -> Int? {
+        guard let expression = try? NSRegularExpression(
+            pattern: "(?s)<h([1-6])\\b[^>]*>.*?</h\\1>\\s*<p\\b[^>]*class=\"[^\"]*work-authors[^\"]*\"") else { return nil }
+        let text = blankingComments(text)
+        guard let match = expression.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) else { return nil }
+        return Int((text as NSString).substring(with: match.range(at: 1)))
+    }
+
+    /// Every heading of one level in a document, in order; none from
+    /// inside a comment.
+    static func headings(level: Int, in text: String) -> [Heading] {
+        guard let expression = try? NSRegularExpression(pattern: "(?s)<h\(level)\\b([^>]*)>(.*?)</h\(level)>") else { return [] }
+        let text = blankingComments(text)
+        let whole = text as NSString
+        return expression.matches(in: text, range: NSRange(location: 0, length: whole.length)).map { match in
+            let attributes = whole.substring(with: match.range(at: 1))
+            return Heading(id: capture(in: attributes, "\\sid=\"([^\"]+)\""),
+                           title: plain(whole.substring(with: match.range(at: 2))),
+                           location: match.range.location,
+                           end: match.range.location + match.range.length)
+        }
+    }
+
+    /// The names under an article's heading: the first byline-like
+    /// element between the heading and the next — a paragraph or block
+    /// whose class or type says author, byline or contributor, or an
+    /// `<address>` — split on commas, semicolons and "and".
+    static func authors(in text: String, after start: Int, before end: Int) -> [String] {
+        let whole = text as NSString
+        guard end > start else { return [] }
+        // Bylines stand near the heading; a page of body text before any
+        // author-like class is not a byline.
+        let window = whole.substring(with: NSRange(location: start, length: min(end - start, 3000)))
+        let patterns = [
+            "(?s)<(?:p|div|span|section|header)\\b[^>]*(?:class|epub:type|role)=\"[^\"]*(?:author|byline|contributor|creator)[^\"]*\"[^>]*>(.*?)</(?:p|div|span|section|header)>",
+            "(?s)<address\\b[^>]*>(.*?)</address>"
+        ]
+        for pattern in patterns {
+            guard let inner = capture(in: window, pattern) else { continue }
+            let line = plain(inner.replacingOccurrences(of: "<br\\s*/?>", with: ", ", options: .regularExpression))
+            let names = line
+                .replacingOccurrences(of: "\\s+and\\s+|\\s*;\\s*|\\s*·\\s*|\\s*,\\s*", with: "\n", options: .regularExpression)
+                .split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && $0.count < 80 }
+            if !names.isEmpty { return names }
+        }
+        return []
+    }
+
+    /// Elements that never close.
+    private static let voidElements: Set<String> = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+        "param", "source", "track", "wbr"
+    ]
+
+    /// A content document cut to one of its articles: from the article's
+    /// heading — the `ordinal`-th heading of `level` (and the section,
+    /// article or header tags that open directly before it) — to the next
+    /// heading of that level (less the tags that open directly before that
+    /// one), or the body's end. Elements open where the cut begins are
+    /// reopened before it and those left open at its end are closed
+    /// after, so the result is well-formed XHTML. The heading keeps its
+    /// id, or takes `fallbackID`.
+    static func cut(_ text: String, toHeading ordinal: Int, level: Int = 1,
+                    fallbackID: String) -> (text: String, headingID: String) {
+        let whole = text as NSString
+        guard let bodyOpen = (try? NSRegularExpression(pattern: "<body\\b[^>]*>"))?
+                .firstMatch(in: text, range: NSRange(location: 0, length: whole.length)),
+              let bodyClose = (try? NSRegularExpression(pattern: "</body\\s*>"))?
+                .matches(in: text, range: NSRange(location: 0, length: whole.length)).last
+        else { return (ensureHeadingID(text, level: level, fallbackID: fallbackID)) }
+        let bodyStart = bodyOpen.range.location + bodyOpen.range.length
+        let bodyEnd = bodyClose.range.location
+        let body = whole.substring(with: NSRange(location: bodyStart, length: bodyEnd - bodyStart))
+        let headings = Self.headings(level: level, in: body)
+        guard ordinal < headings.count else { return (ensureHeadingID(text, level: level, fallbackID: fallbackID)) }
+
+        let bodyNS = body as NSString
+        var start = wrappersStart(before: headings[ordinal].location, in: bodyNS)
+        var end = ordinal + 1 < headings.count ? wrappersStart(before: headings[ordinal + 1].location, in: bodyNS) : bodyNS.length
+        if end < start { end = start }
+        start = max(0, start)
+        var slice = bodyNS.substring(with: NSRange(location: start, length: end - start))
+
+        // Balance: what is open where the cut begins, reopened; what the
+        // cut leaves open, closed.
+        var stack = openElements(in: bodyNS.substring(to: start), from: [])
+        let reopened = stack.map(\.tag).joined()
+        stack = openElements(in: slice, from: stack)
+        let closed = stack.reversed().map { "</\($0.name)>" }.joined()
+        slice = reopened + slice + closed
+
+        let headed = ensureHeadingID(slice, level: level, fallbackID: fallbackID)
+        let head = whole.substring(to: bodyStart)
+        let tail = whole.substring(from: bodyEnd)
+        return (head + "\n" + headed.text + "\n" + tail, headed.headingID)
+    }
+
+    /// Where the run of section/article/header/div opening tags that
+    /// stand directly (only whitespace between) before a position begins.
+    private static func wrappersStart(before position: Int, in body: NSString) -> Int {
+        var start = position
+        guard let expression = try? NSRegularExpression(pattern: "<(?:section|article|header|div)\\b[^>]*>\\s*$") else { return start }
+        while true {
+            let before = body.substring(to: start)
+            guard let match = expression.firstMatch(in: before, range: NSRange(location: max(0, start - 600), length: min(600, start))),
+                  match.range.location < start else { return start }
+            start = match.range.location
+        }
+    }
+
+    private struct OpenElement { let name: String; let tag: String }
+
+    /// The elements still open after reading `text`, starting from an
+    /// existing stack. Comments, processing instructions, declarations,
+    /// self-closing and void tags open nothing.
+    private static func openElements(in text: String, from initial: [OpenElement]) -> [OpenElement] {
+        var stack = initial
+        let stripped = text.replacingOccurrences(of: "(?s)<!--.*?-->|<!\\[CDATA\\[.*?\\]\\]>", with: "", options: .regularExpression)
+        guard let expression = try? NSRegularExpression(pattern: "<(/?)([A-Za-z][\\w:.-]*)((?:\\s[^>]*)?)>") else { return stack }
+        let whole = stripped as NSString
+        for match in expression.matches(in: stripped, range: NSRange(location: 0, length: whole.length)) {
+            let closing = match.range(at: 1).length > 0
+            let name = whole.substring(with: match.range(at: 2))
+            let attributes = whole.substring(with: match.range(at: 3))
+            if closing {
+                if let index = stack.lastIndex(where: { $0.name == name }) { stack.removeSubrange(index...) }
+            } else if attributes.hasSuffix("/") || voidElements.contains(name.lowercased()) {
+                continue
+            } else {
+                stack.append(OpenElement(name: name, tag: whole.substring(with: match.range)))
+            }
+        }
+        return stack
+    }
+
+    /// The first heading's id at the given level, given when it has none.
+    private static func ensureHeadingID(_ text: String, level: Int, fallbackID: String) -> (text: String, headingID: String) {
+        guard let expression = try? NSRegularExpression(pattern: "<h\(level)\\b([^>]*)>"),
+              let match = expression.firstMatch(in: blankingComments(text), range: NSRange(location: 0, length: (text as NSString).length))
+        else { return (text, fallbackID) }
+        let attributes = (text as NSString).substring(with: match.range(at: 1))
+        if let id = capture(in: attributes, "\\sid=\"([^\"]+)\"") { return (text, id) }
+        let tag = "<h\(level) id=\"\(fallbackID)\"\(attributes)>"
+        return ((text as NSString).replacingCharacters(in: match.range, with: tag), fallbackID)
     }
 
     enum AnchorFate { case relink(String), unlink }
