@@ -111,6 +111,9 @@ struct EPUBPileMenu: View {
             }
         }
         #endif
+        // Binding (Origami Binding Profile, 24 Oct 2026): the whole book,
+        // a selection of its articles, or a binder across books.
+        BinderMenuItems(record: record)
         Divider()
         Button("Move to Trash", role: .destructive) { model.trashEPUB(record) }
     }
@@ -220,6 +223,8 @@ struct EPUBLibraryListView: View {
                 AuthorSortTabs(key: $pinnedSortKey, ascending: $pinnedSortAscending, tabs: SortTab.works)
             }
             bookList
+            // The binder being made, and its sheets (EPUBBinderViews.swift).
+            BinderBar()
         }
     }
 

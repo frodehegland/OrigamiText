@@ -3004,13 +3004,18 @@ extension OrigamiEPUBExporter {
         var zip = ZipWriter()
         zip.add("mimetype", Data("application/epub+zip".utf8))
         var files: [(relative: String, url: URL)] = []
+        // Both sides with their symlinks resolved the same way: a folder
+        // under /var enumerates as /private/var, and the prefix must match
+        // or every entry is named by its absolute path (24 Oct 2026).
+        let base = folder.resolvingSymlinksInPath().path
         if let enumerator = FileManager.default.enumerator(
             at: folder, includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]) {
             for case let url as URL in enumerator {
                 guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?
                     .isRegularFile == true else { continue }
-                let relative = url.path.replacingOccurrences(of: folder.path + "/", with: "")
+                let relative = url.resolvingSymlinksInPath().path
+                    .replacingOccurrences(of: base + "/", with: "")
                 guard relative != "mimetype" else { continue }
                 files.append((relative, url))
             }
