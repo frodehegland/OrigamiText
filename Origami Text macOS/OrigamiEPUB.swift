@@ -669,6 +669,14 @@ nonisolated enum OrigamiEPUBExporter {
     /// paper keeps its full front matter.
     @TaskLocal static var writesTitleOnly = false
 
+    /// How much of the front matter the header carries, by Author's
+    /// three names (`ExportSettings.FrontMatter`, as a string so this
+    /// shared file needs nothing of the Mac's): "plain" is the title
+    /// alone, "basic" the title and the authors' names, anything else
+    /// the paper's full front matter. The record states everything
+    /// whichever is chosen; this is what a person sees on the page.
+    @TaskLocal static var frontMatterStyle = "full"
+
     /// Writes the EPUB in a publisher's house style.
     static func write(doc: LiquidDoc, resolve: (String) -> LiquidDoc?, to url: URL,
                       houseStyle: HouseStyle, colophon: Bool = true) throws {
@@ -1718,7 +1726,7 @@ nonisolated enum OrigamiEPUBExporter {
     /// split from the joined author string only when every chunk reads
     /// as a full name — "Doe, John" stays one line.
     private static func headerHTML(for doc: LiquidDoc) -> String {
-        if writesTitleOnly {
+        if writesTitleOnly || frontMatterStyle == "plain" {
             return """
             <header class="title-only">
             <h1\(languageAttributes(doc.forms["title"]?.lang))>\(escaped(doc.title))</h1>

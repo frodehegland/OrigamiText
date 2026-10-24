@@ -1126,6 +1126,22 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
         copy.forms = forms
         copy.authorForms = authorForms
         copy.bibliographyConventions = bibliographyConventions
+        // The front matter (23 Oct 2026 — these had been left behind,
+        // so a published copy lost its abstract and authors' details).
+        copy.subtitle = subtitle
+        copy.journal = journal
+        copy.affiliations = affiliations
+        copy.acmReference = acmReference
+        copy.authorORCIDs = authorORCIDs
+        copy.authorEmails = authorEmails
+        copy.authorAffiliations = authorAffiliations
+        copy.authors = authors
+        copy.abstract = abstract
+        copy.keywords = keywords
+        copy.isbn = isbn
+        copy.ccsConcepts = ccsConcepts
+        copy.license = license
+        copy.licenseURI = licenseURI
         return copy
     }
 

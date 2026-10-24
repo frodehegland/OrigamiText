@@ -533,6 +533,8 @@ struct ContentView: View {
             ConceptListView(name: name)
         } else if model.sidebarSelection == .concepts {
             ConceptsListView()
+        } else if model.sidebarSelection == .conceptLibrary {
+            ConceptLibraryView()
         } else if model.sidebarSelection == .conceptSpace {
             ConceptSpaceView()
         } else if model.sidebarSelection == .timeFlows {

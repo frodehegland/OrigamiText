@@ -29,6 +29,11 @@ struct OrigamiTextMacApp: App {
                 MainWindowConnector()
             }
             .background(MainNSWindowCapture())
+            // Define Concept… from any selection, reading or writing.
+            .sheet(item: Bindable(model).conceptDefinitionRequest) { request in
+                DefineConceptSheet(term: request.term, doc: request.doc)
+                    .environment(model)
+            }
             // A file open (or any external event) lands in THIS window —
             // without the preference, SwiftUI opened a fresh library
             // window per double-clicked EPUB; hidden or stacked, they
@@ -40,6 +45,8 @@ struct OrigamiTextMacApp: App {
             .task {
                 appDelegate.model = model
                 model.restoreFolderAccess()
+                model.conceptLibrary.onReload = { [weak model] in model?.syncTrackedConceptsFromLibrary() }
+                model.conceptLibrary.restore()
                 model.restoreReaderLibrary()
                 #if DEBUG
                 model.runFormatSelfTestIfRequested()
@@ -146,6 +153,10 @@ struct OrigamiTextMacApp: App {
                 Toggle("Show Superseded", isOn: Bindable(model).showSuperseded)
                 Divider()
             }
+            // Format — Author's basic writing commands, for the document
+            // being written: headings, emphasis, lists, code, links,
+            // citations, images and tables.
+            FormatCommands()
             // The reading's View-menu verbs: Flow (⌘⇧F) and the colour
             // views, fold/unfold (⌘−/⌘+), and the type (⇧⌘±, ⌥⌘±) —
             // answered by the front reading.

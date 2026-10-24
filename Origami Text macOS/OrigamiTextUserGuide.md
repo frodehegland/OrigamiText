@@ -158,10 +158,11 @@ duplicates.
 | *Your name* | The papers you wrote |
 | **References** | Every work your library cites, each once — however many of your papers cite it — with its warning (Retracted, Expression of Concern…). Sort by the **Title**, **Author** or **Date** tab, and click the chosen tab again to reverse: by title the rows show titles, by author the authors' names, by date both, with the year. Choose one to see everything known of it: its marks and what they mean, abstract, topics, citations by year, a free copy, and the papers on your shelf that cite it. Filled by **Check Library Now** (Settings ▸ Reading ▸ References), and read by your Vision Pro's Library room |
 | **To Acquire** | Works you have asked to get (it appears when there is something on it) |
+| **Writing** | **New Document** starts your own writing (⌘N); **Drafts** lists what you are writing (section 10). Right-click Drafts for New Book |
 | **Hypermedia** | The Seed spaces you follow (section 13) |
 | **Folders** | Your own groupings; **Add Folder** makes one |
 | **XR** | Graphs and Timelines for the Vision Pro |
-| **Views** | Annotations, People, Concept Space, Tracked Concepts and the library views (section 9) |
+| **Views** | Annotations, People, Defined Concepts, Concept Space, Tracked Concepts and the library views (section 9) |
 
 Right-click **Papers** to show only unread books.
 
@@ -714,13 +715,55 @@ books, so they answer from a whole shelf of long texts.
 Settings ▸ **View Modules** turns views on and off, imports views made by
 others, and helps you make your own.
 
+**Defined Concepts** is your own vocabulary, shared with Author. Each
+concept has a term, your definition, other names, a kind, where it appears
+in your books, links to related concepts, and matches to the same idea
+elsewhere (a Wikidata item, an ACM CCS node). **Import** brings concepts
+in: from every book in the library (their Visual-Meta glossaries), from an
+Author document's glossary, or from another concept library folder, such
+as Author's own in iCloud Drive ▸ Author ▸ Concepts. **Export SKOS** writes
+the library for any other vocabulary tool. The library is a folder of plain
+JSON files, one per concept, each a log of its definitions and uses, in the
+format Author writes; Settings ▸ **Concepts** chooses the folder. Put it in
+a synced folder and every device and app shares it, and nothing is ever
+lost: two copies of a concept always merge.
+
 ---
 
 ## 10. Writing and exporting
 
 - **File ▸ New Document** (⌘N), **New Note** (⇧⌘N), **New Book** (⇧⌘B) and
   **New Author** (⌥⌘N) start your own writing. **File ▸ Save** (⌘S) saves it.
-- **File ▸ Export…** (⇧⌘E) publishes a document as an Origami EPUB.
+- **Your drafts are Author documents.** Each is saved as a `.liquid`
+  package, the same file the Author app writes, so **Open in Author** in
+  the editor's toolbar hands the very document to Author and back again.
+  Drafts written before this change were converted on first launch; the
+  old `.origamitext` files are kept in Drafts/Migrated inside the app's
+  Application Support folder.
+- **Formatting** lives in the **Format** menu, with Author's shortcuts:
+  Heading 1–3 (⌘1–⌘3) and Body (⌘0), Bold (⌘B), Italic (⌘I), Bullet (⌘8)
+  and Dash (⌘9) lists, Code, Weblink (⌘K), Citation (⌘T), Insert Image and
+  Insert Table. Right-clicking the text offers the same.
+- **Images** come in by Insert Image, by dropping a picture file onto the
+  text, or by pasting one; each sits in a paragraph of its own and exports
+  into the EPUB. Type the caption on the line under it.
+- **Tables**: Insert Table asks for rows and columns; pasting a selection
+  from a spreadsheet makes one at once. Click a table to edit its cells; a
+  cell beginning with `=` is a formula (`=SUM(A1:A3)`).
+- **Citing**: paste a DOI (or a doi.org link) and Crossref supplies the
+  record, which appears as "(Surname Year)"; paste a BibTeX entry and it
+  becomes a citation the same way. With words selected, ⌘T quotes them
+  and puts the label after. Every record travels in the document and is
+  listed at export; **Preflight References…** checks them first.
+- **File ▸ Export…** (⇧⌘E) publishes a document as an Origami EPUB. For a
+  draft it first asks what Author asks: the header's style (Plain is the
+  title alone, Basic the title and authors' names, Full front matter the
+  paper's authors with affiliations and contact lines, venue and date,
+  abstract, CCS concepts, keywords and rights), the authors with email,
+  ORCID, institution, city and country, the conference or journal, DOI and
+  ISBN, the abstract, keywords, CCS concepts and the rights statement. The
+  answers are kept with the draft, and the abstract and keywords land where
+  Author keeps them, so the two apps show the same.
 - **File ▸ Export as Gemtext (.gmi)…** for the Gemini network.
 - **File ▸ Export to XR (Author Map)…** takes a Map into Author's spatial
   view.
@@ -861,6 +904,10 @@ can read and comment.
 | ⇧⌘O | Choose Community Folder… |
 | ⌘S | Save |
 | ⇧⌘E | Export… |
+| ⌘0 / ⌘1 / ⌘2 / ⌘3 | Body / Heading 1 / 2 / 3 (writing) |
+| ⌘B / ⌘I | Bold / Italic (writing) |
+| ⌘8 / ⌘9 | Bullet list / Dash list (writing) |
+| ⌘K / ⌘T | Weblink… / Citation… (writing) |
 | ⌘W | Close |
 | ⌘L | Library |
 | ⌥⌘L | Show Links Panel |

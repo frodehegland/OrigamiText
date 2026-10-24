@@ -101,6 +101,15 @@ enum ContextActionBuilder {
                     model.floatSelection(trimmed, in: doc)
                 })
             }
+            // The selected words as a Defined Concept: define them in your
+            // own words (or revise the library's definition), noting this
+            // document as a place the concept appears. Reading or writing.
+            let known = model.conceptLibrary.concept(forTerm: trimmed)
+            actions.append(ContextAction(id: "define-concept",
+                                         title: known == nil ? "Define Concept…" : "Concept: \(known!.term)…",
+                                         systemImage: "character.book.closed") {
+                model.requestConceptDefinition(term: trimmed, in: doc)
+            })
             // The selected words as a person: offered when the library
             // knows the name (special text discovered, not marked up).
             if model.people.person(named: trimmed) != nil || model.knowsAuthor(named: trimmed) {

@@ -305,9 +305,10 @@ container on macOS). Portable: `%APPDATA%/OrigamiText`, `~/.local/share/origami-
 
 | Path | Format | Written by | Purpose |
 |---|---|---|---|
-| `App Support/Drafts/<id>.origamitext` | Origami JSON | `DraftStore.save/create` | Editable drafts (letters, notes, books, transcripts). |
+| `App Support/Drafts/<id>.liquid` | Author package (`LiquidPackage.swift`): `Contents/Content.liquidstore` (NSKeyedArchiver of the attributed text), `Content.rtfd`, `Version.plist`, `Author.plist` (title, and Origami's fields as a JSON string under `origami`), `Citations.plist` | `DraftStore.save` | Editable drafts (letters, notes, books, transcripts) — the same file the Author app opens. Members Origami does not own are carried through a save. |
+| `App Support/Drafts/Migrated/<id>.origamitext` | Origami JSON | `DraftStore.migrateLegacyDrafts` | The pre-package draft files, kept after conversion (23 Oct 2026). |
 | `App Support/Published/<id>.origamitext` | Origami JSON with appendix | `DraftStore.markPublished` | Read-only published records. |
-| `App Support/Archived/<id>.origamitext` | Origami JSON | `DraftStore.archive` (file moved whole) | Shelved drafts. |
+| `App Support/Archived/<id>.liquid` | Author package | `DraftStore.archive` (package moved whole) | Shelved drafts. Older `.origamitext` archives are still listed and convert when un-archived. |
 | `App Support/EPUBs/library.json` | JSON array of `EPUBRecord` (pretty, sorted keys) | `persistEPUBRecords` | **The shelf manifest.** A failed write beeps and toasts. |
 | `App Support/EPUBs/<folder>.epub` | EPUB | import | The canonical stored copy of each shelf book. |
 | `App Support/EPUBs/<folder>/` | unpacked EPUB | import | Derived cache the reader serves from; rebuildable from the `.epub`. Missing `.epub`s are re-packed from it at launch (`ensureStoredEPUBs`). |
@@ -782,8 +783,44 @@ The main library in today's UI. Records come from `epubRecords` (manifest), newe
 
 ### 5.8 Writing: drafts and the editor
 
+- **Sidebar** (`SidebarView.writingSection`, 23 Oct 2026): a "Writing" section under the EPUB section holds a
+  New Document button (`newDraft`) and a Drafts row (`SidebarItem.drafts`, now a row `hasRow` admits; context
+  menu New Document / New Book). Before this, the Drafts list had no row and was reached only by ⌘N.
 - **Create** (`DraftStore.create`): id from `makeID(author, now)` with collision check against drafts only;
-  title "Untitled", empty body, saved immediately to `Drafts/<id>.origamitext`.
+  title "Untitled", empty body, saved immediately to `Drafts/<id>.liquid`.
+- **The draft file is an Author document** (23 Oct 2026, `LiquidPackage.swift`, `AuthorAttributes.swift`,
+  `LiquidRichText.swift`). The text is stored as Author stores it: an `NSAttributedString` whose structure is in
+  attributes — `LATextStyleIdentifierAttribute` per paragraph (`body`, `header1`–`header6`, `bulletList`,
+  `dashList`, `code`, `attachment`, `attachmentDetails`), bold/italic as font traits, `.link` for weblinks,
+  citation runs tagged `LACitationIdentifierAttributeName` + `LACitationFormatAttributeName` with
+  `LACitationStartMarker`/`LACitationEndMarker` on the "(" and "Name Year)" runs, images as `NSTextAttachment`s
+  with the bytes in the file wrapper, tables as `TableAttachment` (archived under Author's class name
+  `LiquidAuthorTextCore.LATableAttachment`, the `LATable` JSON in the wrapper as `AuthorTable-<id>.json`).
+  Citation records are `AuthorCitation` (Author's `LACitation` plist, field for field; `bibtex` is the verbatim
+  `originalText` when it starts with `@`, else written from the fields under the identifier as key). Author
+  reads the archive with the legacy non-secure unarchiver and normalises image attachments itself, so only
+  tables need its class name. Reading maps Author's class names to this app's and falls back to the RTFD.
+  **Fonts are Author's to decide**: Author's open pass (`updateFormatIfNeeded` → `repairFontSizes` +
+  `applyUserFonts`) re-applies every style's default face in the user's chosen families, scaled by the
+  document's `FontSizeModifier`, so archived fonts never show there. The archive is still written in Author's
+  default faces per style (`AuthorStyle.authorFont` — Times New Roman 17 body, Optima 25/19/17/15/14/12
+  headings, Menlo 17 code, Times italic captions; emphasis beyond the style's own weight carried as
+  bold/italic) so the RTFD backup reads as Author's. `Version.plist` carries **no** `FontSizeModifier` for a
+  package Origami made (a 0 or missing value is removed; Author then uses its default 17) — only a value Author
+  itself wrote is kept; writing 0 had Author take 17 points off every face. On read,
+  `LiquidRichText.normalizedForEditing` maps every run to Origami's reading faces for the editor.
+- **The bridge** (`LiquidRichText`): attributed text ⇄ `LiquidDoc`. `header1`–`3` ⇄ `heading` 1–3 (4–6 read as
+  3); list styles ⇄ lines opening "• " / "- "; consecutive `code` paragraphs ⇄ one fenced ``` block; traits ⇄
+  `**`/`*` markers (only beyond the paragraph's own face — a heading's bold is not emphasis); `.link` ⇄
+  `[text](url)`; an image attachment ⇄ `Asset` (id `img-<8 hex of SHA-256>` so the same picture keeps its id) +
+  `![caption](asset:id)`, the caption being the following `attachmentDetails` paragraph; `TableAttachment` ⇄
+  `Table` + paragraph with `tableID` and pipe-text fallback; a citation run ⇄ `[cite:id]` (the cited words kept,
+  the label dropped; the number stands in at export) + `Reference`. Library addresses (`[f.hegla.…#p3]`) stay as
+  text in both apps. Paragraph ids `p1…pN`. Origami's other fields travel as the document's JSON (body, tables,
+  assets, references emptied) under `Author.plist["origami"]`, which Author round-trips; a package without one
+  (made in Author) gets an id from its file name and dates (`document(from:fileURL:fallbackAuthor:)`).
+- **Migration** (`DraftStore.migrateLegacyDrafts`): at every `reload`, each `Drafts/*.origamitext` is written
+  as a package (unless one exists) and the file moves to `Drafts/Migrated/`. Nothing is deleted.
 - **⌘N** (`newDraft`): if words are selected in a native reader text view: in a transcript (the paragraph's
   speaker, or the nearest earlier speaker) → lift an extract on the speaker's behalf; otherwise ask "New Reply"
   with a pop-up of discourse kinds, start that discourse draft and put the quote (citation convention) plus a
@@ -794,13 +831,17 @@ The main library in today's UI. Records come from `epubRecords` (manifest), newe
   (`startDiscourse`) → empty, prefix + title, that rel; Use as Template → copy body, "Title (new)", no link;
   Retract → body "This document retracts “Title” [id].", title "Retraction of Title", `retracts`. Derived drafts
   carry no `documentType` (D18).
-- **Editor buffer** (`DraftEditor`): title, author, bodyText, attention, onBehalfOf, date, assets, plus
-  `pendingReferences[address] = bibtex` (from pastes) and `referenceOverrides[id] = bibtex` (from Preflight).
-  `buildDocument()`: parse body; re-attach `speaker` to paragraphs starting with a speaker name the original
-  already knew; keep original links and add detected links not already present (same `to`+`fragment`) and not
-  pointing at itself; attach pending BibTeX to links lacking one; apply overrides to links and references; empty
-  title → "Untitled"; keep `aiOnBehalf`, `documentType`, concepts, layouts, connections, assets.
-  (`location`, `sourceURL`, `publication`, `tables` are not carried — unclear from source whether intended.)
+- **Editor buffer** (`DraftEditor`): title, author, attention, onBehalfOf, date; the live `NSTextStorage` the
+  text view edits directly (one copy of the words); `citations[id]` (`AuthorCitation`); the package it came
+  from; a `RichTextController` the Format menu reaches; plus `pendingReferences[address] = bibtex` (from library
+  citation pastes) and `referenceOverrides[id] = bibtex` (from Preflight). `buildDocument()`: extract body,
+  tables, assets and cited ids from the text (`LiquidRichText.extract`); re-attach `speaker` to paragraphs
+  starting with a speaker name the original already knew; keep original links and add detected links not
+  already present (same `to`+`fragment`) and not pointing at itself; attach pending BibTeX to links lacking
+  one; references = cited records in order of appearance, then the original's uncited references; apply
+  overrides to links, references and the citation records; empty title → "Untitled"; keep `aiOnBehalf`,
+  `documentType`, concepts, layouts, connections, `location`, `sourceURL`, `publication`, `language`.
+  Saving (`DraftStore.save(text:citations:for:)`) writes the package and re-derives the listed document.
 - **Saving:** ⌘S; automatically 800 ms after the title stops changing, when the title loses focus, when the
   editor disappears, before another draft opens, and at quit (`applicationWillTerminate`). Saving also writes the
   editor's author name back as the default author.
@@ -813,26 +854,43 @@ The main library in today's UI. Records come from `epubRecords` (manifest), newe
   unset and the body is non-empty); author field; "On Behalf Of…" menu + popover; date button (popover §4.5);
   "Attention of" popover (checkboxes for ranked correspondents, then all library authors and People records,
   plus "New…" which creates a person); attention chips removable by click; transcript speakers as chips (Profile,
-  Contact Record, Add to People, Associate with Record); the body editor; an image strip; foot hint "One paragraph
-  per line. Start a line with #, ##, or ### for a heading."; "Preflight References…"; "Insert Image…"; Archive.
+  Contact Record, Add to People, Associate with Record); the body editor; a foot hint naming the Format
+  shortcuts; "Preflight References…", "Cite…", "Insert Image…", "Insert Table…"; Archive. Toolbar: Save, Open
+  in Author (`openDraftInAuthor`: always saves first, changes or none, so the package travels under the current
+  rules, then opens it with bundle id `com.liquid.auhor.osx`), Export.
   Transcript drafts get a side column with publish/archive and Summary & Notes.
-- **Body editor** (`MarkdownTextEditor.swift`): plain text is the source of truth. Styling per edited paragraph:
-  serif body 17 pt; heading lines 28/23/19 pt bold; with `hideHeadingMarkers` (default on) the `# ` markers are
-  shrunk to near-zero width; inline emphasis `*`/`**`/`***` and `_` forms rendered with markers hidden
-  (regexes `(?<!\*)(\*{1,3})(?![\s*])(.+?)(?<!\s)\1(?!\*)` and
-  `(?<![\w_])(_{1,3})(?![\s_])(.+?)(?<!\s)\1(?![\w_])`). The caret never rests inside a hidden marker; deleting
-  into a hidden marker removes the whole marker (heading) or the marker pair (emphasis). No restyle during IME
-  composition. `![alt](asset:id)` lines with a known image render as inline images and serialise back to the
-  marker.
-- **Smart paste** (in order): (1) an Origami citation on the clipboard (private flavour or HTML link) → its
+- **Body editor** (`RichTextEditor.swift`, 23 Oct 2026, replacing `MarkdownTextEditor`): an `NSTextView`
+  (TextKit 1, needed for attachment cells) over the draft's own `NSTextStorage`; formatting is data in Author's
+  attributes, never re-derived from markers. Faces: the reader's chosen families at Author's sizes (body 17,
+  headings 25/19/17 bold, code monospaced 15, caption italic 15 — `AuthorStyle.font`). `RichTextController`
+  (the delegate, one per draft) carries the commands: `setStyle(_:)` per selected paragraph (keeps emphasis,
+  links and citation marks; adds/removes the list stub "• " / "- " marked `LATextStructureIdentifiersAttribute =
+  listStub`), `toggleBold`/`toggleItalic` (on if any of the selection lacks the trait; typing attributes when
+  nothing is selected), `insertLink`, `insertCitation` (bare "(Name Year)" at the caret, or `“words” (Name Year)`
+  around a selection — Author's `nameAndDate` / `quoteWithName` formats), `insertAttachmentParagraph` (breaks
+  the line, centres the attachment, follows it with a body paragraph), `insertImage(data:)` (normalised by
+  `ImageNormalizer`: ≤2048 px wide, PNG when alpha else JPEG 0.85 — Author's rule), `insertTable(rows:columns:)`
+  and `insertTable(tabSeparated:)`. Return in a heading starts a body paragraph; in a list continues it, or ends
+  it when the item is empty. Images arrive by Insert Image, file drop (`performDragOperation`) or paste
+  (`paste(_:)` takes a picture when the clipboard has no words; words always paste plain). Clicking a table
+  opens `TableGridEditor` (`WritingSheets.swift`) — cells, formulas, add/remove rows and columns; Done
+  re-encodes the wrapper and invalidates layout.
+- **Format menu** (`FormatCommands.swift`): a `CommandMenu` reaching the focused draft's controller through
+  `@FocusedValue(\.richTextController)` (set by `DraftEditorView` with `.focusedSceneValue`). Author's
+  shortcuts: Body ⌘0, Heading 1–3 ⌘1–⌘3, Bold ⌘B, Italic ⌘I, Bullet ⌘8, Dash ⌘9, Code, Citation… ⌘T, Weblink…
+  ⌘K, Insert Image…, Insert Table…. The context menu offers Format and Insert submenus too. Not ported from
+  Author: align, highlight, strikethrough, endnotes, inline notes, page break, contract, mark, comment.
+- **Smart paste** (in order; `RichTextController.textView(_:shouldChangeTextIn:replacementString:)` then
+  `CitationPaste.handle`): (1) an Origami citation on the clipboard (private flavour or HTML link) → its
   bracketed insertion text, registering its BibTeX; (2) a Reader "Copy Quote/Cite" → healed quotation with
-  attribution, synthesised BibTeX registered under the derived id; (3) text starting with `@` that parses as
-  BibTeX → one citation line per entry `“Title” (First Author[ et al.], Year) [derived-id]` (or the DOI/URL when
-  no `vm-id`), each raw entry registered under its derived id (`makeID(firstAuthor, vm-id)`); (4) anything else
-  unchanged. Converted pastes get a preceding blank line when not at a line start.
-- **Images** (`DraftEditor.insertImage`): asset id `img-<8 hex>`, extension from the name or sniffed (JPEG
-  `FF D8 FF`, PNG `89 50 4E 47`, GIF `47 49 46`, default png), base64 bytes stored in the document, marker
-  paragraph appended.
+  attribution, synthesised BibTeX registered under the derived id; (3) BibTeX → one citation run per entry
+  (`AuthorCitation(bibtex:)`, the raw entry kept as `originalText`); (4) text that is a DOI, give or take a
+  doi.org URL (`OnlineFetch.doi(in:)`, ≤240 characters, nothing else around it) → a placeholder "(looking up
+  10.…)" tagged `citationPlaceholderAttributeName`, replaced when `CrossrefVerifier` answers (key
+  `surnameYear`; the DOI stays as words when nothing is found); (5) tab-separated text (every line has a tab, or
+  one line has two) → a table; (6) anything else as plain words in the paragraph's style.
+- **Citation sheet** (`CitationSheet`, ⌘T): a DOI or BibTeX typed or pasted (the clipboard pre-fills when it
+  holds one); BibTeX inserts at once, a DOI after the Crossref lookup, with the failure said in the sheet.
 - **Preflight** (`PreflightModel`, `PreflightView`): compares each link/reference BibTeX with Crossref (when
   `verifyReferencesCrossref`), status pending/checking/verified/differs/notFound/unavailable; "differs" when
   title/author/year disagree or the found record has a DOI the reference lacks; per-field "use" and "Use All
@@ -842,10 +900,25 @@ The main library in today's UI. Records come from `epubRecords` (manifest), newe
 
 ### 5.9 Publishing and export
 
+- **The export sheet** (`ExportEPUBSheet.swift`, `ExportSettings.swift`, 23 Oct 2026): ⇧⌘E on a draft asks
+  Author's export questions first. `ExportSettings` holds `frontMatter` (`plain` = title alone, `basic` = title
+  and names, `full` = the paper's front matter — Author's Plain / Basic / ACM), `authors` (name, email, ORCID,
+  institution, city, country → `LiquidDoc.authors`, `authorAffiliations` "Institution, City, Country",
+  `authorEmails`, `authorORCIDs` bare, `affiliations`), `venue` → `publication`, `journal`, `doi` (doi.org
+  prefix stripped), `isbn`, `ccsConcepts`, `license`/`licenseURI`, `abstract`, `keywords`, `acknowledgements`.
+  Storage: abstract, keywords and acknowledgements in Author's `Contents/exportMeta.json` (its
+  `DocumentExportMeta` shape; `meeting`, `concepts`, `names` preserved; Author's edits win on read), the rest as
+  JSON under `Author.plist["origamiExport"]`. `apply(to:)` sets the document fields (empty settings leave a
+  field as it was) in `LiquidRichText.document(from:)` and `DraftEditor.buildDocument`. The sheet pre-fills the
+  first author from the draft's author and Settings' ORCID/affiliation. The writer's header follows
+  `OrigamiEPUBExporter.frontMatterStyle` (a task-local string): "plain" renders the title-only header, "basic"
+  stops after the authors' names, otherwise everything; the record states every field regardless.
+  `exportEPUB(_:frontMatter:)` takes the style from the draft's package when not given.
 - **Export as EPUB** (`exportEPUB`, ⇧⌘E and draft menus): save panel with the identity file name; write via
   `OrigamiEPUBExporter` (chapter 04). If the document is a draft it is **published**: append the Visual-Meta
-  appendix, write `Published/<id>.origamitext`, delete the draft, close the editor, select books-published for
-  books, open the published copy, toast "Published “Title” as an EPUB".
+  appendix (`VisualMeta.appendingAppendix`, which since 23 Oct 2026 keeps every field — tables and assets
+  included — via `replacingBody`), write `Published/<id>.origamitext`, delete the draft package, close the
+  editor, select books-published for books, open the published copy, toast "Published “Title” as an EPUB".
 - **Export a Copy… (.origamitext)** (`exportDocument`, from the Published list): save panel named
   `suggestedExportFileName`, content type `info.futuretextlab.origami-doc`; accessory: segmented "This document
   is:" (None + every `DocumentType` + any unknown existing token; default the existing type or Letter);

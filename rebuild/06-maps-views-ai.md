@@ -875,6 +875,70 @@ Further AI and Library entries from part (b):
 - **Library Insights** (`LibraryInsights.swift`): helpers for hot paragraphs, author summaries, health, and `RevisionDelta`. `RevisionDelta` pairs edited paragraphs greedily by Jaccard word similarity of at least 0.4; `percentChanged = round((edited+added+removed)/total·100)`.
 - **Reading Analysis** (`ReadingAnalysisView.swift`): the per-document "AI" screen. Uses tasks 4 and 5 and note A. Clicking a term opens a Find column (`@AppStorage("aiColumnView")`).
 
+### 4.3 Defined Concepts: the shared library (23 Oct 2026)
+
+Views ▸ **Defined Concepts** (`ConceptLibraryView.swift`, `SidebarItem.conceptLibrary`) is the reader's own
+vocabulary, shared with Author through a folder of plain JSON files. The format is normative in
+`ORIGAMI-CONCEPTS-FORMAT.md` (`origami-concepts/1.0`) and has no Apple dependency: Author's `ConceptLibrary`
+package writes the same files.
+
+- **Data** (`ConceptLibrary.swift`, pure Foundation): `concepts/<id>.json` is Author's record — `{id, terms,
+  events[]}`, each event `{id, kind, created (ISO 8601), device, sequence, …}` with kinds `version`, `used`,
+  `deleted`, `restored`, `merged`; the head is the newest `version`; deleted when the newest lifecycle event
+  outranks the head; ordering `(sequence, created, id)`; two copies merge by event-id union. **Only those five
+  kinds may be written there** — Author's decoder rejects others. Origami's additions go in
+  `extensions/<id>.json`, the same discipline with open kinds: `label` (pref/alt/hidden, lang), `sense`,
+  `kind`, `relation` (broader/narrower/related/…, `to`), `match` (exact/close/broad, scheme, identifier, url),
+  `flag` (tracked/liked/hidden, on), `occurrence` (stable document id, title, fragment, form),
+  `definitionSource` (user/document/ai); list kinds are removed by a later event with `on: false`; unknown kinds
+  are kept. `layouts/<space>.json` holds positions per space; `library.json` names the format and the apps.
+  `ConceptTerm.normalise` (quotes/dashes straightened, case and diacritics folded, whitespace collapsed, never
+  stemmed; whole-word matching) is the one rule for "same concept". `ConceptLibraryStore` does the folder IO;
+  `NSFileCoordinator`/`NSFileVersion` are used only under `#if canImport(Darwin)` as a courtesy to iCloud
+  Drive — conflicts resolve by union. `AuthorGlossaryReader` reads a `.liquid`'s `Contents/glossary.json`
+  (phrase "Name, alt, alt"; dates as seconds-since-2001 or ISO; `section`/`citation`/`heading`/`reference`/`lens`
+  entries never published). `ConceptLibrarySKOS.jsonLD` exports a `skos:ConceptScheme`.
+- **Model** (`ConceptLibraryModel.swift`, `AppModel.conceptLibrary`): the folder (default
+  `Application Support/Concepts`; a chosen folder kept as a bookmark, security-scoped on macOS; `restore()` at
+  launch), `define(draft)` (matches by source id then term; same words → `used`, new words → `version` with
+  `parentID`; records an `occurrence` and `definitionSource`), `setDefinition`, `setKind`, `setSense`,
+  alternative names, URLs, flags, relations, matches, delete/restore, `importConcepts(from: LiquidDoc)` (the
+  book's Visual-Meta concepts; `heading` skipped; `markedForms` → alt labels), `importConcepts(from: [LiquidDoc])`
+  (every book), `importAuthorDocument(at:)`, `importLibrary(at:)` (another folder, union-merged), `skosData()`.
+- **UI**: list with filter and a Deleted toggle; detail with term/definition (Save Definition), kind, sense,
+  other names, Appears in (Open resolves the stable id through `index.byID` else `openEPUBRecord`), related
+  concepts, matches elsewhere (wikidata/ccs/orcid/doi/url with URL built), links, history, concept id; toolbar
+  New Concept, Import menu, Export SKOS…, Reload. Settings ▸ **Concepts** (`ConceptsSettingsView`): the folder,
+  Choose Folder…, "Use Author's iCloud Library…" (the open panel starts at
+  `~/Library/Mobile Documents/iCloud~com~liquid~Author/Concepts`; access is user-granted, no entitlement),
+  Use the App's Own Folder, Reload.
+- **Woven into the rest** (later on 23 Oct 2026): a draft's concepts are written into its `.liquid`
+  package's `Contents/glossary.json` in Author's `GlossaryEntry` shape (`LiquidRichText.glossaryEntries` —
+  concept entries replaced, Author's `section`/citation entries kept) and read back from it
+  (`concepts(fromGlossaryEntries:)`; the glossary is the record, the Origami JSON carries no concepts);
+  **Define Concept…** is a built-in context action on any selection, reading or writing
+  (`AppModel.requestConceptDefinition` → `DefineConceptSheet` → `defineConcept`, which writes the library
+  with the document as an occurrence and, for an open draft, into `DraftEditor.concepts`);
+  `DraftEditor.buildDocument` adds every library concept whose term or other name the text uses as whole
+  words (`documentConcepts(mentionedIn:)` — Author's rule), so the EPUB's `concepts[]` and `<dfn>` carry
+  them; `mergedLibraryConcepts` takes the library's definition and kind by term (cache keyed on
+  `conceptLibrary.revision`); `addConcept`/`removeConcept` set the library's `tracked` flag and
+  `syncTrackedConceptsFromLibrary` brings flags made elsewhere into Tracked Concepts.
+- **Author's side** (`author_mac_forxcode`, same day): `Concept` decodes tolerantly (an unknown event is
+  skipped, not fatal); `ConceptExtension.swift` + `ConceptStore` read/write `extensions/<id>.json` and
+  `library.json`; `ConceptLibrary` exposes `extensionRecord`, `alternativeNames`, `occurrences`,
+  `recordOccurrence`, `setFlag`; both `GlossaryEntry`s gain `conceptID`/`versionID` (set by the adapters
+  after `share`, by entry id then term), the Mac init assigns `citationIdentifiers`, Core gains `lens` and
+  a copy that keeps every field; Mac and iOS entitlements add `iCloud.com.liquid.Author`.
+- **Layouts and the Liquid app** (later on 23 Oct 2026): `ConceptLayout` (`space {id, name, kind, app}`,
+  `positions [{id, x, y, z?}]`, `connections [{from, to}]`) with `ConceptLibraryStore.layouts()`,
+  `layout(space:)` and `write(_ layout:)` — the newest write of a space wins. `ConceptLibrary.swift` is
+  copied verbatim into the Liquid Information app (`~/Documents/Liquid Information/Models/`), which reads the
+  same folder from Author's iCloud container, shows the library as a structure in space and writes its
+  positions back as `layouts/<structure uuid>.json` (`kind: liquid`). Keep the two copies in step.
+- **Portable equivalents**: the folder is the API. Any platform reads/writes the JSON; file coordination and
+  version conflicts are Apple details with no effect on the format.
+
 ---
 
 ## 5. visionOS note (visionOS only)

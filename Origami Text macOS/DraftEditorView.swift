@@ -2,13 +2,16 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// Basic draft editor: title and author fields plus a plain-text body where
-/// each line is a paragraph and #/##/### prefixes mark headings.
+/// The draft editor: title and author fields over the rich writing
+/// surface — Author's basic writing tools (headings, emphasis, lists,
+/// code, weblinks, images, tables, citations by DOI or BibTeX), the
+/// draft kept as a `.liquid` package Author opens too.
 struct DraftEditorView: View {
     @Environment(AppModel.self) private var model
     @Bindable var editor: DraftEditor
-    @AppStorage(AppSettings.hideHeadingMarkersKey) private var hideHeadingMarkers = true
     @AppStorage(AppSettings.fullScreenContentWidthKey) private var fullScreenContentWidth = 760.0
+    /// The table whose grid is open in a sheet.
+    @State private var editingTable: EditingTable?
     @FocusState private var titleFocused: Bool
     /// Tab in the title hands the keyboard straight to the body text,
     /// skipping the name-and-date line.
@@ -266,85 +269,6 @@ struct DraftEditorView: View {
         .help("Scroll to the statement this note came from")
     }
 
-    /// Picks one or more images from disk and appends each to the draft as
-    /// an `![](asset:id)` marker paragraph; the bytes travel in the
-    /// document and export into the EPUB's `content/images/`.
-    private func insertImages() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [.image]
-        panel.message = "Choose an image to add to the document."
-        panel.prompt = "Insert"
-        NSApp.activate()
-        guard panel.runModal() == .OK else { return }
-        for url in panel.urls {
-            guard let data = try? Data(contentsOf: url), !data.isEmpty else { continue }
-            editor.insertImage(data: data, suggestedName: url.lastPathComponent)
-        }
-    }
-
-    /// The draft's images as NSImages keyed by asset id, for the editor to
-    /// render `asset:` markers inline.
-    private var editorImages: [String: NSImage] {
-        var result: [String: NSImage] = [:]
-        for asset in editor.assets {
-            if let data = asset.data, let image = NSImage(data: data) { result[asset.id] = image }
-        }
-        return result
-    }
-
-    /// The images the body currently references, in order — resolved from
-    /// the draft's assets by the `![alt](asset:id)` markers.
-    private var referencedImages: [LiquidDoc.Asset] {
-        let assetsByID = Dictionary(editor.assets.map { ($0.id, $0) },
-                                    uniquingKeysWith: { first, _ in first })
-        return editor.bodyText.components(separatedBy: .newlines).compactMap { line in
-            guard let reference = LiquidDoc.imageReference(in: line) else { return nil }
-            return assetsByID[reference.id]
-        }
-    }
-
-    /// A live preview strip of the draft's images, beneath the editor —
-    /// the plain-text body shows the `![…](asset:…)` marker, and this
-    /// shows what it resolves to. Empty documents show nothing.
-    @ViewBuilder
-    private var imageStrip: some View {
-        let images = referencedImages
-        if !images.isEmpty {
-            Divider()
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 14) {
-                    ForEach(Array(images.enumerated()), id: \.offset) { _, asset in
-                        VStack(spacing: 4) {
-                            if let data = asset.data, let image = NSImage(data: data) {
-                                Image(nsImage: image)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(maxHeight: 96)
-                                    .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary))
-                            } else {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(.quaternary)
-                                    .frame(width: 96, height: 96)
-                                    .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
-                            }
-                            Text(asset.alt?.isEmpty == false ? asset.alt! : asset.filename)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .frame(maxWidth: 140)
-                        }
-                    }
-                }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 8)
-            }
-            .frame(maxHeight: 130)
-        }
-    }
-
     /// The draft's speakers in order of first appearance (transcripts).
     private var speakers: [String] {
         var seen: Set<String> = []
@@ -485,6 +409,9 @@ struct DraftEditorView: View {
                     TextField("Title", text: $editor.title, selection: $titleSelection)
                         .textFieldStyle(.plain)
                         .font(AppFonts.heading(28))
+                        // The title stands centred over the page, as a
+                        // paper's does.
+                        .multilineTextAlignment(.center)
                         .focused($titleFocused)
                         .onKeyPress(.tab) {
                             // Straight from the title into the words; the
@@ -682,31 +609,25 @@ struct DraftEditorView: View {
             }
             .padding([.horizontal, .top], 24)
 
-            MarkdownTextEditor(text: $editor.bodyText,
-                               images: editorImages,
-                               hideHeadingMarkers: hideHeadingMarkers,
-                               onReference: { address, bibtex in
-                                   editor.registerReference(address: address, bibtex: bibtex)
-                               },
-                               speakers: speakers,
-                               onLiftStatement: { paragraphText in
-                                   model.liftStatement(fromDraftParagraph: paragraphText)
-                               },
-                               contextDoc: { editor.buildDocument() },
-                               contextMenuItems: { target in
-                                   ContextActionBuilder.menuItems(for: target, mode: .editing,
-                                                                  model: model)
-                               },
-                               claimFocus: $bodyClaimsFocus,
-                               revealParagraph: $revealStatementLine)
+            RichTextEditor(editor: editor,
+                           speakers: speakers,
+                           onLiftStatement: { paragraphText in
+                               model.liftStatement(fromDraftParagraph: paragraphText)
+                           },
+                           contextDoc: { editor.buildDocument() },
+                           contextMenuItems: { target in
+                               ContextActionBuilder.menuItems(for: target, mode: .editing,
+                                                              model: model)
+                           },
+                           claimFocus: $bodyClaimsFocus,
+                           revealParagraph: $revealStatementLine)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 4)
-
-            imageStrip
+                .focusedSceneValue(\.richTextController, editor.controller)
 
             Divider()
             HStack(spacing: 10) {
-                Text("One paragraph per line. Start a line with #, ##, or ### for a heading.")
+                Text("Format menu: ⌘1–⌘3 headings, ⌘B bold, ⌘I italic, ⌘8 list, ⌘K weblink, ⌘T cite. Paste a DOI or BibTeX to cite; paste a spreadsheet selection for a table.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -718,12 +639,26 @@ struct DraftEditorView: View {
                 .controlSize(.small)
                 .help("Verify this document's references before export")
                 Button {
-                    insertImages()
+                    editor.requestCitation = true
+                } label: {
+                    Label("Cite…", systemImage: "quote.opening")
+                }
+                .controlSize(.small)
+                .help("Cite a work by DOI or BibTeX (⌘T)")
+                Button {
+                    editor.controller.chooseAndInsertImages()
                 } label: {
                     Label("Insert Image…", systemImage: "photo.badge.plus")
                 }
                 .controlSize(.small)
-                .help("Add an image to the document — it exports into the EPUB")
+                .help("Add an image at the cursor — it exports into the EPUB")
+                Button {
+                    editor.requestTable = true
+                } label: {
+                    Label("Insert Table…", systemImage: "tablecells")
+                }
+                .controlSize(.small)
+                .help("Add a table at the cursor; click it to edit the cells")
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 6)
@@ -745,6 +680,21 @@ struct DraftEditorView: View {
                 editor.applyReferenceCorrection(id: id, bibtex: bibtex)
             }
         }
+        .sheet(isPresented: $editor.requestCitation) {
+            CitationSheet(controller: editor.controller)
+        }
+        .sheet(isPresented: $editor.requestLink) {
+            WeblinkSheet(controller: editor.controller)
+        }
+        .sheet(isPresented: $editor.requestTable) {
+            TableSizeSheet(controller: editor.controller)
+        }
+        .sheet(isPresented: $editor.requestExport) {
+            ExportEPUBSheet(editor: editor)
+        }
+        .sheet(item: $editingTable) { editing in
+            TableGridEditor(attachment: editing.attachment, controller: editor.controller)
+        }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -756,11 +706,18 @@ struct DraftEditorView: View {
                 .help("Save (⌘S)")
 
                 Button {
+                    model.openDraftInAuthor()
+                } label: {
+                    Label("Open in Author", systemImage: "arrow.up.forward.app")
+                }
+                .help("Open this document in Author — the same .liquid file, edited in either app")
+
+                Button {
                     model.exportDraft()
                 } label: {
                     Label("Export…", systemImage: "square.and.arrow.up")
                 }
-                .help("Export as .origamitext for sharing (⇧⌘E)")
+                .help("Export as an Origami Text EPUB — the draft is published (⇧⌘E)")
             }
         }
         .onChange(of: editor.docID) {
@@ -771,6 +728,9 @@ struct DraftEditorView: View {
         }
         .onAppear {
             loadTranscriptSummary()
+            editor.controller.onTableClicked = { attachment, _ in
+                editingTable = EditingTable(attachment: attachment)
+            }
             // A fresh document opens with "Untitled" pre-selected: type to
             // replace it, or tab past to keep it.
             guard editor.title == "Untitled" else { return }

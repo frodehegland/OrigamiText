@@ -69,6 +69,9 @@ enum SidebarItem: Hashable {
     case person(String)
     case concepts
     case concept(String)
+    /// The Defined Concepts library shared with Author: a folder of
+    /// plain JSON files (ConceptLibrary.swift).
+    case conceptLibrary
     /// The full library-wide Concept Space: all AI-extracted concepts
     /// merged by name, with co-occurrence relationships and source docs.
     case conceptSpace
@@ -5735,23 +5738,89 @@ final class AppModel {
 
     func addConcept(_ name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty,
-              !viewConcepts.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame })
-        else { return }
-        viewConcepts.append(trimmed)
-        viewConcepts.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-        UserDefaults.standard.set(viewConcepts, forKey: "viewConcepts")
-        // Concepts travel in the standing file, so the Vision Pro's
-        // arm offers the new one without waiting for a pin to change.
-        publishStanding()
+        guard !trimmed.isEmpty else { return }
+        if !viewConcepts.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            viewConcepts.append(trimmed)
+            viewConcepts.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            UserDefaults.standard.set(viewConcepts, forKey: "viewConcepts")
+            // Concepts travel in the standing file, so the Vision Pro's
+            // arm offers the new one without waiting for a pin to change.
+            publishStanding()
+        }
+        // Tracking is a flag on the library's concept — defined there if
+        // need be, so Author and every device see the same mark.
+        var draft = ConceptDraft(term: trimmed)
+        draft.definitionSource = "user"
+        if let id = conceptLibrary.concept(forTerm: trimmed)?.id ?? conceptLibrary.define(draft) {
+            conceptLibrary.setFlag(id, "tracked", on: true)
+        }
     }
 
     func removeConcept(_ name: String) {
-        guard let index = viewConcepts.firstIndex(where: { $0.caseInsensitiveCompare(name) == .orderedSame })
-        else { return }
-        viewConcepts.remove(at: index)
-        UserDefaults.standard.set(viewConcepts, forKey: "viewConcepts")
-        publishStanding()
+        if let index = viewConcepts.firstIndex(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+            viewConcepts.remove(at: index)
+            UserDefaults.standard.set(viewConcepts, forKey: "viewConcepts")
+            publishStanding()
+        }
+        if let concept = conceptLibrary.concept(forTerm: name), concept.flags.contains("tracked") {
+            conceptLibrary.setFlag(concept.id, "tracked", on: false)
+        }
+    }
+
+    /// Tracked marks made elsewhere (Author, another device) join the
+    /// Tracked Concepts list here; runs after the library reloads.
+    func syncTrackedConceptsFromLibrary() {
+        var changed = false
+        for concept in conceptLibrary.liveConcepts where concept.flags.contains("tracked") {
+            let term = concept.term.trimmingCharacters(in: .whitespaces)
+            guard !term.isEmpty,
+                  !viewConcepts.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) else { continue }
+            viewConcepts.append(term)
+            changed = true
+        }
+        if changed {
+            viewConcepts.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            UserDefaults.standard.set(viewConcepts, forKey: "viewConcepts")
+            publishStanding()
+        }
+        // The merged Concept Space reads the library's definitions.
+        mergedConceptsCache = nil
+    }
+
+    /// Define Concept… from any selection: the sheet to show.
+    struct ConceptDefinitionRequest: Identifiable {
+        let id = UUID()
+        let term: String
+        let doc: LiquidDoc?
+    }
+    var conceptDefinitionRequest: ConceptDefinitionRequest?
+
+    func requestConceptDefinition(term: String, in doc: LiquidDoc?) {
+        conceptDefinitionRequest = ConceptDefinitionRequest(term: term, doc: doc)
+    }
+
+    /// The definition made: into the library, with this document as a
+    /// place it appears; and into the document itself when it is a draft
+    /// being written, so the glossary Author sees and the EPUB's record
+    /// carry it.
+    func defineConcept(term: String, definition: String, kind: String, in doc: LiquidDoc?) {
+        var draft = ConceptDraft(term: term)
+        draft.definition = definition
+        draft.tags = kind.isEmpty ? [] : [kind]
+        draft.definitionSource = "user"
+        draft.documentID = doc?.id
+        draft.documentTitle = doc?.title
+        draft.originDocumentName = doc?.title
+        guard let id = conceptLibrary.define(draft) else { return }
+        conceptLibrary.reload()
+        if let doc, let editor = draftEditor, editor.docID == doc.id {
+            var concept = LiquidDoc.Concept(id: id, name: term)
+            concept.description = definition
+            concept.userDefinition = definition.isEmpty ? nil : definition
+            concept.tag = kind.isEmpty ? "concept" : kind
+            editor.addConcept(concept)
+        }
+        showNote("Defined “\(term)”")
     }
 
     /// Asks for a person's name and adds them to the People view.
@@ -6053,19 +6122,33 @@ final class AppModel {
     /// merged-concepts cache key (the index's revision is the other).
     @ObservationIgnored private var analysesRevision = 0
     @ObservationIgnored private var mergedConceptsCache:
-        (indexRevision: Int, analysesRevision: Int, items: [MergedConcept])?
+        (indexRevision: Int, analysesRevision: Int, libraryRevision: Int, items: [MergedConcept])?
 
     /// The Concept Space's merged list — Visual-Meta concepts from the
     /// whole library plus AI-extracted paper topics — aggregated once
-    /// and cached until the index or an analysis actually changes. The
-    /// views read this instead of re-walking the index per render.
+    /// and cached until the index, an analysis or the Defined Concepts
+    /// library actually changes. The views read this instead of
+    /// re-walking the index per render.
     var mergedLibraryConcepts: [MergedConcept] {
         if let cached = mergedConceptsCache,
            cached.indexRevision == index.revision,
-           cached.analysesRevision == analysesRevision {
+           cached.analysesRevision == analysesRevision,
+           cached.libraryRevision == conceptLibrary.revision {
             return cached.items
         }
         var merged = ConceptAggregator.aggregate(from: Array(index.byID.values))
+        // The Defined Concepts library's words win where the reader has
+        // defined a concept: its definition and kind stand in for the
+        // documents' own, by term.
+        for index in merged.indices {
+            guard let defined = conceptLibrary.concept(forTerm: merged[index].name) else { continue }
+            if (merged[index].userDefinition ?? "").isEmpty, !defined.definition.isEmpty {
+                merged[index].userDefinition = defined.definition
+            }
+            if (merged[index].category ?? "").isEmpty, let kind = defined.kind {
+                merged[index].category = kind
+            }
+        }
         var byKey: [String: Int] = Dictionary(
             uniqueKeysWithValues: merged.enumerated().map { ($1.id, $0) })
         for (_, analysis) in publicationAnalyses {
@@ -6097,7 +6180,7 @@ final class AppModel {
         let items = merged.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
-        mergedConceptsCache = (index.revision, analysesRevision, items)
+        mergedConceptsCache = (index.revision, analysesRevision, conceptLibrary.revision, items)
         return items
     }
 
@@ -6908,6 +6991,8 @@ final class AppModel {
     // MARK: - Authoring
 
     let drafts = DraftStore()
+    /// The Defined Concepts library shared with Author (ConceptLibrary.swift).
+    let conceptLibrary = ConceptLibraryModel()
     let people = PersonDirectory()
     /// What the library has taught the on-device model about each person,
     /// revised as their letters arrive. See PersonProfiles.swift.
@@ -7073,8 +7158,8 @@ final class AppModel {
             guard let relation = askReplyKind(about: selection.doc) else { return }
             startDiscourse(relation, about: selection.doc)
             // The selected words arrive as a citation (§4).
-            draftEditor?.bodyText =
-                ContextActionBuilder.quote(selection.text, from: selection.doc) + "\n\n"
+            draftEditor?.insertPlainText(
+                ContextActionBuilder.quote(selection.text, from: selection.doc))
             return
         }
         do {
@@ -7171,21 +7256,50 @@ final class AppModel {
         guard draftEditor?.docID != doc.id else { return }
         openEPUB = nil   // editing leaves the EPUB reader
         saveDraftIfNeeded()
-        draftEditor = DraftEditor(doc: doc)
+        let editor = DraftEditor(doc: doc, package: drafts.package(for: doc.id))
+        editor.conceptLibrary = conceptLibrary
+        draftEditor = editor
         selectedDraftID = doc.id
     }
 
+    /// Saves the editor's text as the draft's `.liquid` package; the
+    /// library lists the document derived from what was written.
     func saveDraft() {
         guard let draftEditor else { return }
         let doc = draftEditor.buildDocument()
         do {
-            try drafts.save(doc)
-            draftEditor.markSaved(doc)
+            let saved = try drafts.save(text: draftEditor.textStorage,
+                                        citations: draftEditor.citationList,
+                                        exportSettings: draftEditor.exportSettings, for: doc)
+            draftEditor.markSaved(saved, package: drafts.package(for: doc.id))
             authorName = draftEditor.author
         } catch {
             NSSound.beep()
             showNote("Could not save: \(error.localizedDescription)")
         }
+    }
+
+    /// Hands the draft being written to Author: the same `.liquid`
+    /// package, saved first, opened there. Author's absence is said plainly.
+    func openDraftInAuthor() {
+        guard let draftEditor else { return }
+        // Always written first, changes or none: the package on disk must
+        // be the current one, under the current rules of what a package
+        // carries — a file saved under older rules would otherwise travel.
+        saveDraft()
+        let url = drafts.fileURL(for: draftEditor.docID)
+        let workspace = NSWorkspace.shared
+        // Author's identifier carries its historic spelling.
+        let candidates = ["com.liquid.auhor.osx", "com.liquid.author.osx", "com.liquid.author"]
+        guard let authorApp = candidates.lazy.compactMap({ workspace.urlForApplication(withBundleIdentifier: $0) }).first
+            ?? workspace.urlForApplication(toOpen: url).flatMap({ app in
+                app.lastPathComponent.lowercased().hasPrefix("author") ? app : nil
+            }) else {
+            NSSound.beep()
+            showNote("Author is not installed on this Mac — the draft is at \(url.path)")
+            return
+        }
+        workspace.open([url], withApplicationAt: authorApp, configuration: NSWorkspace.OpenConfiguration())
     }
 
     func saveDraftIfNeeded() {
@@ -7256,8 +7370,19 @@ final class AppModel {
         guard let draftEditor else { return }
         saveDraftIfNeeded()
         // Origami Text authors to EPUB — the format's distributable form —
-        // regardless of the draft's internal kind.
-        exportEPUB(draftEditor.buildDocument())
+        // regardless of the draft's internal kind. The export sheet asks
+        // Author's questions first (front matter, authors, venue,
+        // abstract, keywords); the answers stay with the draft.
+        draftEditor.requestExport = true
+    }
+
+    /// The export sheet's answer: the settings are the draft's now, and
+    /// the EPUB is written with them.
+    func exportDraft(with settings: ExportSettings) {
+        guard let draftEditor else { return }
+        draftEditor.exportSettings = settings
+        saveDraft()
+        exportEPUB(draftEditor.buildDocument(), frontMatter: settings.frontMatter)
     }
 
     func export(draft doc: LiquidDoc) {
@@ -7270,8 +7395,12 @@ final class AppModel {
 
     /// Exports the document as an Origami Text EPUB — the format's
     /// EPUB 3 profile: one semantic HTML file, Visual-Meta in the
-    /// package and on the page. See OrigamiEPUB.swift.
-    func exportEPUB(_ doc: LiquidDoc) {
+    /// package and on the page. See OrigamiEPUB.swift. The header's
+    /// extent follows the draft's export settings unless given.
+    func exportEPUB(_ doc: LiquidDoc, frontMatter: ExportSettings.FrontMatter? = nil) {
+        let style = frontMatter
+            ?? drafts.package(for: doc.id)?.exportSettings.frontMatter
+            ?? .full
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.epub]
         // The name carries the whole identity — full title, author, and
@@ -7282,10 +7411,12 @@ final class AppModel {
         panel.message = "Export this document as an Origami Text EPUB — readable in any EPUB reader, its Visual-Meta carried within."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try OrigamiEPUBExporter.write(
-                doc: doc,
-                resolve: { [index] id in index.byID[LiquidAddress.canonical(id)]?.doc },
-                to: url)
+            try OrigamiEPUBExporter.$frontMatterStyle.withValue(style.rawValue) {
+                try OrigamiEPUBExporter.write(
+                    doc: doc,
+                    resolve: { [index] id in index.byID[LiquidAddress.canonical(id)]?.doc },
+                    to: url)
+            }
             // Exporting a draft as an EPUB publishes it, exactly as the
             // .origamitext export does: the draft retires, and the
             // published .origamitext copy (appendix and all) becomes

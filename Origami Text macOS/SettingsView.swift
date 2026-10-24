@@ -77,6 +77,7 @@ enum ReaderLayoutStyle: String, CaseIterable, Identifiable {
 /// open Settings onto a particular one.
 enum SettingsTab: Hashable {
     case author, editor, reading, overview, assistive, annotation, layout, library, hypermedia, ai, modules, openSource
+    case concepts
 }
 
 /// The app's Settings window (Origami Text → Settings…, ⌘,).
@@ -116,6 +117,9 @@ struct SettingsView: View {
             AISettingsView()
                 .tabItem { Label("AI", systemImage: "sparkles") }
                 .tag(SettingsTab.ai)
+            ConceptsSettingsView()
+                .tabItem { Label("Concepts", systemImage: "character.book.closed") }
+                .tag(SettingsTab.concepts)
             ModulesSettingsView()
                 .tabItem { Label("View Modules", systemImage: "puzzlepiece.extension") }
                 .tag(SettingsTab.modules)

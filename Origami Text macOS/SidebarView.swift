@@ -169,7 +169,7 @@ struct SidebarView: View {
             true
         case .acquisitions:
             !model.acquisitions.isEmpty
-        case .citedWorks, .meetings, .letters, .books:
+        case .citedWorks, .meetings, .letters, .books, .drafts, .conceptLibrary:
             true
         case .epubPublicationAuthor, .epubPublicationTopic:
             true
@@ -236,6 +236,7 @@ struct SidebarView: View {
                     // them, the user's folders), then the Views.
                     Group {
                         librarySection
+                        writingSection
                         hypermediaSection
                         foldersSection
                         xrSection
@@ -300,6 +301,31 @@ struct SidebarView: View {
         .navigationSplitViewColumnWidth(min: 340, ideal: 360, max: 560)
     }
 
+    /// The user's own writing: a new document (the visible twin of ⌘N),
+    /// and the drafts being written — each an Author `.liquid` package,
+    /// published as an Origami EPUB from the editor.
+    @ViewBuilder
+    private var writingSection: some View {
+        Section(isExpanded: isExpanded("Writing")) {
+            Button {
+                model.newDraft()
+            } label: {
+                Label("New Document", systemImage: "plus.square")
+            }
+            .buttonStyle(.plain)
+            .help("Start a new document (⌘N)")
+            // The same icon as Papers: a draft is a paper being written.
+            Label("Drafts", systemImage: "doc.text")
+                .tag(SidebarItem.drafts)
+                .contextMenu {
+                    Button("New Document") { model.newDraft() }
+                    Button("New Book") { model.newBook() }
+                }
+        } header: {
+            Text("Writing")
+        }
+    }
+
     /// Ways into the opened EPUBs by who and what they hold: Authors (the
     /// authors of record, automatic), then People and Concepts — user-curated
     /// buckets added the way folders are. How names and concepts are pulled
@@ -327,6 +353,11 @@ struct SidebarView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+
+            // The Defined Concepts library shared with Author — the
+            // reader's own vocabulary, a folder of plain files.
+            Label("Defined Concepts", systemImage: "character.book.closed")
+                .tag(SidebarItem.conceptLibrary)
 
             Label("Concept Space", systemImage: "sparkles.rectangle.stack")
                 .tag(SidebarItem.conceptSpace)

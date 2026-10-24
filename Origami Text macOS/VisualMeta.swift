@@ -81,26 +81,9 @@ nonisolated enum VisualMeta {
 
         // Everything the document carries rides through — the appendix
         // adds the metadata to the page, it never costs the structured
-        // fields (place, references, the knowledge layer).
-        return LiquidDoc(format: doc.format,
-                         id: doc.id,
-                         title: doc.title,
-                         author: doc.author,
-                         created: doc.created,
-                         body: paragraphs,
-                         links: doc.links,
-                         wraps: nil,
-                         attention: doc.attention,
-                         date: doc.date,
-                         aiOnBehalf: doc.aiOnBehalf,
-                         onBehalfOf: doc.onBehalfOf,
-                         documentType: doc.documentType,
-                         location: doc.location,
-                         concepts: doc.concepts,
-                         layouts: doc.layouts,
-                         mapConnections: doc.mapConnections,
-                         references: doc.references,
-                         fileURL: doc.fileURL)
+        // fields (place, references, the knowledge layer, the tables and
+        // pictures: the published record used to lose those two).
+        return doc.replacingBody(paragraphs)
     }
 
     /// The machine-readable block, kept as a single paragraph so the marker

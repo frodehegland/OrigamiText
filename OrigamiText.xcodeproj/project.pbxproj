@@ -84,6 +84,7 @@
 			membershipExceptions = (
 				AnnotationStore.swift,
 				BibTeX.swift,
+				ConceptLibrary.swift,
 				DocumentRelation.swift,
 				EPUBShelf.swift,
 				LATable.swift,
@@ -128,6 +129,7 @@
 				ArmMenu.swift,
 				BibTeX.swift,
 				CitationGraph.swift,
+				ConceptLibrary.swift,
 				DocumentRelation.swift,
 				EPUBMapView.swift,
 				EPUBShelf.swift,
