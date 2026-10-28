@@ -80,14 +80,13 @@ struct EPUBPileMenu: View {
         } else {
             Button("Set Aside") { model.setAside(record) }
         }
-        #if DEBUG || EDITOR
-        // The file verbs are ours, not readers': a distributed build's
-        // menu is Pin, Set Aside, Move to Trash — nothing that shows,
-        // saves, or exports the file.
         Divider()
         // The document's own .epub, one click away — for inspection,
-        // or to hand on.
+        // or to hand on. Every build, readers' included (28 Oct 2026).
         Button("Show in Finder") { model.revealEPUBInFinder(record) }
+        #if DEBUG || EDITOR
+        // The remaining file verbs are ours, not readers': a distributed
+        // build has no Show PDF, Save a Copy or DOI-name export.
         // Reviewing aid: the camera-ready PDF from the paper's source
         // archive — the ground truth the conversion answers to.
         Button("Show PDF") { model.showSourcePDF(for: record) }

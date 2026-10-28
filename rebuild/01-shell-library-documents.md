@@ -737,7 +737,7 @@ The main library in today's UI. Records come from `epubRecords` (manifest), newe
 - Selection: a single click opens the book (and, on a venue/pinned Map face, switches back to the documents
   face); ⌘-click builds a multi-selection without opening (for "Export n with DOI Names…").
 - Context menu: File Under (folders, New Folder…), Remove from Folder, Copy to Cite, Read Beside "<open book>"
-  (Side by Side), Pin, Set Aside / Bring Back, (DEBUG/EDITOR: Show in Finder, Show PDF, Save a Copy as EPUB…,
+  (Side by Side), Pin, Set Aside / Bring Back, Show in Finder, (DEBUG/EDITOR: Show PDF, Save a Copy as EPUB…,
   Export with DOI Name(s)…, Edit Document…), Move to Trash.
 - Pins and set-asides persist locally and in `origami-standing.json` (§3.2). Set Aside closes the book if open.
 - **To Read** (`AppModel.toRead`, an `EPUBToRead`): `pinnedFirst` puts To Read books first, newest mark first, then the pinned. Rows show a teal `bookmark.fill` in the pin's place; the row menu and the reader's foot bar toggle it (the Mac marks without a place). `openStoredEPUB` sets `pendingReaderFragment` to the item's `at` (the part after `#`), so a book marked on the phone opens at its paragraph; a link's own fragment still wins.
