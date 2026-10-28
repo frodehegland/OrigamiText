@@ -203,3 +203,23 @@ Declared relations (§3) and exact citations (by work ID) always take precedence
 - [ ] In a book, show series and volume. List articles with their abstracts. Open, share or extract one article, keeping its work `id`.
 - [ ] Carry `document-id` and `vm-relation` when copying a citation of a document, so a reply written from it in Author keeps the exact address.
 - [ ] Older books without `binding.works`: keep the existing heading and byline cutting.
+
+## 8. Addition for Origami Text, from the Knowledge Space developer (28 Oct 2026)
+
+**Write `binding.works` whenever Origami Text writes an EPUB.** That covers binders, selections, re-exports, and books whose articles it found by cutting at headings and bylines. In `visual-meta.json`, give each article:
+
+- its heading ID (`section`, and `href`),
+- `title` and `authors`,
+- its order (`source.position`),
+- the series `name` and `volume` (`source.series` and `source.volume`, and `document.binding.series` for the book).
+
+Use the shapes in §4. Keep a work's `id` when the source already had one; otherwise derive it from the book's ID and the heading. With that, Knowledge Space's index reads the articles from the record and doesn't rely on the byline markup. Books exported from Author with this build already carry all of this.
+
+**Handle `origami://open` on visionOS,** as Author for visionOS now handles `author://open`. Accept the same query items:
+
+- `path` (the full path),
+- `relative` (the path within the iCloud container),
+- `title`,
+- `id` (a document or work ID), to open one article inside a book.
+
+Resolve in that order: the container plus `relative`, then `path`, then the title searched in the library. If it is still in iCloud only, download it and then open it. If it can't be found, show a short note saying so, rather than nothing. Then add `origami://` to `CFBundleURLTypes` and add `.onOpenURL` to the app's windows. Author's version, `AuthorMobile/AppModel/AuthorOpenLink.swift` (Author commit `a2a57814`), can be followed closely.
