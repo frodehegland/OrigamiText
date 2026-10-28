@@ -30,6 +30,24 @@ nonisolated struct EPUBWorks: Sendable {
         /// declared: where it stands, so the writer can cut it out of a
         /// document it shares with others. Nil for declared works.
         var fragment: Fragment? = nil
+        /// The editor's abstract and the heading's Topics, from the
+        /// record (Binding Profile, additions of 28 Oct 2026).
+        var abstract: String? = nil
+        var keywords: [String] = []
+        /// Where it stands in its source: its place in the book, and the
+        /// book's series and volume — what lets a reader compare it with
+        /// the series' other works without opening either.
+        var position: Int? = nil
+        var series: String? = nil
+        var volume: Int? = nil
+    }
+
+    /// The series a book is a volume of: its name, its number in it, and
+    /// the identifier every volume shares.
+    struct Series: Hashable, Sendable {
+        let name: String
+        let volume: Int?
+        let id: String?
     }
 
     /// An article's place in a content document that holds several.
@@ -68,6 +86,13 @@ nonisolated struct EPUBWorks: Sendable {
     /// `origami:binding`, when the package says it is one.
     let bindingKind: String?
     let coverText: String?
+    /// The series the book is a volume of, from the record's
+    /// `binding.series` or the package's `belongs-to-collection`.
+    let series: Series?
+    /// The publication's own abstract and keywords — for a single-work
+    /// EPUB, the article's.
+    let abstract: String?
+    let keywords: [String]
 
     var hasWorks: Bool { !works.isEmpty }
 
@@ -85,7 +110,10 @@ nonisolated struct EPUBWorks: Sendable {
         }
 
         // The package's own metadata, before any collection's.
-        let metadataBlock = BinderText.capture(in: opf, "(?s)<metadata\\b.*?</metadata>") ?? opf
+        // Captured as a group: without one the capture fails, the whole
+        // package stands in, and every collection's creators read as the
+        // book's own — its editors become all its articles' authors.
+        let metadataBlock = BinderText.capture(in: opf, "(?s)(<metadata\\b.*?</metadata>)") ?? opf
         let title = BinderText.tagText(in: metadataBlock, "dc:title") ?? folder.lastPathComponent
         let authors = BinderText.tagTexts(in: metadataBlock, "dc:creator")
         let language = BinderText.tagText(in: metadataBlock, "dc:language") ?? "und"
@@ -108,15 +136,35 @@ nonisolated struct EPUBWorks: Sendable {
             spine.append(rooted(item.href))
         }
 
-        // The record's binding block: the works' sections, notes and the cover.
+        // The series, as the package declares it: a belongs-to-collection
+        // refined to collection-type series (or not refined at all), with
+        // its group-position as the volume and its own identifier.
+        var series = packageSeries(in: metadataBlock)
+
+        // The record's binding block: the works' sections, notes, abstracts
+        // and sources, the cover and the series; and the publication's own
+        // abstract and keywords.
         var recordWorks: [String: [String: Any]] = [:]
         var coverText: String?
+        var abstract: String?
+        var keywords: [String] = []
         if let record = recordJSON(in: folder, opf: opf, opfDirectory: opfDirectory),
-           let document = record["document"] as? [String: Any],
-           let bindingRecord = document["binding"] as? [String: Any] {
-            coverText = (bindingRecord["cover"] as? [String: Any])?["text"] as? String
-            for work in bindingRecord["works"] as? [[String: Any]] ?? [] {
-                if let id = work["id"] as? String { recordWorks[id] = work }
+           let document = record["document"] as? [String: Any] {
+            abstract = Self.text(document["abstract"])
+            keywords = Self.strings(document["keywords"])
+            if let bindingRecord = document["binding"] as? [String: Any] {
+                coverText = (bindingRecord["cover"] as? [String: Any])?["text"] as? String
+                for work in bindingRecord["works"] as? [[String: Any]] ?? [] {
+                    if let id = work["id"] as? String { recordWorks[id] = work }
+                }
+                // The record's word on the series wins: it carries the
+                // derived identifier even where the package gives none.
+                if let recorded = bindingRecord["series"] as? [String: Any],
+                   let name = Self.text(recorded["name"]) {
+                    series = Series(name: name,
+                                    volume: Self.integer(recorded["volume"]) ?? series?.volume,
+                                    id: Self.text(recorded["id"]) ?? series?.id)
+                }
             }
         }
 
@@ -127,7 +175,8 @@ nonisolated struct EPUBWorks: Sendable {
                   let workTitle = BinderText.tagText(in: block, "dc:title") else { continue }
             let files = BinderText.captures(in: block, "<link\\b[^>]*href=\"([^\"]+)\"").map(rooted)
             let fromRecord = recordWorks[id]
-            works.append(Work(
+            let source = fromRecord?["source"] as? [String: Any]
+            var work = Work(
                 id: id,
                 title: workTitle,
                 authors: BinderText.tagTexts(in: block, "dc:creator"),
@@ -137,7 +186,19 @@ nonisolated struct EPUBWorks: Sendable {
                 year: BinderText.tagText(in: block, "dc:date"),
                 section: (fromRecord?["section"] as? String)
                     ?? (fromRecord?["href"] as? String).flatMap { $0.split(separator: "#").last.map(String.init) },
-                note: fromRecord?["note"] as? String))
+                note: fromRecord?["note"] as? String)
+            work.abstract = Self.text(fromRecord?["abstract"])
+            work.keywords = Self.strings(fromRecord?["keywords"])
+            work.position = Self.integer(source?["position"]) ?? works.count + 1
+            work.series = Self.text(source?["series"]) ?? series?.name
+            work.volume = Self.integer(source?["volume"]) ?? series?.volume
+            // A single-work EPUB's article is the publication: its
+            // abstract and keywords are the document's.
+            if kind == "work" {
+                if work.abstract == nil { work.abstract = abstract }
+                if work.keywords.isEmpty { work.keywords = keywords }
+            }
+            works.append(work)
         }
 
         // Nothing declared: the articles are what the level 1 headings
@@ -146,11 +207,68 @@ nonisolated struct EPUBWorks: Sendable {
         if works.isEmpty {
             works = inferredWorks(folder: folder, spine: spine, edition: edition ?? folder.lastPathComponent)
             inferred = !works.isEmpty
+            for index in works.indices {
+                works[index].position = index + 1
+                works[index].series = series?.name
+                works[index].volume = series?.volume
+            }
         }
 
         return EPUBWorks(opfPath: opfPath, title: title, authors: authors, language: language, date: date,
                          edition: edition, binding: binding, spine: spine, works: works, worksInferred: inferred,
-                         bindingKind: kind, coverText: coverText)
+                         bindingKind: kind, coverText: coverText,
+                         series: series, abstract: abstract, keywords: keywords)
+    }
+
+    /// The package's series: the first `belongs-to-collection` whose
+    /// refinements say series (or say nothing of its type), with its
+    /// `group-position` and `dcterms:identifier`.
+    private static func packageSeries(in metadata: String) -> Series? {
+        guard let expression = try? NSRegularExpression(
+            pattern: "<meta\\b([^>]*)property=\"belongs-to-collection\"([^>]*)>([^<]*)</meta>") else { return nil }
+        let whole = metadata as NSString
+        for match in expression.matches(in: metadata, range: NSRange(location: 0, length: whole.length)) {
+            let attributes = whole.substring(with: match.range(at: 1)) + whole.substring(with: match.range(at: 2))
+            let name = BinderText.unescaped(whole.substring(with: match.range(at: 3)))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { continue }
+            guard let id = BinderText.capture(in: attributes, "\\sid=\"([^\"]+)\"") else {
+                return Series(name: name, volume: nil, id: nil)
+            }
+            func refinement(_ property: String) -> String? {
+                BinderText.capture(in: metadata, "<meta[^>]*refines=\"#\(NSRegularExpression.escapedPattern(for: id))\"[^>]*property=\"\(property)\"[^>]*>([^<]*)</meta>")
+                    .map { BinderText.unescaped($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            }
+            if let type = refinement("collection-type"), type != "series" { continue }
+            return Series(name: name,
+                          volume: refinement("group-position").flatMap { Int($0) ?? Double($0).map { Int($0) } },
+                          id: refinement("dcterms:identifier").flatMap { $0.isEmpty ? nil : $0 })
+        }
+        return nil
+    }
+
+    /// A record value as text: a plain string, or a language-tagged
+    /// `{ "value": … }` (profile §5.5). Nil when empty.
+    private static func text(_ value: Any?) -> String? {
+        let raw: String?
+        if let string = value as? String { raw = string }
+        else if let tagged = value as? [String: Any] { raw = tagged["value"] as? String }
+        else { raw = nil }
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    /// A record list of words, plain or language-tagged.
+    private static func strings(_ value: Any?) -> [String] {
+        (value as? [Any] ?? []).compactMap { text($0) }
+    }
+
+    /// A record number, written as a number or as digits.
+    private static func integer(_ value: Any?) -> Int? {
+        if let number = value as? Int { return number }
+        if let number = value as? Double { return Int(number) }
+        if let string = value as? String { return Int(string.trimmingCharacters(in: .whitespaces)) }
+        return nil
     }
 
     /// The articles a book's level 1 headings mark out: every heading at
@@ -326,6 +444,13 @@ nonisolated enum EPUBBinderWriter {
         let sourceEdition: String?
         let year: String?
         let note: String?
+        /// Carried from the source's record, so a work bound here can
+        /// still be compared across its series without opening it.
+        var abstract: String? = nil
+        var keywords: [String] = []
+        var position: Int? = nil
+        var series: String? = nil
+        var volume: Int? = nil
         /// The content documents, in order, by their new path under the
         /// binder root — the first carries the heading.
         var documents: [String] = []
@@ -406,6 +531,20 @@ nonisolated enum EPUBBinderWriter {
                     sourceEdition: work?.sourceEdition ?? info.edition,
                     year: work?.year ?? info.date.map { String($0.prefix(4)) },
                     note: work?.note)
+                if let work {
+                    piece.abstract = work.abstract
+                    piece.keywords = work.keywords
+                    piece.position = work.position
+                    piece.series = work.series ?? info.series?.name
+                    piece.volume = work.volume ?? info.series?.volume
+                } else {
+                    // The whole publication as one work: its own abstract,
+                    // and the series it is a volume of.
+                    piece.abstract = info.abstract
+                    piece.keywords = info.keywords
+                    piece.series = info.series?.name
+                    piece.volume = info.series?.volume
+                }
                 piece.headingID = work?.section
                 for file in files {
                     guard let target = localRenamed[file] else { continue }
@@ -886,6 +1025,11 @@ nonisolated enum EPUBBinderWriter {
             if let edition = piece.sourceEdition { source["edition"] = edition }
             if !piece.sourceEditors.isEmpty { source["editors"] = piece.sourceEditors }
             if let year = piece.year, !year.isEmpty { source["year"] = year }
+            // Its place in its source, and the source's series and volume,
+            // in the shape AuthorKit writes (Binding Profile, 28 Oct 2026).
+            if let position = piece.position { source["position"] = position }
+            if let series = piece.series, !series.isEmpty { source["series"] = series }
+            if let volume = piece.volume { source["volume"] = volume }
             var work: [String: Any] = [
                 "id": piece.id,
                 "title": piece.title,
@@ -896,6 +1040,8 @@ nonisolated enum EPUBBinderWriter {
             ]
             if let section = piece.headingID { work["section"] = section }
             if let note = piece.note, !note.isEmpty { work["note"] = note }
+            if let abstract = piece.abstract, !abstract.isEmpty { work["abstract"] = abstract }
+            if !piece.keywords.isEmpty { work["keywords"] = piece.keywords }
             return work
         }
         document["binding"] = binding
