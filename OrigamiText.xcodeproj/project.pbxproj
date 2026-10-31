@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		5FC96CB130960577005A8546 /* LiquidAI in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA130960577005A8546 /* LiquidAI */; };
+		5FC96CB230960577005A8546 /* LiquidSpeech in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA230960577005A8546 /* LiquidSpeech */; };
+		5FC96CB330960577005A8546 /* LiquidAssistant in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA330960577005A8546 /* LiquidAssistant */; };
+		5FC96CB430960577005A8546 /* LiquidAI in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA430960577005A8546 /* LiquidAI */; };
+		5FC96CB530960577005A8546 /* LiquidSpeech in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA530960577005A8546 /* LiquidSpeech */; };
+		5FC96CB630960577005A8546 /* LiquidAssistant in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA630960577005A8546 /* LiquidAssistant */; };
 		5F02BA9F3069BA7E004EE9D2 /* Quartz.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F1962D43053FF1A00922704 /* Quartz.framework */; };
 		5F02BAAB3069BA7E004EE9D2 /* EPUBQuickLook.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5F02BA9E3069BA7E004EE9D2 /* EPUBQuickLook.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5F72863D304376EC000585CD /* AudioCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 5F72863C304376EC000585CD /* AudioCommon */; };
@@ -15,6 +21,9 @@
 		5FAFC90E301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
 		5FC2206930438F25001E8E0C /* Qwen3TTS in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC2206830438F25001E8E0C /* Qwen3TTS */; };
 		5FC2206B304391F6001E8E0C /* Qwen3TTS in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC2206A304391F6001E8E0C /* Qwen3TTS */; };
+		5FC96C9C30960577005A8546 /* LiquidAI in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96C9B30960577005A8546 /* LiquidAI */; };
+		5FC96C9E30960577005A8546 /* LiquidAssistant in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96C9D30960577005A8546 /* LiquidAssistant */; };
+		5FC96CA030960577005A8546 /* LiquidSpeech in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96C9F30960577005A8546 /* LiquidSpeech */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -226,6 +235,9 @@
 		000000000000000130000000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				5FC96CB130960577005A8546 /* LiquidAI in Frameworks */,
+				5FC96CB230960577005A8546 /* LiquidSpeech in Frameworks */,
+				5FC96CB330960577005A8546 /* LiquidAssistant in Frameworks */,
 				5F72863D304376EC000585CD /* AudioCommon in Frameworks */,
 				5FC2206B304391F6001E8E0C /* Qwen3TTS in Frameworks */,
 			);
@@ -239,6 +251,9 @@
 		5FA61250300CE184002F8851 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				5FC96CB430960577005A8546 /* LiquidAI in Frameworks */,
+				5FC96CB530960577005A8546 /* LiquidSpeech in Frameworks */,
+				5FC96CB630960577005A8546 /* LiquidAssistant in Frameworks */,
 				5FC2206930438F25001E8E0C /* Qwen3TTS in Frameworks */,
 			);
 		};
@@ -255,6 +270,9 @@
 		5FD0137C3005785700F5A4F0 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				5FC96CA030960577005A8546 /* LiquidSpeech in Frameworks */,
+				5FC96C9E30960577005A8546 /* LiquidAssistant in Frameworks */,
+				5FC96C9C30960577005A8546 /* LiquidAI in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -318,6 +336,9 @@
 			);
 			name = "Origami Text macOS";
 			packageProductDependencies = (
+				5FC96CA130960577005A8546 /* LiquidAI */,
+				5FC96CA230960577005A8546 /* LiquidSpeech */,
+				5FC96CA330960577005A8546 /* LiquidAssistant */,
 				5F72863C304376EC000585CD /* AudioCommon */,
 				5FC2206A304391F6001E8E0C /* Qwen3TTS */,
 			);
@@ -358,6 +379,9 @@
 			);
 			name = "Origami Text iOS";
 			packageProductDependencies = (
+				5FC96CA430960577005A8546 /* LiquidAI */,
+				5FC96CA530960577005A8546 /* LiquidSpeech */,
+				5FC96CA630960577005A8546 /* LiquidAssistant */,
 				5FC2206830438F25001E8E0C /* Qwen3TTS */,
 			);
 			productName = "Origami Text";
@@ -420,6 +444,11 @@
 				5FD013803005785700F5A4F0 /* Origami Text Vision */,
 			);
 			name = "Origami Text Vision";
+			packageProductDependencies = (
+				5FC96C9B30960577005A8546 /* LiquidAI */,
+				5FC96C9D30960577005A8546 /* LiquidAssistant */,
+				5FC96C9F30960577005A8546 /* LiquidSpeech */,
+			);
 			productName = "Origami Text Vision";
 			productReference = 5FD0137F3005785700F5A4F0 /* Origami Text Vision.app */;
 			productType = "com.apple.product-type.application";
@@ -467,6 +496,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */,
+				5FC96C9A30960577005A8546 /* XCLocalSwiftPackageReference "../LiquidKit/LiquidShared" */,
 			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
@@ -751,7 +781,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = info.futuretextlab.origamitext;
 				PRODUCT_NAME = "Origami Text";
@@ -822,7 +852,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = info.futuretextlab.origamitext;
 				PRODUCT_NAME = "Origami Text";
@@ -921,16 +951,18 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Origami-Text-Info.plist";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "A note carries the place it was made. Your location is used once, when a note is created, to name that place — it is never stored as coordinates.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The microphone carries your voice into a note while you dictate. Nothing is recorded or kept — only the transcribed words.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech recognition turns your dictation into the text of a note, on this device when the hardware allows.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -962,16 +994,18 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Origami-Text-Info.plist";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "A note carries the place it was made. Your location is used once, when a note is created, to name that place — it is never stored as coordinates.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The microphone carries your voice into a note while you dictate. Nothing is recorded or kept — only the transcribed words.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech recognition turns your dictation into the text of a note, on this device when the hardware allows.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1095,8 +1129,12 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Origami Text";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "Origami Text tracks your hands to place the arm menus — Settings and Documents ride above your right hand.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Origami Text reaches the AI model you chose in Settings ▸ AI — such as Ollama running on your Mac — over your local network.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The microphone carries your voice into a spatial note while you dictate. Nothing is recorded or kept — only the words.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech recognition turns your dictation into the text of a spatial note, on this device when the hardware allows.";
+				INFOPLIST_KEY_NSWorldSensingUsageDescription = "Origami Text senses the surfaces around you so a reading laid flat can rest on your actual desk.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1129,8 +1167,12 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Origami Text";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "Origami Text tracks your hands to place the arm menus — Settings and Documents ride above your right hand.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Origami Text reaches the AI model you chose in Settings ▸ AI — such as Ollama running on your Mac — over your local network.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The microphone carries your voice into a spatial note while you dictate. Nothing is recorded or kept — only the words.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech recognition turns your dictation into the text of a spatial note, on this device when the hardware allows.";
+				INFOPLIST_KEY_NSWorldSensingUsageDescription = "Origami Text senses the surfaces around you so a reading laid flat can rest on your actual desk.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1212,6 +1254,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		5FC96C9A30960577005A8546 /* XCLocalSwiftPackageReference "../LiquidKit/LiquidShared" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../LiquidKit/LiquidShared;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -1238,6 +1287,42 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
 			productName = Qwen3TTS;
+		};
+		5FC96C9B30960577005A8546 /* LiquidAI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiquidAI;
+		};
+		5FC96C9D30960577005A8546 /* LiquidAssistant */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiquidAssistant;
+		};
+		5FC96C9F30960577005A8546 /* LiquidSpeech */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiquidSpeech;
+		};
+		5FC96CA130960577005A8546 /* LiquidAI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiquidAI;
+		};
+		5FC96CA230960577005A8546 /* LiquidSpeech */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiquidSpeech;
+		};
+		5FC96CA330960577005A8546 /* LiquidAssistant */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiquidAssistant;
+		};
+		5FC96CA430960577005A8546 /* LiquidAI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiquidAI;
+		};
+		5FC96CA530960577005A8546 /* LiquidSpeech */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiquidSpeech;
+		};
+		5FC96CA630960577005A8546 /* LiquidAssistant */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LiquidAssistant;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

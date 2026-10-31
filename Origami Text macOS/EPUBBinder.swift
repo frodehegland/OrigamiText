@@ -666,8 +666,9 @@ nonisolated enum EPUBBinderWriter {
     /// sections gone (the binder has its own), its images and models
     /// copied and renamed, its links to other files of the same book
     /// followed to their new names — or, where the target is not in the
-    /// binder, let go, their words kept. A glossary reference becomes
-    /// one into the binder's own glossary, the entry collected.
+    /// binder, let go, their words kept. A glossary reference is let go
+    /// too — terms are mapped live by the reader, never baked in (profile
+    /// §7.4) — but its entry is collected into the binder's glossary.
     private static func rewrite(_ text: String, sourcePath: String, folder: URL, prefix: String,
                                 renamed: inout [String: String],
                                 glossary: [String: (term: String, definition: String)],
@@ -710,7 +711,6 @@ nonisolated enum EPUBBinderWriter {
                     if !collected.contains(where: { $0.id == binderID }) {
                         collected.append((binderID, entry.term, entry.definition))
                     }
-                    return .relink("back.html#gloss-\(binderID)")
                 }
                 return .unlink
             }
@@ -720,6 +720,19 @@ nonisolated enum EPUBBinderWriter {
             }
             _ = inner
             return .unlink
+        }
+
+        // With no links to follow, a concept belongs to the piece wherever
+        // its term stands in the text as a whole word.
+        let words = BinderText.plain(out)
+        for (conceptID, entry) in glossary.sorted(by: { $0.key < $1.key }) {
+            let binderID = prefix + conceptID
+            let term = BinderText.plain(entry.term)
+            guard !term.isEmpty, !collected.contains(where: { $0.id == binderID }) else { continue }
+            let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: term) + "(?![\\p{L}\\p{N}])"
+            if words.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
+                collected.append((binderID, entry.term, entry.definition))
+            }
         }
         return out
     }

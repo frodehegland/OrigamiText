@@ -2218,6 +2218,66 @@ final class AppModel {
         openStoredEPUB(record)
     }
 
+    // MARK: - Bound volumes, read as their articles
+
+    /// Each book's binding, read once from its unpacked package (nil
+    /// remembered too). Keyed by folder; forgotten when a book is
+    /// unpacked again.
+    @ObservationIgnored private var boundVolumes: [String: BoundVolume?] = [:]
+    /// Articles cut out of their volumes' documents, by folder and article.
+    @ObservationIgnored private var articleDocCache: [String: LiquidDoc] = [:]
+
+    /// The volume's articles and front and back pages, when the book is
+    /// bound from several works; nil for every other book.
+    func boundVolume(for record: EPUBRecord) -> BoundVolume? {
+        if let known = boundVolumes[record.folder] { return known }
+        let volume = BoundVolume.read(inUnpackedFolder: unpackedFolder(for: record))
+        boundVolumes[record.folder] = volume
+        return volume
+    }
+
+    /// The open book's binding — whether it is read whole or one article.
+    var openBoundVolume: BoundVolume? {
+        guard let book = openEPUB,
+              let record = epubRecords.first(where: { $0.folder == book.id }) else { return nil }
+        return boundVolume(for: record)
+    }
+
+    /// One article of a bound volume, read alone: its own content
+    /// document is the whole reading, the volume's address kept, so its
+    /// annotations and reading place are the volume's.
+    func openArticle(_ article: BoundVolume.Article, of record: EPUBRecord) {
+        openStoredEPUB(record)
+        guard let whole = openEPUB else { return }
+        let content = whole.base.appendingPathComponent(article.file)
+        guard FileManager.default.fileExists(atPath: content.path) else { return }
+        var reading = OpenEPUB(id: whole.id, title: article.title, content: content,
+                               base: whole.base, chapters: [content], nav: nil)
+        reading.article = article
+        openEPUB = reading
+        // Several pieces sharing one document: the reading begins at its own.
+        let shared = (boundVolume(for: record)?.articles ?? [])
+            .contains { $0.id != article.id && $0.file == article.file }
+        pendingReaderFragment = shared ? article.anchor : nil
+    }
+
+    /// The open book's article, by its id — the reader's Articles list.
+    func openArticle(withID id: String) {
+        guard let book = openEPUB,
+              let record = epubRecords.first(where: { $0.folder == book.id }),
+              let article = boundVolume(for: record)?.articles.first(where: { $0.id == id })
+        else { return }
+        openArticle(article, of: record)
+    }
+
+    /// Back from an article to the whole volume, at the article's place.
+    func openWholeVolume() {
+        guard let book = openEPUB, let article = book.article,
+              let record = epubRecords.first(where: { $0.folder == book.id }) else { return }
+        openStoredEPUB(record)
+        pendingReaderFragment = article.anchor
+    }
+
     /// An opened EPUB is unread until it has been opened in the reader —
     /// the Files list shows unread records bold. The user's own authored
     /// EPUBs are never unread.
@@ -2560,6 +2620,8 @@ final class AppModel {
         }
         // A fresh unpack means a new spine — drop the cached one.
         spineCache.removeValue(forKey: prepared.folder)
+        boundVolumes.removeValue(forKey: prepared.folder)
+        articleDocCache = articleDocCache.filter { !$0.key.hasPrefix(prepared.folder + "|") }
         forgetBookChecks(folder: prepared.folder)
         // The reading cache and any prior failure record must both go:
         // a re-imported book deserves a fresh import attempt.
@@ -4454,6 +4516,20 @@ final class AppModel {
     }
 
     func readingDoc(forBook book: OpenEPUB) -> LiquidDoc? {
+        // An article alone reads its own paragraphs, cut out of the
+        // whole volume's document.
+        if let article = book.article {
+            var whole = book
+            whole.article = nil
+            let key = book.id + "|" + article.id
+            if let cached = articleDocCache[key] { return cached }
+            guard let volumeDoc = readingDoc(forBook: whole),
+                  let record = epubRecords.first(where: { $0.folder == book.id }),
+                  let bound = boundVolume(for: record) else { return nil }
+            let doc = bound.document(for: article, in: volumeDoc)
+            articleDocCache[key] = doc
+            return doc
+        }
         if let cached = readingDocCache.last(where: { $0.bookID == book.id }) {
             return cached.doc
         }

@@ -19,6 +19,14 @@ struct OpenEPUB: Identifiable, Hashable, Sendable {
     /// looked at and has no shelf record yet — what Import to Library
     /// acts on. Nil for a shelved book, which is already the library's.
     var sourceFile: URL? = nil
+    /// One article of a bound volume read alone; nil when the book is read
+    /// whole. `id` and `base` stay the volume's.
+    var article: BoundVolume.Article? = nil
+
+    /// What the reading is — the book, or one article of it. The page
+    /// and its state are rebuilt when this changes, which `id` (the
+    /// volume's, shared by its articles) would not.
+    var readingID: String { id + (article.map { "#article=" + $0.id } ?? "") }
 }
 
 // EPUBRecord — the shelf's remembered book — lives in EPUBShelf.swift,
@@ -1029,7 +1037,7 @@ Button { model.toggleTopOfPile(record) } label: {
                 // Overview takes the whole page, as an AI reading does;
                 // the foot stays, so any word there is the way back.
                 OverviewReadingScreen(doc: doc)
-                    .id(book.id)
+                    .id(book.readingID)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         ReadingFootBar(modes: availableModes,
                                        outlineAvailable: true,
@@ -1038,7 +1046,7 @@ Button { model.toggleTopOfPile(record) } label: {
             } else if model.readingReferencesOn {
                 // References takes the whole page too; the foot stays.
                 ReferencesScreen(book: book)
-                    .id(book.id)
+                    .id(book.readingID)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         ReadingFootBar(modes: availableModes,
                                        outlineAvailable: model.readingDoc(forBook: book) != nil,
@@ -1114,7 +1122,7 @@ Button { model.toggleTopOfPile(record) } label: {
                                    findText: findIsLive ? findText : "",
                                    findStamp: findStamp,
                                    findForward: findForward)
-                    .id(book.id)
+                    .id(book.readingID)
             } else {
                 // The package would not read back as a structured
                 // document: the faithful rendering stands.
@@ -1280,7 +1288,7 @@ Button { model.toggleTopOfPile(record) } label: {
                     .padding(30)
             }
         }
-        .task(id: book.id) {
+        .task(id: book.readingID) {
             // A fresh book opens at its start — unless it was opened by
             // following a quote link, in which case land on the linked
             // paragraph's chapter instead. (The left-off position is

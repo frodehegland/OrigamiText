@@ -76,6 +76,9 @@ struct EPUBMapItem: ItemProtocol {
     /// record the Mac gathers (origami-cited-works.json).
     var warning: String?
     var warningIsAlarm = false
+    /// What a volume's piece is, in small capitals over its title —
+    /// FOREWORD, APPENDIX, PART — when it is not plainly an article.
+    var pieceLabel: String?
 
     var isAttachmentsEnabled: Bool {
         // Concepts carry Focus/Hide; documents and citations carry
@@ -97,6 +100,7 @@ struct EPUBMapItem: ItemProtocol {
             && isGhost == other.isGhost && showsAbstract == other.showsAbstract
             && isLifted == other.isLifted && lengthShare == other.lengthShare
             && isFaded == other.isFaded && warning == other.warning
+            && pieceLabel == other.pieceLabel
     }
 }
 
@@ -104,6 +108,7 @@ struct EPUBMapItem: ItemProtocol {
 struct EPUBMapView: View {
     @Environment(VisionModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     /// The Map's nodes: the open journal's records, seeded on a grid.
     /// The room is quiet by default — citations rise only for the
@@ -128,6 +133,9 @@ struct EPUBMapView: View {
     /// The cards opened to their abstracts by the Abstract button —
     /// selection alone shows the full title and authors now.
     @State private var abstractOpenIDs: Set<String> = []
+    /// The card whose Kind row stands open — a volume's piece being told
+    /// what it is.
+    @State private var kindRowCardID: String?
     /// The desk the room offers as a landing surface, beside the wall.
     @State private var deskAnchor: AnchorEntity?
 
@@ -413,7 +421,10 @@ struct EPUBMapView: View {
         guard state.modified > sharedLayoutAdoptedAt else { return }
         sharedLayoutAdoptedAt = state.modified
         for record in records {
-            guard let point = state.positions[record.folder] else { continue }
+            // An article shares its volume's folder, so it has no place
+            // of its own in the shared layout.
+            guard BoundVolume.split(articleDocID: record.id) == nil,
+                  let point = state.positions[record.folder] else { continue }
             let z = placed[record.id]?.z ?? -1.2
             placed[record.id] = SIMD3<Float>(Float(point.x), Float(point.y), z)
         }
@@ -455,7 +466,7 @@ struct EPUBMapView: View {
         // walk, so a long journal costs nothing extra for it.
         var wordsByArticle: [String: Int] = [:]
         for record in records {
-            guard let doc = model.index.byID[record.id]?.doc else { continue }
+            guard let doc = model.document(record.id) else { continue }
             // The document's whole length, counted on its own: the
             // abstract walk below stops the moment the abstract ends,
             // so it can say nothing about the paper's size.
@@ -562,10 +573,18 @@ struct EPUBMapView: View {
 
         // The journal's articles, front and centre: pinned first, then
         // the rest; the Set Aside collapse into a quiet row beneath.
-        let shown = records.filter { !model.openDocIDs.contains($0.id) }
+        // A volume's room: its articles make the wall; its opening pages
+        // and its appendices and records stand in columns either side —
+        // each zone shown or put away by the volume bar's Show.
+        let pieceOf = model.openVolume.map { model.pieceIndex(of: $0) } ?? [:]
+        func zone(_ record: EPUBRecord) -> BoundVolume.Zone { pieceOf[record.id]?.zone ?? .articles }
+        let shown = records.filter { !model.openDocIDs.contains($0.id) && model.showsZone(zone($0)) }
         let standing = documentsShown
-            ? model.pinnedFirstRecords(shown.filter { !model.setAsideIDs.contains($0.id) })
+            ? model.pinnedFirstRecords(shown.filter {
+                !model.setAsideIDs.contains($0.id) && zone($0) == .articles })
             : []
+        let openingSide = documentsShown ? shown.filter { zone($0) == .opening } : []
+        let closingSide = documentsShown ? shown.filter { zone($0) == .appendices } : []
         let asides: [EPUBRecord] = []
 
         let columns = Self.wallColumns(standing.count)
@@ -642,6 +661,41 @@ struct EPUBMapView: View {
             return item
         }
         articleYearZ = yearZ
+
+        // The side columns: the opening pages a card's width and a half to
+        // the wall's left, the appendices and records as far to its right,
+        // each from the wall's top row down.
+        func sideItems(_ side: [EPUBRecord], leftOfWall: Bool) -> [EPUBMapItem] {
+            let edge = Float(columns - 1) / 2 + 1.6
+            return side.enumerated().map { index, record in
+                let seed = SIMD3<Float>(
+                    (leftOfWall ? -edge : edge) * Self.columnPitch,
+                    seedTop - Float(index) * Self.rowPitch,
+                    -1.2) + spaceShift + documentsShift
+                var position = placed[record.id] ?? seed
+                if liftedCards[record.id] == nil,
+                   !Self.withinReach(position - spaceShift - documentsShift) {
+                    position = seed
+                }
+                var item = EPUBMapItem(
+                    id: record.id, title: record.title,
+                    author: pieceOf[record.id]?.byline ?? "",
+                    kind: .article, position: position,
+                    citedIDs: citedIDsByArticle[record.id] ?? [],
+                    isPinned: model.pinnedIDs.contains(record.id),
+                    abstract: abstractByArticle[record.id] ?? "")
+                item.isLifted = liftedCards[record.id] != nil
+                return item
+            }
+        }
+        result += sideItems(openingSide, leftOfWall: true)
+        result += sideItems(closingSide, leftOfWall: false)
+        // Every piece that is not plainly an article says what it is.
+        for index in result.indices {
+            guard let piece = pieceOf[result[index].id] else { continue }
+            result[index].pieceLabel = Self.pieceLabel(piece)
+            if piece.kind == .part { result[index].author = "" }
+        }
 
         // The Set Aside row: title-only slips, half faded, resting ON
         // THE FLOOR — the room's quiet lowest shelf. A slip set aside
@@ -773,6 +827,18 @@ struct EPUBMapView: View {
         return result
     }
 
+    /// The small capitals a volume's piece wears over its title.
+    static func pieceLabel(_ piece: BoundVolume.Article) -> String? {
+        switch piece.kind {
+        case .article: return nil
+        case .part: return "PART"
+        case .collection:
+            return piece.voices > 0 ? "COLLECTION · \(piece.voices) VOICES" : "COLLECTION"
+        default:
+            return (piece.label ?? piece.kind.title).uppercased()
+        }
+    }
+
     /// Whether a card's place, taken back to the room's own frame, is
     /// somewhere a reader can see it: above the floor, below the
     /// ceiling, within a few steps either side.
@@ -804,6 +870,41 @@ struct EPUBMapView: View {
     private var connectionEdgeCount: Int {
         items.reduce(0) { $0 + $1.citedIDs.count }
             + deepLinks.values.reduce(0) { $0 + $1.inbound.count + $1.outbound.count }
+    }
+
+    /// A volume's room carries its bar; any other room has none. Layout's
+    /// choices are named here, where the arrangements live.
+    private func syncVolumeBar() {
+        if model.openVolume != nil {
+            // The series' articles, made ready for the assistant now, so
+            // Similar and Ask answer at once.
+            model.prepareSeriesIndex()
+            model.layoutArrangements = WatchLayoutOption.allCases.map {
+                .init(id: $0.rawValue, title: $0.title)
+            }
+            model.layoutViews = Self.offeredWatchViews.map {
+                .init(id: $0.rawValue, title: $0.title)
+            }
+            openWindow(id: "volume-toolbar")
+        } else {
+            dismissWindow(id: "volume-toolbar")
+        }
+    }
+
+    /// The bar's command, carried out as the arm's and the cards' own
+    /// are: Select All is Select ▸ Documents; Layout runs the same
+    /// arrangements a chosen card's Layout offers.
+    private func performVolumeBarRequest() {
+        guard let request = model.volumeBarRequest else { return }
+        model.volumeBarRequest = nil
+        switch request.action {
+        case .selectAll:
+            toggleSelect(.documents)
+        case .arrange(let name):
+            if let option = WatchLayoutOption(rawValue: name) { runWatchLayout(option) }
+        case .view(let name):
+            if let option = WatchViewOption(rawValue: name) { runWatchView(option) }
+        }
     }
 
     private func reload() {
@@ -838,6 +939,10 @@ struct EPUBMapView: View {
                 }
             }
             items = built
+            // The volume bar's Select All reads what the room holds.
+            let papers = items.filter { matchesSelectKind(.documents, $0) }
+            let allSelected = !papers.isEmpty && papers.allSatisfy(\.isSelected)
+            if model.allArticlesSelected != allSelected { model.allArticlesSelected = allSelected }
             // A changed journal leaves stale raises behind — keep only
             // the articles actually standing.
             let standing = Set(items.filter { $0.kind == .article }.map(\.id))
@@ -1730,10 +1835,19 @@ struct EPUBMapView: View {
                 model.transpointDocID = nil
                 model.readingDeskDocID = nil
                 reload()
+                syncVolumeBar()
                 // Another journal, another set of shared views.
                 sharedViews = [:]
                 if watchSavedOpen { refreshSharedViews() } else { updateWatchChips() }
             }
+            // The volume bar's Select All and Layout.
+            .onChange(of: model.volumeBarRequest) {
+                performVolumeBarRequest()
+            }
+            // A piece corrected, or a zone shown or put away: the room
+            // stands its cards again.
+            .onChange(of: model.volumeStamp) { reload() }
+            .onChange(of: model.shownZones) { reload() }
             .onChange(of: armMenuInverted) {
                 armMenu.setInverted(armMenuInverted)
             }
@@ -2563,6 +2677,12 @@ struct EPUBMapView: View {
             // (the entity's scale, set in cardEntity).
             let selected = item.isSelected
             VStack(spacing: (item.kind == .citedDeep ? 1.5 : 2.5) * s) {
+                if let label = item.pieceLabel {
+                    Text(label)
+                        .font(.system(size: 4.5 * s, weight: .semibold))
+                        .tracking(0.6 * s)
+                        .foregroundStyle(Color.white.opacity(0.55))
+                }
                 HStack(alignment: .firstTextBaseline, spacing: 2 * s) {
                     if item.isPinned {
                         Image(systemName: "pin.fill")
@@ -2889,10 +3009,17 @@ struct EPUBMapView: View {
         reload()
     }
 
+    /// A card on the wall proper: in a volume's room, an article — not the
+    /// opening pages or the appendices standing either side, which Select
+    /// All and Layout leave where they are.
+    private func standsOnWall(_ item: EPUBMapItem) -> Bool {
+        item.kind == .article && (model.piece(forDocID: item.id)?.zone ?? .articles) == .articles
+    }
+
     private func matchesSelectKind(_ kind: SelectKind, _ item: EPUBMapItem) -> Bool {
         guard !item.isGhost, !item.isFaded else { return false }
         return switch kind {
-        case .documents: item.kind == .article && !item.isAside
+        case .documents: standsOnWall(item) && !item.isAside
         case .citations: item.kind == .cited || item.kind == .citedDeep
         // The topic magnets and floated passages are their own families
         // — Select's Concepts leaves them as they stand.
@@ -3047,6 +3174,7 @@ struct EPUBMapView: View {
 
     /// One paper chosen: its own verbs.
     @ViewBuilder private func onePaperButtons(for item: EPUBMapItem) -> some View {
+        VStack(spacing: 6) {
         HStack(spacing: 8) {
             Button("Open") { handleTap(count: 2, on: item) }
             // The citation card's own Abstract, verbatim: only when
@@ -3063,8 +3191,43 @@ struct EPUBMapView: View {
             }
             // The paper alone, with what it cites standing behind it.
             Button("Transpoint") { model.transpointDocID = item.id }
+            // A bound volume stands as its articles, each a card read
+            // alone; inside, the way back to the whole book.
+            if model.openVolume != nil {
+                Button("Whole Volume") { model.openWholeVolume() }
+                // What this piece is, as the reader reads it: the volume's
+                // own reading corrected — Article, Opening, Appendix…
+                Button("Kind") {
+                    kindRowCardID = kindRowCardID == item.id ? nil : item.id
+                }
+                // The articles most like this one, across the series.
+                Button("Similar") {
+                    model.assistantFocusID = item.id
+                    openWindow(id: "volume-assistant")
+                }
+            } else {
+                Button("Articles") {
+                    if let record = model.record(forDocID: item.id) {
+                        model.openArticles(of: record)
+                    }
+                }
+                .disabled(!model.isBoundVolume(item.id))
+            }
             // Set Aside and Pin moved to the open reading's title bar,
             // right of the title (5 Oct 2026).
+        }
+        if kindRowCardID == item.id, let piece = model.piece(forDocID: item.id) {
+            HStack(spacing: 6) {
+                ForEach(BoundVolume.Kind.allCases, id: \.self) { kind in
+                    Button {
+                        model.setKind(kind, forDocID: item.id)
+                        kindRowCardID = nil
+                    } label: {
+                        Text(kind.title).fontWeight(kind == piece.kind ? .bold : .regular)
+                    }
+                }
+            }
+        }
         }
     }
 
@@ -3208,7 +3371,7 @@ struct EPUBMapView: View {
     /// or every standing article when nothing is chosen.
     private func watchLayoutTargets() -> [EPUBMapItem] {
         let standing = items.filter {
-            $0.kind == .article && !$0.isAside && !$0.isGhost
+            standsOnWall($0) && !$0.isAside && !$0.isGhost
                 && $0.position != nil && liftedCards[$0.id] == nil
         }
         let selected = standing.filter(\.isSelected)
@@ -3217,7 +3380,7 @@ struct EPUBMapView: View {
 
     /// A record's own date, for the Time sorts — the undated sort last.
     private func watchDate(_ id: String) -> Date {
-        model.epubRecords.first { $0.id == id }?.dateISO
+        model.record(forDocID: id)?.dateISO
             .flatMap(LiquidDoc.parseISO8601) ?? .distantFuture
     }
 
@@ -3341,7 +3504,7 @@ struct EPUBMapView: View {
 
     private func runWatchView(_ option: WatchViewOption) {
         let articles = items.filter {
-            $0.kind == .article && !$0.isAside && !$0.isGhost
+            standsOnWall($0) && !$0.isAside && !$0.isGhost
                 && $0.position != nil && liftedCards[$0.id] == nil
         }
         guard articles.count > 1 else { return }
@@ -3588,7 +3751,8 @@ struct EPUBMapView: View {
     private func timelinePositions(_ articles: [EPUBMapItem],
                                    center: SIMD2<Float>) -> [String: SIMD2<Float>] {
         let dateByID = Dictionary(
-            model.epubRecords.map { ($0.id, $0.dateISO) }) { first, _ in first }
+            (model.epubRecords + (model.openVolume.map(model.articleRecords(of:)) ?? []))
+                .map { ($0.id, $0.dateISO) }) { first, _ in first }
         func year(_ id: String) -> Int? {
             dateByID[id]?.flatMap { Int($0.prefix(4)) }
         }
@@ -3981,6 +4145,14 @@ struct EPUBMapView: View {
                 }
                 return
             }
+            // A volume bound from several works opens as its articles —
+            // the room becomes the volume, each piece a card, as a
+            // proceedings' papers stand in a journal's room.
+            if let record = model.epubRecords.first(where: { $0.id == item.id }),
+               model.boundVolume(for: record) != nil {
+                model.openArticles(of: record)
+                return
+            }
             openReading(docID: item.id, title: item.title)
         default:
             break
@@ -4306,6 +4478,12 @@ struct EPUBMapView: View {
     ///   is how a single article opened above the reader's head.)
     private func openReading(docID: String, title: String,
                              toReader: Bool = false) {
+        // Every reading opens in Horizontal — its pages side by side —
+        // the foot bar's words still changing it once open (31 Oct
+        // 2026). Transpoint keeps the flowing page it has just chosen.
+        if model.transpointDocID != docID {
+            readerModeRaw = "horizontal"
+        }
         // Every reading opens in front of the reader's head, wherever
         // its card stands — a card high on the wall opened its page
         // above them. The card stays the reading's home: the close
@@ -4358,15 +4536,15 @@ struct EPUBMapView: View {
             openReading(docID: docID, title: readingTitle(for: docID))
         }
         model.readingDeskDocID = docID
-        guard let doc = model.index.byID[docID]?.doc else { return }
+        guard let doc = model.document(docID) else { return }
         let works = Transpoint.works(citedBy: doc, records: model.epubRecords) {
-            model.index.byID[$0]?.doc
+            model.document($0)
         }
         // Every citation on stage — the page's, and its sources' among
         // themselves and back to it.
         let links = Transpoint.links(page: docID, works: works,
                                      records: model.epubRecords) {
-            model.index.byID[$0]?.doc
+            model.document($0)
         }
         model.transpointReport = Transpoint.reporting(links)
         let geometry = model.transpointGeometry
@@ -4448,8 +4626,8 @@ struct EPUBMapView: View {
 
     /// The reading's name, from the shelf or from the index.
     private func readingTitle(for docID: String) -> String {
-        model.epubRecords.first { $0.id == docID }?.title
-            ?? model.index.byID[docID]?.doc.title ?? ""
+        model.record(forDocID: docID)?.title
+            ?? model.document(docID)?.title ?? ""
     }
 
     /// The reading view changed — Horizontal asked for, or left. Every
@@ -4484,7 +4662,7 @@ struct EPUBMapView: View {
     /// each change draws the object further. Letting go settles it.
     private func pullModel() {
         guard let pull = model.modelPull else { return }
-        guard let doc = model.index.byID[pull.docID]?.doc,
+        guard let doc = model.document(pull.docID),
               let paragraph = doc.body?.first(where: { $0.id == pull.paragraphID }),
               let figure = LiquidDoc.modelReference(in: paragraph.text),
               figure.isNativelyRenderable else { return }
@@ -4656,8 +4834,8 @@ struct EPUBMapView: View {
     private func openRequestedReading() {
         guard let docID = model.roomReadingRequest else { return }
         model.roomReadingRequest = nil
-        let title = model.epubRecords.first { $0.id == docID }?.title
-            ?? model.index.byID[docID]?.doc.title ?? ""
+        let title = model.record(forDocID: docID)?.title
+            ?? model.document(docID)?.title ?? ""
         // Chosen from the shelf, or handed to the app as a file: the
         // reader never saw a card for it, so it comes to them.
         openReading(docID: docID, title: title, toReader: true)

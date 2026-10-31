@@ -1529,9 +1529,8 @@ nonisolated enum OrigamiEPUBExporter {
         }
         let anchoredNoteRefs = NoteRefAnchors()
 
-        // Defined concepts get their first occurrence wrapped in <dfn>
-        // (spec C5) — the definition itself lives only in the JSON.
-        var pendingConcepts = doc.concepts.filter { $0.tag != "heading" }.map(\.name)
+        // Concepts are not marked in the text: the reader maps their terms
+        // live from the record and the glossary (profile §7.4).
         let tablesByID = Dictionary(doc.tables.map { ($0.identifier, $0) },
                                     uniquingKeysWith: { first, _ in first })
         var sectionOpen = false
@@ -1591,18 +1590,12 @@ nonisolated enum OrigamiEPUBExporter {
                 lines.append("<section>")
                 sectionOpen = true
             }
-            var html = self.element(for: element, citations: citations,
+            let html = self.element(for: element, citations: citations,
                                     stableID: stableID, assetsByID: assetsByID,
                                     tablesByID: tablesByID,
                                     publishedIDs: publishedIDs,
                                     noteNumbers: noteNumbers,
                                     anchoredNoteRefs: anchoredNoteRefs)
-            for name in pendingConcepts {
-                if let wrapped = wrappingFirstOccurrence(of: name, in: html) {
-                    html = wrapped
-                    pendingConcepts.removeAll { $0 == name }
-                }
-            }
             if let stretchID, stretchID != openStretchID {
                 // The aside's id is published like any other (§6.2, §7.10).
                 let escapedID = attributeEscaped(ids.claim(publishedID(for: stretchID, prefix: "st")))
@@ -2324,30 +2317,6 @@ nonisolated enum OrigamiEPUBExporter {
                                                   options: .regularExpression))
     }
 
-    /// Wraps the first occurrence of `name` outside any tag in a
-    /// `<dfn data-concept>` — nil when the text never mentions it.
-    private static func wrappingFirstOccurrence(of name: String, in html: String) -> String? {
-        let pattern = "\\b(\(NSRegularExpression.escapedPattern(for: name)))\\b(?![^<]*>)"
-        guard let expression = try? NSRegularExpression(pattern: pattern,
-                                                        options: [.caseInsensitive]) else { return nil }
-        // Never inside an equation: a <dfn> is not MathML.
-        let mathRanges = (try? NSRegularExpression(pattern: "<math\\b.*?</math>",
-                                                   options: [.dotMatchesLineSeparators]))?
-            .matches(in: html, range: NSRange(html.startIndex..., in: html))
-            .map(\.range) ?? []
-        guard let match = expression.matches(
-                  in: html, options: [],
-                  range: NSRange(html.startIndex..., in: html))
-                .first(where: { candidate in
-                    !mathRanges.contains { NSLocationInRange(candidate.range.location, $0) }
-                }),
-              let range = Range(match.range(at: 1), in: html) else { return nil }
-        let occurrence = html[range]
-        return html.replacingCharacters(
-            in: range,
-            with: "<dfn data-concept=\"\(escaped(name))\">\(occurrence)</dfn>")
-    }
-
     private static func escaped(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -2983,7 +2952,6 @@ nonisolated enum OrigamiEPUBExporter {
     pre code { font-size: 0.85em; white-space: pre-wrap; }
     a, a:link, a:visited { color: inherit; }
     a.citation { text-decoration: none; }
-    dfn { font-style: normal; border-bottom: 0.08em dotted #999999; }
     #references li { margin-bottom: 0.6em; }
     #visual-meta { font-size: 0.8em; color: #777777; margin-top: 3em; }
     #origami-publication-info { font-size: 0.9em; margin-top: 3em; border-top: 0.1em solid #cccccc; }

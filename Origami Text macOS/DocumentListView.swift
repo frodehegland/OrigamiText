@@ -110,6 +110,18 @@ struct EPUBPileMenu: View {
             }
         }
         #endif
+        // A volume bound from several works: any one of them, read alone.
+        // Every book carries the menu; a book not bound has it dimmed.
+        let bound = model.boundVolume(for: record)
+        Menu("Read Article") {
+            ForEach(bound?.articles ?? []) { article in
+                Button(article.byline.isEmpty ? article.title
+                       : "\(article.title) — \(article.byline)") {
+                    model.openArticle(article, of: record)
+                }
+            }
+        }
+        .disabled(bound == nil)
         // Binding (Origami Binding Profile, 24 Oct 2026): the whole book,
         // a selection of its articles, or a binder across books.
         BinderMenuItems(record: record)

@@ -951,12 +951,23 @@ either.
 
 ### 7.4 Glossary references
 
+A writer SHOULD NOT bake glossary references into the text. Which words
+are a concept's terms is decided live, by the reader, from the concepts
+the record carries (§9.4) and the glossary (§8.1): a definition added or
+changed later then reaches every occurrence, and no occurrence is ever
+cut out of the middle of a word. The concepts and the glossary are
+written as before; only the in-text links are left out.
+
+A reader MUST read a document that does carry them, as older ones do:
+
 ```html
 <a epub:type="glossref" role="doc-glossref"
    href="backmatter.xhtml#gloss-97887240-D108-40BE-A12F-C022A5C2CE5B">Origami Text</a>
 ```
 
-REQUIRED: `epub:type="glossref"`, `role="doc-glossref"`, resolving href.
+REQUIRED where present: `epub:type="glossref"`, `role="doc-glossref"`,
+resolving href. A reader shows such a link as plain text and SHOULD
+apply its own live mapping as though the link were not there.
 
 ### 7.5 Notes
 

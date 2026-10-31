@@ -221,9 +221,10 @@ struct BinderWriterTests {
         }
 
         let work = try text("content/s1-work-1-authoring-for-ai.html")
-        // The glossary link now reaches the binder's glossary; the link to a
-        // work not in the binder and to the book's front are let go.
-        #expect(work.contains("href=\"back.html#gloss-s1-g1\""))
+        // The glossary link is let go, its word kept (terms are mapped live);
+        // so are the links to a work not in the binder and to the book's front.
+        #expect(!work.contains("gloss-"))
+        #expect(work.contains("Machines read reading"))
         #expect(!work.contains("work-2-after-documents.html"))
         #expect(!work.contains("paper.html#p-front"))
         #expect(work.contains(">Millard</a>") == false && work.contains("Millard"))

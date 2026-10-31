@@ -1,5 +1,10 @@
+import CryptoKit
 import Foundation
+import NaturalLanguage
 import Observation
+#if canImport(KnowledgeIndex)
+import KnowledgeIndex
+#endif
 import SwiftUI
 #if os(iOS)
 import UIKit
@@ -2920,5 +2925,727 @@ struct MapLiveThreads: View {
         Canvas { context, size in
             draw(&context, size) { $0 == id ? point : nil }
         }
+    }
+}
+
+// MARK: - Bound volumes, read as their articles
+
+/// A journal, proceedings or collection bound into one EPUB, read as its
+/// pieces: the binding record's works and its front and back matter
+/// (visual-meta.json `document.binding`), each one a reading of its own.
+/// `read` answers nil for a book that declares no binding — it is read
+/// whole, as before.
+nonisolated struct BoundVolume: Hashable, Sendable {
+    enum Role: String, Hashable, Sendable { case front, work, back }
+
+    /// What a piece is to its reader. Declared by the book where it says
+    /// (the binding's `role`, or the section's `epub:type`), else read off
+    /// the piece itself (`classify`), and always open to the reader's own
+    /// correction.
+    enum Kind: String, Codable, CaseIterable, Hashable, Sendable {
+        /// A contribution: what the volume is for.
+        case article
+        /// Opening pages: title page, dedication, acknowledgements,
+        /// foreword, preface, introduction, welcome, how to read.
+        case front
+        /// A part's own title page — a heading, not a reading.
+        case part
+        /// Many voices in one piece: a graffiti wall, competition entries.
+        case collection
+        /// Closing pages: afterword, postscript, contributors, timeline,
+        /// symposium records, gallery, colophon.
+        case back
+        case appendix
+
+        var zone: Zone {
+            switch self {
+            case .front: .opening
+            case .back, .appendix: .appendices
+            case .article, .part, .collection: .articles
+            }
+        }
+
+        /// The word a reader chooses it by.
+        var title: String {
+            switch self {
+            case .article: "Article"
+            case .front: "Opening"
+            case .part: "Part Title"
+            case .collection: "Collection"
+            case .back: "Closing"
+            case .appendix: "Appendix"
+            }
+        }
+    }
+
+    /// Where a piece stands: the opening pages, the articles, or the
+    /// appendices and records after them.
+    enum Zone: String, CaseIterable, Hashable, Sendable {
+        case opening, articles, appendices
+
+        var title: String {
+            switch self {
+            case .opening: "Opening"
+            case .articles: "Articles"
+            case .appendices: "Appendices & Records"
+            }
+        }
+    }
+
+    struct Article: Identifiable, Hashable, Sendable {
+        /// The work's permanent id (`urn:uuid:…`); a matter piece's href.
+        let id: String
+        let title: String
+        /// Its authors — the binding's, or the name standing on the line
+        /// under its title when the binding gave none.
+        var authors: [String]
+        /// Where the binding put it: a work, or front or back matter.
+        let role: Role
+        /// What it is (see `Kind`), and the small word its card wears —
+        /// FOREWORD, TIMELINE, APPENDIX — when there is one.
+        var kind: Kind = .article
+        var label: String?
+        /// Whether the book itself said what it is.
+        var declared = false
+        /// A collection's number of voices.
+        var voices = 0
+        /// Its content document, folder-relative — "content/work-4-preface.html".
+        let file: String
+        /// The heading it begins at in `file`; nil when it is the whole file.
+        let anchor: String?
+        /// The concept, reference and note ids its pages use, as the
+        /// binding lists them — empty when it lists none.
+        let concepts: [String]
+        let references: [String]
+        let abstract: String?
+        let keywords: [String]
+
+        var isWork: Bool { kind == .article || kind == .collection }
+        var zone: Zone { kind.zone }
+        var byline: String { authors.joined(separator: ", ") }
+    }
+
+    /// The series a volume belongs to (binding `series`).
+    struct Series: Hashable, Sendable {
+        let id: String
+        let name: String
+        let volume: Int?
+    }
+
+    /// "book", "journal", "proceedings" — as the binding names it.
+    let kind: String
+    /// Every piece in reading order: front matter, the works, back matter
+    /// as the spine has them.
+    var articles: [Article]
+    var series: Series? = nil
+
+    /// The articles proper — contributions and collections.
+    var works: [Article] { articles.filter(\.isWork) }
+
+    /// The pieces standing in one zone, in reading order.
+    func pieces(in zone: Zone) -> [Article] { articles.filter { $0.zone == zone } }
+
+    /// The volume with the reader's corrections laid over the book's own
+    /// reading of itself (`[article id: kind]`).
+    func correcting(_ kinds: [String: Kind]) -> BoundVolume {
+        guard !kinds.isEmpty else { return self }
+        var copy = self
+        for index in copy.articles.indices {
+            if let kind = kinds[copy.articles[index].id], kind != copy.articles[index].kind {
+                copy.articles[index].kind = kind
+                copy.articles[index].label = nil
+            }
+        }
+        return copy
+    }
+
+    /// The volume's binding, from its unpacked package.
+    static func read(inUnpackedFolder folder: URL) -> BoundVolume? {
+        guard let data = OrigamiEPUBImporter.recordData(
+                inUnpackedFolder: folder, properties: "origami:visual-meta",
+                fileName: "visual-meta.json"),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let document = root["document"] as? [String: Any],
+              let binding = document["binding"] as? [String: Any],
+              let works = binding["works"] as? [[String: Any]], !works.isEmpty
+        else { return nil }
+
+        // Hrefs in the record are relative to the package document.
+        let container = (try? String(contentsOf: folder.appendingPathComponent("META-INF/container.xml"),
+                                     encoding: .utf8)) ?? ""
+        let opfPath = container.range(of: #"full-path="([^"]+)""#, options: .regularExpression)
+            .map { String(container[$0].dropFirst("full-path=\"".count).dropLast()) } ?? "package.opf"
+        let opfDirectory = (opfPath as NSString).deletingLastPathComponent
+        let opf = (try? String(contentsOf: folder.appendingPathComponent(opfPath), encoding: .utf8)) ?? ""
+        let volumeTitle = opf.range(of: #"<dc:title[^>]*>[^<]*"#, options: .regularExpression)
+            .map { String(opf[$0]).replacingOccurrences(of: #"<dc:title[^>]*>"#, with: "",
+                                                        options: .regularExpression) } ?? ""
+
+        func text(_ raw: Any?) -> String? {
+            let value = OrigamiEPUBImporter.multilingualText(raw)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (value?.isEmpty ?? true) ? nil : value
+        }
+        func place(_ href: String) -> (file: String, anchor: String?) {
+            let parts = href.split(separator: "#", maxSplits: 1).map(String.init)
+            let file = OrigamiEPUBImporter.joinedPath(opfDirectory, parts.first ?? "")
+            return (file, parts.count > 1 ? parts[1] : nil)
+        }
+        func ids(_ resources: [String: Any]?, _ key: String) -> [String] {
+            resources?[key] as? [String] ?? []
+        }
+        /// A declared role, as EPUB's structural vocabulary names it.
+        func declaredKind(_ raw: Any?) -> (Kind, String?)? {
+            guard let role = (raw as? String)?.lowercased(), !role.isEmpty else { return nil }
+            return Self.declaredKinds[role].map { ($0, role == "chapter" || role == "article" ? nil : role) }
+        }
+
+        var pieces: [Article] = []
+        for work in works {
+            guard let href = work["href"] as? String else { continue }
+            let at = place(href)
+            let resources = work["resources"] as? [String: Any]
+            let authors = (work["authors"] as? [[String: Any]] ?? []).compactMap { text($0["name"]) }
+            var piece = Article(
+                id: work["id"] as? String ?? href,
+                title: text(work["title"]) ?? "Untitled",
+                authors: authors, role: .work, file: at.file, anchor: at.anchor,
+                concepts: ids(resources, "concepts"), references: ids(resources, "references"),
+                abstract: text(work["abstract"]),
+                keywords: (work["keywords"] as? [Any] ?? []).compactMap { text($0) })
+            if let (kind, label) = declaredKind(work["role"]) {
+                piece.kind = kind; piece.label = label; piece.declared = true
+            }
+            pieces.append(piece)
+        }
+        for matter in binding["matter"] as? [[String: Any]] ?? [] {
+            guard let href = matter["href"] as? String else { continue }
+            let at = place(href)
+            let given = matter["role"] as? String
+            var piece = Article(
+                id: href, title: text(matter["title"]) ?? "Untitled", authors: [],
+                role: given == "front" ? .front : .back,
+                file: at.file, anchor: at.anchor, concepts: [], references: [],
+                abstract: nil, keywords: [])
+            // "front" and "back" say only where it stands; a richer role
+            // ("foreword", "appendix") says what it is.
+            if let given, given != "front", given != "back", let (kind, label) = declaredKind(given) {
+                piece.kind = kind; piece.label = label; piece.declared = true
+            }
+            pieces.append(piece)
+        }
+
+        // Reading order is the spine's.
+        let spine = OrigamiEPUBImporter.spine(inUnpackedFolder: folder)?.chapters ?? []
+        let position = Dictionary(spine.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        var ordered = pieces.enumerated().sorted {
+            let a = position[$0.element.file] ?? Int.max, b = position[$1.element.file] ?? Int.max
+            return a != b ? a < b : $0.offset < $1.offset
+        }.map(\.element)
+
+        // What each piece is, where the book did not say.
+        var shapes: [String: PieceShape] = [:]
+        for piece in ordered where shapes[piece.file] == nil {
+            let html = (try? String(contentsOf: folder.appendingPathComponent(piece.file), encoding: .utf8)) ?? ""
+            shapes[piece.file] = PieceShape(html: html)
+        }
+        var series: Series?
+        if let raw = binding["series"] as? [String: Any], let id = raw["id"] as? String {
+            series = Series(id: id, name: text(raw["name"]) ?? "",
+                            volume: (raw["volume"] as? Int) ?? Int(raw["volume"] as? String ?? ""))
+        }
+        classify(&ordered, shapes: shapes, volumeTitle: volumeTitle, seriesName: series?.name)
+        return BoundVolume(kind: binding["kind"] as? String ?? "book", articles: ordered, series: series)
+    }
+
+    /// EPUB's structural vocabulary (and the binding's own words), as kinds.
+    static let declaredKinds: [String: Kind] = [
+        "article": .article, "chapter": .article, "work": .article,
+        "titlepage": .front, "halftitlepage": .front, "dedication": .front, "epigraph": .front,
+        "acknowledgments": .front, "acknowledgements": .front, "foreword": .front,
+        "preface": .front, "introduction": .front, "prologue": .front, "frontmatter": .front,
+        "part": .part, "collection": .collection,
+        "afterword": .back, "epilogue": .back, "conclusion": .back, "contributors": .back,
+        "colophon": .back, "backmatter": .back, "timeline": .back, "transcript": .back,
+        "appendix": .appendix,
+    ]
+
+    /// What can be read off a piece's own pages: its length, its headings,
+    /// and the first line under its title (where a byline stands).
+    struct PieceShape: Sendable {
+        let words: Int
+        let headings: [String]
+        let paragraphs: [String]
+
+        init(html: String) {
+            func plain(_ fragment: String) -> String {
+                // Tags go without a space: a word split by an inline link
+                // ("W<a>asi</a>lko") reads whole again.
+                fragment.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                    .replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&nbsp;", with: " ")
+                    .replacingOccurrences(of: "&#160;", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            func matches(_ pattern: String) -> [String] {
+                guard let expression = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators])
+                else { return [] }
+                let ns = html as NSString
+                return expression.matches(in: html, range: NSRange(location: 0, length: ns.length))
+                    .map { plain(ns.substring(with: $0.range(at: 1))) }
+            }
+            let body = html.replacingOccurrences(of: "(?s)<head\\b.*?</head>", with: "", options: .regularExpression)
+            words = body.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+                .split(whereSeparator: \.isWhitespace).count
+            headings = matches("<h[1-6]\\b[^>]*>(.*?)</h[1-6]>")
+            paragraphs = Array(matches("<p\\b[^>]*>(.*?)</p>").filter { !$0.isEmpty }.prefix(6))
+        }
+    }
+
+    /// Opening and closing pages, by the words their titles begin with.
+    private static let openingWords = [
+        "foreword", "preface", "introduction", "welcome", "dedication", "acknowledg",
+        "how to read", "a symposium in writing", "article summaries", "editor’s note", "editor's note",
+    ]
+    private static let closingWords = [
+        "afterword", "postscript", "in closing", "colophon", "contributor", "gallery",
+        "graffiti wall", "conversations from", "open monday", "history of text timeline", "timeline",
+    ]
+    /// Words that mark a record of an event when nobody signs it.
+    private static let recordWords = ["symposium", "transcript", "proceedings of"]
+
+    /// Reads each piece the book did not describe: appendices by name,
+    /// part titles by their brevity, opening and closing pages by the words
+    /// their titles begin with, a byline found on the line under a title,
+    /// many voices by their many named headings — and once the closing
+    /// pages have begun after the articles, whatever follows is closing too.
+    static func classify(_ pieces: inout [Article], shapes: [String: PieceShape],
+                         volumeTitle: String, seriesName: String?) {
+        let volume = volumeTitle.lowercased().trimmingCharacters(in: .whitespaces)
+        let series = (seriesName ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+        var articleSeen = false
+        var closingBegun = false
+        for index in pieces.indices {
+            var piece = pieces[index]
+            defer {
+                if piece.kind == .article || piece.kind == .collection { articleSeen = true }
+                if articleSeen, piece.kind.zone == .appendices { closingBegun = true }
+                pieces[index] = piece
+            }
+            if piece.declared { continue }
+            let title = piece.title.lowercased()
+                .trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
+            let shape = shapes[piece.file]
+            let signed = !piece.authors.isEmpty
+            func set(_ kind: Kind, _ label: String? = nil) { piece.kind = kind; piece.label = label }
+
+            if title.hasPrefix("appendix") { set(.appendix, "appendix"); continue }
+            if !signed, (shape?.words ?? 0) <= 15 { set(.part); continue }
+            // The volume's own title page: its title, the series' name, or
+            // the series' name and its number ("… Vol IV", "… |||").
+            let numbered = !series.isEmpty && title.hasPrefix(series)
+                && ["vol", "|", "volume"].contains(where: {
+                    title.dropFirst(series.count).trimmingCharacters(in: .whitespaces).hasPrefix($0) })
+            if !signed, !title.isEmpty, title == volume || title == series || numbered {
+                set(closingBegun ? .back : .front, "title page"); continue
+            }
+            if let word = openingWords.first(where: { title.hasPrefix($0) }) {
+                set(closingBegun ? .back : .front, Self.labelWord(word)); continue
+            }
+            if let word = closingWords.first(where: { title.hasPrefix($0) }) {
+                set(.back, Self.labelWord(word)); continue
+            }
+            if !signed, recordWords.contains(where: { title.contains($0) }) { set(.back, "record"); continue }
+            if !signed, let shape {
+                // The name under the title the binding missed.
+                let firstLine = shape.paragraphs.first { $0.lowercased() != piece.title.lowercased() } ?? ""
+                if let names = Self.byline(firstLine) {
+                    piece.authors = names
+                    set(closingBegun ? .back : .article); continue
+                }
+                if shape.headings.count >= 8 {
+                    piece.voices = shape.headings.count - 1
+                    set(closingBegun ? .back : .collection, "collection"); continue
+                }
+            }
+            if closingBegun { set(.back); continue }
+            if !signed, !articleSeen { set(.front); continue }
+            set(.article)
+        }
+    }
+
+    private static func labelWord(_ word: String) -> String {
+        switch word {
+        case "acknowledg": "acknowledgements"
+        case "contributor": "contributors"
+        case "graffiti wall", "conversations from", "open monday": "record"
+        case "history of text timeline": "timeline"
+        case "editor’s note", "editor's note": "editor’s note"
+        case "a symposium in writing", "how to read", "article summaries": "opening"
+        default: word
+        }
+    }
+
+    /// A line that is nothing but names — "Peter J. Wasilko", "Ann Bessemans
+    /// & María Pérez Mena" — split into them; nil for a line of prose.
+    static func byline(_ line: String) -> [String]? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (4...90).contains(trimmed.count), !trimmed.hasSuffix(":") else { return nil }
+        // A sentence ends in a full stop; a name may only end in an initial's.
+        if trimmed.hasSuffix("."), (trimmed.split(separator: " ").last?.count ?? 0) > 2 { return nil }
+        let connectors: Set<String> = ["and", "&", "de", "van", "von", "der", "da", "del", "di", "la", "le", "with"]
+        let tokens = trimmed.replacingOccurrences(of: ",", with: " , ").split(separator: " ").map(String.init)
+        let words = tokens.filter { $0 != "," }
+        guard (2...14).contains(words.count) else { return nil }
+        for token in words where !connectors.contains(token.lowercased()) {
+            guard let first = token.first, first.isUppercase else { return nil }
+        }
+        let names = trimmed
+            .replacingOccurrences(of: " and ", with: ",").replacingOccurrences(of: "&", with: ",")
+            .replacingOccurrences(of: " with ", with: ",")
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        // Every name at least two words: "Peter J. Wasilko", not "Notes".
+        guard !names.isEmpty, names.allSatisfy({ $0.split(separator: " ").count >= 2 }) else { return nil }
+        return names
+    }
+
+    // MARK: An article as a document of its own
+
+    /// The id an article reads under: its volume's, then the article's.
+    static func articleDocID(volume: String, article: String) -> String {
+        volume + articleMarker + article
+    }
+
+    /// The volume and article an article id names; nil for any other id.
+    static func split(articleDocID id: String) -> (volume: String, article: String)? {
+        guard let range = id.range(of: articleMarker) else { return nil }
+        return (String(id[..<range.lowerBound]), String(id[range.upperBound...]))
+    }
+
+    private static let articleMarker = "#article="
+
+    /// The article cut out of the volume's structured document: its own
+    /// paragraphs (its file's, from its heading up to the next piece's),
+    /// its title and authors, and the concepts and references its pages
+    /// use. Everything else rides along from the volume.
+    func document(for article: Article, in volume: LiquidDoc) -> LiquidDoc {
+        let body = volume.body ?? []
+        let prefix = article.file + "#"
+        let inFile = body.indices.filter { body[$0].id.hasPrefix(prefix) }
+        let start = article.anchor.flatMap { anchor in
+            inFile.first { body[$0].id == prefix + anchor }
+        } ?? inFile.first
+        // The next piece beginning in the same file ends this one.
+        let otherStarts = Set(articles.filter { $0.id != article.id && $0.file == article.file }
+            .compactMap { $0.anchor.map { prefix + $0 } })
+        var slice: [LiquidDoc.Paragraph] = []
+        if let start {
+            for index in inFile where index >= start {
+                if index > start, otherStarts.contains(body[index].id) { break }
+                slice.append(body[index])
+            }
+        }
+
+        var doc = LiquidDoc(format: volume.format,
+                            id: Self.articleDocID(volume: volume.id, article: article.id),
+                            title: article.title,
+                            author: article.authors.isEmpty ? volume.author : article.byline,
+                            created: volume.created, body: slice,
+                            links: [], wraps: nil, fileURL: volume.fileURL)
+        doc.authors = article.authors
+        doc.documentType = volume.documentType
+        doc.date = volume.date
+        doc.language = volume.language
+        doc.publication = volume.title
+        doc.journal = volume.journal
+        doc.abstract = article.abstract
+        doc.keywords = article.keywords
+        doc.assets = volume.assets
+        doc.tables = volume.tables
+        doc.concepts = article.concepts.isEmpty ? volume.concepts
+            : volume.concepts.filter { Set(article.concepts).contains($0.id) }
+        // The works it cites, as the binding lists them — or, where the
+        // binding lists none, as its own paragraphs cite them.
+        var cited = Set(article.references)
+        if cited.isEmpty {
+            for paragraph in slice {
+                var rest = paragraph.text[...]
+                while let open = rest.range(of: "[cite:") {
+                    rest = rest[open.upperBound...]
+                    guard let close = rest.firstIndex(of: "]") else { break }
+                    cited.insert(String(rest[..<close]))
+                    rest = rest[close...]
+                }
+            }
+        }
+        doc.references = volume.references.filter { cited.contains($0.id) }
+        return doc
+    }
+}
+
+
+// MARK: - A series' articles, ready for the assistant
+
+/// Every article of every volume in one series (binding `series.id`), each
+/// with what an assistant needs to talk about it at once: its title,
+/// authors and volume, a gist (its abstract, else its opening), the names
+/// of its concepts, and a sentence embedding of its opening made on the
+/// device (NaturalLanguage) — so "which articles are like this one?" is
+/// answered from the whole series, in an instant, before any model speaks.
+nonisolated struct SeriesIndex: Codable, Sendable {
+    struct Entry: Identifiable, Hashable, Codable, Sendable {
+        /// The id the article reads under in its volume's room.
+        let id: String
+        let volumeID: String
+        let volumeTitle: String
+        let volumeNumber: Int?
+        let title: String
+        let authors: [String]
+        let kind: BoundVolume.Kind
+        let gist: String
+        var concepts: Set<String>
+        var vector: [Double]
+
+        var byline: String { authors.joined(separator: ", ") }
+        /// "Vol 4" — or the volume's title where it has no number.
+        var volumeName: String { volumeNumber.map { "Vol \($0)" } ?? volumeTitle }
+    }
+
+    /// One volume of the series, as the index is built from it.
+    struct Volume: Sendable {
+        let recordID: String
+        let title: String
+        let bound: BoundVolume
+        let document: LiquidDoc
+    }
+
+    let seriesID: String
+    let name: String
+    /// Which volumes, with how many articles each — an index made from
+    /// other volumes is made again.
+    let signature: String
+    let entries: [Entry]
+    /// What every article of the series shares — in a series about the
+    /// future of text, that it is about the future of text. Taken off each
+    /// vector before comparing, so an article is matched by what is its
+    /// own rather than by the theme they all have.
+    var mean: [Double] = []
+    /// Which embedding made the vectors ("bge-small" or "apple"), so a
+    /// question is embedded the same way.
+    var model = "apple"
+
+    /// Which volumes, and every one of their pieces as the reader now sees
+    /// it — id, title, authors, kind, abstract and length — so a
+    /// re-exported volume or a corrected piece is indexed again.
+    static func signature(of volumes: [Volume]) -> String {
+        let described = volumes.map { volume in
+            volume.recordID + "{" + volume.bound.articles.map { piece in
+                [piece.id, piece.title, piece.byline, piece.kind.rawValue, piece.abstract ?? ""]
+                    .joined(separator: "\u{1F}")
+            }.joined(separator: "\u{1E}") + "#\((volume.document.body ?? []).count)}"
+        }.sorted().joined(separator: "|")
+        return SHA256.hash(data: Data(described.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Indexes the articles (and collections) of every volume given:
+    /// Knowledge Space's own embedding model (bge-small) where the build
+    /// carries it, Apple's sentence embedding otherwise.
+    static func build(seriesID: String, name: String, volumes: [Volume]) async -> SeriesIndex {
+        struct Draft { var entry: Entry; let text: String }
+        var drafts: [Draft] = []
+        for volume in volumes {
+            for article in volume.bound.works {
+                let doc = volume.bound.document(for: article, in: volume.document)
+                let body = (doc.body ?? []).filter { $0.heading == nil }.map(\.text)
+                    .filter { $0.count > 40 && $0 != article.byline }
+                let opening = body.joined(separator: " ")
+                    .replacingOccurrences(of: #"\[cite:[^\]]*\]"#, with: "", options: .regularExpression)
+                let gist: String
+                if let abstract = article.abstract, !abstract.isEmpty {
+                    gist = abstract
+                } else {
+                    gist = opening.split(separator: " ").prefix(70).joined(separator: " ")
+                }
+                let entry = Entry(
+                    id: BoundVolume.articleDocID(volume: volume.recordID, article: article.id),
+                    volumeID: volume.recordID, volumeTitle: volume.title,
+                    volumeNumber: volume.bound.series?.volume,
+                    title: article.title, authors: article.authors, kind: article.kind,
+                    gist: gist, concepts: Set(doc.concepts.map { $0.name.lowercased() }), vector: [])
+                drafts.append(Draft(entry: entry,
+                                    text: article.title + ". " + String(opening.prefix(2400))))
+            }
+        }
+
+        // The vectors.
+        var model = "apple"
+        var vectors: [[Double]]? = nil
+        #if canImport(KnowledgeIndex)
+        if let bge = try? BGEEmbedder() {
+            var made: [[Double]] = []
+            let texts = drafts.map(\.text)
+            for start in stride(from: 0, to: texts.count, by: BGEEmbedder.batchSize) {
+                let batch = Array(texts[start..<min(start + BGEEmbedder.batchSize, texts.count)])
+                guard let embedded = try? await bge.embed(batch) else { made = []; break }
+                made += embedded.map { $0.map(Double.init) }
+            }
+            if made.count == drafts.count { vectors = made; model = "bge-small" }
+        }
+        #endif
+        if vectors == nil {
+            let embedding = NLEmbedding.sentenceEmbedding(for: .english)
+            vectors = drafts.map { Self.appleVector($0.text, embedding: embedding) }
+        }
+        for index in drafts.indices { drafts[index].entry.vector = vectors?[index] ?? [] }
+
+        // A concept most articles share says nothing about any one of them.
+        var counts: [String: Int] = [:]
+        for draft in drafts { for concept in draft.entry.concepts { counts[concept, default: 0] += 1 } }
+        let common = Set(counts.filter { Double($0.value) > Double(drafts.count) * 0.15 }.keys)
+
+        // Centre the vectors on the series' own mean.
+        let width = drafts.first(where: { !$0.entry.vector.isEmpty })?.entry.vector.count ?? 0
+        var mean = [Double](repeating: 0, count: width)
+        let vectored = drafts.filter { $0.entry.vector.count == width && width > 0 }
+        for draft in vectored { for i in 0..<width { mean[i] += draft.entry.vector[i] } }
+        if !vectored.isEmpty { mean = mean.map { $0 / Double(vectored.count) } }
+        let entries = drafts.map { draft -> Entry in
+            var entry = draft.entry
+            entry.vector = Self.centre(entry.vector, on: mean)
+            entry.concepts.subtract(common)
+            return entry
+        }
+        return SeriesIndex(seriesID: seriesID, name: name, signature: signature(of: volumes),
+                           entries: entries, mean: mean, model: model)
+    }
+
+    /// Apple's sentence embedding of a text: the mean of the vectors of its
+    /// first dozen sentences, normalised.
+    static func appleVector(_ text: String, embedding: NLEmbedding?) -> [Double] {
+        guard let embedding else { return [] }
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        var sentences: [String] = []
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            let sentence = text[range].trimmingCharacters(in: .whitespacesAndNewlines)
+            if sentence.count > 8 { sentences.append(sentence) }
+            return sentences.count < 12
+        }
+        var sum = [Double](repeating: 0, count: embedding.dimension)
+        var counted = 0
+        for sentence in sentences {
+            guard let v = embedding.vector(for: sentence) else { continue }
+            for i in v.indices { sum[i] += v[i] }
+            counted += 1
+        }
+        guard counted > 0 else { return [] }
+        let length = sqrt(sum.reduce(0) { $0 + $1 * $1 })
+        return length > 0 ? sum.map { $0 / length } : []
+    }
+
+    /// A question as the index's own model embeds it, centred like the
+    /// articles. bge reads a search better with its retrieval instruction.
+    func questionVector(_ question: String) async -> [Double] {
+        var vector: [Double] = []
+        #if canImport(KnowledgeIndex)
+        if model == "bge-small", let bge = try? BGEEmbedder(),
+           let embedded = try? await bge.embed(["Represent this sentence for searching relevant passages: " + question]),
+           let first = embedded.first {
+            vector = first.map(Double.init)
+        }
+        #endif
+        if vector.isEmpty {
+            vector = Self.appleVector(question, embedding: NLEmbedding.sentenceEmbedding(for: .english))
+        }
+        return Self.centre(vector, on: mean)
+    }
+
+    /// A vector less the series' mean, normalised again.
+    static func centre(_ vector: [Double], on mean: [Double]) -> [Double] {
+        guard vector.count == mean.count, !vector.isEmpty else { return vector }
+        let moved = zip(vector, mean).map { $0 - $1 }
+        let length = sqrt(moved.reduce(0) { $0 + $1 * $1 })
+        return length > 0 ? moved.map { $0 / length } : moved
+    }
+
+    // MARK: Kept between visits
+
+    /// Where a series' index is kept on this device.
+    static func cacheURL(seriesID: String) -> URL {
+        let safe = seriesID.replacingOccurrences(of: "[^A-Za-z0-9-]", with: "_", options: .regularExpression)
+        return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SeriesIndex", isDirectory: true)
+            .appendingPathComponent(safe + ".json")
+    }
+
+    static func cached(seriesID: String, signature: String) -> SeriesIndex? {
+        guard let data = try? Data(contentsOf: cacheURL(seriesID: seriesID)),
+              let index = try? JSONDecoder().decode(SeriesIndex.self, from: data),
+              index.signature == signature else { return nil }
+        return index
+    }
+
+    func save() {
+        let url = Self.cacheURL(seriesID: seriesID)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(self) { try? data.write(to: url, options: .atomic) }
+    }
+
+    /// Whether Knowledge Space's own embedding model (bge-small, through
+    /// LiquidKit's KnowledgeIndex) is in this build.
+    static var bgeLinked: Bool {
+        #if canImport(KnowledgeIndex)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    private static func cosine(_ a: [Double], _ b: [Double]) -> Double {
+        guard a.count == b.count, !a.isEmpty else { return 0 }
+        return zip(a, b).reduce(0) { $0 + $1.0 * $1.1 }
+    }
+
+    /// How alike two articles are: mostly what their openings say, partly
+    /// the concepts they share by name.
+    func likeness(_ a: Entry, _ b: Entry) -> Double {
+        let shared = a.concepts.intersection(b.concepts).count
+        let union = a.concepts.union(b.concepts).count
+        let concepts = union == 0 ? 0 : Double(shared) / Double(union)
+        return 0.85 * Self.cosine(a.vector, b.vector) + 0.15 * concepts
+    }
+
+    func entry(_ id: String) -> Entry? { entries.first { $0.id == id } }
+
+    /// The articles most like this one, across every volume of the series.
+    func similar(to id: String, limit: Int = 8) -> [Entry] {
+        guard let anchor = entry(id) else { return [] }
+        return entries.filter { $0.id != id }
+            .map { ($0, likeness(anchor, $0)) }
+            .sorted { $0.1 > $1.1 }
+            .prefix(limit).map(\.0)
+    }
+
+    /// The articles a question is most about: an article it names by title
+    /// first, then the nearest by meaning.
+    func search(_ question: String, limit: Int = 10) async -> [Entry] {
+        let asked = question.lowercased()
+        let named = entries.filter { $0.title.count >= 12 && asked.contains($0.title.lowercased()) }
+        let probe = Entry(id: "", volumeID: "", volumeTitle: "", volumeNumber: nil, title: question,
+                          authors: [], kind: .article, gist: "",
+                          concepts: Set(entries.flatMap(\.concepts).filter { asked.contains($0) }),
+                          vector: await questionVector(question))
+        let near = entries.map { ($0, likeness(probe, $0)) }.sorted { $0.1 > $1.1 }.map(\.0)
+        var seen = Set<String>()
+        return (named + near).filter { seen.insert($0.id).inserted }.prefix(limit).map { $0 }
+    }
+
+    /// The articles as a model reads them: numbered, so its answer can
+    /// name them back ("[3]").
+    static func briefing(_ entries: [Entry]) -> String {
+        entries.enumerated().map { index, entry in
+            let by = entry.byline.isEmpty ? "" : " — \(entry.byline)"
+            return "[\(index + 1)] \(entry.title)\(by) (\(entry.volumeName)): \(entry.gist)"
+        }.joined(separator: "\n")
     }
 }

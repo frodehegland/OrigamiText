@@ -899,7 +899,7 @@ In `visual-meta.json`, `document.title`, `subtitle`, `abstract`, `publication`, 
 | note mark | `<a [id="fnref-…"] role="doc-noteref" data-note-id="id" href="#<published id>"><sup>N</sup></a>` (N = the id's trailing digits, else order of first use); `[inote:]` uses `class="ot-inline-note"` and ‡ |
 | note | `<p id epub:type="endnote" role="note"><a class="ot-note-back" role="doc-backlink" href="#fnref-…">N.</a> …</p>`, left in the body flow |
 | jump | `<a class="ot-jump" data-target-id="id" href="#published">` |
-| concept | first occurrence (outside tags and `<math>`) wrapped in `<dfn data-concept="name">` |
+| concept | not marked in the text (31 October 2026): the reader maps terms live from the record and glossary, profile §7.4 |
 | bare URL | https/http/gemini/hm URLs become anchors (`OrigamiEPUBLinks.anchorSchemes`) |
 
 **Reference list.**
@@ -1056,7 +1056,7 @@ All of these checks run before the ZIP is assembled.
 | §5.5 languages | JSON value objects + XHTML `lang`; OPF primary only |
 | §6 NCName ids + `data-origami-address`, no `data-id` | Yes |
 | §7.3 biblioref, `#bib-KEY` | Yes |
-| §7.4 glossref | **Not emitted**: concepts become `<dfn data-concept>`, with no glossary `<dl>` |
+| §7.4 glossref | **Not emitted**, as §7.4 now asks: concepts live only in the records, with no glossary `<dl>` |
 | §7.6 tables | Static values + `data-table-id`; no `<caption>`/`<thead>` |
 | §7.7 MathML authoritative, `data-latex` derived, index | Yes; display equations indexed |
 | §8.2 bibliography `<section>` | Yes |
@@ -1069,7 +1069,7 @@ On 8 October 2026 five of this writer's exports (four Author golden documents an
 
 ### 4.11 Binding: `EPUBBinder.swift`, `EPUBBinderViews.swift` (Origami Binding Profile, 24 October 2026)
 
-A *binding* is an EPUB made from shelved EPUBs without re-rendering: each chosen work's own content document, notes, references and images are carried over, plus a plain-text cover, the glossary entries the works reach, a colophon, the records and the package. `EPUBWorks.read(unpackedFolder:)` lists a shelved book's works: those it declares (profile §3.3, one `<collection role="distributable-object">` per article), or, when it declares none, the articles its **level 1 headings** mark out (`worksInferred == true`). `EPUBBinderWriter.write(_:to:)` writes the binding from `[BinderPart]`, where a part is a record and either `nil` (the whole book as one work) or the chosen work ids.
+A *binding* is an EPUB made from shelved EPUBs without re-rendering: each chosen work's own content document, notes, references and images are carried over, plus a plain-text cover, the glossary entries the works reach, a colophon, the records and the package. No glossary link is carried (profile §7.4, 31 October 2026: terms are mapped live by the reader, never baked in): a source's `glossref` anchors are unwrapped to their words, each one's entry still collected, and any other source glossary entry whose term stands in the work's text as a whole word (no letter or digit either side, case-insensitive) is collected too, in concept-id order. `EPUBWorks.read(unpackedFolder:)` lists a shelved book's works: those it declares (profile §3.3, one `<collection role="distributable-object">` per article), or, when it declares none, the articles its **level 1 headings** mark out (`worksInferred == true`). `EPUBBinderWriter.write(_:to:)` writes the binding from `[BinderPart]`, where a part is a record and either `nil` (the whole book as one work) or the chosen work ids.
 
 **Series and per-work facts** (Binding Profile additions, 28 October 2026). `EPUBWorks.read` also reads the book's `series` (record `document.binding.series` {name, volume, id}, else the package's `belongs-to-collection` refined to `collection-type` series with `group-position` and `dcterms:identifier`), the publication's own `abstract` and `keywords`, and for each work its `abstract`, `keywords` and `source.position` / `series` / `volume` (falling back to the book's series, and to its order among the works). Abstracts may be plain strings or `{value, lang}`. The binder carries all of these into each work of its own record, in AuthorKit's shape: `works[].abstract`, `works[].keywords`, `works[].source.{position, series, volume}`. A whole book bound as one work takes the book's abstract and series. The package metadata block is captured as a group, so the book's `dc:creator`s are its editors, never its articles' authors.
 
@@ -1313,7 +1313,7 @@ These are differences between documents and code, or within the code. The rebuil
 1. **No warning for a missing colophon.** `FormatOptions.colophon` defaults to false, and `writeFormatBundle` passes it as `writesColophon`, so the "(label).epub" has no `epub:type="colophon"` section. That is conforming under the revised profile (§8.4 SHOULD), but §18.2 asks for a warning, and the writer gives none.
 2. **Nav vs references condition.** The nav adds "References" when `doc.references` is non-empty, but the section is written only when gathered citations are non-empty. If those differ, the nav anchor dangles and export is refused.
 3. **Accessibility summary overclaims.** It says "nested section headings, and ARIA landmarks", but sections are flat, the nav is flat, and there is no landmarks nav.
-4. **§7.4 glossref and §8.1 glossary are not emitted.** Concepts appear only as `<dfn data-concept>` and in the records.
+4. **§7.4 glossref and §8.1 glossary are not emitted.** Concepts appear only in the records; nothing in the text marks them (§7.4: terms are mapped live by the reader).
 5. **§8.3 endnotes shape.** Notes are `<p epub:type="endnote" role="note">` in the body, not `<aside>` inside `<section epub:type="endnotes">`.
 6. **§7.6 tables** have no `<caption>`/`<thead>`. The caption is a sibling `p.table-caption`.
 7. **[`LATEX-IMPORT-PIPELINE.md`](../Origami%20Text%20macOS/LATEX-IMPORT-PIPELINE.md) §4 is stale.** It describes `id` = positional "purple number" with the stable id in `data-id`, and citations linking `#ref-<n>`. The 1.0 writer does the reverse: `id` = stable id, `data-origami-address` = position, no `data-id`, citations to `#bib-<key>`.

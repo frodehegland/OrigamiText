@@ -4150,6 +4150,8 @@ Button { model.toggleTopOfPile(record) } label: {
 struct ReadingFootBar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var colorScheme
+    /// The bound volume's articles, listed to read one alone.
+    @State private var showsArticles = false
     @AppStorage("readerMode") private var readerModeRaw = EPUBReaderMode.faithful.rawValue
     @AppStorage("readingFoldTarget") private var foldTargetRaw =
         OrigamiReadingView.FoldTarget.headings.rawValue
@@ -4200,6 +4202,43 @@ struct ReadingFootBar: View {
 
     private var readerMode: EPUBReaderMode {
         EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
+    }
+
+    /// Articles — or, reading one, which of the volume's it is.
+    private var articlesWord: some View {
+        let bound = model.openBoundVolume
+        let works = bound?.works ?? []
+        let label: String = {
+            guard let article = model.openEPUB?.article else { return "Articles" }
+            guard let place = works.firstIndex(where: { $0.id == article.id }) else { return article.title }
+            return "Article \(place + 1) / \(works.count)"
+        }()
+        return Button {
+            showsArticles = true
+        } label: {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 160)
+        }
+        .buttonStyle(.plain)
+        .disabled(bound == nil)
+        .help(bound == nil ? "This book is not bound from several articles"
+              : "Read one article of this volume alone, or the whole volume")
+        .popover(isPresented: $showsArticles) {
+            if let bound {
+                VolumeArticlesList(volume: bound, current: model.openEPUB?.article) { choice in
+                    showsArticles = false
+                    if let choice {
+                        model.openArticle(withID: choice.id)
+                    } else {
+                        model.openWholeVolume()
+                    }
+                }
+            }
+        }
     }
 
     var body: some View {
@@ -4313,6 +4352,12 @@ struct ReadingFootBar: View {
                 if let trailingContent {
                     trailingContent()
                 } else {
+                // A volume bound from several works reads whole or one
+                // article at a time; every book carries the word, a book
+                // that is not bound with it dimmed.
+                if model.openEPUB != nil {
+                    articlesWord
+                }
                 if let contents, let showContents {
                     Button {
                         showContents.wrappedValue = true
@@ -7329,4 +7374,118 @@ private struct ModelStageWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {}
+}
+
+
+/// A bound volume's pieces, to read one alone: the works with their
+/// authors, the front and back pages quieter, a filter over titles and
+/// names, and — reading one — the way back to the whole volume and on
+/// to the article either side.
+struct VolumeArticlesList: View {
+    let volume: BoundVolume
+    let current: BoundVolume.Article?
+    /// The piece chosen; nil for the whole volume.
+    let choose: (BoundVolume.Article?) -> Void
+    @State private var filter = ""
+
+    private var shown: [BoundVolume.Article] {
+        let needle = filter.trimmingCharacters(in: .whitespaces)
+        guard !needle.isEmpty else { return volume.articles }
+        return volume.articles.filter {
+            $0.title.localizedCaseInsensitiveContains(needle)
+                || $0.byline.localizedCaseInsensitiveContains(needle)
+        }
+    }
+
+    /// The work before and after the open one.
+    private func neighbour(_ step: Int) -> BoundVolume.Article? {
+        let works = volume.works
+        guard let current, let index = works.firstIndex(where: { $0.id == current.id }),
+              works.indices.contains(index + step) else { return nil }
+        return works[index + step]
+    }
+
+    private func row(_ article: BoundVolume.Article) -> some View {
+        Button {
+            choose(article)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                if let label = article.kind == .article ? nil
+                    : (article.kind == .collection && article.voices > 0
+                        ? "collection · \(article.voices) voices" : article.label ?? article.kind.title) {
+                    Text(label.uppercased())
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                Text(article.title)
+                    .fontWeight(article.id == current?.id ? .semibold : .regular)
+                    .foregroundStyle(article.zone == .articles ? .primary : .secondary)
+                    .lineLimit(2)
+                if !article.byline.isEmpty {
+                    Text(article.byline)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button("Whole Volume") { choose(nil) }
+                    .disabled(current == nil)
+                Spacer()
+                Button {
+                    neighbour(-1).map(choose)
+                } label: {
+                    Label("Previous Article", systemImage: "chevron.left")
+                }
+                .disabled(neighbour(-1) == nil)
+                .help("The article before this one")
+                Button {
+                    neighbour(1).map(choose)
+                } label: {
+                    Label("Next Article", systemImage: "chevron.right")
+                }
+                .disabled(neighbour(1) == nil)
+                .help("The article after this one")
+            }
+            .labelStyle(.iconOnly)
+            .padding(10)
+            TextField("Filter by title or author", text: $filter)
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+            Divider()
+            List {
+                // The volume in its three zones: the opening pages, the
+                // articles (a part's title standing over its own), and the
+                // appendices and records after them.
+                ForEach(BoundVolume.Zone.allCases, id: \.self) { zone in
+                    let pieces = shown.filter { $0.zone == zone }
+                    if !pieces.isEmpty {
+                        Section(zone.title) {
+                            ForEach(pieces) { article in
+                                if article.kind == .part {
+                                    Text(article.title.uppercased())
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                        .padding(.top, 4)
+                                } else {
+                                    row(article)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .listStyle(.plain)
+        }
+        .frame(width: 340, height: 460)
+    }
 }

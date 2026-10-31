@@ -601,7 +601,7 @@ struct ContentView: View {
             // pane; its own bar names it, toggles the Visual-Meta, and
             // gives the way back.
             EPUBReaderScreen(book: epub) { model.openEPUB = nil }
-                .id(epub.id)
+                .id(epub.readingID)
         } else if let selection = model.sidebarSelection,
            [.notes, .noteLocations, .notePeople, .filedNotes].contains(selection) {
             if let id = model.selectedNoteID,
