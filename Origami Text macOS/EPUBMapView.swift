@@ -3748,48 +3748,144 @@ struct EPUBMapView: View {
                          height: CGFloat(card.y) * 1360 * 2 + 20)
         let relations = starRelations(for: item)
         let extras = starExtras(for: item)
-        VStack(spacing: 10) {
-            // The lower verbs, mirrored unseen above, keep the star
-            // centred on the card whatever unfolds beneath.
-            extras.hidden()
-            HStack(spacing: 10) {
-                Button(focusMode ? "Un-Focus" : "Focus") {
-                    focusMode.toggle()
-                    armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
-                    armMenu.setChipActive(Self.focusChipID, focusMode)
-                    reload()
+        // The lit relation's cards, in miniature on a ring round the
+        // star (the lines still run to the cards themselves). The
+        // pictures have their own gallery, so Images rings nothing.
+        let ringed: [EPUBMapItem] = {
+            guard let shown = relationShown, shown.from == item.id, shown.title != "Images",
+                  let relation = relations.first(where: { $0.title == shown.title }) else { return [] }
+            return relation.ids.compactMap { id in items.first { $0.id == id && !$0.isGhost } }
+        }()
+        // The ring's radii, clear of the relation columns at either side
+        // and of the verbs above and below.
+        let ring = CGSize(width: (gap.width + 440) / 2 + 140,
+                          height: gap.height / 2 + 210)
+        ZStack {
+            VStack(spacing: 10) {
+                // The lower verbs, mirrored unseen above, keep the star
+                // centred on the card whatever unfolds beneath.
+                extras.hidden()
+                HStack(spacing: 10) {
+                    Button(focusMode ? "Un-Focus" : "Focus") {
+                        focusMode.toggle()
+                        armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
+                        armMenu.setChipActive(Self.focusChipID, focusMode)
+                        reload()
+                    }
+                    Button("Read") { readCard(item) }
+                    Button("Fold") { toggleOpen(item) }
                 }
-                Button("Read") { readCard(item) }
-                Button("Fold") { toggleOpen(item) }
-            }
-            let pictures = imagePaths(forDocID: item.id)
-            if !pictures.isEmpty { thumbnailStrip(pictures, of: item).hidden() }
-            HStack(alignment: .center, spacing: 10) {
-                relationColumn(relations.filter(\.outward), of: item, alignment: .trailing)
-                Color.clear.frame(width: gap.width, height: gap.height)
-                relationColumn(relations.filter { !$0.outward }, of: item, alignment: .leading)
-            }
-            // Its pictures, along the card's lower edge.
-            if !pictures.isEmpty { thumbnailStrip(pictures, of: item) }
-            HStack(spacing: 10) {
-                Button("Close") {
-                    if relationShown?.from == item.id { relationShown = nil }
-                    handleTap(count: 1, on: item)
+                let pictures = imagePaths(forDocID: item.id)
+                if !pictures.isEmpty { thumbnailStrip(pictures, of: item).hidden() }
+                HStack(alignment: .center, spacing: 10) {
+                    relationColumn(relations.filter(\.outward), of: item, alignment: .trailing)
+                    Color.clear.frame(width: gap.width, height: gap.height)
+                    relationColumn(relations.filter { !$0.outward }, of: item, alignment: .leading)
                 }
-                Button("Hide") {
-                    if relationShown?.from == item.id { relationShown = nil }
-                    handleTap(count: 1, on: item)
-                    model.toggleSetAside(item.id)
-                    reload()
-                    updateStandingChips()
+                // Its pictures, along the card's lower edge.
+                if !pictures.isEmpty { thumbnailStrip(pictures, of: item) }
+                HStack(spacing: 10) {
+                    Button("Close") {
+                        if relationShown?.from == item.id { relationShown = nil }
+                        handleTap(count: 1, on: item)
+                    }
+                    Button("Hide") {
+                        if relationShown?.from == item.id { relationShown = nil }
+                        handleTap(count: 1, on: item)
+                        model.toggleSetAside(item.id)
+                        reload()
+                        updateStandingChips()
+                    }
                 }
+                extras
             }
-            extras
+            if !ringed.isEmpty {
+                miniatureRing(Array(ringed.prefix(Self.ringLimit)), radii: ring)
+            }
         }
+        // Wide enough for the ring while it stands, so the attachment
+        // does not clip it; the star alone otherwise.
+        .frame(width: ringed.isEmpty ? nil : ring.width * 2 + Self.miniatureSize.width + 20,
+               height: ringed.isEmpty ? nil : ring.height * 2 + Self.miniatureSize.height + 20)
         .buttonStyle(.bordered)
         .controlSize(.small)
         .font(.caption)
         .scaleEffect(0.5)
+    }
+
+    /// At most this many miniatures ring a star; the lines reach them all.
+    private static let ringLimit = 14
+    /// A miniature's face, in the star's doubled points (before its halving).
+    private static let miniatureSize = CGSize(width: 230, height: 96)
+    /// How far in front of the eyes a card jumped to comes to stand.
+    private static let jumpDistance: Float = 0.75
+
+    /// The lit relation's cards, each a miniature evenly round an ellipse
+    /// about the star, the first at the top and on clockwise.
+    @ViewBuilder private func miniatureRing(_ cards: [EPUBMapItem], radii: CGSize) -> some View {
+        ForEach(Array(cards.enumerated()), id: \.element.id) { index, card in
+            let angle = -Double.pi / 2 + 2 * Double.pi * Double(index) / Double(cards.count)
+            miniatureCard(card)
+                .offset(x: radii.width * cos(angle), y: radii.height * sin(angle))
+        }
+    }
+
+    /// One card in small, as the room shows it closed: its title in
+    /// serif, its byline beneath. Tapped, the reader jumps to the card.
+    private func miniatureCard(_ card: EPUBMapItem) -> some View {
+        Button {
+            jumpToCard(card.id)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(card.title)
+                    .font(.system(size: 15, weight: .semibold, design: .serif))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                if !card.author.isEmpty {
+                    Text(card.author)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(10)
+            .frame(width: Self.miniatureSize.width, height: Self.miniatureSize.height, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.1).opacity(0.88)))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.25), lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .hoverEffect()
+    }
+
+    /// A miniature chosen: the whole space is carried, as Gather carries
+    /// it, until the card it stands for stands in front of the reader —
+    /// along the cards' own facing, on whichever side the reader is
+    /// turned to, a little below the eyes — and that card opens. The
+    /// ring and its lines are put away: the reader is somewhere new.
+    /// Undo View carries the space back.
+    private func jumpToCard(_ id: String) {
+        guard let target = items.first(where: { $0.id == id }), let at = target.position else { return }
+        relationShown = nil
+        galleryOf = nil
+        // A card stuck to a real surface keeps its wall when the space
+        // moves, so there is no carrying it to the reader; it still opens.
+        if liftedCards[id]?.stuck == nil {
+            let head = faceTurner.headPose()
+            // No head pose (the simulator, or tracking not yet running):
+            // where the reader stood when the space opened.
+            let eyes = head?.position ?? SIMD3<Float>(0, CitedSpace.walkHeight, 0)
+            let side: Float = (head?.forward.z ?? -1) > 0 ? 1 : -1
+            let place = eyes + SIMD3<Float>(0, -0.06, side * Self.jumpDistance)
+            let delta = place - at
+            if delta == .zero { reload() } else { carrySpace(delta) }
+        } else {
+            reload()
+        }
+        if let landed = items.first(where: { $0.id == id }), !landed.showsAbstract {
+            toggleOpen(landed)
+        }
     }
 
     /// One side of the star: its relations, each with how many cards it
@@ -3823,7 +3919,9 @@ struct EPUBMapView: View {
 
     /// A relation tapped: lines run from the paper to every card it
     /// reaches, and nothing else in the room changes — results are shown
-    /// by connection only, never in a panel and never by hiding. Cites
+    /// by connection only, never in a panel and never by hiding — and in
+    /// miniature on a ring round the star, each a way to jump to its
+    /// card (`miniatureRing`, 1 Nov 2026). Cites
     /// raises the paper's citation cards first if they are down. A second
     /// tap takes the lines away.
     private func toggleRelation(_ relation: StarRelation, of item: EPUBMapItem) {

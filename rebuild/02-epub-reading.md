@@ -1637,6 +1637,21 @@ A series room stands about 400 cards. Four measures keep each one cheap:
    - `CardFaceTurner.turn` sets the component the first time the reader is behind the card. Most cards are never seen from behind, so most never pay for a second live attachment.
 4. **No live blur on papers and citations.** Their faces fill `Color(white: 0.1).opacity(0.88)` (a chosen card is solid `white: 0.12`), and `glassBackgroundEffect` is `.never` for `.article`, `.cited` and `.citedDeep`. Labels, concepts and notes keep their own looks.
 
+### 5.29 Miniatures on the star, and jumping to a card (visionOS, 1 November 2026)
+
+When a relation on an open paper's star is lit (Similar to, Mentioned by, Cites…), its cards also stand in miniature on a ring round the star. The lines to the real cards still run.
+- **The ring** (`miniatureRing`):
+  - It is an ellipse about the star, inside the same attachment. While the ring stands, the star's `ZStack` is framed to hold it, so nothing clips.
+  - Radii: half of (gap width + 440) + 140 across, and half the gap height + 210 down, in doubled points.
+  - The first miniature is at the top, the rest evenly clockwise, at most 14 (`ringLimit`).
+  - Images rings nothing: it has the gallery (5.26).
+- **A miniature** (`miniatureCard`): 230 × 96 doubled points, on the cards' 0.88 dark ground, with the title in serif semibold (2 lines) and the byline beneath.
+- **Tapping a miniature** (`jumpToCard`):
+  - The relation and gallery are put away.
+  - The whole space is carried (`carrySpace`, so Undo View takes it back) until the card stands 0.75 m (`jumpDistance`) in front of the eyes and 6 cm below them. It lands along the cards' own facing axis (Z), on the side the reader is turned toward. Without a head pose, the eyes are taken as (0, walk height, 0).
+  - The card then opens (`toggleOpen`) unless it is open already.
+  - A card stuck to a real surface does not travel with the space. It is not carried, but it still opens.
+
 ### 5.24 A reading panel faces the reader while carried (visionOS, 1 November 2026)
 
 A reading panel is dragged by its grab bar (`ReaderHandleComponent`) through the Hallway's simultaneous `DragGesture`. Each change moves the panel root and, when `faceTurner.headPose()` gives a head pose, calls `ReaderPanels.turn(docID:toward:)` with the head's position.
