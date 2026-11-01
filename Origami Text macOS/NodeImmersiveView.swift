@@ -110,6 +110,18 @@ public struct NodeImmersiveView<
     var connectedNodesToNodeBlock: ConnectedNodesToNodeBlock?
     
     var nodeMaxWidthBlock: NodeMaxWidthBlock?
+
+    /// Origami addition (carry back to Author): the caller draws each node
+    /// itself (a live attachment) and wants only its size — so the node's
+    /// view is measured, never rendered to an image nor uploaded as a
+    /// texture. With hundreds of nodes that is hundreds of large textures
+    /// a rebuild no longer makes and throws away.
+    var measuresNodesOnly = false
+
+    /// Origami addition (carry back to Author): which items need an
+    /// attachment declared at all. Every item used to get one, most of
+    /// them empty; nil keeps that.
+    var needsAttachmentBlock: ((Items.Element) -> Bool)?
     
     var onMoveNodeBlock: OnMoveNodeBlock?
     
@@ -172,7 +184,7 @@ public struct NodeImmersiveView<
         } update: { content, attachments in
             update(content, attachments)
         } attachments: {
-            ForEach(items) { item in
+            ForEach(items.filter { needsAttachmentBlock?($0) ?? true }) { item in
                 let identifiers = {
                     if let result = attachmentIdentifiersBlock?(item), !result.isEmpty {
                         return result

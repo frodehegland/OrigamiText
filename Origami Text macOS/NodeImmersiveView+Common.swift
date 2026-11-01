@@ -178,11 +178,23 @@ extension NodeImmersiveView {
                     .frame(maxWidth: maxWidth)
                     .fixedSize(horizontal: false, vertical: true)
                 
-                guard
-                    let image = UIImage.image(framedView, maxWidth),
-                    let texturedPlane = ModelEntity.texturedPlane(with: image, ratio: 0.001)
-                else {
-                    continue
+                // Measured only, when the caller draws the node itself: a
+                // bare plane of the view's size (1000 points to the metre,
+                // as the textured one is), with no image and no texture.
+                let texturedPlane: ModelEntity
+                if measuresNodesOnly {
+                    let size = UIView.sizeThatFits(framedView, maxWidth: maxWidth)
+                    guard size.width > 0, size.height > 0 else { continue }
+                    texturedPlane = ModelEntity(mesh: .generatePlane(width: 0.001 * Float(size.width),
+                                                                     height: 0.001 * Float(size.height)))
+                } else {
+                    guard
+                        let image = UIImage.image(framedView, maxWidth),
+                        let plane = ModelEntity.texturedPlane(with: image, ratio: 0.001)
+                    else {
+                        continue
+                    }
+                    texturedPlane = plane
                 }
                 
                 let tuple = constructorNodeModelEntityBlock(item, texturedPlane)

@@ -1625,6 +1625,18 @@ The text-only rest is "Text only", standing as the field behind. On FoT the grou
 - A second tap, choosing another relation, or letting the paper go puts the gallery away.
 - Gallery cards are not labels (`isSpatialLabel` excludes `image:`), and a double tap on them, or on a label, opens nothing.
 
+### 5.28 Many cards: what each costs (visionOS, 1 November 2026)
+
+A series room stands about 400 cards. Four measures keep each one cheap:
+1. **Measure, don't render** (`NodeImmersiveView.measuresNodesOnly`, an engine addition owed back to Author).
+   - Before: the engine drew every node's view to an image at 4× and uploaded it as a `TextureResource`. The face itself is laid out at 4× crisp, so that was about 1800 px across, used only to measure the holder, then discarded.
+   - Now `update` asks `UIView.sizeThatFits` and makes a bare `generatePlane` of that size at 1000 pt/m, with no image and no texture.
+2. **Attachments only where needed** (`needsAttachmentBlock` / `.needsAttachment`, also an engine addition). Only items with `isAttachmentsEnabled` (chosen, not a ghost or faded) declare an `Attachment`, instead of every item declaring one (mostly `EmptyView`).
+3. **Back faces on demand.**
+   - A card's back face entity is built without its `ViewAttachmentComponent`. `CardFacesComponent.makeBack` holds a maker.
+   - `CardFaceTurner.turn` sets the component the first time the reader is behind the card. Most cards are never seen from behind, so most never pay for a second live attachment.
+4. **No live blur on papers and citations.** Their faces fill `Color(white: 0.1).opacity(0.88)` (a chosen card is solid `white: 0.12`), and `glassBackgroundEffect` is `.never` for `.article`, `.cited` and `.citedDeep`. Labels, concepts and notes keep their own looks.
+
 ### 5.24 A reading panel faces the reader while carried (visionOS, 1 November 2026)
 
 A reading panel is dragged by its grab bar (`ReaderHandleComponent`) through the Hallway's simultaneous `DragGesture`. Each change moves the panel root and, when `faceTurner.headPose()` gives a head pose, calls `ReaderPanels.turn(docID:toward:)` with the head's position.

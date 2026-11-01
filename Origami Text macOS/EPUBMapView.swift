@@ -2500,6 +2500,13 @@ struct EPUBMapView: View {
                 cardEntity(for: item, texturedPlane: texturedPlane)
             }
         )
+        // Performance (1 Nov 2026): every card's face is a live
+        // attachment, so the engine need only measure each node, never
+        // render it to an image and upload it as a texture it throws away;
+        // and only a card that can show controls (chosen, not a ghost)
+        // needs an attachment declared at all.
+        view = view.measuresNodesOnly()
+        view = view.needsAttachment { $0.isAttachmentsEnabled }
         view = view.nodeMaxWidth { item in
             nodeMaxWidth(for: item)
         }
@@ -3181,17 +3188,19 @@ struct EPUBMapView: View {
                 if selected && !item.isLifted {
                     RoundedRectangle(cornerRadius: 8 * s)
                         .fill(Color(white: 0.12))
-                } else if item.kind == .article, !item.isLifted {
-                    // A paper's card stands nearly opaque over the glass
-                    // (1 Nov 2026): the room shows through only faintly,
-                    // so the words read cleanly while the views change
-                    // and the cards move through the space.
+                } else if !item.isLifted {
+                    // Papers and citations stand on a solid, nearly opaque
+                    // ground (1 Nov 2026) — the words read cleanly while
+                    // the views change, and no card pays for a live blur
+                    // of the room behind it: hundreds of glass panes were
+                    // the GPU's heaviest load in a series room.
                     RoundedRectangle(cornerRadius: 8 * s)
-                        .fill(Color(white: 0.1).opacity(0.72))
+                        .fill(Color(white: 0.1).opacity(0.88))
                 }
             }
             .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 8 * s),
-                                   displayMode: (selected || item.isLifted)
+                                   displayMode: (selected || item.isLifted || item.kind == .article
+                                                 || item.kind == .cited || item.kind == .citedDeep)
                                        ? .never : .always)
             // The side rails are away for now (17 Sep 2026). What a
             // chosen card wears instead: the solid dark pane above,
@@ -3254,13 +3263,8 @@ struct EPUBMapView: View {
         // ruler used 1000 — 1.36 keeps every card its familiar size,
         // divided by the crisp factor the supersampled face carries.
         let scale: Float = 1.36 / Float(Self.crisp) * grown
-        func face(back: Bool) -> Entity {
-            let entity = Entity()
-            // Named so the face turner can find the pair each frame:
-            // glass is see-through, so only the side toward the reader
-            // may stand — both lit would read as text through text.
-            entity.name = back ? CardFaceTurner.backName : CardFaceTurner.frontName
-            entity.components.set(ViewAttachmentComponent(
+        func faceAttachment(back: Bool) -> ViewAttachmentComponent {
+            ViewAttachmentComponent(
                 // The fine-print abstract stands on the front alone;
                 // the back carries just the title and byline (shorter,
                 // so it floats centred in the same pinned frame).
@@ -3271,7 +3275,18 @@ struct EPUBMapView: View {
                     // As the chips do: the face never takes the pinch —
                     // the holder's collision does, and the concept
                     // buttons beneath keep their own taps.
-                    .allowsHitTesting(false)))
+                    .allowsHitTesting(false))
+        }
+        func face(back: Bool) -> Entity {
+            let entity = Entity()
+            // Named so the face turner can find the pair each frame:
+            // glass is see-through, so only the side toward the reader
+            // may stand — both lit would read as text through text.
+            entity.name = back ? CardFaceTurner.backName : CardFaceTurner.frontName
+            // The back is made the first time the reader sees the card
+            // from behind (CardFaceTurner) — most never are, and a live
+            // attachment per card is the room's dearest cost.
+            if !back { entity.components.set(faceAttachment(back: false)) }
             entity.scale = SIMD3<Float>(repeating: scale)
             entity.position = SIMD3<Float>(0, 0, back ? -0.003 : 0.003)
             if back {
@@ -3286,7 +3301,8 @@ struct EPUBMapView: View {
         let backFace = face(back: true)
         holder.addChild(frontFace)
         holder.addChild(backFace)
-        holder.components.set(CardFacesComponent(front: frontFace, back: backFace))
+        holder.components.set(CardFacesComponent(front: frontFace, back: backFace,
+                                                 makeBack: .init { faceAttachment(back: true) }))
         // Opening: the card unfolds — it begins folded flat along its
         // middle, like a sheet creased in half, and opens to full height
         // with its star around it, rather than appearing in one frame.
@@ -6597,6 +6613,13 @@ struct EPUBNodeIDComponent: Component {
 struct CardFacesComponent: Component {
     let front: Entity
     let back: Entity
+    /// Makes the back's live face when first needed.
+    let makeBack: BackFaceMaker?
+
+    final class BackFaceMaker {
+        let make: @MainActor () -> ViewAttachmentComponent
+        init(_ make: @escaping @MainActor () -> ViewAttachmentComponent) { self.make = make }
+    }
 }
 
 /// The whole-space grab: close either hand into a fist and the space
@@ -8756,7 +8779,14 @@ final class CardFaceTurner {
         else if d < -0.05 { facing = false }
         else { return }
         if faces.front.isEnabled != facing { faces.front.isEnabled = facing }
-        if faces.back.isEnabled == facing { faces.back.isEnabled = !facing }
+        if faces.back.isEnabled == facing {
+            // First seen from behind: its back face is made now.
+            if !facing, !faces.back.components.has(ViewAttachmentComponent.self),
+               let maker = faces.makeBack {
+                faces.back.components.set(maker.make())
+            }
+            faces.back.isEnabled = !facing
+        }
     }
 }
 

@@ -94,6 +94,22 @@ public extension NodeImmersiveView {
         return copy
     }
     
+    /// Origami addition: measure nodes, never rasterise them (see
+    /// `measuresNodesOnly`).
+    func measuresNodesOnly(_ on: Bool = true) -> Self {
+        var copy = self
+        copy.measuresNodesOnly = on
+        return copy
+    }
+
+    /// Origami addition: declare attachments only for the items that need
+    /// one (see `needsAttachmentBlock`).
+    func needsAttachment(_ block: @escaping (Items.Element) -> Bool) -> Self {
+        var copy = self
+        copy.needsAttachmentBlock = block
+        return copy
+    }
+
     func nodeMaxWidth(_ block: @escaping NodeMaxWidthBlock) -> Self {
         var copy = self
         
