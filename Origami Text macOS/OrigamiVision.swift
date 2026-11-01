@@ -3279,16 +3279,19 @@ struct VisionVolumeToolbar: View {
                     }
             }
             .help("Speak or type a keyword to put it into the room")
-            // Which of the volume's zones stand in the room.
-            HStack(spacing: 10) {
-                Text("Show").foregroundStyle(.secondary)
+            // Which of the volume's zones stand in the room — each a word
+            // that reads full while its zone stands and pale grey while it
+            // is put away, so off is never mistaken for on.
+            HStack(spacing: 18) {
                 ForEach(BoundVolume.Zone.allCases, id: \.self) { zone in
-                    Toggle(zone.title, isOn: Binding(
-                        get: { model.shownZones.contains(zone) },
-                        set: { on in
-                            if on { model.shownZones.insert(zone) } else { model.shownZones.remove(zone) }
-                        }))
-                    .toggleStyle(.button)
+                    let on = model.shownZones.contains(zone)
+                    Button {
+                        if on { model.shownZones.remove(zone) } else { model.shownZones.insert(zone) }
+                    } label: {
+                        Text(zone.title)
+                            .foregroundStyle(on ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+                    }
+                    .help(on ? "Put away \(zone.title)" : "Show \(zone.title)")
                 }
             }
             Button(model.allArticlesSelected ? "Deselect All" : "Select All") {
@@ -3314,6 +3317,26 @@ struct VisionVolumeToolbar: View {
                 Text("Layout")
             }
             .help("Arrange the selected articles — every article when none is selected — or the whole wall")
+            // The room's Shape: Timeline (time in depth), or the papers
+            // gathered by what they share — only Timeline orders by time.
+            Menu {
+                ForEach(model.shapeChoices) { choice in
+                    Button {
+                        model.volumeBarRequest = .init(action: .shape(choice.id))
+                    } label: {
+                        if model.currentShapeID == choice.id {
+                            Label(choice.title, systemImage: "checkmark")
+                        } else {
+                            Text(choice.title)
+                        }
+                    }
+                    // Dimmed, never hidden, while its data is not there.
+                    .disabled(!model.shapeAvailable.contains(choice.id))
+                }
+            } label: {
+                Text("Shapes")
+            }
+            .help("Give the room a shape: Timeline, or the articles gathered by meaning, theme, concept, author or the people they mention")
             Button("Ask") {
                 model.assistantFocusID = nil
                 openWindow(id: "volume-assistant")

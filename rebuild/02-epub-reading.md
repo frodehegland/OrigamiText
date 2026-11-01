@@ -1285,7 +1285,7 @@ A volume bound from several works — a journal issue, proceedings, a collection
 8. An unsigned piece with 8 or more headings is a collection (voices = headings − 1).
 9. Otherwise: back once closing has begun; front if unsigned before any article; article.
 
-Closing begins at the first appendices-zone piece after an article. Verified on Future of Text Vols 1–6, as opening/articles/appendices: 8/169/4, 3/40/5, 3/51/7, 3/52/7, 6/46/8 and 5/29/3. The two unsigned Vol 4 articles (Wasilko, Bonfert) are recovered. `correcting(_:)` lays the reader's `[piece id: Kind]` over the result. On visionOS, `VisionModel.setKind(_:forDocID:)` writes `annotationsRoot/piece-kinds.json` (`[folder: [piece id: kind]]`), forgets the caches and bumps `volumeStamp`. The room reloads on `volumeStamp` and `shownZones`. In a volume's room the wall holds only articles-zone pieces; opening pieces stand in a column 1.6 pitches left of the wall, and appendices-zone pieces in one to its right, from the wall's top down (`sideItems`). Every non-article card wears `pieceLabel` in small capitals (PART, COLLECTION · n VOICES, FOREWORD…), and part cards have no byline. `standsOnWall` keeps Select All, Layout's Arrange and the Views to the wall's articles. The volume bar adds **Show** (one toggle per zone, `shownZones` in UserDefaults `volumeShownZones`, all on by default) and **Ask**. A selected card in a volume room adds **Kind** (a row of the six kinds, the current one bold) and **Similar**. On the Mac, `VolumeArticlesList` groups by zone in sections, with part titles as small headings and kind labels over the rows.
+Closing begins at the first appendices-zone piece after an article. Verified on Future of Text Vols 1–6, as opening/articles/appendices: 8/169/4, 3/40/5, 3/51/7, 3/52/7, 6/46/8 and 5/29/3. The two unsigned Vol 4 articles (Wasilko, Bonfert) are recovered. `correcting(_:)` lays the reader's `[piece id: Kind]` over the result. On visionOS, `VisionModel.setKind(_:forDocID:)` writes `annotationsRoot/piece-kinds.json` (`[folder: [piece id: kind]]`), forgets the caches and bumps `volumeStamp`. The room reloads on `volumeStamp` and `shownZones`. In a volume's room the wall holds only articles-zone pieces; opening pieces stand in a column 1.6 pitches left of the wall, and appendices-zone pieces in one to its right, from the wall's top down (`sideItems`). Every non-article card wears `pieceLabel` in small capitals (PART, COLLECTION · n VOICES, FOREWORD…), and part cards have no byline. `standsOnWall` keeps Select All, Layout's Arrange and the Views to the wall's articles. The volume bar adds one word per zone (`shownZones` in UserDefaults `volumeShownZones`, all on by default) and **Ask**. Since 1 Nov 2026 the zone words stand without a "Show" label, as plain buttons: a zone standing reads in the primary colour, one put away in `.tertiary` grey. The forearm chips are also away (`EPUBMapView.armChipsWorn = false` filters every chip out; the menu still installs for its hand tracking). A selected card in a volume room adds **Kind** (a row of the six kinds, the current one bold) and **Similar**. On the Mac, `VolumeArticlesList` groups by zone in sections, with part titles as small headings and kind labels over the rows.
 
 **The series assistant.** `SeriesIndex` (EPUBShelf.swift; Codable) holds one `Entry` per work of every shelved volume whose binding `series.id` matches. A volume with no series counts as its own series. Each entry has its article doc id, volume id, title and number, title, authors, kind, a gist (the abstract, else the first 70 words of its opening) and its concept names. The concepts that 15% or more of the series' articles share are removed. Each entry also has a vector of "title. " + its first 2,400 characters, made with LiquidKit's `BGEEmbedder` (bge-small, 384 dimensions, batches of 32; `#if canImport(KnowledgeIndex)`, reached through LiquidShared and bundled into every app) or, failing that, the mean of Apple `NLEmbedding` sentence vectors. Vectors are centred on the series mean and normalised again. `likeness` is 0.85 × cosine + 0.15 × concept Jaccard. `similar(to:)` gives the top matches; `search` lists articles named by title first, then the nearest to the question, which bge embeds with its retrieval prefix. The index is saved in Caches/SeriesIndex/<series>.json and reused while `signature` (sorted record id:works count) matches. Built in 3.5 s for 385 articles on a Mac; loaded again in 0.03 s. `VisionModel.prepareSeriesIndex()` runs when a volume's room stands. The `volume-assistant` window (`VisionVolumeAssistant`) lists "Like …" for the card chosen with Similar. A question takes the focus article, its 8 nearest and the 10 the question is most about (12 at most), as a numbered `briefing`, to `OrigamiLLM.respond`. The answer streams, cites [n], and is shown with the articles it names. Tapping one calls `openPiece`, which opens that volume's room if it isn't open and stands the article in front of the reader.
 
@@ -1483,7 +1483,7 @@ Layout's ladder on the right arm gains a fifth rung, **Experimental** (`LayoutFa
 **A chosen keyword's verbs**, a row under the card at half scale, each lit while on (`keywordModes[id]`):
 - **Lines**: `conceptEdges` adds an edge from the keyword to each match, drawn by `conceptConnectionLines`. Other concepts' edges no longer include keyword cards.
 - **Only**: sets the room's concept Focus (`focusedConceptID` = the keyword, `focusedConceptArticleIDs` = its matches), so only the keyword and its papers stand.
-- **Gather** (`gatherPapers`): the matches, most-cited first, go into a small wall of ceil(√n × 1.4) columns. It is centred under the card, 12 cm below it and 8 cm behind, at wall pitch, written with `applyWatchPositions3D`. That frees the room from the timeline; Wall or Undo View sends the papers home.
+- **Gather** (`gatherPapers`): the matches, most-cited first, go into a small wall of ceil(√n × 1.4) columns. It is centred under the card, 12 cm below it and 8 cm behind, at wall pitch, written with `applyWatchPositions3D`. The gathered papers are also selected, set directly rather than through the tap, so their citation walls do not all rise at once; Layout and the Shapes then act on them. That frees the room from the timeline; Shapes ▸ Timeline or Undo View sends the papers home.
 - **Remove**: ends the keyword's mode and Focus, then calls `removeSpaceKeyword`.
 
 The same verb again turns it off. Letting the card go ends Lines and Only. A Gather's moved papers stay where they are; **Shapes ▸ Timeline** sends them home (Wall no longer does — see 5.23).
@@ -1542,6 +1542,31 @@ The same verb again turns it off. Letting the card go ends Lines and Only. A Gat
 
 **Wall** no longer restores time. In a time-free room it is a rectangle on one plane, z = −1.2.
 
+### 5.25 Labels as words in the room (visionOS, 1 November 2026)
+
+**What counts as a label.** `EPUBMapView.isSpatialLabel` is every `.concept` item that is not a note (`noteItemPrefix`) or a floated passage (`float:`): keywords, Shape group labels, topic magnets and concept cards. Papers and cited works keep their cards.
+
+**Drawing.** A label's face (`cardFace`) is plain text with no pane, glass or border:
+- the title in a 22 pt semibold serif (× crisp), the byline in 10 pt at 70%;
+- a black shadow at 60%, radius 3 (× crisp), for legibility;
+- at most 320 pt wide, held within `nodeMaxWidth`'s 240;
+- white ink, turning warm gold (1.0, 0.84, 0.45) when chosen.
+
+**Surfaces.** In the drag constraint a label is snapped by `surfacePose(for:)`, as a lifted card is, onto the nearest real wall (flush) or table (flat).
+- The pose is kept in `labelStuck [id: quaternion vector]`, persisted in UserDefaults under `"mapLabelSurfacePoses"`.
+- Dragging the label away from any surface clears it.
+- `MapCardTick` holds a stuck label at that pose (`stuckOrientation` reads `liftedCards[id].stuck ?? labelStuck[id]`; `anyLifted` is true while any label is stuck).
+
+**Verbs.** A chosen label shows one row: **Gather**, **Lines**, **Focus**, each lit while on (`keywordModes`). A keyword adds **Remove**; a concept adds **Hide**. Each acts on `labelMembers(item)`:
+- for a Shape label, its group's members;
+- for anything else, `keywordMatches(title)`: a whole-word match in the standing papers' titles, abstracts and text.
+
+**Behaviour.**
+- Lines are drawn only on request (`conceptEdges`). Choosing a concept, topic or Shape label no longer draws them by itself.
+- Focus is the room's concept Focus.
+- Gather brings the members round the label and selects them (5.22).
+- Letting the label go ends Lines and Focus.
+
 ### 5.24 A reading panel faces the reader while carried (visionOS, 1 November 2026)
 
 A reading panel is dragged by its grab bar (`ReaderHandleComponent`) through the Hallway's simultaneous `DragGesture`. Each change moves the panel root and, when `faceTurner.headPose()` gives a head pose, calls `ReaderPanels.turn(docID:toward:)` with the head's position.
@@ -1571,8 +1596,12 @@ The `!important` is required: Google Docs exports paint the body through
 a class (`<body class="c5">`, `.c5 { background-color: #ffffff }`), which
 outranks a plain `html, body` rule.
 
-An untouched High Contrast theme emits only
-`:root { color-scheme: light; }`, which leaves the system colours.
+An untouched High Contrast theme emits `:root { color-scheme: light dark; }`
+and only a dark rule, `html, body { background-color: #1e1e1e !important;
+color: #ffffff !important; }` inside `@media (prefers-color-scheme: dark)`.
+In light mode the book keeps its own black-on-white. It once emitted only
+`color-scheme: light`, which left a dark Mac reading black type: the web view
+draws no background, so the dark window showed through (fixed 1 Nov 2026).
 
 | Raw value | Name | Light bg | Light text | Dark bg | Dark text |
 |---|---|---|---|---|---|

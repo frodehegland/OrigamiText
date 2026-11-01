@@ -1648,9 +1648,16 @@ struct EPUBMapView: View {
         // top rows and their lists stay declared above, ready to come
         // back by dropping this filter; a chip the menu was not given
         // simply ignores its show, title and active calls.
-        .filter(\.underside),
+        // Every chip is away for now (1 Nov 2026, `armChipsWorn`): the
+        // menu still installs, so its hand tracking serves the rest.
+        .filter { EPUBMapView.armChipsWorn && $0.underside },
        tracksPlanes: true,   // the flat pose finds the actual desk
        inverted: UserDefaults.standard.bool(forKey: "armMenuInverted"))
+
+    /// Whether the forearms wear their chips. Off for now at Frode's
+    /// asking (1 Nov 2026) — the room is worked from its toolbar and
+    /// the cards' own menus; set true to bring the undersides back.
+    static let armChipsWorn = false
 
     /// The Settings' Swap Arms toggle — every chip on the opposite
     /// forearm. Read here as well so a change flips the menu live.
@@ -1748,6 +1755,23 @@ struct EPUBMapView: View {
     /// standing now — cleared when the room changes.
     @State private var keywordMatchCache: [String: Set<String>] = [:]
     static let keywordItemPrefix = "keyword:"
+    /// The pose each label took from the real surface it was dropped on —
+    /// flush to a wall, flat on a table — by id, as a quaternion's vector.
+    /// Kept across launches; pulling a label off clears it.
+    @State private var labelStuck: [String: SIMD4<Float>] = EPUBMapView.loadLabelStuck()
+
+    nonisolated private static func loadLabelStuck() -> [String: SIMD4<Float>] {
+        guard let raw = UserDefaults.standard.dictionary(forKey: "mapLabelSurfacePoses") as? [String: [Double]]
+        else { return [:] }
+        return raw.compactMapValues { v in
+            v.count == 4 ? SIMD4<Float>(Float(v[0]), Float(v[1]), Float(v[2]), Float(v[3])) : nil
+        }
+    }
+
+    private func saveLabelStuck() {
+        UserDefaults.standard.set(labelStuck.mapValues { [Double($0.x), Double($0.y), Double($0.z), Double($0.w)] },
+                                  forKey: "mapLabelSurfacePoses")
+    }
 
     private static let settingsChipID = "map.arm.settings"
     private static let documentsChipID = "map.arm.documents"
@@ -2322,40 +2346,30 @@ struct EPUBMapView: View {
                         .scaleEffect(0.5, anchor: .top)
                     )
                 }
-                // A chosen keyword: what it should do with the papers
-                // using it — the reader's choice, each lit while on.
-                if item.isSelected, item.id.hasPrefix(Self.keywordItemPrefix) {
+                // A chosen label — keyword, Shape label, topic, concept —
+                // and what it should do with the papers it gathers, each
+                // lit while on: Gather brings them round it, Lines threads
+                // to them, Focus leaves only them standing. A keyword can
+                // be removed; a concept put away.
+                if item.isSelected, Self.isSpatialLabel(item) {
                     let mode = keywordModes[item.id]
+                    let isKeyword = item.id.hasPrefix(Self.keywordItemPrefix)
+                    let isConcept = !isKeyword && !item.id.hasPrefix(Self.shapeLabelPrefix)
+                        && !item.id.hasPrefix("topic:")
                     return AnyView(
                         HStack(spacing: 8) {
-                            Button("Lines") { setKeywordMode(.lines, on: item) }
-                                .tint(mode == .lines ? .accentColor : nil)
-                            Button("Only") { setKeywordMode(.only, on: item) }
-                                .tint(mode == .only ? .accentColor : nil)
                             Button("Gather") { setKeywordMode(.gather, on: item) }
                                 .tint(mode == .gather ? .accentColor : nil)
-                            Button("Remove") { removeKeyword(item) }
+                            Button("Lines") { setKeywordMode(.lines, on: item) }
+                                .tint(mode == .lines ? .accentColor : nil)
+                            Button("Focus") { setKeywordMode(.only, on: item) }
+                                .tint(mode == .only ? .accentColor : nil)
+                            if isKeyword { Button("Remove") { removeKeyword(item) } }
+                            if isConcept { Button("Hide") { hideConcept(item.id) } }
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .font(.caption)
-                        .scaleEffect(0.5, anchor: .top)
-                    )
-                }
-                // Topic magnets carry no buttons: selection alone is
-                // their whole voice — the threads to their articles.
-                if item.kind == .concept && item.isSelected
-                    && !item.id.hasPrefix("topic:")
-                    && !item.id.hasPrefix(Self.shapeLabelPrefix)
-                    && !item.id.hasPrefix(EPUBMapView.noteItemPrefix) {
-                    return AnyView(
-                        HStack(spacing: 8) {
-                            Button(focusedConceptID == item.id ? "Un-Focus" : "Focus") {
-                                focusConcept(item)
-                            }
-                            Button("Hide") { hideConcept(item.id) }
-                        }
-                        .buttonStyle(.bordered)
                         .scaleEffect(0.5, anchor: .top)
                     )
                 }
@@ -2521,6 +2535,23 @@ struct EPUBMapView: View {
                 held.z = z
                 return held
             }
+            // A label snaps onto a real surface it is brought near —
+            // flush to a wall, flat on a table — and keeps that pose until
+            // pulled off. State writes only on change, as a lifted card's.
+            if Self.isSpatialLabel(item) {
+                if let pose = surfacePose(for: proposed) {
+                    if labelStuck[item.id] != pose.orientation.vector {
+                        labelStuck[item.id] = pose.orientation.vector
+                        saveLabelStuck()
+                    }
+                    return pose.position
+                }
+                if labelStuck[item.id] != nil {
+                    labelStuck[item.id] = nil
+                    saveLabelStuck()
+                }
+                return proposed
+            }
             // Concepts move freely in all axes.
             guard item.kind == .cited || item.kind == .citedDeep else { return proposed }
             // Citations stay on their year's Z no matter what. Prefer
@@ -2678,12 +2709,12 @@ struct EPUBMapView: View {
                              // head, so gaze can take a lifted card
                              // from any side; everything else stands
                              // upright.
-                             anyLifted: { !liftedCards.isEmpty },
+                             anyLifted: { !liftedCards.isEmpty || !labelStuck.isEmpty },
                              liftedFacesHead: { liftedCards[$0] != nil },
                              // A card that has taken a real surface
                              // keeps that surface's pose instead.
                              stuckOrientation: {
-                                 liftedCards[$0]?.stuck.map(simd_quatf.init(vector:))
+                                 (liftedCards[$0]?.stuck ?? labelStuck[$0]).map(simd_quatf.init(vector:))
                              })
             // Align to Room's wall: a wall-classified vertical plane on
             // the one tracking session, read when the chip is tapped.
@@ -2868,6 +2899,27 @@ struct EPUBMapView: View {
                     .strokeBorder(Color.white.opacity(item.isSelected ? 0.75 : 0.25),
                                   lineWidth: (item.isSelected ? 1.6 : 0.6) * s)
             )
+        } else if Self.isSpatialLabel(item) {
+            // A label is words in the air, not a card: larger type, no
+            // pane, no border — a soft shadow keeps it legible against
+            // the room. Chosen, it turns warm gold (1 Nov 2026).
+            let ink = item.isSelected ? Color(red: 1.0, green: 0.84, blue: 0.45) : Color.white
+            VStack(spacing: 3 * s) {
+                Text(item.title)
+                    .font(.system(size: 22 * s, weight: .semibold, design: .serif))
+                    .foregroundStyle(ink)
+                    .multilineTextAlignment(.center)
+                if !item.author.isEmpty {
+                    Text(item.author)
+                        .font(.system(size: 10 * s, design: .serif))
+                        .foregroundStyle(ink.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .shadow(color: .black.opacity(0.6), radius: 3 * s)
+            .padding(.horizontal, 6 * s)
+            .padding(.vertical, 4 * s)
+            .frame(maxWidth: 320 * s)
         } else if item.kind == .concept {
             // The arm chips' glass, in the concepts' own serif voice.
             // Real material — this face rides a live attachment now,
@@ -3155,12 +3207,6 @@ struct EPUBMapView: View {
     /// by text mention — the same source the concept picks select by.
     private func conceptEdges() -> [(from: String, to: String)] {
         var edges: [(from: String, to: String)] = []
-        for item in items where item.kind == .concept && item.isSelected
-            && !item.id.hasPrefix("topic:") && !item.id.hasPrefix(Self.keywordItemPrefix) {
-            for docID in model.articleIDs(mentioning: item.title) {
-                edges.append((from: item.id, to: docID))
-            }
-        }
         // A relation chosen on a paper's star menu: a line from the
         // paper to every card it reaches. Results are only ever shown so
         // — by connection, never in a panel.
@@ -3169,28 +3215,12 @@ struct EPUBMapView: View {
                 edges.append((from: relationShown.from, to: id))
             }
         }
-        // A chosen Shape label threads to every paper in its group.
-        for label in roomShape?.labels ?? [] where items.contains(where: { $0.id == label.id && $0.isSelected }) {
-            for member in label.members { edges.append((from: label.id, to: member)) }
-        }
-        // A keyword chosen with Lines threads to every paper using it.
+        // A label chosen with Lines — a keyword, a Shape's group label, a
+        // topic, a concept — threads to every paper it gathers. Only when
+        // asked: choosing a label alone draws nothing (1 Nov 2026).
         for item in items where item.isSelected && keywordModes[item.id] == .lines {
-            for docID in keywordMatches(item.title) {
+            for docID in labelMembers(item) {
                 edges.append((from: item.id, to: docID))
-            }
-        }
-        // A selected topic magnet threads to every article it speaks
-        // for — the same pull as the Mac bar's threads.
-        if let venue = model.openJournalVenue {
-            var standing: [MapTopics.Paper]?
-            for item in items where item.isSelected && item.id.hasPrefix("topic:") {
-                let papers = standing ?? topicStandingArticles(venue: venue)
-                standing = papers
-                let pole = MapTopics.words(item.title)
-                for paper in papers where MapTopics.pull(
-                    pole: pole, topics: paper.topics, title: paper.title) > 0 {
-                    edges.append((from: item.id, to: paper.id))
-                }
             }
         }
         return edges
@@ -4722,17 +4752,37 @@ struct EPUBMapView: View {
         keywordModes[item.id] = turningOff ? nil : mode
         if !turningOff, mode == .only {
             focusedConceptID = item.id
-            focusedConceptArticleIDs = keywordMatches(item.title)
+            focusedConceptArticleIDs = labelMembers(item)
         }
         if !turningOff, mode == .gather {
-            gatherPapers(keywordMatches(item.title), around: item)
+            gatherPapers(labelMembers(item), around: item)
             return
         }
         reload()
     }
 
+    /// Whether an element is a label in the room rather than a paper or a
+    /// citation: a keyword, a Shape's group label, a topic, a concept. A
+    /// note and a floated passage are content of their own, and keep their
+    /// cards. Labels stand as plain text, snap onto real surfaces, and
+    /// offer Gather, Lines and Focus.
+    static func isSpatialLabel(_ item: EPUBMapItem) -> Bool {
+        item.kind == .concept && !item.id.hasPrefix(noteItemPrefix) && !item.id.hasPrefix("float:")
+    }
+
+    /// The papers a label gathers: a Shape label its group; any other its
+    /// words, found whole in the standing papers' titles, abstracts and
+    /// text.
+    private func labelMembers(_ item: EPUBMapItem) -> Set<String> {
+        if let label = roomShape?.labels.first(where: { $0.id == item.id }) {
+            return Set(label.members)
+        }
+        return keywordMatches(item.title)
+    }
+
     /// The papers brought round a keyword: a small wall of them hanging
-    /// just below and behind its card, the most-cited first.
+    /// just below and behind its card, the most-cited first — and chosen,
+    /// so Layout and the Shapes act on them next.
     private func gatherPapers(_ ids: Set<String>, around keyword: EPUBMapItem) {
         guard let anchor = keyword.position else { return }
         let papers = items.filter { ids.contains($0.id) && $0.position != nil && liftedCards[$0.id] == nil }
@@ -4749,7 +4799,14 @@ struct EPUBMapView: View {
                 anchor.y - 0.12 - Float(row) * Self.rowPitch,
                 anchor.z - 0.08)
         }
+        // The gathered papers stand chosen, ready for Layout or a Shape.
+        // Chosen directly, not tapped: a tap would also raise each one's
+        // citation wall, and a keyword can gather dozens of papers.
+        for index in items.indices where xyz[items[index].id] != nil {
+            items[index].isSelected = true
+        }
         applyWatchPositions3D(xyz)
+        updateStandingChips()
     }
 
     /// Remove: the keyword leaves the room, and whatever it was doing ends.

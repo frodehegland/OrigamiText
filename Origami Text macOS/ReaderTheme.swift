@@ -123,7 +123,18 @@ enum ReaderTheme: String, CaseIterable, Identifiable, Sendable {
         if self == .highContrast,
            !ThemeColorOverrides.hasOverride(backgroundOverrideKey),
            !ThemeColorOverrides.hasOverride(textOverrideKey) {
-            return ":root { color-scheme: light; }"
+            // Light: the book's own black-on-white, untouched. Dark: the
+            // system's own dark pair. Forcing `color-scheme: light` here
+            // left a dark Mac reading black type on the transparent page
+            // over a dark window (1 Nov 2026) — the web view draws no
+            // background of its own.
+            let dark = ReaderTheme.highContrastEditorPalette
+            return """
+            :root { color-scheme: light dark; }
+            @media (prefers-color-scheme: dark) {
+              html, body { background-color: \(dark.darkBackground) !important; color: \(dark.darkText) !important; }
+            }
+            """
         }
         let fallback = ReaderTheme.highContrastEditorPalette
         return """
