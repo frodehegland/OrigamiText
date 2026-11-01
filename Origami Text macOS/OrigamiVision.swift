@@ -3264,6 +3264,11 @@ struct VisionVolumeToolbar: View {
 
     var body: some View {
         HStack(spacing: 40) {
+            // Back to the document chooser: the library, where another
+            // journal, volume or series is chosen (the arm's Documents
+            // chip, now the arm chips are away).
+            Button("Documents") { openWindow(id: "library") }
+                .help("Choose another journal, volume or series")
             // A keyword into the room: it stands as a card, and chosen,
             // draws lines to the papers using it, leaves only them, or
             // gathers them round it.
@@ -3294,6 +3299,9 @@ struct VisionVolumeToolbar: View {
                     .help(on ? "Put away \(zone.title)" : "Show \(zone.title)")
                 }
             }
+            // A journal has no opening pages or appendices to put away:
+            // the zones stay in the bar, dimmed, never hidden.
+            .disabled(!model.isVolumeRoom)
             Button(model.allArticlesSelected ? "Deselect All" : "Select All") {
                 model.volumeBarRequest = .init(action: .selectAll)
             }
@@ -3317,8 +3325,9 @@ struct VisionVolumeToolbar: View {
                 Text("Layout")
             }
             .help("Arrange the selected articles — every article when none is selected — or the whole wall")
-            // The room's Shape: Timeline (time in depth), or the papers
-            // gathered by what they share — only Timeline orders by time.
+            // The room's Shape: Hallway (the room as it first stood, time
+            // in depth), or the papers gathered by what they share — only
+            // Hallway orders by time.
             Menu {
                 ForEach(model.shapeChoices) { choice in
                     Button {
@@ -3336,11 +3345,13 @@ struct VisionVolumeToolbar: View {
             } label: {
                 Text("Shapes")
             }
-            .help("Give the room a shape: Timeline, or the articles gathered by meaning, theme, concept, author or the people they mention")
+            .help("Give the room a shape: Hallway, or the articles gathered by meaning, theme, concept, author or the people they mention")
             Button("Ask") {
                 model.assistantFocusID = nil
                 openWindow(id: "volume-assistant")
             }
+            // The assistant reads a series' index — volumes only, for now.
+            .disabled(!model.isVolumeRoom)
             .help("Ask about the articles of every volume in this series")
         }
         .font(.system(size: 16))

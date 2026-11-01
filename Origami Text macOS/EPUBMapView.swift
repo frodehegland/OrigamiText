@@ -1006,13 +1006,14 @@ struct EPUBMapView: View {
             + deepLinks.values.reduce(0) { $0 + $1.inbound.count + $1.outbound.count }
     }
 
-    /// A volume's room carries its bar; any other room has none. Layout's
-    /// choices are named here, where the arrangements live.
+    /// Every room carries the bar — a volume's, a series', a journal's
+    /// (1 Nov 2026: the Hypertext proceedings get what The Future of Text
+    /// has). Layout's choices are named here, where the arrangements live.
     private func syncVolumeBar() {
-        if model.isVolumeRoom {
+        if model.openJournalVenue != nil {
             // The series' articles, made ready for the assistant now, so
             // Similar and Ask answer at once.
-            model.prepareSeriesIndex()
+            if model.isVolumeRoom { model.prepareSeriesIndex() }
             model.layoutArrangements = WatchLayoutOption.allCases.map {
                 .init(id: $0.rawValue, title: $0.title)
             }
@@ -1214,7 +1215,7 @@ struct EPUBMapView: View {
                                        edges: linesActive ? conceptEdges() : [])
         citedToDeepLines.rebuild(items: linesActive ? items : [])
         // The bar's Shapes follow what the room's record now offers.
-        if model.isVolumeRoom { syncShapeChoices() }
+        syncShapeChoices()
     }
 
     /// Concept cards: a galaxy on a shell around the reader, framing the
@@ -1738,6 +1739,9 @@ struct EPUBMapView: View {
         let from: String
         let title: String
         let ids: Set<String>
+        /// Whether its cards stand in miniature round the star — put
+        /// away when the reader jumps to one, the focus kept.
+        var ringed = true
     }
     /// Each card's measured face, so a star menu can leave the card its
     /// room. A plain box, not observed: it is written while the engine
@@ -1832,13 +1836,46 @@ struct EPUBMapView: View {
 
     /// A paper's pictures as absolute file paths, in its binding's order:
     /// its volume's unpacked folder joined with each listed image.
+    /// A book read whole (a journal's paper) lists its own: every picture
+    /// in its unpacked folder, in name order, leaving out covers, logos
+    /// and anything under 8 KB (rules, icons).
     private func imagePaths(forDocID id: String) -> [String] {
+        guard BoundVolume.split(articleDocID: id) != nil else { return bookImagePaths(forDocID: id) }
         guard let split = BoundVolume.split(articleDocID: id),
               let volume = model.epubRecords.first(where: { $0.id == split.volume }),
               let piece = model.piece(forDocID: id), !piece.images.isEmpty else { return [] }
         let folder = VisionModel.epubsRoot.appendingPathComponent(volume.folder, isDirectory: true)
         return piece.images.map { folder.appendingPathComponent($0).path }
     }
+    private func bookImagePaths(forDocID id: String) -> [String] {
+        guard let record = model.epubRecords.first(where: { $0.id == id }) else { return [] }
+        let folder = VisionModel.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+        let kinds: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic"]
+        guard let walk = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else { return [] }
+        var paths: [String] = []
+        for case let url as URL in walk where kinds.contains(url.pathExtension.lowercased()) {
+            let name = url.lastPathComponent.lowercased()
+            guard !name.contains("cover"), !name.contains("logo"),
+                  (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 >= 8_000 else { continue }
+            paths.append(url.path)
+        }
+        return paths.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// A paper's authors: a volume piece's own bylines, else its shelf
+    /// record's — so Authors and Same author work in a journal's room.
+    private func paperAuthors(_ id: String) -> [String] {
+        if let piece = model.piece(forDocID: id) { return piece.authors }
+        guard let record = model.record(forDocID: id) else { return [] }
+        if let authors = record.authors, !authors.isEmpty { return authors }
+        return record.author
+            .replacingOccurrences(of: " and ", with: ",")
+            .components(separatedBy: CharacterSet(charactersIn: ",;&"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     /// The pose each label took from the real surface it was dropped on —
     /// flush to a wall, flat on a table — by id, as a quaternion's vector.
     /// Kept across launches; pulling a label off clears it.
@@ -2288,6 +2325,7 @@ struct EPUBMapView: View {
                     CitedSpace.depthRange.upperBound)
                 citedSpace.zMapping = citedSpaceFlat ? .flat : .date
                 reload()
+                syncVolumeBar()
                 // A book asked for before the room was up — the app
                 // launched by a file, say — is standing waiting.
                 openRequestedReading()
@@ -2517,11 +2555,12 @@ struct EPUBMapView: View {
         view = view.attachmentAnchorRule { _, item in
             // A chosen paper's star menu rings the card: centred on it,
             // 6 mm behind its face — so the card keeps every pinch, and
-            // the verbs stand clear around its edges.
+            // the verbs stand clear around its edges. The open card has
+            // come forward (openCardLift), and its star with it.
             if item.kind == .article, item.isSelected, item.showsAbstract,
                !item.isGhost, !item.isAside {
                 return AnchorRule(anchor: SIMD3<Float>(0.5, 0.5, 0.5),
-                                  offset: SIMD3<Float>(0, 0, -0.006))
+                                  offset: SIMD3<Float>(0, 0, Self.openCardLift - 0.006))
             }
             // Centre horizontally, sit at the card's bottom edge, then
             // drop clear of it. A single paper's verbs — Open,
@@ -2532,9 +2571,11 @@ struct EPUBMapView: View {
             let gap: Float = item.kind == .article && selectedPaperCount == 1
                 ? 0.008
                 : 0.02
+            // An open citation's verbs come forward with it.
+            let forward: Float = item.isSelected && item.showsAbstract ? Self.openCardLift : 0
             return AnchorRule(
                 anchor: SIMD3<Float>(0.5, 0, 0.5),
-                offset: SIMD3<Float>(0, -gap, 0))
+                offset: SIMD3<Float>(0, -gap, forward))
         }
         view = view.onEndMoveNode { allItems, _, newItems in
             // The next drag works out its own riders afresh.
@@ -2683,6 +2724,14 @@ struct EPUBMapView: View {
         }
         view = view.shouldEnableNode { item in
             guard model.readingDeskDocID == nil else { return false }
+            // A relation lit on a paper's star is a Focus of its own: only
+            // the paper and the cards the relation reaches stand, until it
+            // is tapped again, the star's Un-Focus, or the paper let go.
+            // (Images is the paper's gallery, not a relation: the room
+            // stays whole for it.)
+            if let relationShown, relationShown.title != "Images" {
+                return item.id == relationShown.from || relationShown.ids.contains(item.id)
+            }
             // A concept's own Focus: only that concept and the articles
             // it touches stand; everything unconnected steps away.
             if let focusedConceptID {
@@ -3209,6 +3258,9 @@ struct EPUBMapView: View {
         }
     }
 
+    /// How far an open card stands forward of where it stands closed.
+    static let openCardLift: Float = 0.03
+
     private func cardEntity(for item: EPUBMapItem, texturedPlane: ModelEntity)
         -> (modelEntity: ModelEntity?, collisionShape: ShapeResource) {
         // The cards ARE the chits now: the visible face is a live
@@ -3297,22 +3349,35 @@ struct EPUBMapView: View {
             }
             return entity
         }
+        // An open card stands forward of the wall, toward the reader
+        // (1 Nov 2026): everything seen of it rides one child, moved
+        // `openCardLift` out along the card's facing, while the node —
+        // its saved place, its timeline depth — stays where it is.
+        let lift: Float = item.isSelected && item.showsAbstract && !item.isGhost ? Self.openCardLift : 0
+        let body = Entity()
+        body.position = SIMD3<Float>(0, 0, lift)
+        holder.addChild(body)
         let frontFace = face(back: false)
         let backFace = face(back: true)
-        holder.addChild(frontFace)
-        holder.addChild(backFace)
+        body.addChild(frontFace)
+        body.addChild(backFace)
         holder.components.set(CardFacesComponent(front: frontFace, back: backFace,
                                                  makeBack: .init { faceAttachment(back: true) }))
         // Opening: the card unfolds — it begins folded flat along its
         // middle, like a sheet creased in half, and opens to full height
         // with its star around it, rather than appearing in one frame.
+        // It comes forward as it unfolds.
         if cardSizes.unfolding.remove(item.id) != nil {
             holder.scale = SIMD3<Float>(1, 0.06, 1)
+            body.position = .zero
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(16))
                 var open = holder.transform
                 open.scale = SIMD3<Float>(repeating: 1)
                 holder.move(to: open, relativeTo: holder.parent, duration: 0.38, timingFunction: .easeOut)
+                var forward = body.transform
+                forward.translation = SIMD3<Float>(0, 0, lift)
+                body.move(to: forward, relativeTo: holder, duration: 0.38, timingFunction: .easeOut)
             }
         }
         // A floated passage always faces the reader — billboarded on
@@ -3335,7 +3400,7 @@ struct EPUBMapView: View {
                 materials: [SimpleMaterial(color: UIColor(white: 0.08, alpha: 0.85),
                                            roughness: 0.5, isMetallic: false)])
             depth.position = SIMD3<Float>(0, 0, -0.008)
-            holder.addChild(depth)
+            body.addChild(depth)
         }
 
         // A chosen citation is solid in the room, not only in paint: an
@@ -3351,7 +3416,7 @@ struct EPUBMapView: View {
                 mesh: .generateBox(size: SIMD3<Float>(width, height, 0.002),
                                    cornerRadius: min(0.008 * grown, min(width, height) * 0.45)),
                 materials: [UnlitMaterial(color: UIColor(white: 0.12, alpha: 1))])
-            holder.addChild(slab)
+            body.addChild(slab)
         }
 
         // Set Aside slips fade whole — glass and words together.
@@ -3371,10 +3436,12 @@ struct EPUBMapView: View {
         // The body and the pinch target grow with the face, so the
         // gaze frame still fits a chosen card and its verbs still hang
         // clear beneath it (the attachment anchors on these bounds).
+        // (Forward with the open card's face.)
         let shape = item.isFaded
             ? ShapeResource.generateBox(size: SIMD3<Float>(repeating: 0.0005))
             : ShapeResource.generateBox(size: SIMD3<Float>(
                 extents.x * grown + 0.008, extents.y * grown + 0.008, 0.012))
+                .offsetBy(translation: SIMD3<Float>(0, 0, lift))
         return (holder, shape)
     }
 
@@ -3650,7 +3717,7 @@ struct EPUBMapView: View {
     private func peopleAndVocabularyRelations(for item: EPUBMapItem, standing: Set<String>) -> [StarRelation] {
         var relations: [StarRelation] = []
         let authorsOf: [String: Set<String>] = Dictionary(uniqueKeysWithValues: standing.map { id in
-            (id, Set((model.piece(forDocID: id)?.authors ?? []).map(Self.personKey).filter { !$0.isEmpty }))
+            (id, Set(paperAuthors(id).map(Self.personKey).filter { !$0.isEmpty }))
         })
         let mine = authorsOf[item.id] ?? []
         if !mine.isEmpty {
@@ -3752,7 +3819,7 @@ struct EPUBMapView: View {
         // star (the lines still run to the cards themselves). The
         // pictures have their own gallery, so Images rings nothing.
         let ringed: [EPUBMapItem] = {
-            guard let shown = relationShown, shown.from == item.id, shown.title != "Images",
+            guard let shown = relationShown, shown.ringed, shown.from == item.id, shown.title != "Images",
                   let relation = relations.first(where: { $0.title == shown.title }) else { return [] }
             return relation.ids.compactMap { id in items.first { $0.id == id && !$0.isGhost } }
         }()
@@ -3766,11 +3833,22 @@ struct EPUBMapView: View {
                 // centred on the card whatever unfolds beneath.
                 extras.hidden()
                 HStack(spacing: 10) {
-                    Button(focusMode ? "Un-Focus" : "Focus") {
-                        focusMode.toggle()
-                        armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
-                        armMenu.setChipActive(Self.focusChipID, focusMode)
-                        reload()
+                    // A lit relation already focuses the room on its
+                    // cards: Un-Focus puts it away and the room stands whole.
+                    if let shown = relationShown, shown.title != "Images",
+                       shown.from == item.id || shown.ids.contains(item.id) {
+                        Button("Un-Focus") {
+                            relationShown = nil
+                            reload()
+                        }
+                        .tint(.accentColor)
+                    } else {
+                        Button(focusMode ? "Un-Focus" : "Focus") {
+                            focusMode.toggle()
+                            armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
+                            armMenu.setChipActive(Self.focusChipID, focusMode)
+                            reload()
+                        }
                     }
                     Button("Read") { readCard(item) }
                     Button("Fold") { toggleOpen(item) }
@@ -3863,12 +3941,12 @@ struct EPUBMapView: View {
     /// it, until the card it stands for stands in front of the reader —
     /// along the cards' own facing, on whichever side the reader is
     /// turned to, a little below the eyes — and that card opens. The
-    /// ring and its lines are put away: the reader is somewhere new.
-    /// Undo View carries the space back.
+    /// ring is put away; the relation's focus and lines stay, so the
+    /// reader moves among the same cards (Un-Focus on either star ends
+    /// it). Undo View carries the space back.
     private func jumpToCard(_ id: String) {
         guard let target = items.first(where: { $0.id == id }), let at = target.position else { return }
-        relationShown = nil
-        galleryOf = nil
+        relationShown?.ringed = false
         // A card stuck to a real surface keeps its wall when the space
         // moves, so there is no carrying it to the reader; it still opens.
         if liftedCards[id]?.stuck == nil {
@@ -3917,9 +3995,10 @@ struct EPUBMapView: View {
         .frame(width: 210, alignment: alignment == .trailing ? .trailing : .leading)
     }
 
-    /// A relation tapped: lines run from the paper to every card it
-    /// reaches, and nothing else in the room changes — results are shown
-    /// by connection only, never in a panel and never by hiding — and in
+    /// A relation tapped: the room focuses on it — every other card
+    /// steps away (`shouldEnableNode`, 1 Nov 2026) — and lines run from
+    /// the paper to every card it reaches. Results are shown by
+    /// connection, never in a panel — and in
     /// miniature on a ring round the star, each a way to jump to its
     /// card (`miniatureRing`, 1 Nov 2026). Cites
     /// raises the paper's citation cards first if they are down. A second
@@ -4359,7 +4438,8 @@ struct EPUBMapView: View {
 
         var title: String {
             switch self {
-            case .timeline: "Timeline"
+            // The room as it first stood (1 Nov 2026: Timeline renamed).
+            case .timeline: "Hallway"
             case .meaning: "Meaning"
             case .themes: "Themes"
             case .concepts: "Concepts"
@@ -4412,16 +4492,20 @@ struct EPUBMapView: View {
     private func syncShapeChoices() {
         let papers = items.filter { $0.kind == .article && !$0.isGhost }.map(\.id)
         let corpus = model.roomCorpus(for: papers)?.corpus
+        // Meaning and Constellation fall back on Apple's sentence
+        // embedding, so they stand in any room, record or none.
         var available: Set<String> = [RoomShape.timeline.rawValue, RoomShape.authors.rawValue,
-                                      RoomShape.meaning.rawValue, RoomShape.images.rawValue]
+                                      RoomShape.meaning.rawValue, RoomShape.images.rawValue,
+                                      RoomShape.constellation.rawValue]
         if !(corpus?.themes ?? []).isEmpty { available.insert(RoomShape.themes.rawValue) }
         if !(corpus?.terms ?? []).isEmpty { available.insert(RoomShape.concepts.rawValue) }
         if !(corpus?.people ?? []).isEmpty { available.insert(RoomShape.people.rawValue) }
-        if corpus?.meaning != nil || model.seriesIndex != nil { available.insert(RoomShape.constellation.rawValue) }
+        // The corpus record is built for bound volumes; a journal's room
+        // says so rather than sending the reader to the Mac for nothing.
+        let wanting = model.isVolumeRoom ? " — Build Corpus Relations on the Mac" : " — not yet for journals"
         model.shapeChoices = RoomShape.allCases.map { shape in
             let waiting = !available.contains(shape.rawValue)
-            return .init(id: shape.rawValue,
-                         title: shape.title + (waiting ? " — Build Corpus Relations on the Mac" : ""))
+            return .init(id: shape.rawValue, title: shape.title + (waiting ? wanting : ""))
         }
         if model.shapeAvailable != available { model.shapeAvailable = available }
         let current = roomShape?.shape ?? RoomShape.timeline.rawValue
@@ -4495,7 +4579,7 @@ struct EPUBMapView: View {
             var byAuthor: [String: Set<String>] = [:]
             var forms: [String: [String: Int]] = [:]
             for item in targets {
-                for name in model.piece(forDocID: item.id)?.authors ?? [] {
+                for name in paperAuthors(item.id) {
                     let words = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
                         .split(separator: " ")
                     guard let first = words.first, let last = words.last else { continue }

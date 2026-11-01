@@ -1483,10 +1483,10 @@ Layout's ladder on the right arm gains a fifth rung, **Experimental** (`LayoutFa
 **A chosen keyword's verbs**, a row under the card at half scale, each lit while on (`keywordModes[id]`):
 - **Lines**: `conceptEdges` adds an edge from the keyword to each match, drawn by `conceptConnectionLines`. Other concepts' edges no longer include keyword cards.
 - **Only**: sets the room's concept Focus (`focusedConceptID` = the keyword, `focusedConceptArticleIDs` = its matches), so only the keyword and its papers stand.
-- **Gather** (`gatherPapers`): the matches, most-cited first, go into a small wall of ceil(√n × 1.4) columns. It is centred under the card, 12 cm below it and 8 cm behind, at wall pitch, written with `applyWatchPositions3D`. The gathered papers are also selected, set directly rather than through the tap, so their citation walls do not all rise at once; Layout and the Shapes then act on them. That frees the room from the timeline; Shapes ▸ Timeline or Undo View sends the papers home.
+- **Gather** (`gatherPapers`): the matches, most-cited first, go into a small wall of ceil(√n × 1.4) columns. It is centred under the card, 12 cm below it and 8 cm behind, at wall pitch, written with `applyWatchPositions3D`. The gathered papers are also selected, set directly rather than through the tap, so their citation walls do not all rise at once; Layout and the Shapes then act on them. That frees the room from the timeline; Shapes ▸ Hallway or Undo View sends the papers home.
 - **Remove**: ends the keyword's mode and Focus, then calls `removeSpaceKeyword`.
 
-The same verb again turns it off. Letting the card go ends Lines and Only. A Gather's moved papers stay where they are; **Shapes ▸ Timeline** sends them home (Wall no longer does — see 5.23).
+The same verb again turns it off. Letting the card go ends Lines and Only. A Gather's moved papers stay where they are; **Shapes ▸ Hallway** sends them home (Wall no longer does — see 5.23).
 
 ### 5.23 Reading the corpus, and the room's Shapes (1 November 2026)
 
@@ -1528,8 +1528,8 @@ The same verb again turns it off. Letting the card go ends Lines and Only. A Gat
 
 `CorpusRelations.sphericalKMeans` is the one copy; the Map's own was removed.
 
-**Shapes** (visionOS): the volume bar has a **Shapes** menu right of Layout, listing every `RoomShape`. A Shape whose data the room's record lacks is dimmed, never hidden, and titled "… — Build Corpus Relations on the Mac". The current Shape wears a checkmark. Each runs through `volumeBarRequest .shape(id)`, then `runShape`.
-- **Timeline**: the only Shape that orders by time. Every standing paper's `placed` is cleared and `setTimeFree(false)` is called, so each paper returns to its volume or year plane seat and the labels go. Undo View restores.
+**Shapes** (visionOS): the volume bar has a **Shapes** menu right of Layout, listing every `RoomShape`. A Shape whose data the room's record lacks is dimmed, never hidden, and titled "… — Build Corpus Relations on the Mac" (in a journal's room, "… — not yet for journals": the corpus record is built for bound volumes only). Hallway, Meaning, Authors, Images and Constellation always stand; Meaning and Constellation fall back on `NLEmbedding.sentenceEmbedding` where no series index or record knows the papers. The current Shape wears a checkmark. Each runs through `volumeBarRequest .shape(id)`, then `runShape`.
+- **Hallway** (`RoomShape.timeline`; titled Timeline until 1 Nov 2026): the only Shape that orders by time. Every standing paper's `placed` is cleared and `setTimeFree(false)` is called, so each paper returns to its volume or year plane seat and the labels go. Undo View restores.
 - **Meaning, Themes, Concepts, Authors, People Mentioned** (`shapeGroups`, then `coveringGroups`): greedy cover, up to 12 groups. Each takes the set reaching the most unplaced papers, so every paper stands in one group; a group needs 3 or more. The left-overs gather as "Elsewhere", "Other themes", "No shared concept", "Single contributions" or "Names no one".
   - Meaning uses the record's groups, else local k-means named by a member's first keyword.
   - Authors merge name forms by first and last name with accents folded ("Frode Alexander Hegland" = "Frode Hegland"), and are named by the commonest form.
@@ -1602,6 +1602,12 @@ A paper or citation card has two states beyond standing:
   - **Shares concepts** (outward): papers sharing two or more of the books' glossary terms.
   - The rankings take the eight most-shared first. All but Same author read the room's corpus record (`roomCorpus`) and wait for the Mac's Build Corpus Relations.
 
+- **Forward when open** (`openCardLift`, 3 cm):
+  - On an open card (chosen and unfolded, paper or citation), everything seen of it rides one child entity (`body`): the faces, a citation's slab and a lifted card's extrusion. That child stands 3 cm out along the card's facing.
+  - The collision box is offset with it (`offsetBy`), and the star's or the citation's verbs' anchor offset gains the same 3 cm.
+  - The node itself (its saved place and its timeline depth) does not move.
+  - The child glides forward during the unfold. On fold, the rebuilt card stands back at once.
+
 ### 5.26 Pictures in the room (visionOS, 1 November 2026)
 
 **Source.** `BoundVolume.Article.images` is the binding's `resources.images`, joined to the package directory as hrefs are (e.g. `content/images/image1.png`). FoT has 241 images in 85 articles, all PNG, 69 MB.
@@ -1637,6 +1643,17 @@ A series room stands about 400 cards. Four measures keep each one cheap:
    - `CardFaceTurner.turn` sets the component the first time the reader is behind the card. Most cards are never seen from behind, so most never pay for a second live attachment.
 4. **No live blur on papers and citations.** Their faces fill `Color(white: 0.1).opacity(0.88)` (a chosen card is solid `white: 0.12`), and `glassBackgroundEffect` is `.never` for `.article`, `.cited` and `.citedDeep`. Labels, concepts and notes keep their own looks.
 
+### 5.30 The bar in every room (visionOS, 1 November 2026)
+
+Every room now carries the bar: journals such as the Hypertext proceedings as well as volumes and series.
+- **Opening it:** `syncVolumeBar` opens `volume-toolbar` whenever `openJournalVenue` is set, both on venue change and on the Hallway's `onAppear`. `prepareSeriesIndex` still runs for volume rooms only.
+- **Documents** (`openWindow(id: "library")`), which was the arm's Documents chip, now leads the bar. It is the way back to the document chooser.
+- **Dimmed in a journal's room**, never hidden: the zone words and **Ask**, which reads a series index.
+- **Journal fallbacks:**
+  - `paperAuthors(_:)`: a piece's bylines, else the shelf record's `authors`, else its `author` split on `,` `;` `&` and " and ". These feed Authors and Same author.
+  - `bookImagePaths(forDocID:)`: for a book read whole, every png/jpg/gif/webp/heic in its unpacked folder, in name order, skipping names containing cover or logo and files under 8 KB. These feed the thumbnails, the gallery and Images.
+- **Still volume-only:** the corpus record (Themes, Concepts, People Mentioned; Mentions/Mentioned by/Names same people/Same themes/Shares concepts; Shares Sources, recorded Similar and stances), the series index's Similar, and Ask.
+
 ### 5.29 Miniatures on the star, and jumping to a card (visionOS, 1 November 2026)
 
 When a relation on an open paper's star is lit (Similar to, Mentioned by, Cites…), its cards also stand in miniature on a ring round the star. The lines to the real cards still run.
@@ -1651,6 +1668,12 @@ When a relation on an open paper's star is lit (Similar to, Mentioned by, Cites�
   - The whole space is carried (`carrySpace`, so Undo View takes it back) until the card stands 0.75 m (`jumpDistance`) in front of the eyes and 6 cm below them. It lands along the cards' own facing axis (Z), on the side the reader is turned toward. Without a head pose, the eyes are taken as (0, walk height, 0).
   - The card then opens (`toggleOpen`) unless it is open already.
   - A card stuck to a real surface does not travel with the space. It is not carried, but it still opens.
+- **A lit relation is a Focus** (`shouldEnableNode`, checked before every other focus):
+  - Only the paper and the cards the relation reaches stand; every other card, citation and label steps away.
+  - Images is exempt, because it is the gallery, not a relation.
+  - While a relation focus stands, the star of the paper, or of any card in the relation, shows a lit **Un-Focus** in place of Focus.
+  - The focus ends when the same relation is tapped again, on Un-Focus, or when the paper is let go (Close or Hide). Tapping another relation moves the focus to that one.
+  - A jump keeps the focus and the lines, and puts only the ring away (`RelationShown.ringed = false`). The reader moves among the same cards.
 
 ### 5.24 A reading panel faces the reader while carried (visionOS, 1 November 2026)
 
