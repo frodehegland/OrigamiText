@@ -439,7 +439,7 @@ register click listeners in the capture phase and call
 | 15 | `quoteLinkScript` | end | Decorates `origamitext://` links with a `[]` transclusion control. Exposes `origamiApplyQuoteLinks`, `origamiMarkCitedHere`, `origamiInsertTransclusion`. |
 | 16 | `progressScript` | end | Posts `progress` (400 ms throttle). Exposes `origamiScrollToFraction`. |
 | 17 | `readAloudScript` | end | Exposes `origamiReadAloudUnits`, `origamiReadAloudMark`, `origamiOverlayMark` |
-| 18 | `greyContrastScript` (not for fixed layout) | end | The book's paper and ink give way to the theme's. Walks `body *` in document order, skipping media (`img`, `svg`, `video`, `canvas`, `picture`, `iframe`, `object`, `embed`), anything inside `svg`/`math`, and the reader's own furniture (ids starting `origami`, classes starting `ot-` or `origami`). A neutral (channel spread ≤ 16) background with alpha ≥ 0.5 becomes `transparent !important` (`pre` gets `rgba(127,127,127,0.12)` instead); a coloured background is kept, and that element and its descendants keep their ink. Otherwise a neutral ink that is near-black (max channel ≤ 0x33), near-white (min channel ≥ 0xE0), or under WCAG contrast 3 against the body background gets `color: inherit !important`. Coloured inks, fonts, sizes and spacing are never touched. |
+| 18 | `greyContrastScript` (not for fixed layout) | end | The book's paper and ink give way to the theme's. Walks `body *` in document order, skipping media (`img`, `svg`, `video`, `canvas`, `picture`, `iframe`, `object`, `embed`), anything inside `svg`/`math`, and the reader's own furniture (ids starting `origami`, classes starting `ot-` or `origami`). A neutral (channel spread ≤ 16) background with alpha ≥ 0.5 becomes `transparent !important` (`pre` gets `rgba(127,127,127,0.12)` instead); a coloured background is kept, and that element and its descendants keep their ink. Otherwise a neutral ink that is near-black (max channel ≤ 0x33), near-white (min channel ≥ 0xE0), or under WCAG contrast 3 against the body background gets `color: inherit !important`. Coloured inks, fonts, sizes and spacing are never touched. The walk is a function, `pass`, run at once; the first run also registers, once per page (`window.__origamiContrastWatch`), a `matchMedia('(prefers-color-scheme: dark)')` change listener that runs `pass` again two animation frames later. A system light/dark switch changes no theme setting, so the Swift side never re-injects, but a grey kept as readable on the light page must be judged again on the dark one. |
 
 **Live changes without reloading.** When the CSS, note style or popup
 setting changes, `updateNSView` removes all user scripts, reinstalls
@@ -1299,7 +1299,7 @@ Every volume of one series (binding `series.id`, e.g. The Future of Text Vols 1�
 
 **Layout** (`journalItems`, `EPUBMapView.swift`):
 - Each volume is a plane: its articles form a wall with the usual columns and top, its opening pages stand to the left and its appendices to the right.
-- The newest volume is nearest, at z −1.2. Each older one stands `seriesPlaneGap` (0.45 m) deeper, so the progression reads into depth.
+- The newest volume is nearest, at z −1.2. Each older one stands `seriesPlaneGap` (0.9 m) deeper, so the progression reads into depth.
 - The plane owns the depth, as the year does in other rooms: X/Y keep where the hand left them.
 - Cards read "author · Vol n · year".
 
@@ -1331,6 +1331,224 @@ Defined Concepts are re-checked on every pass. Each live library concept, under 
 **The store.** `ArticleMetadata` (`EPUBShelf.swift`, shared) holds `{format "origami-article-metadata", version 1, modified, volumes: {bookFolder: {workID: Entry}}}`. Each entry has title, abstract, abstractSource ("book", "summaries", "summaries · Gen:AI", "ai · <model>"), keywords, keywordsSource (likewise, or "terms"), concepts [{id, name}], textHash, made and note. It is written as `origami-article-metadata.json` beside the shelf (`epubsRoot`) and in the community folder, every 8 articles and at the end. The reads and writes are coordinated. Nothing is written into the EPUBs.
 
 **The headset.** `adoptStanding` reads the file whenever its modification date changes. `VisionModel.boundVolume(for:)` applies `.enriched(with:)`, which supplies an abstract or keywords only where the binding has none, and the Defined Concepts always (`Article.definedConcepts`, `abstractSource`). A newer file forgets every cached binding, bumps `volumeStamp` and rebuilds the series index. Card faces show the abstract ("(AI)" when AI-made), its keywords and its Defined Concepts. `SeriesIndex` likeness uses the concepts. `briefing` adds "[keywords: …] [concepts: …]". The Mac's own `boundVolume(for:)` is not enriched, so the Binder never carries AI abstracts into a new binding.
+
+### 5.19 Corpus relations: who cites what (1 November 2026)
+
+This is the first part of CORPUS-RELATIONS-PLAN.md, and it holds facts only. A bound volume's row menu has **Build Corpus Relations…**. For an unbound book it is dimmed, never hidden. It opens the window `corpusRelations` (`CorpusRelationsView`, `CorpusRelationsBuild.swift`, macOS only).
+
+**The window.**
+- One row per series, or per lone volume, with Build / Build Again.
+- The pass's findings, and Show Record in Finder.
+- On the right, each corpus's most widely cited outside works.
+
+**The pass.** `CorpusRelations.build(name:volumes:known:)` lives in `EPUBShelf.swift`, which is shared. It reads the volumes in series order. For each volume it reads `references.bib`, plus `visual-meta.json`'s `endnotes`, `citations` and `document.binding.works`.
+
+An entry belongs to the first volume that holds its id. FoT's volumes each carry every endnote of the volume before (Vol 6 holds 830, and 789 of them are earlier volumes'), and Vol 3 repeats 125 of Vol 2's bibliography entries. A later volume claims an entry only if it traces the entry to an article and the first volume did not.
+
+Within its volume, an entry is traced in this order:
+1. by the binding's own lists of each work's references and notes (`attributedBy: "binding"`);
+2. by the file it is placed in, when exactly one work stands in that file (`"anchor"`). For a bibliography entry the file comes from the `citations` href; for a note, from its `anchor`. A note left at the back says nothing;
+3. otherwise it stands for the volume (`from: "volume:<folder>"`).
+
+What becomes a work:
+- **Bibliography entries.** One with no title, DOI or URL is a filed quotation and is skipped.
+- **Endnotes that carry an address or a DOI.** The rest are asides. Note text has its HTML entities decoded.
+
+Work keys are `doi:<doi>` (the first `10.…` anywhere in the doi or url field, since some records double "https://doi.org/"), else `url:<normalised address>`, else `title:<folded title>` when it is at least 12 characters.
+
+A work is the corpus's own when its folded title equals a piece's title (`inCorpus: "piece:<key>"`), or when it names the series and a volume number in digits, roman numerals, "Vol N" or pipes (`volume:<folder>`, `volumeNumber(inTitle:series:)`). A piece citing itself, or a volume citing itself, is dropped. A piece cites a given work only once.
+
+`known` is the Mac's master list (`origami-cited-works.json`), matched by DOI and then by title key. It supplies the year, venue, authors and DOI where the volume gave none, the registry's title for endnote-listed works, the world citation count (`live.citedBy`), and `retracted` (OpenAlex).
+
+The pass also computes:
+- **Shares sources** (bibliographic coupling): the top 8 per piece. Each shared work counts log(1 + pieces ÷ its citing pieces).
+- **Canon**: the top 40 outside works with at least 2 citing pieces or volumes.
+
+**The file.** `origami-corpus-relations.json` has this shape:
+
+```
+{ format: "origami-corpus-relations", version: 1, modified,
+  publisher: {name, role},   // the first volume's binding compiler, "editor and publisher"
+  licence: "CC-BY-4.0",   // Creative Commons Attribution 4.0, Frode's choice
+  corpora: { seriesID: {
+      name, volumes[],
+      pieces { "folder#work": {folder, work, title, authors, volume} },
+      works { key: {title, authors, year, venue, doi, url, listedAs, inCorpus,
+                    citedByPieces, citedByVolumes, citedByWorld, retracted} },
+      citations [ {from, to, attributedBy, entry} ],
+      sharesSources { piece: [ {piece, shared, score} ] },
+      canon [],
+      findings []
+  } } }
+```
+
+The Mac writes it beside the shelf and publishes it to the community folder. Reads and writes are coordinated, and the encoding is pretty-printed with sorted keys. It is published as the editor's optional metadata and is never written into the EPUBs.
+
+FoT Vols 1–6 (1 Nov) give 1,156 citations of 1,085 works:
+- 464 are traced to their article;
+- 692 stand for their volume (275 of them are Vol 1's book-level bibliography);
+- 3 cite the corpus itself.
+
+The file is about 880 KB.
+
+**The headset.**
+- `adoptStanding` reads the file (`CorpusRelations.readShared`).
+- `VisionModel.adoptCorpusRelations` indexes piece key → corpus and bumps `volumeStamp`.
+- `corpusCitations(forDocID:)` returns an article's traced works, resolving the corpus's own pieces to their ids in the room.
+- In `EPUBMapView.journalItems`, an article the record knows takes its citations from it, as `cited:<work key>` cards with title, up to 3 authors ("et al." beyond) and year. A cited corpus piece standing in the room connects to its own card.
+- An article the record does not know keeps its own `doc.references`, as before.
+
+### 5.20 A chosen paper's star menu (visionOS, 1 November 2026)
+
+A chosen article card (not a ghost, not set aside) wears a star menu instead of the row of verbs under it (`paperStar(for:)` in `EPUBMapView`).
+
+**Placement.** Its attachment anchor is `AnchorRule(anchor: (0.5, 0.5, 0.5), offset: (0, 0, -0.006))`: centred on the card, 6 mm behind its face. The card keeps its pinch, and the verbs stand clear of its edges.
+
+**Size.** The view is laid out at twice size and drawn with `.scaleEffect(0.5)`, as the old verbs were. The card's gap is (card size × 1.2 chosen growth) × 1360 pt/m × 2, plus 28 × 20 pt.
+- The card size comes from `cardSizes.base[id]`: the width and height in metres of the unchosen face. `cardEntity` writes it into a plain, unobserved box.
+- The fallback is `nodeMaxWidth / crisp / 1000` × 0.07 m × `documentCardMagnify`.
+
+**Layout, top to bottom:**
+1. A hidden copy of the lower verbs, which keeps the star centred on the card whatever unfolds beneath it.
+2. **Focus / Un-Focus.** This is the room's `focusMode`, kept in step with the wrist chip's title and active state.
+3. **Open**, the double tap.
+4. The relations, either side of the card's gap. Outward relations (Cites, Shares Sources, Similar) stand on the left; inward ones (Cited by, and the stances: Agrees, Contradicts, Extends…) on the right. Each column is 210 pt wide.
+5. **Close** (the deselect tap) and **Hide** (deselect, then `toggleSetAside`).
+6. The card's other verbs (`onePaperButtons`, now without Open): Abstract, Lift, Transpoint, Whole Volume, Whole Series, Kind. (The assistant's Similar list left the card: a card's results show only as lines to other cards.) With several papers chosen, Layout and its arrangements stand here too.
+
+**The relations** (`starRelations(for:)`). Only relations reaching at least one standing card are offered. Each shows its count, and a small "AI" when a model inferred it.
+- **Cites**: `item.citedIDs`. Tapping raises the citation cards if they are down (`raisedArticleIDs`), then draws its lines like any other relation. Selecting still raises them, as before.
+- **Cited by**: articles whose `citedIDs` hold this one.
+- **From the corpus record** (`VisionModel.corpusRelated(forDocID:)`): Shares Sources (fact), Similar (`Corpus.similar`, AI), and every stance type (`Corpus.stances`). Stances read both ways and leave out the editor's rejected ones.
+- **Similar from the series index**: until the record holds Similar, `seriesIndex.similar(to:limit: 6)` stands in, marked AI.
+
+Tapping a relation sets `relationShown {from, title, ids}`, and `conceptEdges` adds a line from the card to each of those cards (drawn by `conceptConnectionLines`). Nothing else in the room changes: **a card's results are shown only by connection — never in a panel, never by hiding** (Frode, 1 Nov 2026). A second tap, Close, Hide, or deselecting the card takes the lines away.
+
+**Schema additions** (optional, absent until later passes):
+- `Corpus.similar: [piece: [Neighbour]]`.
+- `Corpus.stances: [Stance {from, to, type (CiTO), point, source, review}]`.
+- `Stance.title` maps types to words: agreesWith/supports → Agrees; disagreesWith/disputes → Contradicts; extends; respondsTo → Responds to; questions.
+- `isAI` is true when the source starts "llm" and the editor has not confirmed it.
+
+### 5.21 Experimental layouts: Cluster (visionOS, 1 November 2026)
+
+Layout's ladder on the right arm gains a fifth rung, **Experimental** (`LayoutFan.experimental`). Its fan holds `ExperimentalLayout` options (chip ids `map.arm.layout.experimental.<raw>`). With several papers chosen, the star menu's Layout list shows them too, in a row headed "Experimental". Like Align, Distribute and Sort, they act on the chosen papers, or on every standing paper when none is chosen (`watchLayoutTargets`).
+
+**Cluster** (`runClusterLayout`) groups papers by what they are about, with no regard for the timeline.
+
+**Meaning** (`clusterVectors`):
+- The series index's entry vector where the room has one; otherwise `NLEmbedding.sentenceEmbedding(for: .english)` of the title plus the first 600 characters of the abstract.
+- Vectors are made unit length. Only the most common dimension is kept, since vectors from two sources can't be compared.
+
+**Groups** (`sphericalKMeans`, a nonisolated static):
+- k = √(n/2) rounded, held between 2 and 10.
+- Farthest-first deterministic seeds: the vector least like the mean, then each next the one least like any seed so far.
+- Cosine assignment and re-normalised means, for up to 25 rounds.
+- Each member keeps its cosine to its group's centre (`fit`).
+
+**Placement:**
+- Groups are sorted largest first. The largest stands straight ahead; the rest alternate right and left along an arc around the room origin (`spaceShift + documentsShift`), with 40 cm of air between groups.
+- Radius = max(2.0 m, the groups' total width ÷ 2.6).
+- Each group is a small wall of ceil(√m × 1.3) columns, centred at 1.45 m high. Its across runs along the arc's tangent.
+- Each paper stands nearer the reader by (fit − the group's mean fit) × 0.6, held within ±10 cm.
+- Cards are not turned; they face the room's front as everywhere else.
+
+**Applying it** (`applyWatchPositions3D`):
+- Writes x, y and z (x within ±5 m of the shift, y within 0.95…2.2).
+- Snapshots positions for Undo, records the room's previous state in `watchUndoTimeFree`, frees the room, then calls `keepPlacements` and reloads.
+
+**Free of the timeline:**
+- `@AppStorage("mapTimeFreeVenues")` holds one venue per line.
+- While a room is free, `journalItems` leaves every paper's z as placed instead of reclaiming its year or volume plane (articles and side columns alike). `articleYearZ` is emptied, so drags move in depth too.
+- **Wall** gives the timeline back (`setTimeFree(false)`).
+- **Undo View** restores the previous state with the places.
+- The 2D arrangements leave the state as it is.
+
+### 5.22 Keywords in the room (visionOS, 1 November 2026)
+
+**Adding one.** The volume bar (`VisionVolumeToolbar`, a utility-panel window sized to its contents) leads with a **Keyword** text field: `text.badge.plus`, 220 pt wide. Its keyboard's microphone takes dictation. On submit it calls `VisionModel.addSpaceKeyword`:
+- Trims whitespace and punctuation, so a spoken keyword loses dictation's full stop.
+- Ignores a duplicate regardless of case.
+- Stores into `spaceKeywords: [venue: [String]]`, persisted in UserDefaults under `"spaceKeywordsByVenue"`.
+
+`roomKeywords` is the open venue's list, and the Hallway reloads on any change to it.
+
+**The cards.** Each keyword stands as a `.concept` item with id `keyword:<lowercased>`.
+- Seed: x = (index mod 5 − 2) × 0.28, y = 1.9 + 0.1 × (index ÷ 5), z = −0.85, plus `spaceShift`. After a drag it stands where it was left (`placed`).
+- Byline: "Keyword · N papers".
+- Select ▸ Concepts leaves keyword cards out.
+
+**Matching** (`keywordMatches`): a case-insensitive whole-word regex (`\b…\b`) over each standing article's title and card abstract (which carries its keywords), then its document's paragraphs. Results are cached per keyword in `keywordMatchCache`, which is cleared, along with `keywordModes`, when the venue changes.
+
+**A chosen keyword's verbs**, a row under the card at half scale, each lit while on (`keywordModes[id]`):
+- **Lines**: `conceptEdges` adds an edge from the keyword to each match, drawn by `conceptConnectionLines`. Other concepts' edges no longer include keyword cards.
+- **Only**: sets the room's concept Focus (`focusedConceptID` = the keyword, `focusedConceptArticleIDs` = its matches), so only the keyword and its papers stand.
+- **Gather** (`gatherPapers`): the matches, most-cited first, go into a small wall of ceil(√n × 1.4) columns. It is centred under the card, 12 cm below it and 8 cm behind, at wall pitch, written with `applyWatchPositions3D`. That frees the room from the timeline; Wall or Undo View sends the papers home.
+- **Remove**: ends the keyword's mode and Focus, then calls `removeSpaceKeyword`.
+
+The same verb again turns it off. Letting the card go ends Lines and Only. A Gather's moved papers stay where they are; **Shapes ▸ Timeline** sends them home (Wall no longer does — see 5.23).
+
+### 5.23 Reading the corpus, and the room's Shapes (1 November 2026)
+
+**The reading** (the Mac's Build Corpus Relations, after the citation facts; `CorpusRelationsBuilder.read(into:sources:)`):
+- **Gathered per piece:** title, authors, keywords (the binding's plus `ArticleMetadata`'s), the whole text from `blocks`, and an embedding input. The input is the title, the abstract and the first 2000 characters of the body; qwen3-embedding:8b takes 1.3 s at 3000 characters and 7 s at 6000. The books' glossaries come from `visual-meta.json` `concepts`.
+- **People** (`peopleMentioned`):
+  - Names the corpus knows are matched whole and case-sensitively: the contributors, plus the authors of its cited works, two or more words long and at least 6 characters. A surname search screens out absent names before the full match.
+  - Apple's `NLTagger` `.nameType` names are added. The simulator's tagger finds none; the Mac's may.
+  - A piece's own authors aren't counted as its mentions.
+  - Short forms fold into the full name; a shared surname with the same first initial joins the most used form.
+  - Kept: names in 2+ pieces, at least two words. `isContributor` is set too.
+- **Glossary** (`glossaryTerms`): one term per lower-cased name. Dropped:
+  - everyday words (`everydayTerms`);
+  - people (the contributors and the found names);
+  - single lower-case words;
+  - terms used by more than 30% of pieces.
+
+  Acronyms match case-sensitively. Kept: terms in 2+ pieces.
+- **Themes** (`keywordThemes`):
+  - Keywords are normalised (`normalizedKeyword`): lower case, abbreviations spelled out (vr, xr, ar, ai, hci, llm…), a last word's plain plural dropped with exceptions.
+  - With vectors, it is greedy leader clustering, most-used first, at cosine ≥ 0.85. 0.75 and 0.8 over-merge: "text" swallowed 92 pieces.
+  - Kept: themes carried by 2+ pieces. Without the model, themes merge by spelling only.
+- **Meaning** (`meaningMap`, only when `OrigamiLLM.hasEmbeddingModel()`): the pieces are embedded through `OrigamiLLM.embed` in batches of 8. Vectors are cached per model in Caches/CorpusVectors/<model>.json, keyed by the SHA-256 of the text, so a rebuild embeds only what changed. From the vectors:
+  - each piece's 8 nearest by cosine (`Corpus.similar`);
+  - spherical k-means groups, √(n/2) between 2 and 12. Each is named by the theme scoring highest by Σ 1/√(theme size) over its members, unused names first.
+  - 3D coordinates from PCA through the Gram matrix (`principalCoordinates`, cblas/vDSP), each axis scaled to ±1.
+- **On FoT (simulator trial, 1 Nov):**
+  - keyword themes at 0.85: 254 themes, in 361 pieces;
+  - glossary: 145 terms;
+  - people: 91 (Engelbart 47, Nelson 43…);
+  - embedding: 0.8 s a piece; a 74-piece sample made 6 sensible groups.
+
+**Schema additions** (`Corpus`, all optional):
+- `themes [Theme {id, label, keywords, pieces}]`;
+- `terms [Term {name, definition, pieces}]`;
+- `people [Person {name, pieces, mentions, isContributor}]`;
+- `meaning Meaning {model, groups [{id, label, pieces}], coordinates {piece: [x, y, z]}}`;
+- `similar`, now filled.
+
+`CorpusRelations.sphericalKMeans` is the one copy; the Map's own was removed.
+
+**Shapes** (visionOS): the volume bar has a **Shapes** menu right of Layout, listing every `RoomShape`. A Shape whose data the room's record lacks is dimmed, never hidden, and titled "… — Build Corpus Relations on the Mac". The current Shape wears a checkmark. Each runs through `volumeBarRequest .shape(id)`, then `runShape`.
+- **Timeline**: the only Shape that orders by time. Every standing paper's `placed` is cleared and `setTimeFree(false)` is called, so each paper returns to its volume or year plane seat and the labels go. Undo View restores.
+- **Meaning, Themes, Concepts, Authors, People Mentioned** (`shapeGroups`, then `coveringGroups`): greedy cover, up to 12 groups. Each takes the set reaching the most unplaced papers, so every paper stands in one group; a group needs 3 or more. The left-overs gather as "Elsewhere", "Other themes", "No shared concept", "Single contributions" or "Names no one".
+  - Meaning uses the record's groups, else local k-means named by a member's first keyword.
+  - Authors merge name forms by first and last name with accents folded ("Frode Alexander Hegland" = "Frode Hegland"), and are named by the commonest form.
+- **Placement** (`placeGroups`):
+  - Groups are sorted by size, the largest ahead, alternating along the arc (as 5.21's Cluster, which now runs Meaning).
+  - The left-overs stand as a broad, low field behind the arc: radius + 1.4 m, 1.15 m high, ceil(√n × 2.2) columns.
+  - Each group, and the field, has a **label card** (`shape:<shape>.<n>`, a `.concept` item, byline "N papers") 13 cm above its top row. Choosing a label draws a line to every member (`conceptEdges`); labels carry no verbs.
+  - The Shape and its labels are stored per venue in `@AppStorage("mapShapesByVenue")` (JSON `{venue: {shape, labels}}`).
+- **Constellation**: each paper is placed at x = c₀ × 2.2, y = 1.45 + c₁ × 0.5, z = −2.0 + c₂ × 1.2 (plus origin), from the record's meaning coordinates. Without them, PCA runs over the series index's vectors. Meaning group labels stand at their members' centroid, 18 cm up.
+
+**Wall** no longer restores time. In a time-free room it is a rectangle on one plane, z = −1.2.
+
+### 5.24 A reading panel faces the reader while carried (visionOS, 1 November 2026)
+
+A reading panel is dragged by its grab bar (`ReaderHandleComponent`) through the Hallway's simultaneous `DragGesture`. Each change moves the panel root and, when `faceTurner.headPose()` gives a head pose, calls `ReaderPanels.turn(docID:toward:)` with the head's position.
+- The turn is about the vertical only: `yaw(facing:)` of head minus panel, flattened to the floor.
+- It is stored as the panel's own facing (`yaws[docID]`), composed with the panel's current lean: upright 0, tilted −π/4, flat −π/2.
+- On release nothing more happens, so the panel keeps the angle it last had, and a later pose change composes with that facing.
+- Without a head pose (the simulator) the panel keeps its facing while it moves.
 
 
 
@@ -1403,6 +1621,8 @@ An Origami EPUB that embeds them shows them through its own `@font-face`
 only under Publisher's Styles; otherwise the reader's chosen family wins.
 
 ---
+
+**Light and dark on the Mac (1 Nov 2026).** The native reading views draw each paragraph in an AppKit text view (`SelectableParagraph` in `OrigamiReadingView.swift`). It replaces its text storage only when the converted text compares unequal, so as to keep a live selection. System colours, such as the label colour a paragraph without a theme ink wears, compare equal across light and dark, so after a system switch the view kept its old ink. The paragraph now reads `@Environment(\.colorScheme)` and keeps the last scheme in its coordinator. On a change it lays the text in afresh and marks the view for display. The web reader follows by itself through the contrast pass's media listener (see the user-script table above).
 
 ## 7. Platform notes and portable equivalents
 

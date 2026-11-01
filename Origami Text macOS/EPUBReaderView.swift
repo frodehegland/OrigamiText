@@ -3096,6 +3096,7 @@ struct EPUBReaderView: NSViewRepresentable {
     private static let greyContrastScript = """
     (function(){
       if (!document.body) return;
+      function pass(){
       function lum(c){
         var a=[c[0],c[1],c[2]].map(function(v){v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);});
         return 0.2126*a[0]+0.7152*a[1]+0.0722*a[2];
@@ -3134,6 +3135,19 @@ struct EPUBReaderView: NSViewRepresentable {
         var extreme=Math.max(c[0],c[1],c[2])<=0x33||Math.min(c[0],c[1],c[2])>=0xE0;
         if(!extreme&&contrast(c)>=3)continue;
         el.style.setProperty('color','inherit','important');
+      }
+      }
+      pass();
+      // The system turning light or dark repaints the theme by its own
+      // media rule, but a grey this pass kept as readable on the light
+      // page may not be on the dark one — so the pass walks again once
+      // the new colours stand (two frames: the style recalculates first).
+      // Registered once per page; a re-run of this script only re-applies.
+      if(!window.__origamiContrastWatch){
+        window.__origamiContrastWatch=true;
+        var dark=window.matchMedia('(prefers-color-scheme: dark)');
+        var again=function(){requestAnimationFrame(function(){requestAnimationFrame(pass);});};
+        if(dark.addEventListener)dark.addEventListener('change',again);else dark.addListener(again);
       }
     })();
     """

@@ -10,6 +10,7 @@ import SwiftUI
 import RealityKit
 import ARKit
 import QuartzCore
+import NaturalLanguage
 // A note's voice: the microphone's words, for SpatialNotePanel.
 import Speech
 import AVFoundation
@@ -586,6 +587,17 @@ struct EPUBMapView: View {
         let openingSide = documentsShown ? shown.filter { zone($0) == .opening } : []
         let closingSide = documentsShown ? shown.filter { zone($0) == .appendices } : []
         let asides: [EPUBRecord] = []
+        // The papers a card's length is measured against: the wall's own,
+        // open readings INCLUDED. Measured over the standing cards alone,
+        // opening the shortest or longest paper rescaled every other
+        // card's height on its plane — a whole volume re-rasterised at
+        // the moment the reading panel arrived, which took the headset's
+        // render server down (1 Nov 2026).
+        let lengthPeers = documentsShown
+            ? records.filter {
+                model.showsZone(zone($0)) && !model.setAsideIDs.contains($0.id)
+                    && zone($0) == .articles }
+            : []
 
         // A series' hallway: every volume a plane of its own — its
         // articles its own wall, its opening pages and appendices either
@@ -601,6 +613,8 @@ struct EPUBMapView: View {
             var depth: Float?
             var volumeNumber: Int?
             var year: Int?
+            /// The plane's papers, open or not — the length scale's range.
+            var lengthPeers: [EPUBRecord] = []
         }
         var planes: [Plane]
         if let seriesID = model.openSeriesID {
@@ -616,10 +630,12 @@ struct EPUBMapView: View {
                              closing: closingSide.filter(mine),
                              depth: -1.2 - behind * Self.seriesPlaneGap,
                              volumeNumber: model.boundVolume(for: volumeRecord)?.series?.volume,
-                             year: volumeRecord.dateISO.flatMap { Int($0.prefix(4)) })
+                             year: volumeRecord.dateISO.flatMap { Int($0.prefix(4)) },
+                             lengthPeers: lengthPeers.filter(mine))
             }
         } else {
-            planes = [Plane(standing: standing, opening: openingSide, closing: closingSide)]
+            planes = [Plane(standing: standing, opening: openingSide, closing: closingSide,
+                            lengthPeers: lengthPeers)]
         }
         // What the series index knows of each article — its gist and its
         // keywords — on the card's face where the book gave no abstract.
@@ -647,6 +663,7 @@ struct EPUBMapView: View {
 
         var result: [EPUBMapItem] = []
         var yearZ: [String: Float] = [:]
+        let timeFree = isTimeFree
         for plane in planes {
             let standing = plane.standing
             let columns = Self.wallColumns(standing.count)
@@ -672,7 +689,7 @@ struct EPUBMapView: View {
             // short notes still shows which of them runs long. A journal
             // whose papers are all one size says nothing — every share nil,
             // every card its plain height.
-            let standingWords = standing.compactMap { wordsByArticle[$0.id] }
+            let standingWords = plane.lengthPeers.compactMap { wordsByArticle[$0.id] }
             let shortestWords = standingWords.min() ?? 0
             let longestWords = standingWords.max() ?? 0
             let wordSpan = longestWords - shortestWords
@@ -706,7 +723,9 @@ struct EPUBMapView: View {
                    !Self.withinReach(position - spaceShift - documentsShift) {
                     position = seed
                 }
-                if liftedCards[record.id] == nil { position.z = seed.z }
+                // A room an Experimental layout freed keeps each paper's
+                // own depth; otherwise the year (or volume) reclaims it.
+                if liftedCards[record.id] == nil, !timeFree { position.z = seed.z }
                 // The year on the face, so the alignment reads at a glance —
                 // in a series' hallway, the volume too.
                 let stamp = plane.volumeNumber.map { volume in
@@ -742,7 +761,7 @@ struct EPUBMapView: View {
                        !Self.withinReach(position - spaceShift - documentsShift) {
                         position = seed
                     }
-                    if plane.depth != nil, liftedCards[record.id] == nil { position.z = seed.z }
+                    if plane.depth != nil, liftedCards[record.id] == nil, !timeFree { position.z = seed.z }
                     var item = EPUBMapItem(
                         id: record.id, title: record.title,
                         author: pieceOf[record.id]?.byline ?? "",
@@ -757,7 +776,8 @@ struct EPUBMapView: View {
             result += sideItems(plane.opening, leftOfWall: true)
             result += sideItems(plane.closing, leftOfWall: false)
         }
-        articleYearZ = yearZ
+        // Free of the timeline, a paper's drag is free in depth too.
+        articleYearZ = timeFree ? [:] : yearZ
         // Every piece that is not plainly an article says what it is.
         for index in result.indices {
             guard let piece = pieceOf[result[index].id] else { continue }
@@ -972,6 +992,8 @@ struct EPUBMapView: View {
             if let option = WatchLayoutOption(rawValue: name) { runWatchLayout(option) }
         case .view(let name):
             if let option = WatchViewOption(rawValue: name) { runWatchView(option) }
+        case .shape(let name):
+            if let shape = RoomShape(rawValue: name) { runShape(shape) }
         }
     }
 
@@ -1065,6 +1087,35 @@ struct EPUBMapView: View {
             item.visionTheme = visionThemeRaw
             return item
         }
+        // The reader's own keywords, spoken or typed into the volume bar:
+        // a row of cards just in front of the wall, each saying how many
+        // of the room's papers use it.
+        let articleCount = items.filter { $0.kind == .article && !$0.isGhost }.count
+        items += model.roomKeywords.enumerated().map { index, term in
+            let id = Self.keywordItemPrefix + term.lowercased()
+            let seed = SIMD3<Float>(
+                (Float(index % 5) - 2) * 0.28,
+                1.9 + 0.1 * Float(index / 5),
+                -0.85) + spaceShift
+            let found = articleCount > 0 ? keywordMatches(term).count : 0
+            var item = EPUBMapItem(
+                id: id, title: term,
+                author: "Keyword \u{00B7} \(found) paper\(found == 1 ? "" : "s")",
+                kind: .concept, position: placed[id] ?? seed)
+            item.isSelected = selected.contains(id)
+            return item
+        }
+        // The room's Shape labels: one card above each group, naming what
+        // its papers share. Chosen, it draws a line to each of them.
+        items += (roomShape?.labels ?? []).map { label in
+            var item = EPUBMapItem(
+                id: label.id, title: label.title,
+                author: "\(label.members.count) paper\(label.members.count == 1 ? "" : "s")",
+                kind: .concept,
+                position: placed[label.id] ?? SIMD3<Float>(label.x, label.y, label.z) + spaceShift)
+            item.isSelected = selected.contains(label.id)
+            return item
+        }
         if topicSpaceMode {
             // Topic magnets hold their selection through the rebuild too,
             // so the threads stand while the room updates around them.
@@ -1100,6 +1151,8 @@ struct EPUBMapView: View {
         conceptConnectionLines.rebuild(items: linesActive ? items : [],
                                        edges: linesActive ? conceptEdges() : [])
         citedToDeepLines.rebuild(items: linesActive ? items : [])
+        // The bar's Shapes follow what the room's record now offers.
+        if model.isVolumeRoom { syncShapeChoices() }
     }
 
     /// Concept cards: a galaxy on a shell around the reader, framing the
@@ -1609,6 +1662,22 @@ struct EPUBMapView: View {
     @State private var sharedCitedStanding = false
     /// Focus: show only selected items and their direct connections.
     @State private var focusMode = false
+    /// A relation chosen on a card's star menu: the card, the relation's
+    /// name, and the cards it reaches. Only those stand while it does.
+    @State private var relationShown: RelationShown?
+    struct RelationShown: Equatable {
+        let from: String
+        let title: String
+        let ids: Set<String>
+    }
+    /// Each card's measured face, so a star menu can leave the card its
+    /// room. A plain box, not observed: it is written while the engine
+    /// builds a card, and must not make the view update again.
+    @State private var cardSizes = CardSizes()
+    final class CardSizes {
+        /// Width and height in metres, as an unchosen card stands.
+        var base: [String: SIMD2<Float>] = [:]
+    }
     /// The Select chip's kinds, unfolded above it.
     @State private var selectOpen = false
     /// The Show chip's families, unfolded above it.
@@ -1635,6 +1704,26 @@ struct EPUBMapView: View {
     /// floor's lanes travelled with them, so Undo puts the space back
     /// before it puts the cards back.
     @State private var watchUndoShift: SIMD3<Float>?
+    /// Whether the room's depth was free before the last arrangement —
+    /// Undo gives the timeline back with the places.
+    @State private var watchUndoTimeFree: Bool?
+    /// The rooms (by venue) whose papers stand free of the timeline: an
+    /// Experimental layout set their depth, and the year or volume plane
+    /// no longer reclaims it. Wall gives the timeline back. One venue a
+    /// line, kept across launches.
+    @AppStorage("mapTimeFreeVenues") private var timeFreeVenues = ""
+
+    private var isTimeFree: Bool {
+        guard let venue = model.openJournalVenue else { return false }
+        return timeFreeVenues.split(separator: "\n").contains { $0 == venue }
+    }
+
+    private func setTimeFree(_ free: Bool) {
+        guard let venue = model.openJournalVenue else { return }
+        var venues = Set(timeFreeVenues.split(separator: "\n").map(String.init))
+        if free { venues.insert(venue) } else { venues.remove(venue) }
+        timeFreeVenues = venues.sorted().joined(separator: "\n")
+    }
     /// The card whose Layout options stand unfolded beneath it, while
     /// several papers are chosen. One at a time.
     @State private var layoutRowCardID: String?
@@ -1649,6 +1738,16 @@ struct EPUBMapView: View {
     @State private var focusedConceptID: String?
     /// The focused concept's articles, resolved once at the tap.
     @State private var focusedConceptArticleIDs: Set<String> = []
+
+    /// What each chosen keyword card is doing: drawing lines to the
+    /// papers that use it, leaving only them standing, or having
+    /// gathered them round it. Letting the card go ends it.
+    @State private var keywordModes: [String: KeywordMode] = [:]
+    enum KeywordMode { case lines, only, gather }
+    /// The papers each keyword is found in, by keyword, for the room
+    /// standing now — cleared when the room changes.
+    @State private var keywordMatchCache: [String: Set<String>] = [:]
+    static let keywordItemPrefix = "keyword:"
 
     private static let settingsChipID = "map.arm.settings"
     private static let documentsChipID = "map.arm.documents"
@@ -1713,6 +1812,10 @@ struct EPUBMapView: View {
             ArmMenu.Chip(id: watchViewOptionID($0), title: $0.title,
                          side: .right, group: LayoutFan.auto.chipID)
         }
+        + ExperimentalLayout.allCases.map {
+            ArmMenu.Chip(id: experimentalLayoutID($0), title: $0.title,
+                         side: .right, group: LayoutFan.experimental.chipID)
+        }
     }
 
     /// The five saved slots, standing under Saved View — each one shows
@@ -1734,7 +1837,7 @@ struct EPUBMapView: View {
     /// along the arm. Three are ways of arranging the chosen cards by
     /// hand; Auto is the whole wall re-made.
     private enum LayoutFan: String, CaseIterable {
-        case align, distribute, sort, auto
+        case align, distribute, sort, auto, experimental
 
         var title: String {
             switch self {
@@ -1742,10 +1845,35 @@ struct EPUBMapView: View {
             case .distribute: "Distribute"
             case .sort: "Sort"
             case .auto: "Auto"
+            case .experimental: "Experimental"
             }
         }
 
         var chipID: String { "map.arm.layout." + rawValue }
+    }
+
+    /// Layouts on trial (1 Nov 2026), on their own rung so they can come
+    /// and go. Each acts on the papers chosen, or every standing paper
+    /// when none are, and may set depth as well as place — free of the
+    /// timeline until Wall.
+    private enum ExperimentalLayout: String, CaseIterable {
+        case cluster
+
+        var title: String {
+            switch self {
+            case .cluster: "Cluster"
+            }
+        }
+    }
+
+    private static func experimentalLayoutID(_ option: ExperimentalLayout) -> String {
+        LayoutFan.experimental.chipID + "." + option.rawValue
+    }
+
+    private func runExperimentalLayout(_ option: ExperimentalLayout) {
+        switch option {
+        case .cluster: runClusterLayout()
+        }
     }
 
     /// Author Map's Layout commands, in three families — the cards
@@ -1846,7 +1974,8 @@ struct EPUBMapView: View {
     /// How far behind one another a series' volumes stand — far enough
     /// that each reads as its own plane, near enough that the oldest is
     /// still legible from the newest.
-    private static let seriesPlaneGap: Float = 0.45
+    /// Doubled from 0.45 on 1 Nov 2026, at Frode's asking.
+    private static let seriesPlaneGap: Float = 0.9
     /// Rings and ellipses are squashed to the card's own proportion,
     /// so a step outward is a row's step down.
     private static let pitchAspect = rowPitch / columnPitch
@@ -1906,6 +2035,9 @@ struct EPUBMapView: View {
                 // gives the new one back its cards.
                 model.transpointDocID = nil
                 model.readingDeskDocID = nil
+                // Another room's papers answer a keyword differently.
+                keywordMatchCache = [:]
+                keywordModes = [:]
                 reload()
                 syncVolumeBar()
                 // Another journal, another set of shared views.
@@ -1913,6 +2045,10 @@ struct EPUBMapView: View {
                 if watchSavedOpen { refreshSharedViews() } else { updateWatchChips() }
             }
             // The volume bar's Select All and Layout.
+            // A keyword spoken into the bar (or removed) stands at once.
+            .onChange(of: model.roomKeywords) {
+                reload()
+            }
             .onChange(of: model.volumeBarRequest) {
                 performVolumeBarRequest()
             }
@@ -2060,6 +2196,13 @@ struct EPUBMapView: View {
                             readerPanels.dragStart[docID] = start
                             root.position = start + value.convert(
                                 value.gestureValue.translation3D, from: .local, to: .scene)
+                            // Held by its bar, the page turns to face the
+                            // reader as it goes; let go, it keeps the angle
+                            // it had. (No head pose in the simulator: it
+                            // keeps its facing there.)
+                            if let head = faceTurner.headPose() {
+                                readerPanels.turn(docID: docID, toward: head.position)
+                            }
                         }
                         // A model standing in the room needs nothing
                         // here: RealityKit's ManipulationComponent
@@ -2179,10 +2322,31 @@ struct EPUBMapView: View {
                         .scaleEffect(0.5, anchor: .top)
                     )
                 }
+                // A chosen keyword: what it should do with the papers
+                // using it — the reader's choice, each lit while on.
+                if item.isSelected, item.id.hasPrefix(Self.keywordItemPrefix) {
+                    let mode = keywordModes[item.id]
+                    return AnyView(
+                        HStack(spacing: 8) {
+                            Button("Lines") { setKeywordMode(.lines, on: item) }
+                                .tint(mode == .lines ? .accentColor : nil)
+                            Button("Only") { setKeywordMode(.only, on: item) }
+                                .tint(mode == .only ? .accentColor : nil)
+                            Button("Gather") { setKeywordMode(.gather, on: item) }
+                                .tint(mode == .gather ? .accentColor : nil)
+                            Button("Remove") { removeKeyword(item) }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .font(.caption)
+                        .scaleEffect(0.5, anchor: .top)
+                    )
+                }
                 // Topic magnets carry no buttons: selection alone is
                 // their whole voice — the threads to their articles.
                 if item.kind == .concept && item.isSelected
                     && !item.id.hasPrefix("topic:")
+                    && !item.id.hasPrefix(Self.shapeLabelPrefix)
                     && !item.id.hasPrefix(EPUBMapView.noteItemPrefix) {
                     return AnyView(
                         HStack(spacing: 8) {
@@ -2201,7 +2365,7 @@ struct EPUBMapView: View {
                 // card gives way to the one that acts on many.
                 if item.kind == .article, item.isSelected,
                    !item.isGhost, !item.isAside {
-                    return AnyView(paperButtons(for: item))
+                    return AnyView(paperStar(for: item))
                 }
                 // A citation keeps the row it had: Open, its abstract
                 // when the reference carried one, and the snap-off verb.
@@ -2245,6 +2409,13 @@ struct EPUBMapView: View {
         // glass face — so it reads as a ghost frame around every card.
         view = view.shouldUseHoverNode { _ in false }
         view = view.attachmentAnchorRule { _, item in
+            // A chosen paper's star menu rings the card: centred on it,
+            // 6 mm behind its face — so the card keeps every pinch, and
+            // the verbs stand clear around its edges.
+            if item.kind == .article, item.isSelected, !item.isGhost, !item.isAside {
+                return AnchorRule(anchor: SIMD3<Float>(0.5, 0.5, 0.5),
+                                  offset: SIMD3<Float>(0, 0, -0.006))
+            }
             // Centre horizontally, sit at the card's bottom edge, then
             // drop clear of it. A single paper's verbs — Open,
             // Abstract, Lift — hang 0.8 cm under the card: the
@@ -2872,6 +3043,9 @@ struct EPUBMapView: View {
         if item.kind == .article, !item.isGhost {
             grown *= Self.documentCardMagnify
         }
+        // The card's size as it stands unchosen — the star menu's gap.
+        cardSizes.base[item.id] = SIMD2(extents.x, extents.y)
+            * (item.kind == .article && !item.isGhost ? Self.documentCardMagnify : 1)
         let holder = ModelEntity(
             mesh: .generateBox(width: extents.x * grown,
                                height: extents.y * grown, depth: 0.004),
@@ -2982,8 +3156,26 @@ struct EPUBMapView: View {
     private func conceptEdges() -> [(from: String, to: String)] {
         var edges: [(from: String, to: String)] = []
         for item in items where item.kind == .concept && item.isSelected
-            && !item.id.hasPrefix("topic:") {
+            && !item.id.hasPrefix("topic:") && !item.id.hasPrefix(Self.keywordItemPrefix) {
             for docID in model.articleIDs(mentioning: item.title) {
+                edges.append((from: item.id, to: docID))
+            }
+        }
+        // A relation chosen on a paper's star menu: a line from the
+        // paper to every card it reaches. Results are only ever shown so
+        // — by connection, never in a panel.
+        if let relationShown {
+            for id in relationShown.ids where id != relationShown.from {
+                edges.append((from: relationShown.from, to: id))
+            }
+        }
+        // A chosen Shape label threads to every paper in its group.
+        for label in roomShape?.labels ?? [] where items.contains(where: { $0.id == label.id && $0.isSelected }) {
+            for member in label.members { edges.append((from: label.id, to: member)) }
+        }
+        // A keyword chosen with Lines threads to every paper using it.
+        for item in items where item.isSelected && keywordModes[item.id] == .lines {
+            for docID in keywordMatches(item.title) {
                 edges.append((from: item.id, to: docID))
             }
         }
@@ -3096,6 +3288,7 @@ struct EPUBMapView: View {
         // The topic magnets and floated passages are their own families
         // — Select's Concepts leaves them as they stand.
         case .concepts: item.kind == .concept && !item.id.hasPrefix("topic:")
+            && !item.id.hasPrefix(Self.keywordItemPrefix) && !item.id.hasPrefix(Self.shapeLabelPrefix)
             && !item.id.hasPrefix("float:")
         // The magnets, which Concepts leaves alone, are a family of
         // their own — and now Select's own third kind.
@@ -3172,28 +3365,157 @@ struct EPUBMapView: View {
         }.count
     }
 
-    /// The verbs under a chosen paper. One paper in hand: Open, Abstract,
-    /// Lift — each acting on this card alone. Several in
-    /// hand: Layout, which acts on all of them, and unfolds Author's
-    /// arrangements right there (nothing may present a menu on an
-    /// attachment, so the options are buttons like everything else).
-    @ViewBuilder private func paperButtons(for item: EPUBMapItem) -> some View {
-        if selectedPaperCount > 1 {
-            manyPaperButtons(for: item)
-                .buttonStyle(.bordered)
-                // Layout's own list stands HALF AGAIN the size of a
-                // card's quiet verbs: eleven arrangements is a menu to
-                // read across the room and pinch at, not a footnote.
-                .controlSize(.regular)
-                .scaleEffect(0.8, anchor: .top)
+    /// One relation a star menu offers: its name, the cards it reaches,
+    /// whether a model inferred it, and its side — what the paper
+    /// reaches out to on the left, what reaches back to it on the right.
+    struct StarRelation: Identifiable {
+        let title: String
+        let ids: [String]
+        let isAI: Bool
+        let outward: Bool
+        var id: String { title }
+    }
+
+    /// Every relation this paper has in the room, only those with a card
+    /// to show: what it cites (raised as its citation wall), the papers
+    /// citing it, the corpus record's Shares Sources and Similar and
+    /// stances — and, until the record holds its own Similar, the series
+    /// index's (by meaning, so AI).
+    private func starRelations(for item: EPUBMapItem) -> [StarRelation] {
+        let standing = Set(items.filter { $0.kind == .article && !$0.isGhost }.map(\.id))
+        var relations: [StarRelation] = []
+        if !item.citedIDs.isEmpty {
+            relations.append(StarRelation(title: "Cites", ids: item.citedIDs, isAI: false, outward: true))
+        }
+        let citing = items.filter { $0.kind == .article && $0.id != item.id && $0.citedIDs.contains(item.id) }
+            .map(\.id)
+        if !citing.isEmpty {
+            relations.append(StarRelation(title: "Cited by", ids: citing, isAI: false, outward: false))
+        }
+        let recorded = model.corpusRelated(forDocID: item.id)
+        for relation in recorded {
+            let present = relation.ids.filter { standing.contains($0) && $0 != item.id }
+            guard !present.isEmpty else { continue }
+            relations.append(StarRelation(title: relation.title, ids: present,
+                                          isAI: relation.isAI, outward: relation.outward))
+        }
+        if !recorded.contains(where: { $0.title == "Similar" }), model.isVolumeRoom,
+           let index = model.seriesIndex {
+            let similar = index.similar(to: item.id, limit: 6).map(\.id).filter(standing.contains)
+            if !similar.isEmpty {
+                relations.append(StarRelation(title: "Similar", ids: similar, isAI: true, outward: true))
+            }
+        }
+        return relations
+    }
+
+    /// A chosen paper's star menu, ringing its card: Focus and Open
+    /// above; Close and Hide below, and the card's other verbs under
+    /// them; its relations at either side, each offered only when it
+    /// reaches a card. Drawn at twice its size and halved, as the
+    /// card's quiet verbs always were (attachments render full size),
+    /// so the card's own gap is laid out at twice the card.
+    @ViewBuilder private func paperStar(for item: EPUBMapItem) -> some View {
+        // The card as it stands chosen (a fifth larger), in this view's
+        // doubled points (1360 to the metre), with a breath of air.
+        let fallback = SIMD2<Float>(Float(nodeMaxWidth(for: item) / Self.crisp) / 1000, 0.07)
+            * Self.documentCardMagnify
+        let card = (cardSizes.base[item.id] ?? fallback) * 1.2
+        let gap = CGSize(width: CGFloat(card.x) * 1360 * 2 + 28,
+                         height: CGFloat(card.y) * 1360 * 2 + 20)
+        let relations = starRelations(for: item)
+        let extras = starExtras(for: item)
+        VStack(spacing: 10) {
+            // The lower verbs, mirrored unseen above, keep the star
+            // centred on the card whatever unfolds beneath.
+            extras.hidden()
+            HStack(spacing: 10) {
+                Button(focusMode ? "Un-Focus" : "Focus") {
+                    focusMode.toggle()
+                    armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
+                    armMenu.setChipActive(Self.focusChipID, focusMode)
+                    reload()
+                }
+                Button("Open") { handleTap(count: 2, on: item) }
+            }
+            HStack(alignment: .center, spacing: 10) {
+                relationColumn(relations.filter(\.outward), of: item, alignment: .trailing)
+                Color.clear.frame(width: gap.width, height: gap.height)
+                relationColumn(relations.filter { !$0.outward }, of: item, alignment: .leading)
+            }
+            HStack(spacing: 10) {
+                Button("Close") {
+                    if relationShown?.from == item.id { relationShown = nil }
+                    handleTap(count: 1, on: item)
+                }
+                Button("Hide") {
+                    if relationShown?.from == item.id { relationShown = nil }
+                    handleTap(count: 1, on: item)
+                    model.toggleSetAside(item.id)
+                    reload()
+                    updateStandingChips()
+                }
+            }
+            extras
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .font(.caption)
+        .scaleEffect(0.5)
+    }
+
+    /// One side of the star: its relations, each with how many cards it
+    /// reaches, a small AI where a model inferred it, and lit while its
+    /// cards stand. A column as wide as the other side's, so the gap
+    /// stays centred on the card.
+    private func relationColumn(_ relations: [StarRelation], of item: EPUBMapItem,
+                                alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 8) {
+            ForEach(relations) { relation in
+                let lit = relationShown?.from == item.id && relationShown?.title == relation.title
+                Button {
+                    toggleRelation(relation, of: item)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(relation.title)
+                        Text("\(relation.ids.count)").foregroundStyle(.secondary)
+                        if relation.isAI {
+                            Text("AI")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .tint(lit ? .accentColor : nil)
+                .fontWeight(lit ? .semibold : .regular)
+            }
+        }
+        .frame(width: 210, alignment: alignment == .trailing ? .trailing : .leading)
+    }
+
+    /// A relation tapped: lines run from the paper to every card it
+    /// reaches, and nothing else in the room changes — results are shown
+    /// by connection only, never in a panel and never by hiding. Cites
+    /// raises the paper's citation cards first if they are down. A second
+    /// tap takes the lines away.
+    private func toggleRelation(_ relation: StarRelation, of item: EPUBMapItem) {
+        if relationShown?.from == item.id, relationShown?.title == relation.title {
+            relationShown = nil
         } else {
+            if relation.title == "Cites" { raisedArticleIDs.insert(item.id) }
+            relationShown = RelationShown(from: item.id, title: relation.title, ids: Set(relation.ids))
+        }
+        reload()
+    }
+
+    /// Under Close and Hide: the card's other verbs, and with several
+    /// papers in hand, Layout and its arrangements.
+    @ViewBuilder private func starExtras(for item: EPUBMapItem) -> some View {
+        VStack(spacing: 8) {
             onePaperButtons(for: item)
-                .buttonStyle(.bordered)
-                // Quiet verbs under the card, not a toolbar — half
-                // life-size (attachments render full).
-                .controlSize(.small)
-                .font(.caption)
-                .scaleEffect(0.5, anchor: .top)
+            if selectedPaperCount > 1 {
+                manyPaperButtons(for: item)
+            }
         }
     }
 
@@ -3232,6 +3554,16 @@ struct EPUBMapView: View {
                             }
                         }
                     }
+                    // The layouts on trial, acting on the papers in hand.
+                    HStack(spacing: 8) {
+                        Text("Experimental").foregroundStyle(.secondary)
+                        ForEach(ExperimentalLayout.allCases, id: \.self) { option in
+                            Button(option.title) {
+                                runExperimentalLayout(option)
+                                layoutRowCardID = nil
+                            }
+                        }
+                    }
                 }
                 // The list stands 3 cm below the button that opened it
                 // — a centimetre and a half further down than it did
@@ -3244,11 +3576,11 @@ struct EPUBMapView: View {
         }
     }
 
-    /// One paper chosen: its own verbs.
+    /// A chosen paper's own verbs, beneath its star's Close and Hide
+    /// (Open stands at the star's top).
     @ViewBuilder private func onePaperButtons(for item: EPUBMapItem) -> some View {
         VStack(spacing: 6) {
         HStack(spacing: 8) {
-            Button("Open") { handleTap(count: 2, on: item) }
             // The citation card's own Abstract, verbatim: only when
             // the paper carries one.
             if !item.abstract.isEmpty {
@@ -3279,11 +3611,9 @@ struct EPUBMapView: View {
                 Button("Kind") {
                     kindRowCardID = kindRowCardID == item.id ? nil : item.id
                 }
-                // The articles most like this one, across the series.
-                Button("Similar") {
-                    model.assistantFocusID = item.id
-                    openWindow(id: "volume-assistant")
-                }
+                // (The assistant's Similar list left the card on 1 Nov
+                // 2026: a card's results show only as lines to other
+                // cards — the star's own Similar does that.)
             } else {
                 Button("Articles") {
                     if let record = model.record(forDocID: item.id) {
@@ -3549,6 +3879,7 @@ struct EPUBMapView: View {
         if !snapshot.isEmpty {
             watchUndo = snapshot
             watchUndoShift = nil
+            watchUndoTimeFree = nil
         }
         keepPlacements(of: moved)
         reload()
@@ -3568,12 +3899,412 @@ struct EPUBMapView: View {
         }
         let snapshot = watchUndo
         watchUndo = nil
+        // An arrangement that freed (or restored) the timeline puts that
+        // back too, before the places return.
+        if let wasFree = watchUndoTimeFree {
+            watchUndoTimeFree = nil
+            setTimeFree(wasFree)
+        }
         var moved: [EPUBMapItem] = []
         for index in items.indices {
             guard let position = snapshot?[items[index].id] else { continue }
             items[index].position = position
             moved.append(items[index])
         }
+        keepPlacements(of: moved)
+        reload()
+        updateWatchChips()
+    }
+
+    // MARK: - Shapes
+
+    /// The Shapes a room can take (the volume bar's Shapes menu). Only
+    /// Timeline orders the papers by time — each volume (or year) its own
+    /// plane, as the room has always stood. Every other Shape gathers the
+    /// papers by what they share and pays no regard to time: depth is
+    /// freed for the room (`timeFreeVenues`) until Timeline is chosen.
+    ///
+    /// The groupings read the Mac's corpus record (Build Corpus
+    /// Relations): its meaning groups and map, keyword themes, the books'
+    /// glossary terms, the people the pieces mention; Authors reads the
+    /// cards' own bylines. Each group stands as a small wall on an arc
+    /// around the reader, under a label card — choosing the label draws a
+    /// line to each of its papers.
+    enum RoomShape: String, CaseIterable {
+        case timeline, meaning, themes, concepts, authors, people, constellation
+
+        var title: String {
+            switch self {
+            case .timeline: "Timeline"
+            case .meaning: "Meaning"
+            case .themes: "Themes"
+            case .concepts: "Concepts"
+            case .authors: "Authors"
+            case .people: "People Mentioned"
+            case .constellation: "Constellation"
+            }
+        }
+    }
+
+    /// A group's label card in the room, kept per room across launches.
+    struct ShapeLabel: Codable, Hashable {
+        let id: String
+        let title: String
+        let members: [String]
+        let x: Float, y: Float, z: Float
+    }
+
+    struct StoredShape: Codable {
+        var shape: String
+        var labels: [ShapeLabel]
+    }
+
+    static let shapeLabelPrefix = "shape:"
+
+    /// Every room's Shape and labels, by venue.
+    @AppStorage("mapShapesByVenue") private var storedShapesRaw = ""
+
+    private var storedShapes: [String: StoredShape] {
+        (try? JSONDecoder().decode([String: StoredShape].self, from: Data(storedShapesRaw.utf8))) ?? [:]
+    }
+
+    private var roomShape: StoredShape? {
+        model.openJournalVenue.flatMap { storedShapes[$0] }
+    }
+
+    private func storeShape(_ shape: RoomShape, labels: [ShapeLabel]) {
+        guard let venue = model.openJournalVenue else { return }
+        var all = storedShapes
+        all[venue] = StoredShape(shape: shape.rawValue, labels: labels)
+        if let data = try? JSONEncoder().encode(all), let text = String(data: data, encoding: .utf8) {
+            storedShapesRaw = text
+        }
+        model.currentShapeID = shape.rawValue
+    }
+
+    /// The Shapes menu as the bar shows it: each Shape, dimmed with what it
+    /// waits for when the room's corpus record lacks its data.
+    private func syncShapeChoices() {
+        let papers = items.filter { $0.kind == .article && !$0.isGhost }.map(\.id)
+        let corpus = model.roomCorpus(for: papers)?.corpus
+        var available: Set<String> = [RoomShape.timeline.rawValue, RoomShape.authors.rawValue,
+                                      RoomShape.meaning.rawValue]
+        if !(corpus?.themes ?? []).isEmpty { available.insert(RoomShape.themes.rawValue) }
+        if !(corpus?.terms ?? []).isEmpty { available.insert(RoomShape.concepts.rawValue) }
+        if !(corpus?.people ?? []).isEmpty { available.insert(RoomShape.people.rawValue) }
+        if corpus?.meaning != nil || model.seriesIndex != nil { available.insert(RoomShape.constellation.rawValue) }
+        model.shapeChoices = RoomShape.allCases.map { shape in
+            let waiting = !available.contains(shape.rawValue)
+            return .init(id: shape.rawValue,
+                         title: shape.title + (waiting ? " — Build Corpus Relations on the Mac" : ""))
+        }
+        if model.shapeAvailable != available { model.shapeAvailable = available }
+        let current = roomShape?.shape ?? RoomShape.timeline.rawValue
+        if model.currentShapeID != current { model.currentShapeID = current }
+    }
+
+    /// The room takes a Shape.
+    private func runShape(_ shape: RoomShape) {
+        switch shape {
+        case .timeline: runTimelineShape()
+        case .constellation: runConstellationShape()
+        default:
+            let targets = watchLayoutTargets()
+            guard targets.count > 2 else { return }
+            let groups = shapeGroups(shape, among: targets)
+            guard !groups.isEmpty else { return }
+            placeGroups(groups, shape: shape)
+        }
+    }
+
+    /// Timeline: every paper back to its seat on its volume's (or year's)
+    /// plane, the group labels gone — the room as it first stood.
+    private func runTimelineShape() {
+        var snapshot: [String: SIMD3<Float>] = [:]
+        for item in items where item.kind == .article && !item.isGhost && liftedCards[item.id] == nil {
+            if let position = item.position { snapshot[item.id] = position }
+            placed[item.id] = nil
+        }
+        watchUndo = snapshot
+        watchUndoShift = nil
+        watchUndoTimeFree = isTimeFree
+        setTimeFree(false)
+        storeShape(.timeline, labels: [])
+        savePlacedNow()
+        reload()
+        updateWatchChips()
+    }
+
+    /// The groups a Shape makes of the papers, each with how typical each
+    /// member is (1 where the Shape has no measure of it).
+    private func shapeGroups(_ shape: RoomShape, among targets: [EPUBMapItem])
+        -> [(label: String, members: [(item: EPUBMapItem, fit: Float)])] {
+        let byID = Dictionary(targets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let record = model.roomCorpus(for: targets.map(\.id))
+        func docs(_ pieces: [String]) -> Set<String> {
+            Set(pieces.compactMap { record?.docOfPiece[$0] }.filter { byID[$0] != nil })
+        }
+        func plain(_ sets: [(label: String, ids: Set<String>)], rest: String)
+            -> [(label: String, members: [(item: EPUBMapItem, fit: Float)])] {
+            Self.coveringGroups(sets, among: Set(byID.keys), rest: rest).map { group in
+                (group.label, group.ids.compactMap { byID[$0] }.sorted { $0.title < $1.title }.map { ($0, Float(1)) })
+            }
+        }
+        switch shape {
+        case .meaning:
+            if let meaning = record?.corpus.meaning {
+                return plain(meaning.groups.map { ($0.label, docs($0.pieces)) }, rest: "Elsewhere")
+            }
+            return localMeaningGroups(targets)
+        case .themes:
+            return plain((record?.corpus.themes ?? []).map { ($0.label, docs($0.pieces)) }, rest: "Other themes")
+        case .concepts:
+            return plain((record?.corpus.terms ?? []).map { ($0.name, docs($0.pieces)) }, rest: "No shared concept")
+        case .people:
+            return plain((record?.corpus.people ?? []).map { ($0.name, docs($0.pieces)) }, rest: "Names no one")
+        case .authors:
+            // One person however the volumes wrote them: "Frode Alexander
+            // Hegland" is "Frode Hegland", "Bénétou" is "Benetou" — first
+            // and last name, accents folded. The group wears the form used
+            // most.
+            var byAuthor: [String: Set<String>] = [:]
+            var forms: [String: [String: Int]] = [:]
+            for item in targets {
+                for name in model.piece(forDocID: item.id)?.authors ?? [] {
+                    let words = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+                        .split(separator: " ")
+                    guard let first = words.first, let last = words.last else { continue }
+                    let key = String(first) + " " + String(last)
+                    byAuthor[key, default: []].insert(item.id)
+                    forms[key, default: [:]][name, default: 0] += 1
+                }
+            }
+            let sets = byAuthor.filter { $0.value.count >= 2 }.map { key, ids in
+                (label: forms[key]?.max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key ?? key, ids: ids)
+            }
+            return plain(sets, rest: "Single contributions")
+        case .timeline, .constellation:
+            return []
+        }
+    }
+
+    /// Greedy cover: the set reaching the most papers not yet placed
+    /// becomes a group, then the next, up to twelve; a set left reaching
+    /// fewer than three new papers stops it. What no group took gathers
+    /// under `rest`. Each paper stands in one group only.
+    static func coveringGroups(_ sets: [(label: String, ids: Set<String>)], among all: Set<String>,
+                               rest: String, maxGroups: Int = 12) -> [(label: String, ids: [String])] {
+        var left = all
+        var groups: [(label: String, ids: [String])] = []
+        var candidates = sets.filter { !$0.ids.isEmpty }
+        while groups.count < maxGroups, !left.isEmpty {
+            guard let best = candidates.max(by: { a, b in
+                let x = a.ids.intersection(left).count, y = b.ids.intersection(left).count
+                return x != y ? x < y : a.label > b.label
+            }) else { break }
+            let taken = best.ids.intersection(left)
+            // A group of two reads as a coincidence, not a gathering.
+            guard taken.count >= 3 else { break }
+            groups.append((best.label, taken.sorted()))
+            left.subtract(taken)
+            candidates.removeAll { $0.label == best.label }
+        }
+        if !left.isEmpty { groups.append((rest, left.sorted())) }
+        return groups
+    }
+
+    /// Meaning without a corpus record: spherical k-means over the series
+    /// index's vectors (or Apple's sentence embedding), each group named
+    /// by its most typical paper's first keyword where the card has one.
+    private func localMeaningGroups(_ targets: [EPUBMapItem])
+        -> [(label: String, members: [(item: EPUBMapItem, fit: Float)])] {
+        let vectors = clusterVectors(for: targets)
+        let usable = targets.filter { vectors[$0.id] != nil }
+        guard usable.count > 2 else { return [] }
+        let k = min(10, max(2, Int((Double(usable.count) / 2).squareRoot().rounded())))
+        let clusters = CorpusRelations.sphericalKMeans(usable.map { vectors[$0.id]! }, k: k)
+        return clusters.enumerated().compactMap { index, cluster in
+            guard !cluster.members.isEmpty else { return nil }
+            let members = cluster.members.map { (item: usable[$0.index], fit: $0.fit) }.sorted { $0.fit > $1.fit }
+            let keywords = model.seriesIndex?.entry(members[0].item.id)?.keywords ?? []
+            return (keywords.first ?? "Group \(index + 1)", members)
+        }
+    }
+
+    /// The groups placed: the largest straight ahead, the rest alternating
+    /// outward along an arc 2 m from where the reader stood when the room
+    /// opened (wider if they need it), 40 cm of air between groups. Each
+    /// group a small wall of its own, its most typical papers a little
+    /// nearer, under its label card.
+    private func placeGroups(_ groups: [(label: String, members: [(item: EPUBMapItem, fit: Float)])],
+                             shape: RoomShape) {
+        var clusters = groups.filter { !$0.members.isEmpty }.map { group in
+            let members = group.members.sorted { $0.fit > $1.fit }
+            let columns = max(1, Int(ceil(Double(members.count).squareRoot() * 1.3)))
+            return (label: group.label, members: members,
+                    width: Float(min(columns, members.count)) * Self.columnPitch, columns: columns)
+        }
+        // Largest first — but a catch-all group always stands last.
+        let rests: Set<String> = ["Elsewhere", "Other themes", "No shared concept", "Names no one", "Single contributions"]
+        clusters.sort { $0.members.count > $1.members.count }
+        // What no group took stands apart: a broad, low field behind the
+        // arc, so the groups read in front of it rather than beside a
+        // wall of three hundred (FoT: 302 single contributions, 283
+        // pieces naming no one).
+        let rest = clusters.first { rests.contains($0.label) }
+        clusters.removeAll { rests.contains($0.label) }
+        let air: Float = 0.4
+        let total = clusters.reduce(0) { $0 + $1.width + air }
+        let radius = max(2.0, total / 2.6)
+        var slots = Array(repeating: Float(0), count: clusters.count)
+        var right: Float = clusters.first.map { $0.width / 2 + air / 2 } ?? 0
+        var left = -right
+        for index in clusters.indices.dropFirst() {
+            let span = clusters[index].width + air
+            if index % 2 == 1 {
+                slots[index] = right + span / 2
+                right += span
+            } else {
+                slots[index] = left - span / 2
+                left -= span
+            }
+        }
+        let origin = spaceShift + documentsShift
+        var placedNow: [String: SIMD3<Float>] = [:]
+        var labels: [ShapeLabel] = []
+        for (index, cluster) in clusters.enumerated() {
+            let angle = slots[index] / radius
+            let centre = SIMD3<Float>(sin(angle) * radius, 1.45, -cos(angle) * radius) + origin
+            let count = cluster.members.count
+            let rows = (count + cluster.columns - 1) / cluster.columns
+            let meanFit = cluster.members.map(\.fit).reduce(0, +) / Float(max(count, 1))
+            let tangent = SIMD3<Float>(cos(angle), 0, sin(angle))
+            let toward = SIMD3<Float>(-sin(angle), 0, cos(angle))
+            for (place, member) in cluster.members.enumerated() {
+                let column = place % cluster.columns
+                let row = place / cluster.columns
+                let inRow = min(cluster.columns, count - row * cluster.columns)
+                let x = (Float(column) - Float(inRow - 1) / 2) * Self.columnPitch
+                let y = (Float(rows - 1) / 2 - Float(row)) * Self.rowPitch
+                let forward = min(max((member.fit - meanFit) * 0.6, -0.1), 0.1)
+                placedNow[member.item.id] = centre + tangent * x + SIMD3<Float>(0, y, 0) + toward * forward
+            }
+            // The label above the group's top row, a breath nearer.
+            let top = centre + SIMD3<Float>(0, Float(rows - 1) / 2 * Self.rowPitch + 0.13, 0) + toward * 0.03
+            labels.append(ShapeLabel(id: Self.shapeLabelPrefix + "\(shape.rawValue).\(index)",
+                                     title: cluster.label, members: cluster.members.map(\.item.id),
+                                     x: top.x - spaceShift.x, y: top.y - spaceShift.y, z: top.z - spaceShift.z))
+        }
+        if let rest {
+            let count = rest.members.count
+            let columns = max(1, Int(ceil(Double(count).squareRoot() * 2.2)))
+            let rows = (count + columns - 1) / columns
+            let centre = SIMD3<Float>(0, 1.15, -(radius + 1.4)) + origin
+            for (place, member) in rest.members.enumerated() {
+                let column = place % columns
+                let row = place / columns
+                let inRow = min(columns, count - row * columns)
+                placedNow[member.item.id] = centre + SIMD3<Float>(
+                    (Float(column) - Float(inRow - 1) / 2) * Self.columnPitch,
+                    (Float(rows - 1) / 2 - Float(row)) * Self.rowPitch * 0.8, 0)
+            }
+            let top = centre + SIMD3<Float>(0, Float(rows - 1) / 2 * Self.rowPitch * 0.8 + 0.13, 0.03)
+            labels.append(ShapeLabel(id: Self.shapeLabelPrefix + "\(shape.rawValue).rest",
+                                     title: rest.label, members: rest.members.map(\.item.id),
+                                     x: top.x - spaceShift.x, y: top.y - spaceShift.y, z: top.z - spaceShift.z))
+        }
+        storeShape(shape, labels: labels)
+        applyWatchPositions3D(placedNow)
+    }
+
+    /// Constellation: each paper where its meaning puts it — the three
+    /// main axes of difference across the room's width, height and depth
+    /// (2.2 m either side, 0.5 m up and down, 1.2 m nearer or further
+    /// around 2 m ahead), so the near-alike stand near. From the corpus
+    /// record's map where there is one, else from the series index's
+    /// vectors. The meaning groups' labels stand at their members' middle.
+    private func runConstellationShape() {
+        let targets = watchLayoutTargets()
+        guard targets.count > 2 else { return }
+        let record = model.roomCorpus(for: targets.map(\.id))
+        var coordinates: [String: [Float]] = [:]
+        if let map = record?.corpus.meaning?.coordinates {
+            for (piece, place) in map { if let id = record?.docOfPiece[piece] { coordinates[id] = place } }
+        }
+        if coordinates.count < 3 {
+            let vectors = clusterVectors(for: targets)
+            let ids = vectors.keys.sorted()
+            let places = CorpusRelations.principalCoordinates(ids.map { vectors[$0]!.map(Float.init) }, dimensions: 3)
+            coordinates = Dictionary(uniqueKeysWithValues: zip(ids, places))
+        }
+        let origin = spaceShift + documentsShift
+        var placedNow: [String: SIMD3<Float>] = [:]
+        for item in targets {
+            guard let c = coordinates[item.id], c.count >= 3 else { continue }
+            placedNow[item.id] = SIMD3<Float>(c[0] * 2.2, 1.45 + c[1] * 0.5, -2.0 + c[2] * 1.2) + origin
+        }
+        var labels: [ShapeLabel] = []
+        for (index, group) in (record?.corpus.meaning?.groups ?? []).enumerated() {
+            let members = group.pieces.compactMap { record?.docOfPiece[$0] }.filter { placedNow[$0] != nil }
+            guard !members.isEmpty else { continue }
+            let middle = members.reduce(SIMD3<Float>(0, 0, 0)) { $0 + placedNow[$1]! } / Float(members.count)
+            let at = middle + SIMD3<Float>(0, 0.18, 0.05)
+            labels.append(ShapeLabel(id: Self.shapeLabelPrefix + "constellation.\(index)", title: group.label,
+                                     members: members, x: at.x - spaceShift.x, y: at.y - spaceShift.y, z: at.z - spaceShift.z))
+        }
+        storeShape(.constellation, labels: labels)
+        applyWatchPositions3D(placedNow)
+    }
+
+    /// Cluster (Experimental): the Meaning shape.
+    private func runClusterLayout() {
+        runShape(.meaning)
+    }
+    /// What each paper is about, as a unit vector: the series index's
+    /// own where it knows the paper, else Apple's sentence embedding of
+    /// the title and abstract.
+    private func clusterVectors(for targets: [EPUBMapItem]) -> [String: [Double]] {
+        var vectors: [String: [Double]] = [:]
+        let index = model.seriesIndex
+        let sentence = NLEmbedding.sentenceEmbedding(for: .english)
+        for item in targets {
+            if let known = index?.entry(item.id)?.vector, !known.isEmpty {
+                vectors[item.id] = known
+            } else if let sentence,
+                      let raw = sentence.vector(for: item.title + ". " + String(item.abstract.prefix(600))) {
+                vectors[item.id] = raw
+            }
+        }
+        // Unit length, so a dot product is the cosine.
+        for (id, vector) in vectors {
+            let length = vector.reduce(0) { $0 + $1 * $1 }.squareRoot()
+            if length > 0 { vectors[id] = vector.map { $0 / length } }
+        }
+        // One dimension for all: vectors from two sources cannot meet.
+        let dimension = Dictionary(grouping: vectors.values, by: \.count).max { $0.value.count < $1.value.count }?.key
+        return vectors.filter { $0.value.count == dimension }
+    }
+
+    /// Writes arranged positions in all three axes — the Experimental
+    /// layouts', free of the timeline — frees the room's depth, keeps
+    /// the moment before for Undo, and rebuilds.
+    private func applyWatchPositions3D(_ xyz: [String: SIMD3<Float>]) {
+        var snapshot: [String: SIMD3<Float>] = [:]
+        var moved: [EPUBMapItem] = []
+        for index in items.indices {
+            guard let target = xyz[items[index].id], let before = items[index].position else { continue }
+            snapshot[items[index].id] = before
+            var position = target
+            position.x = min(max(position.x, spaceShift.x - 5), spaceShift.x + 5)
+            position.y = min(max(position.y, 0.95), 2.2)
+            items[index].position = position
+            moved.append(items[index])
+        }
+        guard !snapshot.isEmpty else { return }
+        watchUndo = snapshot
+        watchUndoShift = nil
+        watchUndoTimeFree = isTimeFree
+        setTimeFree(true)
         keepPlacements(of: moved)
         reload()
         updateWatchChips()
@@ -3596,7 +4327,15 @@ struct EPUBMapView: View {
         let xy: [String: SIMD2<Float>]
         switch option {
         case .wall:
+            // Wall is a rectangle, not a timeline: time is the Timeline
+            // Shape's alone (1 Nov 2026). In a room free of time the
+            // rectangle stands on one plane, 1.2 m ahead.
             xy = wallPositions(articles)
+            if isTimeFree {
+                let z = -1.2 + spaceShift.z + documentsShift.z
+                applyWatchPositions3D(xy.mapValues { SIMD3<Float>($0.x, $0.y, z) })
+                return
+            }
         case .magneticCenter:
             xy = magneticCenterPositions(articles, adjacency: adjacency, center: center)
         case .spine:
@@ -3942,6 +4681,87 @@ struct EPUBMapView: View {
         reload()
     }
 
+    // MARK: Keywords in the room
+
+    /// The standing papers a keyword is found in, as a whole word —
+    /// in the title, the card's abstract and keywords, or anywhere in
+    /// the paper's own text. Remembered per keyword for the room.
+    private func keywordMatches(_ term: String) -> Set<String> {
+        let key = term.lowercased()
+        if let known = keywordMatchCache[key] { return known }
+        guard let pattern = try? NSRegularExpression(
+            pattern: "\\b" + NSRegularExpression.escapedPattern(for: term) + "\\b",
+            options: [.caseInsensitive]) else { return [] }
+        func found(_ text: String) -> Bool {
+            pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+        }
+        var matches: Set<String> = []
+        for item in items where item.kind == .article && !item.isGhost {
+            if found(item.title) || found(item.abstract) {
+                matches.insert(item.id)
+            } else if let doc = model.document(item.id),
+                      (doc.body ?? []).contains(where: { found($0.text) }) {
+                matches.insert(item.id)
+            }
+        }
+        keywordMatchCache[key] = matches
+        return matches
+    }
+
+    /// A keyword card's choice: Lines threads it to its papers; Only
+    /// leaves just them standing; Gather brings them round the card,
+    /// free of the timeline (Wall or Undo View sends them home). The
+    /// same choice again turns it off.
+    private func setKeywordMode(_ mode: KeywordMode, on item: EPUBMapItem) {
+        let turningOff = keywordModes[item.id] == mode
+        // Only is the room's concept Focus; any other choice lifts it.
+        if focusedConceptID == item.id {
+            focusedConceptID = nil
+            focusedConceptArticleIDs = []
+        }
+        keywordModes[item.id] = turningOff ? nil : mode
+        if !turningOff, mode == .only {
+            focusedConceptID = item.id
+            focusedConceptArticleIDs = keywordMatches(item.title)
+        }
+        if !turningOff, mode == .gather {
+            gatherPapers(keywordMatches(item.title), around: item)
+            return
+        }
+        reload()
+    }
+
+    /// The papers brought round a keyword: a small wall of them hanging
+    /// just below and behind its card, the most-cited first.
+    private func gatherPapers(_ ids: Set<String>, around keyword: EPUBMapItem) {
+        guard let anchor = keyword.position else { return }
+        let papers = items.filter { ids.contains($0.id) && $0.position != nil && liftedCards[$0.id] == nil }
+            .sorted { ($0.citedIDs.count, $1.title) > ($1.citedIDs.count, $0.title) }
+        guard !papers.isEmpty else { return }
+        let columns = max(1, Int(ceil(Double(papers.count).squareRoot() * 1.4)))
+        var xyz: [String: SIMD3<Float>] = [:]
+        for (index, paper) in papers.enumerated() {
+            let column = index % columns
+            let row = index / columns
+            let inRow = min(columns, papers.count - row * columns)
+            xyz[paper.id] = SIMD3<Float>(
+                anchor.x + (Float(column) - Float(inRow - 1) / 2) * Self.columnPitch,
+                anchor.y - 0.12 - Float(row) * Self.rowPitch,
+                anchor.z - 0.08)
+        }
+        applyWatchPositions3D(xyz)
+    }
+
+    /// Remove: the keyword leaves the room, and whatever it was doing ends.
+    private func removeKeyword(_ item: EPUBMapItem) {
+        keywordModes[item.id] = nil
+        if focusedConceptID == item.id {
+            focusedConceptID = nil
+            focusedConceptArticleIDs = []
+        }
+        model.removeSpaceKeyword(item.title)
+    }
+
     /// Hide, on a selected concept's card: the card leaves the Map —
     /// back via the Concepts chip's long-pinch, Reveal All Concepts.
     private func hideConcept(_ id: String) {
@@ -4173,6 +4993,17 @@ struct EPUBMapView: View {
                 focusedConceptID = nil
                 focusedConceptArticleIDs = []
             }
+            // Letting a paper go puts its star's chosen relation away,
+            // and the room stands whole again.
+            if !willSelect, relationShown?.from == item.id {
+                relationShown = nil
+            }
+            // Letting a keyword go ends its Lines or Only (a Gather has
+            // already moved the papers; Wall or Undo View sends them home).
+            if !willSelect, keywordModes[item.id] != nil {
+                keywordModes[item.id] = nil
+                reload()
+            }
             switch item.kind {
             case .article:
                 // A selected article holds its citations up; several
@@ -4288,6 +5119,11 @@ struct EPUBMapView: View {
     }
 
     private func handleArmTap(on entity: Entity) -> Bool {
+        // A reading's ✕: closed on the first pinch.
+        if let close = readerPanels.closeAction(for: entity) {
+            close()
+            return true
+        }
         // A chit above a closed fist: what the fist carries.
         if let part = fistChooser.part(for: entity) {
             fistGrab.choose(part)
@@ -4444,7 +5280,8 @@ struct EPUBMapView: View {
             openOnly(watchLayoutOpen ? nil : .layout)
             return true
         case LayoutFan.align.chipID, LayoutFan.distribute.chipID,
-             LayoutFan.sort.chipID, LayoutFan.auto.chipID:
+             LayoutFan.sort.chipID, LayoutFan.auto.chipID,
+             LayoutFan.experimental.chipID:
             // A rung of Layout's ladder: its own commands fan along
             // the arm, and opening one folds whichever stood open.
             let fan = LayoutFan.allCases.first {
@@ -4484,6 +5321,11 @@ struct EPUBMapView: View {
                let option = WatchLayoutOption(
                    rawValue: String(id.dropFirst(Self.watchLayoutChipID.count + 1))) {
                 runWatchLayout(option)
+                closeWatchMenus()
+                return true
+            }
+            if let option = ExperimentalLayout.allCases.first(where: { Self.experimentalLayoutID($0) == id }) {
+                runExperimentalLayout(option)
                 closeWatchMenus()
                 return true
             }
@@ -5319,6 +6161,10 @@ struct EPUBMapView: View {
         for option in Self.offeredWatchViews {
             armMenu.setChipVisible(Self.watchViewOptionID(option),
                                    watchLayoutOpen && openLayoutFan == .auto)
+        }
+        for option in ExperimentalLayout.allCases {
+            armMenu.setChipVisible(Self.experimentalLayoutID(option),
+                                   watchLayoutOpen && openLayoutFan == .experimental)
         }
         let kept = Set(loadSavedViews().keys.compactMap(Int.init))
         for slot in 1...Self.savedSlotCount {
@@ -6179,37 +7025,29 @@ struct ReaderHandleComponent: Component {
     var docID: String
 }
 
-/// The ✕ in its circle: always there but very faded, brightening to
-/// full under the gaze — the fade rides a custom hover effect,
-/// composited by the system, so the app never learns the gaze.
-private struct ReaderCloseGlyph: View {
-    let onClose: () -> Void
+/// Marks an in-situ reader's ✕, carrying its document. The close is
+/// taken by the room's own entity tap, as the wrist chips are: a SwiftUI
+/// tap inside the attachment competed with the room's tap, double-tap
+/// and drag gestures for the same pinch and often lost the first one.
+struct ReaderCloseComponent: Component {
+    var docID: String
+}
 
+/// The ✕'s cross, drawn on the close disc. The disc's hover highlight
+/// lights the circle under the gaze, composited by the system, so the
+/// app never learns the gaze.
+private struct ReaderCloseGlyph: View {
     var body: some View {
-        // The system window bar's grammar, and ONLY the circle. Not a
+        // Only the cross: the circle under it is the entity's own disc,
+        // which takes the pinch and lights under the gaze. Not a
         // Button: a plain-styled button still earns the system's glass
-        // plate on visionOS — a tap gesture with its own hover effect
-        // draws nothing but what we ask: a touch larger under the
-        // gaze, a touch quieter when not.
-        ZStack {
-            Circle()
-                .fill(.white.opacity(0.25))
-            Image(systemName: "xmark")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.9))
-        }
-        .frame(width: 30, height: 30)
-        .contentShape(.circle)
-        .hoverEffect { effect, isActive, _ in
-            effect
-                .opacity(isActive ? 1 : 0.6)
-                .scaleEffect(isActive ? 1.15 : 1)
-        }
-        .onTapGesture(perform: onClose)
-        // Breathing room for the gaze growth: the attachment renders
-        // exactly its bounds, so without this margin the grown circle
-        // crops at the edges. Padding draws nothing — no plate.
-        .padding(6)
+        // plate on visionOS.
+        Image(systemName: "xmark")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: 30, height: 30)
+            // Every touch passes through to the disc's collision.
+            .allowsHitTesting(false)
     }
 }
 
@@ -6458,6 +7296,7 @@ final class ReaderPanels {
 
     func install(in content: RealityViewContent) {
         ReaderHandleComponent.registerComponent()
+        ReaderCloseComponent.registerComponent()
         self.content = content
         let desk = AnchorEntity(.plane(.horizontal, classification: .table,
                                        minimumBounds: SIMD2<Float>(0.4, 0.4)))
@@ -6551,12 +7390,31 @@ final class ReaderPanels {
         root.addChild(bar)
 
         // The ✕ in its circle, left of the pill — the system window
-        // bar's grammar: there when looked at, gone when not.
-        let close = Entity()
-        close.components.set(ViewAttachmentComponent(
-            rootView: ReaderCloseGlyph(onClose: onClose)))
+        // bar's grammar. The circle is a real disc with its own
+        // collision, so the room's entity tap takes the pinch on the
+        // first try; the SwiftUI cross on it takes no touches at all.
+        // (Attachments render at ~1360pt/m: the 30pt circle is 2.2 cm.)
+        var discMaterial = UnlitMaterial()
+        discMaterial.color = .init(tint: .white)
+        discMaterial.blending = .transparent(opacity: 0.25)
+        let close = ModelEntity(
+            mesh: .generatePlane(width: 0.022, height: 0.022, cornerRadius: 0.011),
+            materials: [discMaterial])
         close.position = SIMD3<Float>(-0.095, -0.32, 0)
+        // A target a little larger than the disc — the gaze lands on a
+        // small thing less surely than on a card.
+        close.components.set(CollisionComponent(
+            shapes: [.generateBox(size: SIMD3<Float>(0.036, 0.036, 0.02))]))
+        close.components.set(InputTargetComponent())
+        close.components.set(HoverEffectComponent(
+            .highlight(.init(color: .white, strength: 0.9))))
+        close.components.set(ReaderCloseComponent(docID: docID))
+        let cross = Entity()
+        cross.components.set(ViewAttachmentComponent(rootView: ReaderCloseGlyph()))
+        cross.position = SIMD3<Float>(0, 0, 0.001)
+        close.addChild(cross)
         root.addChild(close)
+        closeActions[docID] = onClose
 
         content.add(root)
         roots[docID] = root
@@ -6566,6 +7424,7 @@ final class ReaderPanels {
         roots[docID]?.removeFromParent()
         roots[docID] = nil
         pages[docID] = nil
+        closeActions[docID] = nil
         yaws[docID] = nil
         dragStart[docID] = nil
         origins[docID] = nil
@@ -6598,6 +7457,22 @@ final class ReaderPanels {
     /// The page entity of each open reading, so its attachment can be
     /// replaced when the reading asks to be a different size.
     private var pages: [String: Entity] = [:]
+
+    /// What each reading's ✕ does, by document.
+    private var closeActions: [String: () -> Void] = [:]
+
+    /// The close a tapped entity stands for — the ✕ disc or its cross —
+    /// or nil when the tap was anything else.
+    func closeAction(for entity: Entity) -> (() -> Void)? {
+        var node: Entity? = entity
+        while let current = node {
+            if let mark = current.components[ReaderCloseComponent.self] {
+                return closeActions[mark.docID]
+            }
+            node = current.parent
+        }
+        return nil
+    }
 
     /// Each panel's own facing, kept so a change of pose composes with
     /// it. Without this, tilting a panel that had been brought round to
@@ -6724,6 +7599,23 @@ final class ReaderPanels {
             }
             appliedPoses[id] = pose
         }
+    }
+
+    /// Turns a panel to face a point — the reader's head while its grab
+    /// bar is held — about the vertical only, so a page leaning as a
+    /// drafting board or lying flat keeps its lean. The facing is kept as
+    /// the panel's own, so when the bar is let go it stays at whatever
+    /// angle it last had, and a later change of pose composes with it.
+    func turn(docID: String, toward point: SIMD3<Float>) {
+        guard let root = roots[docID] else { return }
+        let facing = Self.yaw(facing: point - root.position(relativeTo: nil))
+        yaws[docID] = facing
+        let lean: Float = switch appliedPoses[docID] ?? .upright {
+        case .upright: 0
+        case .tilted: Self.tiltedAngle
+        case .flat: -.pi / 2
+        }
+        root.orientation = simd_mul(facing, simd_quatf(angle: lean, axis: SIMD3<Float>(1, 0, 0)))
     }
 
     /// The panel a touched entity belongs to — the handle bar answers,

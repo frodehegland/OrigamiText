@@ -255,6 +255,15 @@ struct OrigamiTextMacApp: App {
         }
         .defaultSize(width: 980, height: 680)
 
+        // Build Corpus Relations… (a bound volume's row menu): who cites
+        // what across a series, published beside the books
+        // (CorpusRelationsBuild.swift).
+        Window("Build Corpus Relations", id: "corpusRelations") {
+            CorpusRelationsView()
+                .environment(model)
+        }
+        .defaultSize(width: 900, height: 620)
+
         // File ▸ Hold Up a Page… — the camera reads a printed page and
         // opens its document in the main window at the page's place.
         Window("Hold Up a Page", id: "pageCamera") {

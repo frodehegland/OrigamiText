@@ -130,6 +130,12 @@ struct EPUBPileMenu: View {
             openWindow(id: "articleMetadata")
         }
         .disabled(bound == nil)
+        // Who cites what across the volume's series — published beside
+        // the books for the headset's cards. Dimmed for an unbound book.
+        Button("Build Corpus Relations\u{2026}") {
+            openWindow(id: "corpusRelations")
+        }
+        .disabled(bound == nil)
         // Binding (Origami Binding Profile, 24 Oct 2026): the whole book,
         // a selection of its articles, or a binder across books.
         BinderMenuItems(record: record)

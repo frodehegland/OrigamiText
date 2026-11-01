@@ -6433,6 +6433,8 @@ private struct SelectableParagraph: NSViewRepresentable {
     /// and where it ends in SwiftUI global coordinates (nil when empty) —
     /// the selection dot's report.
     var onSelectionChange: (String, NSRange, CGPoint?) -> Void = { _, _, _ in }
+    /// The system's light or dark — a switch must reach the text itself.
+    @Environment(\.colorScheme) private var colorScheme
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -6461,9 +6463,17 @@ private struct SelectableParagraph: NSViewRepresentable {
         context.coordinator.onSelectionChange = onSelectionChange
         let converted = converted()
         // Replacing the storage drops any live selection; only real
-        // content changes are worth that.
-        if view.textStorage?.isEqual(to: converted) != true {
+        // content changes are worth that — and a change between light
+        // and dark. The system's own colours (the label colour a
+        // paragraph without a theme ink wears) compare equal across the
+        // two, so the text compared unchanged and the view kept drawing
+        // its last appearance's ink: the text must be laid in afresh and
+        // drawn again under the new appearance.
+        let schemeChanged = context.coordinator.scheme != colorScheme
+        context.coordinator.scheme = colorScheme
+        if schemeChanged || view.textStorage?.isEqual(to: converted) != true {
             view.textStorage?.setAttributedString(converted)
+            if schemeChanged { view.needsDisplay = true }
         }
     }
 
@@ -6583,6 +6593,8 @@ private struct SelectableParagraph: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
+        /// The appearance the text was last laid in under.
+        var scheme: ColorScheme?
         var entriesFor: (String?, NSPoint?) -> [ParagraphMenuEntry] = { _, _ in [] }
         var selectionEntries: (String, NSRange) -> [ParagraphMenuEntry] = { _, _ in [] }
         var onLink: (URL) -> Bool = { _ in false }

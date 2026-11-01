@@ -109,9 +109,28 @@ final class OrigamiLLM {
     /// and cleared by whoever shows it.
     var fallbackNotice: String?
 
+    /// The embedding model, an Ollama model id ("qwen3-embedding:8b"):
+    /// what turns a passage into numbers, so Similar and Themes can
+    /// measure how near two articles stand. Persisted.
+    var embeddingModel: String {
+        didSet { UserDefaults.standard.set(embeddingModel, forKey: "embeddingModelID") }
+    }
+
+    /// A model being downloaded onto the Ollama server, and how far it is.
+    private(set) var download: ModelDownload?
+
+    struct ModelDownload: Equatable {
+        var model: String
+        var status: String
+        var fraction: Double?
+        var failure: String?
+    }
+
     private init() {
         selectedID = UserDefaults.standard.string(forKey: "selectedModelID") ?? "apple"
         endpoints = Self.loadEndpoints()
+        embeddingModel = UserDefaults.standard.string(forKey: "embeddingModelID")
+            ?? EmbeddingModelCatalog.suggested.id
     }
 
     static func endpointID(base: String, model: String) -> String {
@@ -399,6 +418,52 @@ final class OrigamiLLM {
             }
         }
         return found
+    }
+
+    // MARK: Embeddings and downloads (Ollama)
+
+    /// The Ollama server embeddings are asked of: the added endpoint on
+    /// Ollama's port (on the headset, the Mac's .local address), else
+    /// this machine's own.
+    var ollamaBase: String {
+        endpoints.first { $0.base.hasSuffix(":11434") }?.base ?? "http://localhost:11434"
+    }
+
+    /// The passages as vectors, by the chosen embedding model, in order.
+    /// There is no fallback: vectors from two models cannot be compared,
+    /// so a corpus is embedded by one model or not at all — a missing
+    /// model or server is the caller's to report.
+    func embed(_ texts: [String]) async throws -> (vectors: [[Float]], modelName: String) {
+        let model = embeddingModel
+        let vectors = try await OllamaClient.embed(base: ollamaBase, model: model,
+                                                   inputs: texts, key: apiKey(for: ollamaBase))
+        return (vectors, model)
+    }
+
+    /// Whether the chosen embedding model stands on the server.
+    func hasEmbeddingModel() async -> Bool {
+        await OllamaClient.installedModels(base: ollamaBase, key: apiKey(for: ollamaBase))
+            .contains { OllamaClient.sameModel($0, embeddingModel) }
+    }
+
+    /// Downloads a model onto the Ollama server, its progress in
+    /// `download` — Ollama's own pull, so nothing is typed in Terminal.
+    func downloadModel(_ model: String) {
+        guard download == nil || download?.failure != nil else { return }
+        download = ModelDownload(model: model, status: "Starting\u{2026}")
+        let base = ollamaBase
+        let key = apiKey(for: base)
+        Task { @MainActor in
+            do {
+                try await OllamaClient.pull(base: base, model: model, key: key) { status, fraction in
+                    self.download = ModelDownload(model: model, status: status, fraction: fraction)
+                }
+                download = nil
+                await refreshModels(for: base)
+            } catch {
+                download = ModelDownload(model: model, status: "", failure: error.localizedDescription)
+            }
+        }
     }
 
     // MARK: Persistence
@@ -867,6 +932,8 @@ struct LLMModelSettingsSections: View {
                 .foregroundStyle(.secondary)
         }
 
+        EmbeddingModelSettingsSection()
+
         Section {
             if let detected {
                 HStack {
@@ -1031,6 +1098,236 @@ struct LLMModelSettingsSections: View {
             } catch {
                 status = error.localizedDescription
             }
+        }
+    }
+}
+
+// MARK: - Ollama's own wire: downloads and embeddings
+
+/// What the chat-completions dialect does not cover, in Ollama's own
+/// API: the models on the server (/api/tags), a download (/api/pull,
+/// streamed as lines of JSON), and embeddings (/api/embed).
+nonisolated enum OllamaClient {
+    /// "qwen3-embedding:8b" and "qwen3-embedding:8b" — or a bare name and
+    /// its ":latest" — are one model.
+    static func sameModel(_ a: String, _ b: String) -> Bool {
+        func full(_ name: String) -> String { name.contains(":") ? name : name + ":latest" }
+        return full(a) == full(b)
+    }
+
+    static func installedModels(base: String, key: String?) async -> [String] {
+        guard let url = URL(string: base + "/api/tags") else { return [] }
+        var request = URLRequest(url: url, timeoutInterval: 3)
+        if let key { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = object["models"] as? [[String: Any]] else { return [] }
+        return list.compactMap { $0["name"] as? String }
+    }
+
+    /// Pulls a model, reporting each status line and, while layers come
+    /// down, the fraction done.
+    static func pull(base: String, model: String, key: String?,
+                     progress: @escaping @MainActor (String, Double?) -> Void) async throws {
+        let host = URL(string: base)?.host() ?? base
+        guard let url = URL(string: base + "/api/pull") else { throw OrigamiLLMError.serverUnreachable(host) }
+        var request = URLRequest(url: url, timeoutInterval: 3600)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let key { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["model": model, "stream": true])
+        let bytes: URLSession.AsyncBytes
+        do {
+            let (stream, response) = try await URLSession.shared.bytes(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                throw OrigamiLLMError.generationFailed("\(host) would not download \(model).")
+            }
+            bytes = stream
+        } catch let error as OrigamiLLMError {
+            throw error
+        } catch {
+            throw OrigamiLLMError.serverUnreachable(host)
+        }
+        var lastReport = Date.distantPast
+        for try await line in bytes.lines {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            else { continue }
+            if let failure = object["error"] as? String {
+                throw OrigamiLLMError.generationFailed(failure)
+            }
+            let status = object["status"] as? String ?? ""
+            var fraction: Double?
+            if let total = (object["total"] as? NSNumber)?.doubleValue, total > 0,
+               let completed = (object["completed"] as? NSNumber)?.doubleValue {
+                fraction = completed / total
+            }
+            // A line per chunk is far more than a progress bar needs.
+            if status == "success" || Date().timeIntervalSince(lastReport) > 0.25 {
+                lastReport = Date()
+                await progress(status, fraction)
+            }
+        }
+    }
+
+    /// Embeds the inputs, in batches, keeping their order.
+    static func embed(base: String, model: String, inputs: [String], key: String?,
+                      batch: Int = 16) async throws -> [[Float]] {
+        let host = URL(string: base)?.host() ?? base
+        guard let url = URL(string: base + "/api/embed") else { throw OrigamiLLMError.serverUnreachable(host) }
+        var vectors: [[Float]] = []
+        var start = 0
+        while start < inputs.count {
+            try Task.checkCancellation()
+            let slice = Array(inputs[start..<min(start + batch, inputs.count)])
+            var request = URLRequest(url: url, timeoutInterval: 600)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let key { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["model": model, "input": slice])
+            let data: Data
+            let status: Int
+            do {
+                let (body, response) = try await URLSession.shared.data(for: request)
+                data = body
+                status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            } catch {
+                throw OrigamiLLMError.serverUnreachable(host)
+            }
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            if status == 404 || ((object?["error"] as? String) ?? "").contains("not found") {
+                throw OrigamiLLMError.modelNotFound(model)
+            }
+            guard status == 200, let rows = object?["embeddings"] as? [[NSNumber]], rows.count == slice.count else {
+                throw OrigamiLLMError.generationFailed(object?["error"] as? String
+                                                       ?? "\(host) returned no embeddings.")
+            }
+            vectors += rows.map { $0.map(\.floatValue) }
+            start += slice.count
+        }
+        return vectors
+    }
+}
+
+// MARK: - Embedding models (researched November 2026)
+
+/// The embedding models offered in Settings ▸ AI, best first. All run on
+/// Ollama; the suggestion follows this machine's memory.
+nonisolated struct EmbeddingModelChoice: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let summary: String
+    let downloadGB: Double
+    let minRAMGB: Int
+}
+
+nonisolated enum EmbeddingModelCatalog {
+    static let all: [EmbeddingModelChoice] = [
+        EmbeddingModelChoice(
+            id: "qwen3-embedding:8b", name: "Qwen3 Embedding 8B",
+            summary: "Among the strongest open embedding models, in any language; reads a whole article (32K tokens) at once",
+            downloadGB: 4.7, minRAMGB: 32),
+        EmbeddingModelChoice(
+            id: "qwen3-embedding:4b", name: "Qwen3 Embedding 4B",
+            summary: "Nearly as good, half the size; the same long reach",
+            downloadGB: 2.5, minRAMGB: 16),
+        EmbeddingModelChoice(
+            id: "qwen3-embedding:0.6b", name: "Qwen3 Embedding 0.6B",
+            summary: "Small and quick, for any Mac",
+            downloadGB: 0.6, minRAMGB: 8),
+        EmbeddingModelChoice(
+            id: "nomic-embed-text", name: "Nomic Embed Text",
+            summary: "A long-standing small model, English first; a fallback when the Qwen models will not load",
+            downloadGB: 0.3, minRAMGB: 8),
+    ]
+
+    /// The best model this machine's memory holds. On the headset the
+    /// models run on the Mac, so the best is suggested there.
+    static var suggested: EmbeddingModelChoice {
+        #if os(macOS)
+        let ram = Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824)
+        return all.first { $0.minRAMGB <= ram } ?? all[2]
+        #else
+        return all[0]
+        #endif
+    }
+}
+
+/// Settings ▸ AI's embedding section: which model measures likeness, whether
+/// it is on the Ollama server, and a Download button that fetches it there.
+struct EmbeddingModelSettingsSection: View {
+    @State private var llm = OrigamiLLM.shared
+    @State private var installed: [String] = []
+    @State private var checked = false
+
+    private func isInstalled(_ id: String) -> Bool {
+        installed.contains { OllamaClient.sameModel($0, id) }
+    }
+
+    var body: some View {
+        Section {
+            Picker("Embedding Model", selection: Binding(
+                get: { llm.embeddingModel },
+                set: { llm.embeddingModel = $0 })) {
+                ForEach(EmbeddingModelCatalog.all) { choice in
+                    Text(choice.name + (isInstalled(choice.id) ? "" : " \u{2014} not downloaded"))
+                        .tag(choice.id)
+                }
+                // A model chosen elsewhere keeps its place in the list.
+                if !EmbeddingModelCatalog.all.contains(where: { $0.id == llm.embeddingModel }) {
+                    Text(llm.embeddingModel).tag(llm.embeddingModel)
+                }
+            }
+            if let choice = EmbeddingModelCatalog.all.first(where: { $0.id == llm.embeddingModel }) {
+                Text("\(choice.summary). \(String(format: "%.1f", choice.downloadGB)) GB download; suits \(choice.minRAMGB) GB of memory or more.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                if let download = llm.download {
+                    if let failure = download.failure {
+                        Label(failure, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    } else {
+                        ProgressView(value: download.fraction ?? 0) {
+                            Text("Downloading \(download.model): \(download.status)")
+                                .font(.caption)
+                        }
+                    }
+                } else if isInstalled(llm.embeddingModel) {
+                    Label("On \(URL(string: llm.ollamaBase)?.host() ?? llm.ollamaBase), ready", systemImage: "checkmark.circle")
+                        .foregroundStyle(.green)
+                } else if checked {
+                    Text(installed.isEmpty
+                         ? "Ollama is not answering at \(llm.ollamaBase). Install it from ollama.com and open it, then download here."
+                         : "Not on the Ollama server yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(llm.download?.failure != nil ? "Try Again" : "Download") {
+                    llm.downloadModel(llm.embeddingModel)
+                }
+                .disabled(isInstalled(llm.embeddingModel)
+                          || (llm.download != nil && llm.download?.failure == nil))
+            }
+        } header: {
+            Text("Embedding Model")
+        } footer: {
+            Text("""
+                Similar articles and Themes measure how near two pieces of \
+                writing stand by turning each into numbers. That runs in \
+                Ollama, on \(llm.ollamaBase.contains("localhost") ? OrigamiLLM.thisDevice : URL(string: llm.ollamaBase)?.host() ?? "the server") \
+                \u{2014} no text leaves it. Download fetches the model into Ollama for you.
+                """)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .task(id: llm.download) {
+            guard llm.download == nil else { return }
+            installed = await OllamaClient.installedModels(base: llm.ollamaBase,
+                                                           key: llm.apiKey(for: llm.ollamaBase))
+            checked = true
         }
     }
 }

@@ -1,3 +1,4 @@
+import Accelerate
 import CryptoKit
 import Foundation
 import NaturalLanguage
@@ -3863,6 +3864,988 @@ nonisolated enum ArticleMetadata {
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
         write(file, to: folder.appendingPathComponent(fileName))
+    }
+}
+
+// MARK: - Corpus relations
+
+/// A published corpus's connections, worked out once on the Mac and
+/// published beside its EPUBs as the editor's and publisher's own
+/// metadata: optional, so a reader without it loses nothing
+/// (CORPUS-RELATIONS-PLAN.md). This first part holds facts only — who
+/// cites what, inside the corpus and out, and which pieces draw on the
+/// same sources. Each citation says how it was traced to its article.
+///
+/// Keyed by series id (a lone volume by its folder), then by piece: a
+/// book's folder and its work's own id, as `ArticleMetadata` keys them,
+/// so a volume re-exported from Author keeps its relations.
+nonisolated enum CorpusRelations {
+    struct Publisher: Codable, Hashable, Sendable {
+        var name: String
+        var role: String
+    }
+
+    /// One piece of the corpus.
+    struct Piece: Codable, Hashable, Sendable {
+        var folder: String
+        var work: String
+        var title: String
+        var authors: [String] = []
+        var volume: Int?
+    }
+
+    /// A work some piece cites — outside the corpus, or one of its own
+    /// pieces or volumes (`inCorpus`).
+    struct Work: Codable, Hashable, Sendable {
+        var title: String
+        var authors: [String] = []
+        var year: Int?
+        var venue: String?
+        var doi: String?
+        var url: String?
+        /// "bibliography" or "endnote": where the volumes list it.
+        var listedAs: String
+        /// "piece:<key>" or "volume:<folder>" when it is the corpus's own.
+        var inCorpus: String?
+        /// How many pieces cite it, and how many volumes cite it without
+        /// saying which article does.
+        var citedByPieces = 0
+        var citedByVolumes = 0
+        /// What the world knows of it, from the Mac's master list of
+        /// cited works: how often it is cited, and whether it was retracted.
+        var citedByWorld: Int?
+        var retracted: Bool?
+    }
+
+    /// One citation, as the volumes record it.
+    struct Citation: Codable, Hashable, Sendable {
+        /// The citing piece's key, or "volume:<folder>" when the volume
+        /// lists the work in its back matter without saying which
+        /// article cites it.
+        var from: String
+        /// The cited work's key.
+        var to: String
+        /// How the citation was traced to its article: "binding" (the
+        /// work's own list of references and notes), "anchor" (the entry
+        /// or note is placed in the article's file), or "volume".
+        var attributedBy: String
+        /// The bibliography entry's or endnote's own id in the book.
+        var entry: String
+    }
+
+    /// A piece that draws on the same sources, with how many it shares
+    /// and how telling the sharing is (rare sources count for more).
+    struct Neighbour: Codable, Hashable, Sendable {
+        var piece: String
+        var shared: Int
+        var score: Double
+    }
+
+    struct Corpus: Codable, Sendable {
+        var name: String
+        /// The volumes' folders, in the series' order.
+        var volumes: [String]
+        var pieces: [String: Piece]
+        var works: [String: Work]
+        var citations: [Citation]
+        /// Each piece's nearest by shared sources (bibliographic
+        /// coupling), best first.
+        var sharesSources: [String: [Neighbour]]
+        /// The outside works the corpus cites most, by citing pieces.
+        var canon: [String]
+        /// What the pass found worth saying about the books themselves.
+        var findings: [String]
+        /// Each piece's nearest by meaning (embeddings), best first —
+        /// made by a later pass; absent until then.
+        var similar: [String: [Neighbour]]? = nil
+        /// Typed relations between pieces — agrees, contradicts, extends
+        /// — each inferred by a model with its evidence, or the editor's.
+        var stances: [Stance]? = nil
+        /// The articles' keywords merged into themes ("xr", "vr" and
+        /// "virtual reality" one theme), each with the pieces carrying it.
+        var themes: [Theme]? = nil
+        /// The books' own glossary, cleaned of everyday words, each term
+        /// with the pieces using it.
+        var terms: [Term]? = nil
+        /// The people the pieces mention by name, with where.
+        var people: [Person]? = nil
+        /// Where each piece stands by meaning: groups and a 3D map.
+        var meaning: Meaning? = nil
+    }
+
+    /// A theme: keywords that mean one thing, under the most used of them.
+    struct Theme: Codable, Hashable, Sendable {
+        var id: String
+        var label: String
+        var keywords: [String]
+        var pieces: [String]
+    }
+
+    /// One of the books' glossary terms, as the pieces use it.
+    struct Term: Codable, Hashable, Sendable {
+        var name: String
+        var definition: String?
+        var pieces: [String]
+    }
+
+    /// A person named in the pieces; `isContributor` when they also
+    /// write in the corpus.
+    struct Person: Codable, Hashable, Sendable {
+        var name: String
+        var pieces: [String]
+        var mentions: Int
+        var isContributor: Bool
+    }
+
+    /// The pieces by meaning, from one embedding model: groups (each named
+    /// by the theme most its own), and each piece's place on the three
+    /// main axes of difference, from −1 to 1.
+    struct Meaning: Codable, Sendable {
+        var model: String
+        var groups: [Group]
+        var coordinates: [String: [Float]]
+
+        struct Group: Codable, Hashable, Sendable {
+            var id: String
+            var label: String
+            var pieces: [String]
+        }
+    }
+
+    /// One piece's stance toward another, in CiTO's words
+    /// ("agreesWith", "disagreesWith", "extends", "respondsTo",
+    /// "questions"), with where it came from and whether the editor has
+    /// reviewed it ("unreviewed", "confirmed", "rejected").
+    struct Stance: Codable, Hashable, Sendable {
+        var from: String
+        var to: String
+        var type: String
+        var point: String?
+        var source: String
+        var review: String?
+
+        /// The word a card's star menu wears for it.
+        var title: String {
+            switch type {
+            case "agreesWith", "supports": "Agrees"
+            case "disagreesWith", "disputes": "Contradicts"
+            case "extends": "Extends"
+            case "respondsTo", "repliesTo": "Responds to"
+            case "questions": "Questions"
+            default: type
+            }
+        }
+
+        /// Made by a model and not yet confirmed by the editor.
+        var isAI: Bool { review != "confirmed" && source.hasPrefix("llm") }
+    }
+
+    struct File: Codable, Sendable {
+        var format = "origami-corpus-relations"
+        var version = 1
+        var modified: Date
+        var publisher: Publisher?
+        var licence: String?
+        /// Series id (or a lone volume's folder) → its corpus.
+        var corpora: [String: Corpus]
+    }
+
+    static let fileName = "origami-corpus-relations.json"
+
+    static func pieceKey(folder: String, work: String) -> String { folder + "#" + work }
+    static let volumePrefix = "volume:"
+    static let piecePrefix = "piece:"
+
+    /// A work's key: its DOI, else its address, else its folded title.
+    static func workKey(doi: String?, url: String?, title: String) -> String? {
+        if let doi { return "doi:" + doi }
+        if let url { return "url:" + normalizedURL(url) }
+        let folded = ReferenceStatus.normalizedTitle(title)
+        return folded.count >= 12 ? "title:" + folded : nil
+    }
+
+    /// The first DOI written anywhere in a string — "https://doi.org/
+    /// https://doi.org/10.…" as some records double it — lowercased, its
+    /// trailing punctuation dropped.
+    static func doi(in text: String?) -> String? {
+        guard let text, let range = text.range(of: #"10\.\d{4,9}/[^\s"<>]+"#, options: .regularExpression)
+        else { return nil }
+        return String(text[range]).lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".,;:)]}'’”"))
+    }
+
+    /// The first web address in a string, its trailing punctuation dropped.
+    static func url(in text: String?) -> String? {
+        guard let text, let range = text.range(of: #"https?://[^\s"<>]+"#, options: .regularExpression)
+        else { return nil }
+        return String(text[range]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;:)]}'’”?&"))
+    }
+
+    /// An address as a key: no scheme, no "www.", no trailing slash,
+    /// its host lowercased.
+    static func normalizedURL(_ url: String) -> String {
+        var rest = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        for scheme in ["https://", "http://"] where rest.lowercased().hasPrefix(scheme) {
+            rest = String(rest.dropFirst(scheme.count))
+        }
+        if rest.lowercased().hasPrefix("www.") { rest = String(rest.dropFirst(4)) }
+        while rest.hasSuffix("/") { rest.removeLast() }
+        let slash = rest.firstIndex(of: "/") ?? rest.endIndex
+        return rest[..<slash].lowercased() + rest[slash...]
+    }
+
+    // MARK: The file
+
+    static func read(_ url: URL) -> File? {
+        var data: Data?
+        var failure: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &failure) { at in
+            data = try? Data(contentsOf: at)
+        }
+        guard let data else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(File.self, from: data)
+    }
+
+    static func write(_ file: File, to url: URL) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(file) else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        var failure: NSError?
+        NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &failure) { at in
+            try? data.write(to: at, options: .atomic)
+        }
+    }
+
+    /// The file's date when last read, so an unchanged copy is not
+    /// decoded again on every beat. Touched only by the one adopting loop.
+    nonisolated(unsafe) private static var sharedFileDate: Date?
+
+    /// The community folder's copy — nil when unchanged since last read.
+    static func readShared(from folder: URL) -> File? {
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        let url = folder.appendingPathComponent(fileName)
+        let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        if let date, date == sharedFileDate { return nil }
+        guard let file = read(url) else { return nil }
+        sharedFileDate = date
+        return file
+    }
+
+    static func publish(_ file: File, to folder: URL) {
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        write(file, to: folder.appendingPathComponent(fileName))
+    }
+}
+
+// MARK: Reading a corpus: themes, terms, people, meaning
+
+extension CorpusRelations {
+    /// A keyword as a theme key: lower case, single spaces, the common
+    /// abbreviations spelled out, a last word's plain plural dropped.
+    static func normalizedKeyword(_ raw: String) -> String {
+        var text = raw.lowercased()
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'“”‘’.,;:")))
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let aliases: [String: String] = [
+            "vr": "virtual reality", "xr": "extended reality", "ar": "augmented reality",
+            "mr": "mixed reality", "ai": "artificial intelligence", "genai": "generative ai",
+            "hci": "human-computer interaction", "ml": "machine learning",
+            "llm": "large language models", "llms": "large language models",
+            "nlp": "natural language processing", "ui": "user interface", "ux": "user experience",
+            "human computer interaction": "human-computer interaction",
+            "e-book": "ebook", "e-books": "ebook", "web": "world wide web", "www": "world wide web",
+        ]
+        if let spelled = aliases[text] { return spelled }
+        var words = text.split(separator: " ").map(String.init)
+        if var last = words.last, last.count > 4 {
+            let keep: Set<String> = ["ethics", "graphics", "mathematics", "physics", "analysis", "thesis",
+                                     "status", "news", "series", "semantics", "linguistics", "economics",
+                                     "politics", "aesthetics", "humanities", "species", "basis", "corpus",
+                                     "apparatus", "consensus", "process", "access", "address", "glass"]
+            if !keep.contains(last) {
+                if last.hasSuffix("ies") { last = String(last.dropLast(3)) + "y" }
+                else if last.hasSuffix("s"), !last.hasSuffix("ss"), !last.hasSuffix("us"), !last.hasSuffix("is") {
+                    last.removeLast()
+                }
+                words[words.count - 1] = last
+            }
+        }
+        text = words.joined(separator: " ")
+        return text
+    }
+
+    /// The pieces' keywords as themes. Each keyword is first normalised;
+    /// then, with vectors (by normalised keyword), the most used keyword
+    /// leads a theme and every keyword within `threshold` cosine of a
+    /// leader joins it — most used first, so a theme is named by its
+    /// commonest word. A theme only one piece carries connects nothing
+    /// and is left out.
+    static func keywordThemes(_ keywords: [String: [String]], vectors: [String: [Float]]?,
+                              threshold: Float = 0.8) -> [Theme] {
+        var piecesOf: [String: Set<String>] = [:]
+        for (piece, words) in keywords {
+            for word in words {
+                let key = normalizedKeyword(word)
+                if !key.isEmpty { piecesOf[key, default: []].insert(piece) }
+            }
+        }
+        let ordered = piecesOf.keys.sorted {
+            let a = piecesOf[$0]!.count, b = piecesOf[$1]!.count
+            return a != b ? a > b : $0 < $1
+        }
+        var leaders: [(key: String, vector: [Float]?)] = []
+        var members: [String: [String]] = [:]
+        for key in ordered {
+            let vector = vectors?[key]
+            if let vector,
+               let leader = leaders.first(where: { $0.vector.map { cosine($0, vector) >= threshold } ?? false }) {
+                members[leader.key, default: []].append(key)
+            } else {
+                leaders.append((key, vector))
+                members[key] = [key]
+            }
+        }
+        return leaders.compactMap { leader -> Theme? in
+            let words = members[leader.key] ?? [leader.key]
+            let pieces = words.reduce(into: Set<String>()) { $0.formUnion(piecesOf[$1] ?? []) }
+            guard pieces.count >= 2 else { return nil }
+            return Theme(id: "theme:" + leader.key, label: leader.key, keywords: words, pieces: pieces.sorted())
+        }
+        .sorted { $0.pieces.count != $1.pieces.count ? $0.pieces.count > $1.pieces.count : $0.label < $1.label }
+    }
+
+    /// Words a book's glossary may define but that tell no piece from
+    /// another in a corpus about text.
+    static let everydayTerms: Set<String> = [
+        "text", "texts", "book", "books", "paper", "papers", "reader", "readers", "author", "authors",
+        "find", "search", "document", "documents", "art", "map", "maps", "article", "articles", "meta",
+        "interactions", "interaction", "voice", "reference", "references", "academic", "page", "pages",
+        "word", "words", "link", "links", "writing", "read", "reading", "note", "notes", "title", "view",
+        "list", "time", "space", "work", "idea", "ideas", "people", "world", "language", "image", "images",
+        "media", "medium", "tool", "tools", "system", "systems", "user", "users", "file", "files", "data",
+        "information", "knowledge", "content", "screen", "computer", "computers", "the future of text",
+        "future of text", "future", "digital", "online", "internet", "web", "email", "phone", "app", "apps",
+        "definition", "definitions", "lab", "labs", "name", "names", "perspective", "perspectives",
+        "journal", "journals", "touch", "example", "examples", "question", "questions", "point", "points",
+    ]
+
+    /// The books' glossary as the pieces use it: one term per name,
+    /// whatever its case; everyday words and anything most pieces use left
+    /// out (they connect everything, so they tell nothing); found as
+    /// whole words — an all-capitals acronym only in capitals; and only
+    /// terms two or more pieces share.
+    /// A glossary entry that is a person — one of the corpus's own
+    /// contributors — is left to People.
+    static func glossaryTerms(_ entries: [(name: String, definition: String?)],
+                              texts: [String: String], people: Set<String> = []) -> [Term] {
+        let persons = Set(people.map { $0.lowercased() })
+        var byKey: [String: (name: String, definition: String?)] = [:]
+        for entry in entries {
+            let name = entry.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = name.lowercased()
+            guard name.count >= 3, !everydayTerms.contains(key), !persons.contains(key) else { continue }
+            // A single word the glossary itself writes in lower case is a
+            // plain word ("robust", "appended"), not a term of art.
+            if !name.contains(" "), name == name.lowercased() { continue }
+            if let known = byKey[key] {
+                if known.definition == nil, entry.definition != nil { byKey[key]?.definition = entry.definition }
+            } else {
+                byKey[key] = (name, entry.definition)
+            }
+        }
+        let ceiling = max(3, texts.count * 3 / 10)
+        var terms: [Term] = []
+        for (_, entry) in byKey {
+            let acronym = entry.name == entry.name.uppercased() && entry.name.rangeOfCharacter(from: .lowercaseLetters) == nil
+            guard let pattern = try? NSRegularExpression(
+                pattern: "\\b" + NSRegularExpression.escapedPattern(for: entry.name) + "\\b",
+                options: acronym ? [] : [.caseInsensitive]) else { continue }
+            let pieces = texts.compactMap { piece, text in
+                pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil ? piece : nil
+            }
+            guard pieces.count >= 2, pieces.count <= ceiling else { continue }
+            terms.append(Term(name: entry.name, definition: entry.definition, pieces: pieces.sorted()))
+        }
+        return terms.sorted { $0.pieces.count != $1.pieces.count ? $0.pieces.count > $1.pieces.count : $0.name < $1.name }
+    }
+
+    /// The people the pieces name: every name the corpus already knows
+    /// (its contributors, the authors of the works it cites — `known`)
+    /// found whole in the text, and whatever Apple's on-device name tagger
+    /// finds besides (where its model is present; the simulator has none).
+    /// "Engelbart" alone joins "Douglas Engelbart" when only one full name
+    /// ends so; full names sharing a surname and first initial ("Doug
+    /// Engelbart") join the most used of them. Only names two or more
+    /// pieces mention are kept: they are the ones that connect.
+    /// A piece's own authors (`authorsOf`) are not its mentions: their
+    /// names stand in its byline.
+    static func peopleMentioned(texts: [String: String], contributors: Set<String>,
+                                known: Set<String> = [],
+                                authorsOf: [String: [String]] = [:]) -> [Person] {
+        var counts: [String: (pieces: Set<String>, mentions: Int)] = [:]
+        // The names the corpus knows, as whole words, in their own case.
+        let names = known.union(contributors).filter {
+            $0.split(separator: " ").count >= 2 && $0.count >= 6 && $0.first?.isUppercase == true
+        }
+        let patterns: [(name: String, surname: String, pattern: NSRegularExpression)] = names.compactMap { name in
+            guard let surname = name.split(separator: " ").last.map(String.init),
+                  let pattern = try? NSRegularExpression(
+                    pattern: "\\b" + NSRegularExpression.escapedPattern(for: name) + "\\b")
+            else { return nil }
+            return (name, surname, pattern)
+        }
+        for (piece, text) in texts {
+            let range = NSRange(text.startIndex..., in: text)
+            let own = Set(authorsOf[piece] ?? [])
+            for (name, surname, pattern) in patterns where !own.contains(name) {
+                // The surname first: a plain search is far cheaper than
+                // the pattern, and almost every name is absent.
+                guard text.contains(surname) else { continue }
+                let found = pattern.numberOfMatches(in: text, range: range)
+                guard found > 0 else { continue }
+                counts[name, default: ([], 0)].pieces.insert(piece)
+                counts[name, default: ([], 0)].mentions += found
+            }
+        }
+        for (piece, text) in texts {
+            let own = Set(authorsOf[piece] ?? [])
+            let tagger = NLTagger(tagSchemes: [.nameType])
+            let sample = String(text.prefix(60_000))
+            tagger.string = sample
+            tagger.enumerateTags(in: sample.startIndex..<sample.endIndex, unit: .word, scheme: .nameType,
+                                 options: [.omitPunctuation, .omitWhitespace, .joinNames]) { tag, range in
+                guard tag == .personalName else { return true }
+                var name = String(sample[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+                for suffix in ["’s", "'s"] where name.hasSuffix(suffix) { name.removeLast(suffix.count) }
+                let words = name.split(separator: " ")
+                // A known name was counted above; a piece's own author is
+                // its byline, not a mention.
+                guard name.count >= 3, words.count <= 4, name.first?.isUppercase == true,
+                      !names.contains(name), !own.contains(name) else { return true }
+                counts[name, default: ([], 0)].pieces.insert(piece)
+                counts[name, default: ([], 0)].mentions += 1
+                return true
+            }
+        }
+        // Fold the short forms into their full names.
+        let fulls = counts.keys.filter { $0.contains(" ") }
+        var canonical: [String: String] = [:]
+        var bySurname: [String: [String]] = [:]
+        for full in fulls { bySurname[String(full.split(separator: " ").last!), default: []].append(full) }
+        for (_, names) in bySurname {
+            let ranked = names.sorted { (counts[$0]?.mentions ?? 0) > (counts[$1]?.mentions ?? 0) }
+            for name in ranked.dropFirst() where name.first == ranked[0].first { canonical[name] = ranked[0] }
+        }
+        for single in counts.keys where !single.contains(" ") {
+            if let names = bySurname[single] {
+                let heads = Set(names.map { canonical[$0] ?? $0 })
+                if heads.count == 1 { canonical[single] = heads.first }
+            }
+        }
+        var merged: [String: (pieces: Set<String>, mentions: Int)] = [:]
+        for (name, count) in counts {
+            let head = canonical[name] ?? name
+            merged[head, default: ([], 0)].pieces.formUnion(count.pieces)
+            merged[head, default: ([], 0)].mentions += count.mentions
+        }
+        let lowered = Set(contributors.map { $0.lowercased() })
+        return merged.filter { $0.value.pieces.count >= 2 && $0.key.contains(" ") }
+            .map { Person(name: $0.key, pieces: $0.value.pieces.sorted(), mentions: $0.value.mentions,
+                          isContributor: lowered.contains($0.key.lowercased())) }
+            .sorted { $0.pieces.count != $1.pieces.count ? $0.pieces.count > $1.pieces.count : $0.name < $1.name }
+    }
+
+    /// The pieces by meaning: each piece's nearest (`limit`), groups by
+    /// spherical k-means (√(n/2), 2 to 12), each named by the theme most
+    /// its own, and a 3D place from the three main axes of difference.
+    static func meaningMap(vectors: [String: [Float]], model: String, themes: [Theme],
+                           limit: Int = 8) -> (meaning: Meaning, similar: [String: [Neighbour]]) {
+        let keys = vectors.keys.sorted()
+        let unit = keys.map { normalised(vectors[$0]!) }
+        // Nearest by cosine.
+        var similar: [String: [Neighbour]] = [:]
+        for (i, key) in keys.enumerated() {
+            let ranked = keys.indices.filter { $0 != i }
+                .map { ($0, cosine(unit[i], unit[$0])) }
+                .sorted { $0.1 > $1.1 }
+                .prefix(limit)
+            similar[key] = ranked.map { Neighbour(piece: keys[$0.0], shared: 0, score: (Double($0.1) * 1000).rounded() / 1000) }
+        }
+        // Groups, each named by its most characteristic theme: shared by
+        // many of its members, few of everyone else.
+        let k = min(12, max(2, Int((Double(keys.count) / 2).squareRoot().rounded())))
+        let clusters = sphericalKMeans(unit.map { $0.map(Double.init) }, k: k)
+        var themesOf: [String: [Theme]] = [:]
+        for theme in themes { for piece in theme.pieces { themesOf[piece, default: []].append(theme) } }
+        var used = Set<String>()
+        let groups: [Meaning.Group] = clusters.enumerated().compactMap { index, cluster in
+            let members = cluster.members.map { keys[$0.index] }
+            guard !members.isEmpty else { return nil }
+            var score: [String: Double] = [:]
+            for piece in members {
+                for theme in themesOf[piece] ?? [] {
+                    score[theme.label, default: 0] += 1 / Double(theme.pieces.count).squareRoot()
+                }
+            }
+            let label = score.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+                .first { !used.contains($0.key) }?.key ?? "Group \(index + 1)"
+            used.insert(label)
+            return Meaning.Group(id: "meaning:\(index)", label: label, pieces: members.sorted())
+        }
+        // Three main axes (PCA through the Gram matrix), scaled to ±1.
+        let coordinates = principalCoordinates(unit, dimensions: 3)
+        var places: [String: [Float]] = [:]
+        for (i, key) in keys.enumerated() { places[key] = coordinates[i] }
+        return (Meaning(model: model, groups: groups, coordinates: places), similar)
+    }
+
+    static func cosine(_ a: [Float], _ b: [Float]) -> Float {
+        guard a.count == b.count, !a.isEmpty else { return 0 }
+        var dot: Float = 0, x: Float = 0, y: Float = 0
+        vDSP_dotpr(a, 1, b, 1, &dot, vDSP_Length(a.count))
+        vDSP_svesq(a, 1, &x, vDSP_Length(a.count))
+        vDSP_svesq(b, 1, &y, vDSP_Length(b.count))
+        return x > 0 && y > 0 ? dot / (x.squareRoot() * y.squareRoot()) : 0
+    }
+
+    static func normalised(_ v: [Float]) -> [Float] {
+        var length: Float = 0
+        vDSP_svesq(v, 1, &length, vDSP_Length(v.count))
+        length = length.squareRoot()
+        return length > 0 ? v.map { $0 / length } : v
+    }
+
+    /// Each row's place on the data's main axes: the rows centred, their
+    /// Gram matrix's leading eigenvectors by power iteration (deflating
+    /// each found), scaled by √λ, then each axis stretched to ±1.
+    static func principalCoordinates(_ rows: [[Float]], dimensions: Int) -> [[Float]] {
+        let n = rows.count
+        guard n > 1, let d = rows.first?.count, d > 0 else { return rows.map { _ in Array(repeating: 0, count: dimensions) } }
+        var mean = [Float](repeating: 0, count: d)
+        for row in rows { vDSP_vadd(mean, 1, row, 1, &mean, 1, vDSP_Length(d)) }
+        var scale = 1 / Float(n)
+        vDSP_vsmul(mean, 1, &scale, &mean, 1, vDSP_Length(d))
+        var x = [Float](repeating: 0, count: n * d)
+        for (i, row) in rows.enumerated() {
+            for j in 0..<d { x[i * d + j] = row[j] - mean[j] }
+        }
+        var gram = [Float](repeating: 0, count: n * n)
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, Int32(n), Int32(n), Int32(d),
+                    1, x, Int32(d), x, Int32(d), 0, &gram, Int32(n))
+        var axes: [[Float]] = []
+        for axis in 0..<dimensions {
+            var v = (0..<n).map { Float(($0 * 7919 + axis * 104729) % 1000) / 1000 + 0.1 }
+            var lambda: Float = 0
+            for _ in 0..<200 {
+                var next = [Float](repeating: 0, count: n)
+                cblas_sgemv(CblasRowMajor, CblasNoTrans, Int32(n), Int32(n), 1, gram, Int32(n), v, 1, 0, &next, 1)
+                var norm: Float = 0
+                vDSP_svesq(next, 1, &norm, vDSP_Length(n))
+                norm = norm.squareRoot()
+                guard norm > 1e-9 else { break }
+                lambda = norm
+                v = next.map { $0 / norm }
+            }
+            axes.append(v.map { $0 * lambda.squareRoot() })
+            // Deflate: G -= λ v vᵀ.
+            for i in 0..<n { for j in 0..<n { gram[i * n + j] -= lambda * v[i] * v[j] } }
+        }
+        var out = (0..<n).map { i in axes.map { $0[i] } }
+        for axis in 0..<dimensions {
+            let peak = out.map { abs($0[axis]) }.max() ?? 1
+            if peak > 0 { for i in 0..<n { out[i][axis] /= peak } }
+        }
+        return out
+    }
+
+    /// Spherical k-means over unit vectors: farthest-first seeds
+    /// (deterministic), cosine assignment, re-normalised means, 25 rounds
+    /// or until nothing moves. Each member carries its cosine to its
+    /// group's centre.
+    static func sphericalKMeans(_ vectors: [[Double]], k: Int)
+        -> [(centre: [Double], members: [(index: Int, fit: Float)])] {
+        guard !vectors.isEmpty else { return [] }
+        let k = min(k, vectors.count)
+        func dot(_ a: [Double], _ b: [Double]) -> Double { zip(a, b).reduce(0) { $0 + $1.0 * $1.1 } }
+        func unit(_ v: [Double]) -> [Double] {
+            let length = v.reduce(0) { $0 + $1 * $1 }.squareRoot()
+            return length > 0 ? v.map { $0 / length } : v
+        }
+        let mean = unit(vectors.dropFirst().reduce(vectors[0]) { zip($0, $1).map(+) })
+        var seeds = [vectors.indices.min { dot(vectors[$0], mean) < dot(vectors[$1], mean) } ?? 0]
+        var nearestSeed = vectors.map { dot($0, vectors[seeds[0]]) }
+        while seeds.count < k {
+            guard let next = vectors.indices.filter({ !seeds.contains($0) }).min(by: { nearestSeed[$0] < nearestSeed[$1] })
+            else { break }
+            seeds.append(next)
+            for index in vectors.indices { nearestSeed[index] = max(nearestSeed[index], dot(vectors[index], vectors[next])) }
+        }
+        var centres = seeds.map { vectors[$0] }
+        var assignment = Array(repeating: -1, count: vectors.count)
+        for _ in 0..<25 {
+            var changed = false
+            for (index, vector) in vectors.enumerated() {
+                let best = centres.indices.max { dot(vector, centres[$0]) < dot(vector, centres[$1]) } ?? 0
+                if assignment[index] != best { assignment[index] = best; changed = true }
+            }
+            for c in centres.indices {
+                let members = vectors.indices.filter { assignment[$0] == c }
+                guard !members.isEmpty else { continue }
+                centres[c] = unit(members.dropFirst().reduce(vectors[members[0]]) { sum, index in
+                    zip(sum, vectors[index]).map(+)
+                })
+            }
+            if !changed { break }
+        }
+        return centres.indices.map { c in
+            (centres[c], vectors.indices.filter { assignment[$0] == c }
+                .map { (index: $0, fit: Float(dot(vectors[$0], centres[c]))) })
+        }
+    }
+}
+
+// MARK: Building a corpus's relations
+
+extension CorpusRelations {
+    /// One volume as the pass reads it.
+    struct VolumeSource: Sendable {
+        let folder: String
+        let unpacked: URL
+        let bound: BoundVolume
+    }
+
+    /// Who cites what, read from the volumes' own records: each volume's
+    /// `references.bib`, its endnotes and its binding (`visual-meta.json`).
+    ///
+    /// The volumes are read in the series' order, and **an entry belongs
+    /// to the first volume that holds it**: FoT's volumes each carry
+    /// every endnote of the volume before (Vol 6 holds 830, 789 of them
+    /// earlier volumes'), and Vol 3 repeats Vol 2's bibliography. Within
+    /// its volume an entry is traced to its article by the binding's own
+    /// lists of each work's references and notes, then by the file it is
+    /// placed in; one traced to no article stands for the volume.
+    ///
+    /// An endnote counts as a citation only when it carries an address
+    /// or a DOI — the rest are the authors' asides. `known` is the Mac's
+    /// master list of cited works, for each work's registry facts.
+    static func build(name: String, volumes: [VolumeSource],
+                      known: [String: ReferenceStatus.CitedWork]) -> Corpus {
+        var pieces: [String: Piece] = [:]
+        var works: [String: Work] = [:]
+        var findings: [String] = []
+
+        struct Occurrence {
+            var from: String
+            var attributedBy: String
+            var key: String
+        }
+        var chosen: [String: Occurrence] = [:]
+        var order: [String] = []
+        var volumeByNumber: [Int: String] = [:]
+        var seriesNames = Set<String>()
+
+        for source in volumes {
+            let folder = source.folder
+            let number = source.bound.series?.volume
+            if let number { volumeByNumber[number] = folder }
+            if let series = source.bound.series?.name, !series.isEmpty { seriesNames.insert(series) }
+            let label = number.map { "Vol \($0)" } ?? folder
+            guard let data = OrigamiEPUBImporter.recordData(
+                    inUnpackedFolder: source.unpacked, properties: "origami:visual-meta",
+                    fileName: "visual-meta.json"),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                findings.append("\(label): no visual-meta.json — nothing to read.")
+                continue
+            }
+            let binding = (root["document"] as? [String: Any])?["binding"] as? [String: Any]
+            let rawWorks = binding?["works"] as? [[String: Any]] ?? []
+
+            // The works as BoundVolume reads them (a repeated id reads
+            // under its href), with the references and notes each lists
+            // and the file each stands in.
+            var taken = Set<String>()
+            var listedReference: [String: String] = [:]
+            var listedNote: [String: String] = [:]
+            var worksInFile: [String: [String]] = [:]
+            for work in rawWorks {
+                guard let href = work["href"] as? String else { continue }
+                var id = work["id"] as? String ?? href
+                if !taken.insert(id).inserted { id = href; taken.insert(id) }
+                let key = pieceKey(folder: folder, work: id)
+                worksInFile[file(of: href), default: []].append(key)
+                let resources = work["resources"] as? [String: Any]
+                for ref in resources?["references"] as? [String] ?? [] where listedReference[ref] == nil {
+                    listedReference[ref] = key
+                }
+                for note in resources?["notes"] as? [String] ?? [] where listedNote[note] == nil {
+                    listedNote[note] = key
+                }
+            }
+            for article in source.bound.articles where article.role == .work {
+                pieces[pieceKey(folder: folder, work: article.id)] = Piece(
+                    folder: folder, work: article.id, title: article.title,
+                    authors: article.authors, volume: number)
+            }
+
+            func attribute(_ id: String, listed: [String: String], file: String?) -> (String, String) {
+                if let key = listed[id] { return (key, "binding") }
+                if let file, let inFile = worksInFile[file], inFile.count == 1 { return (inFile[0], "anchor") }
+                return (volumePrefix + folder, "volume")
+            }
+            var carried = 0
+            var unplaced = 0
+            func note(_ id: String, key: String, attribution: (String, String)) {
+                let occurrence = Occurrence(from: attribution.0, attributedBy: attribution.1, key: key)
+                if let prior = chosen[id] {
+                    carried += 1
+                    // Traced to an article here and nowhere before: this
+                    // is where it belongs after all.
+                    if prior.attributedBy == "volume", attribution.1 != "volume" { chosen[id] = occurrence }
+                } else {
+                    chosen[id] = occurrence
+                    order.append(id)
+                    if attribution.1 == "volume" { unplaced += 1 }
+                }
+            }
+
+            // The bibliography, each entry placed by the volume's own
+            // citations list (the file it stands in) where the binding
+            // does not list it under a work.
+            var citationFile: [String: String] = [:]
+            for citation in root["citations"] as? [[String: Any]] ?? [] {
+                if let id = citation["id"] as? String, let href = citation["href"] as? String {
+                    citationFile[id] = file(of: href)
+                }
+            }
+            var entries = 0
+            if let bib = OrigamiEPUBImporter.recordData(
+                    inUnpackedFolder: source.unpacked, properties: "origami:bibliography",
+                    fileName: "references.bib").flatMap({ String(data: $0, encoding: .utf8) }) {
+                for entry in BibTeXParser.parse(bib) {
+                    let fields = entry.fields
+                    let title = fields["title"].map(BibTeXParser.displayText) ?? ""
+                    let foundDOI = Self.doi(in: fields["doi"]) ?? Self.doi(in: fields["url"])
+                    let address = Self.url(in: fields["url"])
+                    // A quotation filed as an entry, with nothing to name.
+                    guard !title.isEmpty || foundDOI != nil || address != nil,
+                          let key = workKey(doi: foundDOI, url: foundDOI == nil ? address : nil, title: title)
+                    else { continue }
+                    entries += 1
+                    note(entry.key, key: key,
+                         attribution: attribute(entry.key, listed: listedReference, file: citationFile[entry.key]))
+                    if works[key] == nil {
+                        works[key] = Work(
+                            title: title.isEmpty ? (foundDOI ?? address ?? "") : title,
+                            authors: authors(fields["author"] ?? fields["editor"]),
+                            year: fields["year"].flatMap { Int($0.filter(\.isNumber).prefix(4)) },
+                            venue: (fields["journal"] ?? fields["booktitle"] ?? fields["publisher"])
+                                .map(BibTeXParser.displayText),
+                            doi: foundDOI, url: address, listedAs: "bibliography")
+                    }
+                }
+            }
+
+            // The endnotes that cite something: an address or a DOI.
+            var asides = 0
+            var notes = 0
+            for endnote in root["endnotes"] as? [[String: Any]] ?? [] {
+                guard let id = endnote["id"] as? String else { continue }
+                // Notes keep the HTML's entities (&quot;, &amp;).
+                let text = (endnote["text"] as? String ?? "")
+                    .replacingOccurrences(of: "&quot;", with: "\"").replacingOccurrences(of: "&#39;", with: "'")
+                    .replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
+                    .replacingOccurrences(of: "&nbsp;", with: " ").replacingOccurrences(of: "&amp;", with: "&")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let foundDOI = Self.doi(in: text)
+                let address = Self.url(in: text)
+                guard foundDOI != nil || address != nil,
+                      let key = workKey(doi: foundDOI, url: foundDOI == nil ? address : nil, title: "")
+                else { asides += 1; continue }
+                notes += 1
+                // Where the note is called from: its anchor's file (the
+                // href of a note left at the back says nothing).
+                let placed = (endnote["anchor"] as? String).map(file(of:))
+                note(id, key: key, attribution: attribute(id, listed: listedNote, file: placed))
+                if works[key] == nil {
+                    works[key] = Work(title: noteTitle(text, doi: foundDOI, url: address),
+                                      doi: foundDOI, url: address ?? foundDOI.map { "https://doi.org/" + $0 },
+                                      listedAs: "endnote")
+                }
+            }
+            var line = "\(label): \(entries) bibliography entries and \(notes) citing endnotes read (\(asides) endnotes are asides, not citations)."
+            if carried > 0 { line += " \(carried) repeat an earlier volume's and are counted once, there." }
+            if unplaced > 0 { line += " \(unplaced) of its own name no article and stand for the volume." }
+            findings.append(line)
+        }
+
+        // The corpus's own pieces and volumes among the cited works.
+        var pieceByTitle: [String: String] = [:]
+        for (key, piece) in pieces {
+            let folded = ReferenceStatus.normalizedTitle(piece.title)
+            guard folded.count >= 12 else { continue }
+            pieceByTitle[folded] = pieceByTitle[folded] == nil ? key : ""
+        }
+        for (key, work) in works {
+            if let piece = pieceByTitle[ReferenceStatus.normalizedTitle(work.title)], !piece.isEmpty {
+                works[key]?.inCorpus = piecePrefix + piece
+            } else if let number = seriesNames.lazy.compactMap({ volumeNumber(inTitle: work.title, series: $0) }).first,
+                      let folder = volumeByNumber[number] {
+                works[key]?.inCorpus = volumePrefix + folder
+            }
+        }
+
+        // The citations, a piece citing a work once, a volume never itself.
+        var citations: [Citation] = []
+        var seen = Set<String>()
+        for id in order {
+            guard let occurrence = chosen[id], let work = works[occurrence.key] else { continue }
+            let fromVolume = occurrence.from.hasPrefix(volumePrefix)
+                ? String(occurrence.from.dropFirst(volumePrefix.count))
+                : pieces[occurrence.from]?.folder
+            if let target = work.inCorpus {
+                if target == piecePrefix + occurrence.from { continue }
+                if let fromVolume, target == volumePrefix + fromVolume { continue }
+            }
+            guard seen.insert(occurrence.from + "→" + occurrence.key).inserted else { continue }
+            citations.append(Citation(from: occurrence.from, to: occurrence.key,
+                                      attributedBy: occurrence.attributedBy, entry: id))
+        }
+
+        // How many cite each work, and what the master list knows of it.
+        var citingPieces: [String: Set<String>] = [:]
+        var citingVolumes: [String: Set<String>] = [:]
+        for citation in citations {
+            if citation.from.hasPrefix(volumePrefix) {
+                citingVolumes[citation.to, default: []].insert(citation.from)
+            } else {
+                citingPieces[citation.to, default: []].insert(citation.from)
+            }
+        }
+        for key in works.keys {
+            works[key]?.citedByPieces = citingPieces[key]?.count ?? 0
+            works[key]?.citedByVolumes = citingVolumes[key]?.count ?? 0
+            guard let work = works[key],
+                  let record = work.doi.flatMap({ known[$0] })
+                    ?? ReferenceStatus.sharedKey(doi: nil, title: work.title).flatMap({ known[$0] })
+            else { continue }
+            if work.year == nil { works[key]?.year = record.year }
+            if work.venue == nil { works[key]?.venue = record.venue }
+            if work.authors.isEmpty { works[key]?.authors = record.authors ?? [] }
+            if work.doi == nil { works[key]?.doi = record.doi }
+            if work.listedAs == "endnote", let title = record.title { works[key]?.title = title }
+            works[key]?.citedByWorld = record.live?.citedBy
+            if record.live?.openAlexRetracted == true { works[key]?.retracted = true }
+        }
+        // Works no citation reaches (every listing of them repeated or
+        // self-cited) leave the record.
+        let reached = Set(citations.map(\.to))
+        works = works.filter { reached.contains($0.key) }
+
+        // Shares sources: two pieces citing the same works, a rare work
+        // counting for more than one the whole corpus cites.
+        var sourcesOf: [String: Set<String>] = [:]
+        for (work, citing) in citingPieces { for piece in citing { sourcesOf[piece, default: []].insert(work) } }
+        let pieceCount = Double(max(sourcesOf.count, 1))
+        var sharesSources: [String: [Neighbour]] = [:]
+        for (piece, sources) in sourcesOf {
+            var shared: [String: (count: Int, score: Double)] = [:]
+            for work in sources {
+                let citing = citingPieces[work] ?? []
+                let weight = Foundation.log(1 + pieceCount / Double(max(citing.count, 1)))
+                for other in citing where other != piece {
+                    shared[other, default: (0, 0)].count += 1
+                    shared[other, default: (0, 0)].score += weight
+                }
+            }
+            let ranked = shared.sorted { $0.value.score != $1.value.score ? $0.value.score > $1.value.score : $0.key < $1.key }
+            if !ranked.isEmpty {
+                sharesSources[piece] = ranked.prefix(8).map {
+                    Neighbour(piece: $0.key, shared: $0.value.count, score: ($0.value.score * 100).rounded() / 100)
+                }
+            }
+        }
+
+        // The canon: the outside works cited most widely.
+        let canon = works.filter { $0.value.inCorpus == nil && $0.value.citedByPieces + $0.value.citedByVolumes >= 2 }
+            .sorted {
+                let a = ($0.value.citedByPieces, $0.value.citedByVolumes), b = ($1.value.citedByPieces, $1.value.citedByVolumes)
+                return a != b ? a > b : $0.key < $1.key
+            }
+            .prefix(40).map(\.key)
+
+        let traced = citations.filter { !$0.from.hasPrefix(volumePrefix) }.count
+        let inside = citations.filter { works[$0.to]?.inCorpus != nil }.count
+        findings.append("In all: \(citations.count) citations of \(works.count) works; \(traced) traced to their article, \(citations.count - traced) standing for their volume; \(inside) cite the corpus itself.")
+
+        return Corpus(name: name, volumes: volumes.map(\.folder), pieces: pieces, works: works,
+                      citations: citations, sharesSources: sharesSources, canon: Array(canon),
+                      findings: findings)
+    }
+
+    /// "content/work-8.html#bib-…" → "content/work-8.html".
+    private static func file(of href: String) -> String {
+        String(href.split(separator: "#", maxSplits: 1).first ?? "")
+    }
+
+    /// BibTeX's "Last, First and Last, First" as display names.
+    private static func authors(_ raw: String?) -> [String] {
+        guard let raw else { return [] }
+        return BibTeXParser.displayText(raw).components(separatedBy: " and ").compactMap { name in
+            let parts = name.split(separator: ",", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            let display = parts.count == 2 ? "\(parts[1]) \(parts[0])" : name.trimmingCharacters(in: .whitespaces)
+            return display.isEmpty ? nil : display
+        }
+    }
+
+    /// A citing endnote's words without its address — "ISO13250", "See" —
+    /// or, when nothing else is said, the address's own host and path.
+    private static func noteTitle(_ text: String, doi: String?, url: String?) -> String {
+        var words = text
+        if let url { words = words.replacingOccurrences(of: url, with: "") }
+        words = words.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ":;,.-–—()")))
+        let bare = words.lowercased()
+        if words.count >= 4, !["see", "see also", "source", "available at", "link", "online"].contains(bare) {
+            return String(words.prefix(200))
+        }
+        if let url {
+            let short = normalizedURL(url)
+            return String(short.prefix(90))
+        }
+        return doi.map { "doi:" + $0 } ?? text
+    }
+
+    /// The volume a title names when it is the series' own — "The Future
+    /// of Text VI", "… Vol 4", "… |||" — or nil.
+    static func volumeNumber(inTitle title: String, series: String) -> Int? {
+        let lowered = title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = series.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, lowered.hasPrefix(name) else { return nil }
+        var rest = lowered.dropFirst(name.count).trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
+        for word in ["volume", "vol"] where rest.hasPrefix(word) {
+            rest = rest.dropFirst(word.count).trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
+        }
+        let token = String(rest.split(whereSeparator: { $0 == " " || $0 == ":" }).first ?? "")
+        guard !token.isEmpty else { return nil }
+        if let number = Int(token) { return number }
+        if token.allSatisfy({ $0 == "|" }) { return token.count }
+        let roman: [Character: Int] = ["i": 1, "v": 5, "x": 10, "l": 50]
+        guard token.allSatisfy({ roman[$0] != nil }) else { return nil }
+        var total = 0
+        var previous = 0
+        for character in token.reversed() {
+            let value = roman[character] ?? 0
+            total += value < previous ? -value : value
+            previous = max(previous, value)
+        }
+        return total > 0 && total < 100 ? total : nil
     }
 }
 

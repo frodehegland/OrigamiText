@@ -1469,6 +1469,11 @@ final class VisionModel {
             if let metadata = ArticleMetadata.readShared(from: folder) {
                 await MainActor.run { self.adoptArticleMetadata(metadata) }
             }
+            // Who cites what across a published corpus — the editor's
+            // own record, published beside the books.
+            if let relations = CorpusRelations.readShared(from: folder) {
+                await MainActor.run { self.adoptCorpusRelations(relations) }
+            }
             guard let state = EPUBStanding.read(from: folder) else { return }
             await MainActor.run { self.applyStanding(state) }
         }
@@ -1635,11 +1640,42 @@ final class VisionModel {
             case arrange(String)
             /// A whole-wall view, by the Hallway's own option name.
             case view(String)
+            /// A Shape for the room: Timeline, or one of the groupings.
+            case shape(String)
         }
         let action: Action
         let id = UUID()
     }
     var volumeBarRequest: VolumeBarRequest?
+
+    /// The keywords the reader has put into each room, by venue —
+    /// spoken or typed into the volume bar's Keyword field. Each stands
+    /// in the Hallway as a card of its own. Kept across launches.
+    var spaceKeywords: [String: [String]] =
+        (UserDefaults.standard.dictionary(forKey: "spaceKeywordsByVenue") as? [String: [String]]) ?? [:] {
+        didSet { UserDefaults.standard.set(spaceKeywords, forKey: "spaceKeywordsByVenue") }
+    }
+
+    /// The open room's keywords, in the order they were put there.
+    var roomKeywords: [String] {
+        openJournalVenue.flatMap { spaceKeywords[$0] } ?? []
+    }
+
+    /// A keyword into the open room — once, whatever its case; a spoken
+    /// one loses the full stop dictation gives it.
+    func addSpaceKeyword(_ raw: String) {
+        let term = raw.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
+        guard let venue = openJournalVenue, !term.isEmpty else { return }
+        var terms = spaceKeywords[venue] ?? []
+        guard !terms.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) else { return }
+        terms.append(term)
+        spaceKeywords[venue] = terms
+    }
+
+    func removeSpaceKeyword(_ term: String) {
+        guard let venue = openJournalVenue else { return }
+        spaceKeywords[venue]?.removeAll { $0.caseInsensitiveCompare(term) == .orderedSame }
+    }
 
     /// One of Layout's choices as the Hallway names it.
     struct LayoutChoice: Identifiable, Hashable {
@@ -1650,6 +1686,30 @@ final class VisionModel {
     /// what is selected, and the whole-wall views.
     var layoutArrangements: [LayoutChoice] = []
     var layoutViews: [LayoutChoice] = []
+    /// The Shapes the room can take, published by the Hallway — a title
+    /// saying what is missing when its data is not there yet — and the
+    /// one it stands in.
+    var shapeChoices: [LayoutChoice] = []
+    var shapeAvailable: Set<String> = []
+    var currentShapeID: String?
+
+    /// The corpus record for these cards, with each piece's id in the
+    /// room — nil when the Mac has published none for them.
+    func roomCorpus(for docIDs: [String]) -> (corpus: CorpusRelations.Corpus, docOfPiece: [String: String])? {
+        var folderOfVolume: [String: String] = [:]
+        for record in epubRecords { folderOfVolume[record.id] = record.folder }
+        var docOfPiece: [String: String] = [:]
+        var corpusID: String?
+        for id in docIDs {
+            guard let split = BoundVolume.split(articleDocID: id),
+                  let folder = folderOfVolume[split.volume] else { continue }
+            let piece = CorpusRelations.pieceKey(folder: folder, work: split.article)
+            if corpusID == nil { corpusID = corpusOfPiece[piece] }
+            docOfPiece[piece] = id
+        }
+        guard let corpusID, let corpus = corpusRelations?.corpora[corpusID] else { return nil }
+        return (corpus, docOfPiece)
+    }
     /// Whether every article card stands selected — Select All then
     /// reads Deselect All.
     var allArticlesSelected = false
@@ -1766,6 +1826,91 @@ final class VisionModel {
         volumeStamp += 1
         // The assistant's index re-reads the abstracts and concepts.
         if isVolumeRoom { prepareSeriesIndex() }
+    }
+
+    /// The corpus relations the Mac published, and by piece key the
+    /// corpus each piece belongs to.
+    @ObservationIgnored private(set) var corpusRelations: CorpusRelations.File?
+    @ObservationIgnored private var corpusOfPiece: [String: String] = [:]
+
+    /// A newer record from the Mac: the rooms read their citations again.
+    func adoptCorpusRelations(_ file: CorpusRelations.File) {
+        guard file.modified != corpusRelations?.modified else { return }
+        corpusRelations = file
+        corpusOfPiece = [:]
+        for (id, corpus) in file.corpora {
+            for key in corpus.pieces.keys { corpusOfPiece[key] = id }
+        }
+        volumeStamp += 1
+    }
+
+    /// What the corpus record says an article cites, each work with its
+    /// key — nil when the record does not know the article, so the room
+    /// falls back to the article's own references. A work that is one of
+    /// the corpus's pieces comes back as that piece's id in the room.
+    func corpusCitations(forDocID id: String)
+        -> [(key: String, work: CorpusRelations.Work, pieceDocID: String?)]? {
+        guard let split = BoundVolume.split(articleDocID: id),
+              let volume = epubRecords.first(where: { $0.id == split.volume }) else { return nil }
+        let piece = CorpusRelations.pieceKey(folder: volume.folder, work: split.article)
+        guard let corpusID = corpusOfPiece[piece],
+              let corpus = corpusRelations?.corpora[corpusID] else { return nil }
+        return corpus.citations.filter { $0.from == piece }.compactMap { citation in
+            guard let work = corpus.works[citation.to] else { return nil }
+            var docID: String?
+            if let target = work.inCorpus, target.hasPrefix(CorpusRelations.piecePrefix),
+               let cited = corpus.pieces[String(target.dropFirst(CorpusRelations.piecePrefix.count))],
+               let record = epubRecords.first(where: { $0.folder == cited.folder }) {
+                docID = BoundVolume.articleDocID(volume: record.id, article: cited.work)
+            }
+            return (citation.to, work, docID)
+        }
+    }
+
+    /// The corpus record's relations of an article to its fellow pieces,
+    /// each as the ids those pieces read under in the room: Shares
+    /// Sources (a fact), Similar (by meaning — AI), and every stance type
+    /// the record holds (Agrees, Contradicts…), the editor's rejected
+    /// ones left out. Empty when the record does not know the article.
+    func corpusRelated(forDocID id: String)
+        -> [(title: String, ids: [String], isAI: Bool, outward: Bool)] {
+        guard let split = BoundVolume.split(articleDocID: id),
+              let volume = epubRecords.first(where: { $0.id == split.volume }) else { return [] }
+        let piece = CorpusRelations.pieceKey(folder: volume.folder, work: split.article)
+        guard let corpusID = corpusOfPiece[piece],
+              let corpus = corpusRelations?.corpora[corpusID] else { return [] }
+        var folderToRecord: [String: String] = [:]
+        for record in epubRecords where folderToRecord[record.folder] == nil {
+            folderToRecord[record.folder] = record.id
+        }
+        func docID(_ key: String) -> String? {
+            guard let other = corpus.pieces[key], let record = folderToRecord[other.folder] else { return nil }
+            return BoundVolume.articleDocID(volume: record, article: other.work)
+        }
+        var related: [(title: String, ids: [String], isAI: Bool, outward: Bool)] = []
+        let shares = (corpus.sharesSources[piece] ?? []).compactMap { docID($0.piece) }
+        if !shares.isEmpty { related.append(("Shares Sources", shares, false, true)) }
+        let similar = (corpus.similar?[piece] ?? []).compactMap { docID($0.piece) }
+        if !similar.isEmpty { related.append(("Similar", similar, true, true)) }
+        // Stances read both ways: what this piece holds toward others, and
+        // what others hold toward it ("Contradicted by" reads as Contradicts
+        // either way — a disagreement is mutual on the wall).
+        var byTitle: [String: (ids: [String], isAI: Bool)] = [:]
+        var order: [String] = []
+        for stance in corpus.stances ?? [] where stance.review != "rejected" {
+            let other: String
+            if stance.from == piece { other = stance.to }
+            else if stance.to == piece { other = stance.from }
+            else { continue }
+            guard let otherID = docID(other) else { continue }
+            if byTitle[stance.title] == nil { order.append(stance.title) }
+            byTitle[stance.title, default: ([], false)].ids.append(otherID)
+            if stance.isAI { byTitle[stance.title]?.isAI = true }
+        }
+        for title in order {
+            if let entry = byTitle[title] { related.append((title, entry.ids, entry.isAI, false)) }
+        }
+        return related
     }
 
     func boundVolume(for record: EPUBRecord) -> BoundVolume? {
@@ -3113,9 +3258,27 @@ struct VisionOpeningView: View {
 struct VisionVolumeToolbar: View {
     @Environment(VisionModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    /// The keyword being spoken or typed — its keyboard's microphone
+    /// takes dictation.
+    @State private var keywordDraft = ""
 
     var body: some View {
         HStack(spacing: 40) {
+            // A keyword into the room: it stands as a card, and chosen,
+            // draws lines to the papers using it, leaves only them, or
+            // gathers them round it.
+            HStack(spacing: 8) {
+                Image(systemName: "text.badge.plus").foregroundStyle(.secondary)
+                TextField("Keyword", text: $keywordDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+                    .submitLabel(.done)
+                    .onSubmit {
+                        model.addSpaceKeyword(keywordDraft)
+                        keywordDraft = ""
+                    }
+            }
+            .help("Speak or type a keyword to put it into the room")
             // Which of the volume's zones stand in the room.
             HStack(spacing: 10) {
                 Text("Show").foregroundStyle(.secondary)

@@ -382,6 +382,29 @@ Keys are read only when a request is sent, never at launch. This follows the pro
   - `.invalid(message)`.
 - `OllamaModelCatalog` is a Mac-only list of recommended models, from phi4-mini up to llama4:scout, filtered by installed RAM.
 
+**Embeddings and downloads** (`OllamaClient`, 1 Nov 2026, Mac and headset). These use Ollama's own API, which the chat-completions dialect lacks.
+- **Models on the server:** `GET {base}/api/tags` → `models[].name`. `sameModel` treats a bare name and its `:latest` as one model.
+- **Download:** `POST {base}/api/pull` with `{"model", "stream": true}`. The reply is lines of JSON `{status, total?, completed?}`, and an `error` line throws. Progress is reported at most every 0.25 s, and always on "success". Timeout 3600 s.
+- **Embed:** `POST {base}/api/embed` with `{"model", "input": [..]}` → `embeddings[[Float]]`. It sends batches of 16, keeps the input order, and checks for cancellation between batches.
+  - A 404, or an error containing "not found", throws `.modelNotFound`.
+  - **There is no Apple fallback:** vectors from two models cannot be compared.
+
+In `OrigamiLLM`:
+- `embeddingModel` is persisted in UserDefaults under `"embeddingModelID"`.
+  - Its default is `EmbeddingModelCatalog.suggested`, the best model the Mac's RAM holds: `qwen3-embedding:8b` at 32 GB and up, then `:4b` at 16 GB and up, then `:0.6b`. The headset suggests 8b, since its models run on the Mac.
+  - `nomic-embed-text` is also listed.
+- `ollamaBase` is the added endpoint on port 11434, else `http://localhost:11434`.
+- `embed(_:) -> (vectors, modelName)`, `hasEmbeddingModel()`.
+- `downloadModel(_:)` sets `download: ModelDownload{model, status, fraction, failure}` and refreshes the endpoint's model list when it finishes.
+
+**Settings ▸ AI ▸ Embedding Model** (`EmbeddingModelSettingsSection`, right after the language model picker):
+- A picker over the catalogue, marking "— not downloaded".
+- The chosen model's summary, download size and memory.
+- A ready / not-on-server / Ollama-not-answering line.
+- **Download** (Try Again after a failure), with a progress bar.
+
+qwen3-embedding:8b gives 4096 dimensions. Typed-links sentences score 0.83 against each other and 0.27 against an unrelated sentence.
+
 **Apple path** (`appleRespond`):
 
 - Requires `SystemLanguageModel.default.availability == .available`; otherwise it throws `.appleUnavailable`.
