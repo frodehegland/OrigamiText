@@ -3027,6 +3027,9 @@ nonisolated struct BoundVolume: Hashable, Sendable {
         /// The reader's Defined Concepts its pages use, by name — found
         /// by the Mac's Build Article Metadata, never written into the book.
         var definedConcepts: [String] = []
+        /// The pictures its pages show, folder-relative, in the order the
+        /// binding lists them (`resources.images`) — empty when it lists none.
+        var images: [String] = []
 
         var isWork: Bool { kind == .article || kind == .collection }
         var zone: Zone { kind.zone }
@@ -3138,6 +3141,7 @@ nonisolated struct BoundVolume: Hashable, Sendable {
             if let (kind, label) = declaredKind(work["role"]) {
                 piece.kind = kind; piece.label = label; piece.declared = true
             }
+            piece.images = ids(resources, "images").map { OrigamiEPUBImporter.joinedPath(opfDirectory, $0) }
             pieces.append(piece)
         }
         for matter in binding["matter"] as? [[String: Any]] ?? [] {

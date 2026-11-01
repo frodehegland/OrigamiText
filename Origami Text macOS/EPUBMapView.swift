@@ -80,6 +80,15 @@ struct EPUBMapItem: ItemProtocol {
     /// What a volume's piece is, in small capitals over its title —
     /// FOREWORD, APPENDIX, PART — when it is not plainly an article.
     var pieceLabel: String?
+    /// A picture the card wears, as an absolute file path: a paper's
+    /// first figure as its thumbnail, or a gallery card's own image.
+    var imagePath: String?
+    /// Where the paper stands in its series — "Vol 3 · 2022" — worn only
+    /// once the card is chosen or open.
+    var stamp: String?
+    /// The paper's first sentence, worn small in serif on a card neither
+    /// chosen nor open, so a paper says what it is about at a glance.
+    var firstSentence: String?
 
     var isAttachmentsEnabled: Bool {
         // Concepts carry Focus/Hide; documents and citations carry
@@ -101,7 +110,8 @@ struct EPUBMapItem: ItemProtocol {
             && isGhost == other.isGhost && showsAbstract == other.showsAbstract
             && isLifted == other.isLifted && lengthShare == other.lengthShare
             && isFaded == other.isFaded && warning == other.warning
-            && pieceLabel == other.pieceLabel
+            && pieceLabel == other.pieceLabel && imagePath == other.imagePath
+            && stamp == other.stamp && firstSentence == other.firstSentence
     }
 }
 
@@ -466,8 +476,13 @@ struct EPUBMapView: View {
         // And each paper's length, in words of its own body — the same
         // walk, so a long journal costs nothing extra for it.
         var wordsByArticle: [String: Int] = [:]
+        // And each paper's first sentence — the face of a closed card.
+        var firstSentenceByArticle: [String: String] = [:]
         for record in records {
             guard let doc = model.document(record.id) else { continue }
+            if let sentence = Self.firstSentence(of: doc, title: record.title) {
+                firstSentenceByArticle[record.id] = sentence
+            }
             // The document's whole length, counted on its own: the
             // abstract walk below stops the moment the abstract ends,
             // so it can say nothing about the paper's size.
@@ -734,7 +749,7 @@ struct EPUBMapView: View {
                 var item = EPUBMapItem(
                     id: record.id,
                     title: record.title,
-                    author: stamp.map { "\(record.author) · \($0)" } ?? record.author,
+                    author: record.author,
                     kind: .article,
                     position: position,
                     citedIDs: citedIDsByArticle[record.id] ?? [],
@@ -742,6 +757,9 @@ struct EPUBMapView: View {
                     abstract: cardAbstract(record))
                 item.isLifted = liftedCards[record.id] != nil
                 item.lengthShare = lengthShare(record)
+                item.imagePath = imagePaths(forDocID: record.id).first
+                item.stamp = stamp
+                item.firstSentence = firstSentenceByArticle[record.id]
                 return item
             }
 
@@ -770,6 +788,7 @@ struct EPUBMapView: View {
                         isPinned: model.pinnedIDs.contains(record.id),
                         abstract: cardAbstract(record))
                     item.isLifted = liftedCards[record.id] != nil
+                    item.imagePath = imagePaths(forDocID: record.id).first
                     return item
                 }
             }
@@ -925,6 +944,33 @@ struct EPUBMapView: View {
         default:
             return (piece.label ?? piece.kind.title).uppercased()
         }
+    }
+
+    /// A paper's first sentence: the first paragraph of real prose — not a
+    /// heading, not the title again, not a byline, not a scrap — cut at
+    /// its first sentence's end, and held to 180 characters.
+    static func firstSentence(of doc: LiquidDoc, title: String) -> String? {
+        let folded = title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        for paragraph in doc.body ?? [] {
+            guard paragraph.heading == nil else { continue }
+            let text = paragraph.text
+                .replacingOccurrences(of: #"\[cite:[^\]]*\]"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard text.count >= 40, text.lowercased() != folded,
+                  BoundVolume.byline(text) == nil else { continue }
+            let tokenizer = NLTokenizer(unit: .sentence)
+            tokenizer.string = text
+            var sentence = text
+            if let first = tokenizer.tokens(for: text.startIndex..<text.endIndex).first {
+                sentence = String(text[first]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if sentence.count > 180 {
+                let cut = sentence.prefix(177)
+                sentence = (cut.range(of: " ", options: .backwards).map { String(cut[..<$0.lowerBound]) } ?? String(cut)) + "…"
+            }
+            return sentence
+        }
+        return nil
     }
 
     /// Whether a card's place, taken back to the room's own frame, is
@@ -1104,6 +1150,22 @@ struct EPUBMapView: View {
                 kind: .concept, position: placed[id] ?? seed)
             item.isSelected = selected.contains(id)
             return item
+        }
+        // A paper's gallery, raised from its star menu's Images: each of
+        // its pictures a card of its own, standing to the paper's right in
+        // rows of four, joined to it by a line each (relationShown).
+        if let galleryOf, let source = items.first(where: { $0.id == galleryOf }),
+           let anchor = source.position {
+            items += imagePaths(forDocID: galleryOf).enumerated().map { index, path in
+                let id = Self.galleryItemID(galleryOf, index)
+                let seed = anchor + SIMD3<Float>(0.24 + Float(index % 4) * 0.2,
+                                                 0.06 - Float(index / 4) * 0.17, 0.05)
+                var item = EPUBMapItem(id: id, title: "", author: "", kind: .concept,
+                                       position: placed[id] ?? seed)
+                item.imagePath = path
+                item.isSelected = selected.contains(id)
+                return item
+            }
         }
         // The room's Shape labels: one card above each group, naming what
         // its papers share. Chosen, it draws a line to each of them.
@@ -1684,6 +1746,10 @@ struct EPUBMapView: View {
     final class CardSizes {
         /// Width and height in metres, as an unchosen card stands.
         var base: [String: SIMD2<Float>] = [:]
+        /// Cards just opened, waiting to be built — each unfolds as it is.
+        var unfolding: Set<String> = []
+        /// The papers a dragged label carries, worked out once per drag.
+        var riders: (label: String, ids: Set<String>)?
     }
     /// The Select chip's kinds, unfolded above it.
     @State private var selectOpen = false
@@ -1755,6 +1821,24 @@ struct EPUBMapView: View {
     /// standing now — cleared when the room changes.
     @State private var keywordMatchCache: [String: Set<String>] = [:]
     static let keywordItemPrefix = "keyword:"
+    /// The paper whose pictures stand as a gallery, raised from its star
+    /// menu's Images; nil when none does.
+    @State private var galleryOf: String?
+    static let galleryItemPrefix = "image:"
+
+    static func galleryItemID(_ docID: String, _ index: Int) -> String {
+        galleryItemPrefix + docID + "|\(index)"
+    }
+
+    /// A paper's pictures as absolute file paths, in its binding's order:
+    /// its volume's unpacked folder joined with each listed image.
+    private func imagePaths(forDocID id: String) -> [String] {
+        guard let split = BoundVolume.split(articleDocID: id),
+              let volume = model.epubRecords.first(where: { $0.id == split.volume }),
+              let piece = model.piece(forDocID: id), !piece.images.isEmpty else { return [] }
+        let folder = VisionModel.epubsRoot.appendingPathComponent(volume.folder, isDirectory: true)
+        return piece.images.map { folder.appendingPathComponent($0).path }
+    }
     /// The pose each label took from the real surface it was dropped on —
     /// flush to a wall, flat on a table — by id, as a quaternion's vector.
     /// Kept across launches; pulling a label off clears it.
@@ -2379,22 +2463,23 @@ struct EPUBMapView: View {
                 // card gives way to the one that acts on many.
                 if item.kind == .article, item.isSelected,
                    !item.isGhost, !item.isAside {
+                    // Chosen only: one control, Unfold. Open: the star.
+                    // Chosen only: no controls — two taps open it.
+                    if !item.showsAbstract { return AnyView(EmptyView()) }
                     return AnyView(paperStar(for: item))
                 }
                 // A citation keeps the row it had: Open, its abstract
                 // when the reference carried one, and the snap-off verb.
                 if item.kind == .cited || item.kind == .citedDeep,
                    item.isSelected, !item.isGhost, !item.isAside {
+                    // Chosen only: no controls — two taps open it.
+                    if !item.showsAbstract { return AnyView(EmptyView()) }
                     return AnyView(
                         HStack(spacing: 8) {
-                            // Open: what the double tap does — the
-                            // reading in-situ (a citation, its card).
-                            Button("Open") { handleTap(count: 2, on: item) }
-                            if !item.abstract.isEmpty {
-                                Button(item.showsAbstract ? "Hide Abstract" : "Abstract") {
-                                    toggleAbstract(item)
-                                }
-                            }
+                            // Record: everything held on the work, and
+                            // Acquire. Fold: back to chosen only.
+                            Button("Record") { openCitationCard(for: item) }
+                            Button("Fold") { toggleOpen(item) }
                             if EPUBMapView.liftEnabled {
                                 Button(liftedCards[item.id] == nil ? "Lift" : "Put Back") {
                                     toggleLift(item)
@@ -2426,7 +2511,8 @@ struct EPUBMapView: View {
             // A chosen paper's star menu rings the card: centred on it,
             // 6 mm behind its face — so the card keeps every pinch, and
             // the verbs stand clear around its edges.
-            if item.kind == .article, item.isSelected, !item.isGhost, !item.isAside {
+            if item.kind == .article, item.isSelected, item.showsAbstract,
+               !item.isGhost, !item.isAside {
                 return AnchorRule(anchor: SIMD3<Float>(0.5, 0.5, 0.5),
                                   offset: SIMD3<Float>(0, 0, -0.006))
             }
@@ -2444,6 +2530,8 @@ struct EPUBMapView: View {
                 offset: SIMD3<Float>(0, -gap, 0))
         }
         view = view.onEndMoveNode { allItems, _, newItems in
+            // The next drag works out its own riders afresh.
+            cardSizes.riders = nil
             // A lifted card's drag may have stuck it to (or freed it
             // from) a surface — keep that standing.
             if newItems.contains(where: { liftedCards[$0.id] != nil }) {
@@ -2497,6 +2585,15 @@ struct EPUBMapView: View {
                 || item.kind == .cited || item.kind == .citedDeep)
         }
         view = view.shouldMoveAnotherNode { moving, item in
+            // A chosen label — keyword, concept, topic, Shape label —
+            // carries every paper it relates to as it moves (1 Nov 2026).
+            // Worked out once per drag: this asks for every card, every frame.
+            if Self.isSpatialLabel(moving) {
+                if cardSizes.riders?.label != moving.id {
+                    cardSizes.riders = (moving.id, labelMembers(moving))
+                }
+                return cardSizes.riders?.ids.contains(item.id) ?? false
+            }
             guard item.isSelected else { return false }
             let citations: Set<EPUBMapItem.Kind> = [.cited, .citedDeep]
             if citations.contains(moving.kind) {
@@ -2899,6 +2996,25 @@ struct EPUBMapView: View {
                     .strokeBorder(Color.white.opacity(item.isSelected ? 0.75 : 0.25),
                                   lineWidth: (item.isSelected ? 1.6 : 0.6) * s)
             )
+        } else if item.id.hasPrefix(Self.galleryItemPrefix) {
+            // A gallery card: the picture alone, framed by a hairline —
+            // gold while chosen.
+            if let path = item.imagePath, let image = CardImages.image(path: path, maxPixel: 900) {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 150 * s, maxHeight: 120 * s)
+                    .clipShape(RoundedRectangle(cornerRadius: 4 * s))
+                    .overlay(RoundedRectangle(cornerRadius: 4 * s)
+                        .strokeBorder(item.isSelected ? Color(red: 1.0, green: 0.84, blue: 0.45)
+                                                      : Color.white.opacity(0.3),
+                                      lineWidth: (item.isSelected ? 1.6 : 0.6) * s))
+            } else {
+                Text("Picture not found")
+                    .font(.system(size: 6 * s))
+                    .foregroundStyle(Color.white.opacity(0.6))
+                    .padding(6 * s)
+            }
         } else if Self.isSpatialLabel(item) {
             // A label is words in the air, not a card: larger type, no
             // pane, no border — a soft shadow keeps it legible against
@@ -2972,6 +3088,17 @@ struct EPUBMapView: View {
             // (the entity's scale, set in cardEntity).
             let selected = item.isSelected
             VStack(spacing: (item.kind == .citedDeep ? 1.5 : 2.5) * s) {
+                // A paper with pictures wears its first as a thumbnail, so
+                // it is known at a glance as the views change (1 Nov 2026).
+                // Short enough to keep the wall's row pitch clear.
+                if item.kind == .article, !item.isAside, let path = item.imagePath,
+                   let thumbnail = CardImages.image(path: path, maxPixel: 320) {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 24 * s)
+                        .clipShape(RoundedRectangle(cornerRadius: 2 * s))
+                }
                 if let label = item.pieceLabel {
                     Text(label)
                         .font(.system(size: 4.5 * s, weight: .semibold))
@@ -2994,9 +3121,21 @@ struct EPUBMapView: View {
                         .font(AppFonts.body(titleSize * s, weight: .regular))
                         .foregroundStyle(Color.white)
                 }
-                Text(selected ? item.author : shortByline(item.author))
+                // Chosen or open: every author, and where the paper stands
+                // in its series. Closed: the first authors alone, then the
+                // paper's first sentence, small, in serif (1 Nov 2026).
+                Text(selected ? ([item.author] + [item.stamp].compactMap { $0 }).joined(separator: " · ")
+                              : shortByline(item.author))
                     .font(.system(size: 5.5 * s))
                     .foregroundStyle(Color.white.opacity(0.65))
+                if !selected, !item.showsAbstract, let sentence = item.firstSentence {
+                    Text(sentence)
+                        .font(.system(size: 4.6 * s, design: .serif))
+                        .foregroundStyle(Color.white.opacity(0.75))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 0.8 * s)
+                }
                 // A cited work's gravest warning, worn where it is seen
                 // from across the room.
                 if let warning = item.warning {
@@ -3017,9 +3156,10 @@ struct EPUBMapView: View {
                    item.showsAbstract {
                     // The full abstract in fine print — readable
                     // without stepping right up to the card.
+                    // In the system's serif, New York (1 Nov 2026).
                     Text(item.abstract)
-                        .font(.system(size: 5.6 * s))
-                        .foregroundStyle(Color.white.opacity(0.8))
+                        .font(.system(size: 5.8 * s, design: .serif))
+                        .foregroundStyle(Color.white.opacity(0.85))
                         .multilineTextAlignment(.leading)
                         .padding(.top, 1.5 * s)
                 }
@@ -3041,6 +3181,13 @@ struct EPUBMapView: View {
                 if selected && !item.isLifted {
                     RoundedRectangle(cornerRadius: 8 * s)
                         .fill(Color(white: 0.12))
+                } else if item.kind == .article, !item.isLifted {
+                    // A paper's card stands nearly opaque over the glass
+                    // (1 Nov 2026): the room shows through only faintly,
+                    // so the words read cleanly while the views change
+                    // and the cards move through the space.
+                    RoundedRectangle(cornerRadius: 8 * s)
+                        .fill(Color(white: 0.1).opacity(0.72))
                 }
             }
             .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 8 * s),
@@ -3140,6 +3287,18 @@ struct EPUBMapView: View {
         holder.addChild(frontFace)
         holder.addChild(backFace)
         holder.components.set(CardFacesComponent(front: frontFace, back: backFace))
+        // Opening: the card unfolds — it begins folded flat along its
+        // middle, like a sheet creased in half, and opens to full height
+        // with its star around it, rather than appearing in one frame.
+        if cardSizes.unfolding.remove(item.id) != nil {
+            holder.scale = SIMD3<Float>(1, 0.06, 1)
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(16))
+                var open = holder.transform
+                open.scale = SIMD3<Float>(repeating: 1)
+                holder.move(to: open, relativeTo: holder.parent, duration: 0.38, timingFunction: .easeOut)
+            }
+        }
         // A floated passage always faces the reader — billboarded on
         // its face. (Lifted CARDS turn at the node instead, in
         // MapCardTick, so their collision turns with them and the gaze
@@ -3395,6 +3554,16 @@ struct EPUBMapView: View {
         }.count
     }
 
+    /// A chosen card's one control: Unfold — the card opens to its
+    /// abstract and its verbs, as two taps do.
+    private func unfoldButton(for item: EPUBMapItem) -> some View {
+        Button("Unfold") { toggleOpen(item) }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .font(.caption)
+            .scaleEffect(0.5, anchor: .top)
+    }
+
     /// One relation a star menu offers: its name, the cards it reaches,
     /// whether a model inferred it, and its side — what the paper
     /// reaches out to on the left, what reaches back to it on the right.
@@ -3422,6 +3591,8 @@ struct EPUBMapView: View {
         if !citing.isEmpty {
             relations.append(StarRelation(title: "Cited by", ids: citing, isAI: false, outward: false))
         }
+        // (The paper's pictures are no relation button: they stand as
+        // thumbnails on the open card's edge — `thumbnailStrip`.)
         let recorded = model.corpusRelated(forDocID: item.id)
         for relation in recorded {
             let present = relation.ids.filter { standing.contains($0) && $0 != item.id }
@@ -3429,14 +3600,120 @@ struct EPUBMapView: View {
             relations.append(StarRelation(title: relation.title, ids: present,
                                           isAI: relation.isAI, outward: relation.outward))
         }
-        if !recorded.contains(where: { $0.title == "Similar" }), model.isVolumeRoom,
+        if !recorded.contains(where: { $0.title == "Similar to" }), model.isVolumeRoom,
            let index = model.seriesIndex {
             let similar = index.similar(to: item.id, limit: 6).map(\.id).filter(standing.contains)
             if !similar.isEmpty {
-                relations.append(StarRelation(title: "Similar", ids: similar, isAI: true, outward: true))
+                relations.append(StarRelation(title: "Similar to", ids: similar, isAI: true, outward: true))
             }
         }
+        relations += peopleAndVocabularyRelations(for: item, standing: standing)
         return relations
+    }
+
+    /// One person however the volumes wrote them: first and last name,
+    /// accents and case folded ("Frode Alexander Hegland" is "frode hegland").
+    static func personKey(_ name: String) -> String {
+        let words = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .split(separator: " ")
+        guard let first = words.first, let last = words.last else { return "" }
+        return String(first) + " " + String(last)
+    }
+
+    /// The relations read from who wrote and who is named, and from the
+    /// words the papers share:
+    ///  - Same author: other papers by any of its authors (the bylines).
+    ///  - Mentions: papers written by people this one names in its text —
+    ///    named, not cited (the corpus record's People).
+    ///  - Mentioned by: papers that name this one's authors.
+    ///  - Names same people: papers naming the same people as this one.
+    ///  - Same themes: papers sharing its keyword themes.
+    ///  - Shares concepts: papers sharing two or more of the books' terms.
+    /// The last five wait for the Mac's Build Corpus Relations; each is
+    /// offered only when it reaches a card, the eight nearest first.
+    private func peopleAndVocabularyRelations(for item: EPUBMapItem, standing: Set<String>) -> [StarRelation] {
+        var relations: [StarRelation] = []
+        let authorsOf: [String: Set<String>] = Dictionary(uniqueKeysWithValues: standing.map { id in
+            (id, Set((model.piece(forDocID: id)?.authors ?? []).map(Self.personKey).filter { !$0.isEmpty }))
+        })
+        let mine = authorsOf[item.id] ?? []
+        if !mine.isEmpty {
+            let fellows = standing.filter { $0 != item.id && !(authorsOf[$0] ?? []).isDisjoint(with: mine) }
+            if !fellows.isEmpty {
+                relations.append(StarRelation(title: "Same author", ids: fellows.sorted(), isAI: false, outward: false))
+            }
+        }
+        guard let record = model.roomCorpus(for: Array(standing)) else { return relations }
+        let pieceOfDoc = Dictionary(record.docOfPiece.map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        guard let piece = pieceOfDoc[item.id] else { return relations }
+        func docs(_ pieces: [String]) -> [String] {
+            pieces.compactMap { record.docOfPiece[$0] }.filter { standing.contains($0) && $0 != item.id }
+        }
+        /// The papers most often in the given sets, at least `minimum`
+        /// times, the eight most first.
+        func ranked(_ sets: [[String]], minimum: Int = 1) -> [String] {
+            var count: [String: Int] = [:]
+            for set in sets { for doc in Set(docs(set)) { count[doc, default: 0] += 1 } }
+            return count.filter { $0.value >= minimum }
+                .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+                .prefix(8).map(\.key)
+        }
+        let people = record.corpus.people ?? []
+        let named = people.filter { $0.pieces.contains(piece) }
+        let namedKeys = Set(named.map { Self.personKey($0.name) })
+        let mentions = standing.filter { $0 != item.id && !(authorsOf[$0] ?? []).isDisjoint(with: namedKeys) }
+        if !mentions.isEmpty {
+            relations.append(StarRelation(title: "Mentions", ids: mentions.sorted(), isAI: false, outward: true))
+        }
+        let mentionedBy = Set(docs(people.filter { mine.contains(Self.personKey($0.name)) }.flatMap(\.pieces)))
+        if !mentionedBy.isEmpty {
+            relations.append(StarRelation(title: "Mentioned by", ids: mentionedBy.sorted(), isAI: false, outward: false))
+        }
+        let samePeople = ranked(named.map(\.pieces))
+        if !samePeople.isEmpty {
+            relations.append(StarRelation(title: "Names same people", ids: samePeople, isAI: false, outward: true))
+        }
+        let themes = (record.corpus.themes ?? []).filter { $0.pieces.contains(piece) }
+        let sameThemes = ranked(themes.map(\.pieces))
+        if !sameThemes.isEmpty {
+            relations.append(StarRelation(title: "Same themes", ids: sameThemes, isAI: false, outward: true))
+        }
+        let terms = (record.corpus.terms ?? []).filter { $0.pieces.contains(piece) }
+        let sharedTerms = ranked(terms.map(\.pieces), minimum: 2)
+        if !sharedTerms.isEmpty {
+            relations.append(StarRelation(title: "Shares concepts", ids: sharedTerms, isAI: false, outward: true))
+        }
+        return relations
+    }
+
+    /// The open card's pictures, small along its lower edge — up to eight,
+    /// then how many more. Any one raises the paper's gallery beside it,
+    /// joined by lines; again, puts it away.
+    @ViewBuilder private func thumbnailStrip(_ paths: [String], of item: EPUBMapItem) -> some View {
+        HStack(spacing: 8) {
+            ForEach(Array(paths.prefix(8).enumerated()), id: \.offset) { _, path in
+                if let image = CardImages.image(path: path, maxPixel: 240) {
+                    Button {
+                        let ids = paths.indices.map { Self.galleryItemID(item.id, $0) }
+                        toggleRelation(StarRelation(title: "Images", ids: ids, isAI: false, outward: true), of: item)
+                    } label: {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 72, height: 54)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay(RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(galleryOf == item.id ? Color(red: 1.0, green: 0.84, blue: 0.45)
+                                                                   : Color.white.opacity(0.3),
+                                              lineWidth: galleryOf == item.id ? 2 : 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if paths.count > 8 {
+                Text("+\(paths.count - 8)").foregroundStyle(.secondary)
+            }
+        }
     }
 
     /// A chosen paper's star menu, ringing its card: Focus and Open
@@ -3466,13 +3743,18 @@ struct EPUBMapView: View {
                     armMenu.setChipActive(Self.focusChipID, focusMode)
                     reload()
                 }
-                Button("Open") { handleTap(count: 2, on: item) }
+                Button("Read") { readCard(item) }
+                Button("Fold") { toggleOpen(item) }
             }
+            let pictures = imagePaths(forDocID: item.id)
+            if !pictures.isEmpty { thumbnailStrip(pictures, of: item).hidden() }
             HStack(alignment: .center, spacing: 10) {
                 relationColumn(relations.filter(\.outward), of: item, alignment: .trailing)
                 Color.clear.frame(width: gap.width, height: gap.height)
                 relationColumn(relations.filter { !$0.outward }, of: item, alignment: .leading)
             }
+            // Its pictures, along the card's lower edge.
+            if !pictures.isEmpty { thumbnailStrip(pictures, of: item) }
             HStack(spacing: 10) {
                 Button("Close") {
                     if relationShown?.from == item.id { relationShown = nil }
@@ -3531,8 +3813,12 @@ struct EPUBMapView: View {
     private func toggleRelation(_ relation: StarRelation, of item: EPUBMapItem) {
         if relationShown?.from == item.id, relationShown?.title == relation.title {
             relationShown = nil
+            galleryOf = nil
         } else {
             if relation.title == "Cites" { raisedArticleIDs.insert(item.id) }
+            // Images raises the paper's gallery; any other relation puts
+            // it away.
+            galleryOf = relation.title == "Images" ? item.id : nil
             relationShown = RelationShown(from: item.id, title: relation.title, ids: Set(relation.ids))
         }
         reload()
@@ -3611,13 +3897,7 @@ struct EPUBMapView: View {
     @ViewBuilder private func onePaperButtons(for item: EPUBMapItem) -> some View {
         VStack(spacing: 6) {
         HStack(spacing: 8) {
-            // The citation card's own Abstract, verbatim: only when
-            // the paper carries one.
-            if !item.abstract.isEmpty {
-                Button(item.showsAbstract ? "Hide Abstract" : "Abstract") {
-                    toggleAbstract(item)
-                }
-            }
+            // (No Abstract verb: an open card shows its abstract.)
             if EPUBMapView.liftEnabled {
                 Button(liftedCards[item.id] == nil ? "Lift" : "Put Back") {
                     toggleLift(item)
@@ -3961,7 +4241,7 @@ struct EPUBMapView: View {
     /// around the reader, under a label card — choosing the label draws a
     /// line to each of its papers.
     enum RoomShape: String, CaseIterable {
-        case timeline, meaning, themes, concepts, authors, people, constellation
+        case timeline, meaning, themes, concepts, authors, people, images, constellation
 
         var title: String {
             switch self {
@@ -3971,6 +4251,7 @@ struct EPUBMapView: View {
             case .concepts: "Concepts"
             case .authors: "Authors"
             case .people: "People Mentioned"
+            case .images: "Images"
             case .constellation: "Constellation"
             }
         }
@@ -4018,7 +4299,7 @@ struct EPUBMapView: View {
         let papers = items.filter { $0.kind == .article && !$0.isGhost }.map(\.id)
         let corpus = model.roomCorpus(for: papers)?.corpus
         var available: Set<String> = [RoomShape.timeline.rawValue, RoomShape.authors.rawValue,
-                                      RoomShape.meaning.rawValue]
+                                      RoomShape.meaning.rawValue, RoomShape.images.rawValue]
         if !(corpus?.themes ?? []).isEmpty { available.insert(RoomShape.themes.rawValue) }
         if !(corpus?.terms ?? []).isEmpty { available.insert(RoomShape.concepts.rawValue) }
         if !(corpus?.people ?? []).isEmpty { available.insert(RoomShape.people.rawValue) }
@@ -4113,6 +4394,20 @@ struct EPUBMapView: View {
                 (label: forms[key]?.max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key ?? key, ids: ids)
             }
             return plain(sets, rest: "Single contributions")
+        case .images:
+            // By how many pictures each paper shows — the visual papers
+            // ahead, the text-only ones a field behind.
+            var many = Set<String>(), several = Set<String>(), one = Set<String>()
+            for item in targets {
+                switch imagePaths(forDocID: item.id).count {
+                case 0: break
+                case 1: one.insert(item.id)
+                case 2...4: several.insert(item.id)
+                default: many.insert(item.id)
+                }
+            }
+            return plain([("Many pictures", many), ("Several pictures", several), ("One picture", one)],
+                         rest: "Text only")
         case .timeline, .constellation:
             return []
         }
@@ -4175,7 +4470,8 @@ struct EPUBMapView: View {
                     width: Float(min(columns, members.count)) * Self.columnPitch, columns: columns)
         }
         // Largest first — but a catch-all group always stands last.
-        let rests: Set<String> = ["Elsewhere", "Other themes", "No shared concept", "Names no one", "Single contributions"]
+        let rests: Set<String> = ["Elsewhere", "Other themes", "No shared concept", "Names no one", "Single contributions",
+                                  "Text only"]
         clusters.sort { $0.members.count > $1.members.count }
         // What no group took stands apart: a broad, low field behind the
         // arc, so the groups read in front of it rather than beside a
@@ -4768,6 +5064,7 @@ struct EPUBMapView: View {
     /// offer Gather, Lines and Focus.
     static func isSpatialLabel(_ item: EPUBMapItem) -> Bool {
         item.kind == .concept && !item.id.hasPrefix(noteItemPrefix) && !item.id.hasPrefix("float:")
+            && !item.id.hasPrefix(galleryItemPrefix)
     }
 
     /// The papers a label gathers: a Shape label its group; any other its
@@ -5054,6 +5351,7 @@ struct EPUBMapView: View {
             // and the room stands whole again.
             if !willSelect, relationShown?.from == item.id {
                 relationShown = nil
+                if galleryOf == item.id { galleryOf = nil; reload() }
             }
             // Letting a keyword go ends its Lines or Only (a Gather has
             // already moved the papers; Wall or Undo View sends them home).
@@ -5094,11 +5392,14 @@ struct EPUBMapView: View {
                 conceptConnectionLines.rebuild(items: items, edges: conceptEdges())
             }
         case 2:
-            // The card steps off the Map and its reading opens in-situ
-            // — the full reader standing where the card stood, movable
-            // anywhere by its handle, free of the timeline. Closing
-            // brings the card back. A citation opens its record card
-            // instead: everything we hold on it, and Acquire.
+            // Two taps OPEN a paper or a citation where it stands: chosen
+            // if it was not, unfolded to its abstract, its star menu round
+            // it with Read — and two taps again fold it (1 Nov 2026).
+            // Reading itself is the open card's Read.
+            if item.kind == .article || item.kind == .cited || item.kind == .citedDeep {
+                toggleOpen(item)
+                return
+            }
             guard item.kind == .article else {
                 // A note opens for writing — by hand or by voice.
                 if let note = note(for: item.id) {
@@ -5107,22 +5408,48 @@ struct EPUBMapView: View {
                 }
                 // A topic magnet or floated passage has no record
                 // behind it — nothing to open.
-                if !item.id.hasPrefix("topic:"), !item.id.hasPrefix("float:") {
+                // A label or a gallery picture has no record behind it
+                // either.
+                if !item.id.hasPrefix("topic:"), !item.id.hasPrefix("float:"),
+                   !Self.isSpatialLabel(item), !item.id.hasPrefix(Self.galleryItemPrefix) {
                     openCitationCard(for: item)
                 }
                 return
             }
-            // A volume bound from several works opens as its articles —
-            // the room becomes the volume, each piece a card, as a
-            // proceedings' papers stand in a journal's room.
-            if let record = model.epubRecords.first(where: { $0.id == item.id }),
-               model.boundVolume(for: record) != nil {
-                model.openArticles(of: record)
-                return
-            }
-            openReading(docID: item.id, title: item.title)
+            readCard(item)
         default:
             break
+        }
+    }
+
+    /// An open card's Read: the card steps off the Map and its reading
+    /// opens in-situ — the full reader standing where the card stood,
+    /// movable by its handle. Closing brings the card back. A volume bound
+    /// from several works opens as its articles instead — the room
+    /// becomes the volume, each piece a card.
+    private func readCard(_ item: EPUBMapItem) {
+        if let record = model.epubRecords.first(where: { $0.id == item.id }),
+           model.boundVolume(for: record) != nil {
+            model.openArticles(of: record)
+            return
+        }
+        openReading(docID: item.id, title: item.title)
+    }
+
+    /// Open, or fold: a card chosen and unfolded shows its abstract and,
+    /// on a paper, its star menu with Read. A card not yet chosen is
+    /// chosen first, as a tap would (raising its citations).
+    private func toggleOpen(_ item: EPUBMapItem) {
+        if !item.isSelected { handleTap(count: 1, on: item) }
+        if abstractOpenIDs.contains(item.id) {
+            abstractOpenIDs.remove(item.id)
+        } else {
+            abstractOpenIDs.insert(item.id)
+            // The rebuilt card unfolds into place (cardEntity).
+            cardSizes.unfolding.insert(item.id)
+        }
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            items[index].showsAbstract = abstractOpenIDs.contains(item.id)
         }
     }
 
@@ -8640,6 +8967,34 @@ private final class MapCardTick {
             }
         }
         for layer in liveLines { layer.relayout(positions: positions) }
+    }
+}
+
+// MARK: - Pictures for the cards
+
+/// A book's pictures scaled down once for the cards that show them — a
+/// paper's thumbnail, a gallery card — and kept while memory allows
+/// (NSCache empties itself under pressure). ImageIO decodes straight to
+/// the size asked, so a 4000-pixel figure never stands in memory whole.
+@MainActor
+enum CardImages {
+    private static let cache = NSCache<NSString, UIImage>()
+
+    static func image(path: String, maxPixel: Int) -> UIImage? {
+        let key = "\(maxPixel)|\(path)" as NSString
+        if let known = cache.object(forKey: key) { return known }
+        let url = URL(fileURLWithPath: path) as CFURL
+        guard let source = CGImageSourceCreateWithURL(url, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        let image = UIImage(cgImage: cgImage)
+        cache.setObject(image, forKey: key)
+        return image
     }
 }
 

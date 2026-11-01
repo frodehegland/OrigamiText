@@ -1562,10 +1562,68 @@ The same verb again turns it off. Letting the card go ends Lines and Only. A Gat
 - for anything else, `keywordMatches(title)`: a whole-word match in the standing papers' titles, abstracts and text.
 
 **Behaviour.**
+- A chosen label, dragged, carries every paper it relates to (`labelMembers`). Through the engine's `shouldMoveAnotherNode` the riders obey the same drag constraint, so in Timeline they keep their year or volume depth. The set is worked out once per drag (`cardSizes.riders`) and cleared at the drag's end.
 - Lines are drawn only on request (`conceptEdges`). Choosing a concept, topic or Shape label no longer draws them by itself.
 - Focus is the room's concept Focus.
 - Gather brings the members round the label and selects them (5.22).
 - Letting the label go ends Lines and Focus.
+
+**Article cards less transparent** (1 Nov 2026): an unchosen paper's face fills `Color(white: 0.1).opacity(0.72)` under its glass, so the room shows only faintly through and the words read cleanly while views change. A chosen card stays solid `white: 0.12`; lifted cards are unchanged.
+
+### 5.27 Chosen, then open (visionOS, 1 November 2026)
+
+A paper or citation card has two states beyond standing:
+- **Chosen** (one tap, `handleTap(count: 1)`): selected, its citations raised as before. It carries no controls at all; two taps open it.
+- **Open** (two taps; `toggleOpen`): chosen first if it was not, then `abstractOpenIDs` / `showsAbstract` set, so the face shows its abstract in the system serif, New York (`.system(size: 5.8 × crisp, design: .serif)`).
+  - **The unfolding:** opening marks the card in `cardSizes.unfolding`. When the engine rebuilds it, `cardEntity` starts the holder at scale (1, 0.06, 1), folded flat along its middle, and 16 ms later moves it to full scale over 0.38 s (ease out). The star menu is the holder's child, so it unfolds with the card.
+  - An open paper wears the star menu (5.20). The star's anchor applies only while open (`item.showsAbstract`), and its top row reads **Read** (`readCard`: a bound volume opens as its articles, anything else opens its reading in situ, which is what a double tap used to do) and **Fold**.
+  - An open citation shows **Record** (`openCitationCard`), **Fold**, and Lift / Put Back.
+- Two taps on an open card, or Fold, fold it back to chosen. A single tap that lets the card go also folds it.
+- The Abstract verb is gone from the card's verbs, since opening shows the abstract.
+
+**A closed card's face** (neither chosen nor open):
+- **Byline:** the first authors only; the series stamp ("Vol 3 · 2022") is now `EPUBMapItem.stamp`, kept apart from `author`, so it no longer shows.
+- **First sentence:** under the byline, in serif, 4.6 pt (× crisp), at 75%, at most two lines.
+- **When chosen or open:** the full byline with " · " and the stamp.
+
+`EPUBMapView.firstSentence(of:title:)` builds the sentence in `journalItems`' existing text pass:
+- It takes the first paragraph that is not a heading, not the title again, not a byline (`BoundVolume.byline`) and at least 40 characters long, with `[cite:]` tokens removed.
+- It cuts that at the first sentence's end (`NLTokenizer(.sentence)`), held to 180 characters at a word boundary with "…".
+
+**The open card's sides and edge** (1 Nov 2026, later):
+- **Pictures:** the paper's pictures are no longer an "Images (n)" relation. Up to eight stand as thumbnails along the open card's lower edge (`thumbnailStrip`, 72 × 54 doubled points, decoded at 240 px; "+n" beyond eight). A hidden copy above the card keeps the star centred. Tapping any thumbnail raises or puts away the gallery (5.26), and the thumbnails' border turns gold while it stands.
+- **Similar** reads **Similar to**.
+- **New relations** (`peopleAndVocabularyRelations`), each offered only when it reaches a standing card:
+  - **Same author** (inward): other papers sharing an author. Names match by `personKey`, folded first and last name.
+  - **Mentions** (outward): papers whose authors this paper names in its text. These are named, not cited (`Corpus.people`).
+  - **Mentioned by** (inward): papers that name this paper's authors.
+  - **Names same people** (outward): papers sharing named people.
+  - **Same themes** (outward): papers sharing keyword themes.
+  - **Shares concepts** (outward): papers sharing two or more of the books' glossary terms.
+  - The rankings take the eight most-shared first. All but Same author read the room's corpus record (`roomCorpus`) and wait for the Mac's Build Corpus Relations.
+
+### 5.26 Pictures in the room (visionOS, 1 November 2026)
+
+**Source.** `BoundVolume.Article.images` is the binding's `resources.images`, joined to the package directory as hrefs are (e.g. `content/images/image1.png`). FoT has 241 images in 85 articles, all PNG, 69 MB.
+
+`EPUBMapView.imagePaths(forDocID:)` turns an article id into absolute paths: its volume record's folder under `VisionModel.epubsRoot`, plus each image.
+
+**Loading.** `CardImages.image(path:maxPixel:)` (main actor) decodes with ImageIO's `CGImageSourceCreateThumbnailAtIndex` straight to the asked size (`kCGImageSourceThumbnailMaxPixelSize`, with its transform), so a large figure never stands in memory whole. Results are cached in an `NSCache` keyed by size and path.
+
+**Thumbnails.** `EPUBMapItem.imagePath` is part of visual equality. A standing paper or side piece gets its first image. The card face shows it above the title, aspect-fit, at most 24 pt (× crisp) high, which keeps the wall's row pitch clear. It is decoded at 320 px. Set-aside slips show none.
+
+**Images Shape.** `RoomShape.images` is always available. It groups the targets by picture count:
+- "Many pictures" (5 or more);
+- "Several pictures" (2–4);
+- "One picture".
+
+The text-only rest is "Text only", standing as the field behind. On FoT the groups are 14, 27 and 44.
+
+**Gallery.** The star menu gains an outward relation, **Images (n)**, whose ids are `image:<docID>|<i>`.
+- Tapping it sets `galleryOf`. `reload` then builds one `.concept` card per picture, in rows of four to the paper's right: x + 0.24 + col × 0.2, y + 0.06 − row × 0.17, z + 0.05. Each card's face is the picture alone (decoded at 900 px, at most 150 × 120 pt × crisp), with a hairline border that turns gold when chosen.
+- `relationShown` draws a line from the paper to each picture.
+- A second tap, choosing another relation, or letting the paper go puts the gallery away.
+- Gallery cards are not labels (`isSpatialLabel` excludes `image:`), and a double tap on them, or on a label, opens nothing.
 
 ### 5.24 A reading panel faces the reader while carried (visionOS, 1 November 2026)
 

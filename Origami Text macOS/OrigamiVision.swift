@@ -1891,7 +1891,7 @@ final class VisionModel {
         let shares = (corpus.sharesSources[piece] ?? []).compactMap { docID($0.piece) }
         if !shares.isEmpty { related.append(("Shares Sources", shares, false, true)) }
         let similar = (corpus.similar?[piece] ?? []).compactMap { docID($0.piece) }
-        if !similar.isEmpty { related.append(("Similar", similar, true, true)) }
+        if !similar.isEmpty { related.append(("Similar to", similar, true, true)) }
         // Stances read both ways: what this piece holds toward others, and
         // what others hold toward it ("Contradicted by" reads as Contradicts
         // either way — a disagreement is mutual on the wall).
