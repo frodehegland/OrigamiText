@@ -62,14 +62,25 @@ final class ArticleEnrichment {
     }
 
     func start(model: AppModel) {
-        guard !isRunning else { return }
-        let volumes = model.epubRecords.filter { selection.contains($0.folder) }
-        guard !volumes.isEmpty else { return }
-        isRunning = true
-        done = 0
-        log = []
-        task = Task { [weak self] in await self?.run(volumes: volumes, model: model) }
+        start(volumes: model.epubRecords.filter { selection.contains($0.folder) }, model: model)
     }
+
+    /// The pass over the given volumes. In the background (Library
+    /// Upkeep) it runs at background priority and waits, before each
+    /// article, until the Mac has been left alone (`BackgroundPace`).
+    func start(volumes: [EPUBRecord], model: AppModel, background: Bool = false) {
+        guard !isRunning, !volumes.isEmpty else { return }
+        isRunning = true
+        self.background = background
+        done = 0
+        log = background ? ["Started by Library Upkeep, at low priority."] : []
+        task = Task(priority: background ? .background : nil) { [weak self] in
+            await self?.run(volumes: volumes, model: model)
+        }
+    }
+
+    /// Run by Library Upkeep: low priority, and paced to the reader.
+    private var background = false
 
     func stop() { task?.cancel() }
 
@@ -109,7 +120,7 @@ final class ArticleEnrichment {
         // Read every article's text off the main actor: the book's own
         // binding, not the enriched one, so the book's values are known.
         current = "Reading the volumes…"
-        let works: [Work] = await Task.detached(priority: .userInitiated) {
+        let works: [Work] = await Task.detached(priority: background ? .background : .userInitiated) {
             var out: [Work] = []
             for (record, folder) in sources {
                 guard let bound = BoundVolume.read(inUnpackedFolder: folder) else { continue }
@@ -131,7 +142,7 @@ final class ArticleEnrichment {
         say("\(works.count) articles in \(volumes.count) volume\(volumes.count == 1 ? "" : "s").")
 
         // The fallback keywords: what each article says more than the rest.
-        let terms = await Task.detached(priority: .utility) {
+        let terms = await Task.detached(priority: background ? .background : .utility) {
             Self.distinctiveTerms(works.map { ($0.article.title + ". " + $0.text, $0.article.authors) })
         }.value
 
@@ -146,6 +157,7 @@ final class ArticleEnrichment {
 
         var sincePublish = 0
         for (index, work) in works.enumerated() {
+            if background { await BackgroundPace.waitForQuiet() }
             if Task.isCancelled { say("Stopped."); break }
             current = work.article.title
             let prior = store[work.folder]?[work.article.id]

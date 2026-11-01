@@ -27,11 +27,23 @@ final class CorpusRelationsBuilder {
             .appendingPathComponent(CorpusRelations.fileName)
     }
 
-    /// The series (or lone volume) a record belongs to, and its volumes
-    /// in the series' order.
-    func corpus(of record: EPUBRecord, in model: AppModel) -> (id: String, name: String, volumes: [EPUBRecord]) {
+    /// What a corpus is made of: a series' (or lone volume's) volumes, in
+    /// the series' order, or a journal's papers, each read whole.
+    typealias Target = (id: String, name: String, volumes: [EPUBRecord], papers: [EPUBRecord])
+
+    /// The corpus a record belongs to: its series (or itself, a lone
+    /// volume) when it is bound; else its journal — every paper on the
+    /// shelf declaring the same venue that is not itself a volume.
+    func corpus(of record: EPUBRecord, in model: AppModel) -> Target {
         let bound = model.boundVolume(for: record)
-        guard let series = bound?.series else { return (record.folder, record.title, [record]) }
+        guard bound != nil else {
+            guard let venue = record.venue else { return (record.folder, record.title, [], [record]) }
+            let papers = model.epubRecords.filter {
+                $0.venue?.caseInsensitiveCompare(venue) == .orderedSame && model.boundVolume(for: $0) == nil
+            }.sorted { ($0.dateISO ?? "", $0.title) < ($1.dateISO ?? "", $1.title) }
+            return (CorpusRelations.journalPrefix + venue, venue, [], papers)
+        }
+        guard let series = bound?.series else { return (record.folder, record.title, [record], []) }
         let volumes = model.epubRecords
             .compactMap { other -> (EPUBRecord, Int?)? in
                 guard let theirs = model.boundVolume(for: other)?.series, theirs.id == series.id else { return nil }
@@ -39,31 +51,86 @@ final class CorpusRelationsBuilder {
             }
             .sorted { ($0.1 ?? Int.max, $0.0.dateISO ?? "", $0.0.title) < ($1.1 ?? Int.max, $1.0.dateISO ?? "", $1.0.title) }
             .map(\.0)
-        return (series.id, series.name.isEmpty ? record.title : series.name, volumes)
+        return (series.id, series.name.isEmpty ? record.title : series.name, volumes, [])
     }
 
-    func build(corpusOf record: EPUBRecord, model: AppModel) {
+    /// Run by Library Upkeep: background priority, and paced to the reader.
+    private var background = false
+    private var workPriority: TaskPriority { background ? .background : .userInitiated }
+
+    /// Every corpus the shelf holds: each series (a lone bound volume is
+    /// its own), then each journal of two or more papers, by name.
+    func allCorpora(in model: AppModel) -> [Target] {
+        var seen = Set<String>()
+        let all = model.epubRecords.compactMap { record -> Target? in
+            guard model.boundVolume(for: record) != nil || record.venue != nil else { return nil }
+            let corpus = corpus(of: record, in: model)
+            guard !corpus.volumes.isEmpty || corpus.papers.count >= 2 else { return nil }
+            return seen.insert(corpus.id).inserted ? corpus : nil
+        }
+        return all.filter { $0.papers.isEmpty } + all.filter { !$0.papers.isEmpty }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func build(corpusOf record: EPUBRecord, model: AppModel, background: Bool = false) {
         guard !isRunning else { return }
         let target = corpus(of: record, in: model)
         isRunning = true
-        log = ["Reading \(target.volumes.count) volume\(target.volumes.count == 1 ? "" : "s") of \(target.name)…"]
+        self.background = background
+        log = [target.papers.isEmpty
+               ? "Reading \(target.volumes.count) volume\(target.volumes.count == 1 ? "" : "s") of \(target.name)…"
+               : "Reading \(target.papers.count) papers of \(target.name)…"]
         let sources = target.volumes.compactMap { volume in
             model.boundVolume(for: volume).map {
                 CorpusRelations.VolumeSource(folder: volume.folder, unpacked: model.unpackedFolder(for: volume), bound: $0)
             }
         }
+        // A journal's papers, from the library's own reading of each: its
+        // reference list for the citations; its title, authors, keywords,
+        // abstract, body and glossary for the reading.
+        let paperDocs: [(record: EPUBRecord, doc: LiquidDoc)] = target.papers.compactMap { record in
+            guard let doc = model.index.byID[record.id]?.doc else { return nil }
+            return (record, doc)
+        }
+        if paperDocs.count < target.papers.count {
+            log.append("\(target.papers.count - paperDocs.count) papers are not yet read into the library and are left out.")
+        }
+        let papers = paperDocs.map { record, doc in
+            CorpusRelations.PaperSource(folder: record.folder,
+                                        title: doc.title.isEmpty ? record.title : doc.title,
+                                        authors: doc.authors.isEmpty ? record.authorList : doc.authors,
+                                        references: doc.references.map(\.bibtex))
+        }
+        let paperTexts: [PieceText] = paperDocs.map { record, doc in
+            let body = (doc.body ?? []).map(\.text).joined(separator: "\n")
+            let title = doc.title.isEmpty ? record.title : doc.title
+            return PieceText(
+                key: CorpusRelations.pieceKey(folder: record.folder, work: CorpusRelations.wholeWork),
+                title: title, authors: doc.authors.isEmpty ? record.authorList : doc.authors,
+                keywords: doc.keywords, text: title + "\n" + body,
+                embeddingInput: title + "\n" + (doc.abstract ?? "") + "\n" + String(body.prefix(2000)))
+        }
+        let paperGlossary: [(name: String, definition: String?)] = paperDocs.flatMap { _, doc in
+            doc.concepts.map { concept -> (name: String, definition: String?) in
+                (concept.name, concept.userDefinition ?? (concept.description.isEmpty ? nil : concept.description))
+            }
+        }
         let community = model.index.folderURL
         let previous = file
         let local = Self.localURL
-        Task {
+        let priority = workPriority
+        if background { log.append("Started by Library Upkeep, at low priority.") }
+        Task(priority: background ? .background : nil) {
+            if background { await BackgroundPace.waitForQuiet() }
             // The facts first: who cites what.
-            var corpus = await Task.detached(priority: .userInitiated) {
-                CorpusRelations.build(name: target.name, volumes: sources, known: Self.masterList(in: community))
+            var corpus = await Task.detached(priority: priority) {
+                CorpusRelations.build(name: target.name, volumes: sources, papers: papers,
+                                      known: Self.masterList(in: community))
             }.value
             log += corpus.findings
             // Then the reading: themes, terms, people, meaning.
-            await read(into: &corpus, sources: sources)
-            let built = await Task.detached(priority: .userInitiated) { [corpus] () -> CorpusRelations.File in
+            await read(into: &corpus, sources: sources, papers: paperTexts, paperGlossary: paperGlossary)
+            let built = await Task.detached(priority: priority) { [corpus] () -> CorpusRelations.File in
                 var file = previous ?? CorpusRelations.File(modified: .now, corpora: [:])
                 file.modified = .now
                 file.corpora[target.id] = corpus
@@ -109,21 +176,23 @@ final class CorpusRelationsBuilder {
     /// model stands on Ollama — each piece's nearest, its group and its
     /// place by meaning. Without the model the rest is still read, and
     /// themes merge by spelling alone.
-    private func read(into corpus: inout CorpusRelations.Corpus, sources: [CorpusRelations.VolumeSource]) async {
+    private func read(into corpus: inout CorpusRelations.Corpus, sources: [CorpusRelations.VolumeSource],
+                      papers: [PieceText] = [], paperGlossary: [(name: String, definition: String?)] = []) async {
         let metadata = ArticleMetadata.read(ArticleEnrichment.localURL)?.volumes ?? [:]
         let citedAuthors = Set(corpus.works.values.flatMap(\.authors))
         log.append("Reading the pieces' text, keywords and the books' glossaries…")
-        let gathered = await Task.detached(priority: .userInitiated) {
+        let gathered = await Task.detached(priority: workPriority) {
             Self.gather(sources: sources, metadata: metadata)
         }.value
-        let pieces = gathered.pieces
+        let pieces = gathered.pieces + papers
         let contributors = Set(pieces.flatMap(\.authors))
         let texts = Dictionary(uniqueKeysWithValues: pieces.map { ($0.key, $0.text) })
         let keywords = Dictionary(uniqueKeysWithValues: pieces.map { ($0.key, $0.keywords) })
         let authorsOf = Dictionary(uniqueKeysWithValues: pieces.map { ($0.key, $0.authors) })
 
         // People, from the names the corpus knows and Apple's tagger.
-        let people = await Task.detached(priority: .userInitiated) {
+        if background { await BackgroundPace.waitForQuiet() }
+        let people = await Task.detached(priority: workPriority) {
             CorpusRelations.peopleMentioned(texts: texts, contributors: contributors,
                                             known: citedAuthors, authorsOf: authorsOf)
         }.value
@@ -132,8 +201,8 @@ final class CorpusRelationsBuilder {
 
         // The glossary, its people left to People.
         let personNames = contributors.union(people.map(\.name))
-        let glossary = gathered.glossary
-        let terms = await Task.detached(priority: .userInitiated) {
+        let glossary = gathered.glossary + paperGlossary
+        let terms = await Task.detached(priority: workPriority) {
             CorpusRelations.glossaryTerms(glossary, texts: texts, people: personNames)
         }.value
         corpus.terms = terms
@@ -163,7 +232,7 @@ final class CorpusRelationsBuilder {
             for piece in pieces { vectors[piece.key] = byInput[piece.embeddingInput] }
             Self.saveVectorCache(cache, model: model)
             let themes = corpus.themes ?? []
-            let mapped = await Task.detached(priority: .userInitiated) {
+            let mapped = await Task.detached(priority: workPriority) {
                 CorpusRelations.meaningMap(vectors: vectors, model: model, themes: themes)
             }.value
             corpus.meaning = mapped.meaning
@@ -186,6 +255,7 @@ final class CorpusRelationsBuilder {
         }
         var done = 0
         for start in stride(from: 0, to: missing.count, by: 8) {
+            if background { await BackgroundPace.waitForQuiet() }
             try Task.checkCancellation()
             let slice = Array(missing[start..<min(start + 8, missing.count)])
             let vectors = try await OrigamiLLM.shared.embed(slice).vectors
@@ -298,20 +368,14 @@ struct CorpusRelationsView: View {
     @Environment(AppModel.self) private var model
     private var builder: CorpusRelationsBuilder { CorpusRelationsBuilder.shared }
 
-    /// One row per series (a lone bound volume is its own).
-    private var corpora: [(id: String, name: String, volumes: [EPUBRecord])] {
-        var seen = Set<String>()
-        return model.epubRecords.compactMap { record in
-            guard model.boundVolume(for: record) != nil else { return nil }
-            let corpus = builder.corpus(of: record, in: model)
-            return seen.insert(corpus.id).inserted ? corpus : nil
-        }
-    }
+    /// One row per series (a lone bound volume is its own), then one per
+    /// journal of two or more papers.
+    private var corpora: [CorpusRelationsBuilder.Target] { builder.allCorpora(in: model) }
 
     var body: some View {
         HSplitView {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Traces who cites what across a whole series, inside it and out, from the volumes' own bibliographies, endnotes and bindings — then reads the pieces: their keywords merged into themes, the books' glossary as the pieces use it, the people they mention, and, with the embedding model (Settings ▸ AI), what each piece is near in meaning. The record is published beside the books as your own metadata; the headset builds its Shapes from it. Nothing is written into the books.")
+                Text("Traces who cites what across a whole series or journal, inside it and out, from the volumes' own bibliographies, endnotes and bindings, or each paper's own reference list — then reads the pieces: their keywords merged into themes, the books' glossary as the pieces use it, the people they mention, and, with the embedding model (Settings ▸ AI), what each piece is near in meaning. The record is published beside the books as your own metadata; the headset builds its Shapes from it. Nothing is written into the books.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -320,14 +384,18 @@ struct CorpusRelationsView: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(corpus.name).lineLimit(1)
                             let built = builder.file?.corpora[corpus.id]
-                            Text("\(corpus.volumes.count) volume\(corpus.volumes.count == 1 ? "" : "s")"
+                            Text((corpus.papers.isEmpty
+                                  ? "\(corpus.volumes.count) volume\(corpus.volumes.count == 1 ? "" : "s")"
+                                  : "\(corpus.papers.count) papers")
                                  + (built.map { " · \($0.citations.count) citations of \($0.works.count) works" } ?? " · not built"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button(builder.file?.corpora[corpus.id] == nil ? "Build" : "Build Again") {
-                            if let first = corpus.volumes.first { builder.build(corpusOf: first, model: model) }
+                            if let first = corpus.volumes.first ?? corpus.papers.first {
+                                builder.build(corpusOf: first, model: model)
+                            }
                         }
                         .disabled(builder.isRunning)
                     }

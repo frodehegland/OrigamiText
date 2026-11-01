@@ -117,3 +117,7 @@ Steps 1–4 take minutes. Steps 5–7 take hours on local Ollama, and resume aft
    - The headset never needs the model: the file stores neighbours and scores, not vectors.
    - The file records the model name, so a later rebake with a better model is visible.
    - `nomic-embed-text` is the fallback if the 8b model is unavailable.
+
+## Journals (1 Nov 2026)
+
+At Frode's asking, a journal such as the Hypertext proceedings is a corpus too: corpus id `journal:<venue>`, each paper one piece `folder#whole`, its citations read from the paper's own reference list, and its reading from the library's document. It is built from the same window, and published in the same file under the same licence.

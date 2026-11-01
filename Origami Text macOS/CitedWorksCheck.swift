@@ -47,14 +47,19 @@ final class CitedWorksCheck {
     /// checks works already checked within the month as well.
     /// `docs` by their library id — the master list records which
     /// papers cite each work.
-    func start(docs: [String: LiquidDoc], folder: URL?, force: Bool = false) {
+    /// `background` (the Mac's Library Upkeep): background priority, and
+    /// each work waits until the Mac has been left alone.
+    func start(docs: [String: LiquidDoc], folder: URL?, force: Bool = false, background: Bool = false) {
         guard !isRunning, let folder else { return }
         isRunning = true
         done = 0
-        task = Task { [weak self] in
+        self.background = background
+        task = Task(priority: background ? .background : nil) { [weak self] in
             await self?.run(docs: docs, folder: folder, force: force)
         }
     }
+
+    private var background = false
 
     func cancel() {
         task?.cancel()
@@ -86,6 +91,9 @@ final class CitedWorksCheck {
         }
         total = pending.count
         for work in pending {
+            #if os(macOS)
+            if background { await BackgroundPace.waitForQuiet() }
+            #endif
             if Task.isCancelled { break }
             var (record, foundDOI) = await check(work)
             record.citedBy = work.citedBy

@@ -934,6 +934,10 @@ struct LLMModelSettingsSections: View {
 
         EmbeddingModelSettingsSection()
 
+        #if os(macOS)
+        LibraryUpkeepSettingsSection()
+        #endif
+
         Section {
             if let detected {
                 HStack {

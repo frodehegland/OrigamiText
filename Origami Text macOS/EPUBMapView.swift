@@ -4500,9 +4500,8 @@ struct EPUBMapView: View {
         if !(corpus?.themes ?? []).isEmpty { available.insert(RoomShape.themes.rawValue) }
         if !(corpus?.terms ?? []).isEmpty { available.insert(RoomShape.concepts.rawValue) }
         if !(corpus?.people ?? []).isEmpty { available.insert(RoomShape.people.rawValue) }
-        // The corpus record is built for bound volumes; a journal's room
-        // says so rather than sending the reader to the Mac for nothing.
-        let wanting = model.isVolumeRoom ? " — Build Corpus Relations on the Mac" : " — not yet for journals"
+        // A series and a journal alike: the Mac's Build Corpus Relations.
+        let wanting = " — Build Corpus Relations on the Mac"
         model.shapeChoices = RoomShape.allCases.map { shape in
             let waiting = !available.contains(shape.rawValue)
             return .init(id: shape.rawValue, title: shape.title + (waiting ? wanting : ""))

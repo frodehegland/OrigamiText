@@ -48,6 +48,9 @@ struct OrigamiTextMacApp: App {
                 model.conceptLibrary.onReload = { [weak model] in model?.syncTrackedConceptsFromLibrary() }
                 model.conceptLibrary.restore()
                 model.restoreReaderLibrary()
+                // New documents' metadata and relations, found quietly in
+                // the background (LibraryUpkeep).
+                LibraryUpkeep.shared.start(model: model)
                 #if DEBUG
                 model.runFormatSelfTestIfRequested()
                 #endif

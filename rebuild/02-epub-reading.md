@@ -1528,7 +1528,7 @@ The same verb again turns it off. Letting the card go ends Lines and Only. A Gat
 
 `CorpusRelations.sphericalKMeans` is the one copy; the Map's own was removed.
 
-**Shapes** (visionOS): the volume bar has a **Shapes** menu right of Layout, listing every `RoomShape`. A Shape whose data the room's record lacks is dimmed, never hidden, and titled "… — Build Corpus Relations on the Mac" (in a journal's room, "… — not yet for journals": the corpus record is built for bound volumes only). Hallway, Meaning, Authors, Images and Constellation always stand; Meaning and Constellation fall back on `NLEmbedding.sentenceEmbedding` where no series index or record knows the papers. The current Shape wears a checkmark. Each runs through `volumeBarRequest .shape(id)`, then `runShape`.
+**Shapes** (visionOS): the volume bar has a **Shapes** menu right of Layout, listing every `RoomShape`. A Shape whose data the room's record lacks is dimmed, never hidden, and titled "… — Build Corpus Relations on the Mac"; a journal's room reads the same, its record built per journal (5.31). Hallway, Meaning, Authors, Images and Constellation always stand; Meaning and Constellation fall back on `NLEmbedding.sentenceEmbedding` where no series index or record knows the papers. The current Shape wears a checkmark. Each runs through `volumeBarRequest .shape(id)`, then `runShape`.
 - **Hallway** (`RoomShape.timeline`; titled Timeline until 1 Nov 2026): the only Shape that orders by time. Every standing paper's `placed` is cleared and `setTimeFree(false)` is called, so each paper returns to its volume or year plane seat and the labels go. Undo View restores.
 - **Meaning, Themes, Concepts, Authors, People Mentioned** (`shapeGroups`, then `coveringGroups`): greedy cover, up to 12 groups. Each takes the set reaching the most unplaced papers, so every paper stands in one group; a group needs 3 or more. The left-overs gather as "Elsewhere", "Other themes", "No shared concept", "Single contributions" or "Names no one".
   - Meaning uses the record's groups, else local k-means named by a member's first keyword.
@@ -1652,7 +1652,41 @@ Every room now carries the bar: journals such as the Hypertext proceedings as we
 - **Journal fallbacks:**
   - `paperAuthors(_:)`: a piece's bylines, else the shelf record's `authors`, else its `author` split on `,` `;` `&` and " and ". These feed Authors and Same author.
   - `bookImagePaths(forDocID:)`: for a book read whole, every png/jpg/gif/webp/heic in its unpacked folder, in name order, skipping names containing cover or logo and files under 8 KB. These feed the thumbnails, the gallery and Images.
-- **Still volume-only:** the corpus record (Themes, Concepts, People Mentioned; Mentions/Mentioned by/Names same people/Same themes/Shares concepts; Shares Sources, recorded Similar and stances), the series index's Similar, and Ask.
+- **Still volume-only:** the series index's Similar, and Ask. The corpus record came to journals in 5.31.
+
+### 5.31 Corpus relations for journals (1 November 2026)
+
+A journal (every shelf record declaring one venue that is not itself a bound volume, e.g. the Hypertext proceedings) is a corpus like a series.
+- **Its identity:**
+  - Corpus id: `CorpusRelations.journalPrefix + venue` (`"journal:"`). Its name is the venue.
+  - Each paper is one piece, read whole: `folder#whole` (`CorpusRelations.wholeWork`). Its title and authors come from the library's document, falling back to the record.
+- **The window:** `CorpusRelationsBuilder.corpus(of:in:)` returns a `Target` (id, name, volumes, papers). The window lists series first, then every journal of two or more papers ("n papers"). Build takes the first volume or paper.
+- **Citations:** `CorpusRelations.build(name:volumes:papers:known:)` takes `PaperSource`s (folder, title, authors, the BibTeX of each `LiquidDoc.Reference`).
+  - Each entry is read under its paper (`piece|entryKey|n`), because entry keys repeat from paper to paper. It is attributed `"paper"`.
+  - Works, in-corpus matching by title, the counts, Shares Sources and the canon are as for volumes. A finding reports the entries read and the papers with no reference list. Papers not yet in the library index are left out and logged.
+- **The reading:** `read(into:sources:papers:paperGlossary:)` appends one `PieceText` per paper:
+  - keywords: the document's own;
+  - text: title and body paragraphs;
+  - embedding input: title, abstract and the body's first 2000 characters.
+  The glossary is extended with every paper's Defined Concepts (the user definition, else the description). People, terms, themes, meaning and Similar then run unchanged.
+- **The headset:**
+  - `VisionModel.pieceKey(forDocID:folders:)` maps a volume article to `folder#article` and a plain record id to `folder#whole`. `docID(forPiece:)` is its inverse.
+  - `roomCorpus`, `corpusCitations` and `corpusRelated` all go through these, so a journal room's Shapes and star relations read its record exactly as a series room does.
+
+### 5.32 Library Upkeep (macOS, 1 November 2026)
+
+The Mac keeps the library's metadata current without being asked, so the reader reads and never manages documents (`LibraryUpkeep.swift`).
+- **The loop:** `LibraryUpkeep.shared.start(model:)` runs from the main window's `.task`. It waits 60 s, then ticks every 60 s at `.background` priority. While any pass is running (started by hand or not), a tick does nothing.
+- **What it looks for, in order** (each feeds the next):
+  1. A bound volume with a work that has no `ArticleMetadata` entry. This runs `ArticleEnrichment.start(volumes:model:background: true)`.
+  2. Library documents not yet in the looked-up set (UserDefaults `libraryUpkeepCitedDocs`), or a cited-works record over 30 days old. This runs `CitedWorksCheck.start(docs:folder:background: true)`.
+  3. A corpus from `CorpusRelationsBuilder.allCorpora(in:)` that is missing, whose volume or paper folders differ from `Corpus.volumes`, whose `themes` is nil, or whose `meaning` is nil while the embedding model stands. This runs `build(corpusOf:model:background: true)`.
+- **Retries:** each job remembers its last try and the folder set it tried on (`attempts`). It is tried again when that set changes, or after 24 h, so a pass that cannot finish (Ollama away, a paper unread) never loops.
+- **Pacing** (`BackgroundPace`): in background mode every pass runs its detached work at `.background` priority. Before each step it awaits `waitForQuiet()`:
+  - steps are each article (ArticleEnrichment), each cited work (CitedWorksCheck), and the reading stage plus each batch of 8 embeddings (CorpusRelationsBuilder);
+  - "quiet" means no keyboard, mouse or trackpad input for 20 s (`CGEventSource.secondsSinceLastEventType(.combinedSessionState, ~0)`), thermal state below serious, and Low Power Mode off; it polls every 5 s.
+  - A pass started by hand keeps full speed.
+- **Settings ▸ AI ▸ Library Upkeep** (`LibraryUpkeepSettingsSection`, after Embedding Model): a toggle, on by default (`libraryUpkeepEnabled`), and the upkeep's one-line status.
 
 ### 5.29 Miniatures on the star, and jumping to a card (visionOS, 1 November 2026)
 

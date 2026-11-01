@@ -1696,14 +1696,12 @@ final class VisionModel {
     /// The corpus record for these cards, with each piece's id in the
     /// room — nil when the Mac has published none for them.
     func roomCorpus(for docIDs: [String]) -> (corpus: CorpusRelations.Corpus, docOfPiece: [String: String])? {
-        var folderOfVolume: [String: String] = [:]
-        for record in epubRecords { folderOfVolume[record.id] = record.folder }
+        var folderOfRecord: [String: String] = [:]
+        for record in epubRecords { folderOfRecord[record.id] = record.folder }
         var docOfPiece: [String: String] = [:]
         var corpusID: String?
         for id in docIDs {
-            guard let split = BoundVolume.split(articleDocID: id),
-                  let folder = folderOfVolume[split.volume] else { continue }
-            let piece = CorpusRelations.pieceKey(folder: folder, work: split.article)
+            guard let piece = pieceKey(forDocID: id, folders: folderOfRecord) else { continue }
             if corpusID == nil { corpusID = corpusOfPiece[piece] }
             docOfPiece[piece] = id
         }
@@ -1844,24 +1842,43 @@ final class VisionModel {
         volumeStamp += 1
     }
 
+    /// The corpus record's key for a card: a volume's article as
+    /// `folder#article`, a journal's paper (a book read whole) as
+    /// `folder#whole`.
+    func pieceKey(forDocID id: String, folders: [String: String]? = nil) -> String? {
+        if let split = BoundVolume.split(articleDocID: id) {
+            guard let folder = folders?[split.volume] ?? epubRecords.first(where: { $0.id == split.volume })?.folder
+            else { return nil }
+            return CorpusRelations.pieceKey(folder: folder, work: split.article)
+        }
+        guard let folder = folders?[id] ?? epubRecords.first(where: { $0.id == id })?.folder else { return nil }
+        return CorpusRelations.pieceKey(folder: folder, work: CorpusRelations.wholeWork)
+    }
+
+    /// The card a corpus piece stands as in the room: the inverse of
+    /// `pieceKey(forDocID:)`.
+    func docID(forPiece piece: CorpusRelations.Piece) -> String? {
+        guard let record = epubRecords.first(where: { $0.folder == piece.folder }) else { return nil }
+        return piece.work == CorpusRelations.wholeWork
+            ? record.id
+            : BoundVolume.articleDocID(volume: record.id, article: piece.work)
+    }
+
     /// What the corpus record says an article cites, each work with its
     /// key — nil when the record does not know the article, so the room
     /// falls back to the article's own references. A work that is one of
     /// the corpus's pieces comes back as that piece's id in the room.
     func corpusCitations(forDocID id: String)
         -> [(key: String, work: CorpusRelations.Work, pieceDocID: String?)]? {
-        guard let split = BoundVolume.split(articleDocID: id),
-              let volume = epubRecords.first(where: { $0.id == split.volume }) else { return nil }
-        let piece = CorpusRelations.pieceKey(folder: volume.folder, work: split.article)
-        guard let corpusID = corpusOfPiece[piece],
+        guard let piece = pieceKey(forDocID: id),
+              let corpusID = corpusOfPiece[piece],
               let corpus = corpusRelations?.corpora[corpusID] else { return nil }
         return corpus.citations.filter { $0.from == piece }.compactMap { citation in
             guard let work = corpus.works[citation.to] else { return nil }
             var docID: String?
             if let target = work.inCorpus, target.hasPrefix(CorpusRelations.piecePrefix),
-               let cited = corpus.pieces[String(target.dropFirst(CorpusRelations.piecePrefix.count))],
-               let record = epubRecords.first(where: { $0.folder == cited.folder }) {
-                docID = BoundVolume.articleDocID(volume: record.id, article: cited.work)
+               let cited = corpus.pieces[String(target.dropFirst(CorpusRelations.piecePrefix.count))] {
+                docID = self.docID(forPiece: cited)
             }
             return (citation.to, work, docID)
         }
@@ -1874,10 +1891,8 @@ final class VisionModel {
     /// ones left out. Empty when the record does not know the article.
     func corpusRelated(forDocID id: String)
         -> [(title: String, ids: [String], isAI: Bool, outward: Bool)] {
-        guard let split = BoundVolume.split(articleDocID: id),
-              let volume = epubRecords.first(where: { $0.id == split.volume }) else { return [] }
-        let piece = CorpusRelations.pieceKey(folder: volume.folder, work: split.article)
-        guard let corpusID = corpusOfPiece[piece],
+        guard let piece = pieceKey(forDocID: id),
+              let corpusID = corpusOfPiece[piece],
               let corpus = corpusRelations?.corpora[corpusID] else { return [] }
         var folderToRecord: [String: String] = [:]
         for record in epubRecords where folderToRecord[record.folder] == nil {
@@ -1885,7 +1900,9 @@ final class VisionModel {
         }
         func docID(_ key: String) -> String? {
             guard let other = corpus.pieces[key], let record = folderToRecord[other.folder] else { return nil }
-            return BoundVolume.articleDocID(volume: record, article: other.work)
+            return other.work == CorpusRelations.wholeWork
+                ? record
+                : BoundVolume.articleDocID(volume: record, article: other.work)
         }
         var related: [(title: String, ids: [String], isAI: Bool, outward: Bool)] = []
         let shares = (corpus.sharesSources[piece] ?? []).compactMap { docID($0.piece) }

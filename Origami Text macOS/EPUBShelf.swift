@@ -4525,6 +4525,22 @@ extension CorpusRelations {
         let bound: BoundVolume
     }
 
+    /// A journal's paper, read whole: one EPUB, one piece (1 Nov 2026 —
+    /// the Hypertext proceedings get what The Future of Text has). Its
+    /// citations are its own reference list, each entry's BibTeX.
+    struct PaperSource: Sendable {
+        let folder: String
+        let title: String
+        let authors: [String]
+        let references: [String]
+    }
+
+    /// The work id a paper read whole stands under: `folder#whole`.
+    static let wholeWork = "whole"
+
+    /// A journal's corpus id: its venue as the books declare it.
+    static let journalPrefix = "journal:"
+
     /// Who cites what, read from the volumes' own records: each volume's
     /// `references.bib`, its endnotes and its binding (`visual-meta.json`).
     ///
@@ -4539,7 +4555,7 @@ extension CorpusRelations {
     /// An endnote counts as a citation only when it carries an address
     /// or a DOI — the rest are the authors' asides. `known` is the Mac's
     /// master list of cited works, for each work's registry facts.
-    static func build(name: String, volumes: [VolumeSource],
+    static func build(name: String, volumes: [VolumeSource], papers: [PaperSource] = [],
                       known: [String: ReferenceStatus.CitedWork]) -> Corpus {
         var pieces: [String: Piece] = [:]
         var works: [String: Work] = [:]
@@ -4690,6 +4706,47 @@ extension CorpusRelations {
             findings.append(line)
         }
 
+        // A journal's papers: each its own piece, citing what its own
+        // reference list names. Entry keys repeat from paper to paper
+        // ("b1", "ref-3"), so each is read under its paper.
+        var paperEntries = 0
+        for paper in papers {
+            let key = pieceKey(folder: paper.folder, work: wholeWork)
+            pieces[key] = Piece(folder: paper.folder, work: wholeWork, title: paper.title,
+                                authors: paper.authors, volume: nil)
+            for (index, bib) in paper.references.enumerated() {
+                for entry in BibTeXParser.parse(bib) {
+                    let fields = entry.fields
+                    let title = fields["title"].map(BibTeXParser.displayText) ?? ""
+                    let foundDOI = Self.doi(in: fields["doi"]) ?? Self.doi(in: fields["url"])
+                    let address = Self.url(in: fields["url"])
+                    guard !title.isEmpty || foundDOI != nil || address != nil,
+                          let workKey = workKey(doi: foundDOI, url: foundDOI == nil ? address : nil, title: title)
+                    else { continue }
+                    paperEntries += 1
+                    let id = key + "|" + entry.key + "|\(index)"
+                    if chosen[id] == nil {
+                        chosen[id] = Occurrence(from: key, attributedBy: "paper", key: workKey)
+                        order.append(id)
+                    }
+                    if works[workKey] == nil {
+                        works[workKey] = Work(
+                            title: title.isEmpty ? (foundDOI ?? address ?? "") : title,
+                            authors: authors(fields["author"] ?? fields["editor"]),
+                            year: fields["year"].flatMap { Int($0.filter(\.isNumber).prefix(4)) },
+                            venue: (fields["journal"] ?? fields["booktitle"] ?? fields["publisher"])
+                                .map(BibTeXParser.displayText),
+                            doi: foundDOI, url: address, listedAs: "bibliography")
+                    }
+                }
+            }
+        }
+        if !papers.isEmpty {
+            let empty = papers.filter(\.references.isEmpty).count
+            findings.append("\(papers.count) papers: \(paperEntries) reference entries read"
+                            + (empty > 0 ? "; \(empty) papers carry no reference list." : "."))
+        }
+
         // The corpus's own pieces and volumes among the cited works.
         var pieceByTitle: [String: String] = [:]
         for (key, piece) in pieces {
@@ -4789,7 +4846,8 @@ extension CorpusRelations {
         let inside = citations.filter { works[$0.to]?.inCorpus != nil }.count
         findings.append("In all: \(citations.count) citations of \(works.count) works; \(traced) traced to their article, \(citations.count - traced) standing for their volume; \(inside) cite the corpus itself.")
 
-        return Corpus(name: name, volumes: volumes.map(\.folder), pieces: pieces, works: works,
+        return Corpus(name: name, volumes: volumes.map(\.folder) + papers.map(\.folder),
+                      pieces: pieces, works: works,
                       citations: citations, sharesSources: sharesSources, canon: Array(canon),
                       findings: findings)
     }
