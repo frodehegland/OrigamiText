@@ -7,12 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		5FC96CB130960577005A8546 /* LiquidAI in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA130960577005A8546 /* LiquidAI */; };
-		5FC96CB230960577005A8546 /* LiquidSpeech in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA230960577005A8546 /* LiquidSpeech */; };
-		5FC96CB330960577005A8546 /* LiquidAssistant in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA330960577005A8546 /* LiquidAssistant */; };
-		5FC96CB430960577005A8546 /* LiquidAI in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA430960577005A8546 /* LiquidAI */; };
-		5FC96CB530960577005A8546 /* LiquidSpeech in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA530960577005A8546 /* LiquidSpeech */; };
-		5FC96CB630960577005A8546 /* LiquidAssistant in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA630960577005A8546 /* LiquidAssistant */; };
 		5F02BA9F3069BA7E004EE9D2 /* Quartz.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F1962D43053FF1A00922704 /* Quartz.framework */; };
 		5F02BAAB3069BA7E004EE9D2 /* EPUBQuickLook.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5F02BA9E3069BA7E004EE9D2 /* EPUBQuickLook.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5F72863D304376EC000585CD /* AudioCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 5F72863C304376EC000585CD /* AudioCommon */; };
@@ -24,6 +18,12 @@
 		5FC96C9C30960577005A8546 /* LiquidAI in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96C9B30960577005A8546 /* LiquidAI */; };
 		5FC96C9E30960577005A8546 /* LiquidAssistant in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96C9D30960577005A8546 /* LiquidAssistant */; };
 		5FC96CA030960577005A8546 /* LiquidSpeech in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96C9F30960577005A8546 /* LiquidSpeech */; };
+		5FC96CB130960577005A8546 /* LiquidAI in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA130960577005A8546 /* LiquidAI */; };
+		5FC96CB230960577005A8546 /* LiquidSpeech in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA230960577005A8546 /* LiquidSpeech */; };
+		5FC96CB330960577005A8546 /* LiquidAssistant in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA330960577005A8546 /* LiquidAssistant */; };
+		5FC96CB430960577005A8546 /* LiquidAI in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA430960577005A8546 /* LiquidAI */; };
+		5FC96CB530960577005A8546 /* LiquidSpeech in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA530960577005A8546 /* LiquidSpeech */; };
+		5FC96CB630960577005A8546 /* LiquidAssistant in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96CA630960577005A8546 /* LiquidAssistant */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */

@@ -1293,6 +1293,47 @@ Closing begins at the first appendices-zone piece after an article. Verified on 
 
 **macOS.** `OpenEPUB.article` marks a reading of one article: `openArticle(_:of:)` opens the volume, then replaces `openEPUB` with one whose `chapters` is only the article's file, `id` and `base` kept (so annotations and reading place stay the volume's), and sets `pendingReaderFragment` to the anchor when other pieces share the file. `readingID` (`id` plus `#article=…`) keys the reader's identity and its book-change task. `readingDoc(forBook:)` answers an article with its cut-out document. `openWholeVolume()` reopens the volume at the article's heading. The foot bar carries **Articles** for every EPUB (disabled when not bound; reading one it reads "Article n / count"), opening `VolumeArticlesList`: Whole Volume, previous and next work, a filter on title and authors, and every piece (matter in italic secondary). The library row's context menu has **Read Article ▸** listing every piece.
 
+### 5.17 A series' hallway (1 November 2026)
+
+Every volume of one series (binding `series.id`, e.g. The Future of Text Vols 1–6) can stand in one room. On visionOS the venue is `series:<seriesID>` (`VisionModel.seriesVenuePrefix`). It is listed first in the Library's journal list as "<series name> — n volumes" when two or more volumes of the series are on the shelf (`seriesVenues`), and a volume room's card offers **Whole Series**. `seriesVolumes(_:)` orders the volumes by series volume number, then date, then title. `records(inVenue:)` returns every volume's article records. `isVolumeRoom` (a volume or a series room) gates the volume bar, zones, Kind, Similar and Whole Volume (`openWholeVolume(from:)` takes the card's own volume). `roomPieceIndex()` merges the piece indexes of every member. `standMap` and `openPiece` stay in the series room when the article belongs to it.
+
+**Layout** (`journalItems`, `EPUBMapView.swift`):
+- Each volume is a plane: its articles form a wall with the usual columns and top, its opening pages stand to the left and its appendices to the right.
+- The newest volume is nearest, at z −1.2. Each older one stands `seriesPlaneGap` (0.45 m) deeper, so the progression reads into depth.
+- The plane owns the depth, as the year does in other rooms: X/Y keep where the hand left them.
+- Cards read "author · Vol n · year".
+
+**Metadata for the assistant.** `BoundVolume.read` now strips U+FFFC from titles (falling back to "Untitled") and gives a work whose id repeats an earlier work's (FoT Vol 3's Softspace pair) its href as id. `SeriesIndex.Entry` gains `year` and `keywords`. Where a work has no binding `keywords`, the six highest-scoring nouns are taken by TF‑IDF across the series, under these rules:
+- A term must occur at least twice in the article and in at least 2 articles, but in no more than a fifth of them.
+- Contributors' names are excluded.
+- `nounCounts` uses NLTagger nouns and lemmas, and falls back to every non-common word when the device has no tagging model.
+
+`briefing` sends "(Vol n, year) [keywords: …]" with each gist. Cards with no abstract wear the gist plus their keywords once the index arrives; its arrival bumps `volumeStamp`.
+
+### 5.18 Build Article Metadata (macOS, 1 November 2026)
+
+A bound volume's library-row menu has **Build Article Metadata…**. For any other book it is dimmed, never hidden. It opens the window `articleMetadata` (`ArticleEnrichmentView`, `ArticleEnrichment.swift`, macOS only), with the volume's whole series ticked. The window shows the bound volumes grouped by series, with per-volume coverage, a Review list (each value with its source), Build / Build Again, Stop, "Redo AI abstracts and keywords made by an earlier pass", and Show Record in Finder.
+
+**The pass.** Each work's text is read straight from its content document: `BoundVolume.blocks(of:inUnpackedFolder:)` runs from the work's anchor to the next piece's anchor in the same file.
+
+The abstract comes from the first source that has one:
+1. the binding;
+2. a printed Abstract (`printedAbstract(in:)`, within the first 16 blocks);
+3. the volume's summaries page (`summaries(inUnpackedFolder:)`). This reads "Name - summary … Kw, Kw (Gen:AI)" paragraphs and matches them by author, then by title. It matches 43 of FoT Vol 5's 46 works;
+4. `OrigamiLLM.respond` with `transformingContent: true`. The prompt sends title, byline, volume, year and the first 7000 characters, and asks for "Abstract: … / Keywords: …", parsed by `ArticleEnrichment.parse`.
+
+Keywords come from the binding, else the summaries page, else the model. When no model answers they fall back to TF-IDF terms over the run (`distinctiveTerms`).
+
+Model errors are logged (`ReadingAI.reason`) into the entry's `note`, never kept as an answer. Articles under 40 words get a note instead. An AI value is kept on later passes while the article's text hash is unchanged, unless Redo is on.
+
+Defined Concepts are re-checked on every pass. Each live library concept, under its term or any alternative name, is matched as a whole word with `ConceptTerm.text(_:contains:)`.
+
+**The store.** `ArticleMetadata` (`EPUBShelf.swift`, shared) holds `{format "origami-article-metadata", version 1, modified, volumes: {bookFolder: {workID: Entry}}}`. Each entry has title, abstract, abstractSource ("book", "summaries", "summaries · Gen:AI", "ai · <model>"), keywords, keywordsSource (likewise, or "terms"), concepts [{id, name}], textHash, made and note. It is written as `origami-article-metadata.json` beside the shelf (`epubsRoot`) and in the community folder, every 8 articles and at the end. The reads and writes are coordinated. Nothing is written into the EPUBs.
+
+**The headset.** `adoptStanding` reads the file whenever its modification date changes. `VisionModel.boundVolume(for:)` applies `.enriched(with:)`, which supplies an abstract or keywords only where the binding has none, and the Defined Concepts always (`Article.definedConcepts`, `abstractSource`). A newer file forgets every cached binding, bumps `volumeStamp` and rebuilds the series index. Card faces show the abstract ("(AI)" when AI-made), its keywords and its Defined Concepts. `SeriesIndex` likeness uses the concepts. `briefing` adds "[keywords: …] [concepts: …]". The Mac's own `boundVolume(for:)` is not enriched, so the Binder never carries AI abstracts into a new binding.
+
+
+
 ## 6. Themes and typography
 
 A theme sets **only background and text colours**. Links, headings and

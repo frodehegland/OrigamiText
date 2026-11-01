@@ -576,7 +576,7 @@ struct EPUBMapView: View {
         // A volume's room: its articles make the wall; its opening pages
         // and its appendices and records stand in columns either side —
         // each zone shown or put away by the volume bar's Show.
-        let pieceOf = model.openVolume.map { model.pieceIndex(of: $0) } ?? [:]
+        let pieceOf = model.roomPieceIndex()
         func zone(_ record: EPUBRecord) -> BoundVolume.Zone { pieceOf[record.id]?.zone ?? .articles }
         let shown = records.filter { !model.openDocIDs.contains($0.id) && model.showsZone(zone($0)) }
         let standing = documentsShown
@@ -587,109 +587,177 @@ struct EPUBMapView: View {
         let closingSide = documentsShown ? shown.filter { zone($0) == .appendices } : []
         let asides: [EPUBRecord] = []
 
-        let columns = Self.wallColumns(standing.count)
-        // The seeded rectangle IS the Wall: same columns, same 5 cm of
-        // air, same height — so a room never touched and a room reset
-        // stand alike, and only their order differs (pinned first here,
-        // alphabetical there).
-        let seedTop = Self.wallTop(rows: (standing.count + columns - 1)
-            / max(columns, 1))
-        // EXPERIMENT — the articles' own year scale: newest at the grid's
-        // plane, each older year a step deeper. A single-year proceedings
-        // stands flat as before, only held; a journal spanning years
-        // spreads into time.
-        func articleYear(_ record: EPUBRecord) -> Int? {
-            record.dateISO.flatMap { Int($0.prefix(4)) }
+        // A series' hallway: every volume a plane of its own — its
+        // articles its own wall, its opening pages and appendices either
+        // side — the newest volume nearest, each older one a step deeper,
+        // so the series reads as its progression. Any other room is one
+        // plane.
+        struct Plane {
+            var standing: [EPUBRecord]
+            var opening: [EPUBRecord]
+            var closing: [EPUBRecord]
+            /// The plane's depth; nil for a room's single wall, whose
+            /// depth the articles' years give.
+            var depth: Float?
+            var volumeNumber: Int?
+            var year: Int?
         }
-        let articleYears = standing.compactMap(articleYear)
-        let newestArticleYear = articleYears.max()
-        let articleSpan = max((newestArticleYear ?? 0) - (articleYears.min() ?? 0), 1)
-        // Length against the journal's own range: the shortest paper on
-        // the wall reads 0, the longest 1. Measured across the standing
-        // cards rather than against a fixed word count, so a volume of
-        // short notes still shows which of them runs long. A journal
-        // whose papers are all one size says nothing — every share nil,
-        // every card its plain height.
-        let standingWords = standing.compactMap { wordsByArticle[$0.id] }
-        let shortestWords = standingWords.min() ?? 0
-        let longestWords = standingWords.max() ?? 0
-        let wordSpan = longestWords - shortestWords
-        func lengthShare(_ record: EPUBRecord) -> Double? {
-            guard wordSpan > 0, let words = wordsByArticle[record.id] else { return nil }
-            return Double(words - shortestWords) / Double(wordSpan)
-        }
-        var yearZ: [String: Float] = [:]
-        var result: [EPUBMapItem] = standing.enumerated().map { index, record in
-            let column = index % columns
-            let row = index / columns
-            let agePlace: Float? = articleYear(record).flatMap { year in
-                newestArticleYear.map { Float($0 - year) / Float(articleSpan) }
+        var planes: [Plane]
+        if let seriesID = model.openSeriesID {
+            let volumes = model.seriesVolumes(seriesID)
+            func volume(_ record: EPUBRecord) -> String? {
+                BoundVolume.split(articleDocID: record.id)?.volume
             }
-            let depth: Float = -1.2 - (agePlace ?? 0) * min(1.2, Float(articleSpan) * 0.1)
-            let seed = SIMD3<Float>(
-                (Float(column) - Float(columns - 1) / 2) * Self.columnPitch,
-                seedTop - Float(row) * Self.rowPitch,
-                depth) + spaceShift + documentsShift
-            yearZ[record.id] = seed.z
-            // A card left elsewhere keeps its place on the plane — the
-            // year reclaims only its depth. A lifted card escapes even
-            // that: free in every axis until it is Put Back.
-            var position = placed[record.id] ?? seed
-            // A place remembered out of reach — under the floor, through
-            // the ceiling, rooms away — gives the card back its seat on
-            // the wall. A carried room's shift is not remembered across
-            // launches while its cards' places are, so a room carried
-            // down once left its papers standing under the floor.
-            if liftedCards[record.id] == nil,
-               !Self.withinReach(position - spaceShift - documentsShift) {
-                position = seed
+            planes = volumes.enumerated().map { index, volumeRecord in
+                let mine: (EPUBRecord) -> Bool = { volume($0) == volumeRecord.id }
+                let behind = Float(volumes.count - 1 - index)
+                return Plane(standing: standing.filter(mine),
+                             opening: openingSide.filter(mine),
+                             closing: closingSide.filter(mine),
+                             depth: -1.2 - behind * Self.seriesPlaneGap,
+                             volumeNumber: model.boundVolume(for: volumeRecord)?.series?.volume,
+                             year: volumeRecord.dateISO.flatMap { Int($0.prefix(4)) })
             }
-            if liftedCards[record.id] == nil { position.z = seed.z }
-            var item = EPUBMapItem(
-                id: record.id,
-                title: record.title,
-                // The year on the face, so the alignment reads at a glance.
-                author: articleYear(record).map { "\(record.author) · \($0)" }
-                    ?? record.author,
-                kind: .article,
-                position: position,
-                citedIDs: citedIDsByArticle[record.id] ?? [],
-                isPinned: model.pinnedIDs.contains(record.id),
-                abstract: abstractByArticle[record.id] ?? "")
-            item.isLifted = liftedCards[record.id] != nil
-            item.lengthShare = lengthShare(record)
-            return item
+        } else {
+            planes = [Plane(standing: standing, opening: openingSide, closing: closingSide)]
         }
-        articleYearZ = yearZ
+        // What the series index knows of each article — its gist and its
+        // keywords — on the card's face where the book gave no abstract.
+        let indexed = model.openSeriesID != nil || model.openVolume != nil
+            ? Dictionary((model.seriesIndex?.entries ?? []).map { ($0.id, $0) },
+                         uniquingKeysWith: { first, _ in first })
+            : [:]
+        // And what the Mac's Build Article Metadata found: keywords, the
+        // reader's Defined Concepts, and whether the abstract was AI-made.
+        func cardAbstract(_ record: EPUBRecord) -> String {
+            let piece = pieceOf[record.id]
+            var text = abstractByArticle[record.id] ?? indexed[record.id]?.gist ?? ""
+            if let source = piece?.abstractSource, source.contains("ai") || source.contains("AI"),
+               abstractByArticle[record.id] != nil {
+                text += " (AI)"
+            }
+            let keywords = piece.map(\.keywords).flatMap { $0.isEmpty ? nil : $0 }
+                ?? indexed[record.id]?.keywords ?? []
+            if !keywords.isEmpty { text += "\n\nKeywords: " + keywords.joined(separator: ", ") }
+            if let concepts = piece?.definedConcepts, !concepts.isEmpty {
+                text += "\nDefined Concepts: " + concepts.joined(separator: ", ")
+            }
+            return text
+        }
 
-        // The side columns: the opening pages a card's width and a half to
-        // the wall's left, the appendices and records as far to its right,
-        // each from the wall's top row down.
-        func sideItems(_ side: [EPUBRecord], leftOfWall: Bool) -> [EPUBMapItem] {
-            let edge = Float(columns - 1) / 2 + 1.6
-            return side.enumerated().map { index, record in
+        var result: [EPUBMapItem] = []
+        var yearZ: [String: Float] = [:]
+        for plane in planes {
+            let standing = plane.standing
+            let columns = Self.wallColumns(standing.count)
+            // The seeded rectangle IS the Wall: same columns, same 5 cm of
+            // air, same height — so a room never touched and a room reset
+            // stand alike, and only their order differs (pinned first here,
+            // alphabetical there).
+            let seedTop = Self.wallTop(rows: (standing.count + columns - 1)
+                / max(columns, 1))
+            // EXPERIMENT — the articles' own year scale: newest at the grid's
+            // plane, each older year a step deeper. A single-year proceedings
+            // stands flat as before, only held; a journal spanning years
+            // spreads into time.
+            func articleYear(_ record: EPUBRecord) -> Int? {
+                record.dateISO.flatMap { Int($0.prefix(4)) }
+            }
+            let articleYears = standing.compactMap(articleYear)
+            let newestArticleYear = articleYears.max()
+            let articleSpan = max((newestArticleYear ?? 0) - (articleYears.min() ?? 0), 1)
+            // Length against the journal's own range: the shortest paper on
+            // the wall reads 0, the longest 1. Measured across the standing
+            // cards rather than against a fixed word count, so a volume of
+            // short notes still shows which of them runs long. A journal
+            // whose papers are all one size says nothing — every share nil,
+            // every card its plain height.
+            let standingWords = standing.compactMap { wordsByArticle[$0.id] }
+            let shortestWords = standingWords.min() ?? 0
+            let longestWords = standingWords.max() ?? 0
+            let wordSpan = longestWords - shortestWords
+            func lengthShare(_ record: EPUBRecord) -> Double? {
+                guard wordSpan > 0, let words = wordsByArticle[record.id] else { return nil }
+                return Double(words - shortestWords) / Double(wordSpan)
+            }
+            result += standing.enumerated().map { index, record in
+                let column = index % columns
+                let row = index / columns
+                let agePlace: Float? = articleYear(record).flatMap { year in
+                    newestArticleYear.map { Float($0 - year) / Float(articleSpan) }
+                }
+                let depth: Float = plane.depth
+                    ?? -1.2 - (agePlace ?? 0) * min(1.2, Float(articleSpan) * 0.1)
                 let seed = SIMD3<Float>(
-                    (leftOfWall ? -edge : edge) * Self.columnPitch,
-                    seedTop - Float(index) * Self.rowPitch,
-                    -1.2) + spaceShift + documentsShift
+                    (Float(column) - Float(columns - 1) / 2) * Self.columnPitch,
+                    seedTop - Float(row) * Self.rowPitch,
+                    depth) + spaceShift + documentsShift
+                yearZ[record.id] = seed.z
+                // A card left elsewhere keeps its place on the plane — the
+                // year reclaims only its depth. A lifted card escapes even
+                // that: free in every axis until it is Put Back.
                 var position = placed[record.id] ?? seed
+                // A place remembered out of reach — under the floor, through
+                // the ceiling, rooms away — gives the card back its seat on
+                // the wall. A carried room's shift is not remembered across
+                // launches while its cards' places are, so a room carried
+                // down once left its papers standing under the floor.
                 if liftedCards[record.id] == nil,
                    !Self.withinReach(position - spaceShift - documentsShift) {
                     position = seed
                 }
+                if liftedCards[record.id] == nil { position.z = seed.z }
+                // The year on the face, so the alignment reads at a glance —
+                // in a series' hallway, the volume too.
+                let stamp = plane.volumeNumber.map { volume in
+                    plane.year.map { "Vol \(volume) · \($0)" } ?? "Vol \(volume)" }
+                    ?? articleYear(record).map(String.init)
                 var item = EPUBMapItem(
-                    id: record.id, title: record.title,
-                    author: pieceOf[record.id]?.byline ?? "",
-                    kind: .article, position: position,
+                    id: record.id,
+                    title: record.title,
+                    author: stamp.map { "\(record.author) · \($0)" } ?? record.author,
+                    kind: .article,
+                    position: position,
                     citedIDs: citedIDsByArticle[record.id] ?? [],
                     isPinned: model.pinnedIDs.contains(record.id),
-                    abstract: abstractByArticle[record.id] ?? "")
+                    abstract: cardAbstract(record))
                 item.isLifted = liftedCards[record.id] != nil
+                item.lengthShare = lengthShare(record)
                 return item
             }
+
+            // The side columns: the opening pages a card's width and a half to
+            // the wall's left, the appendices and records as far to its right,
+            // each from the wall's top row down.
+            func sideItems(_ side: [EPUBRecord], leftOfWall: Bool) -> [EPUBMapItem] {
+                let edge = Float(columns - 1) / 2 + 1.6
+                return side.enumerated().map { index, record in
+                    let seed = SIMD3<Float>(
+                        (leftOfWall ? -edge : edge) * Self.columnPitch,
+                        seedTop - Float(index) * Self.rowPitch,
+                        plane.depth ?? -1.2) + spaceShift + documentsShift
+                    if plane.depth != nil { yearZ[record.id] = seed.z }
+                    var position = placed[record.id] ?? seed
+                    if liftedCards[record.id] == nil,
+                       !Self.withinReach(position - spaceShift - documentsShift) {
+                        position = seed
+                    }
+                    if plane.depth != nil, liftedCards[record.id] == nil { position.z = seed.z }
+                    var item = EPUBMapItem(
+                        id: record.id, title: record.title,
+                        author: pieceOf[record.id]?.byline ?? "",
+                        kind: .article, position: position,
+                        citedIDs: citedIDsByArticle[record.id] ?? [],
+                        isPinned: model.pinnedIDs.contains(record.id),
+                        abstract: cardAbstract(record))
+                    item.isLifted = liftedCards[record.id] != nil
+                    return item
+                }
+            }
+            result += sideItems(plane.opening, leftOfWall: true)
+            result += sideItems(plane.closing, leftOfWall: false)
         }
-        result += sideItems(openingSide, leftOfWall: true)
-        result += sideItems(closingSide, leftOfWall: false)
+        articleYearZ = yearZ
         // Every piece that is not plainly an article says what it is.
         for index in result.indices {
             guard let piece = pieceOf[result[index].id] else { continue }
@@ -875,7 +943,7 @@ struct EPUBMapView: View {
     /// A volume's room carries its bar; any other room has none. Layout's
     /// choices are named here, where the arrangements live.
     private func syncVolumeBar() {
-        if model.openVolume != nil {
+        if model.isVolumeRoom {
             // The series' articles, made ready for the assistant now, so
             // Similar and Ask answer at once.
             model.prepareSeriesIndex()
@@ -1775,6 +1843,10 @@ struct EPUBMapView: View {
     /// Card to card: left to right, and top to bottom.
     private static let columnPitch = cardSize.x + autoGap
     private static let rowPitch = cardSize.y + autoGap
+    /// How far behind one another a series' volumes stand — far enough
+    /// that each reads as its own plane, near enough that the oldest is
+    /// still legible from the newest.
+    private static let seriesPlaneGap: Float = 0.45
     /// Rings and ellipses are squashed to the card's own proportion,
     /// so a step outward is a row's step down.
     private static let pitchAspect = rowPitch / columnPitch
@@ -3193,8 +3265,15 @@ struct EPUBMapView: View {
             Button("Transpoint") { model.transpointDocID = item.id }
             // A bound volume stands as its articles, each a card read
             // alone; inside, the way back to the whole book.
-            if model.openVolume != nil {
-                Button("Whole Volume") { model.openWholeVolume() }
+            if model.isVolumeRoom {
+                Button("Whole Volume") { model.openWholeVolume(from: item.id) }
+                // From one volume's room to its whole series, every
+                // volume on its own plane.
+                if model.openSeriesID == nil,
+                   let seriesID = model.openVolume.flatMap({ model.boundVolume(for: $0)?.series?.id }),
+                   model.seriesVolumes(seriesID).count >= 2 {
+                    Button("Whole Series") { model.openSeries(seriesID) }
+                }
                 // What this piece is, as the reader reads it: the volume's
                 // own reading corrected — Article, Opening, Appendix…
                 Button("Kind") {
@@ -3751,7 +3830,7 @@ struct EPUBMapView: View {
     private func timelinePositions(_ articles: [EPUBMapItem],
                                    center: SIMD2<Float>) -> [String: SIMD2<Float>] {
         let dateByID = Dictionary(
-            (model.epubRecords + (model.openVolume.map(model.articleRecords(of:)) ?? []))
+            (model.epubRecords + (model.isVolumeRoom ? model.openJournalVenue.map(model.records(inVenue:)) ?? [] : []))
                 .map { ($0.id, $0.dateISO) }) { first, _ in first }
         func year(_ id: String) -> Int? {
             dateByID[id]?.flatMap { Int($0.prefix(4)) }

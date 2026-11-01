@@ -122,6 +122,14 @@ struct EPUBPileMenu: View {
             }
         }
         .disabled(bound == nil)
+        // Abstracts, keywords and Defined Concepts for every article of
+        // the volume and its series — for the headset's cards and its
+        // assistant. Dimmed, never hidden, for a book that is not bound.
+        Button("Build Article Metadata\u{2026}") {
+            ArticleEnrichment.shared.select(seriesOf: record, in: model)
+            openWindow(id: "articleMetadata")
+        }
+        .disabled(bound == nil)
         // Binding (Origami Binding Profile, 24 Oct 2026): the whole book,
         // a selection of its articles, or a binder across books.
         BinderMenuItems(record: record)

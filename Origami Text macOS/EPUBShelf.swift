@@ -3017,8 +3017,15 @@ nonisolated struct BoundVolume: Hashable, Sendable {
         /// binding lists them — empty when it lists none.
         let concepts: [String]
         let references: [String]
-        let abstract: String?
-        let keywords: [String]
+        var abstract: String?
+        var keywords: [String]
+        /// Where the abstract came from when the book did not carry it —
+        /// "summaries", "ai · <model>" (`ArticleMetadata`); nil for the
+        /// book's own.
+        var abstractSource: String? = nil
+        /// The reader's Defined Concepts its pages use, by name — found
+        /// by the Mac's Build Article Metadata, never written into the book.
+        var definedConcepts: [String] = []
 
         var isWork: Bool { kind == .article || kind == .collection }
         var zone: Zone { kind.zone }
@@ -3100,15 +3107,29 @@ nonisolated struct BoundVolume: Hashable, Sendable {
             return Self.declaredKinds[role].map { ($0, role == "chapter" || role == "article" ? nil : role) }
         }
 
+        /// A title as a card can wear it: an image's placeholder (U+FFFC,
+        /// a title that was a picture) is no title at all.
+        func title(_ raw: Any?) -> String {
+            let cleaned = text(raw)?.replacingOccurrences(of: "\u{FFFC}", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return cleaned.isEmpty ? "Untitled" : cleaned
+        }
+
         var pieces: [Article] = []
+        var takenIDs = Set<String>()
         for work in works {
             guard let href = work["href"] as? String else { continue }
             let at = place(href)
             let resources = work["resources"] as? [String: Any]
             let authors = (work["authors"] as? [[String: Any]] ?? []).compactMap { text($0["name"]) }
+            // A work whose id another work already carries (FoT Vol 3's
+            // Softspace pair) reads under its href instead, so each is
+            // its own card.
+            var id = work["id"] as? String ?? href
+            if !takenIDs.insert(id).inserted { id = href; takenIDs.insert(id) }
             var piece = Article(
-                id: work["id"] as? String ?? href,
-                title: text(work["title"]) ?? "Untitled",
+                id: id,
+                title: title(work["title"]),
                 authors: authors, role: .work, file: at.file, anchor: at.anchor,
                 concepts: ids(resources, "concepts"), references: ids(resources, "references"),
                 abstract: text(work["abstract"]),
@@ -3123,7 +3144,7 @@ nonisolated struct BoundVolume: Hashable, Sendable {
             let at = place(href)
             let given = matter["role"] as? String
             var piece = Article(
-                id: href, title: text(matter["title"]) ?? "Untitled", authors: [],
+                id: href, title: title(matter["title"]), authors: [],
                 role: given == "front" ? .front : .back,
                 file: at.file, anchor: at.anchor, concepts: [], references: [],
                 abstract: nil, keywords: [])
@@ -3404,6 +3425,14 @@ nonisolated struct SeriesIndex: Codable, Sendable {
         let gist: String
         var concepts: Set<String>
         var vector: [Double]
+        /// The volume's year.
+        var year: Int?
+        /// What it is about in a few words: the book's own keywords, else
+        /// the words it uses far more than the rest of the series does.
+        var keywords: [String]
+        /// The reader's Defined Concepts its pages use (the Mac's Build
+        /// Article Metadata).
+        var definedConcepts: [String] = []
 
         var byline: String { authors.joined(separator: ", ") }
         /// "Vol 4" — or the volume's title where it has no number.
@@ -3416,6 +3445,7 @@ nonisolated struct SeriesIndex: Codable, Sendable {
         let title: String
         let bound: BoundVolume
         let document: LiquidDoc
+        var year: Int? = nil
     }
 
     let seriesID: String
@@ -3439,7 +3469,8 @@ nonisolated struct SeriesIndex: Codable, Sendable {
     static func signature(of volumes: [Volume]) -> String {
         let described = volumes.map { volume in
             volume.recordID + "{" + volume.bound.articles.map { piece in
-                [piece.id, piece.title, piece.byline, piece.kind.rawValue, piece.abstract ?? ""]
+                [piece.id, piece.title, piece.byline, piece.kind.rawValue, piece.abstract ?? "",
+                 piece.keywords.joined(separator: ","), piece.definedConcepts.joined(separator: ",")]
                     .joined(separator: "\u{1F}")
             }.joined(separator: "\u{1E}") + "#\((volume.document.body ?? []).count)}"
         }.sorted().joined(separator: "|")
@@ -3450,7 +3481,7 @@ nonisolated struct SeriesIndex: Codable, Sendable {
     /// Knowledge Space's own embedding model (bge-small) where the build
     /// carries it, Apple's sentence embedding otherwise.
     static func build(seriesID: String, name: String, volumes: [Volume]) async -> SeriesIndex {
-        struct Draft { var entry: Entry; let text: String }
+        struct Draft { var entry: Entry; let text: String; var terms: [String: Int] = [:] }
         var drafts: [Draft] = []
         for volume in volumes {
             for article in volume.bound.works {
@@ -3470,10 +3501,34 @@ nonisolated struct SeriesIndex: Codable, Sendable {
                     volumeID: volume.recordID, volumeTitle: volume.title,
                     volumeNumber: volume.bound.series?.volume,
                     title: article.title, authors: article.authors, kind: article.kind,
-                    gist: gist, concepts: Set(doc.concepts.map { $0.name.lowercased() }), vector: [])
+                    gist: gist,
+                    concepts: Set(doc.concepts.map { $0.name.lowercased() } + article.definedConcepts.map { $0.lowercased() }),
+                    vector: [],
+                    year: volume.year, keywords: article.keywords,
+                    definedConcepts: article.definedConcepts)
                 drafts.append(Draft(entry: entry,
-                                    text: article.title + ". " + String(opening.prefix(2400))))
+                                    text: article.title + ". " + String(opening.prefix(2400)),
+                                    terms: article.keywords.isEmpty
+                                        ? Self.nounCounts(article.title + ". " + opening) : [:]))
             }
+        }
+
+        // Keywords where the book gave none: the nouns an article uses
+        // most that few others in the series use at all.
+        // Its contributors' own names say who, not what.
+        var spread: [String: Int] = [:]
+        for draft in drafts { for term in draft.terms.keys { spread[term, default: 0] += 1 } }
+        let names = Set(drafts.flatMap { $0.entry.authors }
+            .flatMap { $0.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init) })
+        let ceiling = max(2, drafts.count / 5)
+        for index in drafts.indices where !drafts[index].terms.isEmpty {
+            let scored = drafts[index].terms.compactMap { term, count -> (String, Double)? in
+                let df = spread[term] ?? 1
+                guard count >= 2, df >= 2, df <= ceiling, !names.contains(term) else { return nil }
+                return (term, Double(count) * log(Double(drafts.count) / Double(df)))
+            }
+            drafts[index].entry.keywords = scored.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }
+                .prefix(6).map(\.0)
         }
 
         // The vectors.
@@ -3517,6 +3572,62 @@ nonisolated struct SeriesIndex: Codable, Sendable {
         return SeriesIndex(seriesID: seriesID, name: name, signature: signature(of: volumes),
                            entries: entries, mean: mean, model: model)
     }
+
+    /// Each noun's lemma in a text, with how often it stands there —
+    /// names and short words left out. Where the device has no tagging
+    /// model (every word comes back "other"), every word that is not a
+    /// common one counts instead.
+    static func nounCounts(_ raw: String) -> [String: Int] {
+        // An entity left in the text ("&quot;") is no word.
+        let text = raw.replacingOccurrences(of: "&#?[A-Za-z0-9]+;", with: " ", options: .regularExpression)
+        let tagger = NLTagger(tagSchemes: [.lexicalClass, .lemma, .nameType])
+        tagger.string = text
+        var counts: [String: Int] = [:]
+        tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .lexicalClass,
+                             options: [.omitPunctuation, .omitWhitespace]) { tag, range in
+            let tagged = tag != nil && tag != .otherWord
+            if tagged, tag != .noun { return true }
+            if tagged, let name = tagger.tag(at: range.lowerBound, unit: .word, scheme: .nameType).0,
+               [.personalName, .placeName, .organizationName].contains(name) { return true }
+            var word = (tagger.tag(at: range.lowerBound, unit: .word, scheme: .lemma).0?.rawValue
+                        ?? String(text[range])).lowercased()
+            guard word.count >= 4, word.allSatisfy(\.isLetter) else { return true }
+            if !tagged {
+                guard !commonWords.contains(word) else { return true }
+                if word.hasSuffix("ies"), word.count > 5 { word = String(word.dropLast(3)) + "y" }
+            }
+            counts[word, default: 0] += 1
+            return true
+        }
+        // A plural counts with its singular where the text has both.
+        for word in Array(counts.keys) where word.hasSuffix("s") {
+            let singular = String(word.dropLast())
+            if let count = counts[word], counts[singular] != nil {
+                counts[singular, default: 0] += count
+                counts[word] = nil
+            }
+        }
+        return counts
+    }
+
+    /// The words any English text is made of — never what one is about.
+    private static let commonWords: Set<String> = Set("""
+        about above after again against also although always among another anything around away back \
+        because been before being below between both came cannot could does doing done down during each \
+        either else enough even ever every first from further gave give given goes going good great have \
+        having here herself himself however into itself just keep know known last least less like likely \
+        made make makes making many might more most much must myself near need never next none nothing \
+        often once only other others ourselves over perhaps rather really said same seem seems seen should \
+        show since some something sometimes still such sure take than that their theirs them themselves \
+        then there therefore these they thing things think this those though through thus time together \
+        took toward towards under until upon used using very want well were what whatever when where \
+        whether which while whom whose will with within without would year years your yours yourself \
+        actually already able become becomes begin best better came come comes different does early \
+        example find found form full help high however important kind large later long look looking \
+        means move much new number old part people place point possible put quite read right says \
+        several small start started tell thought today true turn want ways what work world write \
+        written yes yet also way new one two three four five many much
+        """.split(whereSeparator: \.isWhitespace).map(String.init))
 
     /// Apple's sentence embedding of a text: the mean of the vectors of its
     /// first dozen sentences, normalised.
@@ -3634,7 +3745,7 @@ nonisolated struct SeriesIndex: Codable, Sendable {
         let probe = Entry(id: "", volumeID: "", volumeTitle: "", volumeNumber: nil, title: question,
                           authors: [], kind: .article, gist: "",
                           concepts: Set(entries.flatMap(\.concepts).filter { asked.contains($0) }),
-                          vector: await questionVector(question))
+                          vector: await questionVector(question), keywords: [])
         let near = entries.map { ($0, likeness(probe, $0)) }.sorted { $0.1 > $1.1 }.map(\.0)
         var seen = Set<String>()
         return (named + near).filter { seen.insert($0.id).inserted }.prefix(limit).map { $0 }
@@ -3645,7 +3756,280 @@ nonisolated struct SeriesIndex: Codable, Sendable {
     static func briefing(_ entries: [Entry]) -> String {
         entries.enumerated().map { index, entry in
             let by = entry.byline.isEmpty ? "" : " — \(entry.byline)"
-            return "[\(index + 1)] \(entry.title)\(by) (\(entry.volumeName)): \(entry.gist)"
+            let when = entry.year.map { ", \($0)" } ?? ""
+            var about = entry.keywords.isEmpty ? "" : " [keywords: \(entry.keywords.joined(separator: ", "))]"
+            if !entry.definedConcepts.isEmpty {
+                about += " [concepts: \(entry.definedConcepts.joined(separator: ", "))]"
+            }
+            return "[\(index + 1)] \(entry.title)\(by) (\(entry.volumeName)\(when))\(about): \(entry.gist)"
         }.joined(separator: "\n")
+    }
+}
+
+
+// MARK: - Article metadata, built on the Mac
+
+/// What the Mac's Build Article Metadata learned of each article of a
+/// bound volume — an abstract, keywords, and the reader's Defined
+/// Concepts its pages use — where the book itself carries none. Kept as
+/// `origami-article-metadata.json` beside the shelf and in the community
+/// folder, keyed by the book's folder name (never its local record id)
+/// and then the work's own id, so the headset reads it and a book
+/// re-exported from Author keeps it. Never written into the EPUB: the
+/// book stays as its author made it, and each value says where it came
+/// from.
+nonisolated enum ArticleMetadata {
+    struct Concept: Codable, Hashable, Sendable {
+        let id: String
+        let name: String
+    }
+
+    struct Entry: Codable, Hashable, Sendable {
+        var title: String
+        var abstract: String?
+        /// "book" (its own Abstract), "summaries" (the volume's summaries
+        /// page), "summaries · Gen:AI" (that page's AI-made ones), or
+        /// "ai · <model>" (made here).
+        var abstractSource: String?
+        var keywords: [String] = []
+        /// "book", "summaries", "ai · <model>", or "terms" (the words it
+        /// uses more than the rest of the series, when no model answered).
+        var keywordsSource: String?
+        var concepts: [Concept] = []
+        /// The article's text as it was read, hashed — changed text is
+        /// read again.
+        var textHash: String
+        var made: Date
+        /// Why the last pass could not finish it (a model refusal, an
+        /// article of pictures only), so it is tried again.
+        var note: String?
+    }
+
+    struct File: Codable, Sendable {
+        var format = "origami-article-metadata"
+        var version = 1
+        var modified: Date
+        /// Book folder → work id → what was learned.
+        var volumes: [String: [String: Entry]]
+    }
+
+    static let fileName = "origami-article-metadata.json"
+
+    /// Reads a copy, coordinated with iCloud.
+    static func read(_ url: URL) -> File? {
+        var data: Data?
+        var failure: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &failure) { at in
+            data = try? Data(contentsOf: at)
+        }
+        guard let data else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(File.self, from: data)
+    }
+
+    /// Writes a copy, coordinated, whole.
+    static func write(_ file: File, to url: URL) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(file) else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        var failure: NSError?
+        NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &failure) { at in
+            try? data.write(to: at, options: .atomic)
+        }
+    }
+
+    /// The file's date when last read, so an unchanged copy is not
+    /// decoded again on every beat. Touched only by the one adopting loop.
+    nonisolated(unsafe) private static var sharedFileDate: Date?
+
+    /// The community folder's copy, read inside its security scope —
+    /// nil when it has not changed since it was last read.
+    static func readShared(from folder: URL) -> File? {
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        let url = folder.appendingPathComponent(fileName)
+        let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        if let date, date == sharedFileDate { return nil }
+        guard let file = read(url) else { return nil }
+        sharedFileDate = date
+        return file
+    }
+
+    static func publish(_ file: File, to folder: URL) {
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        write(file, to: folder.appendingPathComponent(fileName))
+    }
+}
+
+extension BoundVolume {
+    /// The volume with what the Mac learned laid under what the book
+    /// says: an abstract or keywords only where the book has none; the
+    /// Defined Concepts always.
+    nonisolated func enriched(with entries: [String: ArticleMetadata.Entry]) -> BoundVolume {
+        guard !entries.isEmpty else { return self }
+        var copy = self
+        for index in copy.articles.indices {
+            guard let entry = entries[copy.articles[index].id] else { continue }
+            if (copy.articles[index].abstract ?? "").isEmpty, let abstract = entry.abstract, !abstract.isEmpty {
+                copy.articles[index].abstract = abstract
+                copy.articles[index].abstractSource = entry.abstractSource
+            }
+            if copy.articles[index].keywords.isEmpty { copy.articles[index].keywords = entry.keywords }
+            copy.articles[index].definedConcepts = entry.concepts.map(\.name)
+        }
+        return copy
+    }
+
+    /// An article's own text, read straight from its content document as
+    /// blocks (headings, paragraphs, list items): from its heading up to
+    /// the next piece beginning in the same file.
+    nonisolated func blocks(of article: Article, inUnpackedFolder folder: URL) -> [String] {
+        guard let html = try? String(contentsOf: folder.appendingPathComponent(article.file), encoding: .utf8)
+        else { return [] }
+        let body = html.range(of: "<body").map { String(html[$0.lowerBound...]) } ?? html
+        func tagStart(ofID id: String, in text: String) -> String.Index? {
+            guard let at = text.range(of: "id=\"\(id)\"") else { return nil }
+            return text[..<at.lowerBound].lastIndex(of: "<")
+        }
+        var slice = Substring(body)
+        if let anchor = article.anchor, let start = tagStart(ofID: anchor, in: body) {
+            slice = body[start...]
+        }
+        let rest = String(slice)
+        let ends = articles
+            .filter { $0.id != article.id && $0.file == article.file }
+            .compactMap { $0.anchor }
+            .compactMap { tagStart(ofID: $0, in: rest) }
+            .filter { $0 > rest.startIndex }
+        let piece = ends.min().map { String(rest[..<$0]) } ?? rest
+        let broken = piece
+            .replacingOccurrences(of: "(?i)</(p|h[1-6]|li|blockquote|div|figcaption|tr|dd|dt)>",
+                                  with: "\n\n", options: .regularExpression)
+            .replacingOccurrences(of: "(?i)<br\\s*/?>", with: "\n", options: .regularExpression)
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        return Self.decodedEntities(broken)
+            .components(separatedBy: "\n\n")
+            .map { $0.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "\u{FFFC}" }
+    }
+
+    nonisolated static func decodedEntities(_ text: String) -> String {
+        var out = text
+        let named: [(String, String)] = [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""),
+                                         ("&#39;", "'"), ("&apos;", "'"), ("&nbsp;", " "), ("&#160;", " ")]
+        for (entity, plain) in named {
+            out = out.replacingOccurrences(of: entity, with: plain)
+        }
+        // Numeric entities, decimal and hex.
+        guard let expression = try? NSRegularExpression(pattern: "&#(x?)([0-9A-Fa-f]+);") else { return out }
+        let ns = out as NSString
+        var result = ""
+        var last = 0
+        for match in expression.matches(in: out, range: NSRange(location: 0, length: ns.length)) {
+            result += ns.substring(with: NSRange(location: last, length: match.range.location - last))
+            let hex = ns.substring(with: match.range(at: 1)) == "x"
+            let digits = ns.substring(with: match.range(at: 2))
+            if let value = UInt32(digits, radix: hex ? 16 : 10), let scalar = Unicode.Scalar(value) {
+                result.append(Character(scalar))
+            }
+            last = match.range.location + match.range.length
+        }
+        return result + ns.substring(from: last)
+    }
+
+    /// The abstract an article prints itself: the block after one that
+    /// reads "Abstract", or a block that begins "Abstract:" — looked for
+    /// near its top only.
+    nonisolated static func printedAbstract(in blocks: [String]) -> String? {
+        let head = Array(blocks.prefix(16))
+        for (index, block) in head.enumerated() {
+            let lower = block.lowercased()
+            if ["abstract", "abstract:", "abstract.", "summary", "summary:"].contains(lower) {
+                var parts: [String] = []
+                for next in head.dropFirst(index + 1) {
+                    let words = next.split(separator: " ").count
+                    if words <= 6, !parts.isEmpty { break }       // the next heading
+                    if words <= 6 { continue }
+                    parts.append(next)
+                    if parts.joined(separator: " ").split(separator: " ").count > 220 { break }
+                }
+                if !parts.isEmpty { return parts.joined(separator: "\n\n") }
+            }
+            for prefix in ["abstract:", "abstract.", "abstract —", "abstract -", "abstract –"]
+                where lower.hasPrefix(prefix) && block.count > 80 {
+                return String(block.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+
+    /// A volume's summaries page (The Future of Text Vol 5's "Article
+    /// Summaries"): one paragraph a contributor, "Name - summary …
+    /// Keyword, Keyword (Gen:AI)", matched to the works by author and,
+    /// where an author wrote more than one, by title.
+    nonisolated func summaries(inUnpackedFolder folder: URL)
+        -> [String: (abstract: String, keywords: [String], generated: Bool)] {
+        let pages = articles.filter {
+            let title = $0.title.lowercased()
+            return title.hasPrefix("article summaries") || title == "summaries" || title == "abstracts"
+        }
+        guard !pages.isEmpty else { return [:] }
+        func fold(_ text: String) -> String {
+            text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                .replacingOccurrences(of: "[^a-z0-9 ]", with: " ", options: .regularExpression)
+                .replacingOccurrences(of: " +", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+        }
+        var found: [String: (abstract: String, keywords: [String], generated: Bool)] = [:]
+        for page in pages {
+            for block in blocks(of: page, inUnpackedFolder: folder) {
+                guard let dash = block.range(of: #"\s[-–—]\s"#, options: .regularExpression) else { continue }
+                let name = fold(String(block[..<dash.lowerBound]))
+                guard !name.isEmpty, name.split(separator: " ").count <= 8 else { continue }
+                var summary = String(block[dash.upperBound...]).trimmingCharacters(in: .whitespaces)
+                let generated = summary.contains("(Gen:AI)")
+                summary = summary.replacingOccurrences(of: "(Gen:AI)", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+                // The keywords close it: a last run of short, comma-joined words.
+                var keywords: [String] = []
+                if let stop = summary.range(of: ". ", options: .backwards) {
+                    let tail = String(summary[stop.upperBound...])
+                    let parts = tail.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                    if parts.count >= 2, parts.allSatisfy({ !$0.isEmpty && $0.split(separator: " ").count <= 4 }),
+                       !tail.hasSuffix(".") {
+                        keywords = parts
+                        summary = String(summary[..<stop.lowerBound]) + "."
+                    }
+                }
+                guard summary.split(separator: " ").count >= 12 else { continue }
+                let folded = fold(summary.prefix(240).description)
+                let byAuthor = works.filter { work in
+                    found[work.id] == nil && work.authors.contains { author in
+                        let a = fold(author)
+                        return !a.isEmpty && (name.contains(a) || a.contains(name))
+                    }
+                }
+                let chosen = byAuthor.first { folded.contains(fold($0.title)) } ?? byAuthor.first
+                    // Opening pages are summarised too ("Foreword", "Welcome").
+                    ?? articles.first { piece in
+                        found[piece.id] == nil && !piece.isWork
+                            && folded.hasPrefix(fold(piece.title)) && !fold(piece.title).isEmpty
+                    }
+                if let chosen {
+                    var text = summary
+                    if text.lowercased().hasPrefix(chosen.title.lowercased() + ".") {
+                        text = String(text.dropFirst(chosen.title.count + 1)).trimmingCharacters(in: .whitespaces)
+                    }
+                    found[chosen.id] = (text, keywords, generated)
+                }
+            }
+        }
+        return found
     }
 }

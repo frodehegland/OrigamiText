@@ -246,6 +246,15 @@ struct OrigamiTextMacApp: App {
         }
         .defaultSize(width: 720, height: 560)
 
+        // Build Article Metadata… (a bound volume's row menu): abstracts,
+        // keywords and Defined Concepts for each article
+        // (ArticleEnrichment.swift).
+        Window("Build Article Metadata", id: "articleMetadata") {
+            ArticleEnrichmentView()
+                .environment(model)
+        }
+        .defaultSize(width: 980, height: 680)
+
         // File ▸ Hold Up a Page… — the camera reads a printed page and
         // opens its document in the main window at the page's place.
         Window("Hold Up a Page", id: "pageCamera") {

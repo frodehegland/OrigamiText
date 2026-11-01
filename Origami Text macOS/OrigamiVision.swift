@@ -1465,6 +1465,10 @@ final class VisionModel {
             // What the Mac learned of every cited work — read, never
             // fetched: the headset asks no reference service itself.
             await ReferenceStatus.adoptShared(from: folder)
+            // The articles' abstracts, keywords and Defined Concepts.
+            if let metadata = ArticleMetadata.readShared(from: folder) {
+                await MainActor.run { self.adoptArticleMetadata(metadata) }
+            }
             guard let state = EPUBStanding.read(from: folder) else { return }
             await MainActor.run { self.applyStanding(state) }
         }
@@ -1583,6 +1587,9 @@ final class VisionModel {
     func records(inVenue venue: String) -> [EPUBRecord] {
         if venue == Self.libraryVenue { return epubRecords }
         if let volume = volumeRecord(forVenue: venue) { return articleRecords(of: volume) }
+        if let seriesID = seriesID(forVenue: venue) {
+            return seriesVolumes(seriesID).flatMap(articleRecords(of:))
+        }
         guard venue != Self.noJournalVenue else {
             return epubRecords.filter { $0.venue == nil }
         }
@@ -1597,6 +1604,10 @@ final class VisionModel {
     /// room, with the same views and interactions around the page.
     func standMap(for record: EPUBRecord) {
         // An article's room is its volume's.
+        // An article of the open series stays in the series' hallway.
+        if let split = BoundVolume.split(articleDocID: record.id),
+           let seriesID = openSeriesID,
+           seriesVolumes(seriesID).contains(where: { $0.id == split.volume }) { return }
         let venue = BoundVolume.split(articleDocID: record.id)
             .map { Self.volumeVenuePrefix + $0.volume }
             ?? record.venue ?? Self.noJournalVenue
@@ -1661,9 +1672,77 @@ final class VisionModel {
             .map { Self.volumeVenuePrefix + $0.id }
     }
 
-    /// A room's name as people read it: a volume's title, else the venue.
+    /// A room's name as people read it: a volume's title, a series' name,
+    /// else the venue.
     func venueTitle(_ venue: String) -> String {
-        volumeRecord(forVenue: venue)?.title ?? venue
+        if let volume = volumeRecord(forVenue: venue) { return volume.title }
+        if let seriesID = seriesID(forVenue: venue),
+           let first = seriesVolumes(seriesID).first,
+           let series = boundVolume(for: first)?.series {
+            return series.name.isEmpty ? first.title : series.name
+        }
+        return venue
+    }
+
+    // MARK: A series' hallway
+
+    /// The room every volume of one series stands in at once (binding
+    /// `series.id`): each volume's articles a wall of their own, the
+    /// walls one behind another, so the series reads as its progression.
+    static let seriesVenuePrefix = "series:"
+
+    func seriesID(forVenue venue: String?) -> String? {
+        guard let venue, venue.hasPrefix(Self.seriesVenuePrefix) else { return nil }
+        return String(venue.dropFirst(Self.seriesVenuePrefix.count))
+    }
+
+    /// The series whose hallway stands, when one does.
+    var openSeriesID: String? { seriesID(forVenue: openJournalVenue) }
+
+    /// Whether the room is a volume's or a series' — either carries the
+    /// volume bar, its zones, Kind and Similar.
+    var isVolumeRoom: Bool { openVolume != nil || openSeriesID != nil }
+
+    /// A series' volumes on the shelf, in the series' own order (its
+    /// volume numbers, then dates, then titles).
+    func seriesVolumes(_ seriesID: String) -> [EPUBRecord] {
+        epubRecords
+            .compactMap { record in boundVolume(for: record).flatMap { bound in
+                bound.series?.id == seriesID ? (record, bound.series?.volume) : nil } }
+            .sorted { a, b in
+                if a.1 != b.1 { return (a.1 ?? Int.max) < (b.1 ?? Int.max) }
+                if a.0.dateISO != b.0.dateISO { return (a.0.dateISO ?? "") < (b.0.dateISO ?? "") }
+                return a.0.title.localizedCaseInsensitiveCompare(b.0.title) == .orderedAscending
+            }
+            .map(\.0)
+    }
+
+    /// Every series with two or more volumes on the shelf — listed first
+    /// among the rooms, since it is where a series is best begun.
+    var seriesVenues: [String] {
+        var seen = Set<String>()
+        let ids = epubRecords.compactMap { boundVolume(for: $0)?.series?.id }
+            .filter { seen.insert($0).inserted }
+        return ids.filter { seriesVolumes($0).count >= 2 }
+            .map { Self.seriesVenuePrefix + $0 }
+    }
+
+    /// The series' hallway takes the room.
+    func openSeries(_ seriesID: String) {
+        let venue = Self.seriesVenuePrefix + seriesID
+        guard openJournalVenue != venue else { return }
+        if !isVolumeRoom { venueBeforeArticles = openJournalVenue }
+        openJournalVenue = venue
+    }
+
+    /// Every piece the room's volume (or series) holds, by the id it reads
+    /// under — what the Hallway's zones and labels are read from.
+    func roomPieceIndex() -> [String: BoundVolume.Article] {
+        if let volume = openVolume { return pieceIndex(of: volume) }
+        guard let seriesID = openSeriesID else { return [:] }
+        return seriesVolumes(seriesID).reduce(into: [:]) { index, volume in
+            index.merge(pieceIndex(of: volume)) { first, _ in first }
+        }
     }
 
     /// Each book's binding, read once from its unpacked package (nil
@@ -1672,12 +1751,29 @@ final class VisionModel {
     @ObservationIgnored private var boundVolumes: [String: BoundVolume?] = [:]
     /// The articles cut out of their volumes, by article id.
     @ObservationIgnored private var articleDocCache: [String: LiquidDoc] = [:]
+    /// What the Mac's Build Article Metadata learned of each article
+    /// (abstracts, keywords, Defined Concepts), by book folder then work
+    /// id — read from the community folder, laid under each binding.
+    @ObservationIgnored private var articleMetadata: [String: [String: ArticleMetadata.Entry]] = [:]
+    @ObservationIgnored private var articleMetadataModified: Date?
+
+    /// A newer record from the Mac: every volume is read again with it.
+    func adoptArticleMetadata(_ file: ArticleMetadata.File) {
+        guard file.modified != articleMetadataModified else { return }
+        articleMetadataModified = file.modified
+        articleMetadata = file.volumes
+        forgetBoundVolumes()
+        volumeStamp += 1
+        // The assistant's index re-reads the abstracts and concepts.
+        if isVolumeRoom { prepareSeriesIndex() }
+    }
 
     func boundVolume(for record: EPUBRecord) -> BoundVolume? {
         if let known = boundVolumes[record.folder] { return known }
         let volume = BoundVolume.read(inUnpackedFolder:
             Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true))?
             .correcting(kindCorrections[record.folder] ?? [:])
+            .enriched(with: articleMetadata[record.folder] ?? [:])
         boundVolumes[record.folder] = volume
         return volume
     }
@@ -1715,7 +1811,7 @@ final class VisionModel {
     }
 
     func showsZone(_ zone: BoundVolume.Zone) -> Bool {
-        openVolume == nil || shownZones.contains(zone)
+        !isVolumeRoom || shownZones.contains(zone)
     }
 
     /// Bumped when a volume's reading of itself changes (a correction), so
@@ -1809,7 +1905,7 @@ final class VisionModel {
         let venue = Self.volumeVenuePrefix + record.id
         guard openJournalVenue != venue else { return }
         // Volume to volume keeps the way home to the room before them all.
-        if openVolume == nil { venueBeforeArticles = openJournalVenue }
+        if !isVolumeRoom { venueBeforeArticles = openJournalVenue }
         openJournalVenue = venue
     }
 
@@ -1824,13 +1920,16 @@ final class VisionModel {
     var assistantFocusID: String?
 
     func prepareSeriesIndex() {
-        guard let volume = openVolume, let bound = boundVolume(for: volume) else { return }
+        // The open volume's series — or the open series itself.
+        guard let volume = openVolume ?? openSeriesID.flatMap({ seriesVolumes($0).first }),
+              let bound = boundVolume(for: volume) else { return }
         let seriesID = bound.series?.id ?? volume.id
         let members: [SeriesIndex.Volume] = epubRecords.compactMap { record in
             guard let other = boundVolume(for: record),
                   (other.series?.id ?? record.id) == seriesID,
                   let doc = index.byID[record.id]?.doc else { return nil }
-            return SeriesIndex.Volume(recordID: record.id, title: record.title, bound: other, document: doc)
+            return SeriesIndex.Volume(recordID: record.id, title: record.title, bound: other, document: doc,
+                                      year: record.dateISO.flatMap { Int($0.prefix(4)) })
         }
         let signature = SeriesIndex.signature(of: members)
         if let current = seriesIndex, current.seriesID == seriesID,
@@ -1851,6 +1950,9 @@ final class VisionModel {
             await MainActor.run {
                 self.seriesIndex = ready
                 self.seriesIndexBuilding = false
+                // The room stands its cards again, wearing the index's
+                // gists and keywords where the book gave no abstract.
+                self.volumeStamp += 1
             }
         }
     }
@@ -1860,14 +1962,19 @@ final class VisionModel {
     func openPiece(_ id: String) {
         guard let split = BoundVolume.split(articleDocID: id),
               let volume = epubRecords.first(where: { $0.id == split.volume }) else { return }
-        if openVolume?.id != volume.id { openArticles(of: volume) }
+        // In a series' hallway every volume of the series is already here.
+        let inOpenSeries = openSeriesID.map { seriesVolumes($0).contains { $0.id == volume.id } } ?? false
+        if openVolume?.id != volume.id, !inOpenSeries { openArticles(of: volume) }
         roomReadingRequest = id
     }
 
     /// Back from the articles to the room the volume came from, the
-    /// whole volume standing open in it.
-    func openWholeVolume() {
-        guard let volume = openVolume else { return }
+    /// whole volume standing open in it — in a series' hallway, the
+    /// volume the card belongs to.
+    func openWholeVolume(from cardID: String? = nil) {
+        guard let volume = openVolume ?? cardID
+            .flatMap({ BoundVolume.split(articleDocID: $0)?.volume })
+            .flatMap({ id in epubRecords.first { $0.id == id } }) else { return }
         openJournalVenue = venueBeforeArticles ?? volume.venue ?? Self.noJournalVenue
         venueBeforeArticles = nil
         roomReadingRequest = volume.id
@@ -2900,7 +3007,7 @@ struct VisionOpeningView: View {
     /// in the panel for now; the spatial Map view is being rebuilt on
     /// Author's basis.
     @ViewBuilder private var journalsList: some View {
-        let venues = model.venues + model.volumeVenues
+        let venues = model.seriesVenues + model.venues + model.volumeVenues
         if venues.isEmpty {
             ContentUnavailableView {
                 Label("No Journals Yet", systemImage: "newspaper")
@@ -2919,19 +3026,24 @@ struct VisionOpeningView: View {
             List(venues, id: \.self) { venue in
                 let isBucket = venue == VisionModel.noJournalVenue
                 let volume = model.volumeRecord(forVenue: venue)
+                let seriesID = model.seriesID(forVenue: venue)
                 Button {
                     // The articles take the Map; the panel steps aside
                     // — the right arm's Documents chip brings it back.
                     if let volume {
                         model.openArticles(of: volume)
+                    } else if let seriesID {
+                        model.openSeries(seriesID)
                     } else {
                         model.openJournalVenue = venue
                     }
                     dismissWindow(id: "library")
                 } label: {
                     HStack {
-                        Label(model.venueTitle(venue),
-                              systemImage: volume != nil ? "books.vertical"
+                        Label(seriesID.map { "\(model.venueTitle(venue)) — \(model.seriesVolumes($0).count) volumes" }
+                                  ?? model.venueTitle(venue),
+                              systemImage: seriesID != nil ? "square.stack.3d.down.right"
+                                  : volume != nil ? "books.vertical"
                                   : isBucket ? "doc.text" : "newspaper")
                             .lineLimit(2)
                         Spacer()
@@ -2940,7 +3052,9 @@ struct VisionOpeningView: View {
                             .monospacedDigit()
                     }
                 }
-                .help(volume != nil
+                .help(seriesID != nil
+                      ? "Open every volume of this series in one hallway, each volume's articles on a plane of its own, the newest nearest"
+                      : volume != nil
                       ? "Open this volume's articles on the Map, each its own card, as a journal's are"
                       : isBucket
                       ? "Open these articles on the Map — the same room, and the same interactions, a journal's articles stand in"
