@@ -1744,6 +1744,15 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
   - Read, Open/Fold, Lift and the Pictures count are gone. Two hands spread open the reading, two taps fold the card, and the edge thumbnails raise the gallery.
   - The Connects and Show Only rows are 11 pt above and below, with 6 pt between them.
 
+### 5.44 Lifted words beside the reading; a reading opens clear (visionOS, 2 November 2026)
+
+- **Lift** (`floatText`) marks the new passage as `justLiftedFloatID`.
+  - `placeNewFloats` stands that one float beside its reading: the panel's position (an open doc whose `annotationAddress` matches), plus 0.55 m to the reader's right, 12 cm up and 12 cm nearer. It writes that place into the annotation (`setFloatPosition`).
+  - Floats read in from annotations keep their places.
+  - Float cards are always enabled: no Focus, Show Only or Reading Desk hides lifted words.
+  - (Before, a lift stood at the room's fixed front, (0, 1.35, −0.9) plus the shift, where the reading panel hid it.)
+- **Opening a reading** (`openReading`) puts away any relation drawn from that card, and its selection relation and gallery, so no lines carry over from the card to the panel.
+
 ### 5.43 Concepts on the room's bar; Knowledge Space import (2 November 2026)
 
 **visionOS**

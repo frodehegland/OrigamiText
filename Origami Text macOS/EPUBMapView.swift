@@ -2287,6 +2287,7 @@ struct EPUBMapView: View {
             }
             // A passage floated (or put away) from a reading panel.
             .onChange(of: model.floatingTexts) {
+                placeNewFloats()
                 reload()
             }
             .onChange(of: model.openDocCitations) {
@@ -2724,6 +2725,9 @@ struct EPUBMapView: View {
                 materialMode: .none)
         }
         view = view.shouldEnableNode { item in
+            // Lifted words stand whatever else the room shows — a Focus,
+            // a Show Only, the Reading Desk (2 Nov 2026).
+            if item.id.hasPrefix("float:") { return true }
             guard model.readingDeskDocID == nil else { return false }
             // A relation lit on a paper's star is a Focus of its own: only
             // the paper and the cards the relation reaches stand, until it
@@ -4197,6 +4201,29 @@ struct EPUBMapView: View {
                 : RelationShown(from: shown.from, title: shown.title, ids: ids, only: shown.only, ringed: shown.ringed)
         }
         reload()
+    }
+
+    /// Words just lifted from a reading stand beside it, where the reader
+    /// is looking — to the reading's right, a little above its middle and
+    /// a breath nearer — not at the room's fixed front, where the reading
+    /// panel itself stood over them. Several lifted at once stack down.
+    private func placeNewFloats() {
+        // Only the one just lifted — floats read in from a book's
+        // annotations keep the places they were given.
+        guard let id = model.justLiftedFloatID else { return }
+        model.justLiftedFloatID = nil
+        let fresh = model.floatingTexts.filter { $0.id == id }
+        guard !fresh.isEmpty else { return }
+        let head = faceTurner.headPose()
+        let forward = head?.forward ?? SIMD3<Float>(0, 0, -1)
+        let right = simd_normalize(simd_cross(forward, SIMD3<Float>(0, 1, 0)))
+        for (index, float) in fresh.enumerated() {
+            let reading = model.openDocIDs.first { VisionModel.annotationAddress($0) == float.docID }
+            guard let panel = reading.flatMap({ readerPanels.worldPosition(of: $0) })
+                    ?? head.map({ $0.position + $0.forward * 0.85 }) else { continue }
+            let place = panel + right * 0.55 + SIMD3<Float>(0, 0.12 - 0.11 * Float(index), 0) - forward * 0.12
+            model.setFloatPosition(place - spaceShift, id: float.id)
+        }
     }
 
     /// How far two hands must spread on an open card to open its reading,
@@ -6380,6 +6407,13 @@ struct EPUBMapView: View {
     ///   is how a single article opened above the reader's head.)
     private func openReading(docID: String, title: String,
                              toReader: Bool = false) {
+        // Opened to read: whatever lines the card was drawing go — the
+        // reading starts clear (2 Nov 2026).
+        if relationShown?.from == docID {
+            relationShown = nil
+            model.litSelectionRelation = nil
+        }
+        galleryOf = galleryOf == docID ? nil : galleryOf
         // Every reading opens in Horizontal — its pages side by side —
         // the foot bar's words still changing it once open (31 Oct
         // 2026). Transpoint keeps the flowing page it has just chosen.

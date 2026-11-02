@@ -1178,12 +1178,17 @@ final class VisionModel {
     /// Float: the selection becomes a highlighting annotation carrying
     /// its standing place — the room shows it free and billboarded,
     /// and the sidecar keeps it with the book.
+    /// The passage lifted a moment ago, for the room to place.
+    @ObservationIgnored var justLiftedFloatID: String?
+
     func floatText(on selection: ReaderSelection) {
         let annotation = addAnnotation(
             motivation: WebAnnotation.Motivation.highlighting, note: nil,
             float: WebAnnotation.FloatPosition(x: 0, y: 1.35, z: -0.9),
             on: selection)
         guard let annotation else { return }
+        // Marked as just lifted: the room stands it beside its reading.
+        justLiftedFloatID = annotation.id
         floatingTexts.append(FloatingText(
             id: annotation.id, text: selection.text, docID: selection.address,
             position: SIMD3<Float>(0, 1.35, -0.9)))
