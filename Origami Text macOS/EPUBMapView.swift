@@ -72,6 +72,8 @@ struct EPUBMapItem: ItemProtocol {
     /// Size by Length (2 Nov 2026): how much larger or smaller the card
     /// stands for its paper's length — 1 while the bar's toggle is off.
     var sizeScale: Float = 1
+    /// Retro's palette name, or nil (2 Nov 2026).
+    var retro: String?
     /// Two papers raised: a citation they do NOT share stands dimmed
     /// and out of reach, so the shared ones read at once. (29 Sep 2026.)
     var isFaded = false
@@ -143,7 +145,7 @@ struct EPUBMapItem: ItemProtocol {
             && stamp == other.stamp && firstSentence == other.firstSentence
             && tagColors == other.tagColors && authorFaces == other.authorFaces
             && look == other.look && openLift == other.openLift
-            && sizeScale == other.sizeScale
+            && sizeScale == other.sizeScale && retro == other.retro
             // The engine attaches a card's attachment only when it builds
             // the card, so a stance mark coming or going rebuilds it.
             && stanceMark == other.stanceMark
@@ -794,6 +796,7 @@ struct EPUBMapView: View {
                 item.isLifted = liftedCards[record.id] != nil
                 item.lengthShare = lengthShare(record)
                 item.sizeScale = model.sizeByLength ? Self.lengthScale(item.lengthShare) : 1
+                item.retro = model.retroName
                 item.imagePath = imagePaths(forDocID: record.id).first
                 item.stamp = stamp
                 item.firstSentence = firstSentenceByArticle[record.id]
@@ -3450,7 +3453,8 @@ struct EPUBMapView: View {
                     // competes with it, so weight is asked to do work
                     // the card's own size already does. (18 Sep 2026.)
                     Text(selected ? item.title : shortTitle(item.title))
-                        .font(AppFonts.body(titleSize * s, weight: .regular))
+                        .font(retroPalette(item) == nil ? AppFonts.body(titleSize * s, weight: .regular)
+                              : .system(size: titleSize * s * 0.92, design: .monospaced))
                         .foregroundStyle(Color.white)
                 }
                 // Chosen or open: every author, and where the paper stands
@@ -3505,7 +3509,7 @@ struct EPUBMapView: View {
                 }
                 if !selected, !item.showsAbstract, let sentence = item.firstSentence {
                     Text(sentence)
-                        .font(.system(size: 4.6 * s, design: .serif))
+                        .font(.system(size: 4.6 * s, design: retroPalette(item) == nil ? .serif : .monospaced))
                         .foregroundStyle(Color.white.opacity(0.75))
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
@@ -3533,13 +3537,17 @@ struct EPUBMapView: View {
                     // without stepping right up to the card.
                     // In the system's serif, New York (1 Nov 2026).
                     Text(item.abstract)
-                        .font(.system(size: 5.8 * s, design: .serif))
+                        .font(.system(size: 5.8 * s, design: retroPalette(item) == nil ? .serif : .monospaced))
                         .foregroundStyle(Color.white.opacity(0.85))
                         .multilineTextAlignment(.leading)
                         .padding(.top, 1.5 * s)
                 }
             }
             .multilineTextAlignment(.center)
+            // Retro: every ink tinted to the palette's text colour (white
+            // takes it whole, greys a dimmer shade), in a monospaced hand.
+            .colorMultiply(retroPalette(item)?.text ?? .white)
+            .fontDesign(retroPalette(item) == nil ? nil : .monospaced)
             .padding(.horizontal, (item.kind == .article ? 8 : 7) * s)
             // A long paper is a taller sheet: the length's share of the
             // journal's range buys up to `lengthRise` more points of
@@ -3553,7 +3561,9 @@ struct EPUBMapView: View {
             // itself is shaped (not a material fill, which paints the
             // attachment's backing square past the corners).
             .background {
-                if !item.tagColors.isEmpty && !item.isLifted {
+                if retroPalette(item) != nil && !item.isLifted {
+                    RoundedRectangle(cornerRadius: 8 * s).fill(Color.black)
+                } else if !item.tagColors.isEmpty && !item.isLifted {
                     // A paper's categories as its ground (2 Nov 2026): a
                     // soft mosaic of their colours — gradients, no blur, so
                     // a room of hundreds stays light — dimmed under the words.
@@ -3586,7 +3596,12 @@ struct EPUBMapView: View {
             // as a chosen note or label does, so what is in hand reads at a
             // glance across the room.
             .overlay {
-                if selected {
+                if let retro = retroPalette(item) {
+                    // Retro: edged in the palette's line colour, brighter
+                    // and heavier when chosen.
+                    RoundedRectangle(cornerRadius: 8 * s)
+                        .strokeBorder(retro.line.opacity(selected ? 1 : 0.7), lineWidth: (selected ? 1.6 : 0.7) * s)
+                } else if selected {
                     RoundedRectangle(cornerRadius: 8 * s)
                         .strokeBorder(Color.white.opacity(0.85), lineWidth: 1.6 * s)
                 }
@@ -3797,6 +3812,11 @@ struct EPUBMapView: View {
         let tag = OrigamiTags.Tag(id: "", name: "", color: hex, words: [])
         let (r, g, b) = tag.rgb
         return Color(red: r, green: g, blue: b)
+    }
+
+    /// The Retro palette a card wears, if any.
+    private func retroPalette(_ item: EPUBMapItem) -> VisionModel.RetroPalette? {
+        item.retro.flatMap { name in VisionModel.RetroPalette.all.first { $0.name == name } }
     }
 
     /// Size by Length: the shortest paper of its plane at three quarters

@@ -1789,6 +1789,28 @@ final class VisionModel {
             volumeStamp += 1
         }
     }
+    /// Retro (2 Nov 2026): Author's neon look for the room's cards — a
+    /// black ground, the words in one palette's text colour, monospaced,
+    /// each card edged in its line colour. Author's five palettes; nil, off.
+    struct RetroPalette: Equatable {
+        let name: String
+        let line: Color
+        let text: Color
+        static let all: [RetroPalette] = [
+            .init(name: "Ember", line: Color(red: 1, green: 0.08, blue: 0.08), text: Color(red: 1, green: 0.55, blue: 0.05)),
+            .init(name: "Terminal", line: Color(red: 0.1, green: 0.9, blue: 0.25), text: Color(red: 1, green: 0.92, blue: 0.15)),
+            .init(name: "Cyberpunk", line: Color(red: 0, green: 0.85, blue: 1), text: Color(red: 1, green: 0.15, blue: 0.85)),
+            .init(name: "Amber CRT", line: Color(red: 1, green: 0.6, blue: 0), text: Color(red: 1, green: 0.78, blue: 0.25)),
+            .init(name: "Ice", line: Color(red: 0.25, green: 0.55, blue: 1), text: Color(red: 0.65, green: 0.85, blue: 1)),
+        ]
+    }
+    var retroName: String? = UserDefaults.standard.string(forKey: "visionRetroPalette") {
+        didSet {
+            UserDefaults.standard.set(retroName, forKey: "visionRetroPalette")
+            volumeStamp += 1
+        }
+    }
+    var retro: RetroPalette? { retroName.flatMap { name in RetroPalette.all.first { $0.name == name } } }
     var cardLook = CardLook(rawValue: UserDefaults.standard.string(forKey: "visionCardLook") ?? "") ?? .cards {
         didSet {
             UserDefaults.standard.set(cardLook.rawValue, forKey: "visionCardLook")
@@ -3842,6 +3864,25 @@ struct VisionVolumeToolbar: View {
                     ForEach(model.layoutViews) { choice in
                         Button(choice.title) {
                             model.volumeBarRequest = .init(action: .view(choice.id))
+                        }
+                    }
+                }
+                // Retro (2 Nov 2026): Author's neon palettes for the cards.
+                Section("Retro") {
+                    Button {
+                        model.retroName = nil
+                    } label: {
+                        if model.retroName == nil { Label("Off", systemImage: "checkmark") } else { Text("Off") }
+                    }
+                    ForEach(VisionModel.RetroPalette.all, id: \.name) { palette in
+                        Button {
+                            model.retroName = palette.name
+                        } label: {
+                            if model.retroName == palette.name {
+                                Label(palette.name, systemImage: "checkmark")
+                            } else {
+                                Text(palette.name)
+                            }
                         }
                     }
                 }

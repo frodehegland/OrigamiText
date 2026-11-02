@@ -2473,3 +2473,10 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Size by Length:** the bar's **Size by Length** toggle (after Colours) sets `VisionModel.sizeByLength`, kept in UserDefaults as `visionSizeByLength`; changing it bumps `volumeStamp`.
   - **Scale:** while it is on, each paper's `EPUBMapItem.sizeScale` (part of `isVisuallyEqual`) is `lengthScale(lengthShare)` = 0.75 + 0.75·√share. The shortest paper in its plane stands at three quarters of a card and the longest at one and a half.
   - **What scales:** `cardEntity` multiplies `grown` by it, so the body, face, collision, sphere or blob all scale. The star's measured `cardSizes.base` scales too, so menus stay clear.
+
+**Retro (2 Nov 2026).** The bar's **Layout** menu has a section of its own, **Retro**, listing **Off** and Author's five neon palettes (`VisionModel.RetroPalette`, copied from Author's `RetroPalette`): Ember, Terminal, Cyberpunk, Amber CRT and Ice, each a line colour and a text colour. The choice is `retroName`, kept in UserDefaults as `visionRetroPalette`; changing it bumps `volumeStamp`.
+- **Per card:** every paper's `EPUBMapItem.retro` (part of `isVisuallyEqual`) carries the palette's name.
+- **The face:** the card's pane is black.
+  - **Ink:** all ink is tinted with `colorMultiply(text)`, so white takes the palette colour whole and greys take dimmer shades.
+  - **Type:** it is monospaced (`fontDesign(.monospaced)`); the title, first sentence and abstract switch from their own faces to system monospaced.
+  - **Edge:** the card is edged in the line colour, 0.7 points at 70%, or 1.6 points at full when chosen.
