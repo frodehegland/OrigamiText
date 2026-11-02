@@ -499,7 +499,20 @@ struct ReaderMapView: View {
 
     private var layoutMenu: some View {
         Menu("Layout") {
-            Button(extras.originalLayoutName) { restoreAuthorsLayout() }
+            if doc.layouts.count > 1 {
+                // The author's saved views (2 Nov 2026 — were under Views):
+                // each as the author arranged it, the one shown ticked;
+                // choosing it again puts back the author's arrangement.
+                ForEach(Array(doc.layouts.enumerated()), id: \.offset) { index, layout in
+                    Toggle(layout.name, isOn: Binding(
+                        get: { viewIndex == index },
+                        set: { _ in
+                            if viewIndex == index { restoreAuthorsLayout() } else { viewIndex = index }
+                        }))
+                }
+            } else {
+                Button(extras.originalLayoutName) { restoreAuthorsLayout() }
+            }
             Divider()
             ForEach([ReaderMapAnalysis.magneticCenter, .islands, .spine, .orbits]) { kind in
                 Button(kind.title) { analyse(kind) }
@@ -510,14 +523,8 @@ struct ReaderMapView: View {
     }
 
     private var viewsMenu: some View {
+        // The reader's own saved views; the author's are under Layout.
         Menu("Views") {
-            if doc.layouts.count > 1 {
-                ForEach(Array(doc.layouts.enumerated()), id: \.offset) { index, layout in
-                    Toggle(layout.name, isOn: Binding(get: { viewIndex == index },
-                                                      set: { if $0 { viewIndex = index } }))
-                }
-                Divider()
-            }
             ForEach(savedViews) { saved in
                 Button(saved.name) { apply(saved) }
             }
