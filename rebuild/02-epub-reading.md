@@ -2456,3 +2456,14 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
   - **Placement:** papers in no stance stand at the rim on their colour's bearing.
   - **Height:** 0.65 + 0.12 per stance, to 7 stances; papers in none at 0.45.
   - **Labels:** up to twelve "Disputed n×" labels, the most disputed first, each carrying its disputants.
+
+**Blobs (2 Nov 2026, experimental).** A fourth look, `CardLook.blobs` ("Blobs"), is listed in Shapes after the others. `isRound` covers spheres and blobs, so blobs share the sphere's face, billboarded title, hidden byline and open-lift allowance.
+- **The blob:** `sphereEntity` makes it 12% larger than a sphere, matte (roughness 0.62, clearcoat 0.15) and slightly see-through (opacity 0.86). The ball sits inside a pivot entity carrying `BlobComponent` (radius, colours, phase hashed from the id, current stretch and axis).
+- **Every frame:** `MapCardTick.tickBlobs` updates each enabled blob.
+  - **Nearest neighbour:** it finds the nearest blob within 2.8 radii; closeness = 1 − gap / reach.
+  - **Kin:** if the two share a colour, the blob is drawn out toward it (stretch 1 + 0.45·closeness).
+  - **Strangers:** otherwise it presses flat against it (1 − 0.38·closeness).
+  - **Carried:** a blob moving faster than 8 cm/s is drawn out along its velocity (1 + min(0.5·speed, 0.6)) when that is the stronger effect.
+  - **Easing:** stretch and axis ease toward their targets at 9 per second, so a blob wobbles rather than snaps.
+  - **Shape:** the pivot's X is turned along the axis and scaled by the stretch, with 1/√stretch across to keep the volume, times a 3.5% breath (sin(1.7·t + phase)).
+- **Places:** only the blob's shape moves; the node's place never does.

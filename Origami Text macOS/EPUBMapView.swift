@@ -1139,7 +1139,7 @@ struct EPUBMapView: View {
                     guard let q = other.position, abs(q.x - p.x) < 0.55, abs(q.y - p.y) < 0.42 else { continue }
                     var face = q.z
                     if other.isSelected && other.showsAbstract { face += Self.openCardLift }
-                    if other.wearsLook && other.look == .spheres { face += 0.02 }
+                    if other.wearsLook && other.look.isRound { face += 0.02 }
                     front = max(front, face - p.z)
                 }
                 built[index].openLift = min(max(Self.openCardLift, front + 0.026), 0.25)
@@ -3256,7 +3256,7 @@ struct EPUBMapView: View {
                 .padding(.horizontal, 7 * s)
                 .padding(.vertical, 5 * s)
                 .opacity(0.35)
-        } else if item.wearsLook && item.look == .spheres {
+        } else if item.wearsLook && item.look.isRound {
             colorSphere(for: item)
         } else if item.wearsLook && item.look == .titles {
             colorTitle(for: item)
@@ -3677,12 +3677,36 @@ struct EPUBMapView: View {
         var plain = PhysicallyBasedMaterial()
         let first = item.tagColors.first.map { Self.uiColor(hex: $0) } ?? UIColor(white: Self.uncolouredGrey, alpha: 1)
         plain.baseColor = .init(tint: first)
-        plain.roughness = 0.32
-        plain.clearcoat = 0.6
-        let sphere = ModelEntity(mesh: .generateSphere(radius: radius), materials: [plain])
+        let blob = item.look == .blobs
+        // A blob is soft: matte, a little see-through, a touch larger.
+        plain.roughness = blob ? 0.62 : 0.32
+        plain.clearcoat = blob ? 0.15 : 0.6
+        if blob { plain.blending = .transparent(opacity: .init(floatLiteral: 0.86)) }
+        let sphere = ModelEntity(mesh: .generateSphere(radius: radius * (blob ? 1.12 : 1)), materials: [plain])
         sphere.position = SIMD3<Float>(0, y, radius * 0.25)
         // Turned a little, so the bands run round it as it faces the reader.
         sphere.orientation = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(0, 1, 0))
+        if blob {
+            // The blob squashes and stretches about a pivot of its own
+            // (MapCardTick), the ball within keeping its bands' turn.
+            let pivot = ModelEntity()
+            pivot.position = sphere.position
+            sphere.position = .zero
+            pivot.addChild(sphere)
+            var phase: Float = 0
+            for byte in item.id.utf8 { phase = (phase * 31 + Float(byte)).truncatingRemainder(dividingBy: 6.283) }
+            pivot.components.set(BlobComponent(radius: radius, colours: Set(item.tagColors), phase: phase))
+            if item.tagColors.count > 1 {
+                let colors = item.tagColors
+                Task { @MainActor in
+                    guard let texture = await SphereTextures.texture(for: colors) else { return }
+                    var material = plain
+                    material.baseColor = .init(tint: .white, texture: .init(texture))
+                    sphere.model?.materials = [material]
+                }
+            }
+            return pivot
+        }
         if item.tagColors.count > 1 {
             let colors = item.tagColors
             Task { @MainActor in
@@ -3870,20 +3894,20 @@ struct EPUBMapView: View {
         // Color Spheres: the words beneath a sphere turn to the reader
         // wherever they stand (2 Nov 2026) — the sphere itself looks the
         // same from every side.
-        if item.wearsLook && item.look == .spheres {
+        if item.wearsLook && item.look.isRound {
             frontFace.components.set(BillboardComponent())
             backFace.components.set(BillboardComponent())
         }
         body.addChild(frontFace)
         body.addChild(backFace)
-        if item.wearsLook && item.look == .spheres {
+        if item.wearsLook && item.look.isRound {
             body.addChild(sphereEntity(for: item, facePoints: facePoints, grown: grown))
         }
         // A sphere's or a coloured title's authors wait beneath it, unseen,
         // until the reader faces it (MapCardTick); chosen, they stand in
         // the face itself (2 Nov 2026).
         if item.wearsLook, !item.isSelected, !item.author.isEmpty {
-            let spheres = item.look == .spheres
+            let spheres = item.look.isRound
             let size = (spheres ? Self.sphereBylineSize : Self.titleBylineSize) * Self.crisp
             let byline = Entity()
             byline.components.set(ViewAttachmentComponent(
@@ -8535,6 +8559,17 @@ struct EPUBNodeIDComponent: Component {
     let id: String
 }
 
+/// A soft blob's state (Blobs, 2 Nov 2026): its size and colours, and how
+/// it is squashed or stretched now — eased each frame by MapCardTick.
+struct BlobComponent: Component {
+    let radius: Float
+    let colours: Set<String>
+    let phase: Float
+    var last: SIMD3<Float>? = nil
+    var stretch: Float = 1
+    var axis = SIMD3<Float>(1, 0, 0)
+}
+
 /// A sphere's or a coloured title's authors, shown only while the reader
 /// faces the node (2 Nov 2026).
 struct LookBylineComponent: Component {
@@ -10652,6 +10687,7 @@ final class CardFaceTurner {
         started = true
         CardFacesComponent.registerComponent()
         LookBylineComponent.registerComponent()
+        BlobComponent.registerComponent()
         guard WorldTrackingProvider.isSupported else {
             print("Map/faces: world tracking unsupported — back faces stay dark")
             return
@@ -10933,7 +10969,70 @@ private final class MapCardTick {
         self.liftedFacesHead = liftedFacesHead
         self.stuckOrientation = stuckOrientation
         subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
-            MainActor.assumeIsolated { self?.tick(scene: event.scene) }
+            MainActor.assumeIsolated {
+                self?.tick(scene: event.scene)
+                self?.tickBlobs(scene: event.scene, dt: Float(event.deltaTime))
+            }
+        }
+    }
+
+    private let blobQuery = EntityQuery(where: .has(BlobComponent.self))
+    private var blobClock: Float = 0
+
+    /// Blobs (2 Nov 2026): each breathes a little; two of a shared colour
+    /// near each other lean together, drawn out toward one another as if
+    /// about to merge; two with nothing in common press flat; a blob
+    /// carried by the hand stretches along its way and wobbles back. Only
+    /// the blob's own shape moves — never the node's place.
+    private func tickBlobs(scene: RealityKit.Scene, dt: Float) {
+        let blobs = Array(scene.performQuery(blobQuery))
+        guard !blobs.isEmpty else { return }
+        blobClock += dt
+        let places = blobs.map { $0.position(relativeTo: nil) }
+        for (index, entity) in blobs.enumerated() {
+            guard var blob = entity.components[BlobComponent.self], entity.isEnabledInHierarchy
+            else { continue }
+            let place = places[index]
+            // The nearest blob within reach of touching, and how near.
+            var nearest: (direction: SIMD3<Float>, closeness: Float, kin: Bool)?
+            let reach = blob.radius * 2.8
+            for (other, there) in zip(blobs, places) where other !== entity {
+                let d = there - place
+                let gap = simd_length(d)
+                guard gap > 1e-4, gap < reach else { continue }
+                let closeness = 1 - gap / reach
+                guard closeness > (nearest?.closeness ?? 0) else { continue }
+                let kin = !(other.components[BlobComponent.self]?.colours ?? []).isDisjoint(with: blob.colours)
+                    && !blob.colours.isEmpty
+                nearest = (d / gap, closeness, kin)
+            }
+            var target: Float = 1
+            var axis = blob.axis
+            if let nearest {
+                axis = nearest.direction
+                target = nearest.kin ? 1 + 0.45 * nearest.closeness : 1 - 0.38 * nearest.closeness
+            }
+            // Carried: drawn out along the way it goes.
+            if let last = blob.last, dt > 0 {
+                let velocity = (place - last) / dt
+                let speed = simd_length(velocity)
+                if speed > 0.08 {
+                    let pull = 1 + min(speed * 0.5, 0.6)
+                    if abs(pull - 1) > abs(target - 1) { target = pull; axis = velocity / speed }
+                }
+            }
+            blob.last = place
+            // Eased, so it wobbles toward its shape rather than snapping.
+            blob.stretch += (target - blob.stretch) * min(1, dt * 9)
+            blob.axis = simd_normalize(blob.axis + (axis - blob.axis) * min(1, dt * 9))
+            entity.components[BlobComponent.self] = blob
+            let breathe = 1 + 0.035 * sin(blobClock * 1.7 + blob.phase)
+            let across = 1 / blob.stretch.squareRoot()
+            // Point the pivot's X along the axis; scale along it, keep the
+            // volume across it.
+            let turn = simd_quatf(from: SIMD3<Float>(1, 0, 0), to: blob.axis)
+            entity.setOrientation(turn, relativeTo: nil)
+            entity.scale = SIMD3<Float>(blob.stretch, across, across) * breathe
         }
     }
 

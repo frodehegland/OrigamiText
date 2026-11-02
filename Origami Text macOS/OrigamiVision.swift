@@ -1769,14 +1769,17 @@ final class VisionModel {
     /// title alone, its letters in those colours with soft edges.
     /// Kept across launches.
     enum CardLook: String, CaseIterable {
-        case cards, spheres, titles
+        case cards, spheres, titles, blobs
         var title: String {
             switch self {
             case .cards: "Cards"
             case .spheres: "Color Spheres"
             case .titles: "Color Titles"
+            case .blobs: "Blobs"
             }
         }
+        /// A ball under the title: Color Spheres, or the soft Blobs.
+        var isRound: Bool { self == .spheres || self == .blobs }
     }
     var cardLook = CardLook(rawValue: UserDefaults.standard.string(forKey: "visionCardLook") ?? "") ?? .cards {
         didSet {
