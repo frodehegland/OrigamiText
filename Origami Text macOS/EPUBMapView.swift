@@ -5159,6 +5159,17 @@ struct EPUBMapView: View {
         } else {
             lift(item, sticks: true)
         }
+        // Stick on: the card goes straight to the surface the reader faces
+        // — a wall across the room, the table below — and rests on it.
+        // Facing open air, it stands lifted and lands on the first surface
+        // it is carried near.
+        guard liftedCards[item.id]?.sticks == true, let ray = faceTurner.headRay(),
+              let pose = roomSurfaces.facedPose(from: ray.position, along: ray.forward) else { return }
+        liftedCards[item.id]?.stuck = pose.orientation.vector
+        placed[item.id] = pose.position
+        saveLiftedCards()
+        savePlacedNow()
+        reload()
     }
 
     private func toggleLift(_ item: EPUBMapItem) {
@@ -10088,6 +10099,45 @@ final class RoomSurfaces {
                 }
             }
         }
+    }
+
+    /// The surface the reader faces: where a ray from the head along its
+    /// heading first meets a known plane within its extent, between 30 cm
+    /// and 8 m — and the pose a card takes there (2 Nov 2026, for Stick:
+    /// a wall is rarely within a hand's reach of the card).
+    func facedPose(from head: SIMD3<Float>, along direction: SIMD3<Float>)
+        -> (position: SIMD3<Float>, orientation: simd_quatf)? {
+        var best: (position: SIMD3<Float>, orientation: simd_quatf, distance: Float)?
+        for plane in planes.values {
+            let originFromAnchor = plane.originFromAnchorTransform
+            let centre = SIMD3<Float>(originFromAnchor.columns.3.x, originFromAnchor.columns.3.y,
+                                      originFromAnchor.columns.3.z)
+            var normal = SIMD3<Float>(originFromAnchor.columns.1.x, originFromAnchor.columns.1.y,
+                                      originFromAnchor.columns.1.z)
+            guard simd_length(normal) > 1e-4 else { continue }
+            normal = simd_normalize(normal)
+            let facing = simd_dot(direction, normal)
+            guard abs(facing) > 0.15 else { continue }
+            let distance = simd_dot(centre - head, normal) / facing
+            guard distance > 0.3, distance < 8, distance < (best?.distance ?? .infinity) else { continue }
+            let hit = head + direction * distance
+            let extent = plane.geometry.extent
+            let local = simd_inverse(originFromAnchor * extent.anchorFromExtentTransform) * SIMD4<Float>(hit, 1)
+            guard abs(local.x) < extent.width / 2 + 0.05, abs(local.z) < extent.height / 2 + 0.05 else { continue }
+            if abs(simd_dot(normal, SIMD3<Float>(0, 1, 0))) > 0.85 {
+                var flat = hit
+                flat.y += simd_dot(head - hit, SIMD3<Float>(0, 1, 0)) > 0 ? 0.01 : -0.01
+                best = (flat, simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0)), distance)
+            } else {
+                var out = simd_dot(normal, head - hit) < 0 ? -normal : normal
+                out.y = 0
+                guard simd_length(out) > 1e-4 else { continue }
+                out = simd_normalize(out)
+                best = (hit + out * 0.015, simd_quatf(angle: atan2(out.x, out.z), axis: SIMD3<Float>(0, 1, 0)),
+                        distance)
+            }
+        }
+        return best.map { ($0.position, $0.orientation) }
     }
 
     /// Where a card held at `position` would rest: the nearest surface
