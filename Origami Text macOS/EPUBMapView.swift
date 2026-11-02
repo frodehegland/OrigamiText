@@ -1094,6 +1094,17 @@ struct EPUBMapView: View {
                     built[index].position?.z += Self.selectedStep
                 }
             }
+            // Gather: the cards the relation reaches stand round the card
+            // as a star, in front of the wall (gatherStar).
+            if let shown = relationShown, shown.gathered,
+               let source = built.first(where: { $0.id == shown.from }), let centre = source.position {
+                let gathered = built.indices.filter {
+                    shown.ids.contains(built[$0].id) && !built[$0].isGhost && built[$0].id != shown.from
+                }
+                let spots = gatherStar(round: source, at: centre, count: gathered.count,
+                                       sizes: gathered.map { cardSizes.base[built[$0].id] })
+                for (index, spot) in zip(gathered, spots) { built[index].position = spot }
+            }
             // A relation lit — on a card, or from a reading's selected
             // words: every card it reaches wears the line's end, on the
             // edge facing where the line comes from, with Confirm and
@@ -1804,6 +1815,15 @@ struct EPUBMapView: View {
         /// Whether its cards stand in miniature round the star — put
         /// away when the reader jumps to one, the focus kept.
         var ringed = true
+        /// Gather: the cards it reaches are drawn in, full size, as a star
+        /// round the card, until it is let go (2 Nov 2026).
+        var gathered = false
+    }
+    /// The cards a Gather has drawn in — their gathered places are never
+    /// saved, so letting go sends each back to its own.
+    private var gatheredIDs: Set<String> {
+        guard let relationShown, relationShown.gathered else { return [] }
+        return relationShown.ids
     }
     /// Each card's measured face, so a star menu can leave the card its
     /// room. A plain box, not observed: it is written while the engine
@@ -4008,8 +4028,12 @@ struct EPUBMapView: View {
                 // equal widths, so the card stays centred.
                 HStack(spacing: 12) {
                     if bar != nil {
-                        relationMenu("Connects", only: false, for: item, relations: relations)
-                            .frame(width: Self.relationMenuWidth, alignment: .trailing)
+                        // Connects, and beneath it Gather.
+                        VStack(alignment: .trailing, spacing: 14) {
+                            relationMenu("Connects", only: false, for: item, relations: relations)
+                            relationMenu("Gather", only: false, gather: true, for: item, relations: relations)
+                        }
+                        .frame(width: Self.relationMenuWidth, alignment: .trailing)
                     }
                     Color.clear.frame(width: gap.width, height: gap.height)
                     if bar != nil {
@@ -4114,6 +4138,35 @@ struct EPUBMapView: View {
         }
     }
 
+    /// Where a Gather's cards stand round the card it was chosen on: evenly
+    /// on an ellipse clear of the card and its menus, the first at the top
+    /// and on clockwise, 5 cm in front of the wall; past ten, a second
+    /// ring further out takes the rest.
+    private func gatherStar(round source: EPUBMapItem, at centre: SIMD3<Float>, count: Int,
+                            sizes: [SIMD2<Float>?]) -> [SIMD3<Float>] {
+        guard count > 0 else { return [] }
+        let fallback = SIMD2<Float>(Float(nodeMaxWidth(for: source) / Self.crisp) / 1000, 0.07)
+            * Self.documentCardMagnify
+        let own = (cardSizes.base[source.id] ?? fallback) * 1.2
+        let other = sizes.compactMap { $0 }.reduce(SIMD2<Float>(0, 0)) { simd_max($0, $1) }
+        let neighbour = other == .zero ? fallback : other
+        // Beside the card: its half, its menus (in the star's halved
+        // points, 1360 to the metre doubled), a gap, the neighbour's half.
+        let menus = Float(Self.relationMenuWidth) / 2720 + 0.04
+        let rx = own.x / 2 + menus + neighbour.x / 2
+        let ry = own.y / 2 + 0.06 + neighbour.y / 2
+        let inner = min(count, 10)
+        return (0..<count).map { index in
+            let outer = index >= inner
+            let slot = outer ? index - inner : index
+            let slots = outer ? count - inner : inner
+            let angle = -Float.pi / 2 + 2 * Float.pi * Float(slot) / Float(slots)
+                + (outer ? Float.pi / Float(slots) : 0)
+            let scale: Float = outer ? 1.7 : 1
+            return centre + SIMD3<Float>(rx * scale * cos(angle), -ry * scale * sin(angle), 0.05)
+        }
+    }
+
     /// A relation tapped: the room focuses on it — every other card
     /// steps away (`shouldEnableNode`, 1 Nov 2026) — and lines run from
     /// the paper to every card it reaches. Results are shown by
@@ -4122,9 +4175,10 @@ struct EPUBMapView: View {
     /// card (`miniatureRing`, 1 Nov 2026). Cites
     /// raises the paper's citation cards first if they are down. A second
     /// tap takes the lines away.
-    private func toggleRelation(_ relation: StarRelation, of item: EPUBMapItem, only: Bool = false) {
+    private func toggleRelation(_ relation: StarRelation, of item: EPUBMapItem, only: Bool = false,
+                                gather: Bool = false) {
         if relationShown?.from == item.id, relationShown?.title == relation.title,
-           relationShown?.only == only {
+           relationShown?.only == only, relationShown?.gathered == gather {
             relationShown = nil
             galleryOf = nil
         } else {
@@ -4132,7 +4186,10 @@ struct EPUBMapView: View {
             // Images raises the paper's gallery; any other relation puts
             // it away.
             galleryOf = relation.title == "Images" ? item.id : nil
-            relationShown = RelationShown(from: item.id, title: relation.title, ids: Set(relation.ids), only: only)
+            // A gathered star stands full size round the card, so no
+            // miniatures ring it as well.
+            relationShown = RelationShown(from: item.id, title: relation.title, ids: Set(relation.ids),
+                                          only: only, ringed: !gather, gathered: gather)
         }
         reload()
     }
@@ -4344,7 +4401,8 @@ struct EPUBMapView: View {
             ids.remove(cardID)
             relationShown = ids.isEmpty
                 ? nil
-                : RelationShown(from: shown.from, title: shown.title, ids: ids, only: shown.only, ringed: shown.ringed)
+                : RelationShown(from: shown.from, title: shown.title, ids: ids, only: shown.only, ringed: shown.ringed,
+                               gathered: shown.gathered)
         }
         reload()
     }
@@ -4494,10 +4552,10 @@ struct EPUBMapView: View {
     /// the cards) on its left, Show Only (lines, and every other card
     /// steps away) on its right. Named on its face while one of its
     /// choices stands.
-    private func relationMenu(_ title: String, only: Bool, for item: EPUBMapItem,
+    private func relationMenu(_ title: String, only: Bool, gather: Bool = false, for item: EPUBMapItem,
                               relations: [StarRelation]) -> some View {
         let lit: String? = relationShown.flatMap {
-            $0.from == item.id && $0.only == only && $0.title != "Images" ? $0.title : nil
+            $0.from == item.id && $0.only == only && $0.gathered == gather && $0.title != "Images" ? $0.title : nil
         }
         let others = relations.filter {
             !Self.relationCatalog.contains($0.title) && !$0.title.hasPrefix(Self.bothCitePrefix)
@@ -4505,7 +4563,7 @@ struct EPUBMapView: View {
         let shared = relations.filter { $0.title.hasPrefix(Self.bothCitePrefix) }
         // An unfolding list, not a Menu: no presented menu can open on a
         // RealityKit attachment (2 Nov 2026).
-        let key = (only ? "only|" : "connects|") + item.id
+        let key = (gather ? "gather|" : only ? "only|" : "connects|") + item.id
         let open = openList == key || openList == "both|" + key
         return VStack(alignment: only ? .leading : .trailing, spacing: 4) {
             Button {
@@ -4518,10 +4576,10 @@ struct EPUBMapView: View {
             if open {
                 VStack(alignment: only ? .leading : .trailing, spacing: 6) {
                     ForEach(Self.relationCatalog, id: \.self) { name in
-                        relationChoice(name, relations.first { $0.title == name }, only: only, of: item, lit: lit)
+                        relationChoice(name, relations.first { $0.title == name }, only: only, gather: gather, of: item, lit: lit)
                     }
                     ForEach(others) { relation in
-                        relationChoice(relation.title, relation, only: only, of: item, lit: lit)
+                        relationChoice(relation.title, relation, only: only, gather: gather, of: item, lit: lit)
                     }
                     Button {
                         openList = openList == "both|" + key ? key : "both|" + key
@@ -4533,7 +4591,7 @@ struct EPUBMapView: View {
                     if openList == "both|" + key {
                         ForEach(shared) { relation in
                             relationChoice(String(relation.title.dropFirst(Self.bothCitePrefix.count)),
-                                           relation, only: only, of: item, lit: lit)
+                                           relation, only: only, gather: gather, of: item, lit: lit)
                         }
                     }
                 }
@@ -4595,9 +4653,10 @@ struct EPUBMapView: View {
     /// small AI where a model inferred it, checked while it stands —
     /// greyed when it reaches no card in the room.
     @ViewBuilder private func relationChoice(_ name: String, _ relation: StarRelation?, only: Bool,
+                                             gather: Bool = false,
                                              of item: EPUBMapItem, lit: String?) -> some View {
         Button {
-            if let relation { toggleRelation(relation, of: item, only: only) }
+            if let relation { toggleRelation(relation, of: item, only: only, gather: gather) }
             openList = nil
         } label: {
             let words = relation.map { "\(name)  \($0.ids.count)" + ($0.isAI ? "  \u{00B7} AI" : "") } ?? name
@@ -5974,7 +6033,7 @@ struct EPUBMapView: View {
             liftedCards[id]?.home += delta
         }
         saveLiftedCards()
-        for item in items {
+        for item in items where !gatheredIDs.contains(item.id) {
             if let position = item.position {
                 placed[item.id] = position
             }
@@ -6026,7 +6085,7 @@ struct EPUBMapView: View {
             liftedCards[id]?.home += delta
         }
         saveLiftedCards()
-        for item in items where carried(item.id) {
+        for item in items where carried(item.id) && !gatheredIDs.contains(item.id) {
             if let position = item.position {
                 placed[item.id] = position
             }
