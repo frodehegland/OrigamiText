@@ -4,7 +4,7 @@
 
 ## What the writer does
 
-In Author on the Mac, the writer arranges the Map, saves it as a view, and chooses **Layout ▸ Copy Layout**. Pasting into Write asks for a name and puts a marker in the text, `<Islands>` for example. Clicking the marker in Author brings the Map back in that view.
+In Author, on the Mac, iPad or Vision Pro, the writer arranges the Map and chooses **Save View**. Saved views travel in the document, so they are on every device. On the Mac, the writer selects words and makes a local link. The link dialog now has a **Views** tab beside Headings and Images. The linked words open the Map in that view. (Copy Layout, then paste into Write, makes the same kind of marker.)
 
 When the document is exported as an Origami EPUB, the marker stays in the text. A reader that knows about it opens the book's Map **in that view** when the marker is clicked.
 
@@ -30,7 +30,7 @@ The Mac reader does this already (commit `a470726`). This handover covers the sa
   "nodes": [ { "ref": "C-…", "x": 120.0, "y": -340.0, "z": 0.0 } ] }
 ```
 
-- `MAP-1` (named "Map") is always the main Map. Each of the writer's saved views follows as `VIEW-<id>`.
+- `MAP-1` (named "Map") is the main Map, and each saved view is `VIEW-<id>`. With exactly **one** saved view, that view comes **first**, so it is the default a reader opens. With several, `MAP-1` comes first and the views follow.
 - `ref` is a published concept id: an entry in `concepts` (and in `map.nodes`).
 - **y is up.** Author negates the canvas y before export. The Mac reader uses `extras.yUpViews` (filled in `AppModel.authoredMapExtras`) to flip it back for drawing. Do the same here, or keep y as it is if the visionOS map is already y-up.
 - `z` is Knowledge Space depth in metres. 0 means not set, and the reader chooses a default depth.
@@ -60,7 +60,7 @@ The Mac reader does this already (commit `a470726`). This handover covers the sa
    - Show the book's concepts (`doc.concepts`) as cards. Place them by the chosen layout (`doc.layouts.first { $0.sourceID == viewID }`), falling back to the first layout.
    - Scale points down to the volume, as `KnowledgeSpaceView` does with Author's Map.
    - Draw `doc.mapConnections`.
-   - Offer the other views in a picker. The Mac's Map has a Views list in its bar.
+   - Offer every authored view in the map's **Layout** list, the way the Mac now does (commit `77acdb9`). The author's views are under Layout; Views is for the reader's own saved views. The first view (`doc.layouts[0]`) is the default.
 
    `openMapView` would then call `openWindow(id: "bookmap", value: BookMapTarget(docID: doc.id, viewID: viewID))`.
 
