@@ -3252,6 +3252,15 @@ struct EPUBMapView: View {
                                    displayMode: (selected || item.isLifted || item.kind == .article
                                                  || item.kind == .cited || item.kind == .citedDeep)
                                        ? .never : .always)
+            // A chosen paper or citation wears a border (2 Nov 2026): the
+            // warm gold a chosen picture wears, so what is in hand reads at
+            // a glance across the room.
+            .overlay {
+                if selected {
+                    RoundedRectangle(cornerRadius: 8 * s)
+                        .strokeBorder(Color(red: 1.0, green: 0.84, blue: 0.45), lineWidth: 1.6 * s)
+                }
+            }
             // The side rails are away for now (17 Sep 2026). What a
             // chosen card wears instead: the solid dark pane above,
             // and the fifth it grows by. A LIFTED card carries no pane

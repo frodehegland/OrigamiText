@@ -1738,6 +1738,8 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
 - The mark is stuck to the connected card at its foot: anchor (0.5, 0, 0.5), offset 2 mm down, drawn from its top. Its ✓ and ✗ come first, then the word.
 - The Connects and Show Only lists are bigger: rows at 19 pt with 5 pt of padding, the panel padded 12, and the side columns 420 doubled points wide.
 
+- **A chosen paper or citation** wears a gold border (1.0, 0.84, 0.45), 1.6 pt at the face's scale, over its solid pane: the same gold a chosen gallery picture wears. Notes and labels keep their white border.
+
 ### 5.40 Unfolding lists, not menus; the selected words' relations (visionOS, 2 November 2026)
 
 **No presented menu opens on a RealityKit attachment** (there is no window to present into). The reading panel and every card are attachments, so every `Menu` there became a list that unfolds in place:
