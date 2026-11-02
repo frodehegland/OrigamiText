@@ -4041,16 +4041,12 @@ struct EPUBMapView: View {
             let relationFocus = relationShown.map {
                 $0.only && $0.title != "Images" && ($0.from == item.id || $0.ids.contains(item.id))
             } ?? false
-            verbs = [Verb(id: "read", title: "Read"),
-                     Verb(id: "open", title: item.showsAbstract ? "Fold" : "Open"),
-                     Verb(id: "focus", title: relationFocus || focusMode ? "Un-Focus" : "Focus",
-                          isOn: relationFocus || focusMode)]
+            // Above an open paper (2 Nov 2026, Frode): no Read (two hands
+            // spread open it), no Fold (two taps), no Lift, and no
+            // Pictures count — the thumbnails on its edge raise the gallery.
             // (Hide is Put Aside now, under the card beside Pin.)
-            let pictures = imagePaths(forDocID: item.id).count
-            if pictures > 0 {
-                verbs.append(Verb(id: "pictures", title: "Pictures", isOn: galleryOf == item.id, count: pictures))
-            }
-            if Self.liftEnabled { verbs.append(Verb(id: "lift", title: lifted ? "Put Back" : "Lift")) }
+            verbs = [Verb(id: "focus", title: relationFocus || focusMode ? "Un-Focus" : "Focus",
+                          isOn: relationFocus || focusMode)]
             verbs.append(Verb(id: "transpoint", title: "Transpoint"))
             // (Whole Volume and Whole Series are where the room stands in
             // the collection: the bar's first row.)
@@ -4347,7 +4343,7 @@ struct EPUBMapView: View {
             }
             .tint(lit == nil ? nil : .accentColor)
             if open {
-                VStack(alignment: only ? .leading : .trailing, spacing: 2) {
+                VStack(alignment: only ? .leading : .trailing, spacing: 6) {
                     ForEach(Self.relationCatalog, id: \.self) { name in
                         relationChoice(name, relations.first { $0.title == name }, only: only, of: item, lit: lit)
                     }
@@ -4392,7 +4388,7 @@ struct EPUBMapView: View {
             }
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 5)
+        .padding(.vertical, 11)
         .disabled(relation == nil)
     }
 

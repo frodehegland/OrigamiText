@@ -1740,6 +1740,10 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
 
 - **A chosen paper or citation** wears a gold border (1.0, 0.84, 0.45), 1.6 pt at the face's scale, over its solid pane: the same gold a chosen gallery picture wears. Notes and labels keep their white border.
 
+- **Above an open paper** stand only Focus, Transpoint, and Kind (in volume rooms) or Articles.
+  - Read, Open/Fold, Lift and the Pictures count are gone. Two hands spread open the reading, two taps fold the card, and the edge thumbnails raise the gallery.
+  - The Connects and Show Only rows are 11 pt above and below, with 6 pt between them.
+
 ### 5.40 Unfolding lists, not menus; the selected words' relations (visionOS, 2 November 2026)
 
 **No presented menu opens on a RealityKit attachment** (there is no window to present into). The reading panel and every card are attachments, so every `Menu` there became a list that unfolds in place:
