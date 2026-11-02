@@ -1763,6 +1763,15 @@ final class VisionModel {
     var shapeChoices: [LayoutChoice] = []
     var shapeAvailable: Set<String> = []
     var currentShapeID: String?
+    /// Color Spheres (2 Nov 2026): every paper a sphere of its categories'
+    /// colours with its title beneath, whatever Shape the room stands in.
+    /// Kept across launches.
+    var colorSpheres = UserDefaults.standard.bool(forKey: "visionColorSpheres") {
+        didSet {
+            UserDefaults.standard.set(colorSpheres, forKey: "visionColorSpheres")
+            volumeStamp += 1
+        }
+    }
 
     /// The corpus record for these cards, with each piece's id in the
     /// room — nil when the Mac has published none for them.
@@ -3813,6 +3822,18 @@ struct VisionVolumeToolbar: View {
                     }
                     // Dimmed, never hidden, while its data is not there.
                     .disabled(!model.shapeAvailable.contains(choice.id))
+                }
+                Divider()
+                // A look, not a layout: the papers stand where the Shape
+                // put them, as coloured spheres.
+                Button {
+                    model.colorSpheres.toggle()
+                } label: {
+                    if model.colorSpheres {
+                        Label("Color Spheres", systemImage: "checkmark")
+                    } else {
+                        Text("Color Spheres")
+                    }
                 }
             } label: {
                 Text("Shapes")

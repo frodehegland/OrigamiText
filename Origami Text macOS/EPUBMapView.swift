@@ -95,6 +95,9 @@ struct EPUBMapItem: ItemProtocol {
     /// The paper's authors with their faces, when the Mac knows any —
     /// worn in place of the byline (2 Nov 2026). Empty: the names alone.
     var authorFaces: [AuthorFace] = []
+    /// Color Spheres: the paper stands as a sphere of its colours, its
+    /// title beneath and nothing else (2 Nov 2026).
+    var asSphere = false
     struct AuthorFace: Hashable {
         var name: String
         var path: String?
@@ -127,6 +130,7 @@ struct EPUBMapItem: ItemProtocol {
             && pieceLabel == other.pieceLabel && imagePath == other.imagePath
             && stamp == other.stamp && firstSentence == other.firstSentence
             && tagColors == other.tagColors && authorFaces == other.authorFaces
+            && asSphere == other.asSphere
             // The engine attaches a card's attachment only when it builds
             // the card, so a stance mark coming or going rebuilds it.
             && stanceMark == other.stanceMark
@@ -777,6 +781,7 @@ struct EPUBMapView: View {
                 item.firstSentence = firstSentenceByArticle[record.id]
                 item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
                 item.authorFaces = model.authorFaces(paperAuthors(record.id))
+                item.asSphere = model.colorSpheres
                 return item
             }
 
@@ -3124,6 +3129,8 @@ struct EPUBMapView: View {
                 .padding(.horizontal, 7 * s)
                 .padding(.vertical, 5 * s)
                 .opacity(0.35)
+        } else if item.asSphere && item.kind == .article && !item.isAside && !item.showsAbstract {
+            colorSphere(for: item)
         } else if item.isAside {
             // The whole slip fades — the words too, not just the paper.
             Text(shortTitle(item.title))
@@ -3414,6 +3421,45 @@ struct EPUBMapView: View {
             // and the fifth it grows by. A LIFTED card carries no pane
             // at all — its words print straight onto the extruded slab.
         }
+    }
+
+    /// Color Spheres' face: a sphere of the paper's categories' colours (a
+    /// soft grey when it has none), lit from above left, and its title
+    /// beneath — nothing more. Chosen, a white ring and the full title;
+    /// opened, the paper's full card comes back (2 Nov 2026).
+    @ViewBuilder private func colorSphere(for item: EPUBMapItem) -> some View {
+        let s = Self.crisp
+        let diameter = 30 * s
+        VStack(spacing: 3 * s) {
+            ZStack {
+                if item.tagColors.isEmpty {
+                    Circle().fill(Color(white: 0.45))
+                } else {
+                    Self.mosaic(item.tagColors).clipShape(Circle())
+                }
+                // The light and the shade that make a disc a sphere.
+                Circle().fill(RadialGradient(colors: [Color.white.opacity(0.55), .clear],
+                                             center: UnitPoint(x: 0.32, y: 0.28),
+                                             startRadius: 0, endRadius: diameter * 0.45))
+                Circle().fill(RadialGradient(colors: [.clear, Color.black.opacity(0.5)],
+                                             center: UnitPoint(x: 0.4, y: 0.35),
+                                             startRadius: diameter * 0.25, endRadius: diameter * 0.62))
+            }
+            .frame(width: diameter, height: diameter)
+            .overlay {
+                if item.isSelected {
+                    Circle().strokeBorder(Color.white.opacity(0.85), lineWidth: 1.6 * s)
+                }
+            }
+            Text(item.isSelected ? item.title : shortTitle(item.title))
+                .font(AppFonts.body(5.5 * s, weight: .regular))
+                .foregroundStyle(Color.white)
+                .shadow(color: .black.opacity(0.6), radius: 1.5 * s)
+                .multilineTextAlignment(.center)
+                .lineLimit(item.isSelected ? 4 : 2)
+                .frame(maxWidth: 70 * s)
+        }
+        .padding(2 * s)
     }
 
     /// A soft mosaic of colours: one band of them across the top, the same
