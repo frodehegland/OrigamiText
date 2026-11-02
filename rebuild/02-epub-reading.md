@@ -1897,7 +1897,7 @@ There is no Close: tapping the card lets it go.
   - **All** calls `openSeries` and is checked in the series' hallway.
   - A divider follows, then each volume of the series, which calls `openArticles(of:)`; the room's own volume is checked.
   - The menu is dimmed outside a series or volume room, and All is dimmed for a series with only one volume.
-  - A card's way to read a volume whole remains its own verb.
+  - No control now opens a volume as one whole reading; `openWholeVolume` stays in the model.
 
 ### 5.29 Miniatures on the star, and jumping to a card (visionOS, 1 November 2026)
 
