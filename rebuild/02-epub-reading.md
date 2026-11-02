@@ -2353,9 +2353,19 @@ The headset reads the index in its standing loop, copies each face into Caches/P
 
 Beneath Connects on the open card's left stands a third relation list, **Gather** (`relationMenu(…, gather: true)`; `RelationShown.gathered`, ringed false). Choosing a relation draws every card it reaches, full size, into a star round the card: `gatherStar` sets their positions in `reload` on an ellipse clear of the card and its menus (half the card + 420/2720 m + 4 cm + the neighbour's half across; half heights + 6 cm up and down), the first at the top and clockwise, 5 cm in front of the wall, a second ring 1.7× out past ten cards. The lines run to them as in Connects, and the other cards stay. Gathered places are never written to `placed` (`gatheredIDs` is skipped in `carrySpace`/`commitPlaces`), so choosing it again, or letting the card go, sends each card home.
 
-### Color Spheres (2 Nov 2026)
+### Looks: Cards, Color Spheres, Color Titles (2 Nov 2026)
 
-At the foot of the bar's **Shapes** menu, after a divider, **Color Spheres** is an on/off look rather than a layout (`VisionModel.colorSpheres`, kept in UserDefaults `visionColorSpheres`; toggling bumps `volumeStamp`). While it is on, every paper card (`EPUBMapItem.asSphere`, in `isVisuallyEqual`) is drawn by `colorSphere(for:)` as a 30-point sphere at the crisp scale. The sphere is the paper's tag mosaic clipped to a circle, or soft grey when the paper has no tags, with a radial highlight at the upper left and a radial shade at the rim. Beneath it sits the short title, two lines at most, and nothing else. A chosen sphere wears a white ring and the full title. A paper that is opened (`showsAbstract`) or set aside is drawn as its usual card. The papers stay where the current Shape put them.
+At the foot of the bar's **Shapes** menu, after a divider, three looks are listed with a checkmark on the current one: **Cards**, **Color Spheres** and **Color Titles**. A look is not a layout; the papers stand where the Shape put them.
+- **State:** `VisionModel.cardLook` (`CardLook` enum), kept in UserDefaults as `visionCardLook`; setting it bumps `volumeStamp`.
+- **Per card:** `EPUBMapItem.look` is part of `isVisuallyEqual`. `wearsLook` is true for an article that is not set aside, not a ghost and not opened. An opened paper (`showsAbstract`) always shows its full card, abstract and verbs.
+- **Color Spheres:** the face (`colorSphere`) keeps a clear 30-point square (`sphereDiameter`, below a 5-point `sphereTopPad`) above the two-line title. A chosen sphere gets a white ring 6 points wider and the full title.
+- **The sphere itself:** `cardEntity` adds a real RealityKit sphere (`sphereEntity`) to the card's body at the face's clear spot.
+  - Size: radius 1.5 cm × `grown`; position y = (face height / 2 − 20 crisp points) × grown / (1000 × crisp); z = 0.25 r.
+  - Material: `PhysicallyBasedMaterial` with roughness 0.32 and clearcoat 0.6, first tinted with the paper's first colour.
+  - Texture: `SphereTextures` (at the file's end) draws a 256 × 128 sRGB strip of the colours as one horizontal gradient that wraps back to the first. It loads it with the async `TextureResource(image:withName:options:)`, once per colour set, and the texture replaces the tint.
+  - A lifted sphere has no slab.
+- **Color Titles** (`colorTitle`): the title alone, 9-point semibold serif, three lines (five when chosen, full title). Its letters are the tag mosaic masked by the text, over a 1.6-point blurred copy of the same for soft edges; a paper with no tags is white with a soft white glow. Chosen, it sits on a faint dark pane ringed in white.
+- **Relations:** the star, Connects, Gather, Show Only, Focus and Select Gathered work in every look. They size themselves from `cardSizes.base`, the measured face.
 
 **Focus and Select Gathered (2 Nov 2026).** While a card's Gather stands, two more buttons join Pin and Put Aside under it (`pileVerbs`):
 - **Focus** toggles `relationShown.only`, so every card the Gather did not draw in steps away. The Gather list still reads as lit, because for a gather the lit check and the toggle check ignore `only`.

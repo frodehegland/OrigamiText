@@ -97,7 +97,12 @@ struct EPUBMapItem: ItemProtocol {
     var authorFaces: [AuthorFace] = []
     /// Color Spheres: the paper stands as a sphere of its colours, its
     /// title beneath and nothing else (2 Nov 2026).
-    var asSphere = false
+    var look: VisionModel.CardLook = .cards
+    /// Drawn in a look of its own — a sphere or a coloured title — rather
+    /// than as a card: a paper standing, not set aside nor opened.
+    var wearsLook: Bool {
+        look != .cards && kind == .article && !isAside && !isGhost && !showsAbstract
+    }
     struct AuthorFace: Hashable {
         var name: String
         var path: String?
@@ -130,7 +135,7 @@ struct EPUBMapItem: ItemProtocol {
             && pieceLabel == other.pieceLabel && imagePath == other.imagePath
             && stamp == other.stamp && firstSentence == other.firstSentence
             && tagColors == other.tagColors && authorFaces == other.authorFaces
-            && asSphere == other.asSphere
+            && look == other.look
             // The engine attaches a card's attachment only when it builds
             // the card, so a stance mark coming or going rebuilds it.
             && stanceMark == other.stanceMark
@@ -781,7 +786,7 @@ struct EPUBMapView: View {
                 item.firstSentence = firstSentenceByArticle[record.id]
                 item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
                 item.authorFaces = model.authorFaces(paperAuthors(record.id))
-                item.asSphere = model.colorSpheres
+                item.look = model.cardLook
                 return item
             }
 
@@ -3129,8 +3134,10 @@ struct EPUBMapView: View {
                 .padding(.horizontal, 7 * s)
                 .padding(.vertical, 5 * s)
                 .opacity(0.35)
-        } else if item.asSphere && item.kind == .article && !item.isAside && !item.showsAbstract {
+        } else if item.wearsLook && item.look == .spheres {
             colorSphere(for: item)
+        } else if item.wearsLook && item.look == .titles {
+            colorTitle(for: item)
         } else if item.isAside {
             // The whole slip fades — the words too, not just the paper.
             Text(shortTitle(item.title))
@@ -3423,34 +3430,22 @@ struct EPUBMapView: View {
         }
     }
 
-    /// Color Spheres' face: a sphere of the paper's categories' colours (a
-    /// soft grey when it has none), lit from above left, and its title
-    /// beneath — nothing more. Chosen, a white ring and the full title;
-    /// opened, the paper's full card comes back (2 Nov 2026).
+    /// Color Spheres' face: room for the sphere — a real one, made in
+    /// `cardEntity` (`sphereEntity`) — and the title beneath, nothing more.
+    /// Chosen, a white ring round the sphere and the full title; opened,
+    /// the paper's full card comes back (2 Nov 2026).
     @ViewBuilder private func colorSphere(for item: EPUBMapItem) -> some View {
         let s = Self.crisp
-        let diameter = 30 * s
         VStack(spacing: 3 * s) {
-            ZStack {
-                if item.tagColors.isEmpty {
-                    Circle().fill(Color(white: 0.45))
-                } else {
-                    Self.mosaic(item.tagColors).clipShape(Circle())
+            Color.clear
+                .frame(width: Self.sphereDiameter * s, height: Self.sphereDiameter * s)
+                .overlay {
+                    if item.isSelected {
+                        Circle()
+                            .strokeBorder(Color.white.opacity(0.85), lineWidth: 1.4 * s)
+                            .frame(width: (Self.sphereDiameter + 6) * s, height: (Self.sphereDiameter + 6) * s)
+                    }
                 }
-                // The light and the shade that make a disc a sphere.
-                Circle().fill(RadialGradient(colors: [Color.white.opacity(0.55), .clear],
-                                             center: UnitPoint(x: 0.32, y: 0.28),
-                                             startRadius: 0, endRadius: diameter * 0.45))
-                Circle().fill(RadialGradient(colors: [.clear, Color.black.opacity(0.5)],
-                                             center: UnitPoint(x: 0.4, y: 0.35),
-                                             startRadius: diameter * 0.25, endRadius: diameter * 0.62))
-            }
-            .frame(width: diameter, height: diameter)
-            .overlay {
-                if item.isSelected {
-                    Circle().strokeBorder(Color.white.opacity(0.85), lineWidth: 1.6 * s)
-                }
-            }
             Text(item.isSelected ? item.title : shortTitle(item.title))
                 .font(AppFonts.body(5.5 * s, weight: .regular))
                 .foregroundStyle(Color.white)
@@ -3459,7 +3454,91 @@ struct EPUBMapView: View {
                 .lineLimit(item.isSelected ? 4 : 2)
                 .frame(maxWidth: 70 * s)
         }
-        .padding(2 * s)
+        .padding(.top, Self.sphereTopPad * s)
+        .padding([.horizontal, .bottom], 2 * s)
+    }
+
+    /// A sphere's diameter and the room above it on its face, in face
+    /// points before the crisp factor (1000 to the metre at rest).
+    static let sphereDiameter: CGFloat = 30
+    static let sphereTopPad: CGFloat = 5
+
+    /// The real sphere of a Color Spheres paper: lit, slightly glossy, its
+    /// categories' colours wrapped round it in soft bands (grey when it has
+    /// none), at the place its face keeps clear. The colours arrive a beat
+    /// after the sphere — the texture is made once per set of colours.
+    private func sphereEntity(for item: EPUBMapItem, facePoints: CGSize, grown: Float) -> ModelEntity {
+        let crisp = Float(Self.crisp)
+        // Face points to metres on this card: the face stands at
+        // 1.36 / crisp × grown, attachments at 1360 points to the metre.
+        let metres = grown / (1000 * crisp)
+        let radius = Float(Self.sphereDiameter) / 2 * crisp * metres
+        let centreFromTop = Float(Self.sphereTopPad + Self.sphereDiameter / 2) * crisp
+        let y = (Float(facePoints.height) / 2 - centreFromTop) * metres
+        var plain = PhysicallyBasedMaterial()
+        let first = item.tagColors.first.map { Self.uiColor(hex: $0) } ?? UIColor(white: 0.5, alpha: 1)
+        plain.baseColor = .init(tint: first)
+        plain.roughness = 0.32
+        plain.clearcoat = 0.6
+        let sphere = ModelEntity(mesh: .generateSphere(radius: radius), materials: [plain])
+        sphere.position = SIMD3<Float>(0, y, radius * 0.25)
+        // Turned a little, so the bands run round it as it faces the reader.
+        sphere.orientation = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(0, 1, 0))
+        if item.tagColors.count > 1 {
+            let colors = item.tagColors
+            Task { @MainActor in
+                guard let texture = await SphereTextures.texture(for: colors) else { return }
+                var material = plain
+                material.baseColor = .init(tint: .white, texture: .init(texture))
+                sphere.model?.materials = [material]
+            }
+        }
+        return sphere
+    }
+
+    static func uiColor(hex: String) -> UIColor {
+        let (r, g, b) = OrigamiTags.Tag(id: "", name: "", color: hex, words: []).rgb
+        return UIColor(red: r, green: g, blue: b, alpha: 1)
+    }
+
+    /// Color Titles' face: the title alone, its letters in the paper's
+    /// categories' colours (white when it has none) with soft edges — a
+    /// blurred copy of the same colours glowing under the crisp letters.
+    /// Chosen, the full title on a faint dark pane, ringed in white.
+    @ViewBuilder private func colorTitle(for item: EPUBMapItem) -> some View {
+        let s = Self.crisp
+        let label = Text(item.isSelected ? item.title : shortTitle(item.title))
+            .font(.system(size: 9 * s, weight: .semibold, design: .serif))
+            .multilineTextAlignment(.center)
+            .lineLimit(item.isSelected ? 5 : 3)
+        Group {
+            if item.tagColors.isEmpty {
+                label
+                    .foregroundStyle(Color.white)
+                    .shadow(color: .white.opacity(0.5), radius: 1.6 * s)
+            } else {
+                label
+                    .foregroundStyle(Color.clear)
+                    .background {
+                        Self.mosaic(item.tagColors).mask(label).blur(radius: 1.6 * s).opacity(0.9)
+                    }
+                    .overlay { Self.mosaic(item.tagColors).mask(label) }
+            }
+        }
+        .frame(maxWidth: 100 * s)
+        .padding(.horizontal, 6 * s)
+        .padding(.vertical, 4 * s)
+        .background {
+            if item.isSelected {
+                RoundedRectangle(cornerRadius: 8 * s).fill(Color.black.opacity(0.45))
+            }
+        }
+        .overlay {
+            if item.isSelected {
+                RoundedRectangle(cornerRadius: 8 * s)
+                    .strokeBorder(Color.white.opacity(0.85), lineWidth: 1.6 * s)
+            }
+        }
     }
 
     /// A soft mosaic of colours: one band of them across the top, the same
@@ -3587,6 +3666,9 @@ struct EPUBMapView: View {
         let backFace = face(back: true)
         body.addChild(frontFace)
         body.addChild(backFace)
+        if item.wearsLook && item.look == .spheres {
+            body.addChild(sphereEntity(for: item, facePoints: facePoints, grown: grown))
+        }
         holder.components.set(CardFacesComponent(front: frontFace, back: backFace,
                                                  makeBack: .init { faceAttachment(back: true) }))
         // Opening: the card unfolds — it begins folded flat along its
@@ -3616,7 +3698,7 @@ struct EPUBMapView: View {
         // A lifted card is an OBJECT now, not a leaf of the wall: a
         // slim dark extrusion behind the face sets it apart from the
         // flat cards still standing in the map.
-        if item.isLifted {
+        if item.isLifted && !item.wearsLook {
             // The slab grows with the face it stands behind — a card
             // magnified or chosen must not overhang its own edge.
             let depth = ModelEntity(
@@ -11893,3 +11975,45 @@ private struct SphereRowStyle: ButtonStyle {
     }
 }
 #endif
+
+// MARK: - Color Spheres' textures (2 Nov 2026)
+
+/// The wrap of a Color Sphere: its colours as soft vertical bands round an
+/// equirectangular strip, the last melting back into the first so the seam
+/// never shows. Made once per set of colours and kept.
+@MainActor
+enum SphereTextures {
+    private static var made: [String: TextureResource] = [:]
+    private static var making: [String: Task<TextureResource?, Never>] = [:]
+
+    static func texture(for hexes: [String]) async -> TextureResource? {
+        let key = hexes.joined(separator: ",")
+        if let known = made[key] { return known }
+        if let pending = making[key] { return await pending.value }
+        let task = Task<TextureResource?, Never> { @MainActor in
+            guard let image = strip(hexes) else { return nil }
+            return try? await TextureResource(image: image, withName: "sphere-" + key,
+                                              options: .init(semantic: .color))
+        }
+        making[key] = task
+        let texture = await task.value
+        making[key] = nil
+        if let texture { made[key] = texture }
+        return texture
+    }
+
+    private static func strip(_ hexes: [String]) -> CGImage? {
+        let width = 256, height = 128
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        let colors = (hexes + [hexes[0]]).map { EPUBMapView.uiColor(hex: $0).cgColor }
+        let stops = (0..<colors.count).map { CGFloat($0) / CGFloat(colors.count - 1) }
+        guard let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
+                                        colors: colors as CFArray, locations: stops) else { return nil }
+        context.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: width, y: 0), options: [])
+        return context.makeImage()
+    }
+}
+

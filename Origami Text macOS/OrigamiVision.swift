@@ -1763,12 +1763,24 @@ final class VisionModel {
     var shapeChoices: [LayoutChoice] = []
     var shapeAvailable: Set<String> = []
     var currentShapeID: String?
-    /// Color Spheres (2 Nov 2026): every paper a sphere of its categories'
-    /// colours with its title beneath, whatever Shape the room stands in.
+    /// How the papers look, whatever Shape the room stands in (2 Nov 2026):
+    /// as cards; as Color Spheres — a real sphere of the paper's
+    /// categories' colours, its title beneath; or as Color Titles — the
+    /// title alone, its letters in those colours with soft edges.
     /// Kept across launches.
-    var colorSpheres = UserDefaults.standard.bool(forKey: "visionColorSpheres") {
+    enum CardLook: String, CaseIterable {
+        case cards, spheres, titles
+        var title: String {
+            switch self {
+            case .cards: "Cards"
+            case .spheres: "Color Spheres"
+            case .titles: "Color Titles"
+            }
+        }
+    }
+    var cardLook = CardLook(rawValue: UserDefaults.standard.string(forKey: "visionCardLook") ?? "") ?? .cards {
         didSet {
-            UserDefaults.standard.set(colorSpheres, forKey: "visionColorSpheres")
+            UserDefaults.standard.set(cardLook.rawValue, forKey: "visionCardLook")
             volumeStamp += 1
         }
     }
@@ -3824,15 +3836,17 @@ struct VisionVolumeToolbar: View {
                     .disabled(!model.shapeAvailable.contains(choice.id))
                 }
                 Divider()
-                // A look, not a layout: the papers stand where the Shape
-                // put them, as coloured spheres.
-                Button {
-                    model.colorSpheres.toggle()
-                } label: {
-                    if model.colorSpheres {
-                        Label("Color Spheres", systemImage: "checkmark")
-                    } else {
-                        Text("Color Spheres")
+                // Looks, not layouts: the papers stand where the Shape put
+                // them, as cards, coloured spheres or coloured titles.
+                ForEach(VisionModel.CardLook.allCases, id: \.self) { look in
+                    Button {
+                        model.cardLook = look
+                    } label: {
+                        if model.cardLook == look {
+                            Label(look.title, systemImage: "checkmark")
+                        } else {
+                            Text(look.title)
+                        }
                     }
                 }
             } label: {
