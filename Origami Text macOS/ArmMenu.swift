@@ -156,7 +156,16 @@ final class ArmMenu {
     /// once from the RealityView's make closure (or an equivalent setup hook):
     /// `content` is only valid to mutate there, so the anchors must be added now.
     func install(in content: RealityViewContent) {
-        guard items.isEmpty, !chips.isEmpty else { return }
+        guard items.isEmpty else { return }
+        // With no chips worn the hands are still tracked: the session is
+        // what makes every hand anchor in the room report — the fist that
+        // carries the space, and the surfaces things stick to, ride it.
+        // (Origami addition, carry back to Author — 2 Nov 2026: with all
+        // chips away the early return left the fist dead.)
+        guard !chips.isEmpty else {
+            if session == nil { Task { await startTracking() } }
+            return
+        }
 
         // Both orientations' arms get a menu and anchors, so a Swap
         // Arms flip mid-session only re-parents chips — even when the
