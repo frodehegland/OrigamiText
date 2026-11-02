@@ -1938,6 +1938,8 @@ struct EPUBMapView: View {
         var riders: (label: String, ids: Set<String>)?
         /// The card that wears the verbs: the last one chosen.
         var barItemID: String?
+        /// What a Focus keeps standing, by the selection it was read for.
+        var focusKeep: (key: String, ids: Set<String>)?
         /// The card a two-hand spread has just opened — once per spread.
         var spreadOpened: String?
         /// Each paper's text, and its paragraphs' meaning vectors, for the
@@ -2914,6 +2916,7 @@ struct EPUBMapView: View {
             // stays whole for it.)
             if let relationShown, relationShown.only, relationShown.title != "Images" {
                 return item.id == relationShown.from || relationShown.ids.contains(item.id)
+                    || focusKeeps().contains(item.id)
             }
             // A concept's own Focus: only that concept and the articles
             // it touches stand; everything unconnected steps away.
@@ -2930,6 +2933,10 @@ struct EPUBMapView: View {
                 let selected = items.filter { $0.isSelected }
                 guard !selected.isEmpty else { return true }
                 if item.isSelected { return true }
+                // Whatever stands connected in the room stays with it: a
+                // Gather's star, a Connects or Show Only's cards, a chosen
+                // colour's papers, a label's lines (2 Nov 2026).
+                if focusKeeps().contains(item.id) { return true }
                 // What a chosen card's lit relation reaches — a Gather's
                 // star above all — stays with it.
                 if let relationShown, relationShown.title != "Images",
@@ -4504,6 +4511,29 @@ struct EPUBMapView: View {
         if let landed = items.first(where: { $0.id == id }), !landed.showsAbstract {
             toggleOpen(landed)
         }
+    }
+
+    /// Every card shown connected to something in hand — the lit relation's
+    /// cards and its card, the papers of each chosen colour marker, the
+    /// papers a chosen label threads with Lines — which a Focus keeps
+    /// standing. Worked out once per change of selection, not per card.
+    private func focusKeeps() -> Set<String> {
+        let chosen = items.filter(\.isSelected).map(\.id)
+        let key = chosen.sorted().joined(separator: "|") + "#" + (relationShown.map {
+            "\($0.from)/\($0.title)/\($0.ids.count)/\($0.only)/\($0.gathered)" } ?? "")
+        if let cached = cardSizes.focusKeep, cached.key == key { return cached.ids }
+        var ids = Set<String>()
+        if let relationShown, relationShown.title != "Images" {
+            ids.insert(relationShown.from)
+            ids.formUnion(relationShown.ids)
+        }
+        for item in items where item.isSelected {
+            if item.id.hasPrefix(Self.tagHubPrefix) || keywordModes[item.id] == .lines {
+                ids.formUnion(labelMembers(item))
+            }
+        }
+        cardSizes.focusKeep = (key, ids)
+        return ids
     }
 
     /// Where a Gather's cards stand round the card it was chosen on: evenly
