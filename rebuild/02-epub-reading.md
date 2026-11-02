@@ -2403,13 +2403,14 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Miniatures:** their hover glow uses `.contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 10))` with `.hoverEffect(.highlight)`, so the glow is exactly the miniature's frame.
 
 
-**Colour Cluster (2 Nov 2026).** `RoomShape.colours` ("Colour Cluster", always available; `runColourPolygonShape`) stands the papers in an upright polygon facing the reader, 2.4 m ahead.
-- **The polygon:** one side per colour that is on (eight for the categories), the first side across the top and the rest clockwise. It is stretched to 2.3 × 0.95 m radii about 1.45 m height.
-- **Homes:** a paper of one colour goes 18% inside its side's midpoint. A paper of several colours goes to the mean of their sides' midpoints, so it is equidistant from them, and one of two colours lies on the line between them.
-- **Easing apart:** 120 rounds push papers apart in card units (`columnPitch` × `rowPitch`), so no two cards overlap, draw each 3% toward home, and keep them inside the polygon's box.
-- **Uncoloured papers:** they stand in a block to the right of the polygon, top down (2.3 m to 0.6 m), a column at a time.
-- **Labels:** each side's label (`shape:colours.N`, in its colour) stands 22 cm outside the side's midpoint and 5 cm nearer the reader. It carries every paper wearing that colour.
-- **Heights:** `applyWatchPositions3D` uses a 0.15–2.6 m height range.
+**Colour Cluster (2 Nov 2026).** `RoomShape.colours` ("Colour Cluster", always available; `runColourPolygonShape`) is three-dimensional.
+- **The solid:** one face per colour that is on. With eight colours it is the octahedron, whose faces look out toward a cube's corners (±1, ±1, ±1)/√3. With any other count, the faces' directions are a Fibonacci sphere.
+- **Size:** the solid's reach is a 2.0 × 0.95 × 1.5 m ellipsoid, centred 1.45 m up and 2.7 m ahead.
+- **Homes:** a paper of one colour goes 20% inside its face. A paper of several colours goes to the mean of their faces, so it is equally drawn to each and, with two colours, lies on the line between them.
+- **Easing apart:** 120 rounds push papers apart in card units (`columnPitch` × `rowPitch` × 16 cm depth), draw each 3% toward home, and keep them inside the reach.
+- **Uncoloured papers:** they stand in a block to the right.
+- **Labels:** each colour's label (`shape:colours.N`, in its colour, carrying its papers) stands 20 cm outside its face.
+- **Heights:** the height range is 0.15–2.7 m.
 
 **Category names on open cards (2 Nov 2026).** On an open paper (chosen, with `showsAbstract`), each colour rectangle is followed by its category's name. The name is looked up in `model.tags` by colour and drawn in a 3.8-point system sans-serif at white 0.7. The rectangles and names sit in one row, or stack one under another when the row will not fit (`ViewThatFits`). Closed cards keep the bare rectangles.
 
