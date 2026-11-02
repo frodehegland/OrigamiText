@@ -820,6 +820,11 @@ struct EPUBMapView: View {
                         abstract: cardAbstract(record))
                     item.isLifted = liftedCards[record.id] != nil
                     item.imagePath = imagePaths(forDocID: record.id).first
+                    // The opening pages, appendices and records wear the
+                    // room's colours and look as its articles do (2 Nov 2026).
+                    item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
+                    item.authorFaces = model.authorFaces(paperAuthors(record.id))
+                    item.look = model.cardLook
                     return item
                 }
             }
@@ -3774,6 +3779,13 @@ struct EPUBMapView: View {
         holder.addChild(body)
         let frontFace = face(back: false)
         let backFace = face(back: true)
+        // Color Spheres: the words beneath a sphere turn to the reader
+        // wherever they stand (2 Nov 2026) — the sphere itself looks the
+        // same from every side.
+        if item.wearsLook && item.look == .spheres {
+            frontFace.components.set(BillboardComponent())
+            backFace.components.set(BillboardComponent())
+        }
         body.addChild(frontFace)
         body.addChild(backFace)
         if item.wearsLook && item.look == .spheres {
@@ -3794,6 +3806,7 @@ struct EPUBMapView: View {
             let metres = grown / (1000 * Float(Self.crisp))
             byline.position = SIMD3<Float>(0, -Float(facePoints.height) / 2 * metres - 0.005, 0.004)
             byline.isEnabled = false
+            if spheres { byline.components.set(BillboardComponent()) }
             body.addChild(byline)
             holder.components.set(LookBylineComponent(byline: byline))
         }
