@@ -1933,7 +1933,14 @@ final class VisionModel {
         let rationale: String?
         /// Set by the room: the mark stands on the card's left edge.
         var onLeft = false
+        /// A stance runs one way; most relations read the same both ways.
+        var directed = true
+        /// Inferred by a model (a stance, Similar…): AI until confirmed.
+        var isAI = true
     }
+
+    /// The relations a model inferred, whose marks wear AI until confirmed.
+    static let inferredRelationTitles: Set<String> = ["Similar to", "Same meaning group", "Says something similar"]
 
     /// The stance of the given kind between two cards in the room, either
     /// way round, unless it was severed.
@@ -1950,6 +1957,34 @@ final class VisionModel {
             sourceQuote: stance.evidence?.first { $0.role == "source" }?.quote,
             targetQuote: stance.evidence?.first { $0.role == "target" }?.quote,
             rationale: stance.point)
+    }
+
+    /// Any relation between two cards — not a stance — confirmed or
+    /// severed by the reader: one decision per pair and relation, kept in
+    /// the same shared file as the stances', under an id of its own made
+    /// from the pair's piece keys (folder-based, so every device agrees)
+    /// and the relation's name. Order-free: a relation reads the same
+    /// from either card.
+    func edgeID(from a: String, to b: String, title: String) -> String {
+        let one = pieceKey(forDocID: a) ?? a
+        let two = pieceKey(forDocID: b) ?? b
+        let pair = [one, two].sorted()
+        return "edge-" + CorpusRelations.Stance.stableID(from: pair[0], to: pair[1], type: title)
+            .dropFirst("stance-".count)
+    }
+
+    func isSevered(from a: String, to b: String, title: String) -> Bool {
+        stanceDecisions[edgeID(from: a, to: b, title: title)]?.decision == "rejected"
+    }
+
+    /// The mark at a line's end for a relation that is not a stance.
+    func edgeMark(from chosen: String, to other: String, title: String) -> StanceMarkInfo? {
+        let id = edgeID(from: chosen, to: other, title: title)
+        let decision = stanceDecisions[id]?.decision
+        guard decision != "rejected" else { return nil }
+        return StanceMarkInfo(stanceID: id, title: title, confirmed: decision == "confirmed",
+                              outward: true, sourceQuote: nil, targetQuote: nil, rationale: nil,
+                              directed: false, isAI: Self.inferredRelationTitles.contains(title))
     }
 
     /// Confirm or sever a stance: kept here at once, and written to the

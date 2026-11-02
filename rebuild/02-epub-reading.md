@@ -1723,6 +1723,17 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
 - **Memory:** loaded containers are released after 10 idle minutes (`MLX.GPU.clearCache()`).
 - **Settings ▸ AI:** **AI on This Mac** comes first, one row per offered rung: tier, model, summary and size, then *Download and Use*, a progress bar with *Stop*, *Use*, or a green *In Use*. **Model in Use** (the former Language Model picker) follows. It lists the ready pairs first, and leaves out embedding-only models (`isEmbeddingOnly`: names containing "embed", or bge-).
 
+### 5.41 A mark on every connected card; grey lines (visionOS, 2 November 2026)
+
+- **Lines:** card-to-card relation lines (`ConceptConnectionLines`) and lines from a reading panel (`CitationLineManager`) are grey (white 0.72), drawn at opacity 0.22.
+- **Marks:** the mark at a line's end (`StanceMarkView`, ✓ Confirm, ✗ Sever with "Sever this connection?") now stands on every card any lit relation reaches, not only stances.
+  - It also appears for a reading's selection relations, whose origin is the panel (`readerPanels.worldPosition`).
+  - Stances keep their record's mark (direction arrow, quotes, AI while proposed).
+  - Every other relation's mark (`VisionModel.edgeMark`) has no arrow and no quotes. It wears AI only for inferred relations (`inferredRelationTitles`: Similar to, Same meaning group, Says something similar).
+- **Decisions on other relations:** `edgeID` is "edge-" plus a hash of the pair's sorted piece keys and the relation's title, so it reads the same from either card and is folder-based, so every device agrees.
+  - Decisions are kept in the same `origami-stance-reviews.json` (`decideStance`).
+  - A severed pair (`isSevered`) is filtered out of `starRelations` and the selection relations for good.
+
 ### 5.40 Unfolding lists, not menus; the selected words' relations (visionOS, 2 November 2026)
 
 **No presented menu opens on a RealityKit attachment** (there is no window to present into). The reading panel and every card are attachments, so every `Menu` there became a list that unfolds in place:

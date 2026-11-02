@@ -1081,14 +1081,22 @@ struct EPUBMapView: View {
                     built[index].position?.z += Self.selectedStep
                 }
             }
-            // A stance lit on a card: every card it reaches wears the
-            // line's end, on the edge facing the chosen card.
-            if let shown = relationShown, CorpusRelations.Stance.titles.contains(shown.title),
-               let origin = built.first(where: { $0.id == shown.from })?.position {
+            // A relation lit — on a card, or from a reading's selected
+            // words: every card it reaches wears the line's end, on the
+            // edge facing where the line comes from, with Confirm and
+            // Sever. A stance's mark is its record's (quotes and all);
+            // any other relation's is the pair's own decision.
+            if let shown = relationShown, shown.title != "Images",
+               let origin = built.first(where: { $0.id == shown.from })?.position
+                ?? readerPanels.worldPosition(of: shown.from) {
+                let title = shown.title.hasPrefix("sel:") ? String(shown.title.dropFirst(4)) : shown.title
                 for index in built.indices where shown.ids.contains(built[index].id) {
-                    guard var mark = model.stanceMark(from: shown.from, to: built[index].id, title: shown.title)
-                    else { continue }
-                    mark.onLeft = origin.x < (built[index].position?.x ?? 0)
+                    let other = built[index].id
+                    var mark = CorpusRelations.Stance.titles.contains(title)
+                        ? model.stanceMark(from: shown.from, to: other, title: title)
+                        : model.edgeMark(from: shown.from, to: other, title: title)
+                    guard mark != nil else { continue }
+                    mark?.onLeft = origin.x < (built[index].position?.x ?? 0)
                     built[index].stanceMark = mark
                 }
             }
@@ -3687,6 +3695,12 @@ struct EPUBMapView: View {
         }
         relations += peopleAndVocabularyRelations(for: item, standing: standing)
         relations += citationPatternRelations(for: item, standing: standing)
+        // A pair the reader severed leaves that relation for good.
+        relations = relations.compactMap { relation in
+            let kept = relation.ids.filter { !model.isSevered(from: item.id, to: $0, title: relation.title) }
+            return kept.isEmpty ? nil
+                : StarRelation(title: relation.title, ids: kept, isAI: relation.isAI, outward: relation.outward)
+        }
         return relations
     }
 
@@ -4440,7 +4454,13 @@ struct EPUBMapView: View {
 
             let sentence = phrase.split(separator: " ").count >= 6
             relations.append(.init(title: "Says something similar", ids: [], isAI: true, pending: sentence))
-            all[docID] = relations
+            // A pair the reader severed leaves that relation for good.
+            all[docID] = relations.map { relation in
+                VisionModel.SelectionRelation(
+                    title: relation.title,
+                    ids: relation.ids.filter { !model.isSevered(from: docID, to: $0, title: relation.title) },
+                    isAI: relation.isAI, pending: relation.pending)
+            }
             if sentence { measureSimilar(phrase, from: docID, among: others) }
         }
         if model.selectionRelations != all { model.selectionRelations = all }
@@ -9131,8 +9151,10 @@ private final class CitationLineManager {
     }
 
     private func makeLineEntity() -> ModelEntity {
+        // Grey and faint, as the room's other relation lines.
         var mat = UnlitMaterial()
-        mat.color = .init(tint: UIColor(red: 0.55, green: 0.35, blue: 0.85, alpha: 0.22))
+        mat.color = .init(tint: UIColor(white: 0.72, alpha: 1))
+        mat.blending = .transparent(opacity: 0.22)
         return ModelEntity(
             mesh: .generateBox(size: SIMD3<Float>(1.0, 0.003, 0.003)),
             materials: [mat])
@@ -9687,7 +9709,9 @@ private final class ConceptConnectionLines: MapLineLayer {
     private struct LineData { let line: ModelEntity; let fromID: String; let toID: String }
     private var lineData: [LineData] = []
 
-    private static let lineColor = UIColor(red: 0.55, green: 0.60, blue: 1.0, alpha: 0.35)
+    /// Grey and faint (2 Nov 2026, Frode): the lines say "these belong
+    /// together" without drawing the eye away from the cards.
+    private static let lineColor = UIColor(white: 0.72, alpha: 1)
 
     func install(in content: RealityViewContent) {
         let r = Entity(); content.add(r); root = r
@@ -9744,7 +9768,7 @@ private final class ConceptConnectionLines: MapLineLayer {
     private func makeLine(from: SIMD3<Float>, to: SIMD3<Float>) -> ModelEntity {
         var mat = UnlitMaterial()
         mat.color = .init(tint: Self.lineColor)
-        mat.blending = .transparent(opacity: 1.0)
+        mat.blending = .transparent(opacity: 0.22)
         let line = ModelEntity(
             mesh: .generateBox(size: SIMD3<Float>(1.0, 0.002, 0.002)),
             materials: [mat])
@@ -11358,14 +11382,17 @@ struct StanceMarkView: View {
         VStack(alignment: mark.onLeft ? .trailing : .leading, spacing: 6) {
             HStack(spacing: 6) {
                 if !mark.onLeft { buttons }
-                Text((mark.outward ? "\u{2192} " : "\u{2190} ") + mark.title)
+                Text((mark.directed ? (mark.outward ? "\u{2192} " : "\u{2190} ") : "") + mark.title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(mark.title == "Contradicts" ? Color(red: 1.0, green: 0.62, blue: 0.42) : .white)
-                if !mark.confirmed {
+                if !mark.confirmed, mark.isAI {
                     Text("AI").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                 }
-                Button { showsEvidence.toggle() } label: { Text("\u{275D}") }
-                    .buttonStyle(.plain)
+                // Quotes only where there are some — a stance's.
+                if mark.sourceQuote != nil || mark.targetQuote != nil || mark.rationale != nil {
+                    Button { showsEvidence.toggle() } label: { Text("\u{275D}") }
+                        .buttonStyle(.plain)
+                }
                 if mark.onLeft { buttons }
             }
             if asking {
