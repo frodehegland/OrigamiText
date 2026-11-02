@@ -3368,6 +3368,14 @@ nonisolated enum OrigamiEPUBImporter {
                     // Data scripts and stylesheets are never paragraph text.
                     break
                 case "a":
+                    if let viewID = inner.attributes["data-map-view"], !viewID.isEmpty,
+                       !content.isEmpty {
+                        // A map view named in the text (Author's Copy
+                        // Layout, 2 Nov 2026): a click opens the book's Map
+                        // in that view (map.views, by id).
+                        out += "[\(content)](origami-mapview:\(viewID))"
+                        break
+                    }
                     if (inner.attributes["class"] ?? "").contains("ot-stretchtext") {
                         // The stretchtext marker (»/‹‹) is the export's
                         // chrome, never the words — the readers draw

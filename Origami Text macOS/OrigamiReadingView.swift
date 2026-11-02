@@ -373,6 +373,9 @@ struct OrigamiReadingView: View {
     @State private var showsDocumentAnnotation = false
     /// The author's own map of the document (§10.3), in a sheet.
     @State private var showsAuthoredMap = false
+    /// A layout clicked in the text (Author's Copy Layout, 2 Nov 2026):
+    /// the view the Map opens in, by its map.views id.
+    @State private var requestedMapViewID: String?
     /// Reference mode: paragraph numbers in the margin (View menu).
     @AppStorage("paragraphNumbers") private var showsParagraphNumbers = false
     /// Each body paragraph's number through the whole document.
@@ -767,16 +770,17 @@ struct OrigamiReadingView: View {
             if showsAuthoredMap {
                 ReaderMapView(doc: doc, extras: model.authoredMapExtras(for: doc), bookKey: doc.id,
                               onShowInText: { model.pendingReaderFragment = $0 },
-                              onClose: { showsAuthoredMap = false },
+                              onClose: { showsAuthoredMap = false; requestedMapViewID = nil },
                               footBar: { left, right in
                                   AnyView(ReadingFootBar(
                                       modes: availableModes,
                                       leadingContent: { left },
                                       focusContent: { AnyView(focusGroup) },
-                                      onMap: { showsAuthoredMap = false },
+                                      onMap: { showsAuthoredMap = false; requestedMapViewID = nil },
                                       mapActive: true,
                                       trailingContent: { right }))
-                              })
+                              },
+                              initialViewID: requestedMapViewID)
             }
         }
         .modifier(ReaderMapShortcut(available: doc.hasAuthoredMap && !showsAuthoredMap) {
@@ -1091,6 +1095,10 @@ struct OrigamiReadingView: View {
             }
             if url.scheme == "origami-jump" {
                 followJump(String(url.absoluteString.dropFirst("origami-jump:".count)))
+                return .handled
+            }
+            if url.scheme == "origami-mapview" {
+                openMapView(String(url.absoluteString.dropFirst("origami-mapview:".count)))
                 return .handled
             }
             if url.scheme == "origami-conceptcard" {
@@ -3595,6 +3603,10 @@ Button { model.toggleTopOfPile(record) } label: {
             followJump(String(url.absoluteString.dropFirst("origami-jump:".count)))
             return true
         }
+        if url.scheme == "origami-mapview" {
+            openMapView(String(url.absoluteString.dropFirst("origami-mapview:".count)))
+            return true
+        }
         // A book's own sound or film: opened from its folder by the system.
         if url.scheme == "origami-media" {
             let raw = String(url.absoluteString.dropFirst("origami-media:".count))
@@ -3630,6 +3642,15 @@ Button { model.toggleTopOfPile(record) } label: {
     /// An in-document jump: a figure shows itself in place — the whole
     /// point is seeing the image BEFORE reading further (Mark) — and
     /// anything else scrolls the reading to the target.
+    /// A layout named in the text, clicked (Author's Copy Layout, 2 Nov
+    /// 2026): the book's Map, in that view. A view the book does not carry
+    /// opens the Map as it would anyway.
+    private func openMapView(_ viewID: String) {
+        guard doc.hasAuthoredMap else { return }
+        requestedMapViewID = viewID.removingPercentEncoding ?? viewID
+        showsAuthoredMap = true
+    }
+
     private func followJump(_ paragraphID: String) {
         let target = (doc.body ?? []).first { $0.id == paragraphID }
         if let target, LiquidDoc.imageReference(in: target.text) != nil {

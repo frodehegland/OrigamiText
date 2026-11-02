@@ -83,6 +83,9 @@ struct ReaderMapView: View {
     /// A member chosen elsewhere (a list beside the map): selected, and
     /// brought into view.
     var focusID: String? = nil
+    /// The view to open in, by its map.views id — a layout clicked in the
+    /// text (Author's Copy Layout, 2 Nov 2026). Nil opens the first.
+    var initialViewID: String? = nil
 
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var colorScheme
@@ -909,6 +912,11 @@ struct ReaderMapView: View {
     private func appear() {
         model.isReaderMapShown = true
         savedViews = ReaderMapStore.savedViews(book: bookKey)
+        // Before the positions load, so they are that view's.
+        if let initialViewID,
+           let index = doc.layouts.firstIndex(where: { $0.sourceID == initialViewID }) {
+            viewIndex = index
+        }
         loadPositions()
         recentre()
         if !initialSelection.isEmpty { selection = initialSelection; recomputeLinks() }
