@@ -1106,6 +1106,12 @@ struct EPUBMapView: View {
                 }
             }
             items = built
+            // The colour key's counts: how many papers here carry each.
+            var tagCounts: [String: Int] = [:]
+            for item in items where item.kind == .article && !item.isGhost {
+                for color in item.tagColors { tagCounts[color, default: 0] += 1 }
+            }
+            if model.roomTagCounts != tagCounts { model.roomTagCounts = tagCounts }
             // The volume bar's Select All reads what the room holds.
             let papers = items.filter { matchesSelectKind(.documents, $0) }
             let allSelected = !papers.isEmpty && papers.allSatisfy(\.isSelected)
@@ -3278,7 +3284,19 @@ struct EPUBMapView: View {
             // itself is shaped (not a material fill, which paints the
             // attachment's backing square past the corners).
             .background {
-                if selected && !item.isLifted {
+                if !item.tagColors.isEmpty && !item.isLifted {
+                    // A paper's categories as its ground (2 Nov 2026): a
+                    // soft mosaic of their colours — gradients, no blur, so
+                    // a room of hundreds stays light — dimmed under the words.
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8 * s).fill(Color(white: 0.08))
+                        Self.mosaic(item.tagColors)
+                            .opacity(0.62)
+                            .clipShape(RoundedRectangle(cornerRadius: 8 * s))
+                        RoundedRectangle(cornerRadius: 8 * s)
+                            .fill(Color.black.opacity(selected ? 0.42 : 0.36))
+                    }
+                } else if selected && !item.isLifted {
                     RoundedRectangle(cornerRadius: 8 * s)
                         .fill(Color(white: 0.12))
                 } else if !item.isLifted {
@@ -3308,6 +3326,21 @@ struct EPUBMapView: View {
             // chosen card wears instead: the solid dark pane above,
             // and the fifth it grows by. A LIFTED card carries no pane
             // at all — its words print straight onto the extruded slab.
+        }
+    }
+
+    /// A soft mosaic of colours: one band of them across the top, the same
+    /// turned half round across the bottom, the two melting into each other
+    /// down the card — every edge a gradient, never a line.
+    @ViewBuilder static func mosaic(_ hexes: [String]) -> some View {
+        let colors = hexes.map(color(hex:))
+        let top = colors.count == 1 ? [colors[0], colors[0]] : colors
+        let turned = colors.count < 2 ? top
+            : Array(colors[(colors.count / 2)...] + colors[..<(colors.count / 2)])
+        ZStack {
+            LinearGradient(colors: top, startPoint: .topLeading, endPoint: .bottomTrailing)
+            LinearGradient(colors: turned, startPoint: .bottomLeading, endPoint: .topTrailing)
+                .mask(LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom))
         }
     }
 

@@ -765,6 +765,16 @@ struct OrigamiVisionApp: App {
         // window, standing low in front of the reader while a volume's
         // articles fill the room — Select All and Layout. Single
         // instance, so reopening brings the same bar forward.
+        // The colour key, from the room's bar.
+        Window("Colours", id: "tag-legend") {
+            VisionTagLegendView()
+                .environment(model)
+        }
+        .windowResizability(.contentSize)
+        .defaultWindowPlacement { _, _ in
+            WindowPlacement(.utilityPanel)
+        }
+
         // New Concept, from the room's bar.
         Window("New Concept", id: "new-concept") {
             VisionNewConceptView()
@@ -1911,6 +1921,9 @@ final class VisionModel {
     /// The room's categories in colour, as the Mac set them (the defaults
     /// until it has) — shown on every card as small rectangles.
     private(set) var tags: OrigamiTags = .defaults
+    /// How many papers in the room carry each category, by its colour —
+    /// published by the room for the colour key.
+    var roomTagCounts: [String: Int] = [:]
 
     func adoptTags(_ file: OrigamiTags) {
         guard file != tags else { return }
@@ -3763,6 +3776,8 @@ struct VisionVolumeToolbar: View {
             }
             .help("Give the room a shape: Hallway, or the articles gathered by meaning, theme, concept, author or the people they mention")
             conceptsMenu
+            Button("Colours") { openWindow(id: "tag-legend") }
+                .help("Which colour is which category")
             // Where the room stands in the collection: back out to the
             // whole book (in a series' room, the chosen card's volume), or
             // up to every volume of its series. Dimmed where they lead
@@ -8784,6 +8799,46 @@ struct VisionNewConceptView: View {
         }
         .padding(28)
         .frame(width: 520)
+    }
+}
+/// The colour key (2 Nov 2026): every category the Mac set, its colour and
+/// its name, with how many papers in the room carry it — for learning
+/// which colour is which while the room is read. Words of each category
+/// beneath, small, so what it catches can be seen.
+struct VisionTagLegendView: View {
+    @Environment(VisionModel.self) private var model
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Colours").font(.title2.weight(.semibold))
+            ForEach(model.tags.tags.filter(\.isOn)) { tag in
+                HStack(alignment: .top, spacing: 14) {
+                    let (r, g, b) = tag.rgb
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(red: r, green: g, blue: b))
+                        .frame(width: 44, height: 22)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(tag.name).font(.headline)
+                            Spacer()
+                            Text("\(model.roomTagCounts[tag.color] ?? 0) in the room")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(tag.words.prefix(8).joined(separator: ", ")
+                             + (tag.words.count > 8 ? "\u{2026}" : ""))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+            Text("Set on the Mac, in Settings \u{25B8} Tags.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(26)
+        .frame(width: 420)
     }
 }
 #endif

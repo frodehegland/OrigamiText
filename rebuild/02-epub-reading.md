@@ -1771,6 +1771,13 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
   - `tagColors(forDocID:title:)` reads the piece's keywords and abstract (enriched from the Mac's metadata), or a whole book's document.
   - Each paper card gets `EPUBMapItem.tagColors`, which is part of `isVisuallyEqual`. Under the byline it shows one rounded 7 × 2.4-point rectangle (at face scale) per category, in the tags' order.
 
+- **The colour key** (visionOS): the bar's **Colours** button opens the `tag-legend` window (`VisionTagLegendView`). Each category that is on is listed with a 44 × 22 swatch, its name, "n in the room" (`VisionModel.roomTagCounts`, published by `reload`, keyed by colour) and its first eight words.
+- **Mosaic grounds:** a tagged paper's card stands on a soft mosaic of its colours (`EPUBMapView.mosaic`). It is built from gradients alone, with no blur:
+  - one diagonal gradient of the colours;
+  - over it, the same colours turned half round (the list rotated), on the opposite diagonal, masked to fade in from top to bottom.
+  - The whole is drawn at 0.62 over white 0.08, under a black wash of 0.36 (0.42 when chosen), so the words stay readable.
+  - Untagged cards keep their plain dark pane. The rectangles under the byline remain as the exact key.
+
 ### 5.45 Library locations set on the Mac, inherited by the headset (2 November 2026)
 
 - **The community folder is the one link.** Each device must be shown it once (the sandbox: a bookmark cannot pass between devices, and Origami has no iCloud container of its own). Every other location is named relative to it.
