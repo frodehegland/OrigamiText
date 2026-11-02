@@ -2424,3 +2424,13 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Wall:** the wall curves round the reader, with radius at least 2 m (width / 2.6), as the group Shapes' arc does.
 - **Labels:** each row's label stands left of its first column and names the median length of its papers to two figures (e.g. "≈ 4,500 words"; `roundedWords`), or "Not weighed".
 - **Storage:** it is stored and undoable like the other Shapes (`storeShape`, `applyWatchPositions3D`).
+
+**Landscape (2 Nov 2026).** `RoomShape.landscape` ("Landscape", always available) turns the room into a landscape of colour (`runLandscapeShape`).
+- **The tops:** every colour that is on becomes a mountain top, a shape label `shape:landscape.N`. Each wears the `mountain.2.fill` glyph and its name in its colour, at 1.5 m. The tops stand on a ring of radius 1.7 m in a 5 m square of floor in front of the reader (centre 2.6 m ahead), the first straight ahead and the rest clockwise.
+- **Placing each paper:**
+  - **Home:** the mean of its colours' tops, so a one-colour paper stands at its top's foot and a several-colour paper between its tops. Uncoloured papers start at the centre.
+  - **Start:** each starts at home plus a stable scatter of 25–55 cm, hashed from its id.
+  - **Relaxation:** 80 rounds push the papers 30 cm apart and 30 cm clear of every top, draw each 2% back toward home, and hold them inside the square.
+- **Height:** a paper stands at 0.5 + 0.8·e^(−d/0.8) m, where d is its distance to its nearest own top. It is high on the slope at a top's foot and low in the valleys.
+- **Moving a top:** dragging a top carries the papers whose first colour it is, since those are the label's `members`.
+- **Height ranges:** `applyWatchPositions3D` now takes a height range per Shape (0.95–2.2 m by default). Landscape uses 0.4–1.6 m and Weight 0.45–2.4 m; Weight's lower rows had been clamped together.

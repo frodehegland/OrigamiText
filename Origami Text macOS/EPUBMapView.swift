@@ -1273,7 +1273,8 @@ struct EPUBMapView: View {
                 position: placed[label.id] ?? SIMD3<Float>(label.x, label.y, label.z) + spaceShift)
             item.isSelected = selected.contains(label.id)
             // A Colour Cluster's group names itself in its colour.
-            if label.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.colours.rawValue + "."),
+            if label.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.colours.rawValue + ".")
+                || label.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.landscape.rawValue + "."),
                let hex = colourOfTag[label.title] {
                 item.tagColors = [hex]
             }
@@ -3332,6 +3333,12 @@ struct EPUBMapView: View {
                     ? Self.color(hex: item.tagColors.first ?? "#FFFFFF")
                 : Color.white
             VStack(spacing: 3 * s) {
+                // A Landscape's colour is a mountain top.
+                if item.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.landscape.rawValue + ".") {
+                    Image(systemName: "mountain.2.fill")
+                        .font(.system(size: 30 * s))
+                        .foregroundStyle(ink)
+                }
                 Text(item.title)
                     .font(.system(size: 22 * s, weight: .semibold, design: .serif))
                     .foregroundStyle(ink)
@@ -5591,7 +5598,7 @@ struct EPUBMapView: View {
     /// around the reader, under a label card — choosing the label draws a
     /// line to each of its papers.
     enum RoomShape: String, CaseIterable {
-        case timeline, meaning, themes, concepts, authors, people, images, constellation, colours, weight
+        case timeline, meaning, themes, concepts, authors, people, images, constellation, colours, weight, landscape
 
         var title: String {
             switch self {
@@ -5606,6 +5613,7 @@ struct EPUBMapView: View {
             case .constellation: "Constellation"
             case .colours: "Colour Cluster"
             case .weight: "Weight"
+            case .landscape: "Landscape"
             }
         }
     }
@@ -5656,7 +5664,7 @@ struct EPUBMapView: View {
         var available: Set<String> = [RoomShape.timeline.rawValue, RoomShape.authors.rawValue,
                                       RoomShape.meaning.rawValue, RoomShape.images.rawValue,
                                       RoomShape.constellation.rawValue, RoomShape.colours.rawValue,
-                                      RoomShape.weight.rawValue]
+                                      RoomShape.weight.rawValue, RoomShape.landscape.rawValue]
         if !(corpus?.themes ?? []).isEmpty { available.insert(RoomShape.themes.rawValue) }
         if !(corpus?.terms ?? []).isEmpty { available.insert(RoomShape.concepts.rawValue) }
         if !(corpus?.people ?? []).isEmpty { available.insert(RoomShape.people.rawValue) }
@@ -5677,6 +5685,7 @@ struct EPUBMapView: View {
         case .timeline: runTimelineShape()
         case .constellation: runConstellationShape()
         case .weight: runWeightShape()
+        case .landscape: runLandscapeShape()
         default:
             let targets = shapeTargets()
             guard targets.count > 2 else { return }
@@ -5784,7 +5793,7 @@ struct EPUBMapView: View {
             }
             return plain([("Many pictures", many), ("Several pictures", several), ("One picture", one)],
                          rest: "Text only")
-        case .timeline, .constellation, .weight:
+        case .timeline, .constellation, .weight, .landscape:
             return []
         }
     }
@@ -6004,7 +6013,96 @@ struct EPUBMapView: View {
                                      x: at.x - spaceShift.x, y: at.y - spaceShift.y, z: at.z - spaceShift.z))
         }
         storeShape(.weight, labels: labels)
-        applyWatchPositions3D(placedNow)
+        applyWatchPositions3D(placedNow, heights: 0.45...2.4)
+    }
+
+    /// Landscape (2 Nov 2026): every colour a mountain top, 1.5 m up, on a
+    /// ring in a 5 m square of floor before the reader; each paper stands
+    /// between the tops of its colours — at its one colour's foot, or where
+    /// its several colours pull it — higher the nearer its own peak, lower
+    /// in the valleys between. The papers are pushed apart until none
+    /// overlaps (a card's width and a breath). Each top is a label: moved,
+    /// it carries the papers whose first colour it is.
+    private func runLandscapeShape() {
+        let targets = shapeTargets()
+        guard targets.count > 2 else { return }
+        let tags = model.tags.tags.filter(\.isOn)
+        guard !tags.isEmpty else { return }
+        let origin = spaceShift + documentsShift
+        let centre = SIMD2<Float>(0, -2.6)
+        let half: Float = 2.5
+        // The tops on a ring, the first straight ahead and on clockwise.
+        var peak: [String: SIMD2<Float>] = [:]
+        for (index, tag) in tags.enumerated() {
+            let angle = Float(index) / Float(tags.count) * 2 * .pi
+            peak[tag.color] = centre + SIMD2<Float>(sin(angle), -cos(angle)) * 1.7
+        }
+        // Where each paper's colours pull it, and a stable small scatter
+        // so papers of one colour do not start on one spot.
+        func scatter(_ id: String) -> SIMD2<Float> {
+            var hash: UInt64 = 1469598103934665603
+            for byte in id.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
+            let angle = Float(hash % 6283) / 1000
+            let reach = 0.25 + Float((hash >> 16) % 300) / 1000
+            return SIMD2<Float>(cos(angle), sin(angle)) * reach
+        }
+        var home: [String: SIMD2<Float>] = [:]
+        for item in targets {
+            let spots = item.tagColors.compactMap { peak[$0] }
+            let pull = spots.isEmpty ? centre : spots.reduce(SIMD2<Float>(0, 0), +) / Float(spots.count)
+            home[item.id] = pull
+        }
+        var at = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, home[$0.id]! + scatter($0.id)) })
+        // Relax: apart from one another and from the tops, drawn gently home,
+        // held inside the square.
+        let ids = targets.map(\.id)
+        let apart: Float = 0.3, clearOfTop: Float = 0.3
+        let tops = Array(peak.values)
+        for _ in 0..<80 {
+            var push = [String: SIMD2<Float>]()
+            for i in ids.indices {
+                for j in (i + 1)..<ids.count {
+                    let d = at[ids[i]]! - at[ids[j]]!
+                    let gap = simd_length(d)
+                    guard gap < apart else { continue }
+                    let dir = gap > 1e-4 ? d / gap : SIMD2<Float>(1, 0)
+                    let shove = dir * (apart - gap) / 2
+                    push[ids[i], default: .zero] += shove
+                    push[ids[j], default: .zero] -= shove
+                }
+            }
+            for id in ids {
+                var p = at[id]! + push[id, default: .zero] + (home[id]! - at[id]!) * 0.02
+                for top in tops {
+                    let d = p - top
+                    let gap = simd_length(d)
+                    if gap < clearOfTop { p = top + (gap > 1e-4 ? d / gap : SIMD2<Float>(0, 1)) * clearOfTop }
+                }
+                p.x = min(max(p.x, centre.x - half), centre.x + half)
+                p.y = min(max(p.y, centre.y - half), centre.y + half)
+                at[id] = p
+            }
+        }
+        var placedNow: [String: SIMD3<Float>] = [:]
+        for item in targets {
+            let p = at[item.id]!
+            let own = item.tagColors.compactMap { peak[$0] }
+            let nearest = own.map { simd_length($0 - p) }.min() ?? 2
+            // On the slope: up to 1.3 m at a top's foot, 0.5 m in a valley.
+            let y = 0.5 + 0.8 * exp(-nearest / 0.8)
+            placedNow[item.id] = SIMD3<Float>(p.x, y, p.y) + origin
+        }
+        var labels: [ShapeLabel] = []
+        for (index, tag) in tags.enumerated() {
+            guard let top = peak[tag.color] else { continue }
+            let members = targets.filter { $0.tagColors.first == tag.color }.map(\.id)
+            let spot = SIMD3<Float>(top.x, 1.5, top.y) + origin
+            labels.append(ShapeLabel(id: Self.shapeLabelPrefix + "landscape.\(index)", title: tag.name,
+                                     members: members,
+                                     x: spot.x - spaceShift.x, y: spot.y - spaceShift.y, z: spot.z - spaceShift.z))
+        }
+        storeShape(.landscape, labels: labels)
+        applyWatchPositions3D(placedNow, heights: 0.4...1.6)
     }
 
     /// "≈ 4,500": a length to two figures, as a row of papers reads it.
@@ -6046,7 +6144,8 @@ struct EPUBMapView: View {
     /// Writes arranged positions in all three axes — the Experimental
     /// layouts', free of the timeline — frees the room's depth, keeps
     /// the moment before for Undo, and rebuilds.
-    private func applyWatchPositions3D(_ xyz: [String: SIMD3<Float>]) {
+    private func applyWatchPositions3D(_ xyz: [String: SIMD3<Float>],
+                                       heights: ClosedRange<Float> = 0.95...2.2) {
         var snapshot: [String: SIMD3<Float>] = [:]
         var moved: [EPUBMapItem] = []
         for index in items.indices {
@@ -6054,7 +6153,7 @@ struct EPUBMapView: View {
             snapshot[items[index].id] = before
             var position = target
             position.x = min(max(position.x, spaceShift.x - 5), spaceShift.x + 5)
-            position.y = min(max(position.y, 0.95), 2.2)
+            position.y = min(max(position.y, heights.lowerBound), heights.upperBound)
             items[index].position = position
             moved.append(items[index])
         }
