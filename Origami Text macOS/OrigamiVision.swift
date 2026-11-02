@@ -1686,6 +1686,8 @@ final class VisionModel {
             case view(String)
             /// A Shape for the room: Timeline, or one of the groupings.
             case shape(String)
+            /// Compact: every node drawn in toward the room's middle.
+            case compact
             /// A verb on the bar's second row, for the chosen card: its
             /// id, then the verb's (`CardBar.Verb.id`).
             case card(String, String)
@@ -3891,6 +3893,8 @@ struct VisionVolumeToolbar: View {
                             model.volumeBarRequest = .init(action: .view(choice.id))
                         }
                     }
+                    // Each time, the room a third closer in (2 Nov 2026).
+                    Button("Compact") { model.volumeBarRequest = .init(action: .compact) }
                 }
                 // Retro (2 Nov 2026): Author's neon palettes for the cards.
                 Section("Retro") {

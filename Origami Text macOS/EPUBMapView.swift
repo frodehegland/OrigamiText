@@ -1105,6 +1105,8 @@ struct EPUBMapView: View {
             if let option = WatchViewOption(rawValue: name) { runWatchView(option) }
         case .shape(let name):
             if let shape = RoomShape(rawValue: name) { runShape(shape) }
+        case .compact:
+            runCompact()
         case .card(let itemID, let verb):
             performCardVerb(verb, on: itemID)
         }
@@ -6113,6 +6115,43 @@ struct EPUBMapView: View {
         }
         storeShape(.constellation, labels: labels)
         applyWatchPositions3D(placedNow)
+    }
+
+    /// Compact (2 Nov 2026): every node standing in the room — papers,
+    /// labels, markers — drawn a third of the way in toward the room's
+    /// middle, whatever Shape it stands in; then eased apart (in card
+    /// widths, heights and a hand's depth) so none overlaps. Again and the
+    /// room draws in again. A card resting on a real surface stays there.
+    /// Undo View takes it back.
+    private func runCompact() {
+        let nodes = items.filter {
+            !$0.isGhost && !$0.isAside && $0.position != nil && liftedCards[$0.id]?.stuck == nil
+                && labelStuck[$0.id] == nil && !$0.id.hasPrefix("float:")
+        }
+        guard nodes.count > 1 else { return }
+        let positions = nodes.map { $0.position! }
+        let centre = positions.reduce(SIMD3<Float>(repeating: 0), +) / Float(positions.count)
+        let ids = nodes.map(\.id)
+        var at = Dictionary(uniqueKeysWithValues: zip(ids, positions.map { centre + ($0 - centre) * 0.66 }))
+        let home = at
+        let cell = SIMD3<Float>(Self.columnPitch, Self.rowPitch, 0.12)
+        for _ in 0..<60 {
+            var push = [String: SIMD3<Float>]()
+            for i in ids.indices {
+                for j in (i + 1)..<ids.count {
+                    let d = (at[ids[i]]! - at[ids[j]]!) / cell
+                    let gap = simd_length(d)
+                    guard gap < 1 else { continue }
+                    let dir = gap > 1e-4 ? d / gap : SIMD3<Float>(1, 0, 0)
+                    let shove = dir * (1 - gap) / 2 * cell
+                    push[ids[i], default: .zero] += shove
+                    push[ids[j], default: .zero] -= shove
+                }
+            }
+            guard !push.isEmpty else { break }
+            for id in ids { at[id] = at[id]! + push[id, default: .zero] + (home[id]! - at[id]!) * 0.03 }
+        }
+        applyWatchPositions3D(at, heights: 0.15...2.6)
     }
 
     /// Weight (2 Nov 2026): the papers by their length — the shortest at
