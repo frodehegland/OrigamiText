@@ -92,6 +92,13 @@ struct EPUBMapItem: ItemProtocol {
     /// The paper's categories, as "#RRGGBB" colours — small rectangles on
     /// its face (2 Nov 2026).
     var tagColors: [String] = []
+    /// The paper's authors with their faces, when the Mac knows any —
+    /// worn in place of the byline (2 Nov 2026). Empty: the names alone.
+    var authorFaces: [AuthorFace] = []
+    struct AuthorFace: Hashable {
+        var name: String
+        var path: String?
+    }
     /// The card is reached by a stance relation lit on another card: it
     /// wears the line's end — confirm and sever.
     var stanceMark: VisionModel.StanceMarkInfo?
@@ -119,7 +126,7 @@ struct EPUBMapItem: ItemProtocol {
             && isFaded == other.isFaded && warning == other.warning
             && pieceLabel == other.pieceLabel && imagePath == other.imagePath
             && stamp == other.stamp && firstSentence == other.firstSentence
-            && tagColors == other.tagColors
+            && tagColors == other.tagColors && authorFaces == other.authorFaces
             // The engine attaches a card's attachment only when it builds
             // the card, so a stance mark coming or going rebuilds it.
             && stanceMark == other.stanceMark
@@ -769,6 +776,7 @@ struct EPUBMapView: View {
                 item.stamp = stamp
                 item.firstSentence = firstSentenceByArticle[record.id]
                 item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
+                item.authorFaces = model.authorFaces(paperAuthors(record.id))
                 return item
             }
 
@@ -3016,6 +3024,56 @@ struct EPUBMapView: View {
 
     /// The first author alone, an ellipsis standing for the rest; the
     /// byline's year suffix (" · 2023") rides along untouched.
+    /// The authors as faces (2 Nov 2026): closed, a row of small round
+    /// faces (four at most, then "+n"), an author without one by name;
+    /// chosen, every author larger, each with their name beneath.
+    @ViewBuilder
+    private func authorFaceRow(_ faces: [EPUBMapItem.AuthorFace], selected: Bool, s: CGFloat) -> some View {
+        let shown = selected ? faces : Array(faces.prefix(4))
+        let size = (selected ? 13 : 8) * s
+        HStack(alignment: .top, spacing: (selected ? 3 : 1.6) * s) {
+            ForEach(Array(shown.enumerated()), id: \.offset) { _, face in
+                VStack(spacing: 0.8 * s) {
+                    if let path = face.path, let image = CardImages.image(path: path, maxPixel: 160) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: size, height: size)
+                            .clipShape(Circle())
+                            .overlay(Circle().stroke(Color.white.opacity(0.35), lineWidth: 0.4 * s))
+                    } else if !selected {
+                        Text(face.name)
+                            .font(.system(size: 5 * s))
+                            .foregroundStyle(Color.white.opacity(0.65))
+                            .lineLimit(1)
+                            .frame(height: size)
+                    } else {
+                        Circle()
+                            .fill(Color.white.opacity(0.12))
+                            .frame(width: size, height: size)
+                            .overlay(Text(face.name.split(separator: " ").compactMap(\.first).map(String.init).joined())
+                                .font(.system(size: 4.5 * s, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.7)))
+                    }
+                    if selected {
+                        Text(face.name)
+                            .font(.system(size: 3.8 * s))
+                            .foregroundStyle(Color.white.opacity(0.65))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                            .frame(width: size * 1.6)
+                    }
+                }
+            }
+            if faces.count > shown.count {
+                Text("+\(faces.count - shown.count)")
+                    .font(.system(size: 5 * s))
+                    .foregroundStyle(Color.white.opacity(0.55))
+                    .frame(height: size)
+            }
+        }
+    }
+
     private func shortByline(_ byline: String) -> String {
         let parts = byline.components(separatedBy: " \u{00B7} ")
         let year = parts.count > 1 ? " \u{00B7} " + parts[1] : ""
@@ -3218,10 +3276,19 @@ struct EPUBMapView: View {
                 // Chosen or open: every author, and where the paper stands
                 // in its series. Closed: the first authors alone, then the
                 // paper's first sentence, small, in serif (1 Nov 2026).
-                Text(selected ? ([item.author] + [item.stamp].compactMap { $0 }).joined(separator: " · ")
-                              : shortByline(item.author))
-                    .font(.system(size: 5.5 * s))
-                    .foregroundStyle(Color.white.opacity(0.65))
+                if !item.authorFaces.isEmpty {
+                    authorFaceRow(item.authorFaces, selected: selected, s: s)
+                    if selected, let stamp = item.stamp {
+                        Text(stamp)
+                            .font(.system(size: 5.5 * s))
+                            .foregroundStyle(Color.white.opacity(0.65))
+                    }
+                } else {
+                    Text(selected ? ([item.author] + [item.stamp].compactMap { $0 }).joined(separator: " · ")
+                                  : shortByline(item.author))
+                        .font(.system(size: 5.5 * s))
+                        .foregroundStyle(Color.white.opacity(0.65))
+                }
                 // Its categories: a small rectangle of each colour, in the
                 // tags' order (set on the Mac, 2 Nov 2026).
                 if !item.tagColors.isEmpty {

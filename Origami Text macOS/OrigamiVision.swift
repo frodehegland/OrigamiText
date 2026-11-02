@@ -1511,6 +1511,13 @@ final class VisionModel {
             if let tags = OrigamiTags.read(from: folder) {
                 await MainActor.run { self.adoptTags(tags) }
             }
+            // Authors' faces, as the Mac gathered them — copied into this
+            // headset's caches while the folder is open, so the cards read
+            // them without asking the folder again.
+            if let portraits = OrigamiPortraits.read(from: folder) {
+                let faces = VisionModel.cachePortraits(portraits, from: folder)
+                await MainActor.run { self.adoptPortraits(faces) }
+            }
             guard let state = EPUBStanding.read(from: folder) else { return }
             await MainActor.run { self.applyStanding(state) }
         }
@@ -1924,6 +1931,42 @@ final class VisionModel {
     /// How many papers in the room carry each category, by its colour —
     /// published by the room for the colour key.
     var roomTagCounts: [String: Int] = [:]
+
+    /// Authors' faces by name key (first and last, folded) → a local file,
+    /// gathered on the Mac from its People, Author and Knowledge Space
+    /// (2 Nov 2026). Cards wear these in place of the names.
+    private(set) var portraitPaths: [String: String] = [:]
+
+    func adoptPortraits(_ faces: [String: String]) {
+        guard faces != portraitPaths else { return }
+        portraitPaths = faces
+        volumeStamp += 1
+    }
+
+    /// The paper's authors, each with a face when one is known.
+    func authorFaces(_ names: [String]) -> [EPUBMapItem.AuthorFace] {
+        let faces = names.map { EPUBMapItem.AuthorFace(name: $0, path: portraitPaths[OrigamiPortraits.key($0)]) }
+        return faces.contains { $0.path != nil } ? faces : []
+    }
+
+    /// Copies each face the index names into Caches/Portraits, once per
+    /// source change (the file is named by its source hash).
+    nonisolated static func cachePortraits(_ portraits: OrigamiPortraits, from folder: URL) -> [String: String] {
+        let fm = FileManager.default
+        guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return [:] }
+        let local = caches.appendingPathComponent("Portraits", isDirectory: true)
+        try? fm.createDirectory(at: local, withIntermediateDirectories: true)
+        var faces: [String: String] = [:]
+        for entry in portraits.people {
+            let target = local.appendingPathComponent(entry.sourceHash + ".png")
+            if !fm.fileExists(atPath: target.path) {
+                guard let data = try? Data(contentsOf: folder.appendingPathComponent(entry.file)) else { continue }
+                try? data.write(to: target, options: .atomic)
+            }
+            faces[entry.key] = target.path
+        }
+        return faces
+    }
 
     func adoptTags(_ file: OrigamiTags) {
         guard file != tags else { return }

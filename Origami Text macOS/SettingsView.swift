@@ -79,6 +79,7 @@ enum SettingsTab: Hashable {
     case author, editor, reading, overview, assistive, annotation, layout, library, hypermedia, ai, modules, openSource
     case concepts
     case tags
+    case portraits
 }
 
 /// The app's Settings window (Origami Text → Settings…, ⌘,).
@@ -124,6 +125,9 @@ struct SettingsView: View {
             TagsSettingsView()
                 .tabItem { Label("Tags", systemImage: "tag") }
                 .tag(SettingsTab.tags)
+            PortraitsSettingsView()
+                .tabItem { Label("Portraits", systemImage: "person.crop.square") }
+                .tag(SettingsTab.portraits)
             ModulesSettingsView()
                 .tabItem { Label("View Modules", systemImage: "puzzlepiece.extension") }
                 .tag(SettingsTab.modules)

@@ -113,6 +113,8 @@ final class LibraryUpkeep {
         guard let community = model.index.folderURL else { return }
         let library = model.conceptLibrary
         library.mirror(withCommunity: community)
+        // Authors' faces for the headset's cards, every ten minutes.
+        PortraitPublisher.shared.publishIfDue(model: model)
         let settings = OrigamiLibrarySettings(
             modified: .now,
             conceptsFolder: OrigamiLibrarySettings.defaultConceptsFolder,

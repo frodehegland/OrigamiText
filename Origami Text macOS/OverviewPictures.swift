@@ -274,6 +274,10 @@ final class OverviewPictureStore {
     /// The shared group container's "Overview Pictures", else — an app not
     /// in the group — its own Application Support. A store this app kept
     /// before the two shared moves in once, so nothing is fetched twice.
+    /// Where the pictures live — for Origami's gathering of authors' faces
+    /// (Origami addition, carry back to Author — 2 Nov 2026).
+    static var directoryURL: URL { pictureDirectory() }
+
     private static func pictureDirectory() -> URL {
         let fileManager = FileManager.default
         let local = (fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first

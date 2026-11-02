@@ -2342,3 +2342,9 @@ Each check can be tested by hand or automatically.
 - **Qwen3 voice.** Pause has no real resume (it stops). The controller
   sends pause and resume to the preferred engine even after falling back
   to the Apple voice.
+
+### Authors' faces on the cards (2 Nov 2026)
+
+The Mac gathers every author's face it knows into the community folder: `Portraits/origami-<first-last>.png` (256 px PNG) plus `origami-portraits.json` (`OrigamiPortraits`, in EPUBShelf.swift: `{format, modified, people: [{name, key, file, source, sourceHash}]}`), keyed by `OrigamiPortraits.key` — first and last name, accents and case folded. Sources, first one with a face winning: Origami's own People (`model.portraits.original`, else `portrait`), Author's person pictures (`OverviewPictureStore.directoryURL` + `index.json`, kind `.person`, not deleted), then Knowledge Space's `People.json` (`portraitFile`, `givenName`/`familyName`/`otherNames`) in the community folder or a folder chosen in Settings. `PortraitPublisher` (PortraitPublisher.swift) runs from Library Upkeep at most every ten minutes and from Settings ▸ Portraits ▸ Import Now, with a status line; a face is rewritten only when its source hash changes.
+
+The headset reads the index in its standing loop, copies each face into Caches/Portraits (named by source hash) while the folder is open, and keeps `portraitPaths` by key. `EPUBMapItem.authorFaces` (in `isVisuallyEqual`) holds the paper's authors (`paperAuthors`) with their faces when any is known; the card then wears faces instead of the byline — closed, up to four small round faces then "+n" (an author without a face by name); chosen, every author larger with their name beneath (initials in a circle when no face), then the series stamp.

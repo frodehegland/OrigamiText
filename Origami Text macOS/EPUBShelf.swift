@@ -5324,3 +5324,56 @@ extension OrigamiTags.Tag {
         return (Double((value >> 16) & 0xFF) / 255, Double((value >> 8) & 0xFF) / 255, Double(value & 0xFF) / 255)
     }
 }
+
+// MARK: - Portraits of authors, gathered on the Mac (2 Nov 2026)
+
+/// Every author's face the Mac knows — its own People, Author's pictures,
+/// Knowledge Space's portraits — gathered into the community folder
+/// (`Portraits/…` and `origami-portraits.json`), so the headset can show a
+/// paper's authors as faces rather than names. Keyed by the person's
+/// first and last name, accents and case folded, as the room's bylines are.
+nonisolated struct OrigamiPortraits: Codable, Sendable, Equatable {
+    struct Entry: Codable, Sendable, Hashable {
+        var name: String
+        var key: String
+        /// Relative to the community folder.
+        var file: String
+        /// "origami", "author", "knowledge-space".
+        var source: String
+        /// The source image's digest, so an unchanged face is not rewritten.
+        var sourceHash: String
+    }
+    var format = "origami-portraits"
+    var modified: Date
+    var people: [Entry]
+
+    static let fileName = "origami-portraits.json"
+    static let folderName = "Portraits"
+
+    /// "Frode Alexander Hegland" → "frode hegland".
+    static func key(_ name: String) -> String {
+        let words = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.letters.inverted).filter { !$0.isEmpty }
+        guard let first = words.first, let last = words.last else { return "" }
+        return words.count == 1 ? first : first + " " + last
+    }
+
+    static func read(from community: URL) -> OrigamiPortraits? {
+        let scoped = community.startAccessingSecurityScopedResource()
+        defer { if scoped { community.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: community.appendingPathComponent(fileName)) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(OrigamiPortraits.self, from: data)
+    }
+
+    static func write(_ portraits: OrigamiPortraits, to community: URL) {
+        let scoped = community.startAccessingSecurityScopedResource()
+        defer { if scoped { community.stopAccessingSecurityScopedResource() } }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(portraits) else { return }
+        try? data.write(to: community.appendingPathComponent(fileName), options: .atomic)
+    }
+}
