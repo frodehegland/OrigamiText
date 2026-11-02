@@ -1103,7 +1103,13 @@ struct EPUBMapView: View {
             saveLiftedCards()
             savePlacedNow()
         }
-        let selected = Set(items.filter(\.isSelected).map(\.id))
+        var selected = Set(items.filter(\.isSelected).map(\.id))
+        // The colour key's Clear Lines: every colour marker let go — its
+        // lines with it — the markers left standing (2 Nov 2026).
+        if model.clearTagLines {
+            selected = selected.filter { !$0.hasPrefix(Self.tagHubPrefix) }
+            model.clearTagLines = false
+        }
         if let venue = model.openJournalVenue {
             var built = journalItems(venue: venue)
             // Each lifted card's ghost: a transparent place-holder at
@@ -2850,8 +2856,14 @@ struct EPUBMapView: View {
             // the room's surfaces: within reach of one it lands on the
             // plane. State writes only ON CHANGE — a write per frame
             // invalidates the whole view and drags like mud.
+            // Blobs stick to what they touch (2 Nov 2026): a blob taken by
+            // the hand leaves its slot, free, courting the room's surfaces.
+            if liftedCards[item.id] == nil, item.kind == .article, item.wearsLook, item.look == .blobs {
+                liftedCards[item.id] = LiftedCard(home: startPosition, sticks: true)
+            }
             if let lifted = liftedCards[item.id] {
-                if lifted.sticks ?? true, let pose = surfacePose(for: proposed) {
+                let reach: Float? = item.look == .blobs ? 0.25 : nil
+                if lifted.sticks ?? true, let pose = surfacePose(for: proposed, reach: reach) {
                     if lifted.stuck != pose.orientation.vector {
                         liftedCards[item.id]?.stuck = pose.orientation.vector
                     }
@@ -3098,7 +3110,9 @@ struct EPUBMapView: View {
             fistGrab.install(
                 in: content,
                 grip: { palm in
-                    fistChooser.show(above: palm, facing: faceTurner.headPosition())
+                    if FistGrab.offersChits {
+                        fistChooser.show(above: palm, facing: faceTurner.headPosition())
+                    }
                     fistDepth.begin(items: items,
                                     citationsNearPlane: citedSpace.z(agePlace: 0) + spaceShift.z)
                 },
@@ -8675,6 +8689,9 @@ final class FistGrab {
     /// everything, as the fist always has. Generous: the fist drifts
     /// while the other hand reaches for a chit.
     private static let chooseWithin: Float = 0.10
+    /// Whether a fist offers its Everything / Documents / Citations chits.
+    /// Off (2 Nov 2026): nothing stands at the hands or arms.
+    static let offersChits = false
     /// While its chits stand, a fist that loosens or slips from the
     /// cameras for a moment keeps them — reaching across with the other
     /// hand often does both.
@@ -8828,7 +8845,9 @@ final class FistGrab {
                     if driving == nil {
                         driving = index
                         carried = .zero
-                        choice = nil
+                        // No chits (2 Nov 2026, Frode: no arm chits at
+                        // all): a fist carries everything at once.
+                        choice = Self.offersChits ? nil : .everything
                         waited = .zero
                         grip?(palm)
                     }

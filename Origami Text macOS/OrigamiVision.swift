@@ -2030,6 +2030,14 @@ final class VisionModel {
     /// Colours dragged out of the colour key, by where the hand let go (in
     /// the room's metres) — taken up by the Hallway's next reload.
     var tagDrops: [String: SIMD3<Float>] = [:]
+    /// The colour key's Clear Lines: let go of every colour marker in the
+    /// room (so no lines), leaving the markers where they stand.
+    var clearTagLines = false
+
+    func clearColourLines() {
+        clearTagLines = true
+        volumeStamp += 1
+    }
 
     func dropTagColor(_ hex: String, at point: SIMD3<Float>) {
         tagDrops[hex] = point
@@ -9022,7 +9030,7 @@ struct VisionTagLegendView: View {
                         })
             }
             if !model.chosenTagColors.isEmpty {
-                Button("Clear Lines") { model.chosenTagColors = [] }
+                Button("Clear Lines") { model.clearColourLines() }
             }
             Text("Set on the Mac, in Settings \u{25B8} Tags.")
                 .font(.caption2)

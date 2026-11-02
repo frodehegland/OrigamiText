@@ -2480,3 +2480,8 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
   - **Ink:** all ink is tinted with `colorMultiply(text)`, so white takes the palette colour whole and greys take dimmer shades.
   - **Type:** it is monospaced (`fontDesign(.monospaced)`); the title, first sentence and abstract switch from their own faces to system monospaced.
   - **Edge:** the card is edged in the line colour, 0.7 points at 70%, or 1.6 points at full when chosen.
+
+**No chits, blobs that stick, Clear Lines that only lets go (2 Nov 2026).**
+- **No fist chits:** the forearms have worn no chips since 1 Nov (`armChipsWorn`). Now the fist offers no chits either (`FistGrab.offersChits = false`): it carries everything from the moment it closes, `choice = .everything` at grip, and `FistChooser.show` is never called. The chooser code stays for the day it returns.
+- **Blobs stick:** in the Blobs look, the first frame of a drag lifts a blob that is still on its slot (`LiftedCard(home: start, sticks: true)`), so it moves free and courts the room's surfaces from 25 cm (`surfacePose(reach:)`). It lands on a wall, a table or the floor it is brought near, and Put Back sends it home.
+- **Clear Lines:** the colour key's **Clear Lines** now calls `VisionModel.clearColourLines()`. That sets `clearTagLines` and bumps `volumeStamp`; `reload` drops every colour marker from the carried selection. The markers stay where they stand, unchosen, so they draw no lines.
