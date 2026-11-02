@@ -3587,7 +3587,9 @@ struct EPUBMapView: View {
             .background {
                 if retroPalette(item) != nil && !item.isLifted {
                     RoundedRectangle(cornerRadius: 8 * s).fill(Color.black)
-                } else if !item.tagColors.isEmpty && !item.isLifted {
+                } else if !item.tagColors.isEmpty {
+                    // (A lifted card keeps its colours too — off its slot it
+                    // stood black on its dark slab, 2 Nov 2026.)
                     // A paper's categories as its ground (2 Nov 2026): a
                     // soft mosaic of their colours — gradients, no blur, so
                     // a room of hundreds stays light — dimmed under the words.
@@ -13144,7 +13146,12 @@ enum SphereTextures {
                                       bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
-        let colors = (hexes + [hexes[0]]).map { EPUBMapView.uiColor(hex: $0).cgColor }
+        // Plain sRGB components, the gradient's own space — never a colour
+        // in another space for CoreGraphics to drop.
+        let colors = (hexes + [hexes[0]]).map { hex -> CGColor in
+            let (r, g, b) = OrigamiTags.Tag(id: "", name: "", color: hex, words: []).rgb
+            return CGColor(srgbRed: r, green: g, blue: b, alpha: 1)
+        }
         let stops = (0..<colors.count).map { CGFloat($0) / CGFloat(colors.count - 1) }
         guard let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
                                         colors: colors as CFArray, locations: stops) else { return nil }

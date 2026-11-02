@@ -2493,3 +2493,6 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 
 
 **Relative Volume in Color Titles (2 Nov 2026).** In the Color Titles look, a title's visible size is its ink (characters × font size²), not the card's. With Relative Volume on, a paper's `sizeScale` is therefore further multiplied by √(36 / characters), where 36 is `typicalTitleLength` and characters is the closed (short) title's length, at least 8. The result is clamped to 0.4–1.9. The ink a title covers then answers to its paper's length, so a long title on a short paper never stands larger than a short title on a long one.
+
+**Lifted cards keep their colours (2 Nov 2026).** The tag mosaic ground no longer skips lifted cards. Open cards carried off their plane and blobs taken by the hand are lifted, and they stood black on their dark slab; *Text & Rinsema Effects*, with its four colours, was the case found. `SphereTextures.strip` builds its gradient from `CGColor(srgbRed:green:blue:alpha:)` components, the gradient's own space.
+
