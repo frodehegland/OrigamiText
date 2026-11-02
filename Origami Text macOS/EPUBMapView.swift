@@ -98,6 +98,10 @@ struct EPUBMapItem: ItemProtocol {
     /// Color Spheres: the paper stands as a sphere of its colours, its
     /// title beneath and nothing else (2 Nov 2026).
     var look: VisionModel.CardLook = .cards
+    /// How far an open card stands forward of its place: 3 cm, or enough
+    /// to stand its verbs and menus clear in front of every card near it
+    /// (2 Nov 2026) — a gathered star, a Shape's forward rows.
+    var openLift: Float = EPUBMapView.openCardLift
     /// Drawn in a look of its own — a sphere or a coloured title — rather
     /// than as a card: a paper standing, not set aside nor opened.
     var wearsLook: Bool {
@@ -135,7 +139,7 @@ struct EPUBMapItem: ItemProtocol {
             && pieceLabel == other.pieceLabel && imagePath == other.imagePath
             && stamp == other.stamp && firstSentence == other.firstSentence
             && tagColors == other.tagColors && authorFaces == other.authorFaces
-            && look == other.look
+            && look == other.look && openLift == other.openLift
             // The engine attaches a card's attachment only when it builds
             // the card, so a stance mark coming or going rebuilds it.
             && stanceMark == other.stanceMark
@@ -1123,6 +1127,22 @@ struct EPUBMapView: View {
                 let spots = gatherStar(round: source, at: centre, count: gathered.count,
                                        sizes: gathered.map { cardSizes.base[built[$0].id] })
                 for (index, spot) in zip(gathered, spots) { built[index].position = spot }
+            }
+            // An open card comes forward far enough that its verbs and
+            // menus stand clear in front of every card within their reach —
+            // never less than its usual 3 cm, never more than 25.
+            for index in built.indices where built[index].kind == .article && built[index].isSelected
+                && built[index].showsAbstract && !built[index].isGhost {
+                guard let p = built[index].position else { continue }
+                var front: Float = 0
+                for other in built where other.id != built[index].id && !other.isGhost {
+                    guard let q = other.position, abs(q.x - p.x) < 0.55, abs(q.y - p.y) < 0.42 else { continue }
+                    var face = q.z
+                    if other.isSelected && other.showsAbstract { face += Self.openCardLift }
+                    if other.wearsLook && other.look == .spheres { face += 0.02 }
+                    front = max(front, face - p.z)
+                }
+                built[index].openLift = min(max(Self.openCardLift, front + 0.026), 0.25)
             }
             // A relation lit — on a card, or from a reading's selected
             // words: every card it reaches wears the line's end, on the
@@ -2680,7 +2700,7 @@ struct EPUBMapView: View {
             if item.kind == .article, item.isSelected, item.showsAbstract,
                !item.isGhost, !item.isAside {
                 return AnchorRule(anchor: SIMD3<Float>(0.5, 0.5, 0.5),
-                                  offset: SIMD3<Float>(0, 0, Self.openCardLift - 0.006))
+                                  offset: SIMD3<Float>(0, 0, item.openLift - 0.006))
             }
             // Centre horizontally, sit at the card's bottom edge, then
             // drop clear of it. A single paper's verbs — Open,
@@ -3773,7 +3793,7 @@ struct EPUBMapView: View {
         // (1 Nov 2026): everything seen of it rides one child, moved
         // `openCardLift` out along the card's facing, while the node —
         // its saved place, its timeline depth — stays where it is.
-        let lift: Float = item.isSelected && item.showsAbstract && !item.isGhost ? Self.openCardLift : 0
+        let lift: Float = item.isSelected && item.showsAbstract && !item.isGhost ? item.openLift : 0
         let body = Entity()
         body.position = SIMD3<Float>(0, 0, lift)
         holder.addChild(body)
@@ -3847,7 +3867,7 @@ struct EPUBMapView: View {
             let depth = ModelEntity(
                 mesh: .generateBox(size: SIMD3<Float>(extents.x * grown * 0.98,
                                                       extents.y * grown * 0.98, 0.012),
-                                   cornerRadius: 0.004),
+                                   cornerRadius: 0.006),
                 materials: [SimpleMaterial(color: UIColor(white: 0.08, alpha: 0.85),
                                            roughness: 0.5, isMetallic: false)])
             depth.position = SIMD3<Float>(0, 0, -0.008)
@@ -3864,13 +3884,25 @@ struct EPUBMapView: View {
         if item.isSelected, item.kind == .cited || item.kind == .citedDeep
             || (item.kind == .article && item.showsAbstract),
            !item.isLifted {
-            let width = extents.x * grown
-            let height = extents.y * grown
-            let slab = ModelEntity(
-                mesh: .generateBox(size: SIMD3<Float>(width, height, 0.002),
-                                   cornerRadius: min(0.008 * grown, min(width, height) * 0.45)),
-                materials: [UnlitMaterial(color: UIColor(white: 0.12, alpha: 1))])
-            body.addChild(slab)
+            // A breath inside the face (3%), so no edge of it can show past
+            // the card's own frame should the live face lay out a hair
+            // smaller than it measured.
+            let width = extents.x * grown * 0.97
+            let height = extents.y * grown * 0.97
+            // Two flat panes, back to back, rounded exactly as the face is
+            // (8 points at the crisp factor = 8 mm × grown). A 2 mm box
+            // cannot round its corners past half its depth, so its square
+            // corners stood out of the face's rounded ones.
+            let radius = min(0.008 * grown, min(width, height) / 2)
+            let mesh = MeshResource.generatePlane(width: width, height: height, cornerRadius: radius)
+            let ink = UnlitMaterial(color: UIColor(white: 0.12, alpha: 1))
+            let front = ModelEntity(mesh: mesh, materials: [ink])
+            front.position = SIMD3<Float>(0, 0, 0.0008)
+            let back = ModelEntity(mesh: mesh, materials: [ink])
+            back.position = SIMD3<Float>(0, 0, -0.0008)
+            back.orientation = simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+            body.addChild(front)
+            body.addChild(back)
         }
 
         // Set Aside slips fade whole — glass and words together.
@@ -4382,10 +4414,12 @@ struct EPUBMapView: View {
             .frame(width: Self.miniatureSize.width, height: Self.miniatureSize.height, alignment: .topLeading)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.1).opacity(0.88)))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.25), lineWidth: 1))
+            // The gaze glow is the card's own shape and size, no larger.
             .contentShape(RoundedRectangle(cornerRadius: 10))
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 10))
+            .hoverEffect(.highlight)
         }
         .buttonStyle(.plain)
-        .hoverEffect()
     }
 
     /// A miniature chosen: the whole space is carried, as Gather carries

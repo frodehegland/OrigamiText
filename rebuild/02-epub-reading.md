@@ -2395,3 +2395,9 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Put Back:** shown on any lifted card, it sends the card home.
 
 **A series opens at its latest volume (2 Nov 2026).** On the first screen (the `library` window's list), choosing a series row ("… — n volumes") opens only its latest volume: `model.openArticles(of: seriesVolumes(id).last)`, with volumes sorted by number, then date. A series with no volumes falls back to `openSeries`. The bar's **Volume ▸ All** brings every volume into the room, and Volume's other items step between volumes.
+
+**Edges that fit, and menus that stay in front (2 Nov 2026).**
+- **The solid backing:** behind an open paper or a chosen citation it is now two flat `generatePlane` panes, back to back, ±0.8 mm. They are rounded as the face is (`min(0.008 × grown, half the shorter side)`) and sized at 97% of the face. A 2 mm `generateBox` cannot round its corners past half its depth, so its square corners stood out of the face's rounded ones. The lifted slab's corner radius rises to 6 mm, half its 12 mm depth.
+- **`EPUBMapItem.openLift`** (part of `isVisuallyEqual`): `reload` gives each open paper a lift so its star of verbs and menus stands in front of every card within ±55 cm across and ±42 cm up and down. It is the furthest such face (plus 3 cm for another open card and 2 cm for a sphere) plus 2.6 cm, at least `openCardLift` (3 cm) and at most 25 cm. Gathered cards (+5 cm) and a Shape's forward rows used to stand in front of the side menus. The card's body and its star's anchor both use it.
+- **Miniatures:** their hover glow uses `.contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 10))` with `.hoverEffect(.highlight)`, so the glow is exactly the miniature's frame.
+
