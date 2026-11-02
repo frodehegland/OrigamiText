@@ -5694,6 +5694,7 @@ struct EPUBMapView: View {
         case .constellation: runConstellationShape()
         case .weight: runWeightShape()
         case .landscape: runLandscapeShape()
+        case .colours: runColourPolygonShape()
         case .citations: runCitationMountainsShape()
         case .territory: runTerritoryShape()
         case .faults: runFaultLinesShape()
@@ -6114,6 +6115,95 @@ struct EPUBMapView: View {
         }
         storeShape(.landscape, labels: labels)
         applyWatchPositions3D(placedNow, heights: 0.4...1.6)
+    }
+
+    /// Colour Cluster (2 Nov 2026, Frode): a polygon standing upright before
+    /// the reader, a side per colour (eight for the eight categories), its
+    /// name outside the side in its colour. A paper of one colour stands
+    /// just inside that side; a paper of several stands where it is as far
+    /// from each of its sides as from the others — the mean of their
+    /// midpoints — so a paper of two colours lies on the line between them.
+    /// The papers are then eased apart until no card overlaps another; the
+    /// uncoloured stand in a block to the right. Stretched wide (2.3 × 0.95 m) so
+    /// a room of hundreds fits within reach of the eye.
+    private func runColourPolygonShape() {
+        let targets = shapeTargets()
+        guard targets.count > 2 else { return }
+        let tags = model.tags.tags.filter(\.isOn)
+        guard tags.count >= 3 else { return }
+        let radii = SIMD2<Float>(2.3, 0.95)
+        let centre = SIMD2<Float>(0, 1.45)
+        let depth: Float = -2.4
+        let n = tags.count
+        // The corners, the first side across the top; each side's midpoint.
+        func corner(_ k: Int) -> SIMD2<Float> {
+            let angle = (Float(k) - 0.5) / Float(n) * 2 * .pi
+            return centre + SIMD2<Float>(sin(angle), cos(angle)) * radii
+        }
+        var side: [String: SIMD2<Float>] = [:]
+        for (index, tag) in tags.enumerated() {
+            side[tag.color] = (corner(index) + corner(index + 1)) / 2
+        }
+        var home: [String: SIMD2<Float>] = [:]
+        var uncoloured: [EPUBMapItem] = []
+        for item in targets {
+            let mids = Array(Set(item.tagColors)).compactMap { side[$0] }
+            if mids.isEmpty { uncoloured.append(item); continue }
+            let mean = mids.reduce(SIMD2<Float>(0, 0), +) / Float(mids.count)
+            // One colour: a breath inside its side, toward the middle.
+            home[item.id] = mids.count == 1 ? mean + (centre - mean) * 0.18 : mean
+        }
+        // Ease apart, measuring in cards (a card's width and height plus
+        // air), drawn gently home and held inside the polygon's box.
+        let cell = SIMD2<Float>(Self.columnPitch, Self.rowPitch)
+        let ids = Array(home.keys).sorted()
+        var at = Dictionary(uniqueKeysWithValues: ids.map { id in
+            (id, home[id]! + Self.landscapeScatter(id) * SIMD2<Float>(0.12, 0.08))
+        })
+        for _ in 0..<120 {
+            var push = [String: SIMD2<Float>]()
+            for i in ids.indices {
+                for j in (i + 1)..<ids.count {
+                    let d = (at[ids[i]]! - at[ids[j]]!) / cell
+                    let gap = simd_length(d)
+                    guard gap < 1 else { continue }
+                    let dir = gap > 1e-4 ? d / gap : SIMD2<Float>(1, 0)
+                    let shove = dir * (1 - gap) / 2 * cell
+                    push[ids[i], default: .zero] += shove
+                    push[ids[j], default: .zero] -= shove
+                }
+            }
+            for id in ids {
+                var p = at[id]! + push[id, default: .zero] + (home[id]! - at[id]!) * 0.03
+                p.x = min(max(p.x, centre.x - radii.x), centre.x + radii.x)
+                p.y = min(max(p.y, centre.y - radii.y), centre.y + radii.y)
+                at[id] = p
+            }
+        }
+        let origin = spaceShift + documentsShift
+        var placedNow: [String: SIMD3<Float>] = [:]
+        for id in ids { placedNow[id] = SIMD3<Float>(at[id]!.x, at[id]!.y, depth) + origin }
+        // The uncoloured: a block to the polygon's right, top down, a
+        // column at a time — clear of the floor however many there are.
+        let perColumn = max(1, Int((2.3 - 0.6) / Self.rowPitch) + 1)
+        for (index, item) in uncoloured.sorted(by: { $0.title < $1.title }).enumerated() {
+            let column = index / perColumn, row = index % perColumn
+            placedNow[item.id] = SIMD3<Float>(centre.x + radii.x + 0.55 + Float(column) * Self.columnPitch,
+                                              2.3 - Float(row) * Self.rowPitch, depth) + origin
+        }
+        var labels: [ShapeLabel] = []
+        for (index, tag) in tags.enumerated() {
+            guard let mid = side[tag.color] else { continue }
+            // Outside its side, a little nearer the reader.
+            let out = mid + simd_normalize((mid - centre) / radii) * 0.22
+            let spot = SIMD3<Float>(out.x, out.y, depth + 0.05) + origin
+            let members = targets.filter { $0.tagColors.contains(tag.color) }.map(\.id)
+            labels.append(ShapeLabel(id: Self.shapeLabelPrefix + "colours.\(index)", title: tag.name,
+                                     members: members, x: spot.x - spaceShift.x, y: spot.y - spaceShift.y,
+                                     z: spot.z - spaceShift.z))
+        }
+        storeShape(.colours, labels: labels)
+        applyWatchPositions3D(placedNow, heights: 0.15...2.6)
     }
 
     // MARK: - More landscapes (2 Nov 2026)
