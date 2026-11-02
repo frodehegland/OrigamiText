@@ -1287,7 +1287,24 @@ struct EPUBMapView: View {
         for id in placed.keys where id.hasPrefix(Self.tagHubPrefix)
             && !model.chosenTagColors.contains(String(id.dropFirst(Self.tagHubPrefix.count))) {
             placed[id] = nil
+            if labelStuck[id] != nil { labelStuck[id] = nil; saveLabelStuck() }
         }
+        // A colour dragged out of the colour key lands where the hand let
+        // go — on a wall or a table within half a metre, flush to it.
+        var dropped = Set<String>()
+        for (hex, point) in model.tagDrops {
+            let id = Self.tagHubPrefix + hex
+            dropped.insert(id)
+            if let pose = surfacePose(for: point, reach: 0.5) {
+                placed[id] = pose.position
+                labelStuck[id] = pose.orientation.vector
+            } else {
+                placed[id] = point
+                labelStuck[id] = nil
+            }
+            saveLabelStuck()
+        }
+        if !model.tagDrops.isEmpty { model.tagDrops = [:] }
         for (index, hex) in model.chosenTagColors.sorted().enumerated() {
             let members = items.filter { $0.kind == .article && !$0.isGhost && $0.tagColors.contains(hex) }
             let spots = members.compactMap(\.position)
@@ -1295,7 +1312,7 @@ struct EPUBMapView: View {
             let id = Self.tagHubPrefix + hex
             // Just chosen on the colour key: it comes in chosen, its lines
             // drawn; tapped, it lets go and its lines go with it.
-            let arriving = placed[id] == nil
+            let arriving = placed[id] == nil || dropped.contains(id)
             // First shown: in front of the reader, a little above the
             // eyes, each further colour a step to the right — where the
             // lines can be seen to converge — and kept there after.
@@ -2843,7 +2860,9 @@ struct EPUBMapView: View {
             // flush to a wall, flat on a table — and keeps that pose until
             // pulled off. State writes only on change, as a lifted card's.
             if Self.isSpatialLabel(item) {
-                if let pose = surfacePose(for: proposed) {
+                // A colour key's marker courts a wall from further off.
+                let reach: Float? = item.id.hasPrefix(Self.tagHubPrefix) ? 0.3 : nil
+                if let pose = surfacePose(for: proposed, reach: reach) {
                     if labelStuck[item.id] != pose.orientation.vector {
                         labelStuck[item.id] = pose.orientation.vector
                         saveLabelStuck()
@@ -3031,8 +3050,9 @@ struct EPUBMapView: View {
                              // head, so gaze can take a lifted card
                              // from any side; everything else stands
                              // upright.
-                             anyLifted: { !liftedCards.isEmpty || !labelStuck.isEmpty },
-                             liftedFacesHead: { liftedCards[$0] != nil },
+                             anyLifted: { !liftedCards.isEmpty || !labelStuck.isEmpty
+                                 || !model.chosenTagColors.isEmpty },
+                             liftedFacesHead: { liftedCards[$0] != nil || $0.hasPrefix(Self.tagHubPrefix) },
                              // A card that has taken a real surface
                              // keeps that surface's pose instead.
                              stuckOrientation: {
@@ -3888,7 +3908,9 @@ struct EPUBMapView: View {
         // can take them from any side.)
         // A colour key's marker too: it stands wherever the reader was
         // facing, and must read at once from wherever they now are.
-        if item.id.hasPrefix("float:") || item.id.hasPrefix(Self.tagHubPrefix) {
+        // (A colour key's marker turns to the reader in MapCardTick, unless
+        // it rests on a wall — a billboard would turn it off the wall.)
+        if item.id.hasPrefix("float:") {
             holder.components.set(BillboardComponent())
         }
         // A lifted card is an OBJECT now, not a leaf of the wall: a
@@ -5320,15 +5342,16 @@ struct EPUBMapView: View {
     /// The Map's own two plane anchors (one wall, one table) stand in
     /// while plane detection has nothing yet — the simulator, or the
     /// first seconds in a room.
-    private func surfacePose(for position: SIMD3<Float>)
+    private func surfacePose(for position: SIMD3<Float>, reach wanted: Float? = nil)
         -> (position: SIMD3<Float>, orientation: simd_quatf)? {
+        let surfaceReach = wanted ?? Self.surfaceReach
         if roomSurfaces.isReading,
            let pose = roomSurfaces.nearestPose(to: position,
-                                               reach: Self.surfaceReach,
+                                               reach: surfaceReach,
                                                head: faceTurner.headPosition()) {
             return pose
         }
-        let reach = Self.surfaceReach
+        let reach = surfaceReach
         var best: (position: SIMD3<Float>, orientation: simd_quatf, distance: Float)?
         if let wall = roomWallAnchor, wall.isAnchored {
             let point = wall.position(relativeTo: nil)

@@ -2409,3 +2409,9 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Any look:** it works with Cards, Color Spheres and Color Titles alike.
 
 **Category names on open cards (2 Nov 2026).** On an open paper (chosen, with `showsAbstract`), each colour rectangle is followed by its category's name. The name is looked up in `model.tags` by colour and drawn in a 3.8-point system sans-serif at white 0.7. The rectangles and names sit in one row, or stack one under another when the row will not fit (`ViewThatFits`). Closed cards keep the bare rectangles.
+
+**Colours dragged out of the key, and markers on walls (2 Nov 2026).**
+- **Dragging out:** each colour-key row also takes a `DragGesture(minimumDistance: 24, coordinateSpace: .immersiveSpace)`, and the row follows the hand inside the window while dragged. On release, `value.location3D` is converted with `physicalMetrics` to metres, with y negated because SwiftUI's immersive space counts downward. The point goes to `VisionModel.dropTagColor(_:at:)`, which records it in `tagDrops` and chooses the colour, or bumps `volumeStamp` if it is already chosen.
+- **Landing:** `reload` takes each drop. Within 50 cm of a surface (`surfacePose(for:reach:)`) the marker lands flush on it and its pose goes into `labelStuck`; otherwise it stands at the release point. Either way it arrives chosen, and `tagDrops` is then cleared.
+- **Sticking by drag:** a marker dragged in the room courts surfaces from 30 cm, not 18. Letting a colour go clears its stuck pose.
+- **Turning:** markers no longer wear a `BillboardComponent`. `MapCardTick` turns them to the reader each frame (they count in `anyLifted` and `liftedFacesHead`) unless they rest on a surface, which keeps its pose.

@@ -1994,6 +1994,14 @@ final class VisionModel {
     var chosenTagColors: Set<String> = [] {
         didSet { if chosenTagColors != oldValue { volumeStamp += 1 } }
     }
+    /// Colours dragged out of the colour key, by where the hand let go (in
+    /// the room's metres) — taken up by the Hallway's next reload.
+    var tagDrops: [String: SIMD3<Float>] = [:]
+
+    func dropTagColor(_ hex: String, at point: SIMD3<Float>) {
+        tagDrops[hex] = point
+        if chosenTagColors.contains(hex) { volumeStamp += 1 } else { chosenTagColors.insert(hex) }
+    }
 
     func adoptTags(_ file: OrigamiTags) {
         guard file != tags else { return }
@@ -8897,6 +8905,9 @@ struct VisionNewConceptView: View {
 /// beneath, small, so what it catches can be seen.
 struct VisionTagLegendView: View {
     @Environment(VisionModel.self) private var model
+    @Environment(\.physicalMetrics) private var metrics
+    /// The colour being dragged out, and how far.
+    @State private var dragging: (hex: String, offset: CGSize)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -8939,6 +8950,20 @@ struct VisionTagLegendView: View {
                 }
                 .buttonStyle(.plain)
                 .hoverEffect()
+                // Dragged out of the key (2 Nov 2026): the colour's marker
+                // lands where the hand lets go, on a wall if one is near.
+                .offset(dragging?.hex == tag.color ? dragging!.offset : .zero)
+                .zIndex(dragging?.hex == tag.color ? 1 : 0)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 24, coordinateSpace: .immersiveSpace)
+                        .onChanged { value in dragging = (tag.color, value.translation) }
+                        .onEnded { value in
+                            dragging = nil
+                            let p = value.location3D
+                            func m(_ v: Double) -> Float { Float(metrics.convert(CGFloat(v), to: .meters)) }
+                            // SwiftUI's immersive space counts y downward.
+                            model.dropTagColor(tag.color, at: SIMD3<Float>(m(p.x), -m(p.y), m(p.z)))
+                        })
             }
             if !model.chosenTagColors.isEmpty {
                 Button("Clear Lines") { model.chosenTagColors = [] }
