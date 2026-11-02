@@ -1738,7 +1738,7 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
 - The mark is stuck to the connected card at its foot: anchor (0.5, 0, 0.5), offset 2 mm down, drawn from its top. Its ✓ and ✗ come first, then the word.
 - The Connects and Show Only lists are bigger: rows at 19 pt with 5 pt of padding, the panel padded 12, and the side columns 420 doubled points wide.
 
-- **A chosen paper or citation** wears a gold border (1.0, 0.84, 0.45), 1.6 pt at the face's scale, over its solid pane: the same gold a chosen gallery picture wears. Notes and labels keep their white border.
+- **A chosen paper or citation** wears a white border (opacity 0.85), 1.6 pt at the face's scale, over its solid pane, as chosen notes and labels do.
 
 - **Above an open paper** stand only Focus, Transpoint, and Kind (in volume rooms) or Articles.
   - Read, Open/Fold, Lift and the Pictures count are gone. Two hands spread open the reading, two taps fold the card, and the edge thumbnails raise the gallery.

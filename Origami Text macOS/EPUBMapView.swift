@@ -3252,13 +3252,13 @@ struct EPUBMapView: View {
                                    displayMode: (selected || item.isLifted || item.kind == .article
                                                  || item.kind == .cited || item.kind == .citedDeep)
                                        ? .never : .always)
-            // A chosen paper or citation wears a border (2 Nov 2026): the
-            // warm gold a chosen picture wears, so what is in hand reads at
-            // a glance across the room.
+            // A chosen paper or citation wears a white border (2 Nov 2026),
+            // as a chosen note or label does, so what is in hand reads at a
+            // glance across the room.
             .overlay {
                 if selected {
                     RoundedRectangle(cornerRadius: 8 * s)
-                        .strokeBorder(Color(red: 1.0, green: 0.84, blue: 0.45), lineWidth: 1.6 * s)
+                        .strokeBorder(Color.white.opacity(0.85), lineWidth: 1.6 * s)
                 }
             }
             // The side rails are away for now (17 Sep 2026). What a
