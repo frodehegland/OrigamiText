@@ -629,6 +629,8 @@ private struct NewConceptSheet: View {
 struct ConceptsSettingsView: View {
     @Environment(AppModel.self) private var model
     private var library: ConceptLibraryModel { model.conceptLibrary }
+    /// What the last Knowledge Space import did.
+    @State private var importSummary: String?
 
     var body: some View {
         Form {
@@ -654,6 +656,26 @@ struct ConceptsSettingsView: View {
                     Spacer()
                     Button("Reload") { library.reload() }
                 }
+                HStack {
+                    // The headset keeps its concepts in the community
+                    // folder's Defined Concepts (2 Nov 2026): this Mac
+                    // shares them by using that folder too.
+                    if let community = model.index.folderURL {
+                        Button("Use the Community Folder\u{2019}s Library") {
+                            let folder = community.appendingPathComponent("Defined Concepts", isDirectory: true)
+                            let scoped = community.startAccessingSecurityScopedResource()
+                            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                            if scoped { community.stopAccessingSecurityScopedResource() }
+                            chooseFolder(startingAt: folder)
+                        }
+                        .help("The library Vision Pro keeps in the community folder's Defined Concepts — choose it and both share one library")
+                    }
+                    Button("Import from Knowledge Space\u{2026}") { importKnowledgeSpace() }
+                        .help("Bring in the concepts of Knowledge Space documents (.liquid.json) — choose the documents or their folder")
+                }
+                if let importSummary {
+                    Text(importSummary).font(.caption).foregroundStyle(.secondary)
+                }
             } header: {
                 Text("Defined Concepts")
             } footer: {
@@ -664,6 +686,39 @@ struct ConceptsSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
+    }
+
+    /// Knowledge Space's concepts: every `concepts` entry of the chosen
+    /// `.liquid.json` documents (or every one in a chosen folder), merged
+    /// into the library as any document's are.
+    private func importKnowledgeSpace() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.json, .folder]
+        panel.message = "Choose Knowledge Space documents (.liquid.json), or the folder that holds them."
+        panel.prompt = "Import Concepts"
+        guard panel.runModal() == .OK else { return }
+        var docs: [LiquidDoc] = []
+        for url in panel.urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            var files = [url]
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                files = (FileManager.default.enumerator(at: url, includingPropertiesForKeys: nil)?
+                    .compactMap { $0 as? URL } ?? [])
+                    .filter { $0.pathExtension == "json" }
+            }
+            for file in files.prefix(2000) {
+                if let data = try? Data(contentsOf: file),
+                   let doc = try? LiquidDoc.decode(data: data, fileURL: file), !doc.concepts.isEmpty {
+                    docs.append(doc)
+                }
+            }
+        }
+        let report = library.importConcepts(from: docs)
+        importSummary = "Knowledge Space: \(docs.count) document\(docs.count == 1 ? "" : "s") read. " + report.summary
     }
 
     private func chooseFolder(startingAt start: URL?) {

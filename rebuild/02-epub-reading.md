@@ -1744,6 +1744,24 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
   - Read, Open/Fold, Lift and the Pictures count are gone. Two hands spread open the reading, two taps fold the card, and the edge thumbnails raise the gallery.
   - The Connects and Show Only rows are 11 pt above and below, with 6 pt between them.
 
+### 5.43 Concepts on the room's bar; Knowledge Space import (2 November 2026)
+
+**visionOS**
+- **The bar's row** is `.fixedSize()` (padding 36), so the window takes its whole width and nothing is cut off.
+- **Concepts ▾** stands after Shapes:
+  - **New Concept…** opens the `new-concept` window (`VisionNewConceptView`): term, definition (typed, or spoken through the keyboard's microphone), and "Put it into the room" (on by default, which calls `addSpaceKeyword`, so the concept stands as a label with Gather, Lines and Focus).
+  - **Import from Knowledge Space…** opens a `fileImporter` for .json files or folders.
+  - The last import's summary.
+  - **Into the Room:** the library's concepts (60 at most), each put in as a label.
+- **The headset's library** is the open folder-of-JSON format (`ConceptLibraryStore`) at `<community folder>/Defined Concepts`.
+  - `VisionModel.defineConcept` appends a version event (device "Vision Pro"), or nothing when the same words are given again. It matches by source id, then by normalised term.
+  - `reloadConcepts` fills `libraryTerms`.
+- **Knowledge Space import** (`importKnowledgeSpaceConcepts`): Knowledge Space keeps its concepts inside its `.liquid.json` documents' `concepts` arrays (name, description, tag). Each document is decoded with `LiquidDoc.decode`, and every concept is defined under the source id "ks-<its id>", so a re-import updates rather than repeats.
+
+**macOS: Settings ▸ Concepts**
+- **Use the Community Folder's Library** chooses `<community>/Defined Concepts`, so the Mac and the headset share one library.
+- **Import from Knowledge Space…** (an `NSOpenPanel` over documents or folders) decodes each .json and passes the documents with concepts to `ConceptLibraryModel.importConcepts(from:)`. The report's summary is shown below.
+
 ### 5.42 One sphere when reading: the selection's (visionOS, 2 November 2026)
 
 This supersedes the foot sphere of 5.39 and the sphere column of 5.40.

@@ -765,6 +765,16 @@ struct OrigamiVisionApp: App {
         // window, standing low in front of the reader while a volume's
         // articles fill the room — Select All and Layout. Single
         // instance, so reopening brings the same bar forward.
+        // New Concept, from the room's bar.
+        Window("New Concept", id: "new-concept") {
+            VisionNewConceptView()
+                .environment(model)
+        }
+        .windowResizability(.contentSize)
+        .defaultWindowPlacement { _, _ in
+            WindowPlacement(.utilityPanel)
+        }
+
         Window("Volume", id: "volume-toolbar") {
             VisionVolumeToolbar()
                 .environment(model)
@@ -1863,6 +1873,119 @@ final class VisionModel {
     @ObservationIgnored private var corpusOfPiece: [String: String] = [:]
 
     /// A newer record from the Mac: the rooms read their citations again.
+    // MARK: Defined Concepts on the headset (2 Nov 2026)
+
+    /// The library's concepts, as the room's Concepts menu lists them.
+    struct LibraryTerm: Identifiable, Hashable {
+        let id: String
+        let term: String
+        let definition: String
+    }
+    private(set) var libraryTerms: [LibraryTerm] = []
+    /// What the last import did, in a line.
+    var conceptsMessage: String?
+
+    /// The Defined Concepts library the headset keeps: the same open
+    /// folder of JSON the Mac and Author use (ConceptLibraryStore), in the
+    /// community folder's "Defined Concepts" — so every device that shares
+    /// the folder shares the concepts. The Mac's Concept Library reads it
+    /// once pointed at that folder.
+    private var conceptRoot: URL? {
+        index.folderURL?.appendingPathComponent("Defined Concepts", isDirectory: true)
+    }
+
+    private func withConceptStore<T>(_ body: (ConceptLibraryStore) throws -> T) rethrows -> T? {
+        guard let folder = index.folderURL, let root = conceptRoot else { return nil }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        return try body(ConceptLibraryStore(root: root))
+    }
+
+    func reloadConcepts() {
+        let terms = withConceptStore { store in
+            store.readAll().records.filter { !$0.isDeleted && !$0.headTerm.isEmpty }
+                .map { LibraryTerm(id: $0.id, term: $0.headTerm, definition: $0.headDefinition) }
+                .sorted { $0.term.localizedCaseInsensitiveCompare($1.term) == .orderedAscending }
+        } ?? []
+        if terms != libraryTerms { libraryTerms = terms }
+    }
+
+    /// A concept made or brought in: a new one, or a new version of the
+    /// one already holding the term — the same words again change nothing.
+    @discardableResult
+    func defineConcept(term: String, definition: String, tags: [String] = [],
+                       sourceID: String? = nil, origin: String? = nil) -> Bool {
+        let draft = ConceptDraft(term: term.trimmingCharacters(in: .whitespacesAndNewlines),
+                                 definition: definition.trimmingCharacters(in: .whitespacesAndNewlines),
+                                 tags: tags, originDocumentName: origin, sourceID: sourceID)
+        guard draft.isPublishable else { return false }
+        let made = (try? withConceptStore { store -> Bool in
+            store.noteLibrary(app: "Origami Text")
+            let all = store.readAll().records
+            let existing = draft.sourceID.flatMap { id in all.first { $0.id == id } }
+                ?? all.first { !$0.isDeleted && ConceptTerm.normalise($0.headTerm) == draft.normalisedTerm }
+            if let existing {
+                guard existing.headDefinition != draft.definition, !draft.definition.isEmpty else { return false }
+                _ = try store.append(to: existing.id) { sequence in
+                    ConceptEvent(kind: .version, parentID: existing.head?.id, device: "Vision Pro",
+                                 sequence: sequence, term: draft.term, definition: draft.definition,
+                                 tags: draft.tags.isEmpty ? ["concept"] : draft.tags,
+                                 originDocumentName: draft.originDocumentName)
+                }
+            } else {
+                _ = try store.append(to: draft.sourceID ?? UUID().uuidString) { sequence in
+                    ConceptEvent(kind: .version, device: "Vision Pro", sequence: sequence,
+                                 term: draft.term, definition: draft.definition,
+                                 tags: draft.tags.isEmpty ? ["concept"] : draft.tags,
+                                 originDocumentName: draft.originDocumentName)
+                }
+            }
+            return true
+        }) ?? false
+        reloadConcepts()
+        return made == true
+    }
+
+    /// Knowledge Space's concepts, brought in: every `concepts` entry of
+    /// its `.liquid.json` documents (the files chosen, or every one in a
+    /// folder chosen) — name, description and tag — into the library,
+    /// each remembered by its Knowledge Space id so a second import
+    /// updates rather than repeats.
+    func importKnowledgeSpaceConcepts(from urls: [URL]) {
+        var files: [URL] = []
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                let walk = FileManager.default.enumerator(at: url, includingPropertiesForKeys: nil)
+                while let next = walk?.nextObject() as? URL {
+                    if files.count >= 2000 { break }
+                    if next.lastPathComponent.hasSuffix(".liquid.json") || next.pathExtension == "json" {
+                        files.append(next)
+                    }
+                }
+            } else {
+                files.append(url)
+            }
+        }
+        var added = 0, read = 0
+        for url in urls { _ = url.startAccessingSecurityScopedResource() }
+        defer { for url in urls { url.stopAccessingSecurityScopedResource() } }
+        for file in files {
+            guard let data = try? Data(contentsOf: file),
+                  let doc = try? LiquidDoc.decode(data: data, fileURL: file) else { continue }
+            read += 1
+            for concept in doc.concepts {
+                let tags = concept.tag.map { [$0] } ?? []
+                if defineConcept(term: concept.name, definition: concept.description, tags: tags,
+                                 sourceID: "ks-" + concept.id, origin: doc.title) {
+                    added += 1
+                }
+            }
+        }
+        conceptsMessage = "Knowledge Space: \(added) concept\(added == 1 ? "" : "s") brought in from \(read) document\(read == 1 ? "" : "s")."
+    }
+
     // MARK: Relations from selected words (2 Nov 2026)
 
     /// The words selected in each open reading, with the paragraph they
@@ -3449,13 +3572,54 @@ struct VisionVolumeToolbar: View {
     /// takes dictation.
     @State private var keywordDraft = ""
 
+    @State private var importingConcepts = false
+
     var body: some View {
         roomRow
             .font(.system(size: 16))
             .buttonStyle(.plain)
-            .padding(.horizontal, 32)
+            // Its whole width, always (2 Nov 2026): the window sizes to
+            // the row, and no word is cut off.
+            .fixedSize()
+            .padding(.horizontal, 36)
             .frame(height: 56)
             .glassBackgroundEffect()
+            .fileImporter(isPresented: $importingConcepts,
+                          allowedContentTypes: [.json, .folder],
+                          allowsMultipleSelection: true) { result in
+                if case .success(let urls) = result { model.importKnowledgeSpaceConcepts(from: urls) }
+            }
+            .task { model.reloadConcepts() }
+    }
+
+    /// Concepts: make one, bring Knowledge Space's in, or put one of the
+    /// library's into the room as a label.
+    private var conceptsMenu: some View {
+        Menu {
+            Button("New Concept\u{2026}", systemImage: "plus") { openWindow(id: "new-concept") }
+            Button("Import from Knowledge Space\u{2026}", systemImage: "square.and.arrow.down") {
+                importingConcepts = true
+            }
+            if let message = model.conceptsMessage {
+                Text(message)
+            }
+            Divider()
+            if model.libraryTerms.isEmpty {
+                Text("No concepts in the library yet")
+            } else {
+                Section("Into the Room") {
+                    ForEach(model.libraryTerms.prefix(60)) { concept in
+                        Button(concept.term) { model.addSpaceKeyword(concept.term) }
+                    }
+                    if model.libraryTerms.count > 60 {
+                        Text("and \(model.libraryTerms.count - 60) more")
+                    }
+                }
+            }
+        } label: {
+            Text("Concepts")
+        }
+        .help("Make a concept, bring Knowledge Space's in, or put one into the room")
     }
 
     /// The room's row: Documents first and Ask last; between them the
@@ -3545,6 +3709,7 @@ struct VisionVolumeToolbar: View {
                 Text("Shapes")
             }
             .help("Give the room a shape: Hallway, or the articles gathered by meaning, theme, concept, author or the people they mention")
+            conceptsMenu
             // Where the room stands in the collection: back out to the
             // whole book (in a series' room, the chosen card's volume), or
             // up to every volume of its series. Dimmed where they lead
@@ -8507,6 +8672,45 @@ struct VisionSpeakerStatementsView: View {
             }
         }
         .frame(minWidth: 520, minHeight: 480)
+    }
+}
+/// New Concept, from the room's bar: the term and its definition, typed or
+/// spoken (the keyboard's microphone), kept in the Defined Concepts
+/// library — and, if asked, put into the room at once as a label that can
+/// draw lines to, gather or leave only the papers using it.
+struct VisionNewConceptView: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.dismissWindow) private var dismissWindow
+    @State private var term = ""
+    @State private var definition = ""
+    @State private var intoRoom = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("New Concept").font(.title2.weight(.semibold))
+            TextField("Term", text: $term)
+                .textFieldStyle(.roundedBorder)
+                .font(.title3)
+            TextField("Definition", text: $definition, axis: .vertical)
+                .lineLimit(4...10)
+                .textFieldStyle(.roundedBorder)
+            Toggle("Put it into the room", isOn: $intoRoom)
+            HStack {
+                Button("Cancel") { dismissWindow() }
+                Spacer()
+                Button("Keep Concept") {
+                    let kept = term.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if model.defineConcept(term: kept, definition: definition, origin: "Origami Text") || !kept.isEmpty {
+                        if intoRoom { model.addSpaceKeyword(kept) }
+                    }
+                    dismissWindow()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(term.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(28)
+        .frame(width: 520)
     }
 }
 #endif
