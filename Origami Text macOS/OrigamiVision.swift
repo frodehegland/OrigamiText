@@ -1783,6 +1783,14 @@ final class VisionModel {
     }
     /// Size by Length (2 Nov 2026): each paper's card scaled by its length
     /// among its plane's papers. Kept across launches.
+    /// The bar's Colours (2 Nov 2026): on, the colours unfold beneath the
+    /// bar and every node in the room shows its own; off, none does.
+    var coloursShown = UserDefaults.standard.bool(forKey: "visionColoursShown") {
+        didSet {
+            UserDefaults.standard.set(coloursShown, forKey: "visionColoursShown")
+            volumeStamp += 1
+        }
+    }
     var sizeByLength = UserDefaults.standard.bool(forKey: "visionSizeByLength") {
         didSet {
             UserDefaults.standard.set(sizeByLength, forKey: "visionSizeByLength")
@@ -3764,9 +3772,6 @@ struct VisionVolumeToolbar: View {
     @State private var keywordDraft = ""
 
     @State private var importingConcepts = false
-    /// The colours, unfolded beneath the bar (2 Nov 2026): part of it, not
-    /// a window of their own.
-    @State private var showsColours = false
 
     var body: some View {
         VStack(spacing: 10) {
@@ -3779,7 +3784,7 @@ struct VisionVolumeToolbar: View {
                 .padding(.horizontal, 36)
                 .frame(height: 56)
                 .glassBackgroundEffect()
-            if showsColours {
+            if model.coloursShown {
                 VisionColourStrip()
                     .fixedSize()
                     .padding(.horizontal, 24)
@@ -3946,7 +3951,7 @@ struct VisionVolumeToolbar: View {
             }
             .help("Give the room a shape: Hallway, or the articles gathered by meaning, theme, concept, author or the people they mention")
             conceptsMenu
-            Toggle("Colours", isOn: $showsColours)
+            Toggle("Colours", isOn: Binding(get: { model.coloursShown }, set: { model.coloursShown = $0 }))
                 .toggleStyle(.button)
                 .help("The colours, beneath the bar: which is which, and lines to every paper of one")
             Toggle("Relative Volume", isOn: Binding(get: { model.sizeByLength },

@@ -2503,3 +2503,8 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
   - **Which ones:** when the current Shape stands a colour's own label in the room, it counts as already standing. These are the `shape:` labels with `tagColors`: Colour Cluster's sides, Landscape's peaks and Territory's compass.
   - **Choosing one:** choosing that colour on the bar, by tap or drag, brings out no marker and ignores the drop. Instead `reload` selects the Shape's label once (`cardSizes.highlightedColours`), lit gold, and `conceptEdges` draws its lines to every paper of the colour. Letting the colour go deselects it.
   - **Any chosen colour label:** a chosen colour label of a Shape draws those lines too.
+
+**Colour only while Colours is on (2 Nov 2026).**
+- **The toggle:** the bar's **Colours** toggle is `VisionModel.coloursShown`, kept in UserDefaults as `visionColoursShown` and off at first; changing it bumps `volumeStamp`. It unfolds the colour row and governs every node: `reload`'s last pass stamps `EPUBMapItem.showsColours` (part of `isVisuallyEqual`).
+- **What paints:** everything that paints a colour reads `paintColours`, which is empty unless `showsColours` is set (a colour key's `tagline:` marker always paints). That covers the card mosaic and colour rectangles, the sphere and blob tint and wrap, Color Titles' letters, and the coloured names of Shapes' labels. `tagColors` itself stays whole, so Colour Cluster, Landscape, Territory, the colour lines and the blobs' kinship still read it.
+- **Retro with Colours on:** a coloured paper's mosaic outranks Retro's black, and its ink is not tinted to the palette. It keeps the monospaced type and the neon edge. Uncoloured papers stay wholly Retro.

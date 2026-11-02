@@ -74,6 +74,11 @@ struct EPUBMapItem: ItemProtocol {
     var sizeScale: Float = 1
     /// Retro's palette name, or nil (2 Nov 2026).
     var retro: String?
+    /// Whether the bar's Colours is on (2 Nov 2026): a node shows its
+    /// colours only then. A colour key's own marker always does.
+    var showsColours = false
+    /// The colours a node shows — none while Colours is off.
+    var paintColours: [String] { showsColours || id.hasPrefix("tagline:") ? tagColors : [] }
     /// Two papers raised: a citation they do NOT share stands dimmed
     /// and out of reach, so the shared ones read at once. (29 Sep 2026.)
     var isFaded = false
@@ -146,6 +151,7 @@ struct EPUBMapItem: ItemProtocol {
             && tagColors == other.tagColors && authorFaces == other.authorFaces
             && look == other.look && openLift == other.openLift
             && sizeScale == other.sizeScale && retro == other.retro
+            && showsColours == other.showsColours
             // The engine attaches a card's attachment only when it builds
             // the card, so a stance mark coming or going rebuilds it.
             && stanceMark == other.stanceMark
@@ -1402,7 +1408,10 @@ struct EPUBMapView: View {
         // Stamp every item with the current theme so a theme switch makes
         // them visually unequal to their cached counterparts, triggering a
         // full card face rebuild rather than reusing stale light/dark textures.
-        for i in items.indices { items[i].visionTheme = visionThemeRaw }
+        for i in items.indices {
+            items[i].visionTheme = visionThemeRaw
+            items[i].showsColours = model.coloursShown
+        }
         updateSelectChips()
         rebuildDeepRank()
         updateSankey()
@@ -3395,7 +3404,7 @@ struct EPUBMapView: View {
             // the room. Chosen, it turns warm gold (1 Nov 2026).
             let ink = item.isSelected ? Color(red: 1.0, green: 0.84, blue: 0.45)
                 : item.id.hasPrefix(Self.tagHubPrefix) || item.id.hasPrefix(Self.shapeLabelPrefix)
-                    ? Self.color(hex: item.tagColors.first ?? "#FFFFFF")
+                    ? Self.color(hex: item.paintColours.first ?? "#FFFFFF")
                 : Color.white
             VStack(spacing: 3 * s) {
                 // A Landscape's colour is a mountain top.
@@ -3523,12 +3532,12 @@ struct EPUBMapView: View {
                 }
                 // Its categories: a small rectangle of each colour, in the
                 // tags' order (set on the Mac, 2 Nov 2026).
-                if !item.tagColors.isEmpty {
+                if !item.paintColours.isEmpty {
                     if selected && item.showsAbstract {
                         // Open: each colour names its category beside it, in
                         // small sans-serif (2 Nov 2026) — in a row, or one
                         // under another when the row will not fit.
-                        let chips = ForEach(Array(item.tagColors.enumerated()), id: \.offset) { _, hex in
+                        let chips = ForEach(Array(item.paintColours.enumerated()), id: \.offset) { _, hex in
                             HStack(spacing: 1 * s) {
                                 RoundedRectangle(cornerRadius: 0.6 * s)
                                     .fill(Self.color(hex: hex))
@@ -3546,7 +3555,7 @@ struct EPUBMapView: View {
                         .padding(.top, 0.8 * s)
                     } else {
                         HStack(spacing: 1.2 * s) {
-                            ForEach(Array(item.tagColors.enumerated()), id: \.offset) { _, hex in
+                            ForEach(Array(item.paintColours.enumerated()), id: \.offset) { _, hex in
                                 RoundedRectangle(cornerRadius: 0.6 * s)
                                     .fill(Self.color(hex: hex))
                                     .frame(width: 7 * s, height: 2.4 * s)
@@ -3594,7 +3603,7 @@ struct EPUBMapView: View {
             .multilineTextAlignment(.center)
             // Retro: every ink tinted to the palette's text colour (white
             // takes it whole, greys a dimmer shade), in a monospaced hand.
-            .colorMultiply(retroPalette(item)?.text ?? .white)
+            .colorMultiply(item.paintColours.isEmpty ? (retroPalette(item)?.text ?? .white) : .white)
             .fontDesign(retroPalette(item) == nil ? nil : .monospaced)
             .padding(.horizontal, (item.kind == .article ? 8 : 7) * s)
             // A long paper is a taller sheet: the length's share of the
@@ -3609,9 +3618,10 @@ struct EPUBMapView: View {
             // itself is shaped (not a material fill, which paints the
             // attachment's backing square past the corners).
             .background {
-                if retroPalette(item) != nil && !item.isLifted {
+                // With Colours on, a paper's colours outrank Retro's black.
+                if retroPalette(item) != nil && item.paintColours.isEmpty && !item.isLifted {
                     RoundedRectangle(cornerRadius: 8 * s).fill(Color.black)
-                } else if !item.tagColors.isEmpty {
+                } else if !item.paintColours.isEmpty {
                     // (A lifted card keeps its colours too — off its slot it
                     // stood black on its dark slab, 2 Nov 2026.)
                     // A paper's categories as its ground (2 Nov 2026): a
@@ -3619,7 +3629,7 @@ struct EPUBMapView: View {
                     // a room of hundreds stays light — dimmed under the words.
                     ZStack {
                         RoundedRectangle(cornerRadius: 8 * s).fill(Color(white: 0.08))
-                        Self.mosaic(item.tagColors)
+                        Self.mosaic(item.paintColours)
                             .opacity(0.62)
                             .clipShape(RoundedRectangle(cornerRadius: 8 * s))
                         RoundedRectangle(cornerRadius: 8 * s)
@@ -3669,7 +3679,7 @@ struct EPUBMapView: View {
     /// lines from those papers converge. Chosen, the frame turns white.
     @ViewBuilder private func colourHub(for item: EPUBMapItem) -> some View {
         let s = Self.crisp
-        let colour = Self.color(hex: item.tagColors.first ?? "#FFFFFF")
+        let colour = Self.color(hex: item.paintColours.first ?? "#FFFFFF")
         VStack(spacing: 3 * s) {
             Text(item.title)
                 .font(.system(size: 10 * s, weight: .semibold, design: .serif))
@@ -3753,7 +3763,7 @@ struct EPUBMapView: View {
         let centreFromTop = Float(Self.sphereTopPad + Self.sphereDiameter / 2) * crisp
         let y = (Float(facePoints.height) / 2 - centreFromTop) * metres
         var plain = PhysicallyBasedMaterial()
-        let first = item.tagColors.first.map { Self.uiColor(hex: $0) } ?? UIColor(white: Self.uncolouredGrey, alpha: 1)
+        let first = item.paintColours.first.map { Self.uiColor(hex: $0) } ?? UIColor(white: Self.uncolouredGrey, alpha: 1)
         plain.baseColor = .init(tint: first)
         let blob = item.look == .blobs
         // A blob is soft: matte, a little see-through, a touch larger.
@@ -3774,8 +3784,8 @@ struct EPUBMapView: View {
             var phase: Float = 0
             for byte in item.id.utf8 { phase = (phase * 31 + Float(byte)).truncatingRemainder(dividingBy: 6.283) }
             pivot.components.set(BlobComponent(radius: radius, colours: Set(item.tagColors), phase: phase))
-            if item.tagColors.count > 1 {
-                let colors = item.tagColors
+            if item.paintColours.count > 1 {
+                let colors = item.paintColours
                 Task { @MainActor in
                     guard let texture = await SphereTextures.texture(for: colors) else { return }
                     var material = plain
@@ -3785,8 +3795,8 @@ struct EPUBMapView: View {
             }
             return pivot
         }
-        if item.tagColors.count > 1 {
-            let colors = item.tagColors
+        if item.paintColours.count > 1 {
+            let colors = item.paintColours
             Task { @MainActor in
                 guard let texture = await SphereTextures.texture(for: colors) else { return }
                 var material = plain
@@ -3814,14 +3824,14 @@ struct EPUBMapView: View {
             .lineLimit(item.isSelected ? 5 : 3)
         VStack(spacing: 2 * s) {
         Group {
-            if item.tagColors.isEmpty {
+            if item.paintColours.isEmpty {
                 label.foregroundStyle(Color(white: Self.uncolouredGrey))
             } else {
                 // The colours blend softly within the letters; nothing
                 // glows past their edges.
                 label
                     .foregroundStyle(Color.clear)
-                    .overlay { Self.mosaic(item.tagColors).mask(label) }
+                    .overlay { Self.mosaic(item.paintColours).mask(label) }
             }
         }
             if item.isSelected { lookByline(item, size: Self.titleBylineSize * s, width: 100 * s) }
