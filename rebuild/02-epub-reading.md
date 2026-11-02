@@ -2417,3 +2417,10 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Turning:** markers no longer wear a `BillboardComponent`. `MapCardTick` turns them to the reader each frame (they count in `anyLifted` and `liftedFacesHead`) unless they rest on a surface, which keeps its pose.
 
 **Focus keeps what is connected (2 Nov 2026).** Both kinds of Focus, the room's (`focusMode`) and a relation's Show Only or a Gather's Focus (`relationShown.only`), keep every card in `focusKeeps()` standing as well as their own. That set holds the lit relation's card and every card it reaches (Connects, Show Only, Gather), the papers of each chosen colour marker, and the papers a chosen label threads with Lines. It is worked out once per change of selection or relation and cached in `cardSizes.focusKeep`, keyed by the chosen ids and the relation, because `shouldEnableNode` asks for every card.
+
+**Weight (2 Nov 2026).** `RoomShape.weight` ("Weight", always available) arranges the room by length (`runWeightShape`).
+- **Order:** each standing paper's own word count (its reading's body, whitespace-split) ranks it, shortest first. Papers whose text is not to hand lead, unweighed.
+- **Rows:** they fill rows from the top, between 2.3 m and 0.5 m, as many rows as fit at `rowPitch`, with columns as needed and at least 4. The shortest papers stand highest and the longest lowest.
+- **Wall:** the wall curves round the reader, with radius at least 2 m (width / 2.6), as the group Shapes' arc does.
+- **Labels:** each row's label stands left of its first column and names the median length of its papers to two figures (e.g. "≈ 4,500 words"; `roundedWords`), or "Not weighed".
+- **Storage:** it is stored and undoable like the other Shapes (`storeShape`, `applyWatchPositions3D`).

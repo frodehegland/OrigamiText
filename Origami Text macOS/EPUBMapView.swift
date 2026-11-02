@@ -5591,7 +5591,7 @@ struct EPUBMapView: View {
     /// around the reader, under a label card — choosing the label draws a
     /// line to each of its papers.
     enum RoomShape: String, CaseIterable {
-        case timeline, meaning, themes, concepts, authors, people, images, constellation, colours
+        case timeline, meaning, themes, concepts, authors, people, images, constellation, colours, weight
 
         var title: String {
             switch self {
@@ -5605,6 +5605,7 @@ struct EPUBMapView: View {
             case .images: "Images"
             case .constellation: "Constellation"
             case .colours: "Colour Cluster"
+            case .weight: "Weight"
             }
         }
     }
@@ -5654,7 +5655,8 @@ struct EPUBMapView: View {
         // embedding, so they stand in any room, record or none.
         var available: Set<String> = [RoomShape.timeline.rawValue, RoomShape.authors.rawValue,
                                       RoomShape.meaning.rawValue, RoomShape.images.rawValue,
-                                      RoomShape.constellation.rawValue, RoomShape.colours.rawValue]
+                                      RoomShape.constellation.rawValue, RoomShape.colours.rawValue,
+                                      RoomShape.weight.rawValue]
         if !(corpus?.themes ?? []).isEmpty { available.insert(RoomShape.themes.rawValue) }
         if !(corpus?.terms ?? []).isEmpty { available.insert(RoomShape.concepts.rawValue) }
         if !(corpus?.people ?? []).isEmpty { available.insert(RoomShape.people.rawValue) }
@@ -5674,6 +5676,7 @@ struct EPUBMapView: View {
         switch shape {
         case .timeline: runTimelineShape()
         case .constellation: runConstellationShape()
+        case .weight: runWeightShape()
         default:
             let targets = shapeTargets()
             guard targets.count > 2 else { return }
@@ -5781,7 +5784,7 @@ struct EPUBMapView: View {
             }
             return plain([("Many pictures", many), ("Several pictures", several), ("One picture", one)],
                          rest: "Text only")
-        case .timeline, .constellation:
+        case .timeline, .constellation, .weight:
             return []
         }
     }
@@ -5953,6 +5956,62 @@ struct EPUBMapView: View {
         }
         storeShape(.constellation, labels: labels)
         applyWatchPositions3D(placedNow)
+    }
+
+    /// Weight (2 Nov 2026): the papers by their length — the shortest at
+    /// the top, the longest at the foot — read off a wall curved round the
+    /// reader, a row at a time from the lightest. Each row names its
+    /// papers' middle length at its left. Length is the reading's own word
+    /// count; a paper whose text is not to hand stands in the top row's
+    /// end, unweighed.
+    private func runWeightShape() {
+        let targets = shapeTargets()
+        guard targets.count > 2 else { return }
+        var words: [String: Int] = [:]
+        for item in targets {
+            guard let body = model.document(item.id)?.body, !body.isEmpty else { continue }
+            words[item.id] = body.reduce(0) { $0 + $1.text.split(whereSeparator: \.isWhitespace).count }
+        }
+        let weighed = targets.filter { words[$0.id] != nil }
+            .sorted { (words[$0.id]!, $0.title) < (words[$1.id]!, $1.title) }
+        let unweighed = targets.filter { words[$0.id] == nil }.sorted { $0.title < $1.title }
+        let ordered = unweighed + weighed
+        // Between knee and a hand above the head: as many rows as fit,
+        // as many columns as the papers then need.
+        let bottom: Float = 0.5, top: Float = 2.3
+        let rowsMax = Int((top - bottom) / Self.rowPitch) + 1
+        let columns = max(4, Int((Double(ordered.count) / Double(rowsMax)).rounded(.up)))
+        let rows = (ordered.count + columns - 1) / columns
+        let firstY = min(top, bottom + Float(rows - 1) * Self.rowPitch + 0.1)
+        let width = Float(columns) * Self.columnPitch
+        let radius = max(2.0, width / 2.6)
+        let origin = spaceShift + documentsShift
+        func place(column: Float, row: Int) -> SIMD3<Float> {
+            let angle = (column - Float(columns - 1) / 2) * Self.columnPitch / radius
+            return SIMD3<Float>(sin(angle) * radius, firstY - Float(row) * Self.rowPitch, -cos(angle) * radius) + origin
+        }
+        var placedNow: [String: SIMD3<Float>] = [:]
+        var labels: [ShapeLabel] = []
+        for row in 0..<rows {
+            let members = ordered[(row * columns)..<min(ordered.count, (row + 1) * columns)]
+            for (column, item) in members.enumerated() { placedNow[item.id] = place(column: Float(column), row: row) }
+            let counts = members.compactMap { words[$0.id] }.sorted()
+            let title = counts.isEmpty ? "Not weighed"
+                : "\(Self.roundedWords(counts[counts.count / 2])) words"
+            let at = place(column: -1.1, row: row)
+            labels.append(ShapeLabel(id: Self.shapeLabelPrefix + "weight.\(row)", title: title,
+                                     members: members.map(\.id),
+                                     x: at.x - spaceShift.x, y: at.y - spaceShift.y, z: at.z - spaceShift.z))
+        }
+        storeShape(.weight, labels: labels)
+        applyWatchPositions3D(placedNow)
+    }
+
+    /// "≈ 4,500": a length to two figures, as a row of papers reads it.
+    private static func roundedWords(_ n: Int) -> String {
+        let magnitude = pow(10, max(0, floor(log10(Double(max(n, 1)))) - 1))
+        let rounded = Int((Double(n) / magnitude).rounded() * magnitude)
+        return "\u{2248} " + rounded.formatted(.number.grouping(.automatic))
     }
 
     /// Cluster (Experimental): the Meaning shape.
