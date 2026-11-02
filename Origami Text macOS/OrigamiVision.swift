@@ -1781,6 +1781,14 @@ final class VisionModel {
         /// A ball under the title: Color Spheres, or the soft Blobs.
         var isRound: Bool { self == .spheres || self == .blobs }
     }
+    /// Size by Length (2 Nov 2026): each paper's card scaled by its length
+    /// among its plane's papers. Kept across launches.
+    var sizeByLength = UserDefaults.standard.bool(forKey: "visionSizeByLength") {
+        didSet {
+            UserDefaults.standard.set(sizeByLength, forKey: "visionSizeByLength")
+            volumeStamp += 1
+        }
+    }
     var cardLook = CardLook(rawValue: UserDefaults.standard.string(forKey: "visionCardLook") ?? "") ?? .cards {
         didSet {
             UserDefaults.standard.set(cardLook.rawValue, forKey: "visionCardLook")
@@ -3879,6 +3887,10 @@ struct VisionVolumeToolbar: View {
             conceptsMenu
             Button("Colours") { openWindow(id: "tag-legend") }
                 .help("Which colour is which category")
+            Toggle("Size by Length", isOn: Binding(get: { model.sizeByLength },
+                                                   set: { model.sizeByLength = $0 }))
+                .toggleStyle(.button)
+                .help("Scale each card by its paper's length: the shortest smallest, the longest largest")
             // Where the room stands in the collection: back out to the
             // whole book (in a series' room, the chosen card's volume), or
             // up to every volume of its series. Dimmed where they lead

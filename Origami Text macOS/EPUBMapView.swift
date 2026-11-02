@@ -69,6 +69,9 @@ struct EPUBMapItem: ItemProtocol {
     /// own words. Nil for anything that is not a read document.
     /// (18 Sep 2026.)
     var lengthShare: Double?
+    /// Size by Length (2 Nov 2026): how much larger or smaller the card
+    /// stands for its paper's length — 1 while the bar's toggle is off.
+    var sizeScale: Float = 1
     /// Two papers raised: a citation they do NOT share stands dimmed
     /// and out of reach, so the shared ones read at once. (29 Sep 2026.)
     var isFaded = false
@@ -140,6 +143,7 @@ struct EPUBMapItem: ItemProtocol {
             && stamp == other.stamp && firstSentence == other.firstSentence
             && tagColors == other.tagColors && authorFaces == other.authorFaces
             && look == other.look && openLift == other.openLift
+            && sizeScale == other.sizeScale
             // The engine attaches a card's attachment only when it builds
             // the card, so a stance mark coming or going rebuilds it.
             && stanceMark == other.stanceMark
@@ -789,6 +793,7 @@ struct EPUBMapView: View {
                     abstract: cardAbstract(record))
                 item.isLifted = liftedCards[record.id] != nil
                 item.lengthShare = lengthShare(record)
+                item.sizeScale = model.sizeByLength ? Self.lengthScale(item.lengthShare) : 1
                 item.imagePath = imagePaths(forDocID: record.id).first
                 item.stamp = stamp
                 item.firstSentence = firstSentenceByArticle[record.id]
@@ -1382,6 +1387,8 @@ struct EPUBMapView: View {
         conceptConnectionLines.rebuild(items: linesActive || !floatEdges.isEmpty ? items : [],
                                        edges: linesActive ? conceptEdges() : floatEdges)
         citedToDeepLines.rebuild(items: linesActive ? items : [])
+        let labels = Set(items.filter { Self.isSpatialLabel($0) && !$0.id.hasPrefix("concept:") }.map(\.id))
+        if cardSizes.labelIDs != labels { cardSizes.labelIDs = labels }
         // The bar's Shapes follow what the room's record now offers.
         syncShapeChoices()
         syncCardBar()
@@ -1940,6 +1947,9 @@ struct EPUBMapView: View {
         var riders: (label: String, ids: Set<String>)?
         /// The card that wears the verbs: the last one chosen.
         var barItemID: String?
+        /// The labels standing in the room (not the concept galaxy, which
+        /// turns and tilts on its own), turned to the reader each frame.
+        var labelIDs: Set<String> = []
         /// What a Focus keeps standing, by the selection it was read for.
         var focusKeep: (key: String, ids: Set<String>)?
         /// The card a two-hand spread has just opened — once per spread.
@@ -3060,8 +3070,11 @@ struct EPUBMapView: View {
                              // from any side; everything else stands
                              // upright.
                              anyLifted: { !liftedCards.isEmpty || !labelStuck.isEmpty
-                                 || !model.chosenTagColors.isEmpty },
-                             liftedFacesHead: { liftedCards[$0] != nil || $0.hasPrefix(Self.tagHubPrefix) },
+                                 || !cardSizes.labelIDs.isEmpty },
+                             // Every label in the room turns to the reader —
+                             // a colour's name, a Shape's group, a keyword —
+                             // unless it rests on a wall (2 Nov 2026).
+                             liftedFacesHead: { liftedCards[$0] != nil || cardSizes.labelIDs.contains($0) },
                              // A card that has taken a real surface
                              // keeps that surface's pose instead.
                              stuckOrientation: {
@@ -3786,6 +3799,14 @@ struct EPUBMapView: View {
         return Color(red: r, green: g, blue: b)
     }
 
+    /// Size by Length: the shortest paper of its plane at three quarters
+    /// of a card, the longest half as large again — by the square root of
+    /// its share, so the middling lengths spread.
+    static func lengthScale(_ share: Double?) -> Float {
+        guard let share else { return 1 }
+        return 0.75 + 0.75 * Float(max(0, min(1, share))).squareRoot()
+    }
+
     /// How far an open card stands forward of where it stands closed.
     static let openCardLift: Float = 0.03
 
@@ -3836,8 +3857,10 @@ struct EPUBMapView: View {
             grown *= Self.documentCardMagnify
         }
         // The card's size as it stands unchosen — the star menu's gap.
+        // Size by Length: the whole card, body and words, at its paper's size.
+        if item.kind == .article, !item.isGhost { grown *= item.sizeScale }
         cardSizes.base[item.id] = SIMD2(extents.x, extents.y)
-            * (item.kind == .article && !item.isGhost ? Self.documentCardMagnify : 1)
+            * (item.kind == .article && !item.isGhost ? Self.documentCardMagnify * item.sizeScale : 1)
         let holder = ModelEntity(
             mesh: .generateBox(width: extents.x * grown,
                                height: extents.y * grown, depth: 0.004),

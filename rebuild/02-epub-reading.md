@@ -2467,3 +2467,9 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
   - **Easing:** stretch and axis ease toward their targets at 9 per second, so a blob wobbles rather than snaps.
   - **Shape:** the pivot's X is turned along the axis and scaled by the stretch, with 1/√stretch across to keep the volume, times a 3.5% breath (sin(1.7·t + phase)).
 - **Places:** only the blob's shape moves; the node's place never does.
+
+**Labels face the reader; Size by Length (2 Nov 2026).**
+- **Labels:** every spatial label in the room is listed in `cardSizes.labelIDs`, which `reload` refreshes. That covers a colour's marker, a Shape's group or peak and a keyword, but not the concept galaxy, which turns and tilts on its own. `MapCardTick` turns each listed label to the reader each frame through `liftedFacesHead`, while `anyLifted` holds. A label resting on a wall keeps its stuck pose, since that is checked first.
+- **Size by Length:** the bar's **Size by Length** toggle (after Colours) sets `VisionModel.sizeByLength`, kept in UserDefaults as `visionSizeByLength`; changing it bumps `volumeStamp`.
+  - **Scale:** while it is on, each paper's `EPUBMapItem.sizeScale` (part of `isVisuallyEqual`) is `lengthScale(lengthShare)` = 0.75 + 0.75·√share. The shortest paper in its plane stands at three quarters of a card and the longest at one and a half.
+  - **What scales:** `cardEntity` multiplies `grown` by it, so the body, face, collision, sphere or blob all scale. The star's measured `cardSizes.base` scales too, so menus stay clear.
