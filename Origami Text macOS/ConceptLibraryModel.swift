@@ -488,6 +488,57 @@ final class ConceptLibraryModel {
         return report
     }
 
+    // MARK: - Kept in step with the community folder (2 Nov 2026)
+
+    /// The library every other device uses lives in the community folder
+    /// (`Defined Concepts`); this Mac's library may live anywhere — Author's
+    /// iCloud library, a folder of its own. On every upkeep beat the two are
+    /// merged both ways by event union, only where they differ, so a concept
+    /// made on the headset comes here, and one made here goes there.
+    /// Returns how many concepts moved each way.
+    @discardableResult
+    func mirror(withCommunity community: URL) -> (in: Int, out: Int) {
+        let shared = community.appendingPathComponent(OrigamiLibrarySettings.defaultConceptsFolder, isDirectory: true)
+        guard root.standardizedFileURL.path != shared.standardizedFileURL.path else { return (0, 0) }
+        let scoped = community.startAccessingSecurityScopedResource()
+        defer { if scoped { community.stopAccessingSecurityScopedResource() } }
+        let there = ConceptLibraryStore(root: shared)
+        let here = store
+        let theirs = there.readAll()
+        let ours = here.readAll()
+        let ourCount = Dictionary(ours.records.map { ($0.id, $0.events.count) }, uniquingKeysWith: max)
+        let theirCount = Dictionary(theirs.records.map { ($0.id, $0.events.count) }, uniquingKeysWith: max)
+        var moved = (in: 0, out: 0)
+        for record in theirs.records where (ourCount[record.id] ?? -1) < record.events.count
+            || ourCount[record.id] == nil {
+            if (try? here.write(record)) != nil { moved.in += 1 }
+        }
+        for record in ours.records where (theirCount[record.id] ?? -1) < record.events.count
+            || theirCount[record.id] == nil {
+            if (try? there.write(record)) != nil { moved.out += 1 }
+        }
+        let ourExtensions = ours.extensions.mapValues(\.events.count)
+        let theirExtensions = theirs.extensions.mapValues(\.events.count)
+        for (id, record) in theirs.extensions where (ourExtensions[id] ?? -1) < record.events.count {
+            try? here.write(record)
+        }
+        for (id, record) in ours.extensions where (theirExtensions[id] ?? -1) < record.events.count {
+            try? there.write(record)
+        }
+        if moved.out > 0 { there.noteLibrary(app: Self.appName) }
+        if moved.in > 0 { reload() }
+        return moved
+    }
+
+    /// Where this library lives, in words for the other devices.
+    var locationDescription: String {
+        if root.standardizedFileURL.path == Self.authorICloudLibraryURL.standardizedFileURL.path {
+            return "Author\u{2019}s iCloud library"
+        }
+        if !isUserChosenFolder { return "this Mac\u{2019}s own folder" }
+        return "the folder \u{201C}\(root.lastPathComponent)\u{201D}"
+    }
+
     // MARK: - Export
 
     func skosData() -> Data? {

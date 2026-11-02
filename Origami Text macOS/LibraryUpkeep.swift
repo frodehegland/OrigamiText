@@ -85,6 +85,9 @@ final class LibraryUpkeep {
 
     private func tick(model: AppModel) async {
         guard !isChecking else { return }
+        // The locations this Mac sets, inherited by the other devices —
+        // plumbing, so it runs whether or not the upkeep's passes do.
+        publishLibrarySettings(model: model)
         guard isEnabled else { status = "Off."; return }
         guard !anyPassRunning else { return }
         guard !model.epubRecords.isEmpty else { status = "No documents yet."; return }
@@ -99,6 +102,26 @@ final class LibraryUpkeep {
         // The pass reports its own progress; the upkeep waits it out.
         while anyPassRunning, !Task.isCancelled {
             try? await Task.sleep(for: .seconds(5))
+        }
+    }
+
+    /// The concept library kept in step with the community folder's, and
+    /// the locations written there for every other device to inherit
+    /// (2 Nov 2026). Cheap when nothing changed: only differing concepts
+    /// are written, and the settings file only when it would change.
+    func publishLibrarySettings(model: AppModel) {
+        guard let community = model.index.folderURL else { return }
+        let library = model.conceptLibrary
+        library.mirror(withCommunity: community)
+        let settings = OrigamiLibrarySettings(
+            modified: .now,
+            conceptsFolder: OrigamiLibrarySettings.defaultConceptsFolder,
+            conceptsSource: library.locationDescription,
+            setBy: Host.current().localizedName ?? "the Mac")
+        let held = OrigamiLibrarySettings.read(from: community)
+        if held?.conceptsFolder != settings.conceptsFolder || held?.conceptsSource != settings.conceptsSource
+            || held?.setBy != settings.setBy {
+            OrigamiLibrarySettings.write(settings, to: community)
         }
     }
 

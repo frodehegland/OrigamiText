@@ -1744,6 +1744,20 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
   - Read, Open/Fold, Lift and the Pictures count are gone. Two hands spread open the reading, two taps fold the card, and the edge thumbnails raise the gallery.
   - The Connects and Show Only rows are 11 pt above and below, with 6 pt between them.
 
+### 5.45 Library locations set on the Mac, inherited by the headset (2 November 2026)
+
+- **The community folder is the one link.** Each device must be shown it once (the sandbox: a bookmark cannot pass between devices, and Origami has no iCloud container of its own). Every other location is named relative to it.
+- **`OrigamiLibrarySettings`** (in `EPUBShelf.swift`, shared) is written by the Mac to `<community>/origami-library-settings.json`. It holds:
+  - `conceptsFolder`: "Defined Concepts", relative to the community folder;
+  - `conceptsSource`: where the Mac's own library lives, in words ("Author's iCloud library", "this Mac's own folder", or "the folder "…"");
+  - `setBy` (the Mac's name) and `modified`.
+- **On every Library Upkeep tick** (before the enabled check, since this is plumbing), `publishLibrarySettings` does two things:
+  - It runs `ConceptLibraryModel.mirror(withCommunity:)`. Wherever the Mac's library is, it merges both ways with `<community>/Defined Concepts` by event union, writing only concepts whose event count differs. Extensions are merged too.
+  - It rewrites the settings file only when its content would change.
+- **The headset** adopts the settings on its standing loop (`adoptLibrarySettings`). `conceptRoot` uses `conceptsFolder`.
+  - Settings ▸ General ▸ **Library Locations** shows the community folder and "Defined Concepts: <source>, kept in step by <Mac>", or "Not yet set by the Mac".
+- **Mac Settings ▸ Concepts:** "Use the Community Folder's Library" is gone. A note says the other devices use this library through the community folder, merged both ways.
+
 ### 5.44 Lifted words beside the reading; a reading opens clear (visionOS, 2 November 2026)
 
 - **Lift** (`floatText`) marks the new passage as `justLiftedFloatID`.

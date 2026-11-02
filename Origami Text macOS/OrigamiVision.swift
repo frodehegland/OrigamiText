@@ -1493,6 +1493,10 @@ final class VisionModel {
             if let reviews = CorpusRelations.StanceReviews.read(from: folder) {
                 await MainActor.run { self.adoptStanceReviews(reviews) }
             }
+            // Where the library's parts live, as the Mac set them.
+            if let settings = OrigamiLibrarySettings.read(from: folder) {
+                await MainActor.run { self.adoptLibrarySettings(settings) }
+            }
             guard let state = EPUBStanding.read(from: folder) else { return }
             await MainActor.run { self.applyStanding(state) }
         }
@@ -1896,7 +1900,18 @@ final class VisionModel {
     /// the folder shares the concepts. The Mac's Concept Library reads it
     /// once pointed at that folder.
     private var conceptRoot: URL? {
-        index.folderURL?.appendingPathComponent("Defined Concepts", isDirectory: true)
+        index.folderURL?.appendingPathComponent(
+            librarySettings?.conceptsFolder ?? OrigamiLibrarySettings.defaultConceptsFolder, isDirectory: true)
+    }
+
+    /// The library's locations as the Mac set them, read from the
+    /// community folder — nil until the Mac has written them.
+    private(set) var librarySettings: OrigamiLibrarySettings?
+
+    func adoptLibrarySettings(_ settings: OrigamiLibrarySettings) {
+        guard settings != librarySettings else { return }
+        librarySettings = settings
+        reloadConcepts()
     }
 
     private func withConceptStore<T>(_ body: (ConceptLibraryStore) throws -> T) rethrows -> T? {
@@ -4332,6 +4347,26 @@ struct VisionSettingsView: View {
     private var generalTab: some View {
         NavigationStack {
             Form {
+                // Set on the Mac, inherited here (2 Nov 2026): the headset
+                // is shown the community folder once; every other place
+                // comes from the Mac through it.
+                Section("Library Locations") {
+                    LabeledContent("Community folder") {
+                        Text(model.index.folderURL?.lastPathComponent ?? "Not chosen")
+                            .foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Defined Concepts") {
+                        if let settings = model.librarySettings {
+                            Text("\(settings.conceptsSource), kept in step by \(settings.setBy)")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Not yet set by the Mac").foregroundStyle(.tertiary)
+                        }
+                    }
+                    Text("The Mac sets where the library\u{2019}s parts live and writes them into the community folder; this headset uses the same places. Only the community folder itself is chosen here, once, because the system asks each device to grant a folder.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Section("Reading Desk") {
                     Picker("Theme", selection: $deskThemeRaw) {
                         ForEach(ReadingDeskTheme.allCases) { theme in

@@ -657,25 +657,19 @@ struct ConceptsSettingsView: View {
                     Button("Reload") { library.reload() }
                 }
                 HStack {
-                    // The headset keeps its concepts in the community
-                    // folder's Defined Concepts (2 Nov 2026): this Mac
-                    // shares them by using that folder too.
-                    if let community = model.index.folderURL {
-                        Button("Use the Community Folder\u{2019}s Library") {
-                            let folder = community.appendingPathComponent("Defined Concepts", isDirectory: true)
-                            let scoped = community.startAccessingSecurityScopedResource()
-                            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                            if scoped { community.stopAccessingSecurityScopedResource() }
-                            chooseFolder(startingAt: folder)
-                        }
-                        .help("The library Vision Pro keeps in the community folder's Defined Concepts — choose it and both share one library")
-                    }
                     Button("Import from Knowledge Space\u{2026}") { importKnowledgeSpace() }
                         .help("Bring in the concepts of Knowledge Space documents (.liquid.json) — choose the documents or their folder")
                 }
                 if let importSummary {
                     Text(importSummary).font(.caption).foregroundStyle(.secondary)
                 }
+                // Set here, inherited there (2 Nov 2026): Vision Pro and the
+                // other devices use this library through the community
+                // folder's Defined Concepts, kept in step with it.
+                Text("Vision Pro and your other devices use this library: Library Upkeep keeps a copy of it in the community folder\u{2019}s Defined Concepts, merged both ways, so concepts made on the headset come back here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } header: {
                 Text("Defined Concepts")
             } footer: {

@@ -5178,3 +5178,47 @@ extension BoundVolume {
         return found
     }
 }
+
+// MARK: - Library locations, set on the Mac (2 Nov 2026)
+
+/// Where the library's parts live, as the Mac sets them — written by the
+/// Mac into the community folder (`origami-library-settings.json`) and
+/// inherited by every other device that opens that folder. The community
+/// folder itself is the one thing each device must be shown once (the
+/// system's sandbox asks every device to grant a folder itself); every
+/// other place is named relative to it, so nothing else is asked.
+nonisolated struct OrigamiLibrarySettings: Codable, Sendable, Equatable {
+    var format = "origami-library-settings"
+    var modified: Date
+    /// The Defined Concepts library every device uses, relative to the
+    /// community folder — the Mac keeps it in step with its own library,
+    /// wherever that is.
+    var conceptsFolder: String
+    /// Where the Mac's own concept library lives, in words, for the other
+    /// devices to show ("Author's iCloud library", "a folder named …").
+    var conceptsSource: String
+    /// The Mac that set it.
+    var setBy: String
+
+    static let fileName = "origami-library-settings.json"
+    static let defaultConceptsFolder = "Defined Concepts"
+
+    static func read(from community: URL) -> OrigamiLibrarySettings? {
+        let scoped = community.startAccessingSecurityScopedResource()
+        defer { if scoped { community.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: community.appendingPathComponent(fileName)) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(OrigamiLibrarySettings.self, from: data)
+    }
+
+    static func write(_ settings: OrigamiLibrarySettings, to community: URL) {
+        let scoped = community.startAccessingSecurityScopedResource()
+        defer { if scoped { community.stopAccessingSecurityScopedResource() } }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(settings) else { return }
+        try? data.write(to: community.appendingPathComponent(fileName), options: .atomic)
+    }
+}
