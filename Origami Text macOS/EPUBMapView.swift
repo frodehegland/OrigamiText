@@ -2840,6 +2840,11 @@ struct EPUBMapView: View {
                 let selected = items.filter { $0.isSelected }
                 guard !selected.isEmpty else { return true }
                 if item.isSelected { return true }
+                // What a chosen card's lit relation reaches — a Gather's
+                // star above all — stays with it.
+                if let relationShown, relationShown.title != "Images",
+                   selected.contains(where: { $0.id == relationShown.from }),
+                   relationShown.ids.contains(item.id) { return true }
                 // A selected item references this one (e.g. article → citation).
                 if selected.contains(where: { $0.citedIDs.contains(item.id) }) { return true }
                 // This item references a selected item (e.g. citation → its citing article).
@@ -3472,7 +3477,7 @@ struct EPUBMapView: View {
                 .multilineTextAlignment(.center)
                 .lineLimit(item.isSelected ? 4 : 2)
                 .frame(maxWidth: 70 * s)
-            lookByline(item, size: 4.4 * s, width: 70 * s)
+            if item.isSelected { lookByline(item, size: Self.sphereBylineSize * s, width: 70 * s) }
         }
         .padding(.top, Self.sphereTopPad * s)
         .padding([.horizontal, .bottom], 2 * s)
@@ -3491,6 +3496,9 @@ struct EPUBMapView: View {
                 .frame(maxWidth: width)
         }
     }
+
+    static let sphereBylineSize: CGFloat = 4.4
+    static let titleBylineSize: CGFloat = 5
 
     /// A sphere's diameter and the room above it on its face, in face
     /// points before the crisp factor (1000 to the metre at rest).
@@ -3557,7 +3565,7 @@ struct EPUBMapView: View {
                     .overlay { Self.mosaic(item.tagColors).mask(label) }
             }
         }
-            lookByline(item, size: 5 * s, width: 100 * s)
+            if item.isSelected { lookByline(item, size: Self.titleBylineSize * s, width: 100 * s) }
         }
         .frame(maxWidth: 100 * s)
         .padding(.horizontal, 6 * s)
@@ -3702,6 +3710,24 @@ struct EPUBMapView: View {
         body.addChild(backFace)
         if item.wearsLook && item.look == .spheres {
             body.addChild(sphereEntity(for: item, facePoints: facePoints, grown: grown))
+        }
+        // A sphere's or a coloured title's authors wait beneath it, unseen,
+        // until the reader faces it (MapCardTick); chosen, they stand in
+        // the face itself (2 Nov 2026).
+        if item.wearsLook, !item.isSelected, !item.author.isEmpty {
+            let spheres = item.look == .spheres
+            let size = (spheres ? Self.sphereBylineSize : Self.titleBylineSize) * Self.crisp
+            let byline = Entity()
+            byline.components.set(ViewAttachmentComponent(
+                rootView: lookByline(item, size: size, width: (spheres ? 70 : 100) * Self.crisp)
+                    .fixedSize()
+                    .allowsHitTesting(false)))
+            byline.scale = SIMD3<Float>(repeating: scale)
+            let metres = grown / (1000 * Float(Self.crisp))
+            byline.position = SIMD3<Float>(0, -Float(facePoints.height) / 2 * metres - 0.005, 0.004)
+            byline.isEnabled = false
+            body.addChild(byline)
+            holder.components.set(LookBylineComponent(byline: byline))
         }
         holder.components.set(CardFacesComponent(front: frontFace, back: backFace,
                                                  makeBack: .init { faceAttachment(back: true) }))
@@ -4460,7 +4486,12 @@ struct EPUBMapView: View {
             let ids = imagePaths(forDocID: item.id).indices.map { Self.galleryItemID(item.id, $0) }
             toggleRelation(StarRelation(title: "Images", ids: ids, isAI: false, outward: true), of: item)
         case "focus":
-            if let shown = relationShown, shown.only, shown.title != "Images",
+            // A Gather on this card: Focus keeps the star — the card and
+            // every card gathered — and hides the rest; again, the room
+            // comes back and the star stays.
+            if let shown = relationShown, shown.gathered, shown.from == item.id {
+                relationShown?.only.toggle()
+            } else if let shown = relationShown, shown.only, shown.title != "Images",
                shown.from == item.id || shown.ids.contains(item.id) {
                 relationShown = nil
             } else {
@@ -4621,15 +4652,10 @@ struct EPUBMapView: View {
             Button(item.isPinned ? "Unpin" : "Pin") { performCardVerb("pin", on: item.id) }
                 .tint(item.isPinned ? .accentColor : nil)
             Button("Put Aside") { performCardVerb("hide", on: item.id) }
-            // While this card's Gather stands (2 Nov 2026): Focus hides
-            // every card it did not gather, and Select Gathered chooses
-            // them all, so one drag carries the whole star.
+            // While this card's Gather stands (2 Nov 2026): Select Gathered
+            // chooses them all, so one drag carries the whole star. (Focus
+            // is the card's own Focus, above it.)
             if let shown = relationShown, shown.gathered, shown.from == item.id {
-                Button("Focus") {
-                    relationShown?.only.toggle()
-                    reload()
-                }
-                .tint(shown.only ? .accentColor : nil)
                 let all = gatheredAllSelected
                 Button(all ? "Deselect Gathered" : "Select Gathered") { selectGathered(!all) }
                     .tint(all ? .accentColor : nil)
@@ -7706,6 +7732,12 @@ struct EPUBNodeIDComponent: Component {
     let id: String
 }
 
+/// A sphere's or a coloured title's authors, shown only while the reader
+/// faces the node (2 Nov 2026).
+struct LookBylineComponent: Component {
+    let byline: Entity
+}
+
 /// The card's two faces, cached at build time so the per-frame turner
 /// never walks a card's subtree hunting them by name.
 struct CardFacesComponent: Component {
@@ -9816,6 +9848,7 @@ final class CardFaceTurner {
         guard !started else { return }
         started = true
         CardFacesComponent.registerComponent()
+        LookBylineComponent.registerComponent()
         guard WorldTrackingProvider.isSupported else {
             print("Map/faces: world tracking unsupported — back faces stay dark")
             return
@@ -9844,6 +9877,19 @@ final class CardFaceTurner {
     /// own height, and the gaze flattened to the floor — a look up or
     /// down must not send anything gathered to the ceiling or the
     /// carpet. Nil on the same terms as `headPosition()`.
+    /// Where the reader's head is and the way it points — not flattened,
+    /// so a look up at a node or down at one counts.
+    func headRay() -> (position: SIMD3<Float>, forward: SIMD3<Float>)? {
+        guard worldTracking.state == .running,
+              let device = worldTracking.queryDeviceAnchor(atTimestamp: CACurrentMediaTime())
+        else { return nil }
+        let matrix = device.originFromAnchorTransform
+        let forward = -SIMD3<Float>(matrix.columns.2.x, matrix.columns.2.y, matrix.columns.2.z)
+        guard simd_length(forward) > 1e-4 else { return nil }
+        return (SIMD3<Float>(matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z),
+                simd_normalize(forward))
+    }
+
     func headPose() -> (position: SIMD3<Float>, forward: SIMD3<Float>)? {
         guard worldTracking.state == .running,
               let device = worldTracking.queryDeviceAnchor(
@@ -10024,6 +10070,8 @@ private final class MapCardTick {
     /// a desk must stay lying on it, whoever walks round it.
     private var stuckOrientation: (@MainActor (String) -> simd_quatf?)?
     private let cardQuery = EntityQuery(where: .has(EPUBNodeIDComponent.self))
+    /// The one byline the reader is facing, shown.
+    private weak var shownByline: Entity?
 
     func install(in content: RealityViewContent,
                  faceTurner: CardFaceTurner,
@@ -10048,8 +10096,23 @@ private final class MapCardTick {
         guard head != nil || !liveLines.isEmpty || lifted else { return }
         var positions: [String: SIMD3<Float>] = [:]
         let upright = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+        // The node the head points most nearly at, within about 5°: its
+        // authors show. (visionOS keeps the eyes' own gaze from apps; the
+        // head's heading is the nearest the room may know.)
+        let ray = faceTurner?.headRay()
+        var faced: (byline: Entity, closeness: Float)?
         for card in scene.performQuery(cardQuery) {
             let place = card.position(relativeTo: nil)
+            if let ray, let look = card.components[LookBylineComponent.self], card.isEnabled {
+                let to = place - ray.position
+                let distance = simd_length(to)
+                if distance > 0.1 {
+                    let closeness = simd_dot(to / distance, ray.forward)
+                    if closeness > 0.996, closeness > (faced?.closeness ?? 0) {
+                        faced = (look.byline, closeness)
+                    }
+                }
+            }
             if let head { faceTurner?.turn(card: card, at: place, head: head) }
             guard let id = card.components[EPUBNodeIDComponent.self]?.id
             else { continue }
@@ -10097,6 +10160,11 @@ private final class MapCardTick {
             }
         }
         for layer in liveLines { layer.relayout(positions: positions) }
+        if faced?.byline !== shownByline {
+            shownByline?.isEnabled = false
+            faced?.byline.isEnabled = true
+            shownByline = faced?.byline
+        }
     }
 }
 
