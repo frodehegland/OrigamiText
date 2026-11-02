@@ -1753,6 +1753,12 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
   - (Before, a lift stood at the room's fixed front, (0, 1.35, −0.9) plus the shift, where the reading panel hid it.)
 - **Opening a reading** (`openReading`) puts away any relation drawn from that card, and its selection relation and gallery, so no lines carry over from the card to the panel.
 
+- **A chosen lifted passage** shows, under its verbs, **Connects ▾** and **Show Only ▾** (`floatRelationList`). They unfold the same five relations as a reading's selection, keyed by the passage's text, which is its card id in `selectionRelations`.
+  - `computeSelectionRelations` takes both a reading's selection and every chosen float. A float leaves out the paper it was lifted from.
+  - `relationPhrases` holds the words each key was measured for, so a late "Says something similar" answer for older words is dropped.
+  - A choice posts `selectionRelationRequest` with the float's id. Lines run card to card (`conceptEdges`). The float's lines stand even while a reading is open, since other relation lines are suppressed then.
+  - Letting the float go puts its relation away.
+
 ### 5.43 Concepts on the room's bar; Knowledge Space import (2 November 2026)
 
 **visionOS**

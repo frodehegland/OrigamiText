@@ -1242,8 +1242,13 @@ struct EPUBMapView: View {
             readerPanels: readerPanels,
             readingDeskDocID: model.readingDeskDocID)
         selectedCitationLines.rebuild(items: linesActive ? items : [])
-        conceptConnectionLines.rebuild(items: linesActive ? items : [],
-                                       edges: linesActive ? conceptEdges() : [])
+        // A lifted passage's lines stand even while a reading is open —
+        // it is usually lifted from one.
+        let floatEdges: [(from: String, to: String)] = relationShown.map { shown in
+            shown.from.hasPrefix("float:") ? shown.ids.map { (from: shown.from, to: $0) } : []
+        } ?? []
+        conceptConnectionLines.rebuild(items: linesActive || !floatEdges.isEmpty ? items : [],
+                                       edges: linesActive ? conceptEdges() : floatEdges)
         citedToDeepLines.rebuild(items: linesActive ? items : [])
         // The bar's Shapes follow what the room's record now offers.
         syncShapeChoices()
@@ -1800,6 +1805,10 @@ struct EPUBMapView: View {
         /// relations of a reading's selected words — kept for the room.
         var paperText: [String: String] = [:]
         var paragraphVectors: [String: [[Double]]] = [:]
+        /// The words each relation key was last measured for — a reading's
+        /// selection or a lifted passage — so a late answer for older words
+        /// is dropped.
+        var relationPhrases: [String: String] = [:]
     }
     /// The Select chip's kinds, unfolded above it.
     @State private var selectOpen = false
@@ -2527,6 +2536,19 @@ struct EPUBMapView: View {
                 if item.isSelected, !item.isGhost, wearsVerbs(item),
                    item.kind != .article,
                    (item.kind != .cited && item.kind != .citedDeep) || item.showsAbstract {
+                    // Lifted words also connect: Connects and Show Only,
+                    // keyed by the passage's own text (2 Nov 2026).
+                    if item.id.hasPrefix("float:") {
+                        return AnyView(
+                            VStack(spacing: 10) {
+                                cardVerbs(cardBar(for: item))
+                                HStack(alignment: .top, spacing: 12) {
+                                    floatRelationList("Connects", only: false, for: item)
+                                    floatRelationList("Show Only", only: true, for: item)
+                                }
+                            }
+                            .scaleEffect(0.5, anchor: .top))
+                    }
                     return AnyView(cardVerbs(cardBar(for: item)).scaleEffect(0.5, anchor: .top))
                 }
                 return AnyView(EmptyView())
@@ -4398,6 +4420,53 @@ struct EPUBMapView: View {
         }
     }
 
+    /// A lifted passage's Connects or Show Only: its words' relations,
+    /// unfolded in place, each with how many cards it reaches — greyed
+    /// where none, or while still measuring — checked while it stands.
+    private func floatRelationList(_ title: String, only: Bool, for item: EPUBMapItem) -> some View {
+        let key = (only ? "fonly|" : "fconn|") + item.id
+        let open = openList == key
+        let lit = model.litSelectionRelation
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                openList = open ? nil : key
+            } label: {
+                let shown = lit.flatMap { $0.docID == item.id && $0.only == only ? $0.title : nil }
+                Text((shown.map { "\(title): \($0)" } ?? title) + (open ? " \u{25B4}" : " \u{25BE}"))
+            }
+            .buttonStyle(.bordered)
+            .tint(lit?.docID == item.id && lit?.only == only ? .accentColor : nil)
+            if open {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(model.selectionRelations[item.id] ?? []) { relation in
+                        let on = lit == .init(docID: item.id, title: relation.title, only: only)
+                        Button {
+                            model.selectionRelationRequest = .init(docID: item.id, title: relation.title, only: only)
+                            openList = nil
+                        } label: {
+                            HStack(spacing: 6) {
+                                if on { Image(systemName: "checkmark") }
+                                Text(relation.title)
+                                Text(relation.pending ? "measuring\u{2026}" : "\(relation.ids.count)")
+                                    .foregroundStyle(.secondary)
+                                if relation.isAI {
+                                    Text("AI").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                                }
+                            }
+                            .fontWeight(on ? .semibold : .regular)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 11)
+                        .disabled(relation.ids.isEmpty)
+                    }
+                }
+                .font(.system(size: 19))
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color(white: 0.08).opacity(0.88)))
+            }
+        }
+    }
+
     /// One relation in a menu: its name and how many cards it reaches, a
     /// small AI where a model inferred it, checked while it stands —
     /// greyed when it reaches no card in the room.
@@ -4442,11 +4511,25 @@ struct EPUBMapView: View {
     private func computeSelectionRelations() {
         var all: [String: [VisionModel.SelectionRelation]] = [:]
         let papers = items.filter { $0.kind == .article && !$0.isGhost }.map(\.id)
-        for (docID, words) in model.readerSelectedWords where model.openDocIDs.contains(docID) {
-            let phrase = words.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        // The words to look for: each open reading's selection, and each
+        // chosen lifted passage (2 Nov 2026) — its own card the key, the
+        // paper it was lifted from left out.
+        struct Wanted { let key: String; let text: String; let paragraphID: String?; let reading: String? }
+        var wanted = model.readerSelectedWords.filter { model.openDocIDs.contains($0.key) }
+            .map { Wanted(key: $0.key, text: $0.value.text, paragraphID: $0.value.paragraphID, reading: $0.key) }
+        for item in items where item.id.hasPrefix("float:") && item.isSelected {
+            let source = model.floatingTexts.first { "float:" + $0.id == item.id }?.docID
+            wanted.append(Wanted(key: item.id, text: item.title, paragraphID: nil, reading: source))
+        }
+        for want in wanted {
+            let docID = want.key
+            let phrase = want.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
                 .trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))
             guard phrase.count >= 3 else { continue }
-            let others = papers.filter { $0 != docID }
+            cardSizes.relationPhrases[docID] = phrase
+            // A lifted passage leaves out the paper it came from (its
+            // annotation names the volume, so any of its articles).
+            let others = papers.filter { $0 != want.reading && VisionModel.annotationAddress($0) != want.reading }
             var relations: [VisionModel.SelectionRelation] = []
 
             let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: phrase) + "(?![\\p{L}\\p{N}])"
@@ -4475,7 +4558,7 @@ struct EPUBMapView: View {
             relations.append(.init(title: "Names this person", ids: person, isAI: false))
 
             var cites: [String] = []
-            if let paragraph = words.paragraphID, let doc = model.document(docID) {
+            if let paragraph = want.paragraphID, let doc = model.document(docID) {
                 let standing = Set(others)
                 cites = Transpoint.works(citedBy: doc, records: model.epubRecords) { model.document($0) }
                     .filter { work in work.origins.contains { $0.paragraphID == paragraph } }
@@ -4528,10 +4611,7 @@ struct EPUBMapView: View {
             let measured = vectors
             await MainActor.run {
                 for (id, value) in measured { cardSizes.paragraphVectors[id] = value }
-                guard model.readerSelectedWords[docID].map({
-                    $0.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-                        .trimmingCharacters(in: .punctuationCharacters.union(.whitespaces)) == phrase
-                }) == true, var relations = model.selectionRelations[docID],
+                guard cardSizes.relationPhrases[docID] == phrase, var relations = model.selectionRelations[docID],
                       let index = relations.firstIndex(where: { $0.title == "Says something similar" }) else { return }
                 relations[index] = .init(title: "Says something similar", ids: Array(near), isAI: true)
                 model.selectionRelations[docID] = relations
@@ -5948,7 +6028,15 @@ struct EPUBMapView: View {
             let willSelect = !item.isSelected
             // The bar's second row turns to the card just chosen.
             if willSelect { cardSizes.barItemID = item.id }
-            defer { syncCardBar() }
+            defer {
+                syncCardBar()
+                // A lifted passage chosen (or let go): what its words
+                // connect to among the papers.
+                if item.id.hasPrefix("float:") {
+                    if !willSelect, relationShown?.from == item.id { relationShown = nil; reload() }
+                    computeSelectionRelations()
+                }
+            }
             if let index = items.firstIndex(where: { $0.id == item.id }) {
                 items[index].isSelected = willSelect
                 // Deselecting folds an opened abstract away with it.
