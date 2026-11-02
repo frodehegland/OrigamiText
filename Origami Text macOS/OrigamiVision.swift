@@ -3764,17 +3764,29 @@ struct VisionVolumeToolbar: View {
     @State private var keywordDraft = ""
 
     @State private var importingConcepts = false
+    /// The colours, unfolded beneath the bar (2 Nov 2026): part of it, not
+    /// a window of their own.
+    @State private var showsColours = false
 
     var body: some View {
-        roomRow
-            .font(.system(size: 16))
-            .buttonStyle(.plain)
-            // Its whole width, always (2 Nov 2026): the window sizes to
-            // the row, and no word is cut off.
-            .fixedSize()
-            .padding(.horizontal, 36)
-            .frame(height: 56)
-            .glassBackgroundEffect()
+        VStack(spacing: 10) {
+            roomRow
+                .font(.system(size: 16))
+                .buttonStyle(.plain)
+                // Its whole width, always (2 Nov 2026): the window sizes to
+                // the row, and no word is cut off.
+                .fixedSize()
+                .padding(.horizontal, 36)
+                .frame(height: 56)
+                .glassBackgroundEffect()
+            if showsColours {
+                VisionColourStrip()
+                    .fixedSize()
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 12)
+                    .glassBackgroundEffect()
+            }
+        }
             .fileImporter(isPresented: $importingConcepts,
                           allowedContentTypes: [.json, .folder],
                           allowsMultipleSelection: true) { result in
@@ -3934,9 +3946,10 @@ struct VisionVolumeToolbar: View {
             }
             .help("Give the room a shape: Hallway, or the articles gathered by meaning, theme, concept, author or the people they mention")
             conceptsMenu
-            Button("Colours") { openWindow(id: "tag-legend") }
-                .help("Which colour is which category")
-            Toggle("Size by Length", isOn: Binding(get: { model.sizeByLength },
+            Toggle("Colours", isOn: $showsColours)
+                .toggleStyle(.button)
+                .help("The colours, beneath the bar: which is which, and lines to every paper of one")
+            Toggle("Relative Volume", isOn: Binding(get: { model.sizeByLength },
                                                    set: { model.sizeByLength = $0 }))
                 .toggleStyle(.button)
                 .help("Scale each card by its paper's length: the shortest smallest, the longest largest")
@@ -8967,6 +8980,65 @@ struct VisionNewConceptView: View {
 /// its name, with how many papers in the room carry it — for learning
 /// which colour is which while the room is read. Words of each category
 /// beneath, small, so what it catches can be seen.
+/// The colours as a row beneath the bar (2 Nov 2026): each a swatch with
+/// its name and how many papers in the room wear it — tapped, its marker
+/// comes into the room with its lines; dragged out, it lands where the hand
+/// lets go. Clear Lines lets the markers go without removing them.
+struct VisionColourStrip: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.physicalMetrics) private var metrics
+    @State private var dragging: (hex: String, offset: CGSize)?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(model.tags.tags.filter(\.isOn)) { tag in
+                let chosen = model.chosenTagColors.contains(tag.color)
+                let (r, g, b) = tag.rgb
+                Button {
+                    if chosen { model.chosenTagColors.remove(tag.color) } else { model.chosenTagColors.insert(tag.color) }
+                } label: {
+                    VStack(spacing: 5) {
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(Color(red: r, green: g, blue: b))
+                            .frame(width: 64, height: 18)
+                            .overlay(RoundedRectangle(cornerRadius: 5)
+                                .strokeBorder(Color.white.opacity(chosen ? 0.9 : 0), lineWidth: 2))
+                        Text(tag.name).font(.system(size: 14, weight: chosen ? .semibold : .regular))
+                            .lineLimit(1)
+                        Text("\(model.roomTagCounts[tag.color] ?? 0)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(minWidth: 84)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 6)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(chosen ? 0.14 : 0.0001)))
+                    .contentShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .hoverEffect()
+                .help(tag.words.prefix(8).joined(separator: ", "))
+                .offset(dragging?.hex == tag.color ? dragging!.offset : .zero)
+                .zIndex(dragging?.hex == tag.color ? 1 : 0)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 24, coordinateSpace: .immersiveSpace)
+                        .onChanged { value in dragging = (tag.color, value.translation) }
+                        .onEnded { value in
+                            dragging = nil
+                            let p = value.location3D
+                            func m(_ v: Double) -> Float { Float(metrics.convert(CGFloat(v), to: .meters)) }
+                            model.dropTagColor(tag.color, at: SIMD3<Float>(m(p.x), -m(p.y), m(p.z)))
+                        })
+            }
+            if !model.chosenTagColors.isEmpty {
+                Divider().frame(height: 44)
+                Button("Clear Lines") { model.clearColourLines() }
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+}
+
 struct VisionTagLegendView: View {
     @Environment(VisionModel.self) private var model
     @Environment(\.physicalMetrics) private var metrics

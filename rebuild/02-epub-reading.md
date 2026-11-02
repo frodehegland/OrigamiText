@@ -2470,7 +2470,7 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 
 **Labels face the reader; Size by Length (2 Nov 2026).**
 - **Labels:** every spatial label in the room is listed in `cardSizes.labelIDs`, which `reload` refreshes. That covers a colour's marker, a Shape's group or peak and a keyword, but not the concept galaxy, which turns and tilts on its own. `MapCardTick` turns each listed label to the reader each frame through `liftedFacesHead`, while `anyLifted` holds. A label resting on a wall keeps its stuck pose, since that is checked first.
-- **Size by Length:** the bar's **Size by Length** toggle (after Colours) sets `VisionModel.sizeByLength`, kept in UserDefaults as `visionSizeByLength`; changing it bumps `volumeStamp`.
+- **Size by Length:** the bar's **Relative Volume** toggle (after Colours; first called Size by Length) sets `VisionModel.sizeByLength`, kept in UserDefaults as `visionSizeByLength`; changing it bumps `volumeStamp`.
   - **Scale:** while it is on, each paper's `EPUBMapItem.sizeScale` (part of `isVisuallyEqual`) is `lengthScale(lengthShare)` = 0.75 + 0.75·√share. The shortest paper in its plane stands at three quarters of a card and the longest at one and a half.
   - **What scales:** `cardEntity` multiplies `grown` by it, so the body, face, collision, sphere or blob all scale. The star's measured `cardSizes.base` scales too, so menus stay clear.
 
@@ -2485,3 +2485,9 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **No fist chits:** the forearms have worn no chips since 1 Nov (`armChipsWorn`). Now the fist offers no chits either (`FistGrab.offersChits = false`): it carries everything from the moment it closes, `choice = .everything` at grip, and `FistChooser.show` is never called. The chooser code stays for the day it returns.
 - **Blobs stick:** in the Blobs look, the first frame of a drag lifts a blob that is still on its slot (`LiftedCard(home: start, sticks: true)`), so it moves free and courts the room's surfaces from 25 cm (`surfacePose(reach:)`). It lands on a wall, a table or the floor it is brought near, and Put Back sends it home.
 - **Clear Lines:** the colour key's **Clear Lines** now calls `VisionModel.clearColourLines()`. That sets `clearTagLines` and bumps `volumeStamp`; `reload` drops every colour marker from the carried selection. The markers stay where they stand, unchosen, so they draw no lines.
+
+**Colours beneath the bar (2 Nov 2026).** The bar's **Colours** is now a toggle (`showsColours` in `VisionVolumeToolbar`). Instead of opening the free-floating `tag-legend` window, it unfolds `VisionColourStrip`: a horizontal row in its own glass, directly beneath the bar's row in the same `volume-toolbar` window, which sizes to its content.
+- **Each colour:** a 64 × 18 swatch (ringed in white when chosen), its name, and how many papers in the room wear it; its words show as help.
+- **Behaviour:** tapping toggles its marker, and dragging it out lands the marker where the hand lets go, as the key did.
+- **Clear Lines:** while any colour is chosen, it stands at the row's end. The old window remains declared but is no longer opened from the bar.
+
