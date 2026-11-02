@@ -1688,6 +1688,35 @@ The Mac keeps the library's metadata current without being asked, so the reader 
   - A pass started by hand keeps full speed.
 - **Settings ▸ AI ▸ Library Upkeep** (`LibraryUpkeepSettingsSection`, after Embedding Model): a toggle, on by default (`libraryUpkeepEnabled`), and the upkeep's one-line status.
 
+### 5.33 AI on This Mac: models Origami runs itself (macOS, 2 November 2026)
+
+No Ollama or LM Studio is needed: Origami downloads and runs models in-process on MLX (`LocalModels.swift`).
+- **Packages** linked to the macOS target:
+  - mlx-swift-lm, **exact 3.31.4** (speech-swift pins it): MLXLLM, MLXLMCommon, MLXEmbedders, MLXHuggingFace;
+  - swift-transformers: Tokenizers;
+  - swift-huggingface: HuggingFace.
+  The MLXHuggingFaceMacros macro must be trusted once in Xcode; command-line builds pass `-skipMacroValidation`. All the code is behind `#if os(macOS) && canImport(MLXLLM)…`.
+- **The ladder** (`LocalModelChoice.ladder`): each rung pairs a chat model with an embedding model (all from mlx-community, 4-bit). Download sizes are the two together.
+
+| Rung | Chat model | Embedding model | Download | Memory needed |
+|---|---|---|---|---|
+| 0.8B | Qwen3.5-0.8B-4bit | Qwen3-Embedding-0.6B-4bit-DWQ | 1.0 GB | 4 GB |
+| 4B | Qwen3.5-4B-MLX-4bit | Qwen3-Embedding-0.6B-4bit-DWQ | 3.3 GB | 8 GB |
+| 9B | Qwen3.5-9B-MLX-4bit | Qwen3-Embedding-4B-4bit-DWQ | 8.3 GB | 16 GB |
+| 35B-A3B | Qwen3.5-35B-A3B-4bit | Qwen3-Embedding-4B-4bit-DWQ | 22.7 GB | 32 GB |
+| 122B-A10B | Qwen3.5-122B-A10B-4bit | Qwen3-Embedding-8B-4bit-DWQ | 73.9 GB | 96 GB |
+
+- **What a Mac is offered** (`offered`): the three largest rungs that fit `physicalMemory`, labelled Light, Balanced and Best.
+- **Download** (`LocalModels.download`): `#hubDownloader()` fetches the embedding model, then the chat model (patterns `*.safetensors *.json *.jinja *.txt *.model`). Progress is weighted 4 % to the embedding model. A stopped download resumes. When both are in, the pair is recorded in UserDefaults `localModelsReady` and selected.
+- **Selection:** `OrigamiLLM.selectedID = "local|<id>"`. `selectedLocalChoice` is nil unless that pair is ready.
+  - `respond` goes to `LocalModels.respond`: a `ChatSession` with `enable_thinking: false`, maxTokens 4096 and temperature 0.6 (top-p 0.95), with any `<think>` text cut.
+  - `generate<T>` sends the same JSON-schema prompt a server gets, read back by `decode`.
+  - `canRespond`, `respondJSON`, `embed` and `hasEmbeddingModel` all honour the selection.
+  - `activeEmbeddingModel` (the embedding repo) names the corpus vector cache, so two models' vectors never mix.
+- **Embedding** runs one text at a time: tokens are truncated to `maxPositionEmbeddings`, then `model(…)` and `pooling(normalize: true)`.
+- **Memory:** loaded containers are released after 10 idle minutes (`MLX.GPU.clearCache()`).
+- **Settings ▸ AI:** **AI on This Mac** comes first, one row per offered rung: tier, model, summary and size, then *Download and Use*, a progress bar with *Stop*, *Use*, or a green *In Use*. **Model in Use** (the former Language Model picker) follows. It lists the ready pairs first, and leaves out embedding-only models (`isEmbeddingOnly`: names containing "embed", or bge-).
+
 ### 5.29 Miniatures on the star, and jumping to a card (visionOS, 1 November 2026)
 
 When a relation on an open paper's star is lit (Similar to, Mentioned by, Cites…), its cards also stand in miniature on a ring round the star. The lines to the real cards still run.

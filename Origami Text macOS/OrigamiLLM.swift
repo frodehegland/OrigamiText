@@ -133,6 +133,13 @@ final class OrigamiLLM {
             ?? EmbeddingModelCatalog.suggested.id
     }
 
+    /// A model name that marks an embedding model ("qwen3-embedding:8b",
+    /// "text-embedding-nomic-embed-text-v1.5", "bge-m3").
+    nonisolated static func isEmbeddingOnly(_ model: String) -> Bool {
+        let name = model.lowercased()
+        return name.contains("embed") || name.hasPrefix("bge-") || name.contains("/bge-")
+    }
+
     static func endpointID(base: String, model: String) -> String {
         "endpoint|\(base)|\(model)"
     }
@@ -147,8 +154,41 @@ final class OrigamiLLM {
     }
 
     var selectedDisplayName: String {
-        selectedEndpointModel().map { "\($0.endpoint.hostLabel) \u{00B7} \($0.model)" }
+        #if os(macOS)
+        if let choice = selectedLocalChoice { return choice.modelName + " \u{2014} on this Mac" }
+        #endif
+        return selectedEndpointModel().map { "\($0.endpoint.hostLabel) \u{00B7} \($0.model)" }
             ?? "Apple\u{2019}s built-in model"
+    }
+
+    #if os(macOS)
+    /// A model Origami runs itself (`LocalModels`): "local|<choice id>".
+    static let localPrefix = "local|"
+
+    static func localID(_ choice: LocalModelChoice) -> String { localPrefix + choice.id }
+
+    /// The selection as one of Origami's own models — nil when it names
+    /// another, or names one not yet downloaded.
+    var selectedLocalChoice: LocalModelChoice? {
+        guard selectedID.hasPrefix(Self.localPrefix) else { return nil }
+        let id = String(selectedID.dropFirst(Self.localPrefix.count))
+        guard let choice = LocalModelChoice.ladder.first(where: { $0.id == id }) else { return nil }
+        #if canImport(MLXLLM) && canImport(MLXEmbedders) && canImport(MLXHuggingFace)
+        return LocalModels.shared.isReady(choice) ? choice : nil
+        #else
+        return nil
+        #endif
+    }
+    #endif
+
+    /// The embedding model in use, by name — Origami's own pair's when one
+    /// is chosen, else the Ollama model. Vectors are cached under it, so
+    /// two models' vectors are never compared.
+    var activeEmbeddingModel: String {
+        #if os(macOS)
+        if let choice = selectedLocalChoice { return choice.embedRepo }
+        #endif
+        return embeddingModel
     }
 
     // MARK: Endpoints
@@ -206,6 +246,13 @@ final class OrigamiLLM {
                  transformingContent: Bool = false,
                  onPartial: (@MainActor (String) -> Void)? = nil)
         async throws -> (text: String, modelName: String) {
+        #if os(macOS) && canImport(MLXLLM) && canImport(MLXEmbedders) && canImport(MLXHuggingFace)
+        if let choice = selectedLocalChoice {
+            let text = try await LocalModels.shared.respond(
+                choice, instructions: instructions, prompt: prompt, onPartial: onPartial)
+            return (text, choice.modelName)
+        }
+        #endif
         if let (endpoint, model) = selectedEndpointModel() {
             do {
                 let text = try await ChatCompletionsClient.respond(
@@ -245,6 +292,18 @@ final class OrigamiLLM {
                                 options: GenerationOptions = GenerationOptions(),
                                 transformingContent: Bool = false)
         async throws -> (content: T, modelName: String) {
+        #if os(macOS) && canImport(MLXLLM) && canImport(MLXEmbedders) && canImport(MLXHuggingFace)
+        // Origami's own model is asked for the same JSON a server is.
+        if let choice = selectedLocalChoice {
+            let schema = try Self.jsonSchema(for: T.self)
+            let shape = "Reply with one JSON object only \u{2014} no prose, no code fence \u{2014} matching this JSON Schema:\n"
+                + (String(data: try JSONSerialization.data(withJSONObject: schema), encoding: .utf8) ?? "")
+            let text = try await LocalModels.shared.respond(
+                choice, instructions: [instructions, shape].compactMap { $0 }.joined(separator: "\n\n"),
+                prompt: prompt, temperature: options.temperature.map(Float.init), onPartial: nil)
+            return (try Self.decode(T.self, from: text, host: choice.modelName), choice.modelName)
+        }
+        #endif
         if let (endpoint, model) = selectedEndpointModel() {
             do {
                 let schema = try Self.jsonSchema(for: T.self)
@@ -302,6 +361,9 @@ final class OrigamiLLM {
     /// Whether any model can answer now: a chosen server, or Apple's
     /// built-in model (which may still refuse — callers catch that).
     var canRespond: Bool {
+        #if os(macOS)
+        if selectedLocalChoice != nil { return true }
+        #endif
         if selectedEndpointModel() != nil { return true }
         #if canImport(FoundationModels)
         if case .available = SystemLanguageModel.default.availability { return true }
@@ -315,7 +377,11 @@ final class OrigamiLLM {
     /// reply is not the JSON asked for.
     func respondJSON<T: Decodable>(_ type: T.Type, instructions: String,
                                    prompt: String) async throws -> T? {
-        guard selectedEndpointModel() != nil else { return nil }
+        var chosen = selectedEndpointModel() != nil
+        #if os(macOS)
+        if selectedLocalChoice != nil { chosen = true }
+        #endif
+        guard chosen else { return nil }
         let (text, _) = try await respond(
             instructions: instructions + "\nReply with one JSON object only \u{2014} no prose, no code fence.",
             to: prompt)
@@ -434,6 +500,11 @@ final class OrigamiLLM {
     /// so a corpus is embedded by one model or not at all — a missing
     /// model or server is the caller's to report.
     func embed(_ texts: [String]) async throws -> (vectors: [[Float]], modelName: String) {
+        #if os(macOS) && canImport(MLXLLM) && canImport(MLXEmbedders) && canImport(MLXHuggingFace)
+        if let choice = selectedLocalChoice {
+            return (try await LocalModels.shared.embed(choice, texts), choice.embedRepo)
+        }
+        #endif
         let model = embeddingModel
         let vectors = try await OllamaClient.embed(base: ollamaBase, model: model,
                                                    inputs: texts, key: apiKey(for: ollamaBase))
@@ -442,7 +513,10 @@ final class OrigamiLLM {
 
     /// Whether the chosen embedding model stands on the server.
     func hasEmbeddingModel() async -> Bool {
-        await OllamaClient.installedModels(base: ollamaBase, key: apiKey(for: ollamaBase))
+        #if os(macOS)
+        if selectedLocalChoice != nil { return true }
+        #endif
+        return await OllamaClient.installedModels(base: ollamaBase, key: apiKey(for: ollamaBase))
             .contains { OllamaClient.sameModel($0, embeddingModel) }
     }
 
@@ -906,20 +980,32 @@ struct LLMModelSettingsSections: View {
     @State private var showingRecommendations = false
 
     var body: some View {
+        // The one choice most readers need: a model Origami runs itself.
+        #if os(macOS) && canImport(MLXLLM) && canImport(MLXEmbedders) && canImport(MLXHuggingFace)
+        LocalModelsSettingsSection()
+        #endif
+
         Section {
             Picker("Choose Model", selection: Binding(
                 get: { llm.selectedID },
                 set: { llm.selectedID = $0 })) {
+                #if os(macOS) && canImport(MLXLLM) && canImport(MLXEmbedders) && canImport(MLXHuggingFace)
+                ForEach(LocalModelChoice.ladder.filter { LocalModels.shared.isReady($0) }) { choice in
+                    Text("\(choice.modelName) \u{2014} in Origami").tag(OrigamiLLM.localID(choice))
+                }
+                #endif
                 Text("Apple\u{2019}s built-in \u{2014} on \(OrigamiLLM.thisDevice)").tag("apple")
                 ForEach(llm.endpoints) { endpoint in
-                    ForEach(endpoint.models, id: \.self) { model in
+                    // A model that only measures meaning cannot answer:
+                    // it is the Embedding Model's, not the picker's.
+                    ForEach(endpoint.models.filter { !OrigamiLLM.isEmbeddingOnly($0) }, id: \.self) { model in
                         Text("\(endpoint.hostLabel) \u{00B7} \(model)")
                             .tag(OrigamiLLM.endpointID(base: endpoint.base, model: model))
                     }
                 }
             }
         } header: {
-            Text("Language Model")
+            Text("Model in Use")
         } footer: {
             Text("""
                 Apple\u{2019}s built-in model runs on \(OrigamiLLM.thisDevice) \u{2014} no text \

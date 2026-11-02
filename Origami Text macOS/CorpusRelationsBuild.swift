@@ -212,10 +212,10 @@ final class CorpusRelationsBuilder {
         let llm = OrigamiLLM.shared
         guard await llm.hasEmbeddingModel() else {
             corpus.themes = CorpusRelations.keywordThemes(keywords, vectors: nil)
-            log.append("Themes: \(corpus.themes?.count ?? 0), merged by spelling only — the embedding model \(llm.embeddingModel) is not on Ollama (Settings ▸ AI ▸ Embedding Model). Similar, groups and the meaning map wait for it.")
+            log.append("Themes: \(corpus.themes?.count ?? 0), merged by spelling only — the embedding model \(llm.activeEmbeddingModel) is not available (Settings ▸ AI ▸ AI on This Mac). Similar, groups and the meaning map wait for it.")
             return
         }
-        let model = llm.embeddingModel
+        let model = llm.activeEmbeddingModel
         var cache = Self.loadVectorCache(model: model)
         do {
             let distinct = Array(Set(keywords.values.flatMap { $0 }.map(CorpusRelations.normalizedKeyword)))
