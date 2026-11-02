@@ -3472,9 +3472,24 @@ struct EPUBMapView: View {
                 .multilineTextAlignment(.center)
                 .lineLimit(item.isSelected ? 4 : 2)
                 .frame(maxWidth: 70 * s)
+            lookByline(item, size: 4.4 * s, width: 70 * s)
         }
         .padding(.top, Self.sphereTopPad * s)
         .padding([.horizontal, .bottom], 2 * s)
+    }
+
+    /// The authors beneath a sphere or a coloured title, in light grey:
+    /// the first (and "…" for more) while closed, every one when chosen.
+    @ViewBuilder private func lookByline(_ item: EPUBMapItem, size: CGFloat, width: CGFloat) -> some View {
+        let names = item.author.components(separatedBy: " \u{00B7} ")[0]
+        if !names.isEmpty {
+            Text(item.isSelected ? names : shortByline(names))
+                .font(.system(size: size))
+                .foregroundStyle(Color(white: 0.75))
+                .multilineTextAlignment(.center)
+                .lineLimit(item.isSelected ? 3 : 1)
+                .frame(maxWidth: width)
+        }
     }
 
     /// A sphere's diameter and the room above it on its face, in face
@@ -3530,6 +3545,7 @@ struct EPUBMapView: View {
             .font(.system(size: 9 * s, weight: .semibold, design: .serif))
             .multilineTextAlignment(.center)
             .lineLimit(item.isSelected ? 5 : 3)
+        VStack(spacing: 2 * s) {
         Group {
             if item.tagColors.isEmpty {
                 label.foregroundStyle(Color.white)
@@ -3540,6 +3556,8 @@ struct EPUBMapView: View {
                     .foregroundStyle(Color.clear)
                     .overlay { Self.mosaic(item.tagColors).mask(label) }
             }
+        }
+            lookByline(item, size: 5 * s, width: 100 * s)
         }
         .frame(maxWidth: 100 * s)
         .padding(.horizontal, 6 * s)

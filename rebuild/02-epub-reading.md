@@ -2365,6 +2365,7 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
   - Texture: `SphereTextures` (at the file's end) draws a 256 × 128 sRGB strip of the colours as one horizontal gradient that wraps back to the first. It loads it with the async `TextureResource(image:withName:options:)`, once per colour set, and the texture replaces the tint.
   - A lifted sphere has no slab.
 - **Color Titles** (`colorTitle`): the title alone, 9-point semibold serif, three lines (five when chosen, full title). Its letters are the tag mosaic masked by the text, so the colours blend softly inside the letters with no glow past their edges; a paper with no tags is plain white. Chosen, it sits on a faint dark pane ringed in white.
+- **Authors beneath** (`lookByline`): both looks show the authors in light grey (white 0.75) under the title. Closed, they show the first author (with "…" for more) on one line; chosen, every author on up to three lines. The year is dropped from the byline.
 - **Relations:** the star, Connects, Gather, Show Only, Focus and Select Gathered work in every look. They size themselves from `cardSizes.base`, the measured face.
 
 **Focus and Select Gathered (2 Nov 2026).** While a card's Gather stands, two more buttons join Pin and Put Aside under it (`pileVerbs`):
