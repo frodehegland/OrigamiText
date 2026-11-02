@@ -1744,6 +1744,33 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
   - Read, Open/Fold, Lift and the Pictures count are gone. Two hands spread open the reading, two taps fold the card, and the edge thumbnails raise the gallery.
   - The Connects and Show Only rows are 11 pt above and below, with 6 pt between them.
 
+### 5.46 Tags: categories in colour (2 November 2026)
+
+- **`OrigamiTags`** (`EPUBShelf.swift`, shared) holds `tags: [Tag]`, each with id, name, `color` ("#RRGGBB"), `words` and `isOn`. It is kept in `<community>/origami-tags.json`, so it is set on the Mac and inherited by the headset (5.45).
+- **The defaults** are the eight leading categories of The Future of Text's corpus record (its themes, keywords and meaning groups):
+
+| Category | Colour |
+|---|---|
+| Extended Reality | #4A8FE7 |
+| Artificial Intelligence | #9B6BE0 |
+| Hypertext & Links | #2FB3A6 |
+| Reading & Writing | #E2A93B |
+| Language & Meaning | #D9667D |
+| Knowledge & Scholarship | #5BAE5B |
+| Society & Media | #E9783A |
+| Places & History | #A89F91 |
+
+  Each has a word list. Over FoT's 383 metadata articles they reach 101, 81, 71, 121, 153, 50, 135 and 63 papers; papers carry 2.0 tags on average (6 at most), and 30 carry none.
+- **Matching** (`matching(keywords:title:abstract:)`): a tag applies when any of its words, whole and case-insensitive, is a keyword, appears in a keyword, or appears in the title or abstract.
+- **On the Mac,** Settings ▸ **Tags** (`TagsSettingsView`) has a row per category:
+  - colour picker, name, a live count of the library's papers it reaches (volume articles and books read whole), on/off, and remove;
+  - the words, comma separated.
+  - Below the rows: Add Category, and Reset to The Future of Text's Eight.
+  - Every change is written to the community folder.
+- **On visionOS,** `VisionModel.tags` holds the defaults until the file is adopted on the standing loop (`adoptTags`, which bumps `volumeStamp`).
+  - `tagColors(forDocID:title:)` reads the piece's keywords and abstract (enriched from the Mac's metadata), or a whole book's document.
+  - Each paper card gets `EPUBMapItem.tagColors`, which is part of `isVisuallyEqual`. Under the byline it shows one rounded 7 × 2.4-point rectangle (at face scale) per category, in the tags' order.
+
 ### 5.45 Library locations set on the Mac, inherited by the headset (2 November 2026)
 
 - **The community folder is the one link.** Each device must be shown it once (the sandbox: a bookmark cannot pass between devices, and Origami has no iCloud container of its own). Every other location is named relative to it.

@@ -5222,3 +5222,105 @@ nonisolated struct OrigamiLibrarySettings: Codable, Sendable, Equatable {
         try? data.write(to: community.appendingPathComponent(fileName), options: .atomic)
     }
 }
+
+// MARK: - Tags: categories in colour (2 Nov 2026)
+
+/// The room's categories — each a name, a colour and the words that mark
+/// a paper as belonging to it — edited on the Mac and shown on every
+/// headset card as a small rectangle of each matching colour. Kept in the
+/// community folder (`origami-tags.json`), so the Mac sets them and the
+/// headset inherits them; until the Mac writes the file, both use the
+/// defaults below: the eight leading categories of The Future of Text's
+/// own corpus (its themes, keywords and meaning groups, 1 Nov 2026).
+nonisolated struct OrigamiTags: Codable, Sendable, Equatable {
+    struct Tag: Codable, Sendable, Hashable, Identifiable {
+        var id: String
+        var name: String
+        /// "#RRGGBB".
+        var color: String
+        /// Whole words or phrases, matched without regard to case in a
+        /// paper's keywords, title and abstract.
+        var words: [String]
+        var isOn = true
+    }
+
+    var format = "origami-tags"
+    var modified: Date
+    var tags: [Tag]
+
+    static let fileName = "origami-tags.json"
+
+    static let defaults = OrigamiTags(modified: .distantPast, tags: [
+        Tag(id: "xr", name: "Extended Reality", color: "#4A8FE7", words: [
+            "xr", "vr", "ar", "virtual reality", "augmented reality", "mixed reality", "extended reality",
+            "spatial computing", "immersive", "metaverse", "headset", "vision pro", "3d"]),
+        Tag(id: "ai", name: "Artificial Intelligence", color: "#9B6BE0", words: [
+            "ai", "artificial intelligence", "machine learning", "large language models", "llm", "llms",
+            "language models", "neural networks", "natural language processing", "gpt", "chatgpt",
+            "text generation", "generative ai"]),
+        Tag(id: "hypertext", name: "Hypertext & Links", color: "#2FB3A6", words: [
+            "hypertext", "hypermedia", "hyperlinks", "hyperlink", "links", "transclusion", "xanadu",
+            "knowledge graph", "metadata", "interoperability", "world wide web", "the web", "linking"]),
+        Tag(id: "reading-writing", name: "Reading & Writing", color: "#E2A93B", words: [
+            "reading", "writing", "authorship", "literacy", "handwriting", "typography", "authoring",
+            "authoring tools", "text formatting", "word processing", "reading experiences"]),
+        Tag(id: "language", name: "Language & Meaning", color: "#D9667D", words: [
+            "language", "semiotics", "meaning", "meaning-making", "textuality", "poetry", "narrative",
+            "storytelling", "literary", "literature", "digital humanities", "philosophy", "rhetoric"]),
+        Tag(id: "knowledge", name: "Knowledge & Scholarship", color: "#5BAE5B", words: [
+            "scholarly communication", "academic publishing", "digital preservation", "preservation",
+            "archiving", "archives", "libraries", "library", "knowledge management",
+            "personal knowledge management", "citation", "citations", "education", "pedagogy"]),
+        Tag(id: "society", name: "Society & Media", color: "#E9783A", words: [
+            "communication", "social media", "disinformation", "misinformation", "propaganda", "democracy",
+            "ethics", "collaboration", "collective intelligence", "sustainability", "corporate control",
+            "decentralization", "information overload", "digital media", "journalism"]),
+        Tag(id: "places-history", name: "Places & History", color: "#A89F91", words: [
+            "history", "evolution", "printing", "printing press", "gutenberg", "ancient", "medieval",
+            "europe", "america", "africa", "asia", "china", "japan", "india", "norway", "london", "paris",
+            "rome", "greece", "egypt", "mesopotamia", "silicon valley", "california", "new york"]),
+    ])
+
+    /// The tags whose words a paper's text carries, in the tags' order.
+    func matching(keywords: [String], title: String, abstract: String) -> [Tag] {
+        let keywordSet = Set(keywords.map { $0.lowercased().trimmingCharacters(in: .whitespaces) })
+        let text = (title + "\n" + abstract).lowercased()
+        return tags.filter { tag in
+            tag.isOn && tag.words.contains { word in
+                let wanted = word.lowercased()
+                if keywordSet.contains(wanted) { return true }
+                let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: wanted) + "(?![\\p{L}\\p{N}])"
+                return text.range(of: pattern, options: .regularExpression) != nil
+                    || keywordSet.contains { $0.range(of: pattern, options: .regularExpression) != nil }
+            }
+        }
+    }
+
+    static func read(from community: URL) -> OrigamiTags? {
+        let scoped = community.startAccessingSecurityScopedResource()
+        defer { if scoped { community.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: community.appendingPathComponent(fileName)) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(OrigamiTags.self, from: data)
+    }
+
+    static func write(_ tags: OrigamiTags, to community: URL) {
+        let scoped = community.startAccessingSecurityScopedResource()
+        defer { if scoped { community.stopAccessingSecurityScopedResource() } }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(tags) else { return }
+        try? data.write(to: community.appendingPathComponent(fileName), options: .atomic)
+    }
+}
+
+extension OrigamiTags.Tag {
+    /// The colour as red, green and blue in 0…1.
+    var rgb: (Double, Double, Double) {
+        let hex = color.trimmingCharacters(in: CharacterSet(charactersIn: "# "))
+        guard hex.count == 6, let value = UInt32(hex, radix: 16) else { return (0.6, 0.6, 0.6) }
+        return (Double((value >> 16) & 0xFF) / 255, Double((value >> 8) & 0xFF) / 255, Double(value & 0xFF) / 255)
+    }
+}

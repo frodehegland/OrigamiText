@@ -1497,6 +1497,10 @@ final class VisionModel {
             if let settings = OrigamiLibrarySettings.read(from: folder) {
                 await MainActor.run { self.adoptLibrarySettings(settings) }
             }
+            // The categories' names, colours and words, as the Mac set them.
+            if let tags = OrigamiTags.read(from: folder) {
+                await MainActor.run { self.adoptTags(tags) }
+            }
             guard let state = EPUBStanding.read(from: folder) else { return }
             await MainActor.run { self.applyStanding(state) }
         }
@@ -1902,6 +1906,35 @@ final class VisionModel {
     private var conceptRoot: URL? {
         index.folderURL?.appendingPathComponent(
             librarySettings?.conceptsFolder ?? OrigamiLibrarySettings.defaultConceptsFolder, isDirectory: true)
+    }
+
+    /// The room's categories in colour, as the Mac set them (the defaults
+    /// until it has) — shown on every card as small rectangles.
+    private(set) var tags: OrigamiTags = .defaults
+
+    func adoptTags(_ file: OrigamiTags) {
+        guard file != tags else { return }
+        tags = file
+        volumeStamp += 1
+    }
+
+    /// A paper's categories, as colours: its keywords (the piece's own and
+    /// the Mac's metadata), its title and its abstract, read against the
+    /// tags' words.
+    func tagColors(forDocID id: String, title: String) -> [String] {
+        let keywords: [String]
+        let abstract: String
+        if let piece = piece(forDocID: id) {
+            keywords = piece.keywords
+            abstract = piece.abstract ?? ""
+        } else if let doc = document(id) {
+            keywords = doc.keywords
+            abstract = doc.abstract ?? ""
+        } else {
+            keywords = []
+            abstract = ""
+        }
+        return tags.matching(keywords: keywords, title: title, abstract: abstract).map(\.color)
     }
 
     /// The library's locations as the Mac set them, read from the

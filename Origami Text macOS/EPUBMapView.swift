@@ -89,6 +89,9 @@ struct EPUBMapItem: ItemProtocol {
     /// The paper's first sentence, worn small in serif on a card neither
     /// chosen nor open, so a paper says what it is about at a glance.
     var firstSentence: String?
+    /// The paper's categories, as "#RRGGBB" colours — small rectangles on
+    /// its face (2 Nov 2026).
+    var tagColors: [String] = []
     /// The card is reached by a stance relation lit on another card: it
     /// wears the line's end — confirm and sever.
     var stanceMark: VisionModel.StanceMarkInfo?
@@ -116,6 +119,7 @@ struct EPUBMapItem: ItemProtocol {
             && isFaded == other.isFaded && warning == other.warning
             && pieceLabel == other.pieceLabel && imagePath == other.imagePath
             && stamp == other.stamp && firstSentence == other.firstSentence
+            && tagColors == other.tagColors
             // The engine attaches a card's attachment only when it builds
             // the card, so a stance mark coming or going rebuilds it.
             && stanceMark == other.stanceMark
@@ -764,6 +768,7 @@ struct EPUBMapView: View {
                 item.imagePath = imagePaths(forDocID: record.id).first
                 item.stamp = stamp
                 item.firstSentence = firstSentenceByArticle[record.id]
+                item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
                 return item
             }
 
@@ -3211,6 +3216,18 @@ struct EPUBMapView: View {
                               : shortByline(item.author))
                     .font(.system(size: 5.5 * s))
                     .foregroundStyle(Color.white.opacity(0.65))
+                // Its categories: a small rectangle of each colour, in the
+                // tags' order (set on the Mac, 2 Nov 2026).
+                if !item.tagColors.isEmpty {
+                    HStack(spacing: 1.2 * s) {
+                        ForEach(Array(item.tagColors.enumerated()), id: \.offset) { _, hex in
+                            RoundedRectangle(cornerRadius: 0.6 * s)
+                                .fill(Self.color(hex: hex))
+                                .frame(width: 7 * s, height: 2.4 * s)
+                        }
+                    }
+                    .padding(.top, 0.8 * s)
+                }
                 if !selected, !item.showsAbstract, let sentence = item.firstSentence {
                     Text(sentence)
                         .font(.system(size: 4.6 * s, design: .serif))
@@ -3292,6 +3309,13 @@ struct EPUBMapView: View {
             // and the fifth it grows by. A LIFTED card carries no pane
             // at all — its words print straight onto the extruded slab.
         }
+    }
+
+    /// A "#RRGGBB" colour.
+    static func color(hex: String) -> Color {
+        let tag = OrigamiTags.Tag(id: "", name: "", color: hex, words: [])
+        let (r, g, b) = tag.rgb
+        return Color(red: r, green: g, blue: b)
     }
 
     /// How far an open card stands forward of where it stands closed.

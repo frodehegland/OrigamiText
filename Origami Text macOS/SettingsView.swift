@@ -78,6 +78,7 @@ enum ReaderLayoutStyle: String, CaseIterable, Identifiable {
 enum SettingsTab: Hashable {
     case author, editor, reading, overview, assistive, annotation, layout, library, hypermedia, ai, modules, openSource
     case concepts
+    case tags
 }
 
 /// The app's Settings window (Origami Text → Settings…, ⌘,).
@@ -120,6 +121,9 @@ struct SettingsView: View {
             ConceptsSettingsView()
                 .tabItem { Label("Concepts", systemImage: "character.book.closed") }
                 .tag(SettingsTab.concepts)
+            TagsSettingsView()
+                .tabItem { Label("Tags", systemImage: "tag") }
+                .tag(SettingsTab.tags)
             ModulesSettingsView()
                 .tabItem { Label("View Modules", systemImage: "puzzlepiece.extension") }
                 .tag(SettingsTab.modules)
@@ -2176,5 +2180,132 @@ enum AIPrivacy {
             return "Runs on this Mac only \u{2014} no text leaves it."
         }
         return "Text is sent to \(endpoint.hostLabel) to be answered."
+    }
+}
+
+// MARK: - Settings ▸ Tags (2 Nov 2026)
+
+/// The room's categories, edited here and inherited by Vision Pro through
+/// the community folder (`origami-tags.json`): each a name, a colour, the
+/// words that mark a paper as belonging to it, and on or off. How many of
+/// the library's papers each reaches is shown beside it, so a word list
+/// can be tuned by eye. Saved as it is changed.
+struct TagsSettingsView: View {
+    @Environment(AppModel.self) private var model
+    @State private var tags: [OrigamiTags.Tag] = []
+    @State private var counts: [String: Int] = [:]
+    @State private var loaded = false
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach($tags) { $tag in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 10) {
+                            ColorPicker("", selection: colorBinding($tag), supportsOpacity: false)
+                                .labelsHidden()
+                            TextField("Name", text: $tag.name)
+                                .font(.headline)
+                            Text(counts[tag.id].map { "\($0) papers" } ?? "")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 80, alignment: .trailing)
+                            Toggle("", isOn: $tag.isOn).labelsHidden()
+                            Button {
+                                tags.removeAll { $0.id == tag.id }
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Remove this category")
+                        }
+                        TextField("Words, comma separated", text: wordsBinding($tag), axis: .vertical)
+                            .font(.caption)
+                            .lineLimit(1...4)
+                    }
+                    .padding(.vertical, 4)
+                }
+                HStack {
+                    Button("Add Category") {
+                        tags.append(OrigamiTags.Tag(id: UUID().uuidString, name: "New Category",
+                                                    color: "#8899AA", words: []))
+                    }
+                    Spacer()
+                    Button("Reset to The Future of Text\u{2019}s Eight") {
+                        tags = OrigamiTags.defaults.tags
+                    }
+                }
+            } header: {
+                Text("Categories")
+            } footer: {
+                Text("Each category marks the papers whose keywords, title or abstract carry one of its words — whole words, any case. On Vision Pro every card shows a small rectangle in the colour of each category it belongs to. Kept in the community folder, so the headset inherits these as set here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .task {
+            guard !loaded else { return }
+            tags = (model.index.folderURL.flatMap { OrigamiTags.read(from: $0) } ?? .defaults).tags
+            loaded = true
+            recount()
+        }
+        .onChange(of: tags) {
+            guard loaded else { return }
+            if let community = model.index.folderURL {
+                OrigamiTags.write(OrigamiTags(modified: .now, tags: tags), to: community)
+            }
+            recount()
+        }
+    }
+
+    private func colorBinding(_ tag: Binding<OrigamiTags.Tag>) -> Binding<Color> {
+        Binding(
+            get: {
+                let (r, g, b) = tag.wrappedValue.rgb
+                return Color(red: r, green: g, blue: b)
+            },
+            set: { color in
+                guard let ns = NSColor(color).usingColorSpace(.sRGB) else { return }
+                tag.wrappedValue.color = String(format: "#%02X%02X%02X",
+                                                Int(round(ns.redComponent * 255)),
+                                                Int(round(ns.greenComponent * 255)),
+                                                Int(round(ns.blueComponent * 255)))
+            })
+    }
+
+    private func wordsBinding(_ tag: Binding<OrigamiTags.Tag>) -> Binding<String> {
+        Binding(
+            get: { tag.wrappedValue.words.joined(separator: ", ") },
+            set: { text in
+                tag.wrappedValue.words = text.split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            })
+    }
+
+    /// How many of the library's papers — every bound volume's articles,
+    /// and every book read whole — each category reaches.
+    private func recount() {
+        let file = OrigamiTags(modified: .now, tags: tags)
+        var papers: [(keywords: [String], title: String, abstract: String)] = []
+        for record in model.epubRecords {
+            if let bound = model.boundVolume(for: record) {
+                for article in bound.articles where article.role == .work {
+                    papers.append((article.keywords, article.title, article.abstract ?? ""))
+                }
+            } else if let doc = model.index.byID[record.id]?.doc {
+                papers.append((doc.keywords, record.title, doc.abstract ?? ""))
+            }
+        }
+        Task.detached(priority: .utility) {
+            var tally: [String: Int] = [:]
+            for paper in papers {
+                for tag in file.matching(keywords: paper.keywords, title: paper.title, abstract: paper.abstract) {
+                    tally[tag.id, default: 0] += 1
+                }
+            }
+            await MainActor.run { counts = tally }
+        }
     }
 }
