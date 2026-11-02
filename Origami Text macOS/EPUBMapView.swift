@@ -144,9 +144,6 @@ struct EPUBMapView: View {
     /// The cards opened to their abstracts by the Abstract button —
     /// selection alone shows the full title and authors now.
     @State private var abstractOpenIDs: Set<String> = []
-    /// The card whose Kind row stands open — a volume's piece being told
-    /// what it is.
-    @State private var kindRowCardID: String?
     /// The desk the room offers as a landing surface, beside the wall.
     @State private var deskAnchor: AnchorEntity?
 
@@ -1041,6 +1038,8 @@ struct EPUBMapView: View {
             if let option = WatchViewOption(rawValue: name) { runWatchView(option) }
         case .shape(let name):
             if let shape = RoomShape(rawValue: name) { runShape(shape) }
+        case .card(let itemID, let verb):
+            performCardVerb(verb, on: itemID)
         }
     }
 
@@ -1216,6 +1215,7 @@ struct EPUBMapView: View {
         citedToDeepLines.rebuild(items: linesActive ? items : [])
         // The bar's Shapes follow what the room's record now offers.
         syncShapeChoices()
+        syncCardBar()
     }
 
     /// Concept cards: a galaxy on a shell around the reader, framing the
@@ -1754,6 +1754,8 @@ struct EPUBMapView: View {
         var unfolding: Set<String> = []
         /// The papers a dragged label carries, worked out once per drag.
         var riders: (label: String, ids: Set<String>)?
+        /// The card the bar's second row speaks for: the last one chosen.
+        var barItemID: String?
     }
     /// The Select chip's kinds, unfolded above it.
     @State private var selectOpen = false
@@ -1801,9 +1803,6 @@ struct EPUBMapView: View {
         if free { venues.insert(venue) } else { venues.remove(venue) }
         timeFreeVenues = venues.sorted().joined(separator: "\n")
     }
-    /// The card whose Layout options stand unfolded beneath it, while
-    /// several papers are chosen. One at a time.
-    @State private var layoutRowCardID: String?
     /// The spatial notes standing in this journal's room, as the
     /// community file holds them.
     @State private var spatialNotes: [SpatialNotes.Note] = []
@@ -2436,101 +2435,13 @@ struct EPUBMapView: View {
                 AnyView(cardFace(for: item))
             },
             constructorAttachment: { _, item -> AnyView in
-                // A floated passage: one verb, and it does not come
-                // back — the annotation leaves the sidecar with the card.
-                if item.id.hasPrefix("float:") {
-                    guard item.isSelected else { return AnyView(EmptyView()) }
-                    return AnyView(
-                        Button("Delete") { model.removeFloat(item.id) }
-                            .buttonStyle(.bordered)
-                            .scaleEffect(0.5, anchor: .top)
-                    )
-                }
-                // A note's own two verbs: the words, and the end of
-                // them. Write is what the double tap does.
-                if item.id.hasPrefix(EPUBMapView.noteItemPrefix), item.isSelected {
-                    guard let note = note(for: item.id) else {
-                        return AnyView(EmptyView())
-                    }
-                    return AnyView(
-                        HStack(spacing: 8) {
-                            Button("Write") { openNoteEditor(note) }
-                            Button("Delete") {
-                                SpatialNotes.delete(note,
-                                                    community: model.index.folderURL)
-                                spatialNotes.removeAll { $0.id == note.id }
-                                reload()
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .font(.caption)
-                        .scaleEffect(0.5, anchor: .top)
-                    )
-                }
-                // A chosen label — keyword, Shape label, topic, concept —
-                // and what it should do with the papers it gathers, each
-                // lit while on: Gather brings them round it, Lines threads
-                // to them, Focus leaves only them standing. A keyword can
-                // be removed; a concept put away.
-                if item.isSelected, Self.isSpatialLabel(item) {
-                    let mode = keywordModes[item.id]
-                    let isKeyword = item.id.hasPrefix(Self.keywordItemPrefix)
-                    let isConcept = !isKeyword && !item.id.hasPrefix(Self.shapeLabelPrefix)
-                        && !item.id.hasPrefix("topic:")
-                    return AnyView(
-                        HStack(spacing: 8) {
-                            Button("Gather") { setKeywordMode(.gather, on: item) }
-                                .tint(mode == .gather ? .accentColor : nil)
-                            Button("Lines") { setKeywordMode(.lines, on: item) }
-                                .tint(mode == .lines ? .accentColor : nil)
-                            Button("Focus") { setKeywordMode(.only, on: item) }
-                                .tint(mode == .only ? .accentColor : nil)
-                            if isKeyword { Button("Remove") { removeKeyword(item) } }
-                            if isConcept { Button("Hide") { hideConcept(item.id) } }
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .font(.caption)
-                        .scaleEffect(0.5, anchor: .top)
-                    )
-                }
-                // A chosen paper in the front row carries its own verbs
-                // underneath — and only while it is the one chosen.
-                // With several in hand, every verb that acts on one
-                // card gives way to the one that acts on many.
-                if item.kind == .article, item.isSelected,
+                // Every verb a chosen card offers stands in the room's
+                // bar, second row (2 Nov 2026): a card carries only its
+                // content — an open paper its pictures and, while a
+                // relation is lit, the miniature ring.
+                if item.kind == .article, item.isSelected, item.showsAbstract,
                    !item.isGhost, !item.isAside {
-                    // Chosen only: one control, Unfold. Open: the star.
-                    // Chosen only: no controls — two taps open it.
-                    if !item.showsAbstract { return AnyView(EmptyView()) }
                     return AnyView(paperStar(for: item))
-                }
-                // A citation keeps the row it had: Open, its abstract
-                // when the reference carried one, and the snap-off verb.
-                if item.kind == .cited || item.kind == .citedDeep,
-                   item.isSelected, !item.isGhost, !item.isAside {
-                    // Chosen only: no controls — two taps open it.
-                    if !item.showsAbstract { return AnyView(EmptyView()) }
-                    return AnyView(
-                        HStack(spacing: 8) {
-                            // Record: everything held on the work, and
-                            // Acquire. Fold: back to chosen only.
-                            Button("Record") { openCitationCard(for: item) }
-                            Button("Fold") { toggleOpen(item) }
-                            if EPUBMapView.liftEnabled {
-                                Button(liftedCards[item.id] == nil ? "Lift" : "Put Back") {
-                                    toggleLift(item)
-                                }
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        // Quiet verbs under the card, not a toolbar —
-                        // half life-size (attachments render full).
-                        .controlSize(.small)
-                        .font(.caption)
-                        .scaleEffect(0.5, anchor: .top)
-                    )
                 }
                 return AnyView(EmptyView())
             },
@@ -3799,12 +3710,11 @@ struct EPUBMapView: View {
         }
     }
 
-    /// A chosen paper's star menu, ringing its card: Focus and Open
-    /// above; Close and Hide below, and the card's other verbs under
-    /// them; its relations at either side, each offered only when it
-    /// reaches a card. Drawn at twice its size and halved, as the
-    /// card's quiet verbs always were (attachments render full size),
-    /// so the card's own gap is laid out at twice the card.
+    /// An open paper's surround: its pictures along the card's lower edge
+    /// and, while a relation is lit, its cards in miniature on a ring. No
+    /// verbs — every one of them stands in the room's bar, second row
+    /// (2 Nov 2026). Drawn at twice its size and halved, as attachments
+    /// render full size, so the card's own gap is laid out at twice the card.
     @ViewBuilder private func paperStar(for item: EPUBMapItem) -> some View {
         // The card as it stands chosen (a fifth larger), in this view's
         // doubled points (1360 to the metre), with a breath of air.
@@ -3813,76 +3723,32 @@ struct EPUBMapView: View {
         let card = (cardSizes.base[item.id] ?? fallback) * 1.2
         let gap = CGSize(width: CGFloat(card.x) * 1360 * 2 + 28,
                          height: CGFloat(card.y) * 1360 * 2 + 20)
-        let relations = starRelations(for: item)
-        let extras = starExtras(for: item)
-        // The lit relation's cards, in miniature on a ring round the
-        // star (the lines still run to the cards themselves). The
-        // pictures have their own gallery, so Images rings nothing.
+        // The lit relation's cards, in miniature on a ring round the card
+        // (the lines still run to the cards themselves). The pictures
+        // have their own gallery, so Images rings nothing.
         let ringed: [EPUBMapItem] = {
             guard let shown = relationShown, shown.ringed, shown.from == item.id, shown.title != "Images",
-                  let relation = relations.first(where: { $0.title == shown.title }) else { return [] }
+                  let relation = starRelations(for: item).first(where: { $0.title == shown.title })
+            else { return [] }
             return relation.ids.compactMap { id in items.first { $0.id == id && !$0.isGhost } }
         }()
-        // The ring's radii, clear of the relation columns at either side
-        // and of the verbs above and below.
-        let ring = CGSize(width: (gap.width + 440) / 2 + 140,
-                          height: gap.height / 2 + 210)
+        // The ring's radii: clear of the card and its picture strip.
+        let ring = CGSize(width: gap.width / 2 + Self.miniatureSize.width / 2 + 40,
+                          height: gap.height / 2 + Self.miniatureSize.height / 2 + 110)
+        let pictures = imagePaths(forDocID: item.id)
         ZStack {
             VStack(spacing: 10) {
-                // The lower verbs, mirrored unseen above, keep the star
-                // centred on the card whatever unfolds beneath.
-                extras.hidden()
-                HStack(spacing: 10) {
-                    // A lit relation already focuses the room on its
-                    // cards: Un-Focus puts it away and the room stands whole.
-                    if let shown = relationShown, shown.title != "Images",
-                       shown.from == item.id || shown.ids.contains(item.id) {
-                        Button("Un-Focus") {
-                            relationShown = nil
-                            reload()
-                        }
-                        .tint(.accentColor)
-                    } else {
-                        Button(focusMode ? "Un-Focus" : "Focus") {
-                            focusMode.toggle()
-                            armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
-                            armMenu.setChipActive(Self.focusChipID, focusMode)
-                            reload()
-                        }
-                    }
-                    Button("Read") { readCard(item) }
-                    Button("Fold") { toggleOpen(item) }
-                }
-                let pictures = imagePaths(forDocID: item.id)
+                // Mirrored unseen above, so the card stays centred.
                 if !pictures.isEmpty { thumbnailStrip(pictures, of: item).hidden() }
-                HStack(alignment: .center, spacing: 10) {
-                    relationColumn(relations.filter(\.outward), of: item, alignment: .trailing)
-                    Color.clear.frame(width: gap.width, height: gap.height)
-                    relationColumn(relations.filter { !$0.outward }, of: item, alignment: .leading)
-                }
-                // Its pictures, along the card's lower edge.
+                Color.clear.frame(width: gap.width, height: gap.height)
                 if !pictures.isEmpty { thumbnailStrip(pictures, of: item) }
-                HStack(spacing: 10) {
-                    Button("Close") {
-                        if relationShown?.from == item.id { relationShown = nil }
-                        handleTap(count: 1, on: item)
-                    }
-                    Button("Hide") {
-                        if relationShown?.from == item.id { relationShown = nil }
-                        handleTap(count: 1, on: item)
-                        model.toggleSetAside(item.id)
-                        reload()
-                        updateStandingChips()
-                    }
-                }
-                extras
             }
             if !ringed.isEmpty {
                 miniatureRing(Array(ringed.prefix(Self.ringLimit)), radii: ring)
             }
         }
         // Wide enough for the ring while it stands, so the attachment
-        // does not clip it; the star alone otherwise.
+        // does not clip it; the strip alone otherwise.
         .frame(width: ringed.isEmpty ? nil : ring.width * 2 + Self.miniatureSize.width + 20,
                height: ringed.isEmpty ? nil : ring.height * 2 + Self.miniatureSize.height + 20)
         .buttonStyle(.bordered)
@@ -3966,35 +3832,6 @@ struct EPUBMapView: View {
         }
     }
 
-    /// One side of the star: its relations, each with how many cards it
-    /// reaches, a small AI where a model inferred it, and lit while its
-    /// cards stand. A column as wide as the other side's, so the gap
-    /// stays centred on the card.
-    private func relationColumn(_ relations: [StarRelation], of item: EPUBMapItem,
-                                alignment: HorizontalAlignment) -> some View {
-        VStack(alignment: alignment, spacing: 8) {
-            ForEach(relations) { relation in
-                let lit = relationShown?.from == item.id && relationShown?.title == relation.title
-                Button {
-                    toggleRelation(relation, of: item)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(relation.title)
-                        Text("\(relation.ids.count)").foregroundStyle(.secondary)
-                        if relation.isAI {
-                            Text("AI")
-                                .font(.system(size: 8, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .tint(lit ? .accentColor : nil)
-                .fontWeight(lit ? .semibold : .regular)
-            }
-        }
-        .frame(width: 210, alignment: alignment == .trailing ? .trailing : .leading)
-    }
-
     /// A relation tapped: the room focuses on it — every other card
     /// steps away (`shouldEnableNode`, 1 Nov 2026) — and lines run from
     /// the paper to every card it reaches. Results are shown by
@@ -4017,130 +3854,147 @@ struct EPUBMapView: View {
         reload()
     }
 
-    /// Under Close and Hide: the card's other verbs, and with several
-    /// papers in hand, Layout and its arrangements.
-    @ViewBuilder private func starExtras(for item: EPUBMapItem) -> some View {
-        VStack(spacing: 8) {
-            onePaperButtons(for: item)
-            if selectedPaperCount > 1 {
-                manyPaperButtons(for: item)
-            }
+    // MARK: - The bar's second row: the chosen card's verbs
+
+    /// The card the bar's second row speaks for: the last one chosen
+    /// while it stays chosen, else any chosen card (an open paper first).
+    private var barItem: EPUBMapItem? {
+        if let id = cardSizes.barItemID,
+           let item = items.first(where: { $0.id == id && $0.isSelected && !$0.isGhost }) {
+            return item
         }
+        let chosen = items.filter { $0.isSelected && !$0.isGhost && !$0.isFaded }
+        return chosen.first { $0.kind == .article && $0.showsAbstract }
+            ?? chosen.first { $0.kind == .article } ?? chosen.first
     }
 
-    /// Several papers chosen: the one verb that acts on many, and the
-    /// arrangements it unfolds — four to a row, so eleven words do not
-    /// run off into the room.
-    @ViewBuilder private func manyPaperButtons(for item: EPUBMapItem) -> some View {
-        VStack(spacing: 8) {
-            Button("Layout") {
-                layoutRowCardID = layoutRowCardID == item.id ? nil : item.id
-            }
-            if layoutRowCardID == item.id {
-                let options = Array(WatchLayoutOption.allCases)
-                let rows = stride(from: 0, to: options.count, by: 4).map {
-                    Array(options[$0..<min($0 + 4, options.count)])
-                }
-                VStack(spacing: 8) {
-                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                        HStack(spacing: 8) {
-                            ForEach(row, id: \.self) { option in
-                                Button(option.title) {
-                                    runWatchLayout(option)
-                                    layoutRowCardID = nil
-                                }
-                            }
-                        }
-                    }
-                    // Auto's whole-wall arrangements ride here too now
-                    // the arm has no Layout: Wall among them, which is
-                    // the room's way back from a mess.
-                    HStack(spacing: 8) {
-                        ForEach(Self.offeredWatchViews, id: \.self) { option in
-                            Button(option.title) {
-                                runWatchView(option)
-                                layoutRowCardID = nil
-                            }
-                        }
-                    }
-                    // The layouts on trial, acting on the papers in hand.
-                    HStack(spacing: 8) {
-                        Text("Experimental").foregroundStyle(.secondary)
-                        ForEach(ExperimentalLayout.allCases, id: \.self) { option in
-                            Button(option.title) {
-                                runExperimentalLayout(option)
-                                layoutRowCardID = nil
-                            }
-                        }
-                    }
-                }
-                // The list stands 3 cm below the button that opened it
-                // — a centimetre and a half further down than it did
-                // (17 Sep 2026), which is what reads right in the
-                // room. Attachments lay out at 1360 points to the
-                // metre and this whole block is drawn at 0.8, so 25.5
-                // points is a centimetre and a half: two of them.
-                .padding(.top, 51)
-            }
-        }
+    /// Publishes the chosen card's verbs to the bar — every verb that once
+    /// stood around the card — and its relations with how many cards each
+    /// reaches. Written only when it changes.
+    private func syncCardBar() {
+        let bar = barItem.map(cardBar(for:))
+        if model.cardBar != bar { model.cardBar = bar }
     }
 
-    /// A chosen paper's own verbs, beneath its star's Close and Hide
-    /// (Open stands at the star's top).
-    @ViewBuilder private func onePaperButtons(for item: EPUBMapItem) -> some View {
-        VStack(spacing: 6) {
-        HStack(spacing: 8) {
-            // (No Abstract verb: an open card shows its abstract.)
-            if EPUBMapView.liftEnabled {
-                Button(liftedCards[item.id] == nil ? "Lift" : "Put Back") {
-                    toggleLift(item)
-                }
+    private func cardBar(for item: EPUBMapItem) -> VisionModel.CardBar {
+        typealias Verb = VisionModel.CardBar.Verb
+        var verbs: [Verb] = []
+        var relations: [Verb] = []
+        let lifted = liftedCards[item.id] != nil
+        let kindLabel: String
+        if item.id.hasPrefix("float:") {
+            kindLabel = "Passage"
+            verbs = [Verb(id: "delete", title: "Delete")]
+        } else if item.id.hasPrefix(Self.noteItemPrefix) {
+            kindLabel = "Note"
+            verbs = [Verb(id: "write", title: "Write"), Verb(id: "delete", title: "Delete")]
+        } else if Self.isSpatialLabel(item) {
+            let mode = keywordModes[item.id]
+            let isKeyword = item.id.hasPrefix(Self.keywordItemPrefix)
+            let isConcept = !isKeyword && !item.id.hasPrefix(Self.shapeLabelPrefix) && !item.id.hasPrefix("topic:")
+            kindLabel = isKeyword ? "Keyword" : isConcept ? "Concept" : "Label"
+            verbs = [Verb(id: "gather", title: "Gather", isOn: mode == .gather),
+                     Verb(id: "lines", title: "Lines", isOn: mode == .lines),
+                     Verb(id: "only", title: "Focus", isOn: mode == .only)]
+            if isKeyword { verbs.append(Verb(id: "remove", title: "Remove")) }
+            if isConcept { verbs.append(Verb(id: "hideConcept", title: "Hide")) }
+        } else if item.kind == .cited || item.kind == .citedDeep {
+            kindLabel = "Citation"
+            verbs = [Verb(id: "open", title: item.showsAbstract ? "Fold" : "Open"),
+                     Verb(id: "record", title: "Record")]
+            if Self.liftEnabled { verbs.append(Verb(id: "lift", title: lifted ? "Put Back" : "Lift")) }
+        } else {
+            kindLabel = model.piece(forDocID: item.id)?.kind.title ?? "Paper"
+            let relationFocus = relationShown.map {
+                $0.title != "Images" && ($0.from == item.id || $0.ids.contains(item.id))
+            } ?? false
+            verbs = [Verb(id: "read", title: "Read"),
+                     Verb(id: "open", title: item.showsAbstract ? "Fold" : "Open"),
+                     Verb(id: "focus", title: relationFocus || focusMode ? "Un-Focus" : "Focus",
+                          isOn: relationFocus || focusMode),
+                     Verb(id: "hide", title: "Hide")]
+            let pictures = imagePaths(forDocID: item.id).count
+            if pictures > 0 {
+                verbs.append(Verb(id: "pictures", title: "Pictures", isOn: galleryOf == item.id, count: pictures))
             }
-            // The paper alone, with what it cites standing behind it.
-            Button("Transpoint") { model.transpointDocID = item.id }
-            // A bound volume stands as its articles, each a card read
-            // alone; inside, the way back to the whole book.
+            if Self.liftEnabled { verbs.append(Verb(id: "lift", title: lifted ? "Put Back" : "Lift")) }
+            verbs.append(Verb(id: "transpoint", title: "Transpoint"))
+            // (Whole Volume and Whole Series are where the room stands in
+            // the collection: the bar's first row.)
             if model.isVolumeRoom {
-                Button("Whole Volume") { model.openWholeVolume(from: item.id) }
-                // From one volume's room to its whole series, every
-                // volume on its own plane.
-                if model.openSeriesID == nil,
-                   let seriesID = model.openVolume.flatMap({ model.boundVolume(for: $0)?.series?.id }),
-                   model.seriesVolumes(seriesID).count >= 2 {
-                    Button("Whole Series") { model.openSeries(seriesID) }
+                if let piece = model.piece(forDocID: item.id) {
+                    verbs.append(Verb(id: "kind", title: "Kind", options: BoundVolume.Kind.allCases.map {
+                        Verb(id: "kind:" + $0.rawValue, title: $0.title, isOn: $0 == piece.kind)
+                    }))
                 }
-                // What this piece is, as the reader reads it: the volume's
-                // own reading corrected — Article, Opening, Appendix…
-                Button("Kind") {
-                    kindRowCardID = kindRowCardID == item.id ? nil : item.id
-                }
-                // (The assistant's Similar list left the card on 1 Nov
-                // 2026: a card's results show only as lines to other
-                // cards — the star's own Similar does that.)
             } else {
-                Button("Articles") {
-                    if let record = model.record(forDocID: item.id) {
-                        model.openArticles(of: record)
-                    }
-                }
-                .disabled(!model.isBoundVolume(item.id))
+                verbs.append(Verb(id: "articles", title: "Articles", isEnabled: model.isBoundVolume(item.id)))
             }
-            // Set Aside and Pin moved to the open reading's title bar,
-            // right of the title (5 Oct 2026).
-        }
-        if kindRowCardID == item.id, let piece = model.piece(forDocID: item.id) {
-            HStack(spacing: 6) {
-                ForEach(BoundVolume.Kind.allCases, id: \.self) { kind in
-                    Button {
-                        model.setKind(kind, forDocID: item.id)
-                        kindRowCardID = nil
-                    } label: {
-                        Text(kind.title).fontWeight(kind == piece.kind ? .bold : .regular)
-                    }
-                }
+            relations = starRelations(for: item).map { relation in
+                Verb(id: "rel:" + relation.title, title: relation.title,
+                     isOn: relationShown?.from == item.id && relationShown?.title == relation.title,
+                     isAI: relation.isAI, count: relation.ids.count)
             }
         }
+        // (No Close: a tap on the card lets it go.)
+        return VisionModel.CardBar(itemID: item.id, title: item.title, kindLabel: kindLabel,
+                                   verbs: verbs, relations: relations)
+    }
+
+    /// A verb pressed on the bar's second row, carried out on its card.
+    private func performCardVerb(_ verb: String, on itemID: String) {
+        guard let item = items.first(where: { $0.id == itemID }) else { return }
+        switch verb {
+        case "read": readCard(item)
+        case "open": toggleOpen(item)
+        case "record": openCitationCard(for: item)
+        case "lift": toggleLift(item)
+        case "transpoint": model.transpointDocID = item.id
+        case "articles":
+            if let record = model.record(forDocID: item.id) { model.openArticles(of: record) }
+        case "pictures":
+            let ids = imagePaths(forDocID: item.id).indices.map { Self.galleryItemID(item.id, $0) }
+            toggleRelation(StarRelation(title: "Images", ids: ids, isAI: false, outward: true), of: item)
+        case "focus":
+            if let shown = relationShown, shown.title != "Images",
+               shown.from == item.id || shown.ids.contains(item.id) {
+                relationShown = nil
+            } else {
+                focusMode.toggle()
+                armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
+                armMenu.setChipActive(Self.focusChipID, focusMode)
+            }
+            reload()
+        case "hide":
+            if relationShown?.from == item.id { relationShown = nil }
+            handleTap(count: 1, on: item)
+            model.toggleSetAside(item.id)
+            reload()
+            updateStandingChips()
+        case "gather": setKeywordMode(.gather, on: item)
+        case "lines": setKeywordMode(.lines, on: item)
+        case "only": setKeywordMode(.only, on: item)
+        case "remove": removeKeyword(item)
+        case "hideConcept": hideConcept(item.id)
+        case "write":
+            if let note = note(for: item.id) { openNoteEditor(note) }
+        case "delete":
+            if item.id.hasPrefix("float:") {
+                model.removeFloat(item.id)
+            } else if let note = note(for: item.id) {
+                SpatialNotes.delete(note, community: model.index.folderURL)
+                spatialNotes.removeAll { $0.id == note.id }
+                reload()
+            }
+        default:
+            if verb.hasPrefix("kind:"), let kind = BoundVolume.Kind(rawValue: String(verb.dropFirst(5))) {
+                model.setKind(kind, forDocID: item.id)
+            } else if verb.hasPrefix("rel:"),
+                      let relation = starRelations(for: item).first(where: { "rel:" + $0.title == verb }) {
+                toggleRelation(relation, of: item)
+            }
         }
+        syncCardBar()
     }
 
     private func toggleAbstract(_ item: EPUBMapItem) {
@@ -5529,6 +5383,9 @@ struct EPUBMapView: View {
             // own card, and every selected card keeps its lines and
             // its raise until deselected.
             let willSelect = !item.isSelected
+            // The bar's second row turns to the card just chosen.
+            if willSelect { cardSizes.barItemID = item.id }
+            defer { syncCardBar() }
             if let index = items.firstIndex(where: { $0.id == item.id }) {
                 items[index].isSelected = willSelect
                 // Deselecting folds an opened abstract away with it.
@@ -5648,6 +5505,8 @@ struct EPUBMapView: View {
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index].showsAbstract = abstractOpenIDs.contains(item.id)
         }
+        cardSizes.barItemID = item.id
+        syncCardBar()
     }
 
     /// One close for every door a panel offers — the title bar's ✕ and

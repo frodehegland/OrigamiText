@@ -1642,11 +1642,38 @@ final class VisionModel {
             case view(String)
             /// A Shape for the room: Timeline, or one of the groupings.
             case shape(String)
+            /// A verb on the bar's second row, for the chosen card: its
+            /// id, then the verb's (`CardBar.Verb.id`).
+            case card(String, String)
         }
         let action: Action
         let id = UUID()
     }
     var volumeBarRequest: VolumeBarRequest?
+
+    /// The chosen card's verbs, published by the Hallway for the bar's
+    /// second row: its name, what it is, every verb that once stood round
+    /// the card, and — for a paper — its relations with how many cards
+    /// each reaches. Nil while no card is chosen.
+    struct CardBar: Equatable {
+        struct Verb: Equatable, Identifiable {
+            let id: String
+            let title: String
+            var isOn = false
+            var isAI = false
+            var count: Int? = nil
+            var isEnabled = true
+            /// A verb with options stands as a menu (Kind).
+            var options: [Verb] = []
+        }
+        let itemID: String
+        let title: String
+        let kindLabel: String
+        let verbs: [Verb]
+        let relations: [Verb]
+    }
+    var cardBar: CardBar?
+
 
     /// The keywords the reader has put into each room, by venue —
     /// spoken or typed into the volume bar's Keyword field. Each stands
@@ -3280,6 +3307,122 @@ struct VisionVolumeToolbar: View {
     @State private var keywordDraft = ""
 
     var body: some View {
+        // Two rows (2 Nov 2026): the room above, the chosen card below —
+        // every verb that once stood round a card, so the cards carry
+        // only their content.
+        VStack(alignment: .leading, spacing: 0) {
+            roomRow
+                .frame(height: 56)
+            Divider()
+            cardRow
+                .frame(height: 56)
+        }
+        .font(.system(size: 16))
+        .buttonStyle(.plain)
+        .padding(.horizontal, 32)
+        .glassBackgroundEffect()
+    }
+
+    /// The chosen card's row: its kind and name, its verbs, and — for a
+    /// paper — its relations, each with how many cards it reaches, lit
+    /// while it stands, a small AI where a model inferred it. Always
+    /// standing, so the bar never changes height; quiet when nothing is
+    /// chosen.
+    @ViewBuilder private var cardRow: some View {
+        if let bar = model.cardBar {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 28) {
+                    HStack(spacing: 8) {
+                        Text(bar.kindLabel.uppercased())
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text(bar.title)
+                            .lineLimit(1)
+                            .frame(maxWidth: 260, alignment: .leading)
+                    }
+                    HStack(spacing: 18) {
+                        ForEach(bar.verbs) { verb in verbButton(verb, on: bar.itemID) }
+                    }
+                    if !bar.relations.isEmpty {
+                        relationsMenu(bar)
+                    }
+                }
+                .frame(maxHeight: .infinity)
+            }
+        } else {
+            Text("Choose a card \u{2014} what it can do stands here.")
+                .foregroundStyle(.tertiary)
+                .frame(maxHeight: .infinity)
+        }
+    }
+
+    /// The paper's relations as one menu: each with how many cards it
+    /// reaches and a small AI where a model inferred it; the lit one
+    /// checked, and named on the menu itself while it stands.
+    private func relationsMenu(_ bar: VisionModel.CardBar) -> some View {
+        let lit = bar.relations.first(where: \.isOn)
+        return Menu {
+            ForEach(bar.relations) { relation in
+                Button {
+                    model.volumeBarRequest = .init(action: .card(bar.itemID, relation.id))
+                } label: {
+                    let words = "\(relation.title)  \(relation.count ?? 0)" + (relation.isAI ? "  \u{00B7} AI" : "")
+                    if relation.isOn { Label(words, systemImage: "checkmark") } else { Text(words) }
+                }
+            }
+        } label: {
+            Text(lit.map { "Relations: \($0.title)" } ?? "Relations")
+                .fontWeight(lit == nil ? .regular : .semibold)
+                .foregroundStyle(lit == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.accentColor))
+        }
+    }
+
+    @ViewBuilder private func verbButton(_ verb: VisionModel.CardBar.Verb, on itemID: String) -> some View {
+        if verb.options.isEmpty {
+            Button {
+                model.volumeBarRequest = .init(action: .card(itemID, verb.id))
+            } label: {
+                HStack(spacing: 4) {
+                    Text(verb.title)
+                    if let count = verb.count {
+                        Text("\(count)").foregroundStyle(.secondary)
+                    }
+                    if verb.isAI {
+                        Text("AI").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                    }
+                }
+                .fontWeight(verb.isOn ? .semibold : .regular)
+                .foregroundStyle(verb.isOn ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
+            }
+            .disabled(!verb.isEnabled)
+        } else {
+            Menu {
+                ForEach(verb.options) { option in
+                    Button {
+                        model.volumeBarRequest = .init(action: .card(itemID, option.id))
+                    } label: {
+                        if option.isOn { Label(option.title, systemImage: "checkmark") } else { Text(option.title) }
+                    }
+                }
+            } label: {
+                Text(verb.title)
+            }
+        }
+    }
+
+    /// The series a volume's room belongs to, when it has two or more
+    /// volumes on the shelf and its hallway is not already standing.
+    private var wholeSeriesID: String? {
+        guard model.openSeriesID == nil,
+              let seriesID = model.openVolume.flatMap({ model.boundVolume(for: $0)?.series?.id }),
+              model.seriesVolumes(seriesID).count >= 2 else { return nil }
+        return seriesID
+    }
+
+    /// The room's row: Documents first and Ask last; between them the
+    /// keyword, the zones, and the arranging — Select All, Layout,
+    /// Shapes — then where the room stands: Whole Volume, Whole Series.
+    private var roomRow: some View {
         HStack(spacing: 40) {
             // Back to the document chooser: the library, where another
             // journal, volume or series is chosen (the arm's Documents
@@ -3363,6 +3506,21 @@ struct VisionVolumeToolbar: View {
                 Text("Shapes")
             }
             .help("Give the room a shape: Hallway, or the articles gathered by meaning, theme, concept, author or the people they mention")
+            // Where the room stands in the collection: back out to the
+            // whole book (in a series' room, the chosen card's volume), or
+            // up to every volume of its series. Dimmed where they lead
+            // nowhere.
+            Button("Whole Volume") {
+                model.openWholeVolume(from: model.cardBar?.itemID)
+            }
+            .disabled(model.openVolume == nil
+                      && (model.cardBar.flatMap { BoundVolume.split(articleDocID: $0.itemID) } == nil))
+            .help("Open the whole book this room's articles come from")
+            Button("Whole Series") {
+                if let seriesID = wholeSeriesID { model.openSeries(seriesID) }
+            }
+            .disabled(wholeSeriesID == nil)
+            .help("Stand every volume of this series in one room")
             Button("Ask") {
                 model.assistantFocusID = nil
                 openWindow(id: "volume-assistant")
@@ -3371,11 +3529,6 @@ struct VisionVolumeToolbar: View {
             .disabled(!model.isVolumeRoom)
             .help("Ask about the articles of every volume in this series")
         }
-        .font(.system(size: 16))
-        .buttonStyle(.plain)
-        .padding(.horizontal, 32)
-        .frame(height: 56)
-        .glassBackgroundEffect()
     }
 }
 

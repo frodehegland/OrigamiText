@@ -1717,6 +1717,36 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
 - **Memory:** loaded containers are released after 10 idle minutes (`MLX.GPU.clearCache()`).
 - **Settings ▸ AI:** **AI on This Mac** comes first, one row per offered rung: tier, model, summary and size, then *Download and Use*, a progress bar with *Stop*, *Use*, or a green *In Use*. **Model in Use** (the former Language Model picker) follows. It lists the ready pairs first, and leaves out embedding-only models (`isEmbeddingOnly`: names containing "embed", or bge-).
 
+### 5.34 Every card verb in the bar, two rows (visionOS, 2 November 2026)
+
+This supersedes the star's buttons (5.20, 5.27, 5.29) and every row of verbs that hung under a chosen card. Cards now carry only content: an open paper keeps its picture strip, and while a relation is lit, the miniature ring.
+- **The paper's surround** (`paperStar`) is the thumbnail strip, mirrored unseen above so the card stays centred, plus the ring.
+  - Ring radii: half the gap plus half a miniature, plus 40 across and 110 down.
+  - Gone with the buttons: `relationColumn`, `starExtras`, `manyPaperButtons`, `onePaperButtons`, `kindRowCardID` and `layoutRowCardID`. Several-paper Layout now lives only in the bar's Layout menu.
+- **The bar** (`VisionVolumeToolbar`) is a `VStack` of two 56-pt rows with a divider between them:
+  1. **The room:** everything it held before.
+  2. **The chosen card**, scrollable sideways: its kind in small capitals (PAPER or the piece's Kind, CITATION, KEYWORD, CONCEPT, LABEL, NOTE, PASSAGE), its title (at most 260 pt), its verbs, a divider, then its relations. Each relation shows its count, a small AI where a model inferred it, and accent and semibold while lit. Verbs with options (Kind) are a `Menu` with a checkmark on the current one. With nothing chosen, the row reads "Choose a card — what it can do stands here." in tertiary.
+- **Data:** `VisionModel.CardBar` holds itemID, title, kindLabel, verbs and relations. Each `Verb` has id, title, isOn, isAI, count, isEnabled and options.
+  - `EPUBMapView.syncCardBar()` publishes it (only on change) at the end of `reload()`, after every tap, and after open/fold.
+  - The bar's card is `cardSizes.barItemID`: the last card chosen while it stays chosen. Otherwise it is an open paper, then any paper, then any chosen card.
+  - A press posts `volumeBarRequest .card(itemID, verbID)`, which `performCardVerb` carries out.
+- **The verbs:**
+
+| Card | Verbs |
+|---|---|
+| Paper | Read, Open/Fold, Focus/Un-Focus (lit for a relation focus or Focus mode), Hide, Pictures n (the gallery), Lift (when enabled), Transpoint; Kind (a menu) in volume rooms, Articles elsewhere |
+| Paper's relations | One **Relations** menu (`relationsMenu`). Each entry is `title  n · AI`, and the lit one is checked. While a relation stands, the menu reads "Relations: <title>" in accent and semibold. Each entry posts `rel:<title>`, which calls `toggleRelation` |
+| Citation | Open/Fold, Record, Lift |
+| Label | Gather, Lines, Focus (lit by mode), Remove (keywords), Hide (concepts) |
+| Note | Write, Delete |
+| Passage | Delete |
+
+There is no Close: tapping the card lets it go.
+
+**Row 1, in order:** Documents · Keyword · Opening/Articles/Appendices · Select All · Layout · Shapes · **Whole Volume** · **Whole Series** · Ask.
+- **Whole Volume** runs `openWholeVolume(from: cardBar?.itemID)`. It is dimmed unless the room is a volume's, or the chosen card is a volume's article.
+- **Whole Series** runs `openSeries(wholeSeriesID)`. It is dimmed unless the room is a volume's whose series has two or more volumes on the shelf, and the series room is not already standing.
+
 ### 5.29 Miniatures on the star, and jumping to a card (visionOS, 1 November 2026)
 
 When a relation on an open paper's star is lit (Similar to, Mentioned by, Cites…), its cards also stand in miniature on a ring round the star. The lines to the real cards still run.
