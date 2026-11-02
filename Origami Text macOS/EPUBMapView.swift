@@ -1274,7 +1274,8 @@ struct EPUBMapView: View {
             item.isSelected = selected.contains(label.id)
             // A Colour Cluster's group names itself in its colour.
             if label.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.colours.rawValue + ".")
-                || label.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.landscape.rawValue + "."),
+                || label.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.landscape.rawValue + ".")
+                || label.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.territory.rawValue + "."),
                let hex = colourOfTag[label.title] {
                 item.tagColors = [hex]
             }
@@ -5598,7 +5599,8 @@ struct EPUBMapView: View {
     /// around the reader, under a label card — choosing the label draws a
     /// line to each of its papers.
     enum RoomShape: String, CaseIterable {
-        case timeline, meaning, themes, concepts, authors, people, images, constellation, colours, weight, landscape
+        case timeline, meaning, themes, concepts, authors, people, images, constellation, colours, weight, landscape,
+             citations, territory, faults
 
         var title: String {
             switch self {
@@ -5614,6 +5616,9 @@ struct EPUBMapView: View {
             case .colours: "Colour Cluster"
             case .weight: "Weight"
             case .landscape: "Landscape"
+            case .citations: "Citation Mountains"
+            case .territory: "Your Territory"
+            case .faults: "Fault Lines"
             }
         }
     }
@@ -5664,7 +5669,10 @@ struct EPUBMapView: View {
         var available: Set<String> = [RoomShape.timeline.rawValue, RoomShape.authors.rawValue,
                                       RoomShape.meaning.rawValue, RoomShape.images.rawValue,
                                       RoomShape.constellation.rawValue, RoomShape.colours.rawValue,
-                                      RoomShape.weight.rawValue, RoomShape.landscape.rawValue]
+                                      RoomShape.weight.rawValue, RoomShape.landscape.rawValue,
+                                      RoomShape.territory.rawValue]
+        if corpus != nil { available.insert(RoomShape.citations.rawValue) }
+        if !(corpus?.stances ?? []).isEmpty { available.insert(RoomShape.faults.rawValue) }
         if !(corpus?.themes ?? []).isEmpty { available.insert(RoomShape.themes.rawValue) }
         if !(corpus?.terms ?? []).isEmpty { available.insert(RoomShape.concepts.rawValue) }
         if !(corpus?.people ?? []).isEmpty { available.insert(RoomShape.people.rawValue) }
@@ -5686,6 +5694,9 @@ struct EPUBMapView: View {
         case .constellation: runConstellationShape()
         case .weight: runWeightShape()
         case .landscape: runLandscapeShape()
+        case .citations: runCitationMountainsShape()
+        case .territory: runTerritoryShape()
+        case .faults: runFaultLinesShape()
         default:
             let targets = shapeTargets()
             guard targets.count > 2 else { return }
@@ -5793,7 +5804,7 @@ struct EPUBMapView: View {
             }
             return plain([("Many pictures", many), ("Several pictures", several), ("One picture", one)],
                          rest: "Text only")
-        case .timeline, .constellation, .weight, .landscape:
+        case .timeline, .constellation, .weight, .landscape, .citations, .territory, .faults:
             return []
         }
     }
@@ -6102,6 +6113,282 @@ struct EPUBMapView: View {
                                      x: spot.x - spaceShift.x, y: spot.y - spaceShift.y, z: spot.z - spaceShift.z))
         }
         storeShape(.landscape, labels: labels)
+        applyWatchPositions3D(placedNow, heights: 0.4...1.6)
+    }
+
+    // MARK: - More landscapes (2 Nov 2026)
+
+    /// A stable scatter for a paper, from its id: an angle and a reach of
+    /// 25–55 cm, so papers sharing a home do not start on one spot.
+    private static func landscapeScatter(_ id: String) -> SIMD2<Float> {
+        var hash: UInt64 = 1469598103934665603
+        for byte in id.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
+        let angle = Float(hash % 6283) / 1000
+        let reach = 0.25 + Float((hash >> 16) % 300) / 1000
+        return SIMD2<Float>(cos(angle), sin(angle)) * reach
+    }
+
+    /// The landscapes' shared relaxation on the floor: each paper starts at
+    /// home (plus its scatter), is pushed `apart` from every other and
+    /// `clear` of each fixed point, drawn gently home, and held inside the
+    /// square of half-side `half` round `centre`. Extra pairwise forces —
+    /// a dispute's push, an agreement's pull — ride `springs`.
+    private static func relaxLandscape(ids: [String], home: [String: SIMD2<Float>],
+                                       fixed: [SIMD2<Float>] = [], centre: SIMD2<Float>, half: Float,
+                                       apart: Float = 0.3, clear: Float = 0.3,
+                                       springs: [(a: String, b: String, length: Float, strength: Float)] = [],
+                                       rounds: Int = 80) -> [String: SIMD2<Float>] {
+        var at = Dictionary(uniqueKeysWithValues: ids.map { ($0, home[$0, default: centre] + landscapeScatter($0)) })
+        for _ in 0..<rounds {
+            var push = [String: SIMD2<Float>]()
+            for i in ids.indices {
+                for j in (i + 1)..<ids.count {
+                    let d = at[ids[i]]! - at[ids[j]]!
+                    let gap = simd_length(d)
+                    guard gap < apart else { continue }
+                    let dir = gap > 1e-4 ? d / gap : SIMD2<Float>(1, 0)
+                    push[ids[i], default: .zero] += dir * (apart - gap) / 2
+                    push[ids[j], default: .zero] -= dir * (apart - gap) / 2
+                }
+            }
+            for spring in springs {
+                guard let a = at[spring.a], let b = at[spring.b] else { continue }
+                let d = b - a
+                let gap = max(simd_length(d), 1e-4)
+                // A long spring (a metre or more) only pushes apart.
+                if spring.length >= 1, gap > spring.length { continue }
+                let move = d / gap * (gap - spring.length) * spring.strength / 2
+                push[spring.a, default: .zero] += move
+                push[spring.b, default: .zero] -= move
+            }
+            for id in ids {
+                var p = at[id]! + push[id, default: .zero] + (home[id, default: centre] - at[id]!) * 0.02
+                for point in fixed {
+                    let d = p - point
+                    let gap = simd_length(d)
+                    if gap < clear { p = point + (gap > 1e-4 ? d / gap : SIMD2<Float>(0, 1)) * clear }
+                }
+                p.x = min(max(p.x, centre.x - half), centre.x + half)
+                p.y = min(max(p.y, centre.y - half), centre.y + half)
+                at[id] = p
+            }
+        }
+        return at
+    }
+
+    /// Where each colour lies round a landscape's centre — the colour key's
+    /// order, clockwise from straight ahead — as a unit direction.
+    private func colourBearings() -> [String: SIMD2<Float>] {
+        let tags = model.tags.tags.filter(\.isOn)
+        var bearing: [String: SIMD2<Float>] = [:]
+        for (index, tag) in tags.enumerated() {
+            let angle = Float(index) / Float(max(tags.count, 1)) * 2 * .pi
+            bearing[tag.color] = SIMD2<Float>(sin(angle), -cos(angle))
+        }
+        return bearing
+    }
+
+    /// A label standing in a landscape, at a floor point and a height.
+    private func landscapeLabel(_ shape: RoomShape, _ index: Int, title: String, members: [String],
+                                at point: SIMD2<Float>, height: Float) -> ShapeLabel {
+        let spot = SIMD3<Float>(point.x, height, point.y) + spaceShift + documentsShift
+        return ShapeLabel(id: Self.shapeLabelPrefix + "\(shape.rawValue).\(index)", title: title,
+                          members: members, x: spot.x - spaceShift.x, y: spot.y - spaceShift.y,
+                          z: spot.z - spaceShift.z)
+    }
+
+    /// Citation Mountains: how much a paper is cited is how high it
+    /// stands. Within the corpus a citation counts three times what the
+    /// wider world's count adds (log₂). The most cited — up to eight —
+    /// are the summits, the first at the centre, the rest on a ring; each
+    /// paper stands on the slopes of the summits it cites, and one citing
+    /// none of them out on its colour's bearing at the rim.
+    private func runCitationMountainsShape() {
+        let targets = shapeTargets()
+        guard targets.count > 2 else { return }
+        let ids = targets.map(\.id)
+        guard let record = model.roomCorpus(for: ids) else { return }
+        let corpus = record.corpus
+        // Each cited work that is one of the room's own papers, by work key.
+        var paperOfWork: [String: String] = [:]
+        var worldCount: [String: Int] = [:]
+        for (key, work) in corpus.works {
+            guard let inCorpus = work.inCorpus, inCorpus.hasPrefix("piece:"),
+                  let doc = record.docOfPiece[String(inCorpus.dropFirst("piece:".count))] else { continue }
+            paperOfWork[key] = doc
+            if let world = work.citedByWorld { worldCount[doc] = max(worldCount[doc] ?? 0, world) }
+        }
+        var cites: [String: Set<String>] = [:]
+        var citedBy: [String: Int] = [:]
+        for citation in corpus.citations {
+            guard let from = record.docOfPiece[citation.from], let to = paperOfWork[citation.to], from != to,
+                  cites[from, default: []].insert(to).inserted else { continue }
+            citedBy[to, default: 0] += 1
+        }
+        let score = Dictionary(uniqueKeysWithValues: ids.map { id in
+            (id, Float(citedBy[id] ?? 0) * 3 + log2(1 + Float(worldCount[id] ?? 0)))
+        })
+        let top = score.values.max() ?? 0
+        guard top > 0 else { return }
+        let summits = ids.filter { score[$0]! > 0 }.sorted { score[$0]! > score[$1]! }.prefix(8).map { $0 }
+        let centre = SIMD2<Float>(0, -2.6)
+        var summitAt: [String: SIMD2<Float>] = [:]
+        for (index, id) in summits.enumerated() {
+            if index == 0 { summitAt[id] = centre; continue }
+            let angle = Float(index - 1) / Float(max(summits.count - 1, 1)) * 2 * .pi
+            summitAt[id] = centre + SIMD2<Float>(sin(angle), -cos(angle)) * 1.6
+        }
+        let bearing = colourBearings()
+        var home: [String: SIMD2<Float>] = [:]
+        for item in targets where summitAt[item.id] == nil {
+            let climbed = (cites[item.id] ?? []).compactMap { summitAt[$0] }
+            if !climbed.isEmpty {
+                home[item.id] = climbed.reduce(SIMD2<Float>(0, 0), +) / Float(climbed.count)
+            } else {
+                home[item.id] = centre + (item.tagColors.first.flatMap { bearing[$0] } ?? SIMD2<Float>(0, 1)) * 2.2
+            }
+        }
+        let others = ids.filter { summitAt[$0] == nil }
+        let at = Self.relaxLandscape(ids: others, home: home, fixed: Array(summitAt.values),
+                                     centre: centre, half: 2.5)
+        let origin = spaceShift + documentsShift
+        var placedNow: [String: SIMD3<Float>] = [:]
+        for id in ids {
+            guard let p = summitAt[id] ?? at[id] else { continue }
+            let y = 0.45 + 1.05 * (score[id]! / top).squareRoot()
+            placedNow[id] = SIMD3<Float>(p.x, y, p.y) + origin
+        }
+        let labels = summits.enumerated().map { index, id in
+            let count = citedBy[id] ?? 0
+            let world = worldCount[id] ?? 0
+            let title = count > 0 ? "Cited \(count)× here" + (world > 0 ? " · \(world) worldwide" : "")
+                                  : "\(world) citations worldwide"
+            let climbers = [id] + ids.filter { cites[$0]?.contains(id) == true }
+            let y = 0.45 + 1.05 * (score[id]! / top).squareRoot() + 0.16
+            return landscapeLabel(.citations, index, title: title, members: climbers, at: summitAt[id]!, height: y)
+        }
+        storeShape(.citations, labels: labels)
+        applyWatchPositions3D(placedNow, heights: 0.4...1.7)
+    }
+
+    /// Your Territory: what you have done with a paper — its highlights,
+    /// notes and tags, lifted passages, a pin, a place in To Read — is how
+    /// high and how central it stands. The papers you have worked stand
+    /// near the middle, the most worked highest; the rest lie low round
+    /// the rim, each on its colour's bearing — nearer in where its colour
+    /// is already well read, so the closest unexplored ground is plain.
+    private func runTerritoryShape() {
+        let targets = shapeTargets()
+        guard targets.count > 2 else { return }
+        var worked: [String: Float] = [:]
+        for item in targets {
+            var score = Float(AnnotationStore.load(for: item.id, in: VisionModel.annotationsRoot).count)
+            score += Float(model.floatingTexts.filter { $0.docID == item.id }.count) * 2
+            if model.pinnedIDs.contains(item.id) { score += 3 }
+            if model.isToRead(item.id) { score += 1 }
+            if score > 0 { worked[item.id] = score }
+        }
+        let most = worked.values.max() ?? 1
+        let bearing = colourBearings()
+        // How well read each colour is: the share of its papers you worked.
+        var colourWorked: [String: Float] = [:]
+        var colourAll: [String: Float] = [:]
+        for item in targets {
+            for hex in item.tagColors {
+                colourAll[hex, default: 0] += 1
+                if worked[item.id] != nil { colourWorked[hex, default: 0] += 1 }
+            }
+        }
+        let centre = SIMD2<Float>(0, -2.6)
+        var home: [String: SIMD2<Float>] = [:]
+        for item in targets {
+            let direction = item.tagColors.first.flatMap { bearing[$0] } ?? SIMD2<Float>(0, 1)
+            if let score = worked[item.id] {
+                home[item.id] = centre + direction * (0.2 + 1.1 * (1 - score / most))
+            } else {
+                let known = item.tagColors.map { (colourWorked[$0] ?? 0) / max(colourAll[$0] ?? 1, 1) }.max() ?? 0
+                home[item.id] = centre + direction * (1.6 + 0.8 * (1 - known))
+            }
+        }
+        let ids = targets.map(\.id)
+        let at = Self.relaxLandscape(ids: ids, home: home, centre: centre, half: 2.5)
+        let origin = spaceShift + documentsShift
+        var placedNow: [String: SIMD3<Float>] = [:]
+        for id in ids {
+            guard let p = at[id] else { continue }
+            let y = worked[id].map { 0.75 + 0.75 * $0 / most } ?? 0.45
+            placedNow[id] = SIMD3<Float>(p.x, y, p.y) + origin
+        }
+        // The compass: each colour's name at the rim, on its bearing, and
+        // the middle named for what it is.
+        var labels: [ShapeLabel] = []
+        for (index, tag) in model.tags.tags.filter(\.isOn).enumerated() {
+            guard let direction = bearing[tag.color] else { continue }
+            let members = targets.filter { $0.tagColors.first == tag.color }.map(\.id)
+            labels.append(landscapeLabel(.territory, index, title: tag.name, members: members,
+                                         at: centre + direction * 2.45, height: 1.0))
+        }
+        if !worked.isEmpty {
+            labels.append(landscapeLabel(.territory, labels.count, title: "Read most",
+                                         members: Array(worked.keys), at: centre, height: 1.75))
+        }
+        storeShape(.territory, labels: labels)
+        applyWatchPositions3D(placedNow, heights: 0.4...1.6)
+    }
+
+    /// Fault Lines: the stances the Mac found between the papers — agrees,
+    /// extends, responds — draw papers together; a dispute pushes the two
+    /// at least two metres apart, so the field's arguments open as rifts
+    /// across the floor. The more stances a paper takes part in, the
+    /// higher it stands; papers in none lie low at the rim on their
+    /// colour's bearing. Each disputed paper is named "Disputed n×",
+    /// carrying the papers that dispute it.
+    private func runFaultLinesShape() {
+        let targets = shapeTargets()
+        guard targets.count > 2 else { return }
+        let ids = targets.map(\.id)
+        guard let record = model.roomCorpus(for: ids), let stances = record.corpus.stances, !stances.isEmpty
+        else { return }
+        var springs: [(a: String, b: String, length: Float, strength: Float)] = []
+        var degree: [String: Int] = [:]
+        var disputedBy: [String: Set<String>] = [:]
+        for stance in stances where stance.review != "rejected" {
+            guard let a = record.docOfPiece[stance.from], let b = record.docOfPiece[stance.to], a != b else { continue }
+            let kind = stance.type.lowercased()
+            let dispute = kind.contains("contradict") || kind.contains("disagree") || kind.contains("dispute")
+            springs.append(dispute ? (a, b, 2.0, 0.6) : (a, b, 0.4, 0.3))
+            degree[a, default: 0] += 1
+            degree[b, default: 0] += 1
+            if dispute { disputedBy[b, default: []].insert(a) }
+        }
+        guard !springs.isEmpty else { return }
+        let centre = SIMD2<Float>(0, -2.6)
+        let bearing = colourBearings()
+        var home: [String: SIMD2<Float>] = [:]
+        for item in targets {
+            let direction = item.tagColors.first.flatMap { bearing[$0] } ?? SIMD2<Float>(0, 1)
+            home[item.id] = degree[item.id] == nil ? centre + direction * 2.3 : centre + direction * 0.7
+        }
+        // Disputes only push apart: a spring longer than the gap pulls,
+        // so a dispute's spring acts only while the two stand closer than
+        // two metres.
+        let at = Self.relaxLandscape(ids: ids, home: home, centre: centre, half: 2.5,
+                                     springs: springs, rounds: 140)
+        let origin = spaceShift + documentsShift
+        var placedNow: [String: SIMD3<Float>] = [:]
+        for id in ids {
+            guard let p = at[id] else { continue }
+            let y = degree[id].map { 0.65 + 0.12 * Float(min($0, 7)) } ?? 0.45
+            placedNow[id] = SIMD3<Float>(p.x, y, p.y) + origin
+        }
+        var labels: [ShapeLabel] = []
+        for (id, by) in disputedBy.sorted(by: { $0.value.count > $1.value.count }).prefix(12) {
+            guard let p = at[id] else { continue }
+            let y = (degree[id].map { 0.65 + 0.12 * Float(min($0, 7)) } ?? 0.45) + 0.15
+            labels.append(landscapeLabel(.faults, labels.count, title: "Disputed \(by.count)\u{00D7}",
+                                         members: Array(by), at: p, height: y))
+        }
+        storeShape(.faults, labels: labels)
         applyWatchPositions3D(placedNow, heights: 0.4...1.6)
     }
 

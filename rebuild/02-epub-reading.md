@@ -2434,3 +2434,22 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Height:** a paper stands at 0.5 + 0.8·e^(−d/0.8) m, where d is its distance to its nearest own top. It is high on the slope at a top's foot and low in the valleys.
 - **Moving a top:** dragging a top carries the papers whose first colour it is, since those are the label's `members`.
 - **Height ranges:** `applyWatchPositions3D` now takes a height range per Shape (0.95–2.2 m by default). Landscape uses 0.4–1.6 m and Weight 0.45–2.4 m; Weight's lower rows had been clamped together.
+
+**Three more landscapes (2 Nov 2026).**
+- **Shared engine:** all three use `relaxLandscape`, a relaxation on the floor of a 5 m square centred 2.6 m ahead. Each paper starts at a home plus a stable hashed scatter (`landscapeScatter`). Each of the rounds pushes papers 30 cm apart and 30 cm clear of fixed points, adds optional spring forces between pairs (a spring of a metre or more only pushes), draws each paper 2% toward home, and clamps it to the square. Colours keep one bearing each round the centre (`colourBearings`, the key's order, clockwise from ahead). Labels are placed with `landscapeLabel`.
+- **Citation Mountains** (`.citations`; available when the room has a corpus record, `runCitationMountainsShape`):
+  - **Score:** in-corpus citations, traced from `corpus.citations` to works whose `inCorpus` is one of the room's pieces, count three each, plus log₂(1 + the world's count, `citedByWorld`).
+  - **Summits:** the eight highest scores. The first stands at the centre and the rest on a 1.6 m ring.
+  - **Others:** every other paper stands among the summits it cites, or out on its colour's bearing at 2.2 m if it cites none.
+  - **Height:** 0.45 + 1.05·√(score/top).
+  - **Labels:** each summit's label reads "Cited n× here · m worldwide" and carries the summit and the papers citing it.
+- **Your Territory** (`.territory`; always available, `runTerritoryShape`):
+  - **Worked score:** annotations (`AnnotationStore.load` for the doc) + 2 per lifted passage + 3 for a pin + 1 for To Read.
+  - **Worked papers:** they stand within 1.3 m of the centre on their colour's bearing, nearer and higher (0.75–1.5 m) the more worked.
+  - **Unworked papers:** they lie at 0.45 m between 1.6 and 2.4 m out, nearer in where their colour is already well read (the share of its papers worked).
+  - **Labels:** a compass of colour names at the rim (coloured, carrying each colour's papers) and "Read most" over the centre.
+- **Fault Lines** (`.faults`; available when the corpus has stances, `runFaultLinesShape`):
+  - **Springs:** rejected stances are skipped. Agrees, extends and responds pull a pair to 40 cm; contradicts/disagrees/disputes push a pair to at least 2 m. 140 rounds.
+  - **Placement:** papers in no stance stand at the rim on their colour's bearing.
+  - **Height:** 0.65 + 0.12 per stance, to 7 stances; papers in none at 0.45.
+  - **Labels:** up to twelve "Disputed n×" labels, the most disputed first, each carrying its disputants.
