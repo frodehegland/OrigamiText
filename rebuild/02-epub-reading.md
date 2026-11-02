@@ -1746,6 +1746,9 @@ There is no Close: tapping the card lets it go.
 **Row 1, in order:** Documents · Keyword · Opening/Articles/Appendices · Select All · Layout · Shapes · **Whole Volume** · **Whole Series** · Ask.
 - **Whole Volume** runs `openWholeVolume(from: cardBar?.itemID)`. It is dimmed unless the room is a volume's, or the chosen card is a volume's article.
 - **Whole Series** runs `openSeries(wholeSeriesID)`. It is dimmed unless the room is a volume's whose series has two or more volumes on the shelf, and the series room is not already standing.
+- **In a series' hallway** neither stands grey; both become menus of the series' volumes:
+  - **Whole Volume ▾** calls `openWholeVolume(volume:)`, with the chosen card's volume checked;
+  - **One Volume ▾** replaces Whole Series and calls `openArticles(of:)`.
 
 ### 5.29 Miniatures on the star, and jumping to a card (visionOS, 1 November 2026)
 
