@@ -2401,3 +2401,8 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **`EPUBMapItem.openLift`** (part of `isVisuallyEqual`): `reload` gives each open paper a lift so its star of verbs and menus stands in front of every card within ±55 cm across and ±42 cm up and down. It is the furthest such face (plus 3 cm for another open card and 2 cm for a sphere) plus 2.6 cm, at least `openCardLift` (3 cm) and at most 25 cm. Gathered cards (+5 cm) and a Shape's forward rows used to stand in front of the side menus. The card's body and its star's anchor both use it.
 - **Miniatures:** their hover glow uses `.contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 10))` with `.hoverEffect(.highlight)`, so the glow is exactly the miniature's frame.
 
+
+**Colour Cluster (2 Nov 2026).** `RoomShape.colours` ("Colour Cluster") is always available in Shapes.
+- **Groups:** in `shapeGroups`, each standing paper joins the group of its first colour, in the colour key's order (the tags that are on). A one-colour paper has fit 1 and stands at the heart of its group; a paper with several colours has fit 0.6 and stands toward the edge. Papers with no colour form "No colour", which is among `placeGroups`' rests, so it stands as the low field behind the arc.
+- **Layout and labels:** `placeGroups` lays the groups out as any Shape's. Each group's label (`shape:colours.N`) takes its tag's colour in `reload`, and spatial labels with `tagColors` ink in that colour.
+- **Any look:** it works with Cards, Color Spheres and Color Titles alike.

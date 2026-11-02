@@ -1264,6 +1264,7 @@ struct EPUBMapView: View {
         }
         // The room's Shape labels: one card above each group, naming what
         // its papers share. Chosen, it draws a line to each of them.
+        let colourOfTag = Dictionary(model.tags.tags.map { ($0.name, $0.color) }, uniquingKeysWith: { a, _ in a })
         items += (roomShape?.labels ?? []).map { label in
             var item = EPUBMapItem(
                 id: label.id, title: label.title,
@@ -1271,6 +1272,11 @@ struct EPUBMapView: View {
                 kind: .concept,
                 position: placed[label.id] ?? SIMD3<Float>(label.x, label.y, label.z) + spaceShift)
             item.isSelected = selected.contains(label.id)
+            // A Colour Cluster's group names itself in its colour.
+            if label.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.colours.rawValue + "."),
+               let hex = colourOfTag[label.title] {
+                item.tagColors = [hex]
+            }
             return item
         }
         // The colours chosen on the colour key (2 Nov 2026): each its
@@ -3295,7 +3301,8 @@ struct EPUBMapView: View {
             // pane, no border — a soft shadow keeps it legible against
             // the room. Chosen, it turns warm gold (1 Nov 2026).
             let ink = item.isSelected ? Color(red: 1.0, green: 0.84, blue: 0.45)
-                : item.id.hasPrefix(Self.tagHubPrefix) ? Self.color(hex: item.tagColors.first ?? "#FFFFFF")
+                : item.id.hasPrefix(Self.tagHubPrefix) || item.id.hasPrefix(Self.shapeLabelPrefix)
+                    ? Self.color(hex: item.tagColors.first ?? "#FFFFFF")
                 : Color.white
             VStack(spacing: 3 * s) {
                 Text(item.title)
@@ -5505,7 +5512,7 @@ struct EPUBMapView: View {
     /// around the reader, under a label card — choosing the label draws a
     /// line to each of its papers.
     enum RoomShape: String, CaseIterable {
-        case timeline, meaning, themes, concepts, authors, people, images, constellation
+        case timeline, meaning, themes, concepts, authors, people, images, constellation, colours
 
         var title: String {
             switch self {
@@ -5518,6 +5525,7 @@ struct EPUBMapView: View {
             case .people: "People Mentioned"
             case .images: "Images"
             case .constellation: "Constellation"
+            case .colours: "Colour Cluster"
             }
         }
     }
@@ -5567,7 +5575,7 @@ struct EPUBMapView: View {
         // embedding, so they stand in any room, record or none.
         var available: Set<String> = [RoomShape.timeline.rawValue, RoomShape.authors.rawValue,
                                       RoomShape.meaning.rawValue, RoomShape.images.rawValue,
-                                      RoomShape.constellation.rawValue]
+                                      RoomShape.constellation.rawValue, RoomShape.colours.rawValue]
         if !(corpus?.themes ?? []).isEmpty { available.insert(RoomShape.themes.rawValue) }
         if !(corpus?.terms ?? []).isEmpty { available.insert(RoomShape.concepts.rawValue) }
         if !(corpus?.people ?? []).isEmpty { available.insert(RoomShape.people.rawValue) }
@@ -5630,6 +5638,24 @@ struct EPUBMapView: View {
             }
         }
         switch shape {
+        case .colours:
+            // Colour Cluster (2 Nov 2026): each paper stands with the first
+            // of its colours, in the colour key's order — a paper of one
+            // colour at the heart of its group, one of several toward its
+            // edge; the uncoloured stand apart behind.
+            let order = model.tags.tags.filter(\.isOn)
+            var groups: [(label: String, members: [(item: EPUBMapItem, fit: Float)])] = order.map { ($0.name, []) }
+            var none: [(item: EPUBMapItem, fit: Float)] = []
+            for item in targets.sorted(by: { $0.title < $1.title }) {
+                guard let first = item.tagColors.first,
+                      let index = order.firstIndex(where: { $0.color == first }) else {
+                    none.append((item, 1))
+                    continue
+                }
+                groups[index].members.append((item, item.tagColors.count == 1 ? 1 : 0.6))
+            }
+            if !none.isEmpty { groups.append(("No colour", none)) }
+            return groups.filter { !$0.members.isEmpty }
         case .meaning:
             if let meaning = record?.corpus.meaning {
                 return plain(meaning.groups.map { ($0.label, docs($0.pieces)) }, rest: "Elsewhere")
@@ -5739,7 +5765,7 @@ struct EPUBMapView: View {
         }
         // Largest first — but a catch-all group always stands last.
         let rests: Set<String> = ["Elsewhere", "Other themes", "No shared concept", "Names no one", "Single contributions",
-                                  "Text only"]
+                                  "Text only", "No colour"]
         clusters.sort { $0.members.count > $1.members.count }
         // What no group took stands apart: a broad, low field behind the
         // arc, so the groups read in front of it rather than beside a
