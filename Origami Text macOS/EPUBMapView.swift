@@ -3754,6 +3754,10 @@ struct EPUBMapView: View {
         var ghost = UnlitMaterial()
         ghost.color = .init(tint: .clear)
         ghost.blending = .transparent(opacity: 0.0)
+        // Unseen, and it must hide nothing either: a body that writes depth
+        // cuts any face turned through it — a sphere's billboarded title
+        // was sliced at odd angles by its own card's box (2 Nov 2026).
+        ghost.writesDepth = false
         // Selection grows the face, as an active chip grows — and a
         // chosen PAPER grows further than a citation does: the front
         // row is what the hand works with, and it now carries its own
