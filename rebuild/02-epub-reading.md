@@ -1893,6 +1893,11 @@ There is no Close: tapping the card lets it go.
 - **In a series' hallway** neither stands grey; both become menus of the series' volumes:
   - **Whole Volume ▾** calls `openWholeVolume(volume:)`, with the chosen card's volume checked;
   - **One Volume ▾** replaces Whole Series and calls `openArticles(of:)`.
+- **Since later on 2 Nov 2026,** Whole Volume and Whole Series are gone from the bar. One **Volume ▾** menu stands in their place:
+  - **All** calls `openSeries` and is checked in the series' hallway.
+  - A divider follows, then each volume of the series, which calls `openArticles(of:)`; the room's own volume is checked.
+  - The menu is dimmed outside a series or volume room, and All is dimmed for a series with only one volume.
+  - A card's way to read a volume whole remains its own verb.
 
 ### 5.29 Miniatures on the star, and jumping to a card (visionOS, 1 November 2026)
 

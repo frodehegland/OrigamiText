@@ -3458,18 +3458,9 @@ struct VisionVolumeToolbar: View {
             .glassBackgroundEffect()
     }
 
-    /// The series a volume's room belongs to, when it has two or more
-    /// volumes on the shelf and its hallway is not already standing.
-    private var wholeSeriesID: String? {
-        guard model.openSeriesID == nil,
-              let seriesID = model.openVolume.flatMap({ model.boundVolume(for: $0)?.series?.id }),
-              model.seriesVolumes(seriesID).count >= 2 else { return nil }
-        return seriesID
-    }
-
     /// The room's row: Documents first and Ask last; between them the
     /// keyword, the zones, and the arranging — Select All, Layout,
-    /// Shapes — then where the room stands: Whole Volume, Whole Series.
+    /// Shapes — then where the room stands: Volume (All, or one).
     private var roomRow: some View {
         HStack(spacing: 40) {
             // Back to the document chooser: the library, where another
@@ -3558,48 +3549,36 @@ struct VisionVolumeToolbar: View {
             // whole book (in a series' room, the chosen card's volume), or
             // up to every volume of its series. Dimmed where they lead
             // nowhere.
-            // In a series' hallway (2 Nov 2026) neither may stand grey:
-            // Whole Volume lists the volumes to read whole (the chosen
-            // card's marked), and One Volume steps into any one's room.
-            if let seriesID = model.openSeriesID {
-                let volumes = model.seriesVolumes(seriesID)
-                let chosenVolume = model.cardBar.flatMap { BoundVolume.split(articleDocID: $0.itemID)?.volume }
-                Menu {
-                    ForEach(volumes, id: \.id) { volume in
-                        Button {
-                            model.openWholeVolume(volume: volume)
-                        } label: {
-                            if volume.id == chosenVolume {
-                                Label(volume.title, systemImage: "checkmark")
-                            } else {
-                                Text(volume.title)
-                            }
+            // Volume (2 Nov 2026): All — every volume of the series in one
+            // room — then each volume alone, the room standing checked.
+            // Dimmed where the room is not a series' or one of its volumes.
+            let seriesID = model.openSeriesID
+                ?? model.openVolume.flatMap { model.boundVolume(for: $0)?.series?.id }
+            let volumes = seriesID.map { model.seriesVolumes($0) } ?? []
+            Menu {
+                Button {
+                    if let seriesID { model.openSeries(seriesID) }
+                } label: {
+                    if model.openSeriesID != nil { Label("All", systemImage: "checkmark") } else { Text("All") }
+                }
+                .disabled(volumes.count < 2)
+                Divider()
+                ForEach(volumes, id: \.id) { volume in
+                    Button {
+                        model.openArticles(of: volume)
+                    } label: {
+                        if model.openVolume?.id == volume.id {
+                            Label(volume.title, systemImage: "checkmark")
+                        } else {
+                            Text(volume.title)
                         }
                     }
-                } label: {
-                    Text("Whole Volume")
                 }
-                .help("Read one volume of the series whole")
-                Menu {
-                    ForEach(volumes, id: \.id) { volume in
-                        Button(volume.title) { model.openArticles(of: volume) }
-                    }
-                } label: {
-                    Text("One Volume")
-                }
-                .help("Stand one volume's articles alone in the room")
-            } else {
-                Button("Whole Volume") {
-                    model.openWholeVolume(from: model.cardBar?.itemID)
-                }
-                .disabled(model.openVolume == nil)
-                .help("Open the whole book this room's articles come from")
-                Button("Whole Series") {
-                    if let seriesID = wholeSeriesID { model.openSeries(seriesID) }
-                }
-                .disabled(wholeSeriesID == nil)
-                .help("Stand every volume of this series in one room")
+            } label: {
+                Text("Volume")
             }
+            .disabled(volumes.isEmpty)
+            .help("All the series' volumes in one room, or one volume alone")
             Button("Ask") {
                 model.assistantFocusID = nil
                 openWindow(id: "volume-assistant")
