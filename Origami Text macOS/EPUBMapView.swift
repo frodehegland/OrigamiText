@@ -4224,7 +4224,7 @@ struct EPUBMapView: View {
     private func toggleRelation(_ relation: StarRelation, of item: EPUBMapItem, only: Bool = false,
                                 gather: Bool = false) {
         if relationShown?.from == item.id, relationShown?.title == relation.title,
-           relationShown?.only == only, relationShown?.gathered == gather {
+           relationShown?.gathered == gather, gather || relationShown?.only == only {
             relationShown = nil
             galleryOf = nil
         } else {
@@ -4499,10 +4499,43 @@ struct EPUBMapView: View {
             Button(item.isPinned ? "Unpin" : "Pin") { performCardVerb("pin", on: item.id) }
                 .tint(item.isPinned ? .accentColor : nil)
             Button("Put Aside") { performCardVerb("hide", on: item.id) }
+            // While this card's Gather stands (2 Nov 2026): Focus hides
+            // every card it did not gather, and Select Gathered chooses
+            // them all, so one drag carries the whole star.
+            if let shown = relationShown, shown.gathered, shown.from == item.id {
+                Button("Focus") {
+                    relationShown?.only.toggle()
+                    reload()
+                }
+                .tint(shown.only ? .accentColor : nil)
+                let all = gatheredAllSelected
+                Button(all ? "Deselect Gathered" : "Select Gathered") { selectGathered(!all) }
+                    .tint(all ? .accentColor : nil)
+            }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
         .font(.caption)
+    }
+
+    /// Whether every card the Gather drew in is chosen.
+    private var gatheredAllSelected: Bool {
+        let ids = gatheredIDs
+        let standing = items.filter { ids.contains($0.id) && !$0.isGhost }
+        return !standing.isEmpty && standing.allSatisfy(\.isSelected)
+    }
+
+    /// Chooses (or lets go of) every gathered card with the card they are
+    /// gathered round, which keeps its verbs — so a drag of any of them
+    /// carries the star, and the star, drawn round its card, follows.
+    private func selectGathered(_ select: Bool) {
+        guard let shown = relationShown, shown.gathered else { return }
+        for index in items.indices where shown.ids.contains(items[index].id) && !items[index].isGhost {
+            items[index].isSelected = select
+        }
+        cardSizes.barItemID = shown.from
+        syncCardBar()
+        reload()
     }
 
     /// Whether this card is the one that wears the verbs: the most
@@ -4601,7 +4634,8 @@ struct EPUBMapView: View {
     private func relationMenu(_ title: String, only: Bool, gather: Bool = false, for item: EPUBMapItem,
                               relations: [StarRelation]) -> some View {
         let lit: String? = relationShown.flatMap {
-            $0.from == item.id && $0.only == only && $0.gathered == gather && $0.title != "Images" ? $0.title : nil
+            $0.from == item.id && $0.gathered == gather && (gather || $0.only == only)
+                && $0.title != "Images" ? $0.title : nil
         }
         let others = relations.filter {
             !Self.relationCatalog.contains($0.title) && !$0.title.hasPrefix(Self.bothCitePrefix)
@@ -6124,7 +6158,8 @@ struct EPUBMapView: View {
                 items[index].position = position + delta
             }
         }
-        for (id, position) in placed where carried(id) && liftedCards[id]?.stuck == nil {
+        for (id, position) in placed where carried(id) && liftedCards[id]?.stuck == nil
+            && !gatheredIDs.contains(id) {
             placed[id] = position + delta
         }
         for id in liftedCards.keys where carried(id) {
@@ -6211,7 +6246,9 @@ struct EPUBMapView: View {
             if let index = items.firstIndex(where: { $0.id == item.id }) {
                 items[index].position = position
             }
-            if let position {
+            // A gathered card's place is the star's, drawn round its card:
+            // its own place is kept for when the Gather is let go.
+            if let position, !gatheredIDs.contains(item.id) {
                 placed[item.id] = position
                 // A float's place travels IN its annotation — written
                 // in map space, the carried shift removed.
