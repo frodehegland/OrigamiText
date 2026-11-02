@@ -2511,7 +2511,7 @@ struct EPUBMapView: View {
                         StanceMarkView(mark: mark,
                                        confirm: { decideStance(mark.stanceID, "confirmed", reaching: item.id) },
                                        sever: { decideStance(mark.stanceID, "rejected", reaching: item.id) })
-                            .scaleEffect(0.5))
+                            .scaleEffect(0.5, anchor: .top))
                 }
                 // An open paper: its pictures, the miniature ring while a
                 // relation is lit, and — on the most recently chosen card
@@ -2549,12 +2549,10 @@ struct EPUBMapView: View {
         // glass face — so it reads as a ghost frame around every card.
         view = view.shouldUseHoverNode { _ in false }
         view = view.attachmentAnchorRule { _, item in
-            // A stance's mark stands just off the card's edge that faces
-            // the chosen card, where its line arrives.
-            if let mark = item.stanceMark {
-                return mark.onLeft
-                    ? AnchorRule(anchor: SIMD3<Float>(0, 0.5, 0.5), offset: SIMD3<Float>(-0.004, 0, 0))
-                    : AnchorRule(anchor: SIMD3<Float>(1, 0.5, 0.5), offset: SIMD3<Float>(0.004, 0, 0))
+            // The mark is stuck to the connected card, at its foot,
+            // centred under it (2 Nov 2026, Frode).
+            if item.stanceMark != nil {
+                return AnchorRule(anchor: SIMD3<Float>(0.5, 0, 0.5), offset: SIMD3<Float>(0, -0.002, 0))
             }
             // A chosen paper's star menu rings the card: centred on it,
             // 6 mm behind its face — so the card keeps every pinch, and
@@ -3880,7 +3878,7 @@ struct EPUBMapView: View {
     }
 
     /// Each relation menu's width beside the card, in the star's doubled points.
-    private static let relationMenuWidth: CGFloat = 300
+    private static let relationMenuWidth: CGFloat = 420
 
     /// At most this many miniatures ring a star; the lines reach them all.
     private static let ringLimit = 14
@@ -4361,8 +4359,9 @@ struct EPUBMapView: View {
                         }
                     }
                 }
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.08).opacity(0.85)))
+                .font(.system(size: 19))
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color(white: 0.08).opacity(0.88)))
             }
         }
     }
@@ -4384,7 +4383,7 @@ struct EPUBMapView: View {
             }
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 2)
+        .padding(.vertical, 5)
         .disabled(relation == nil)
     }
 
@@ -11379,9 +11378,9 @@ struct StanceMarkView: View {
     @State private var showsEvidence = false
 
     var body: some View {
-        VStack(alignment: mark.onLeft ? .trailing : .leading, spacing: 6) {
+        VStack(alignment: .center, spacing: 6) {
             HStack(spacing: 6) {
-                if !mark.onLeft { buttons }
+                buttons
                 Text((mark.directed ? (mark.outward ? "\u{2192} " : "\u{2190} ") : "") + mark.title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(mark.title == "Contradicts" ? Color(red: 1.0, green: 0.62, blue: 0.42) : .white)
@@ -11393,7 +11392,6 @@ struct StanceMarkView: View {
                     Button { showsEvidence.toggle() } label: { Text("\u{275D}") }
                         .buttonStyle(.plain)
                 }
-                if mark.onLeft { buttons }
             }
             if asking {
                 HStack(spacing: 8) {
