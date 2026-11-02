@@ -2373,7 +2373,7 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 
 ### Colour lines and solid open cards (2 Nov 2026)
 
-- **Colour lines.** Each row of the colour key (`VisionTagLegendView`) is a button that toggles its colour in `VisionModel.chosenTagColors`. A chosen row shows a checkmark and a light ground, and **Clear Lines** empties the set. Changing the set bumps `volumeStamp`; an `.onChange` on the room's body chain overloads the type checker.
+- **Colour lines.** Each row of the colour key (`VisionTagLegendView`) is a button that toggles its colour in `VisionModel.chosenTagColors`. A chosen row shows a checkmark and a light ground, and **Clear Lines** empties the set. Changing the set bumps `volumeStamp`, which reloads the room. Do not add another `.onChange` to the room's body chain instead: it is already too long for the type checker.
   - **The hub:** `reload` stands each chosen colour in the room as a spatial label (`tagline:<hex>`, `tagHubPrefix`). Its title is the category's name in its colour, with "n papers" beneath, placed 20 cm above the highest of its papers and 12 cm toward the reader from their centre. A hub moved by hand keeps its place.
   - **The lines:** `conceptEdges` runs a line from the hub to every article wearing the colour, and `labelMembers` returns those articles, so dragging the hub carries them.
 - **Solid open cards.** An open paper (`showsAbstract`) gets the same opaque 0.12-white slab between its faces that a chosen citation has, so nothing of the room or its lines shows through it.
