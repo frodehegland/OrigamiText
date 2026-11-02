@@ -3424,14 +3424,36 @@ struct EPUBMapView: View {
                 // Its categories: a small rectangle of each colour, in the
                 // tags' order (set on the Mac, 2 Nov 2026).
                 if !item.tagColors.isEmpty {
-                    HStack(spacing: 1.2 * s) {
-                        ForEach(Array(item.tagColors.enumerated()), id: \.offset) { _, hex in
-                            RoundedRectangle(cornerRadius: 0.6 * s)
-                                .fill(Self.color(hex: hex))
-                                .frame(width: 7 * s, height: 2.4 * s)
+                    if selected && item.showsAbstract {
+                        // Open: each colour names its category beside it, in
+                        // small sans-serif (2 Nov 2026) — in a row, or one
+                        // under another when the row will not fit.
+                        let chips = ForEach(Array(item.tagColors.enumerated()), id: \.offset) { _, hex in
+                            HStack(spacing: 1 * s) {
+                                RoundedRectangle(cornerRadius: 0.6 * s)
+                                    .fill(Self.color(hex: hex))
+                                    .frame(width: 7 * s, height: 2.4 * s)
+                                Text(model.tags.tags.first { $0.color == hex }?.name ?? "")
+                                    .font(.system(size: 3.8 * s))
+                                    .foregroundStyle(Color.white.opacity(0.7))
+                                    .lineLimit(1)
+                            }
                         }
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 3 * s) { chips }
+                            VStack(alignment: .leading, spacing: 1 * s) { chips }
+                        }
+                        .padding(.top, 0.8 * s)
+                    } else {
+                        HStack(spacing: 1.2 * s) {
+                            ForEach(Array(item.tagColors.enumerated()), id: \.offset) { _, hex in
+                                RoundedRectangle(cornerRadius: 0.6 * s)
+                                    .fill(Self.color(hex: hex))
+                                    .frame(width: 7 * s, height: 2.4 * s)
+                            }
+                        }
+                        .padding(.top, 0.8 * s)
                     }
-                    .padding(.top, 0.8 * s)
                 }
                 if !selected, !item.showsAbstract, let sentence = item.firstSentence {
                     Text(sentence)

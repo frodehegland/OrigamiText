@@ -2406,3 +2406,5 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Groups:** in `shapeGroups`, each standing paper joins the group of its first colour, in the colour key's order (the tags that are on). A one-colour paper has fit 1 and stands at the heart of its group; a paper with several colours has fit 0.6 and stands toward the edge. Papers with no colour form "No colour", which is among `placeGroups`' rests, so it stands as the low field behind the arc.
 - **Layout and labels:** `placeGroups` lays the groups out as any Shape's. Each group's label (`shape:colours.N`) takes its tag's colour in `reload`, and spatial labels with `tagColors` ink in that colour.
 - **Any look:** it works with Cards, Color Spheres and Color Titles alike.
+
+**Category names on open cards (2 Nov 2026).** On an open paper (chosen, with `showsAbstract`), each colour rectangle is followed by its category's name. The name is looked up in `model.tags` by colour and drawn in a 3.8-point system sans-serif at white 0.7. The rectangles and names sit in one row, or stack one under another when the row will not fit (`ViewThatFits`). Closed cards keep the bare rectangles.
