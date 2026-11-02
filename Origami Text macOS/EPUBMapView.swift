@@ -4877,6 +4877,9 @@ struct EPUBMapView: View {
             if let note = note(for: item.id) { openNoteEditor(note) }
         case "delete":
             if item.id.hasPrefix("float:") {
+                // Its lit relation goes with it — no lines from nothing.
+                if relationShown?.from == item.id { relationShown = nil }
+                if model.litSelectionRelation?.docID == item.id { model.litSelectionRelation = nil }
                 model.removeFloat(item.id)
             } else if let note = note(for: item.id) {
                 SpatialNotes.delete(note, community: model.index.folderURL)

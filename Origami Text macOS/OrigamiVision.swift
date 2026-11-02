@@ -1209,11 +1209,11 @@ final class VisionModel {
     func setFloatPosition(_ position: SIMD3<Float>, id: String) {
         let bare = id.hasPrefix("float:") ? String(id.dropFirst("float:".count)) : id
         guard let float = floatingTexts.first(where: { $0.id == bare }) else { return }
-        var all = AnnotationStore.load(for: float.docID, in: Self.annotationsRoot)
+        var all = AnnotationStore.load(for: Self.annotationAddress(float.docID), in: Self.annotationsRoot)
         guard let index = all.firstIndex(where: { $0.id == bare }) else { return }
         all[index].float = WebAnnotation.FloatPosition(
             x: Double(position.x), y: Double(position.y), z: Double(position.z))
-        AnnotationStore.save(all, for: float.docID, in: Self.annotationsRoot)
+        AnnotationStore.save(all, for: Self.annotationAddress(float.docID), in: Self.annotationsRoot)
         annotationsStamp += 1
         if let mirror = floatingTexts.firstIndex(where: { $0.id == bare }) {
             floatingTexts[mirror].position = position
@@ -1221,13 +1221,16 @@ final class VisionModel {
     }
 
     /// Delete: the float's annotation leaves the sidecar with it, for
-    /// good — which is why the verb is not a putting-away.
+    /// good — which is why the verb is not a putting-away. The sidecar is
+    /// the book's: a volume's articles share their volume's (2 Nov 2026 —
+    /// read by the article's own id, the passage was never found, so it
+    /// stayed and came straight back).
     func removeFloat(_ id: String) {
         let bare = id.hasPrefix("float:") ? String(id.dropFirst("float:".count)) : id
         guard let float = floatingTexts.first(where: { $0.id == bare }) else { return }
-        var all = AnnotationStore.load(for: float.docID, in: Self.annotationsRoot)
+        var all = AnnotationStore.load(for: Self.annotationAddress(float.docID), in: Self.annotationsRoot)
         all.removeAll { $0.id == bare }
-        AnnotationStore.save(all, for: float.docID, in: Self.annotationsRoot)
+        AnnotationStore.save(all, for: Self.annotationAddress(float.docID), in: Self.annotationsRoot)
         annotationsStamp += 1
         floatingTexts.removeAll { $0.id == bare }
     }

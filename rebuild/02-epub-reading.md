@@ -2513,3 +2513,5 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Drawing in:** each node moves a third of the way toward the nodes' centroid (`centre + (p − centre) × 0.66`).
 - **Easing apart:** up to 60 rounds push the nodes apart in card units (`columnPitch` × `rowPitch` × 12 cm depth) until none overlaps, each drawn 3% back toward its compacted place.
 - **Applying it:** `applyWatchPositions3D` applies the result with a 0.15–2.6 m height range, so Undo View takes it back. Pressing Compact again draws the room in again.
+
+**Deleting lifted words (2 Nov 2026).** `removeFloat` and `setFloatPosition` read and write the float's sidecar at `annotationAddress(docID)`, which is the volume's own for an article in a volume, as `adoptFloats` reads it. They had used the article's id, so a passage lifted from a volume's article was never found to delete and came straight back on the next adopt. A deleted float's lit relation (`relationShown`, `litSelectionRelation`) is cleared with it.
