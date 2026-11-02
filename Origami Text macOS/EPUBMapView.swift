@@ -803,6 +803,16 @@ struct EPUBMapView: View {
                 item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
                 item.authorFaces = model.authorFaces(paperAuthors(record.id))
                 item.look = model.cardLook
+                // Relative Volume in Color Titles (2 Nov 2026): a title is
+                // its own size — so its letters are scaled until the ink it
+                // covers (characters × size²) answers to the paper's length,
+                // and a long title on a short paper never outgrows a short
+                // title on a long one.
+                if model.sizeByLength, item.look == .titles {
+                    let characters = Float(max(shortTitle(record.title).count, 8))
+                    item.sizeScale = min(max(item.sizeScale * (Self.typicalTitleLength / characters).squareRoot(),
+                                             0.4), 1.9)
+                }
                 return item
             }
 
@@ -3836,6 +3846,10 @@ struct EPUBMapView: View {
     /// Size by Length: the shortest paper of its plane at three quarters
     /// of a card, the longest half as large again — by the square root of
     /// its share, so the middling lengths spread.
+    /// The characters of a typical closed title, at which a Color Title of a
+    /// paper of middling length stands at its plain size.
+    static let typicalTitleLength: Float = 36
+
     static func lengthScale(_ share: Double?) -> Float {
         guard let share else { return 1 }
         return 0.75 + 0.75 * Float(max(0, min(1, share))).squareRoot()
