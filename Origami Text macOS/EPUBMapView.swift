@@ -3494,20 +3494,13 @@ struct EPUBMapView: View {
     }
 
     /// A colour chosen on the colour key, standing in the room (2 Nov
-    /// 2026): a bullet of the colour, the category's name in it beneath,
-    /// how many papers wear it, all in a frame of the colour — where the
+    /// 2026): the category's name in its colour, how many papers wear it,
+    /// in a frame of the colour — no bullet — where the
     /// lines from those papers converge. Chosen, the frame turns white.
     @ViewBuilder private func colourHub(for item: EPUBMapItem) -> some View {
         let s = Self.crisp
         let colour = Self.color(hex: item.tagColors.first ?? "#FFFFFF")
         VStack(spacing: 3 * s) {
-            ZStack {
-                Circle().fill(colour)
-                Circle().fill(RadialGradient(colors: [Color.white.opacity(0.5), .clear],
-                                             center: UnitPoint(x: 0.32, y: 0.28),
-                                             startRadius: 0, endRadius: 7 * s))
-            }
-            .frame(width: 14 * s, height: 14 * s)
             Text(item.title)
                 .font(.system(size: 10 * s, weight: .semibold, design: .serif))
                 .foregroundStyle(colour)
@@ -3824,7 +3817,9 @@ struct EPUBMapView: View {
         // its face. (Lifted CARDS turn at the node instead, in
         // MapCardTick, so their collision turns with them and the gaze
         // can take them from any side.)
-        if item.id.hasPrefix("float:") {
+        // A colour key's marker too: it stands wherever the reader was
+        // facing, and must read at once from wherever they now are.
+        if item.id.hasPrefix("float:") || item.id.hasPrefix(Self.tagHubPrefix) {
             holder.components.set(BillboardComponent())
         }
         // A lifted card is an OBJECT now, not a leaf of the wall: a
