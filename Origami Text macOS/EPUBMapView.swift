@@ -1247,16 +1247,34 @@ struct EPUBMapView: View {
         // The colours chosen on the colour key (2 Nov 2026): each its
         // category's name, in its colour, above the papers wearing it,
         // with a line to every one of them (conceptEdges).
-        for hex in model.chosenTagColors.sorted() {
+        // A colour let go forgets its place, so chosen again it comes to
+        // the reader afresh.
+        for id in placed.keys where id.hasPrefix(Self.tagHubPrefix)
+            && !model.chosenTagColors.contains(String(id.dropFirst(Self.tagHubPrefix.count))) {
+            placed[id] = nil
+        }
+        for (index, hex) in model.chosenTagColors.sorted().enumerated() {
             let members = items.filter { $0.kind == .article && !$0.isGhost && $0.tagColors.contains(hex) }
             let spots = members.compactMap(\.position)
             guard !spots.isEmpty, let tag = model.tags.tags.first(where: { $0.color == hex }) else { continue }
-            let centre = spots.reduce(SIMD3<Float>(repeating: 0), +) / Float(spots.count)
-            let top = spots.map(\.y).max() ?? centre.y
             let id = Self.tagHubPrefix + hex
+            // First shown: in front of the reader, a little above the
+            // eyes, each further colour a step to the right — where the
+            // lines can be seen to converge — and kept there after.
+            if placed[id] == nil {
+                if let head = faceTurner.headPose() {
+                    let right = SIMD3<Float>(-head.forward.z, 0, head.forward.x)
+                    placed[id] = head.position + head.forward * 1.1 + SIMD3<Float>(0, 0.18, 0)
+                        + right * (Float(index) - Float(model.chosenTagColors.count - 1) / 2) * 0.34
+                } else {
+                    let centre = spots.reduce(SIMD3<Float>(repeating: 0), +) / Float(spots.count)
+                    placed[id] = SIMD3<Float>(centre.x + Float(index) * 0.34, (spots.map(\.y).max() ?? centre.y) + 0.2,
+                                              centre.z + 0.3)
+                }
+            }
             var hub = EPUBMapItem(id: id, title: tag.name, author: "\(members.count) paper\(members.count == 1 ? "" : "s")",
                                   kind: .concept,
-                                  position: placed[id] ?? SIMD3<Float>(centre.x, top + 0.2, centre.z + 0.12))
+                                  position: placed[id])
             hub.tagColors = [hex]
             hub.isSelected = selected.contains(id)
             items.append(hub)
@@ -2816,6 +2834,8 @@ struct EPUBMapView: View {
             // Lifted words stand whatever else the room shows — a Focus,
             // a Show Only, the Reading Desk (2 Nov 2026).
             if item.id.hasPrefix("float:") { return true }
+            // A colour chosen on the colour key stands through every Focus.
+            if item.id.hasPrefix(Self.tagHubPrefix) { return true }
             guard model.readingDeskDocID == nil else { return false }
             // A relation lit on a paper's star is a Focus of its own: only
             // the paper and the cards the relation reaches stand, until it
@@ -3223,6 +3243,8 @@ struct EPUBMapView: View {
                     .foregroundStyle(Color.white.opacity(0.6))
                     .padding(6 * s)
             }
+        } else if item.id.hasPrefix(Self.tagHubPrefix) {
+            colourHub(for: item)
         } else if Self.isSpatialLabel(item) {
             // A label is words in the air, not a card: larger type, no
             // pane, no border — a soft shadow keeps it legible against
@@ -3452,6 +3474,36 @@ struct EPUBMapView: View {
             // and the fifth it grows by. A LIFTED card carries no pane
             // at all — its words print straight onto the extruded slab.
         }
+    }
+
+    /// A colour chosen on the colour key, standing in the room (2 Nov
+    /// 2026): a bullet of the colour, the category's name in it beneath,
+    /// how many papers wear it, all in a frame of the colour — where the
+    /// lines from those papers converge. Chosen, the frame turns white.
+    @ViewBuilder private func colourHub(for item: EPUBMapItem) -> some View {
+        let s = Self.crisp
+        let colour = Self.color(hex: item.tagColors.first ?? "#FFFFFF")
+        VStack(spacing: 3 * s) {
+            ZStack {
+                Circle().fill(colour)
+                Circle().fill(RadialGradient(colors: [Color.white.opacity(0.5), .clear],
+                                             center: UnitPoint(x: 0.32, y: 0.28),
+                                             startRadius: 0, endRadius: 7 * s))
+            }
+            .frame(width: 14 * s, height: 14 * s)
+            Text(item.title)
+                .font(.system(size: 10 * s, weight: .semibold, design: .serif))
+                .foregroundStyle(colour)
+                .multilineTextAlignment(.center)
+            Text(item.author)
+                .font(.system(size: 5 * s))
+                .foregroundStyle(Color(white: 0.75))
+        }
+        .padding(.horizontal, 9 * s)
+        .padding(.vertical, 6 * s)
+        .background(RoundedRectangle(cornerRadius: 8 * s).fill(Color(white: 0.07).opacity(0.94)))
+        .overlay(RoundedRectangle(cornerRadius: 8 * s)
+            .strokeBorder(item.isSelected ? Color.white.opacity(0.9) : colour, lineWidth: 1.4 * s))
     }
 
     /// Color Spheres' face: room for the sphere — a real one, made in
@@ -5189,6 +5241,17 @@ struct EPUBMapView: View {
 
     /// The cards a Layout verb moves: the selected standing articles,
     /// or every standing article when nothing is chosen.
+    /// A Shape is the whole room's (2 Nov 2026): every paper standing, chosen
+    /// or not — Layout alone narrows to what is selected. (A Shape run while
+    /// one card stood open used to shape that card alone, so seemed not to
+    /// take.)
+    private func shapeTargets() -> [EPUBMapItem] {
+        items.filter {
+            standsOnWall($0) && !$0.isAside && !$0.isGhost
+                && $0.position != nil && liftedCards[$0.id] == nil
+        }
+    }
+
     private func watchLayoutTargets() -> [EPUBMapItem] {
         let standing = items.filter {
             standsOnWall($0) && !$0.isAside && !$0.isGhost
@@ -5425,7 +5488,7 @@ struct EPUBMapView: View {
         case .timeline: runTimelineShape()
         case .constellation: runConstellationShape()
         default:
-            let targets = watchLayoutTargets()
+            let targets = shapeTargets()
             guard targets.count > 2 else { return }
             let groups = shapeGroups(shape, among: targets)
             guard !groups.isEmpty else { return }
@@ -5655,7 +5718,7 @@ struct EPUBMapView: View {
     /// record's map where there is one, else from the series index's
     /// vectors. The meaning groups' labels stand at their members' middle.
     private func runConstellationShape() {
-        let targets = watchLayoutTargets()
+        let targets = shapeTargets()
         guard targets.count > 2 else { return }
         let record = model.roomCorpus(for: targets.map(\.id))
         var coordinates: [String: [Float]] = [:]

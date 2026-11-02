@@ -2375,7 +2375,11 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 ### Colour lines and solid open cards (2 Nov 2026)
 
 - **Colour lines.** Each row of the colour key (`VisionTagLegendView`) is a button that toggles its colour in `VisionModel.chosenTagColors`. A chosen row shows a checkmark and a light ground, and **Clear Lines** empties the set. Changing the set bumps `volumeStamp`, which reloads the room. Do not add another `.onChange` to the room's body chain instead: it is already too long for the type checker.
-  - **The hub:** `reload` stands each chosen colour in the room as a spatial label (`tagline:<hex>`, `tagHubPrefix`). Its title is the category's name in its colour, with "n papers" beneath, placed 20 cm above the highest of its papers and 12 cm toward the reader from their centre. A hub moved by hand keeps its place.
+  - **The hub:** `reload` stands each chosen colour in the room as a `tagline:<hex>` item, drawn by `colourHub`. It is a 14-point bullet of the colour with a highlight, the category's name in its colour (10-point semibold serif), and "n papers" in light grey, all on a dark pane framed in the colour (white when chosen).
+    - **Where it stands:** the first time it is shown, it is placed 1.1 m in front of the reader's head (`faceTurner.headPose()`), 18 cm above the eyes. Several colours stand 34 cm apart, centred. That place is kept in `placed`; a colour let go forgets it.
+    - **Always visible:** `shouldEnableNode` keeps hubs through every Focus, Show Only and the Reading Desk.
   - **The lines:** `conceptEdges` runs a line from the hub to every article wearing the colour, and `labelMembers` returns those articles, so dragging the hub carries them.
 - **Solid open cards.** An open paper (`showsAbstract`) gets the same opaque 0.12-white slab between its faces that a chosen citation has, so nothing of the room or its lines shows through it.
+
+**Shapes act on the whole room (2 Nov 2026).** `runShape` and `runConstellationShape` take `shapeTargets()`, every standing paper whether chosen or not. Layout's arrangements still use `watchLayoutTargets()`, which narrows to the selection. Before this, a Shape chosen while one card stood open shaped only that card, or nothing, because fewer than three targets returns early.
 
