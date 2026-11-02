@@ -1167,6 +1167,8 @@ struct EPUBMapView: View {
                     front = max(front, face - p.z)
                 }
                 built[index].openLift = min(max(Self.openCardLift, front + 0.026), 0.25)
+                // On a wall or a table it stays flush — nothing steps out.
+                if liftedCards[built[index].id]?.stuck != nil { built[index].openLift = 0 }
             }
             // A relation lit — on a card, or from a reading's selected
             // words: every card it reaches wears the line's end, on the
@@ -1318,7 +1320,8 @@ struct EPUBMapView: View {
         // A colour dragged out of the colour key lands where the hand let
         // go — on a wall or a table within half a metre, flush to it.
         var dropped = Set<String>()
-        for (hex, point) in model.tagDrops {
+        let standingColours = Set(items.compactMap { $0.id.hasPrefix(Self.shapeLabelPrefix) ? $0.tagColors.first : nil })
+        for (hex, point) in model.tagDrops where !standingColours.contains(hex) {
             let id = Self.tagHubPrefix + hex
             dropped.insert(id)
             if let pose = surfacePose(for: point, reach: 0.5) {
@@ -1331,7 +1334,26 @@ struct EPUBMapView: View {
             saveLabelStuck()
         }
         if !model.tagDrops.isEmpty { model.tagDrops = [:] }
-        for (index, hex) in model.chosenTagColors.sorted().enumerated() {
+        // A colour the Shape already stands in the room — Colour Cluster's
+        // sides, Landscape's peaks, Territory's compass — is not brought out
+        // again: chosen, its own label is chosen (lit, its lines drawn);
+        // let go, it is let go (2 Nov 2026).
+        var standingLabel: [String: Int] = [:]
+        for index in items.indices where items[index].id.hasPrefix(Self.shapeLabelPrefix) {
+            if let hex = items[index].tagColors.first { standingLabel[hex] = index }
+        }
+        for (hex, index) in standingLabel {
+            let chosen = model.chosenTagColors.contains(hex)
+            if chosen && !cardSizes.highlightedColours.contains(hex) {
+                items[index].isSelected = true
+                cardSizes.highlightedColours.insert(hex)
+            } else if !chosen && cardSizes.highlightedColours.contains(hex) {
+                items[index].isSelected = false
+                cardSizes.highlightedColours.remove(hex)
+            }
+        }
+        cardSizes.highlightedColours.formIntersection(Set(standingLabel.keys))
+        for (index, hex) in model.chosenTagColors.sorted().enumerated() where standingLabel[hex] == nil {
             let members = items.filter { $0.kind == .article && !$0.isGhost && $0.tagColors.contains(hex) }
             let spots = members.compactMap(\.position)
             guard !spots.isEmpty, let tag = model.tags.tags.first(where: { $0.color == hex }) else { continue }
@@ -1969,6 +1991,8 @@ struct EPUBMapView: View {
         /// The labels standing in the room (not the concept galaxy, which
         /// turns and tilts on its own), turned to the reader each frame.
         var labelIDs: Set<String> = []
+        /// The colours chosen on the bar that light a Shape's own label.
+        var highlightedColours: Set<String> = []
         /// What a Focus keeps standing, by the selection it was read for.
         var focusKeep: (key: String, ids: Set<String>)?
         /// The card a two-hand spread has just opened — once per spread.
@@ -3857,6 +3881,10 @@ struct EPUBMapView: View {
         return 0.75 + 0.75 * Float(max(0, min(1, share))).squareRoot()
     }
 
+    /// How far a card rests off a real surface it sticks to: flush, a
+    /// breath clear so the two never fight (2 Nov 2026; was 1–1.5 cm).
+    static let flushGap: Float = 0.004
+
     /// How far an open card stands forward of where it stands closed.
     static let openCardLift: Float = 0.03
 
@@ -4115,7 +4143,8 @@ struct EPUBMapView: View {
         // asked: choosing a label alone draws nothing (1 Nov 2026).
         // A colour key's marker, while chosen: a line to every paper of
         // its colour.
-        for item in items where item.id.hasPrefix(Self.tagHubPrefix) && item.isSelected {
+        for item in items where item.isSelected && (item.id.hasPrefix(Self.tagHubPrefix)
+            || (item.id.hasPrefix(Self.shapeLabelPrefix) && !item.tagColors.isEmpty)) {
             for docID in labelMembers(item) { edges.append((from: item.id, to: docID)) }
         }
         for item in items where item.isSelected && keywordModes[item.id] == .lines {
@@ -5503,7 +5532,7 @@ struct EPUBMapView: View {
                 }
                 let distance = simd_dot(position - point, normal)
                 if abs(distance) < reach {
-                    let landed = position - normal * distance + normal * 0.015
+                    let landed = position - normal * distance + normal * Self.flushGap
                     // The card's front (+Z) turned along the normal.
                     let turn = simd_quatf(angle: atan2(normal.x, normal.z),
                                           axis: SIMD3<Float>(0, 1, 0))
@@ -10929,14 +10958,14 @@ final class RoomSurfaces {
             guard abs(local.x) < extent.width / 2 + 0.05, abs(local.z) < extent.height / 2 + 0.05 else { continue }
             if abs(simd_dot(normal, SIMD3<Float>(0, 1, 0))) > 0.85 {
                 var flat = hit
-                flat.y += simd_dot(head - hit, SIMD3<Float>(0, 1, 0)) > 0 ? 0.01 : -0.01
+                flat.y += simd_dot(head - hit, SIMD3<Float>(0, 1, 0)) > 0 ? EPUBMapView.flushGap : -EPUBMapView.flushGap
                 best = (flat, simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0)), distance)
             } else {
                 var out = simd_dot(normal, head - hit) < 0 ? -normal : normal
                 out.y = 0
                 guard simd_length(out) > 1e-4 else { continue }
                 out = simd_normalize(out)
-                best = (hit + out * 0.015, simd_quatf(angle: atan2(out.x, out.z), axis: SIMD3<Float>(0, 1, 0)),
+                best = (hit + out * EPUBMapView.flushGap, simd_quatf(angle: atan2(out.x, out.z), axis: SIMD3<Float>(0, 1, 0)),
                         distance)
             }
         }
@@ -10984,7 +11013,7 @@ final class RoomSurfaces {
                 // A table, the floor, a seat: the card lies flat, face
                 // to the ceiling, a centimetre clear of the surface.
                 var flatPlace = landed
-                flatPlace.y += gap > 0 ? 0.01 : -0.01
+                flatPlace.y += gap > 0 ? EPUBMapView.flushGap : -EPUBMapView.flushGap
                 let flat = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
                 best = (flatPlace, flat, abs(gap))
             } else {
@@ -10998,7 +11027,7 @@ final class RoomSurfaces {
                 out /= flatLength
                 let turn = simd_quatf(angle: atan2(out.x, out.z),
                                       axis: SIMD3<Float>(0, 1, 0))
-                best = (landed + out * 0.015, turn, abs(gap))
+                best = (landed + out * EPUBMapView.flushGap, turn, abs(gap))
             }
         }
         return best.map { ($0.position, $0.orientation) }

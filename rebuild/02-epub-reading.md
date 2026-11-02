@@ -2496,3 +2496,10 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 
 **Lifted cards keep their colours (2 Nov 2026).** The tag mosaic ground no longer skips lifted cards. Open cards carried off their plane and blobs taken by the hand are lifted, and they stood black on their dark slab; *Text & Rinsema Effects*, with its four colours, was the case found. `SphereTextures.strip` builds its gradient from `CGColor(srgbRed:green:blue:alpha:)` components, the gradient's own space.
 
+
+**Flush to surfaces; colours already in the room light up (2 Nov 2026).**
+- **Flush:** anything that sticks to a real surface rests `flushGap` (4 mm) off it, where it was 1.5 cm off a wall and 1 cm off a table. That covers `RoomSurfaces.nearestPose`, `facedPose` and the room-wall fallback. An open card resting on a surface takes no forward lift (`openLift = 0` while `liftedCards[id].stuck` is set), so it lies flat against the wall rather than standing out from it.
+- **Colours already standing:**
+  - **Which ones:** when the current Shape stands a colour's own label in the room, it counts as already standing. These are the `shape:` labels with `tagColors`: Colour Cluster's sides, Landscape's peaks and Territory's compass.
+  - **Choosing one:** choosing that colour on the bar, by tap or drag, brings out no marker and ignores the drop. Instead `reload` selects the Shape's label once (`cardSizes.highlightedColours`), lit gold, and `conceptEdges` draws its lines to every paper of the colour. Letting the colour go deselects it.
+  - **Any chosen colour label:** a chosen colour label of a Shape draws those lines too.
