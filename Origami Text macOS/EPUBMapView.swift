@@ -1244,6 +1244,23 @@ struct EPUBMapView: View {
             item.isSelected = selected.contains(label.id)
             return item
         }
+        // The colours chosen on the colour key (2 Nov 2026): each its
+        // category's name, in its colour, above the papers wearing it,
+        // with a line to every one of them (conceptEdges).
+        for hex in model.chosenTagColors.sorted() {
+            let members = items.filter { $0.kind == .article && !$0.isGhost && $0.tagColors.contains(hex) }
+            let spots = members.compactMap(\.position)
+            guard !spots.isEmpty, let tag = model.tags.tags.first(where: { $0.color == hex }) else { continue }
+            let centre = spots.reduce(SIMD3<Float>(repeating: 0), +) / Float(spots.count)
+            let top = spots.map(\.y).max() ?? centre.y
+            let id = Self.tagHubPrefix + hex
+            var hub = EPUBMapItem(id: id, title: tag.name, author: "\(members.count) paper\(members.count == 1 ? "" : "s")",
+                                  kind: .concept,
+                                  position: placed[id] ?? SIMD3<Float>(centre.x, top + 0.2, centre.z + 0.12))
+            hub.tagColors = [hex]
+            hub.isSelected = selected.contains(id)
+            items.append(hub)
+        }
         if topicSpaceMode {
             // Topic magnets hold their selection through the rebuild too,
             // so the threads stand while the room updates around them.
@@ -3205,7 +3222,9 @@ struct EPUBMapView: View {
             // A label is words in the air, not a card: larger type, no
             // pane, no border — a soft shadow keeps it legible against
             // the room. Chosen, it turns warm gold (1 Nov 2026).
-            let ink = item.isSelected ? Color(red: 1.0, green: 0.84, blue: 0.45) : Color.white
+            let ink = item.isSelected ? Color(red: 1.0, green: 0.84, blue: 0.45)
+                : item.id.hasPrefix(Self.tagHubPrefix) ? Self.color(hex: item.tagColors.first ?? "#FFFFFF")
+                : Color.white
             VStack(spacing: 3 * s) {
                 Text(item.title)
                     .font(.system(size: 22 * s, weight: .semibold, design: .serif))
@@ -3513,15 +3532,12 @@ struct EPUBMapView: View {
             .lineLimit(item.isSelected ? 5 : 3)
         Group {
             if item.tagColors.isEmpty {
-                label
-                    .foregroundStyle(Color.white)
-                    .shadow(color: .white.opacity(0.5), radius: 1.6 * s)
+                label.foregroundStyle(Color.white)
             } else {
+                // The colours blend softly within the letters; nothing
+                // glows past their edges.
                 label
                     .foregroundStyle(Color.clear)
-                    .background {
-                        Self.mosaic(item.tagColors).mask(label).blur(radius: 1.6 * s).opacity(0.9)
-                    }
                     .overlay { Self.mosaic(item.tagColors).mask(label) }
             }
         }
@@ -3716,7 +3732,10 @@ struct EPUBMapView: View {
         // so the lines it draws stop at it instead of showing through.
         // (The pane is drawn on a see-through attachment, which hides
         // nothing behind it on its own.)
-        if item.isSelected, item.kind == .cited || item.kind == .citedDeep,
+        // An open paper is solid as well (2 Nov 2026): nothing of the room
+        // or its lines shows through it while it is being read from.
+        if item.isSelected, item.kind == .cited || item.kind == .citedDeep
+            || (item.kind == .article && item.showsAbstract),
            !item.isLifted {
             let width = extents.x * grown
             let height = extents.y * grown
@@ -3768,6 +3787,9 @@ struct EPUBMapView: View {
         // A label chosen with Lines — a keyword, a Shape's group label, a
         // topic, a concept — threads to every paper it gathers. Only when
         // asked: choosing a label alone draws nothing (1 Nov 2026).
+        for item in items where item.id.hasPrefix(Self.tagHubPrefix) {
+            for docID in labelMembers(item) { edges.append((from: item.id, to: docID)) }
+        }
         for item in items where item.isSelected && keywordModes[item.id] == .lines {
             for docID in labelMembers(item) {
                 edges.append((from: item.id, to: docID))
@@ -6101,6 +6123,9 @@ struct EPUBMapView: View {
     /// note and a floated passage are content of their own, and keep their
     /// cards. Labels stand as plain text, snap onto real surfaces, and
     /// offer Gather, Lines and Focus.
+    /// A colour chosen on the colour key, standing in the room.
+    static let tagHubPrefix = "tagline:"
+
     static func isSpatialLabel(_ item: EPUBMapItem) -> Bool {
         item.kind == .concept && !item.id.hasPrefix(noteItemPrefix) && !item.id.hasPrefix("float:")
             && !item.id.hasPrefix(galleryItemPrefix)
@@ -6110,6 +6135,10 @@ struct EPUBMapView: View {
     /// words, found whole in the standing papers' titles, abstracts and
     /// text.
     private func labelMembers(_ item: EPUBMapItem) -> Set<String> {
+        if item.id.hasPrefix(Self.tagHubPrefix) {
+            let hex = String(item.id.dropFirst(Self.tagHubPrefix.count))
+            return Set(items.filter { $0.kind == .article && !$0.isGhost && $0.tagColors.contains(hex) }.map(\.id))
+        }
         if let label = roomShape?.labels.first(where: { $0.id == item.id }) {
             return Set(label.members)
         }

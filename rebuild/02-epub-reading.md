@@ -2364,9 +2364,17 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
   - Material: `PhysicallyBasedMaterial` with roughness 0.32 and clearcoat 0.6, first tinted with the paper's first colour.
   - Texture: `SphereTextures` (at the file's end) draws a 256 × 128 sRGB strip of the colours as one horizontal gradient that wraps back to the first. It loads it with the async `TextureResource(image:withName:options:)`, once per colour set, and the texture replaces the tint.
   - A lifted sphere has no slab.
-- **Color Titles** (`colorTitle`): the title alone, 9-point semibold serif, three lines (five when chosen, full title). Its letters are the tag mosaic masked by the text, over a 1.6-point blurred copy of the same for soft edges; a paper with no tags is white with a soft white glow. Chosen, it sits on a faint dark pane ringed in white.
+- **Color Titles** (`colorTitle`): the title alone, 9-point semibold serif, three lines (five when chosen, full title). Its letters are the tag mosaic masked by the text, so the colours blend softly inside the letters with no glow past their edges; a paper with no tags is plain white. Chosen, it sits on a faint dark pane ringed in white.
 - **Relations:** the star, Connects, Gather, Show Only, Focus and Select Gathered work in every look. They size themselves from `cardSizes.base`, the measured face.
 
 **Focus and Select Gathered (2 Nov 2026).** While a card's Gather stands, two more buttons join Pin and Put Aside under it (`pileVerbs`):
 - **Focus** toggles `relationShown.only`, so every card the Gather did not draw in steps away. The Gather list still reads as lit, because for a gather the lit check and the toggle check ignore `only`.
 - **Select Gathered** (shown as **Deselect Gathered** once all are chosen) calls `selectGathered`. This chooses every gathered card and keeps `barItemID` on the source card, so one drag carries the whole star by the selected-articles group move. Gathered cards never write their place: `keepPlacements` and `commitPlaces` skip `gatheredIDs`, and their homes are not shifted. The source card's move is saved, and the star is redrawn round it.
+
+### Colour lines and solid open cards (2 Nov 2026)
+
+- **Colour lines.** Each row of the colour key (`VisionTagLegendView`) is a button that toggles its colour in `VisionModel.chosenTagColors`. A chosen row shows a checkmark and a light ground, and **Clear Lines** empties the set. Changing the set bumps `volumeStamp`; an `.onChange` on the room's body chain overloads the type checker.
+  - **The hub:** `reload` stands each chosen colour in the room as a spatial label (`tagline:<hex>`, `tagHubPrefix`). Its title is the category's name in its colour, with "n papers" beneath, placed 20 cm above the highest of its papers and 12 cm toward the reader from their centre. A hub moved by hand keeps its place.
+  - **The lines:** `conceptEdges` runs a line from the hub to every article wearing the colour, and `labelMembers` returns those articles, so dragging the hub carries them.
+- **Solid open cards.** An open paper (`showsAbstract`) gets the same opaque 0.12-white slab between its faces that a chosen citation has, so nothing of the room or its lines shows through it.
+

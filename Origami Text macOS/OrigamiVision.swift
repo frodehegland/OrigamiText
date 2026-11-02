@@ -1989,6 +1989,12 @@ final class VisionModel {
         return faces
     }
 
+    /// The colours chosen on the colour key: each stands in the room as its
+    /// category's name, a line from it to every paper wearing the colour.
+    var chosenTagColors: Set<String> = [] {
+        didSet { if chosenTagColors != oldValue { volumeStamp += 1 } }
+    }
+
     func adoptTags(_ file: OrigamiTags) {
         guard file != tags else { return }
         tags = file
@@ -8889,7 +8895,14 @@ struct VisionTagLegendView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Colours").font(.title2.weight(.semibold))
+            Text("Choose a colour to draw lines to every paper wearing it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             ForEach(model.tags.tags.filter(\.isOn)) { tag in
+                let chosen = model.chosenTagColors.contains(tag.color)
+                Button {
+                    if chosen { model.chosenTagColors.remove(tag.color) } else { model.chosenTagColors.insert(tag.color) }
+                } label: {
                 HStack(alignment: .top, spacing: 14) {
                     let (r, g, b) = tag.rgb
                     RoundedRectangle(cornerRadius: 6)
@@ -8909,7 +8922,20 @@ struct VisionTagLegendView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
+                    if chosen {
+                        Image(systemName: "checkmark").font(.headline)
+                    }
                 }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.white.opacity(chosen ? 0.14 : 0.0001)))
+                .contentShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .hoverEffect()
+            }
+            if !model.chosenTagColors.isEmpty {
+                Button("Clear Lines") { model.chosenTagColors = [] }
             }
             Text("Set on the Mac, in Settings \u{25B8} Tags.")
                 .font(.caption2)
