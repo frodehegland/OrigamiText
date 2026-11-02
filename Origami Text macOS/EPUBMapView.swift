@@ -3566,6 +3566,9 @@ struct EPUBMapView: View {
         }
     }
 
+    /// A paper with no category, as a sphere or a coloured title: dark grey.
+    static let uncolouredGrey: CGFloat = 0.3
+
     static let sphereBylineSize: CGFloat = 4.4
     static let titleBylineSize: CGFloat = 5
 
@@ -3587,7 +3590,7 @@ struct EPUBMapView: View {
         let centreFromTop = Float(Self.sphereTopPad + Self.sphereDiameter / 2) * crisp
         let y = (Float(facePoints.height) / 2 - centreFromTop) * metres
         var plain = PhysicallyBasedMaterial()
-        let first = item.tagColors.first.map { Self.uiColor(hex: $0) } ?? UIColor(white: 0.5, alpha: 1)
+        let first = item.tagColors.first.map { Self.uiColor(hex: $0) } ?? UIColor(white: Self.uncolouredGrey, alpha: 1)
         plain.baseColor = .init(tint: first)
         plain.roughness = 0.32
         plain.clearcoat = 0.6
@@ -3625,7 +3628,7 @@ struct EPUBMapView: View {
         VStack(spacing: 2 * s) {
         Group {
             if item.tagColors.isEmpty {
-                label.foregroundStyle(Color.white)
+                label.foregroundStyle(Color(white: Self.uncolouredGrey))
             } else {
                 // The colours blend softly within the letters; nothing
                 // glows past their edges.
