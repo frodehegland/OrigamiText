@@ -1837,15 +1837,16 @@ struct EPUBMapView: View {
     /// A paper's pictures as absolute file paths, in its binding's order:
     /// its volume's unpacked folder joined with each listed image.
     /// A book read whole (a journal's paper) lists its own: every picture
-    /// in its unpacked folder, in name order, leaving out covers, logos
-    /// and anything under 8 KB (rules, icons).
+    /// in its unpacked folder, in name order, leaving out anything under
+    /// 8 KB and whatever `CardImages.isFigure` takes for furniture —
+    /// licence badges, logos, icons, pictures too small to be figures.
     private func imagePaths(forDocID id: String) -> [String] {
         guard BoundVolume.split(articleDocID: id) != nil else { return bookImagePaths(forDocID: id) }
         guard let split = BoundVolume.split(articleDocID: id),
               let volume = model.epubRecords.first(where: { $0.id == split.volume }),
               let piece = model.piece(forDocID: id), !piece.images.isEmpty else { return [] }
         let folder = VisionModel.epubsRoot.appendingPathComponent(volume.folder, isDirectory: true)
-        return piece.images.map { folder.appendingPathComponent($0).path }
+        return piece.images.map { folder.appendingPathComponent($0).path }.filter(CardImages.isFigure)
     }
     private func bookImagePaths(forDocID id: String) -> [String] {
         guard let record = model.epubRecords.first(where: { $0.id == id }) else { return [] }
@@ -1855,9 +1856,8 @@ struct EPUBMapView: View {
             at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else { return [] }
         var paths: [String] = []
         for case let url as URL in walk where kinds.contains(url.pathExtension.lowercased()) {
-            let name = url.lastPathComponent.lowercased()
-            guard !name.contains("cover"), !name.contains("logo"),
-                  (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 >= 8_000 else { continue }
+            guard (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 >= 8_000,
+                  CardImages.isFigure(path: url.path) else { continue }
             paths.append(url.path)
         }
         return paths.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
@@ -9206,6 +9206,40 @@ enum CardImages {
         let image = UIImage(cgImage: cgImage)
         cache.setObject(image, forKey: key)
         return image
+    }
+
+    /// Whether a picture is one the paper shows, not furniture: licence
+    /// badges (ACM's cc-by.png, 375 × 131), logos, ORCID and DOI marks,
+    /// rules and icons. A picture's own name gives most away; by size,
+    /// only icons and rules (under 160 px long, or 40 px short) go. On the
+    /// 61 HT'26 papers this keeps all 152 figures and drops the 61 badges. Read from the file's header alone, and
+    /// remembered. (2 Nov 2026.)
+    static func isFigure(path: String) -> Bool {
+        if let known = figureVerdicts[path] { return known }
+        let verdict = measureFigure(path: path)
+        figureVerdicts[path] = verdict
+        return verdict
+    }
+
+    nonisolated(unsafe) private static var figureVerdicts: [String: Bool] = [:]
+
+    private static let furniture = ["cc-by", "cc_by", "ccby", "cc-", "creative-commons", "creativecommons",
+                                    "license", "licence", "badge", "logo", "orcid", "doi", "icon", "cover"]
+
+    private static func measureFigure(path: String) -> Bool {
+        let name = (path as NSString).lastPathComponent.lowercased()
+        if furniture.contains(where: { name.hasPrefix($0) || name.contains("-" + $0) || name.contains("_" + $0) }) {
+            return false
+        }
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int
+        else { return false }
+        // Only true icons and rules by size: The Future of Text's figures
+        // were cut to 400 px wide, so a real diagram can stand 400 × 170 —
+        // larger than a badge (375 × 131). The badge goes by its name.
+        return max(width, height) >= 160 && min(width, height) >= 40
     }
 }
 
