@@ -166,6 +166,10 @@ struct EPUBMapView: View {
     struct LiftedCard: Codable {
         var home: SIMD3<Float>
         var stuck: SIMD4<Float>?
+        /// Whether it courts the room's surfaces — Stick on an open card
+        /// (2 Nov 2026). A card carried off its plane by hand moves free
+        /// and lands on nothing. Unset (cards lifted before): it sticks.
+        var sticks: Bool? = nil
     }
     @State private var liftedCards: [String: LiftedCard] = EPUBMapView.loadLiftedCards()
     /// The cards opened to their abstracts by the Abstract button —
@@ -2688,6 +2692,16 @@ struct EPUBMapView: View {
         view = view.onEndMoveNode { allItems, _, newItems in
             // The next drag works out its own riders afresh.
             cardSizes.riders = nil
+            // An open paper carried off its year's plane keeps its place: it
+            // is lifted, free (no surface courts it), its ghost holding the
+            // slot it left — Put Back sends it home.
+            for moved in newItems where moved.kind == .article && moved.showsAbstract
+                && liftedCards[moved.id] == nil {
+                guard let z = articleYearZ[moved.id], let pos = moved.position, abs(pos.z - z) > 0.02,
+                      let before = items.first(where: { $0.id == moved.id })?.position else { continue }
+                liftedCards[moved.id] = LiftedCard(home: SIMD3<Float>(before.x, before.y, z), sticks: false)
+                saveLiftedCards()
+            }
             // A lifted card's drag may have stuck it to (or freed it
             // from) a surface — keep that standing.
             if newItems.contains(where: { liftedCards[$0.id] != nil }) {
@@ -2769,7 +2783,7 @@ struct EPUBMapView: View {
             // plane. State writes only ON CHANGE — a write per frame
             // invalidates the whole view and drags like mud.
             if let lifted = liftedCards[item.id] {
-                if let pose = surfacePose(for: proposed) {
+                if lifted.sticks ?? true, let pose = surfacePose(for: proposed) {
                     if lifted.stuck != pose.orientation.vector {
                         liftedCards[item.id]?.stuck = pose.orientation.vector
                     }
@@ -2780,6 +2794,9 @@ struct EPUBMapView: View {
                 }
                 return proposed
             }
+            // An open paper moves free in every axis (2 Nov 2026): carried
+            // off its plane, it keeps its own place (onEndMoveNode).
+            if item.kind == .article, item.isSelected, item.showsAbstract { return proposed }
             // EXPERIMENT — a journal card stays on its publication
             // year's plane: free in X and Y, held in Z, like the
             // citations below. Asides (not in the table) still move free.
@@ -4501,6 +4518,12 @@ struct EPUBMapView: View {
             verbs = [Verb(id: "focus", title: relationFocus || focusMode ? "Un-Focus" : "Focus",
                           isOn: relationFocus || focusMode)]
             verbs.append(Verb(id: "transpoint", title: "Transpoint"))
+            // Stick: the card lands on a real surface it is brought near —
+            // a wall, a table — and keeps that pose; otherwise it moves free
+            // in space. Off its slot, Put Back sends it home (2 Nov 2026).
+            let sticks = liftedCards[item.id].map { $0.sticks ?? true } ?? false
+            verbs.append(Verb(id: "stick", title: sticks ? "Unstick" : "Stick", isOn: sticks))
+            if liftedCards[item.id] != nil { verbs.append(Verb(id: "lift", title: "Put Back")) }
             // (Whole Volume and Whole Series are where the room stands in
             // the collection: the bar's first row.)
             if model.isVolumeRoom {
@@ -4531,6 +4554,7 @@ struct EPUBMapView: View {
         case "open": toggleOpen(item)
         case "record": openCitationCard(for: item)
         case "lift": toggleLift(item)
+        case "stick": toggleStick(item)
         case "transpoint": model.transpointDocID = item.id
         case "articles":
             if let record = model.record(forDocID: item.id) { model.openArticles(of: record) }
@@ -5119,6 +5143,21 @@ struct EPUBMapView: View {
     /// Lift: the card snaps off the map — a ghost holds its place —
     /// and rides the hand free of the year planes, courting the room's
     /// surfaces. Put Back: it returns whole to the held place.
+    /// Stick on: a card still on its slot is lifted to court the surfaces;
+    /// one already off it starts to. Off: it lets go of any surface and
+    /// stands upright where it is, free.
+    private func toggleStick(_ item: EPUBMapItem) {
+        if let lifted = liftedCards[item.id] {
+            let sticks = !(lifted.sticks ?? true)
+            liftedCards[item.id]?.sticks = sticks
+            if !sticks { liftedCards[item.id]?.stuck = nil }
+            saveLiftedCards()
+            reload()
+        } else {
+            lift(item, sticks: true)
+        }
+    }
+
     private func toggleLift(_ item: EPUBMapItem) {
         if liftedCards[item.id] != nil {
             putBack(item)
@@ -5127,13 +5166,13 @@ struct EPUBMapView: View {
         }
     }
 
-    private func lift(_ item: EPUBMapItem) {
+    private func lift(_ item: EPUBMapItem, sticks: Bool? = nil) {
         // The LIVE card, not the attachment's captured copy — a drag
         // or fist-carry since the button was built would otherwise
         // leave the ghost standing off the card's true place.
         let live = items.first { $0.id == item.id } ?? item
         guard let position = live.position else { return }
-        liftedCards[item.id] = LiftedCard(home: position)
+        liftedCards[item.id] = LiftedCard(home: position, sticks: sticks)
         // The card steps toward the reader, visibly off its slot.
         placed[item.id] = position + SIMD3<Float>(0, 0, 0.3)
         saveLiftedCards()

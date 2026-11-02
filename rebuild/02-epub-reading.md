@@ -2383,3 +2383,10 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 
 **Shapes act on the whole room (2 Nov 2026).** `runShape` and `runConstellationShape` take `shapeTargets()`, every standing paper whether chosen or not. Layout's arrangements still use `watchLayoutTargets()`, which narrows to the selection. Before this, a Shape chosen while one card stood open shaped only that card, or nothing, because fewer than three targets returns early.
 
+
+**Stick, and open cards that move free (2 Nov 2026).** An open paper (selected with `showsAbstract`) is not held to its year's Z in `constrainMovedNode`; it moves free in every axis.
+- **Off its plane:** if a drag ends more than 2 cm off the plane, `onEndMoveNode` lifts the card with `LiftedCard(home: <its slot on the plane>, sticks: false)`. Its place is then its own, a ghost holds the slot, and it courts no surface.
+- **Stick:** the verbs above an open paper add **Stick** (shown as **Unstick** when on, `toggleStick`).
+  - A card still on its slot is lifted with `sticks: true`, so the surface-courting in `constrainMovedNode` lands it flush on a wall or flat on a table it is brought near. Cards lifted before this change (`sticks` nil) count as sticking.
+  - Unstick sets `sticks` false and clears `stuck`, so the card stands upright and free where it is.
+- **Put Back:** shown on any lifted card, it sends the card home.
