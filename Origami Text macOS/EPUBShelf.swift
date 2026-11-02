@@ -3965,6 +3965,10 @@ nonisolated enum CorpusRelations {
         /// Typed relations between pieces — agrees, contradicts, extends
         /// — each inferred by a model with its evidence, or the editor's.
         var stances: [Stance]? = nil
+        /// The citing pairs the stance pass has read, as
+        /// "source→target|promptVersion" — so a pair is read once per
+        /// prompt version, and a new pair (or a new prompt) is noticed.
+        var stancesChecked: [String]? = nil
         /// The articles' keywords merged into themes ("xr", "vr" and
         /// "virtual reality" one theme), each with the pieces carrying it.
         var themes: [Theme]? = nil
@@ -4020,28 +4024,124 @@ nonisolated enum CorpusRelations {
     /// ("agreesWith", "disagreesWith", "extends", "respondsTo",
     /// "questions"), with where it came from and whether the editor has
     /// reviewed it ("unreviewed", "confirmed", "rejected").
+    /// How one piece stands toward another it cites (Stance Relations
+    /// Build Brief, 2 Nov 2026): directed from the source (the one that
+    /// agrees, contradicts, extends or responds) to the target. Born
+    /// `proposed` with verbatim, verified quotes from both pieces;
+    /// confirmed or severed by the reader on the headset.
     struct Stance: Codable, Hashable, Sendable {
+        /// Source piece key.
         var from: String
+        /// Target piece key.
         var to: String
+        /// agrees_with, contradicts, extends, responds_to (older records:
+        /// agreesWith, disagreesWith…).
         var type: String
+        /// The model's one-sentence rationale.
         var point: String?
+        /// Who made it: "llm · <model>", "declared", "manual".
         var source: String
+        /// nil or "proposed", "confirmed", "rejected".
         var review: String?
+        /// Stable: the same source, target and stance always share it, so
+        /// a decision outlives every re-run.
+        var id: String? = nil
+        /// citation, inferred, manual, declared.
+        var origin: String? = nil
+        var confidence: Double? = nil
+        var evidence: [StanceEvidence]? = nil
+        var promptVersion: String? = nil
+        var ranAt: Date? = nil
+        var reviewedAt: Date? = nil
 
-        /// The word a card's star menu wears for it.
-        var title: String {
+        /// The word a card's menus wear for it.
+        var title: String { Self.title(of: type) }
+
+        static func title(of type: String) -> String {
             switch type {
-            case "agreesWith", "supports": "Agrees"
-            case "disagreesWith", "disputes": "Contradicts"
+            case "agrees_with", "agreesWith", "supports": "Agrees with"
+            case "contradicts", "disagreesWith", "disputes": "Contradicts"
             case "extends": "Extends"
-            case "respondsTo", "repliesTo": "Responds to"
+            case "responds_to", "respondsTo", "repliesTo": "Responds to"
             case "questions": "Questions"
             default: type
             }
         }
 
-        /// Made by a model and not yet confirmed by the editor.
-        var isAI: Bool { review != "confirmed" && source.hasPrefix("llm") }
+        /// The four the brief defines, as their menus name them.
+        static let titles = ["Agrees with", "Contradicts", "Extends", "Responds to"]
+
+        /// Not yet confirmed by the reader.
+        var isAI: Bool { review != "confirmed" && origin != "manual" && origin != "declared" }
+
+        static func stableID(from: String, to: String, type: String) -> String {
+            let digest = SHA256.hash(data: Data((from + "→" + to + "|" + type).utf8))
+            return "stance-" + digest.prefix(10).map { String(format: "%02x", $0) }.joined()
+        }
+    }
+
+    /// One verified quote behind a stance.
+    struct StanceEvidence: Codable, Hashable, Sendable {
+        /// "source" or "target".
+        var role: String
+        var quote: String
+        /// The paragraph id (or "abstract") the quote was found in.
+        var element: String
+        var section: String?
+    }
+
+    /// The reader's decisions on stances, made on the headset and kept in
+    /// their own small file beside the corpus record
+    /// (`origami-stance-reviews.json`), so the headset never rewrites the
+    /// Mac's record; the Mac folds them in on its next upkeep.
+    struct StanceReviews: Codable, Sendable {
+        struct Decision: Codable, Hashable, Sendable {
+            /// "confirmed" or "rejected".
+            var decision: String
+            var at: Date
+            var by: String
+        }
+        var format = "origami-stance-reviews"
+        var modified: Date
+        var decisions: [String: Decision]
+
+        static let fileName = "origami-stance-reviews.json"
+
+        static func read(from folder: URL) -> StanceReviews? {
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            let url = folder.appendingPathComponent(fileName)
+            var data: Data?
+            var failure: NSError?
+            NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &failure) { at in
+                data = try? Data(contentsOf: at)
+            }
+            guard let data else { return nil }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try? decoder.decode(StanceReviews.self, from: data)
+        }
+
+        /// Adds one decision to the file — read, merged and written under
+        /// one coordination, so two devices' decisions never undo each other.
+        static func record(_ decision: Decision, for id: String, in folder: URL) {
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            let url = folder.appendingPathComponent(fileName)
+            var failure: NSError?
+            NSFileCoordinator().coordinate(writingItemAt: url, options: .forMerging, error: &failure) { at in
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                var file = (try? Data(contentsOf: at)).flatMap { try? decoder.decode(StanceReviews.self, from: $0) }
+                    ?? StanceReviews(modified: .now, decisions: [:])
+                file.decisions[id] = decision
+                file.modified = .now
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? encoder.encode(file) { try? data.write(to: at, options: .atomic) }
+            }
+        }
     }
 
     struct File: Codable, Sendable {

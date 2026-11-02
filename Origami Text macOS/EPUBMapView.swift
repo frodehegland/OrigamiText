@@ -89,13 +89,17 @@ struct EPUBMapItem: ItemProtocol {
     /// The paper's first sentence, worn small in serif on a card neither
     /// chosen nor open, so a paper says what it is about at a glance.
     var firstSentence: String?
+    /// The card is reached by a stance relation lit on another card: it
+    /// wears the line's end — confirm and sever.
+    var stanceMark: VisionModel.StanceMarkInfo?
 
     var isAttachmentsEnabled: Bool {
         // Concepts carry Focus/Hide; documents and citations carry
         // Lift / Put Back. Ghosts carry nothing.
-        isSelected && !isGhost && !isFaded
+        (isSelected && !isGhost && !isFaded
             && (kind == .concept || kind == .article
-                || kind == .cited || kind == .citedDeep)
+                || kind == .cited || kind == .citedDeep))
+            || stanceMark != nil
     }
 
     func isVisuallyEqual(to other: EPUBMapItem) -> Bool {
@@ -112,6 +116,9 @@ struct EPUBMapItem: ItemProtocol {
             && isFaded == other.isFaded && warning == other.warning
             && pieceLabel == other.pieceLabel && imagePath == other.imagePath
             && stamp == other.stamp && firstSentence == other.firstSentence
+            // The engine attaches a card's attachment only when it builds
+            // the card, so a stance mark coming or going rebuilds it.
+            && stanceMark == other.stanceMark
     }
 }
 
@@ -1074,6 +1081,17 @@ struct EPUBMapView: View {
                     built[index].position?.z += Self.selectedStep
                 }
             }
+            // A stance lit on a card: every card it reaches wears the
+            // line's end, on the edge facing the chosen card.
+            if let shown = relationShown, CorpusRelations.Stance.titles.contains(shown.title),
+               let origin = built.first(where: { $0.id == shown.from })?.position {
+                for index in built.indices where shown.ids.contains(built[index].id) {
+                    guard var mark = model.stanceMark(from: shown.from, to: built[index].id, title: shown.title)
+                    else { continue }
+                    mark.onLeft = origin.x < (built[index].position?.x ?? 0)
+                    built[index].stanceMark = mark
+                }
+            }
             items = built
             // The volume bar's Select All reads what the room holds.
             let papers = items.filter { matchesSelectKind(.documents, $0) }
@@ -1204,8 +1222,14 @@ struct EPUBMapView: View {
         updateSankey()
         // Suppress ALL connecting lines while any reading panel is open.
         let linesActive = model.openDocIDs.isEmpty
+        // A reading's selected words, connected: lines from its panel to
+        // the cards they reach, whatever else is suppressed.
+        var panelLines = linesActive ? model.openDocCitations : [:]
+        if let shown = relationShown, model.openDocIDs.contains(shown.from) {
+            panelLines[shown.from] = shown.ids
+        }
         citationLines.rebuild(
-            docCitations: linesActive ? model.openDocCitations : [:],
+            docCitations: panelLines,
             items: items,
             readerPanels: readerPanels,
             readingDeskDocID: model.readingDeskDocID)
@@ -1735,10 +1759,16 @@ struct EPUBMapView: View {
     /// A relation chosen on a card's star menu: the card, the relation's
     /// name, and the cards it reaches. Only those stand while it does.
     @State private var relationShown: RelationShown?
+    /// The one list unfolded on a card — its Connects, Show Only, Both
+    /// cite or a verb's options — by "kind|card"; nil when none is.
+    @State private var openList: String?
     struct RelationShown: Equatable {
         let from: String
         let title: String
         let ids: Set<String>
+        /// Show Only: every card it does not reach steps away. Otherwise
+        /// (Connects) its lines alone are drawn.
+        var only = false
         /// Whether its cards stand in miniature round the star — put
         /// away when the reader jumps to one, the focus kept.
         var ringed = true
@@ -1754,8 +1784,14 @@ struct EPUBMapView: View {
         var unfolding: Set<String> = []
         /// The papers a dragged label carries, worked out once per drag.
         var riders: (label: String, ids: Set<String>)?
-        /// The card the bar's second row speaks for: the last one chosen.
+        /// The card that wears the verbs: the last one chosen.
         var barItemID: String?
+        /// The card a two-hand spread has just opened — once per spread.
+        var spreadOpened: String?
+        /// Each paper's text, and its paragraphs' meaning vectors, for the
+        /// relations of a reading's selected words — kept for the room.
+        var paperText: [String: String] = [:]
+        var paragraphVectors: [String: [[Double]]] = [:]
     }
     /// The Select chip's kinds, unfolded above it.
     @State private var selectOpen = false
@@ -2196,6 +2232,14 @@ struct EPUBMapView: View {
             .onChange(of: model.volumeBarRequest) {
                 performVolumeBarRequest()
             }
+            // A reading's selected words: what they connect to, and a
+            // relation chosen on the reading's sphere.
+            .onChange(of: model.readerSelectedWords) {
+                computeSelectionRelations()
+            }
+            .onChange(of: model.selectionRelationRequest) {
+                performSelectionRelationRequest()
+            }
             // A piece corrected, or a zone shown or put away: the room
             // stands its cards again.
             .onChange(of: model.volumeStamp) { reload() }
@@ -2371,6 +2415,23 @@ struct EPUBMapView: View {
                                      + travel)
                         }
                     })
+            // Two hands spread apart on an open, chosen paper: its
+            // reading opens (2 Nov 2026). Pinched together on a reading,
+            // it closes — that half is the panel's own (MapReaderPanel).
+            .simultaneousGesture(
+                MagnifyGesture()
+                    .targetedToAnyEntity()
+                    .onChanged { value in
+                        guard value.magnification >= Self.spreadToRead,
+                              let id = Self.nodeID(of: value.entity),
+                              cardSizes.spreadOpened != id,
+                              let item = items.first(where: { $0.id == id }),
+                              item.kind == .article, item.isSelected, item.showsAbstract
+                        else { return }
+                        cardSizes.spreadOpened = id
+                        readCard(item)
+                    }
+                    .onEnded { _ in cardSizes.spreadOpened = nil })
             // A long-pinch on the Concepts chip offers the way back for
             // hidden concepts: the Reveal All Concepts chip steps out
             // beside it.
@@ -2435,13 +2496,29 @@ struct EPUBMapView: View {
                 AnyView(cardFace(for: item))
             },
             constructorAttachment: { _, item -> AnyView in
-                // Every verb a chosen card offers stands in the room's
-                // bar, second row (2 Nov 2026): a card carries only its
-                // content — an open paper its pictures and, while a
-                // relation is lit, the miniature ring.
+                // The end of a stance's line, on the card it reaches:
+                // confirm, or sever (asked once more).
+                if let mark = item.stanceMark {
+                    return AnyView(
+                        StanceMarkView(mark: mark,
+                                       confirm: { decideStance(mark.stanceID, "confirmed", reaching: item.id) },
+                                       sever: { decideStance(mark.stanceID, "rejected", reaching: item.id) })
+                            .scaleEffect(0.5))
+                }
+                // An open paper: its pictures, the miniature ring while a
+                // relation is lit, and — on the most recently chosen card
+                // alone — its verbs (2 Nov 2026).
                 if item.kind == .article, item.isSelected, item.showsAbstract,
                    !item.isGhost, !item.isAside {
                     return AnyView(paperStar(for: item))
+                }
+                // Any other chosen card shows its verbs beneath it while
+                // it is the one most recently chosen — a citation once
+                // opened, a label, a note, a passage. One card at a time.
+                if item.isSelected, !item.isGhost, wearsVerbs(item),
+                   item.kind != .article,
+                   (item.kind != .cited && item.kind != .citedDeep) || item.showsAbstract {
+                    return AnyView(cardVerbs(cardBar(for: item)).scaleEffect(0.5, anchor: .top))
                 }
                 return AnyView(EmptyView())
             },
@@ -2464,6 +2541,13 @@ struct EPUBMapView: View {
         // glass face — so it reads as a ghost frame around every card.
         view = view.shouldUseHoverNode { _ in false }
         view = view.attachmentAnchorRule { _, item in
+            // A stance's mark stands just off the card's edge that faces
+            // the chosen card, where its line arrives.
+            if let mark = item.stanceMark {
+                return mark.onLeft
+                    ? AnchorRule(anchor: SIMD3<Float>(0, 0.5, 0.5), offset: SIMD3<Float>(-0.004, 0, 0))
+                    : AnchorRule(anchor: SIMD3<Float>(1, 0.5, 0.5), offset: SIMD3<Float>(0.004, 0, 0))
+            }
             // A chosen paper's star menu rings the card: centred on it,
             // 6 mm behind its face — so the card keeps every pinch, and
             // the verbs stand clear around its edges. The open card has
@@ -2640,7 +2724,7 @@ struct EPUBMapView: View {
             // is tapped again, the star's Un-Focus, or the paper let go.
             // (Images is the paper's gallery, not a relation: the room
             // stays whole for it.)
-            if let relationShown, relationShown.title != "Images" {
+            if let relationShown, relationShown.only, relationShown.title != "Images" {
                 return item.id == relationShown.from || relationShown.ids.contains(item.id)
             }
             // A concept's own Focus: only that concept and the articles
@@ -3602,6 +3686,7 @@ struct EPUBMapView: View {
             }
         }
         relations += peopleAndVocabularyRelations(for: item, standing: standing)
+        relations += citationPatternRelations(for: item, standing: standing)
         return relations
     }
 
@@ -3710,10 +3795,9 @@ struct EPUBMapView: View {
         }
     }
 
-    /// An open paper's surround: its pictures along the card's lower edge
-    /// and, while a relation is lit, its cards in miniature on a ring. No
-    /// verbs — every one of them stands in the room's bar, second row
-    /// (2 Nov 2026). Drawn at twice its size and halved, as attachments
+    /// An open paper's surround: its verbs above it (the most recently
+    /// chosen card only), its pictures along the lower edge and, while a
+    /// relation is lit, its cards in miniature on a ring. Drawn at twice its size and halved, as attachments
     /// render full size, so the card's own gap is laid out at twice the card.
     @ViewBuilder private func paperStar(for item: EPUBMapItem) -> some View {
         // The card as it stands chosen (a fifth larger), in this view's
@@ -3723,25 +3807,49 @@ struct EPUBMapView: View {
         let card = (cardSizes.base[item.id] ?? fallback) * 1.2
         let gap = CGSize(width: CGFloat(card.x) * 1360 * 2 + 28,
                          height: CGFloat(card.y) * 1360 * 2 + 20)
+        // Its verbs above it and its relation menus beside it, on the
+        // most recently chosen card alone.
+        let bar = wearsVerbs(item) ? cardBar(for: item) : nil
+        let relations = starRelations(for: item)
         // The lit relation's cards, in miniature on a ring round the card
         // (the lines still run to the cards themselves). The pictures
         // have their own gallery, so Images rings nothing.
         let ringed: [EPUBMapItem] = {
             guard let shown = relationShown, shown.ringed, shown.from == item.id, shown.title != "Images",
-                  let relation = starRelations(for: item).first(where: { $0.title == shown.title })
+                  let relation = relations.first(where: { $0.title == shown.title })
             else { return [] }
             return relation.ids.compactMap { id in items.first { $0.id == id && !$0.isGhost } }
         }()
-        // The ring's radii: clear of the card and its picture strip.
-        let ring = CGSize(width: gap.width / 2 + Self.miniatureSize.width / 2 + 40,
-                          height: gap.height / 2 + Self.miniatureSize.height / 2 + 110)
+        // The ring's radii: clear of the card, its verbs and its pictures.
+        let ring = CGSize(width: gap.width / 2 + Self.miniatureSize.width / 2 + 60
+                            + (bar == nil ? 0 : Self.relationMenuWidth + 12),
+                          height: gap.height / 2 + Self.miniatureSize.height / 2
+                            + (bar == nil ? 150 : 200))
         let pictures = imagePaths(forDocID: item.id)
         ZStack {
             VStack(spacing: 10) {
-                // Mirrored unseen above, so the card stays centred.
+                if let bar { cardVerbs(bar) }
+                // Each side mirrored unseen on the other, so the card
+                // stays centred.
+                if bar != nil { pileVerbs(for: item).hidden() }
                 if !pictures.isEmpty { thumbnailStrip(pictures, of: item).hidden() }
-                Color.clear.frame(width: gap.width, height: gap.height)
+                // Connects on the card's left, Show Only on its right —
+                // equal widths, so the card stays centred.
+                HStack(spacing: 12) {
+                    if bar != nil {
+                        relationMenu("Connects", only: false, for: item, relations: relations)
+                            .frame(width: Self.relationMenuWidth, alignment: .trailing)
+                    }
+                    Color.clear.frame(width: gap.width, height: gap.height)
+                    if bar != nil {
+                        relationMenu("Show Only", only: true, for: item, relations: relations)
+                            .frame(width: Self.relationMenuWidth, alignment: .leading)
+                    }
+                }
                 if !pictures.isEmpty { thumbnailStrip(pictures, of: item) }
+                // Under the card: Pin, and to its right Put Aside.
+                if bar != nil { pileVerbs(for: item) }
+                if let bar { cardVerbs(bar).hidden() }
             }
             if !ringed.isEmpty {
                 miniatureRing(Array(ringed.prefix(Self.ringLimit)), radii: ring)
@@ -3756,6 +3864,9 @@ struct EPUBMapView: View {
         .font(.caption)
         .scaleEffect(0.5)
     }
+
+    /// Each relation menu's width beside the card, in the star's doubled points.
+    private static let relationMenuWidth: CGFloat = 300
 
     /// At most this many miniatures ring a star; the lines reach them all.
     private static let ringLimit = 14
@@ -3840,8 +3951,9 @@ struct EPUBMapView: View {
     /// card (`miniatureRing`, 1 Nov 2026). Cites
     /// raises the paper's citation cards first if they are down. A second
     /// tap takes the lines away.
-    private func toggleRelation(_ relation: StarRelation, of item: EPUBMapItem) {
-        if relationShown?.from == item.id, relationShown?.title == relation.title {
+    private func toggleRelation(_ relation: StarRelation, of item: EPUBMapItem, only: Bool = false) {
+        if relationShown?.from == item.id, relationShown?.title == relation.title,
+           relationShown?.only == only {
             relationShown = nil
             galleryOf = nil
         } else {
@@ -3849,12 +3961,12 @@ struct EPUBMapView: View {
             // Images raises the paper's gallery; any other relation puts
             // it away.
             galleryOf = relation.title == "Images" ? item.id : nil
-            relationShown = RelationShown(from: item.id, title: relation.title, ids: Set(relation.ids))
+            relationShown = RelationShown(from: item.id, title: relation.title, ids: Set(relation.ids), only: only)
         }
         reload()
     }
 
-    // MARK: - The bar's second row: the chosen card's verbs
+    // MARK: - The chosen card's verbs
 
     /// The card the bar's second row speaks for: the last one chosen
     /// while it stays chosen, else any chosen card (an open paper first).
@@ -3906,13 +4018,13 @@ struct EPUBMapView: View {
         } else {
             kindLabel = model.piece(forDocID: item.id)?.kind.title ?? "Paper"
             let relationFocus = relationShown.map {
-                $0.title != "Images" && ($0.from == item.id || $0.ids.contains(item.id))
+                $0.only && $0.title != "Images" && ($0.from == item.id || $0.ids.contains(item.id))
             } ?? false
             verbs = [Verb(id: "read", title: "Read"),
                      Verb(id: "open", title: item.showsAbstract ? "Fold" : "Open"),
                      Verb(id: "focus", title: relationFocus || focusMode ? "Un-Focus" : "Focus",
-                          isOn: relationFocus || focusMode),
-                     Verb(id: "hide", title: "Hide")]
+                          isOn: relationFocus || focusMode)]
+            // (Hide is Put Aside now, under the card beside Pin.)
             let pictures = imagePaths(forDocID: item.id).count
             if pictures > 0 {
                 verbs.append(Verb(id: "pictures", title: "Pictures", isOn: galleryOf == item.id, count: pictures))
@@ -3956,7 +4068,7 @@ struct EPUBMapView: View {
             let ids = imagePaths(forDocID: item.id).indices.map { Self.galleryItemID(item.id, $0) }
             toggleRelation(StarRelation(title: "Images", ids: ids, isAI: false, outward: true), of: item)
         case "focus":
-            if let shown = relationShown, shown.title != "Images",
+            if let shown = relationShown, shown.only, shown.title != "Images",
                shown.from == item.id || shown.ids.contains(item.id) {
                 relationShown = nil
             } else {
@@ -3964,6 +4076,11 @@ struct EPUBMapView: View {
                 armMenu.setChipTitle(Self.focusChipID, focusMode ? "Un-Focus" : "Focus")
                 armMenu.setChipActive(Self.focusChipID, focusMode)
             }
+            reload()
+        case "pin":
+            // To the front of the pile, as lifting a card overhead does.
+            model.togglePinned(item.id)
+            placed[item.id] = nil
             reload()
         case "hide":
             if relationShown?.from == item.id { relationShown = nil }
@@ -3995,6 +4112,401 @@ struct EPUBMapView: View {
             }
         }
         syncCardBar()
+    }
+
+    /// The chosen card's verbs, drawn on the card itself (2 Nov 2026,
+    /// back from the bar's second row): one row of buttons, a menu for a
+    /// verb with options (Kind), and — for a paper — its relations as one
+    /// menu, each with how many cards it reaches and a small AI where a
+    /// model inferred it. Only the most recently chosen card wears them.
+    private func cardVerbs(_ bar: VisionModel.CardBar) -> some View {
+        VStack(spacing: 6) {
+        HStack(spacing: 8) {
+            ForEach(bar.verbs) { verb in
+                if verb.options.isEmpty {
+                    Button {
+                        performCardVerb(verb.id, on: bar.itemID)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(verb.title)
+                            if let count = verb.count { Text("\(count)").foregroundStyle(.secondary) }
+                        }
+                    }
+                    .tint(verb.isOn ? .accentColor : nil)
+                    .fontWeight(verb.isOn ? .semibold : .regular)
+                    .disabled(!verb.isEnabled)
+                } else {
+                    // No presented menu can open on a RealityKit
+                    // attachment: a verb with options unfolds its row.
+                    let key = verb.id + "|" + bar.itemID
+                    Button {
+                        openList = openList == key ? nil : key
+                    } label: {
+                        Text(verb.title + (openList == key ? " \u{25B4}" : " \u{25BE}"))
+                    }
+                }
+            }
+        }
+        // The options of the verb unfolded, under the row.
+        if let verb = bar.verbs.first(where: { openList == $0.id + "|" + bar.itemID }) {
+            HStack(spacing: 6) {
+                ForEach(verb.options) { option in
+                    Button {
+                        performCardVerb(option.id, on: bar.itemID)
+                        openList = nil
+                    } label: {
+                        Text(option.title).fontWeight(option.isOn ? .bold : .regular)
+                    }
+                    .tint(option.isOn ? .accentColor : nil)
+                }
+            }
+        }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .font(.caption)
+    }
+
+    /// A stance confirmed — its mark fills — or severed: the card it
+    /// reached leaves the relation, its line goes, and the room's other
+    /// relations no longer offer it.
+    private func decideStance(_ id: String, _ decision: String, reaching cardID: String) {
+        model.decideStance(id, decision)
+        if decision == "rejected", let shown = relationShown {
+            var ids = shown.ids
+            ids.remove(cardID)
+            relationShown = ids.isEmpty
+                ? nil
+                : RelationShown(from: shown.from, title: shown.title, ids: ids, only: shown.only, ringed: shown.ringed)
+        }
+        reload()
+    }
+
+    /// How far two hands must spread on an open card to open its reading,
+    /// and pinch together on a reading to close it.
+    static let spreadToRead: CGFloat = 1.3
+    static let pinchToClose: CGFloat = 0.7
+
+    /// The card an entity belongs to — itself or an ancestor.
+    static func nodeID(of entity: Entity) -> String? {
+        var node: Entity? = entity
+        while let current = node {
+            if let id = current.components[EPUBNodeIDComponent.self]?.id { return id }
+            node = current.parent
+        }
+        return nil
+    }
+
+    /// Under an open paper: Pin — first in the pile, as lifting a card
+    /// overhead does (Unpin once pinned) — and, to its right, Put Aside,
+    /// as dropping it to the floor does.
+    private func pileVerbs(for item: EPUBMapItem) -> some View {
+        HStack(spacing: 10) {
+            Button(item.isPinned ? "Unpin" : "Pin") { performCardVerb("pin", on: item.id) }
+                .tint(item.isPinned ? .accentColor : nil)
+            Button("Put Aside") { performCardVerb("hide", on: item.id) }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .font(.caption)
+    }
+
+    /// Whether this card is the one that wears the verbs: the most
+    /// recently chosen, while it stays chosen.
+    private func wearsVerbs(_ item: EPUBMapItem) -> Bool {
+        barItem?.id == item.id
+    }
+
+    /// The relations read from the room's own citations, the record's
+    /// meaning groups and the bylines (2 Nov 2026):
+    ///  - Cited together: papers a third paper cites alongside this one.
+    ///  - Both cite ⟨work⟩: one relation per cited work another paper
+    ///    in the room also cites, the most shared first (twelve at most).
+    ///  - Cites questioned works: its cited works the record flags —
+    ///    retracted, withdrawn, an expression of concern.
+    ///  - Same meaning group: its group in the record's meaning map (AI).
+    ///  - Co-authors' work: papers by the people its authors wrote with.
+    private func citationPatternRelations(for item: EPUBMapItem, standing: Set<String>) -> [StarRelation] {
+        var relations: [StarRelation] = []
+        let articles = items.filter { $0.kind == .article && !$0.isGhost }
+        func ranked(_ counts: [String: Int], limit: Int = 12) -> [String] {
+            counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+                .prefix(limit).map(\.key)
+        }
+        var together: [String: Int] = [:]
+        for citer in articles where citer.id != item.id && citer.citedIDs.contains(item.id) {
+            for other in citer.citedIDs where other != item.id && standing.contains(other) {
+                together[other, default: 0] += 1
+            }
+        }
+        if !together.isEmpty {
+            relations.append(StarRelation(title: "Cited together", ids: ranked(together), isAI: false, outward: true))
+        }
+        var shared: [(title: String, ids: [String])] = []
+        for work in Set(item.citedIDs) {
+            let fellows = articles.filter { $0.id != item.id && $0.citedIDs.contains(work) }.map(\.id)
+            guard !fellows.isEmpty, let name = items.first(where: { $0.id == work })?.title, !name.isEmpty
+            else { continue }
+            let short = name.count > 48 ? String(name.prefix(47)) + "\u{2026}" : name
+            shared.append((Self.bothCitePrefix + short, fellows.sorted()))
+        }
+        for entry in shared.sorted(by: { $0.ids.count != $1.ids.count ? $0.ids.count > $1.ids.count : $0.title < $1.title })
+            .prefix(12) {
+            relations.append(StarRelation(title: entry.title, ids: entry.ids, isAI: false, outward: true))
+        }
+        let questioned = items.filter { item.citedIDs.contains($0.id) && $0.warning != nil }.map(\.id)
+        if !questioned.isEmpty {
+            relations.append(StarRelation(title: "Cites questioned works", ids: questioned, isAI: false, outward: true))
+        }
+        if let record = model.roomCorpus(for: Array(standing)),
+           let piece = record.docOfPiece.first(where: { $0.value == item.id })?.key,
+           let group = record.corpus.meaning?.groups.first(where: { $0.pieces.contains(piece) }) {
+            let fellows = group.pieces.compactMap { record.docOfPiece[$0] }
+                .filter { $0 != item.id && standing.contains($0) }
+            if !fellows.isEmpty {
+                relations.append(StarRelation(title: "Same meaning group", ids: fellows.sorted(), isAI: true, outward: true))
+            }
+        }
+        let authorsOf: [String: Set<String>] = Dictionary(uniqueKeysWithValues: standing.map { id in
+            (id, Set(paperAuthors(id).map(Self.personKey).filter { !$0.isEmpty }))
+        })
+        let mine = authorsOf[item.id] ?? []
+        if !mine.isEmpty {
+            var colleagues = Set<String>()
+            for (_, names) in authorsOf where !names.isDisjoint(with: mine) {
+                colleagues.formUnion(names.subtracting(mine))
+            }
+            let work = standing.filter { $0 != item.id && !(authorsOf[$0] ?? []).isDisjoint(with: colleagues) }
+            if !work.isEmpty {
+                relations.append(StarRelation(title: "Co-authors\u{2019} work", ids: work.sorted(), isAI: false, outward: true))
+            }
+        }
+        return relations
+    }
+
+    /// "Both cite: ⟨work⟩" — one relation per shared cited work.
+    static let bothCitePrefix = "Both cite: "
+
+    /// Every relation a paper's two menus offer, in this order, each
+    /// offered always and greyed when no card in the room answers it.
+    /// The record's stances follow wherever there are any; Both cite
+    /// stands as its own submenu.
+    static let relationCatalog = [
+        "Agrees with", "Contradicts", "Extends", "Responds to",
+        "Cites", "Cited by", "Cited together", "Shares Sources",
+        "Similar to", "Same meaning group", "Same themes", "Shares concepts",
+        "Same author", "Co-authors\u{2019} work",
+        "Mentions", "Mentioned by", "Names same people",
+        "Cites questioned works",
+    ]
+
+    /// One of the open paper's two relation menus — Connects (lines to
+    /// the cards) on its left, Show Only (lines, and every other card
+    /// steps away) on its right. Named on its face while one of its
+    /// choices stands.
+    private func relationMenu(_ title: String, only: Bool, for item: EPUBMapItem,
+                              relations: [StarRelation]) -> some View {
+        let lit: String? = relationShown.flatMap {
+            $0.from == item.id && $0.only == only && $0.title != "Images" ? $0.title : nil
+        }
+        let others = relations.filter {
+            !Self.relationCatalog.contains($0.title) && !$0.title.hasPrefix(Self.bothCitePrefix)
+        }
+        let shared = relations.filter { $0.title.hasPrefix(Self.bothCitePrefix) }
+        // An unfolding list, not a Menu: no presented menu can open on a
+        // RealityKit attachment (2 Nov 2026).
+        let key = (only ? "only|" : "connects|") + item.id
+        let open = openList == key || openList == "both|" + key
+        return VStack(alignment: only ? .leading : .trailing, spacing: 4) {
+            Button {
+                openList = open ? nil : key
+            } label: {
+                Text((lit.map { "\(title): \($0.hasPrefix(Self.bothCitePrefix) ? "Both cite" : $0)" } ?? title)
+                     + (open ? " \u{25B4}" : " \u{25BE}"))
+            }
+            .tint(lit == nil ? nil : .accentColor)
+            if open {
+                VStack(alignment: only ? .leading : .trailing, spacing: 2) {
+                    ForEach(Self.relationCatalog, id: \.self) { name in
+                        relationChoice(name, relations.first { $0.title == name }, only: only, of: item, lit: lit)
+                    }
+                    ForEach(others) { relation in
+                        relationChoice(relation.title, relation, only: only, of: item, lit: lit)
+                    }
+                    Button {
+                        openList = openList == "both|" + key ? key : "both|" + key
+                    } label: {
+                        Text("Both cite\u{2026}" + (openList == "both|" + key ? " \u{25B4}" : " \u{25BE}"))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(shared.isEmpty)
+                    if openList == "both|" + key {
+                        ForEach(shared) { relation in
+                            relationChoice(String(relation.title.dropFirst(Self.bothCitePrefix.count)),
+                                           relation, only: only, of: item, lit: lit)
+                        }
+                    }
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.08).opacity(0.85)))
+            }
+        }
+    }
+
+    /// One relation in a menu: its name and how many cards it reaches, a
+    /// small AI where a model inferred it, checked while it stands —
+    /// greyed when it reaches no card in the room.
+    @ViewBuilder private func relationChoice(_ name: String, _ relation: StarRelation?, only: Bool,
+                                             of item: EPUBMapItem, lit: String?) -> some View {
+        Button {
+            if let relation { toggleRelation(relation, of: item, only: only) }
+            openList = nil
+        } label: {
+            let words = relation.map { "\(name)  \($0.ids.count)" + ($0.isAI ? "  \u{00B7} AI" : "") } ?? name
+            if let relation, lit == relation.title {
+                Label(words, systemImage: "checkmark").fontWeight(.semibold)
+            } else {
+                Text(words)
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 2)
+        .disabled(relation == nil)
+    }
+
+    // MARK: - Relations from a reading's selected words (2 Nov 2026)
+
+    /// Every paper's text, as its card's reading has it — read once per
+    /// room for the selected words to be looked for.
+    private func paperText(_ id: String) -> String {
+        if let known = cardSizes.paperText[id] { return known }
+        let text = (model.document(id)?.body ?? []).map(\.displayText).joined(separator: "\n")
+        cardSizes.paperText[id] = text
+        return text
+    }
+
+    /// What each open reading's selected words connect to among the
+    /// papers standing in the room:
+    ///  - Mentions this: the words, whole, in another paper's text.
+    ///  - Same concept: papers using the books' glossary term the words name.
+    ///  - Names this person: papers by, or naming, the person the words name.
+    ///  - Cites this: papers the selected passage cites.
+    ///  - Says something similar (AI): papers with a passage near the words
+    ///    in meaning — a sentence or more, by Apple's on-device sentence
+    ///    embedding; measured after the rest, off the main thread.
+    private func computeSelectionRelations() {
+        var all: [String: [VisionModel.SelectionRelation]] = [:]
+        let papers = items.filter { $0.kind == .article && !$0.isGhost }.map(\.id)
+        for (docID, words) in model.readerSelectedWords where model.openDocIDs.contains(docID) {
+            let phrase = words.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                .trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))
+            guard phrase.count >= 3 else { continue }
+            let others = papers.filter { $0 != docID }
+            var relations: [VisionModel.SelectionRelation] = []
+
+            let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: phrase) + "(?![\\p{L}\\p{N}])"
+            let mentions = others.filter {
+                paperText($0).range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+            }
+            relations.append(.init(title: "Mentions this", ids: mentions, isAI: false))
+
+            var concept: [String] = []
+            var person: [String] = []
+            if let record = model.roomCorpus(for: papers) {
+                if let term = (record.corpus.terms ?? []).first(where: {
+                    $0.name.caseInsensitiveCompare(phrase) == .orderedSame
+                }) {
+                    concept = term.pieces.compactMap { record.docOfPiece[$0] }.filter { others.contains($0) }
+                }
+                let key = Self.personKey(phrase)
+                if phrase.split(separator: " ").count >= 2, !key.isEmpty {
+                    let named = (record.corpus.people ?? []).filter { Self.personKey($0.name) == key }
+                        .flatMap(\.pieces).compactMap { record.docOfPiece[$0] }
+                    person = Array(Set(named + others.filter { paperAuthors($0).map(Self.personKey).contains(key) }))
+                        .filter { others.contains($0) }.sorted()
+                }
+            }
+            relations.append(.init(title: "Same concept", ids: concept, isAI: false))
+            relations.append(.init(title: "Names this person", ids: person, isAI: false))
+
+            var cites: [String] = []
+            if let paragraph = words.paragraphID, let doc = model.document(docID) {
+                let standing = Set(others)
+                cites = Transpoint.works(citedBy: doc, records: model.epubRecords) { model.document($0) }
+                    .filter { work in work.origins.contains { $0.paragraphID == paragraph } }
+                    .compactMap(\.recordID).filter(standing.contains)
+            }
+            relations.append(.init(title: "Cites this", ids: Array(Set(cites)).sorted(), isAI: false))
+
+            let sentence = phrase.split(separator: " ").count >= 6
+            relations.append(.init(title: "Says something similar", ids: [], isAI: true, pending: sentence))
+            all[docID] = relations
+            if sentence { measureSimilar(phrase, from: docID, among: others) }
+        }
+        if model.selectionRelations != all { model.selectionRelations = all }
+    }
+
+    /// Says something similar: each paper's paragraphs measured once (kept
+    /// for the room), the words against them; the papers whose nearest
+    /// passage is closest, at most eight, above a floor.
+    private func measureSimilar(_ phrase: String, from docID: String, among others: [String]) {
+        var texts: [String: [String]] = [:]
+        for id in others where cardSizes.paragraphVectors[id] == nil {
+            texts[id] = (model.document(id)?.body ?? [])
+                .filter { $0.effectiveHeading == nil }
+                .map(\.displayText).filter { $0.count >= 60 }.prefix(240).map { String($0.prefix(600)) }
+        }
+        let known = cardSizes.paragraphVectors
+        Task.detached(priority: .userInitiated) {
+            guard let embedding = NLEmbedding.sentenceEmbedding(for: .english),
+                  let wanted = embedding.vector(for: phrase) else { return }
+            var vectors = known
+            for (id, paragraphs) in texts {
+                vectors[id] = paragraphs.compactMap { embedding.vector(for: $0) }
+            }
+            func cosine(_ a: [Double], _ b: [Double]) -> Double {
+                var dot = 0.0, na = 0.0, nb = 0.0
+                for i in 0..<min(a.count, b.count) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
+                return na > 0 && nb > 0 ? dot / (na.squareRoot() * nb.squareRoot()) : 0
+            }
+            let scored = others.compactMap { id -> (String, Double)? in
+                guard let best = vectors[id]?.map({ cosine(wanted, $0) }).max() else { return nil }
+                return (id, best)
+            }
+            let near = scored.filter { $0.1 >= 0.55 }.sorted { $0.1 > $1.1 }.prefix(8).map(\.0)
+            let measured = vectors
+            await MainActor.run {
+                for (id, value) in measured { cardSizes.paragraphVectors[id] = value }
+                guard model.readerSelectedWords[docID].map({
+                    $0.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                        .trimmingCharacters(in: .punctuationCharacters.union(.whitespaces)) == phrase
+                }) == true, var relations = model.selectionRelations[docID],
+                      let index = relations.firstIndex(where: { $0.title == "Says something similar" }) else { return }
+                relations[index] = .init(title: "Says something similar", ids: Array(near), isAI: true)
+                model.selectionRelations[docID] = relations
+            }
+        }
+    }
+
+    /// A relation chosen on a reading's sphere: lines from the reading to
+    /// the cards it reaches; Show Only, every other card away as well. The
+    /// same choice again — or a nil one — puts it away.
+    private func performSelectionRelationRequest() {
+        guard let request = model.selectionRelationRequest else { return }
+        model.selectionRelationRequest = nil
+        let lit = model.litSelectionRelation
+        if request.title == nil
+            || (lit?.docID == request.docID && lit?.title == request.title && lit?.only == request.only) {
+            if relationShown?.from == request.docID { relationShown = nil }
+            model.litSelectionRelation = nil
+        } else if let title = request.title,
+                  let relation = model.selectionRelations[request.docID]?.first(where: { $0.title == title }),
+                  !relation.ids.isEmpty {
+            relationShown = RelationShown(from: request.docID, title: "sel:" + title,
+                                          ids: Set(relation.ids), only: request.only)
+            model.litSelectionRelation = .init(docID: request.docID, title: title, only: request.only)
+        }
+        reload()
     }
 
     private func toggleAbstract(_ item: EPUBMapItem) {
@@ -5513,6 +6025,11 @@ struct EPUBMapView: View {
     /// the spatial ✕ beside the pill: the desk ends if it was this
     /// document's, the panel goes, the card returns.
     private func closeReader(_ docID: String) {
+        if relationShown?.from == docID {
+            relationShown = nil
+            model.litSelectionRelation = nil
+        }
+        model.readerSelectedWords[docID] = nil
         if model.transpointDocID == docID {
             model.transpointDocID = nil
         }
@@ -9548,7 +10065,16 @@ struct MapReaderPanel: View {
 
     private var isHorizontal: Bool { readerModeRaw == "horizontal" }
 
+    /// Two hands pinched together on the page close the reading — the
+    /// opposite of the spread that opened it (2 Nov 2026).
     var body: some View {
+        shaped.simultaneousGesture(
+            MagnifyGesture().onEnded { value in
+                if value.magnification <= EPUBMapView.pinchToClose { onClose() }
+            })
+    }
+
+    @ViewBuilder private var shaped: some View {
         if isDesk {
             // On the desk the panel wears the chosen theme, whole —
             // one continuous sheet of the theme's page, its light or
@@ -9584,6 +10110,10 @@ struct MapReaderPanel: View {
                 // all the width they need. The reader window cannot,
                 // and does not.
                 .environment(\.visionReadingHostGrows, true)
+            // The silver sphere at the reading's foot, as Author's at a
+            // chosen card's (2 Nov 2026): pinched, the article's own menu.
+            ReadingSphereMenu { sphereItems }
+                .padding(.vertical, 6)
         }
         .frame(width: panelWidth, height: 800)
         // The space a 3D figure's picture measures itself against, and
@@ -9598,6 +10128,85 @@ struct MapReaderPanel: View {
             model.figureGeometry.note(page: docID, size: size)
         }
     }
+
+    /// What the open article's sphere offers: what can be done with the
+    /// whole article from its reading — the room's relations to it come
+    /// next (2 Nov 2026).
+    @ViewBuilder private var sphereItems: some View {
+        // The selected words first: what they connect to in the room.
+        if let words = model.readerSelectedWords[docID] {
+            let quote = words.text.count > 40 ? String(words.text.prefix(39)) + "\u{2026}" : words.text
+            Text("\u{201C}\(quote)\u{201D}")
+                .font(.system(size: 13, design: .serif))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+            selectionList("Connects", only: false)
+            selectionList("Show Only", only: true)
+            if model.litSelectionRelation?.docID == docID {
+                Button("Clear Connections", systemImage: "xmark.circle") {
+                    model.selectionRelationRequest = .init(docID: docID, title: nil, only: false)
+                }
+            }
+            Divider()
+        }
+        Button(isTranspoint ? "End Transpoint" : "Transpoint",
+               systemImage: "point.3.connected.trianglepath.dotted") {
+            model.transpointDocID = isTranspoint ? nil : docID
+        }
+        Button(isDesk ? "Back to the Hallway" : "Reading Desk",
+               systemImage: isDesk ? "doc.on.doc" : "doc") {
+            model.readingDeskDocID = isDesk ? nil : docID
+        }
+        Divider()
+        Button(model.pinnedIDs.contains(docID) ? "Unpin" : "Pin", systemImage: "pin") {
+            model.togglePinned(docID)
+        }
+        Button("Put Aside", systemImage: "tray.and.arrow.down") {
+            model.toggleSetAside(docID)
+            onClose()
+        }
+        Divider()
+        Button("Close Reading", systemImage: "xmark") { onClose() }
+    }
+
+    /// One of the selection's two lists, unfolded in place: each relation
+    /// with how many cards it reaches, greyed where it reaches none (or is
+    /// still being measured), a small AI where a model inferred it, checked
+    /// while it stands.
+    @ViewBuilder private func selectionList(_ title: String, only: Bool) -> some View {
+        let open = openSelectionList == title
+        Button {
+            openSelectionList = open ? nil : title
+        } label: {
+            Label(title + (open ? "  \u{25B4}" : "  \u{25BE}"),
+                  systemImage: only ? "line.3.horizontal.decrease.circle" : "point.3.connected.trianglepath.dotted")
+        }
+        if open {
+            ForEach(model.selectionRelations[docID] ?? []) { relation in
+                let lit = model.litSelectionRelation == .init(docID: docID, title: relation.title, only: only)
+                Button {
+                    model.selectionRelationRequest = .init(docID: docID, title: relation.title, only: only)
+                } label: {
+                    HStack(spacing: 6) {
+                        if lit { Image(systemName: "checkmark") }
+                        Text(relation.title)
+                        Text(relation.pending ? "measuring\u{2026}" : "\(relation.ids.count)")
+                            .foregroundStyle(.secondary)
+                        if relation.isAI {
+                            Text("AI").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.leading, 22)
+                    .fontWeight(lit ? .semibold : .regular)
+                }
+                .disabled(relation.ids.isEmpty)
+            }
+        }
+    }
+
+    /// The selection list unfolded in the sphere's column, if one is.
+    @State private var openSelectionList: String?
 
     /// The title bar. In Horizontal it floats on a glass (or themed
     /// paper) strip of its own above the curved columns; elsewhere it
@@ -10730,6 +11339,219 @@ struct RoomConceptDetailView: View {
             }
         }
         .padding(14)
+    }
+}
+/// The mark at the end of a stance's line, on the card it reaches: the
+/// stance's word with its direction (→ the chosen card takes the stance
+/// toward this one, ← this one toward the chosen card), a ✓ to confirm it
+/// and a ✗ to sever it — the severing asked once more before it is done.
+/// The quotes behind it open beneath on ❝. A proposed stance wears AI; a
+/// confirmed one a filled check. Contradicts is warmer, as the rarest.
+struct StanceMarkView: View {
+    let mark: VisionModel.StanceMarkInfo
+    let confirm: () -> Void
+    let sever: () -> Void
+    @State private var asking = false
+    @State private var showsEvidence = false
+
+    var body: some View {
+        VStack(alignment: mark.onLeft ? .trailing : .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                if !mark.onLeft { buttons }
+                Text((mark.outward ? "\u{2192} " : "\u{2190} ") + mark.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(mark.title == "Contradicts" ? Color(red: 1.0, green: 0.62, blue: 0.42) : .white)
+                if !mark.confirmed {
+                    Text("AI").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                }
+                Button { showsEvidence.toggle() } label: { Text("\u{275D}") }
+                    .buttonStyle(.plain)
+                if mark.onLeft { buttons }
+            }
+            if asking {
+                HStack(spacing: 8) {
+                    Text("Sever this connection?").font(.system(size: 12))
+                    Button("Cancel") { asking = false }
+                    Button("Sever", role: .destructive) { asking = false; sever() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            if showsEvidence {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let quote = mark.sourceQuote {
+                        Text("\u{201C}\(quote)\u{201D}").font(.system(size: 11, design: .serif))
+                    }
+                    if let quote = mark.targetQuote {
+                        Text("\u{201C}\(quote)\u{201D}").font(.system(size: 11, design: .serif))
+                            .foregroundStyle(.secondary)
+                    }
+                    if let rationale = mark.rationale {
+                        Text(rationale).font(.system(size: 10)).foregroundStyle(.tertiary)
+                    }
+                }
+                .frame(width: 320, alignment: .leading)
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.08).opacity(0.85)))
+    }
+
+    private var buttons: some View {
+        HStack(spacing: 4) {
+            Button(action: confirm) {
+                Image(systemName: mark.confirmed ? "checkmark.circle.fill" : "checkmark.circle")
+                    .foregroundStyle(mark.confirmed ? Color.green : Color.white)
+            }
+            .help("Confirm Connection")
+            Button { asking = true } label: {
+                Image(systemName: "xmark.circle")
+            }
+            .help("Sever Connection")
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 18))
+    }
+}
+
+// MARK: - The silver sphere
+
+// ChromeSphere — VERBATIM from Author (AuthorMobile/Views/Document/
+// SelectionDot.swift, 2 Nov 2026), so the two apps' silver spheres look
+// and light alike. Author is canonical for this one: re-copy it when it
+// changes there. ChromeHover.usda (the look-reactive chrome) came with it;
+// where a target does not carry it, plain mirror chrome stands in.
+/// The selection dot on Vision Pro as a real chrome ball: a mirror-metal
+/// sphere in RealityKit, lit and reflecting by the system's estimate of
+/// the room — the Environment when one is up — rather than the painted
+/// gradients of `SelectionDot`, which stand in for that on flat screens.
+struct ChromeSphere: View {
+    var size: CGFloat = 22
+    var lifted = false
+
+    @Environment(\.physicalMetrics) private var metrics
+
+    var body: some View {
+        // The sphere's radius in metres, from its size in points, so it is
+        // as big in the room as the flat dot is on the page.
+        let radius = Float(metrics.convert(size / 2, to: .meters))
+
+        RealityView { content in
+            let sphere = ModelEntity(mesh: .generateSphere(radius: radius),
+                                     materials: [await Self.chrome()])
+            sphere.name = "chrome"
+            // Sunk half into the page: its centre on the page's surface, so
+            // a hemisphere stands out of the text rather than a ball resting
+            // on it.
+            sphere.position.z = -radius
+
+            // The room's light, in full: in the shared space visionOS lights
+            // RealityKit content from ARKit's estimate of the real
+            // surroundings (or the open Environment), and that estimate is
+            // what the chrome reflects.
+            sphere.components.set(EnvironmentLightingConfigurationComponent(environmentLightingWeight: 1.0))
+
+            // No look or pinch of its own: the editor lays a transparent
+            // target over it, whose look fades the menu in beside it (a look
+            // drives either a RealityKit effect or a SwiftUI one, not both,
+            // and the menu is SwiftUI).
+
+            content.add(sphere)
+        } update: { content in
+            // Lifting as the flat dot does while its menu is open.
+            content.entities.first { $0.name == "chrome" }?
+                .scale = SIMD3(repeating: lifted ? 1.15 : 1)
+        }
+        .frame(width: size, height: size)
+        .frame(depth: size)
+        .animation(.easeOut(duration: 0.12), value: lifted)
+    }
+
+    /// Whether ChromeHover.usda loaded, so the look grows the ball.
+    @MainActor private static var hasHoverMaterial = false
+
+    /// The same chrome, for spheres made in RealityKit itself — Cards'
+    /// (17 Oct 2026).
+    @MainActor static func material() async -> any RealityKit.Material { await chrome() }
+
+    /// The look-reactive chrome from ChromeHover.usda; plain mirror chrome
+    /// should it fail to load.
+    @MainActor private static func chrome() async -> any RealityKit.Material {
+        if let url = Bundle.main.url(forResource: "ChromeHover", withExtension: "usda"),
+           let material = try? await ShaderGraphMaterial(named: "/Root/ChromeHover", from: url) {
+            hasHoverMaterial = true
+            return material
+        }
+        hasHoverMaterial = false
+        var material = PhysicallyBasedMaterial()
+        material.baseColor = .init(tint: UIColor(white: 0.97, alpha: 1))
+        material.metallic = 1.0
+        material.roughness = 0.0
+        material.clearcoat = 1.0
+        material.clearcoatRoughness = 0.0
+        return material
+    }
+}
+
+/// The silver sphere at the foot of an open reading (2 Nov 2026), as
+/// Author's at the foot of a chosen card (CardSphereBar): the chrome ball,
+/// drawn only, under an invisible circle that is the Menu's label and
+/// takes the pinch; pinched, the system's own menu opens from it, its
+/// choices one under another.
+struct ReadingSphereMenu<Items: View>: View {
+    @ViewBuilder let items: () -> Items
+    @State private var opened = false
+
+    var body: some View {
+        // No presented menu can open on a RealityKit attachment (there is
+        // no window to present into): pinched, the sphere unfolds its
+        // choices above it, in the panel itself; pinched again, folds them.
+        VStack(spacing: 8) {
+            if opened {
+                VStack(alignment: .leading, spacing: 2) {
+                    items()
+                }
+                .buttonStyle(SphereRowStyle())
+                .padding(6)
+                .fixedSize()
+                .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 16))
+            }
+            Button {
+                opened.toggle()
+            } label: {
+            ZStack {
+                // A deliberate dark disc behind the sphere, round and
+                // placed on purpose, not the Menu's own faint platter.
+                Circle()
+                    .fill(Color.black.opacity(0.55))
+                    .frame(width: 28, height: 28)
+                ChromeSphere(size: 22, lifted: opened)
+                    .allowsHitTesting(false)
+                Circle()
+                    .fill(Color.white.opacity(0.002))
+            }
+            .frame(width: 34, height: 34)
+            .contentShape(.hoverEffect, Circle())
+            .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .hoverEffectDisabled(true)
+        }
+    }
+}
+
+/// A row of the sphere's column: plain words, a soft wash while pressed.
+private struct SphereRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 15))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10)
+                .fill(Color.white.opacity(configuration.isPressed ? 0.15 : 0)))
+            .contentShape(Rectangle())
+            .hoverEffect(.highlight)
     }
 }
 #endif

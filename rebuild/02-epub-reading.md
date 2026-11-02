@@ -1687,6 +1687,12 @@ The Mac keeps the library's metadata current without being asked, so the reader 
   - "quiet" means no keyboard, mouse or trackpad input for 20 s (`CGEventSource.secondsSinceLastEventType(.combinedSessionState, ~0)`), thermal state below serious, and Low Power Mode off; it polls every 5 s.
   - A pass started by hand keeps full speed.
 - **Settings ▸ AI ▸ Library Upkeep** (`LibraryUpkeepSettingsSection`, after Embedding Model): a toggle, on by default (`libraryUpkeepEnabled`), and the upkeep's one-line status.
+- **Check Metadata Now** (2 Nov 2026, `LibraryUpkeep.checkNow()`): runs every outstanding job once, straight away, at full speed (`background: false`).
+  - It ignores the retry rest (`nextJob(force:skipping:)`) and sets `BackgroundPace.override`, so a background pass already waiting for idle carries on at once.
+  - It waits for any running pass, folds the stance reviews, then runs the jobs one after another. Each job runs once, and the cited-works lookup is held back until the others are done.
+  - While it runs, the button reads "Checking…" and the upkeep's own ticks stand aside.
+  - **Live line:** `LibraryUpkeepSettingsSection.activity` shows the pass at work with a small spinner: article metadata n of m and the current title; cited works n of m; corpus relations or stances with their latest log line.
+  - **Closing status:** "Checked now: n jobs done. Up to date.", or "nothing was missing".
 
 ### 5.33 AI on This Mac: models Origami runs itself (macOS, 2 November 2026)
 
@@ -1716,6 +1722,133 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
 - **Embedding** runs one text at a time: tokens are truncated to `maxPositionEmbeddings`, then `model(…)` and `pooling(normalize: true)`.
 - **Memory:** loaded containers are released after 10 idle minutes (`MLX.GPU.clearCache()`).
 - **Settings ▸ AI:** **AI on This Mac** comes first, one row per offered rung: tier, model, summary and size, then *Download and Use*, a progress bar with *Stop*, *Use*, or a green *In Use*. **Model in Use** (the former Language Model picker) follows. It lists the ready pairs first, and leaves out embedding-only models (`isEmbeddingOnly`: names containing "embed", or bge-).
+
+### 5.40 Unfolding lists, not menus; the selected words' relations (visionOS, 2 November 2026)
+
+**No presented menu opens on a RealityKit attachment** (there is no window to present into). The reading panel and every card are attachments, so every `Menu` there became a list that unfolds in place:
+- **The reading's sphere** (`ReadingSphereMenu`): pinching the sphere unfolds its items in a glass column above it, in plain rows (`SphereRowStyle`). Pinching again folds them.
+- **On the card:** Connects, Show Only and Both cite… (`relationMenu`), and a verb's options such as Kind (`cardVerbs`) unfold under their button.
+  - Only one list stands at a time: `openList` holds "connects|", "only|", "both|…" or "<verb>|", followed by the card id.
+  - Choosing a row folds the list.
+
+**The selected words' relations**, offered on the open reading's sphere:
+- **How the words get to the room:** the reader publishes `VisionModel.readerSelectedWords[docID]` (text and paragraph id) as the words are selected. The last words are kept, because pinching the sphere can clear the selection. The Hallway's `computeSelectionRelations` turns them into `selectionRelations[docID]`.
+- **The five relations** (over the papers standing in the room, the reading's own left out):
+  - **Mentions this:** the words, whole and case-insensitive, in the paper's text (`paperText`, cached per room).
+  - **Same concept:** the corpus record's glossary term the words name.
+  - **Names this person:** two or more words whose `personKey` matches the record's people (their pieces) or a paper's authors.
+  - **Cites this:** the library papers `Transpoint.works(citedBy:)` finds cited from the selected paragraph.
+  - **Says something similar** (AI), for 6 words or more:
+    - It uses `NLEmbedding.sentenceEmbedding(.english)`, off the main thread.
+    - Each paper's non-heading paragraphs of 60 characters or more (at most 240, each cut at 600) are measured once and kept (`paragraphVectors`).
+    - A paper scores the best cosine of any of its paragraphs. Papers scoring 0.55 or more are kept, the 8 best. The relation reads "measuring…" until done.
+- **The sphere's column** shows:
+  - the words in quotes (40 characters at most);
+  - **Connects ▾** and **Show Only ▾**, each unfolding the five relations with their counts, greyed where none (or still measuring), checked while one stands;
+  - **Clear Connections**, while one stands.
+- **Choosing one:** a choice posts `selectionRelationRequest`, which sets `relationShown(from: docID, title: "sel:<title>", only:)`. Show Only hides the rest through the usual `only`.
+  - **Lines** run from the panel to the cards: `reload` adds `relationShown.ids` to the panel's entry in `CitationLineManager`'s map, even while other lines are suppressed for an open reading.
+  - The same choice again, or Clear, puts it away. Closing the reading ends it and forgets its words.
+
+### 5.39 The silver sphere at an open reading's foot (visionOS, 2 November 2026)
+
+This is Author's chosen-card sphere (`CardSphereBar`) brought to the reading panel.
+- **`ChromeSphere`** is copied verbatim from Author's `SelectionDot.swift`, Author being canonical: a RealityKit mirror-chrome sphere lit by the room, using `ChromeHover.usda` (copied beside it), or plain PBR chrome without it.
+- **`ReadingSphereMenu`** has a dark 28-pt disc, the 22-pt sphere (drawn only), and an invisible circle as the `Menu` label that takes the pinch. It uses `.menuStyle(.button)` with hover effects off, and the sphere lifts while opened.
+- **Placement:** `MapReaderPanel.panel` stands it under `VisionReaderView`, inside the 800-pt panel.
+- **Items** (`sphereItems`): Transpoint / End Transpoint, Reading Desk / Back to the Hallway, Pin / Unpin, Put Aside (which also closes the reading), Close Reading.
+- **Where the code lives:** at the foot of `EPUBMapView.swift`, because the visionOS target takes shared files only through its membership list. A new file would compile for the Mac only. `ChromeHover.usda` likewise needs the Vision target's membership ticked to load on the headset.
+
+### 5.38 Stances: found on the Mac, confirmed or severed on the headset (2 November 2026)
+
+This follows *Origami Text — Stance Relations Build Brief* (Frode, 2 Nov 2026), with one change: review happens on the headset, at the end of each line, not in a Mac sheet.
+
+**The record** (`CorpusRelations.Stance`, extended and backward-compatible):
+- **Fields:** from and to (source and target piece keys), type (`agrees_with`, `contradicts`, `extends`, `responds_to`), point (the rationale), source ("llm · <model>", "declared", "manual"), and review (proposed, confirmed, rejected).
+- **New optional fields:** `id`, `origin` (citation, declared…), `confidence`, `evidence` (`StanceEvidence`: role, quote, element, section), `promptVersion`, `ranAt`, `reviewedAt`.
+- **`id`** is `stableID(from:to:type:)`: "stance-" plus the first 10 bytes of the SHA-256 of `from→to|type`. A decision therefore survives every re-run.
+- **Titles:** Agrees with, Contradicts, Extends, Responds to (`Stance.titles`).
+- **`Corpus.stancesChecked`** lists `source→target|promptVersion` for every pair already read.
+- A corpus rebuild (`build(corpusOf:)`) carries `stances` and `stancesChecked` over.
+
+**Mac: `StanceFinder`** (`StanceFinder.swift`, run by Library Upkeep as its fourth job when a model can answer and pairs are pending):
+- **Candidate pairs** (`pendingPairs`): citations from a piece to a work whose `inCorpus` is another piece, not yet in `stancesChecked`.
+- **Declared stances:** a source `Link` with rel `responds-to` to the target's record gives a confirmed `responds_to` with origin `declared`.
+- **Context windows:**
+  - The source's references whose BibTeX title (normalised) or DOI matches the target supply the citation keys.
+  - In every paragraph whose `[cite:…]` tokens include a key, the window is the citing sentence plus the one before and after (`NLTokenizer` sentences, merged), at most 4 windows per pair.
+  - Tokens are rendered as the paper prints them (`citedAs` or `[n]`), whitespace collapsed. The model sees exactly this text, and quotes are checked against it.
+  - Each window carries its section heading and kind: introduction, related_work, method, results, discussion, conclusion, other.
+- **Target passages** (`targetPassages`): the abstract first, then up to two paragraphs over 80 characters drawn from result, discussion or conclusion sections, or containing a number or a verb of finding. They are ranked by shared words of more than 3 letters, each capped at 1,500 characters, and labelled t1–t3.
+- **The model:** `OrigamiLLM.respond(instructions: systemPrompt, …)`, with the brief's system message as written plus a one-line reply shape. The input is the brief's JSON (source, target, section, section_kind, SOURCE_WINDOW, TARGET_PASSAGES). `promptVersion` is "stance-1". A reply that does not parse is set aside and logged.
+- **Verification** (`verify`, deterministic):
+  - Curly quotes and dashes are made plain and whitespace is collapsed.
+  - A quote must be at least 25 characters and an exact substring of the named element, else of any line, else of the joined window.
+  - `agrees_with` and `contradicts` also need a verified target quote. Anything unverified is dropped and counted.
+- **Storage:** every model stance is born `proposed`. `merge` keeps one stance per id; it never overrides a decision, takes the more confident proposal, and keeps up to 6 evidence quotes.
+- **Writing:** `CorpusRelationsBuilder.update(corpus:model:_:)` writes the record locally and publishes it after each pair.
+- **Folding decisions back:** on every upkeep tick, `foldReviews` folds the headset's decisions (`origami-stance-reviews.json`) into the record's `review` and `reviewedAt`.
+
+**Headset:**
+- **Reading:** `VisionModel` adopts `StanceReviews` (`decisions[id] = {decision, at, by}`) on the standing loop, keeping the newer of a local and a shared decision. `effectiveReview` is the decision if there is one, else the record's review. Rejected stances never stand. Unconfirmed ones wear AI.
+- **Menus:** the four stance titles lead `relationCatalog`, in both Connects and Show Only, greyed when none reaches a card.
+- **Marks** (`stanceMark(from:to:title:)` gives a `StanceMarkInfo`):
+  - With a stance relation lit, every card it reaches wears a `StanceMarkView` attachment on its edge facing the chosen card (`onLeft` from x), anchored just off that edge, so it stands where the line arrives.
+  - The mark shows → or ← (the chosen card toward this one, or this one toward it), the stance word (Contradicts in a warm orange), AI while proposed, and ❝, which opens the source quote, target quote and rationale.
+  - It carries **✓ Confirm Connection** (the icon fills green once confirmed) and **✗ Sever Connection**. ✗ asks "Sever this connection?" with Cancel and Sever. On Sever the card leaves `relationShown.ids` and its line goes.
+  - `stanceMark` is part of `isVisuallyEqual`, so a mark's coming or going rebuilds that card: the engine attaches attachments only when it builds a card.
+- **Recording a decision:** `decideStance` keeps it locally at once, then `StanceReviews.record` merges it into the shared file under one coordinated write (`.forMerging`).
+
+**Not built:**
+- auto-confirm calibration;
+- the non-citing (inferred) pairs;
+- manual stance entry;
+- a smaller model's pre-filter;
+- OTS addresses on the quotes (only element ids are stored).
+
+### 5.37 Pin and Put Aside under the open card (visionOS, 2 November 2026)
+
+Under the open paper that wears the verbs, below its pictures, stand **Pin** (it reads **Unpin**, in accent, once pinned) and, to its right, **Put Aside** (`pileVerbs`). The row is mirrored unseen above the card, so the card stays centred.
+- **Pin** (`performCardVerb("pin")`) calls `togglePinned` and clears `placed`. This is the same act as lifting a card above 2 m.
+- **Put Aside** (`"hide"`) calls `toggleSetAside`, as dropping a card to the floor does.
+- Hide has left the verbs row above the card.
+- The ring's vertical radius gains 50 doubled points while the verbs stand.
+
+### 5.36 Connects and Show Only, and five more relations (visionOS, 2 November 2026)
+
+On the open paper that wears the verbs, two menus stand either side of the card, each 300 doubled points wide so the card stays centred (`relationMenu`):
+- **Connects ▾** on the left draws lines only.
+- **Show Only ▾** on the right draws the lines and also hides every card the relation does not reach.
+
+Details:
+- **`RelationShown.only`** carries the mode. `shouldEnableNode` hides cards only when `only` is set. Lines (`conceptEdges`) and the miniature ring stand in both modes.
+- **Toggling:** `toggleRelation(_:of:only:)` puts a relation away when the same title is chosen again in the same mode. Choosing it in the other mode switches modes.
+- **What each menu lists:**
+  - every kind in `relationCatalog`, always, in a fixed order, greyed (`.disabled`) when it reaches no card standing in the room;
+  - the record's stance kinds, when there are any;
+  - a **Both cite…** submenu, greyed when empty.
+  - Each entry shows its count and a small "AI" where a model inferred it. The one standing is checked, and the menu's face reads "Connects: <title>" or "Show Only: <title>" in accent.
+- **The single Relations menu has left the verbs row.** Un-Focus now reads only a Show Only relation, or Focus mode.
+- **The catalog:** Cites, Cited by, Cited together, Shares Sources, Similar to, Same meaning group, Same themes, Shares concepts, Same author, Co-authors' work, Mentions, Mentioned by, Names same people, Cites questioned works.
+- **New relations** (`citationPatternRelations`):
+  - **Cited together:** papers that a third paper in the room cites alongside this one, the 12 most often.
+  - **Both cite ⟨work⟩:** one relation per cited work another paper also cites, the 12 most shared. Each is titled `bothCitePrefix` plus the work's title, cut at 48 characters.
+  - **Cites questioned works:** its cited cards that wear a `warning`.
+  - **Same meaning group** (AI): its group in `corpus.meaning.groups`.
+  - **Co-authors' work:** papers by anyone its authors wrote with, matched by `personKey` over `paperAuthors`.
+
+### 5.35 Verbs back on the card, one card at a time; two-hand spread to read (visionOS, 2 November 2026)
+
+This supersedes the bar's second row (5.34). The bar is one 56-pt row again, the room row.
+- **Which card shows controls:** the chosen card's verbs (the same `cardBar(for:)` list) are drawn on the card itself, but only on the most recently chosen card (`wearsVerbs`: `barItem`, from `cardSizes.barItemID`).
+- **An open paper** (`paperStar`) carries:
+  - its verbs above it, then Relations as one menu (`cardVerbs`), with the row mirrored unseen below so the card stays centred;
+  - its picture strip, and the miniature ring.
+  - Ring radii grew to half the gap plus half a miniature, plus 60 across and 150 down, to clear the verbs.
+- **Other chosen cards** show the verbs row hanging under them, halved: a citation once opened, a label, a note, a passage. Every other chosen card shows none.
+- **Two-hand spread to read:** on an open, chosen paper, a `MagnifyGesture` reaching `spreadToRead` (1.3) opens its reading (`readCard`), once per gesture (`cardSizes.spreadOpened`). It is targeted to the card's entity, found through `nodeID(of:)` and `EPUBNodeIDComponent`.
+- **Two-hand pinch to close:** pinching together on a reading panel to `pinchToClose` (0.7) or less closes it (`MapReaderPanel`'s own `MagnifyGesture`, which calls `onClose`).
+- `VisionModel.cardBar` is still published, because Whole Volume reads the chosen card's volume from it.
 
 ### 5.34 Every card verb in the bar, two rows (visionOS, 2 November 2026)
 

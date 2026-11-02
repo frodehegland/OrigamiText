@@ -1,0 +1,68 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# The selection dot's chrome (visionOS). Mirror metal, and on a look the
+# sphere grows by a quarter about its centre: RealityKit's Hover State node
+# drives a geometry modifier that moves every vertex outward along its own
+# object-space position. The system runs it, out of the app's process, as it
+# runs every look effect. Loaded by ChromeSphere (SelectionDot.swift).
+
+def Xform "Root"
+{
+    def Material "ChromeHover"
+    {
+        token outputs:mtlx:surface.connect = </Root/ChromeHover/Surface.outputs:out>
+        token outputs:realitykit:vertex.connect = </Root/ChromeHover/Grow.outputs:out>
+
+        def Shader "Surface"
+        {
+            uniform token info:id = "ND_realitykit_pbr_surfaceshader"
+            color3f inputs:baseColor = (0.97, 0.97, 0.97)
+            float inputs:metallic = 1
+            float inputs:roughness = 0
+            float inputs:clearcoat = 1
+            float inputs:clearcoatRoughness = 0
+            token outputs:out
+        }
+
+        def Shader "Grow"
+        {
+            uniform token info:id = "ND_realitykit_geometrymodifier_2_0_vertexshader"
+            float3 inputs:modelPositionOffset.connect = </Root/ChromeHover/Offset.outputs:out>
+            token outputs:out
+        }
+
+        def Shader "Offset"
+        {
+            uniform token info:id = "ND_multiply_vector3FA"
+            float3 inputs:in1.connect = </Root/ChromeHover/Position.outputs:out>
+            float inputs:in2.connect = </Root/ChromeHover/Amount.outputs:out>
+            float3 outputs:out
+        }
+
+        def Shader "Amount"
+        {
+            uniform token info:id = "ND_multiply_float"
+            float inputs:in1.connect = </Root/ChromeHover/HoverState.outputs:intensity>
+            float inputs:in2 = 0.25
+            float outputs:out
+        }
+
+        def Shader "HoverState"
+        {
+            uniform token info:id = "ND_realitykit_hover_state"
+            float outputs:intensity
+        }
+
+        def Shader "Position"
+        {
+            uniform token info:id = "ND_position_vector3"
+            string inputs:space = "object"
+            float3 outputs:out
+        }
+    }
+}

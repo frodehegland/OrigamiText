@@ -1474,6 +1474,10 @@ final class VisionModel {
             if let relations = CorpusRelations.readShared(from: folder) {
                 await MainActor.run { self.adoptCorpusRelations(relations) }
             }
+            // The reader's confirmations and severings, from any device.
+            if let reviews = CorpusRelations.StanceReviews.read(from: folder) {
+                await MainActor.run { self.adoptStanceReviews(reviews) }
+            }
             guard let state = EPUBStanding.read(from: folder) else { return }
             await MainActor.run { self.applyStanding(state) }
         }
@@ -1859,6 +1863,107 @@ final class VisionModel {
     @ObservationIgnored private var corpusOfPiece: [String: String] = [:]
 
     /// A newer record from the Mac: the rooms read their citations again.
+    // MARK: Relations from selected words (2 Nov 2026)
+
+    /// The words selected in each open reading, with the paragraph they
+    /// stand in — published by the reader, read by the room.
+    struct SelectedWords: Equatable {
+        let text: String
+        let paragraphID: String?
+    }
+    var readerSelectedWords: [String: SelectedWords] = [:]
+
+    /// What a reading's selected words connect to in the room, worked out
+    /// by the Hallway: each relation with the cards it reaches.
+    struct SelectionRelation: Identifiable, Hashable {
+        let title: String
+        let ids: [String]
+        let isAI: Bool
+        /// Still being measured (Says something similar).
+        var pending = false
+        var id: String { title }
+    }
+    var selectionRelations: [String: [SelectionRelation]] = [:]
+
+    /// A selection relation chosen from a reading's sphere: Connects
+    /// (lines) or Show Only (lines, every other card away); nil title
+    /// clears it.
+    struct SelectionRelationRequest: Equatable {
+        let docID: String
+        let title: String?
+        let only: Bool
+        let id = UUID()
+    }
+    var selectionRelationRequest: SelectionRelationRequest?
+
+    /// The selection relation standing now, for the sphere to check.
+    struct LitSelectionRelation: Equatable {
+        let docID: String
+        let title: String
+        let only: Bool
+    }
+    var litSelectionRelation: LitSelectionRelation?
+
+    // MARK: Stances: confirmed or severed here, at the end of each line
+
+    /// The reader's decisions on stances, as the shared file holds them
+    /// and as just made on this headset.
+    @ObservationIgnored private(set) var stanceDecisions: [String: CorpusRelations.StanceReviews.Decision] = [:]
+
+    /// A stance as the room stands it: proposed, confirmed — or severed,
+    /// which takes it out of the room.
+    func effectiveReview(_ stance: CorpusRelations.Stance) -> String? {
+        stance.id.flatMap { stanceDecisions[$0]?.decision } ?? stance.review
+    }
+
+    /// The file's decisions taken in, a newer one made here kept.
+    func adoptStanceReviews(_ reviews: CorpusRelations.StanceReviews) {
+        stanceDecisions.merge(reviews.decisions) { here, there in here.at >= there.at ? here : there }
+    }
+
+    /// What the mark at a line's end shows for one stance between two cards.
+    struct StanceMarkInfo: Hashable {
+        let stanceID: String
+        let title: String
+        let confirmed: Bool
+        /// The chosen card is the source: the line runs from it outward.
+        let outward: Bool
+        let sourceQuote: String?
+        let targetQuote: String?
+        let rationale: String?
+        /// Set by the room: the mark stands on the card's left edge.
+        var onLeft = false
+    }
+
+    /// The stance of the given kind between two cards in the room, either
+    /// way round, unless it was severed.
+    func stanceMark(from chosen: String, to other: String, title: String) -> StanceMarkInfo? {
+        guard let a = pieceKey(forDocID: chosen), let b = pieceKey(forDocID: other),
+              let corpusID = corpusOfPiece[a], let corpus = corpusRelations?.corpora[corpusID] else { return nil }
+        guard let stance = (corpus.stances ?? []).first(where: { stance in
+            stance.title == title && effectiveReview(stance) != "rejected"
+                && ((stance.from == a && stance.to == b) || (stance.from == b && stance.to == a))
+        }), let id = stance.id else { return nil }
+        return StanceMarkInfo(
+            stanceID: id, title: title, confirmed: effectiveReview(stance) == "confirmed",
+            outward: stance.from == a,
+            sourceQuote: stance.evidence?.first { $0.role == "source" }?.quote,
+            targetQuote: stance.evidence?.first { $0.role == "target" }?.quote,
+            rationale: stance.point)
+    }
+
+    /// Confirm or sever a stance: kept here at once, and written to the
+    /// shared decisions file for the Mac to fold into its record.
+    func decideStance(_ id: String, _ decision: String) {
+        let made = CorpusRelations.StanceReviews.Decision(decision: decision, at: .now, by: "headset")
+        stanceDecisions[id] = made
+        guard let folder = index.folderURL else { return }
+        Task.detached(priority: .utility) {
+            CorpusRelations.StanceReviews.record(made, for: id, in: folder)
+        }
+        volumeStamp += 1
+    }
+
     func adoptCorpusRelations(_ file: CorpusRelations.File) {
         guard file.modified != corpusRelations?.modified else { return }
         corpusRelations = file
@@ -1941,7 +2046,8 @@ final class VisionModel {
         // either way — a disagreement is mutual on the wall).
         var byTitle: [String: (ids: [String], isAI: Bool)] = [:]
         var order: [String] = []
-        for stance in corpus.stances ?? [] where stance.review != "rejected" {
+        // A severed stance has left the room; one not yet confirmed wears AI.
+        for stance in corpus.stances ?? [] where effectiveReview(stance) != "rejected" {
             let other: String
             if stance.from == piece { other = stance.to }
             else if stance.to == piece { other = stance.from }
@@ -1949,7 +2055,9 @@ final class VisionModel {
             guard let otherID = docID(other) else { continue }
             if byTitle[stance.title] == nil { order.append(stance.title) }
             byTitle[stance.title, default: ([], false)].ids.append(otherID)
-            if stance.isAI { byTitle[stance.title]?.isAI = true }
+            if effectiveReview(stance) != "confirmed", stance.origin != "manual", stance.origin != "declared" {
+                byTitle[stance.title]?.isAI = true
+            }
         }
         for title in order {
             if let entry = byTitle[title] { related.append((title, entry.ids, entry.isAI, false)) }
@@ -3307,107 +3415,12 @@ struct VisionVolumeToolbar: View {
     @State private var keywordDraft = ""
 
     var body: some View {
-        // Two rows (2 Nov 2026): the room above, the chosen card below —
-        // every verb that once stood round a card, so the cards carry
-        // only their content.
-        VStack(alignment: .leading, spacing: 0) {
-            roomRow
-                .frame(height: 56)
-            Divider()
-            cardRow
-                .frame(height: 56)
-        }
-        .font(.system(size: 16))
-        .buttonStyle(.plain)
-        .padding(.horizontal, 32)
-        .glassBackgroundEffect()
-    }
-
-    /// The chosen card's row: its kind and name, its verbs, and — for a
-    /// paper — its relations, each with how many cards it reaches, lit
-    /// while it stands, a small AI where a model inferred it. Always
-    /// standing, so the bar never changes height; quiet when nothing is
-    /// chosen.
-    @ViewBuilder private var cardRow: some View {
-        if let bar = model.cardBar {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 28) {
-                    HStack(spacing: 8) {
-                        Text(bar.kindLabel.uppercased())
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        Text(bar.title)
-                            .lineLimit(1)
-                            .frame(maxWidth: 260, alignment: .leading)
-                    }
-                    HStack(spacing: 18) {
-                        ForEach(bar.verbs) { verb in verbButton(verb, on: bar.itemID) }
-                    }
-                    if !bar.relations.isEmpty {
-                        relationsMenu(bar)
-                    }
-                }
-                .frame(maxHeight: .infinity)
-            }
-        } else {
-            Text("Choose a card \u{2014} what it can do stands here.")
-                .foregroundStyle(.tertiary)
-                .frame(maxHeight: .infinity)
-        }
-    }
-
-    /// The paper's relations as one menu: each with how many cards it
-    /// reaches and a small AI where a model inferred it; the lit one
-    /// checked, and named on the menu itself while it stands.
-    private func relationsMenu(_ bar: VisionModel.CardBar) -> some View {
-        let lit = bar.relations.first(where: \.isOn)
-        return Menu {
-            ForEach(bar.relations) { relation in
-                Button {
-                    model.volumeBarRequest = .init(action: .card(bar.itemID, relation.id))
-                } label: {
-                    let words = "\(relation.title)  \(relation.count ?? 0)" + (relation.isAI ? "  \u{00B7} AI" : "")
-                    if relation.isOn { Label(words, systemImage: "checkmark") } else { Text(words) }
-                }
-            }
-        } label: {
-            Text(lit.map { "Relations: \($0.title)" } ?? "Relations")
-                .fontWeight(lit == nil ? .regular : .semibold)
-                .foregroundStyle(lit == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.accentColor))
-        }
-    }
-
-    @ViewBuilder private func verbButton(_ verb: VisionModel.CardBar.Verb, on itemID: String) -> some View {
-        if verb.options.isEmpty {
-            Button {
-                model.volumeBarRequest = .init(action: .card(itemID, verb.id))
-            } label: {
-                HStack(spacing: 4) {
-                    Text(verb.title)
-                    if let count = verb.count {
-                        Text("\(count)").foregroundStyle(.secondary)
-                    }
-                    if verb.isAI {
-                        Text("AI").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-                    }
-                }
-                .fontWeight(verb.isOn ? .semibold : .regular)
-                .foregroundStyle(verb.isOn ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
-            }
-            .disabled(!verb.isEnabled)
-        } else {
-            Menu {
-                ForEach(verb.options) { option in
-                    Button {
-                        model.volumeBarRequest = .init(action: .card(itemID, option.id))
-                    } label: {
-                        if option.isOn { Label(option.title, systemImage: "checkmark") } else { Text(option.title) }
-                    }
-                }
-            } label: {
-                Text(verb.title)
-            }
-        }
+        roomRow
+            .font(.system(size: 16))
+            .buttonStyle(.plain)
+            .padding(.horizontal, 32)
+            .frame(height: 56)
+            .glassBackgroundEffect()
     }
 
     /// The series a volume's room belongs to, when it has two or more
@@ -5350,6 +5363,12 @@ struct VisionReaderView: View {
                                 paragraphID: paragraph.id, text: report.text,
                                 prefix: report.prefix, suffix: report.suffix,
                                 point: report.point)
+                            // The room reads the words too: the reading's
+                            // sphere connects them to other papers.
+                            let words = VisionModel.SelectedWords(text: report.text, paragraphID: paragraph.id)
+                            if model.readerSelectedWords[docID] != words {
+                                model.readerSelectedWords[docID] = words
+                            }
                             // An open panel follows the new words, where
                             // it stands.
                             if contextTarget != nil {
@@ -5363,6 +5382,9 @@ struct VisionReaderView: View {
                             // the pinch on the dot can clear the text
                             // view's selection on its way past.
                             dotSelection = nil
+                            // (The room keeps the last words: the sphere is
+                            // pinched after the selection, which the pinch
+                            // can clear on its way.)
                         }
                     })
                 // NO presented menu can appear on a RealityKit

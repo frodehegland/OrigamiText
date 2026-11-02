@@ -27,6 +27,18 @@ final class CorpusRelationsBuilder {
             .appendingPathComponent(CorpusRelations.fileName)
     }
 
+    /// One corpus changed in place — the stance pass's additions, the
+    /// headset's decisions folded in — kept here and published.
+    func update(corpus id: String, model: AppModel, _ change: (inout CorpusRelations.Corpus) -> Void) {
+        guard var current = file, var corpus = current.corpora[id] else { return }
+        change(&corpus)
+        current.corpora[id] = corpus
+        current.modified = .now
+        file = current
+        CorpusRelations.write(current, to: Self.localURL)
+        if let community = model.index.folderURL { CorpusRelations.publish(current, to: community) }
+    }
+
     /// What a corpus is made of: a series' (or lone volume's) volumes, in
     /// the series' order, or a journal's papers, each read whole.
     typealias Target = (id: String, name: String, volumes: [EPUBRecord], papers: [EPUBRecord])
@@ -133,6 +145,13 @@ final class CorpusRelationsBuilder {
             let built = await Task.detached(priority: priority) { [corpus] () -> CorpusRelations.File in
                 var file = previous ?? CorpusRelations.File(modified: .now, corpora: [:])
                 file.modified = .now
+                // A rebuild keeps the stances and the reader's decisions
+                // on them: they are read from the text, not the citations.
+                var corpus = corpus
+                if let held = previous?.corpora[target.id] {
+                    corpus.stances = held.stances
+                    corpus.stancesChecked = held.stancesChecked
+                }
                 file.corpora[target.id] = corpus
                 // The volumes' own compiler stands as the publisher.
                 if let first = sources.first, let editor = Self.editor(inUnpackedFolder: first.unpacked) {
