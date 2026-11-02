@@ -3624,7 +3624,13 @@ struct VisionOpeningView: View {
                     if let volume {
                         model.openArticles(of: volume)
                     } else if let seriesID {
-                        model.openSeries(seriesID)
+                        // A series opens at its latest volume alone (2 Nov
+                        // 2026): the bar's Volume ▸ All brings in the rest.
+                        if let latest = model.seriesVolumes(seriesID).last {
+                            model.openArticles(of: latest)
+                        } else {
+                            model.openSeries(seriesID)
+                        }
                     } else {
                         model.openJournalVenue = venue
                     }
