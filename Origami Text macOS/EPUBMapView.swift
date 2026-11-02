@@ -10138,10 +10138,9 @@ struct MapReaderPanel: View {
                 // all the width they need. The reader window cannot,
                 // and does not.
                 .environment(\.visionReadingHostGrows, true)
-            // The silver sphere at the reading's foot, as Author's at a
-            // chosen card's (2 Nov 2026): pinched, the article's own menu.
-            ReadingSphereMenu { sphereItems }
-                .padding(.vertical, 6)
+            // (No sphere at the foot, 2 Nov 2026: the reading's own bar
+            // and title bar carry its verbs; the selection's chrome dot
+            // carries the words', Connects and Show Only among them.)
         }
         .frame(width: panelWidth, height: 800)
         // The space a 3D figure's picture measures itself against, and
@@ -10156,85 +10155,6 @@ struct MapReaderPanel: View {
             model.figureGeometry.note(page: docID, size: size)
         }
     }
-
-    /// What the open article's sphere offers: what can be done with the
-    /// whole article from its reading — the room's relations to it come
-    /// next (2 Nov 2026).
-    @ViewBuilder private var sphereItems: some View {
-        // The selected words first: what they connect to in the room.
-        if let words = model.readerSelectedWords[docID] {
-            let quote = words.text.count > 40 ? String(words.text.prefix(39)) + "\u{2026}" : words.text
-            Text("\u{201C}\(quote)\u{201D}")
-                .font(.system(size: 13, design: .serif))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.top, 4)
-            selectionList("Connects", only: false)
-            selectionList("Show Only", only: true)
-            if model.litSelectionRelation?.docID == docID {
-                Button("Clear Connections", systemImage: "xmark.circle") {
-                    model.selectionRelationRequest = .init(docID: docID, title: nil, only: false)
-                }
-            }
-            Divider()
-        }
-        Button(isTranspoint ? "End Transpoint" : "Transpoint",
-               systemImage: "point.3.connected.trianglepath.dotted") {
-            model.transpointDocID = isTranspoint ? nil : docID
-        }
-        Button(isDesk ? "Back to the Hallway" : "Reading Desk",
-               systemImage: isDesk ? "doc.on.doc" : "doc") {
-            model.readingDeskDocID = isDesk ? nil : docID
-        }
-        Divider()
-        Button(model.pinnedIDs.contains(docID) ? "Unpin" : "Pin", systemImage: "pin") {
-            model.togglePinned(docID)
-        }
-        Button("Put Aside", systemImage: "tray.and.arrow.down") {
-            model.toggleSetAside(docID)
-            onClose()
-        }
-        Divider()
-        Button("Close Reading", systemImage: "xmark") { onClose() }
-    }
-
-    /// One of the selection's two lists, unfolded in place: each relation
-    /// with how many cards it reaches, greyed where it reaches none (or is
-    /// still being measured), a small AI where a model inferred it, checked
-    /// while it stands.
-    @ViewBuilder private func selectionList(_ title: String, only: Bool) -> some View {
-        let open = openSelectionList == title
-        Button {
-            openSelectionList = open ? nil : title
-        } label: {
-            Label(title + (open ? "  \u{25B4}" : "  \u{25BE}"),
-                  systemImage: only ? "line.3.horizontal.decrease.circle" : "point.3.connected.trianglepath.dotted")
-        }
-        if open {
-            ForEach(model.selectionRelations[docID] ?? []) { relation in
-                let lit = model.litSelectionRelation == .init(docID: docID, title: relation.title, only: only)
-                Button {
-                    model.selectionRelationRequest = .init(docID: docID, title: relation.title, only: only)
-                } label: {
-                    HStack(spacing: 6) {
-                        if lit { Image(systemName: "checkmark") }
-                        Text(relation.title)
-                        Text(relation.pending ? "measuring\u{2026}" : "\(relation.ids.count)")
-                            .foregroundStyle(.secondary)
-                        if relation.isAI {
-                            Text("AI").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.leading, 22)
-                    .fontWeight(lit ? .semibold : .regular)
-                }
-                .disabled(relation.ids.isEmpty)
-            }
-        }
-    }
-
-    /// The selection list unfolded in the sphere's column, if one is.
-    @State private var openSelectionList: String?
 
     /// The title bar. In Horizontal it floats on a glass (or themed
     /// paper) strip of its own above the curved columns; elsewhere it

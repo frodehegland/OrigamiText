@@ -1744,6 +1744,15 @@ No Ollama or LM Studio is needed: Origami downloads and runs models in-process o
   - Read, Open/Fold, Lift and the Pictures count are gone. Two hands spread open the reading, two taps fold the card, and the edge thumbnails raise the gallery.
   - The Connects and Show Only rows are 11 pt above and below, with 6 pt between them.
 
+### 5.42 One sphere when reading: the selection's (visionOS, 2 November 2026)
+
+This supersedes the foot sphere of 5.39 and the sphere column of 5.40.
+- **No sphere at the reading's foot:** the reading's own bottom bar and title bar carry its verbs. `ReadingSphereMenu` is no longer used.
+- **The selection dot** (`VisionReaderView.selectionDot`) is now Author's `ChromeSphere` (22 pt) on a dark 26-pt disc, under an invisible 32-pt target, in place of the painted `SelectionDot`.
+- **Its menu** (`VisionSelectionMenu`) leads with **Lift** (`arrow.up`, which calls `floatText`: the words become a card of their own in the room).
+- **In a room reading** (`openDocIDs` holds the reading), the menu also offers **Connects ▾** and **Show Only ▾**, which unfold the selection's relations (5.40) with counts, AI marks and a check. While one stands, **Clear Connections** is offered too.
+- Then come Show All, Annotate, Copy as Citation and Context, as before.
+
 ### 5.40 Unfolding lists, not menus; the selected words' relations (visionOS, 2 November 2026)
 
 **No presented menu opens on a RealityKit attachment** (there is no window to present into). The reading panel and every card are attachments, so every `Menu` there became a list that unfolds in place:

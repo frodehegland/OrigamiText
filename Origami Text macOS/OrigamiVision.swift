@@ -5449,12 +5449,23 @@ struct VisionReaderView: View {
             Button {
                 dotMenuOpen.toggle()
             } label: {
-                SelectionDot(size: 22, lifted: dotMenuOpen)
-                    // Held to 32 points so the target stops short of
-                    // the system's end handle beside it.
-                    .frame(width: 32, height: 32)
-                    .contentShape(.hoverEffect, Circle())
-                    .contentShape(Circle())
+                // Author's real chrome ball (2 Nov 2026), lit by the room,
+                // on its dark disc — drawn only; the invisible circle over
+                // it takes the pinch.
+                ZStack {
+                    Circle()
+                        .fill(Color.black.opacity(0.55))
+                        .frame(width: 26, height: 26)
+                    ChromeSphere(size: 22, lifted: dotMenuOpen)
+                        .allowsHitTesting(false)
+                    Circle()
+                        .fill(Color.white.opacity(0.002))
+                }
+                // Held to 32 points so the target stops short of the
+                // system's end handle beside it.
+                .frame(width: 32, height: 32)
+                .contentShape(.hoverEffect, Circle())
+                .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .hoverEffect(.highlight)
@@ -6932,6 +6943,50 @@ private struct VisionSelectionMenu: View {
     let onLift: () -> Void
     @State private var quickAnswer: String?
     @State private var showsKinds = false
+    /// The relations list unfolded: "Connects" or "Show Only".
+    @State private var openRelations: String?
+
+    /// Connects or Show Only, unfolding the words' relations in the room:
+    /// each with how many papers it reaches — greyed where none, or while
+    /// still being measured — a small AI where a model inferred it, and a
+    /// check while it stands.
+    @ViewBuilder private func relationsSection(_ title: String, only: Bool) -> some View {
+        let open = openRelations == title
+        item(title + (open ? "  \u{25B4}" : "  \u{25BE}"),
+             only ? "line.3.horizontal.decrease.circle" : "point.3.connected.trianglepath.dotted") {
+            openRelations = open ? nil : title
+        }
+        if open {
+            ForEach(model.selectionRelations[docID] ?? []) { relation in
+                let lit = model.litSelectionRelation == .init(docID: docID, title: relation.title, only: only)
+                Button {
+                    model.selectionRelationRequest = .init(docID: docID, title: relation.title, only: only)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: lit ? "checkmark" : "circle.fill")
+                            .font(.system(size: lit ? 13 : 4))
+                            .frame(width: 16)
+                        Text(relation.title)
+                        Text(relation.pending ? "measuring\u{2026}" : "\(relation.ids.count)")
+                            .foregroundStyle(.secondary)
+                        if relation.isAI {
+                            Text("AI").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .fontWeight(lit ? .semibold : .regular)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 32)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 12))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverEffect()
+                .disabled(relation.ids.isEmpty)
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -6945,6 +7000,20 @@ private struct VisionSelectionMenu: View {
                     .padding(.vertical, 6)
                 Divider().padding(.horizontal, 10)
             }
+            // Lift first (2 Nov 2026): the words up off the page, a card
+            // of their own in the room.
+            item("Lift", "arrow.up", action: onLift)
+            // Read in the room: what the words connect to among its papers
+            // — lines from the reading to them, or only them standing.
+            if model.openDocIDs.contains(docID) {
+                relationsSection("Connects", only: false)
+                relationsSection("Show Only", only: true)
+                if model.litSelectionRelation?.docID == docID {
+                    item("Clear Connections", "xmark.circle") {
+                        model.selectionRelationRequest = .init(docID: docID, title: nil, only: false)
+                    }
+                }
+            }
             item("Show All", "list.bullet.indent", action: onShowAll)
             item("Annotate", "highlighter") { showsKinds.toggle() }
             if showsKinds {
@@ -6956,7 +7025,6 @@ private struct VisionSelectionMenu: View {
                 item("Note\u{2026}", "square.and.pencil", indent: true, action: onNote)
             }
             item("Copy as Citation", "quote.opening", action: onCite)
-            item("Lift", "balloon", action: onLift)
             item("Context", "info.circle", action: onContext)
         }
         .padding(8)
