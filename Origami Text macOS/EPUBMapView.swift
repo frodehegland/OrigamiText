@@ -1262,6 +1262,9 @@ struct EPUBMapView: View {
             let spots = members.compactMap(\.position)
             guard !spots.isEmpty, let tag = model.tags.tags.first(where: { $0.color == hex }) else { continue }
             let id = Self.tagHubPrefix + hex
+            // Just chosen on the colour key: it comes in chosen, its lines
+            // drawn; tapped, it lets go and its lines go with it.
+            let arriving = placed[id] == nil
             // First shown: in front of the reader, a little above the
             // eyes, each further colour a step to the right — where the
             // lines can be seen to converge — and kept there after.
@@ -1280,7 +1283,7 @@ struct EPUBMapView: View {
                                   kind: .concept,
                                   position: placed[id])
             hub.tagColors = [hex]
-            hub.isSelected = selected.contains(id)
+            hub.isSelected = arriving || selected.contains(id)
             items.append(hub)
         }
         if topicSpaceMode {
@@ -3898,7 +3901,9 @@ struct EPUBMapView: View {
         // A label chosen with Lines — a keyword, a Shape's group label, a
         // topic, a concept — threads to every paper it gathers. Only when
         // asked: choosing a label alone draws nothing (1 Nov 2026).
-        for item in items where item.id.hasPrefix(Self.tagHubPrefix) {
+        // A colour key's marker, while chosen: a line to every paper of
+        // its colour.
+        for item in items where item.id.hasPrefix(Self.tagHubPrefix) && item.isSelected {
             for docID in labelMembers(item) { edges.append((from: item.id, to: docID)) }
         }
         for item in items where item.isSelected && keywordModes[item.id] == .lines {
