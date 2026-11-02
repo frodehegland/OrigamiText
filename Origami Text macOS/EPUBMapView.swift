@@ -9996,8 +9996,10 @@ final class CardFaceTurner {
     /// Where the reader's head is and the way it points — not flattened,
     /// so a look up at a node or down at one counts.
     func headRay() -> (position: SIMD3<Float>, forward: SIMD3<Float>)? {
+        // Read a twentieth of a second ahead, so what the head is turning
+        // toward answers as it arrives rather than after.
         guard worldTracking.state == .running,
-              let device = worldTracking.queryDeviceAnchor(atTimestamp: CACurrentMediaTime())
+              let device = worldTracking.queryDeviceAnchor(atTimestamp: CACurrentMediaTime() + 0.05)
         else { return nil }
         let matrix = device.originFromAnchorTransform
         let forward = -SIMD3<Float>(matrix.columns.2.x, matrix.columns.2.y, matrix.columns.2.z)
@@ -10225,8 +10227,12 @@ private final class MapCardTick {
     /// a desk must stay lying on it, whoever walks round it.
     private var stuckOrientation: (@MainActor (String) -> simd_quatf?)?
     private let cardQuery = EntityQuery(where: .has(EPUBNodeIDComponent.self))
-    /// The one byline the reader is facing, shown.
-    private weak var shownByline: Entity?
+    /// The bylines of the nodes the reader is facing, shown.
+    private var shownBylines: [Entity] = []
+    /// How many faced nodes show their authors at once, and how near the
+    /// heading they must stand (cos 0.988 ≈ 9°).
+    private static let facedBylines = 3
+    private static let facedCloseness: Float = 0.988
 
     func install(in content: RealityViewContent,
                  faceTurner: CardFaceTurner,
@@ -10251,11 +10257,12 @@ private final class MapCardTick {
         guard head != nil || !liveLines.isEmpty || lifted else { return }
         var positions: [String: SIMD3<Float>] = [:]
         let upright = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
-        // The node the head points most nearly at, within about 5°: its
-        // authors show. (visionOS keeps the eyes' own gaze from apps; the
+        // The nodes the head points most nearly at, within about 9°: their
+        // authors show — the nearest three, so names are there as the head
+        // arrives. (visionOS keeps the eyes' own gaze from apps; the
         // head's heading is the nearest the room may know.)
         let ray = faceTurner?.headRay()
-        var faced: (byline: Entity, closeness: Float)?
+        var faced: [(byline: Entity, closeness: Float)] = []
         for card in scene.performQuery(cardQuery) {
             let place = card.position(relativeTo: nil)
             if let ray, let look = card.components[LookBylineComponent.self], card.isEnabled {
@@ -10263,9 +10270,7 @@ private final class MapCardTick {
                 let distance = simd_length(to)
                 if distance > 0.1 {
                     let closeness = simd_dot(to / distance, ray.forward)
-                    if closeness > 0.996, closeness > (faced?.closeness ?? 0) {
-                        faced = (look.byline, closeness)
-                    }
+                    if closeness > Self.facedCloseness { faced.append((look.byline, closeness)) }
                 }
             }
             if let head { faceTurner?.turn(card: card, at: place, head: head) }
@@ -10315,11 +10320,10 @@ private final class MapCardTick {
             }
         }
         for layer in liveLines { layer.relayout(positions: positions) }
-        if faced?.byline !== shownByline {
-            shownByline?.isEnabled = false
-            faced?.byline.isEnabled = true
-            shownByline = faced?.byline
-        }
+        let now = faced.sorted { $0.closeness > $1.closeness }.prefix(Self.facedBylines).map(\.byline)
+        for old in shownBylines where !now.contains(where: { $0 === old }) { old.isEnabled = false }
+        for byline in now where !byline.isEnabled { byline.isEnabled = true }
+        shownBylines = now
     }
 }
 
