@@ -2571,3 +2571,10 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Glide:** `NodeGlide` (end of `NodeImmersiveView+Common.swift`, Origami's addition to Author's engine, owed back) opens a 0.75 s window. Within it, the engine's update moves a node whose `item.position` changed by more than 5 mm with `move(to:duration: 0.5, .easeInOut)` instead of setting its position. `NodeGlideTargetComponent` records the target, so a second update during the glide does not restart it.
 - **Gather:** `relationShown`'s `didSet` opens the window whenever a Gather starts, ends (a second tap, the card let go, another relation chosen) or changes, so gathered cards glide in round the card and back to their places.
 - **The Mac build:** `SphereTextures` stood after `EPUBMapView.swift`'s closing `#endif` from 2 Nov, so the macOS target tried to compile RealityKit code and failed. The `#endif` now closes the file.
+
+**Lines fade toward their ends, thinner (visionOS, 4 Nov 2026).**
+- **Which lines:** every connecting line in the room: relation, label and colour lines (`ConceptConnectionLines`), citation-to-deep lines, selected-citation lines, and reading-panel citation lines. All are made by `FadingLine.make(tint:opacity:thickness:)` (end of `EPUBMapView.swift`).
+- **Shape:** two crossed planes a metre long along x, `faceCulling = .none`, which the layers scale to length as before.
+- **Thickness:** 1.8 mm for citation and selection lines (`thick`), 1.2 mm for relation and concept lines (`thin`); they were 3 and 2 mm.
+- **The fade:** one shared 256 × 1 texture, white with alpha clear at both ends, rising by smoothstep to full a quarter of the way in. It serves as both the colour texture and the opacity texture, under each line's tint and opacity.
+- **Loading:** the texture loads asynchronously once per launch. A line made before then stands plain and takes the fade when it arrives.

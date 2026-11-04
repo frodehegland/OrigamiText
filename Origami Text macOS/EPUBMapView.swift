@@ -10911,12 +10911,7 @@ private final class CitationLineManager {
 
     private func makeLineEntity() -> ModelEntity {
         // Grey and faint, as the room's other relation lines.
-        var mat = UnlitMaterial()
-        mat.color = .init(tint: UIColor(white: 0.72, alpha: 1))
-        mat.blending = .transparent(opacity: 0.22)
-        return ModelEntity(
-            mesh: .generateBox(size: SIMD3<Float>(1.0, 0.003, 0.003)),
-            materials: [mat])
+        FadingLine.make(tint: UIColor(white: 0.72, alpha: 1), opacity: 0.22, thickness: FadingLine.thick)
     }
 
     private func positionLine(_ entity: ModelEntity,
@@ -11019,12 +11014,7 @@ private final class SelectedCitationLines: MapLineLayer {
 
     private func makeLine(from: SIMD3<Float>, to: SIMD3<Float>,
                           color: UIColor) -> ModelEntity {
-        var mat = UnlitMaterial()
-        mat.color = .init(tint: color)
-        mat.blending = .transparent(opacity: 1.0)
-        let line = ModelEntity(
-            mesh: .generateBox(size: SIMD3<Float>(1.0, 0.003, 0.003)),
-            materials: [mat])
+        let line = FadingLine.make(tint: color, opacity: 1, thickness: FadingLine.thick)
         positionLine(line, from: from, to: to)
         return line
     }
@@ -11717,12 +11707,7 @@ private final class ConceptConnectionLines: MapLineLayer {
     }
 
     private func makeLine(from: SIMD3<Float>, to: SIMD3<Float>) -> ModelEntity {
-        var mat = UnlitMaterial()
-        mat.color = .init(tint: Self.lineColor)
-        mat.blending = .transparent(opacity: 0.22)
-        let line = ModelEntity(
-            mesh: .generateBox(size: SIMD3<Float>(1.0, 0.002, 0.002)),
-            materials: [mat])
+        let line = FadingLine.make(tint: Self.lineColor, opacity: 0.22, thickness: FadingLine.thin)
         positionLine(line, from: from, to: to)
         return line
     }
@@ -11793,12 +11778,7 @@ private final class CitedToDeepLines: MapLineLayer {
     }
 
     private func makeLine(from: SIMD3<Float>, to: SIMD3<Float>) -> ModelEntity {
-        var mat = UnlitMaterial()
-        mat.color = .init(tint: Self.lineColor)
-        mat.blending = .transparent(opacity: 1.0)
-        let line = ModelEntity(
-            mesh: .generateBox(size: SIMD3<Float>(1.0, 0.002, 0.002)),
-            materials: [mat])
+        let line = FadingLine.make(tint: Self.lineColor, opacity: 1, thickness: FadingLine.thin)
         positionLine(line, from: from, to: to)
         return line
     }
@@ -13490,6 +13470,87 @@ enum SphereTextures {
                                         colors: colors as CFArray, locations: stops) else { return nil }
         context.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: width, y: 0), options: [])
         return context.makeImage()
+    }
+}
+
+// MARK: - Lines that fade toward their ends (4 Nov 2026)
+
+/// A connecting line: two thin crossed planes a metre long along x (the
+/// layers scale it to its length), lit evenly, fading to nothing toward
+/// both ends so a line reads as reaching between two cards rather than
+/// butting into them. One shared texture carries the fade — white, its
+/// alpha a ramp along the line — tinted per line. A line made before the
+/// texture is ready stands plain and takes the fade when it comes.
+@MainActor
+enum FadingLine {
+    /// Across, in metres: the citation and selection lines, and the
+    /// relation and concept lines (were 3 and 2 mm).
+    static let thick: Float = 0.0018
+    static let thin: Float = 0.0012
+
+    private static var texture: TextureResource?
+    private static var loading: Task<TextureResource?, Never>?
+
+    static func make(tint: UIColor, opacity: Float, thickness: Float) -> ModelEntity {
+        var material = UnlitMaterial()
+        material.color = .init(tint: tint)
+        material.blending = .transparent(opacity: .init(floatLiteral: opacity))
+        material.faceCulling = .none
+        if let texture { faded(&material, tint: tint, opacity: opacity, texture: texture) }
+        let mesh = MeshResource.generatePlane(width: 1, height: thickness)
+        let line = ModelEntity()
+        let flat = ModelEntity(mesh: mesh, materials: [material])
+        let upright = ModelEntity(mesh: mesh, materials: [material])
+        upright.orientation = simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(1, 0, 0))
+        line.addChild(flat)
+        line.addChild(upright)
+        if texture == nil {
+            Task { @MainActor in
+                guard let texture = await fade() else { return }
+                var fadedMaterial = material
+                faded(&fadedMaterial, tint: tint, opacity: opacity, texture: texture)
+                flat.model?.materials = [fadedMaterial]
+                upright.model?.materials = [fadedMaterial]
+            }
+        }
+        return line
+    }
+
+    /// The fade as both the colour's alpha and the opacity — its colour
+    /// channels equal its alpha, so either reading gives the same ramp.
+    private static func faded(_ material: inout UnlitMaterial, tint: UIColor, opacity: Float,
+                              texture: TextureResource) {
+        material.color = .init(tint: tint, texture: .init(texture))
+        material.blending = .transparent(opacity: .init(scale: opacity, texture: .init(texture)))
+    }
+
+    /// The fade, made once: clear at both ends, whole from a quarter of the
+    /// way in, eased between.
+    private static func fade() async -> TextureResource? {
+        if let texture { return texture }
+        if let loading { return await loading.value }
+        let task = Task<TextureResource?, Never> { @MainActor in
+            let width = 256
+            guard let context = CGContext(data: nil, width: width, height: 1, bitsPerComponent: 8,
+                                          bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return nil }
+            for x in 0..<width {
+                let along = (Float(x) + 0.5) / Float(width)
+                let edge = min(along, 1 - along) / 0.25
+                let t = min(max(edge, 0), 1)
+                let alpha = CGFloat(t * t * (3 - 2 * t))
+                context.setFillColor(CGColor(srgbRed: alpha, green: alpha, blue: alpha, alpha: alpha))
+                context.fill(CGRect(x: x, y: 0, width: 1, height: 1))
+            }
+            guard let image = context.makeImage() else { return nil }
+            return try? await TextureResource(image: image, withName: "line-fade", options: .init(semantic: .color))
+        }
+        loading = task
+        let made = await task.value
+        loading = nil
+        texture = made
+        return made
     }
 }
 #endif
