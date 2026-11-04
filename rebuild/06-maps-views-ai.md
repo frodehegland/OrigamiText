@@ -1128,3 +1128,10 @@ The reader pulls 3D figures off the page: drag 40 pt (`pullThreshold`), or doubl
 - The `KnowledgeSpaceAnchoring` surface snapping is not referenced anywhere. Unclear whether it is planned or abandoned.
 - `WatchViewOption.timeline` is defined in the hallway but not offered.
 - Many headset behaviours are listed in project memory as built but not yet checked on the device: fist grab, Map performance, the arm menu's back-of-hand sign, figure pull. Treat their constants as provisional.
+
+**Ollama models by name in the paste box (4 Nov 2026).** Settings ▸ AI ▸ Add a Model or Server also accepts an Ollama model.
+- **Forms:** `OrigamiLLM.ollamaModelName(in:)` reads the word after `--model` or `--model=`, after `ollama run` / `ollama pull`, or a single word with a tag (`qwen3:8b`). So a whole `ollama launch … --model kimi-k3.1-pro:cloud` line works. `classify` tries this before the Hugging Face form, and URLs go to the server path as before.
+- **Cloud models first:** `isCloudModel` (tag `cloud` or ending `-cloud`) shows the §11 warning that the text read goes to Ollama's servers, with **Add Anyway**.
+- **Adding:** `addOllamaModel` checks that Ollama answers at `ollamaBase` and pulls the model unless it is installed (a cloud model only registers), with progress in `download` shown beneath the box. It adds or refreshes the Ollama endpoint with the model in its list and makes it the selected model.
+- **Errors:** an unauthorized cloud pull says to sign in to Ollama first.
+

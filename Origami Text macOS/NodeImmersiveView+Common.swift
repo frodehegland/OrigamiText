@@ -106,8 +106,22 @@ extension NodeImmersiveView {
 
             for entity in content.entities {
                 if let item = entity.components[ItemComponent<Items.Element>.self]?.item {
-                    entity.position = item.position ?? defaultNodePosition
-                    entity.components.set(StartPositionComponent(position: entity.position))
+                    // Origami's (4 Nov 2026): within a glide window a node
+                    // moves to its new place rather than jumping (NodeGlide).
+                    let target = item.position ?? defaultNodePosition
+                    if NodeGlide.isOpen, simd_distance(entity.position, target) > 0.005 {
+                        if entity.components[NodeGlideTargetComponent.self]?.target != target {
+                            var moved = entity.transform
+                            moved.translation = target
+                            entity.move(to: moved, relativeTo: entity.parent,
+                                        duration: NodeGlide.duration, timingFunction: .easeInOut)
+                            entity.components.set(NodeGlideTargetComponent(target: target))
+                        }
+                    } else {
+                        entity.position = target
+                        entity.components.remove(NodeGlideTargetComponent.self)
+                    }
+                    entity.components.set(StartPositionComponent(position: target))
 
                     let extents: SIMD3<Float>
 
@@ -368,5 +382,26 @@ extension NodeImmersiveView {
             content.remove(entity)
         }
     }
+}
+// MARK: - Gliding to a new place (Origami Text, 4 Nov 2026)
+
+/// A short window in which every node whose place changes moves there over
+/// `duration` instead of jumping — opened by the room for a Gather drawing
+/// its cards in or letting them go. Origami's addition to Author's engine:
+/// carry it back when the engines are next brought into step.
+@MainActor
+enum NodeGlide {
+    static let duration: TimeInterval = 0.5
+    private static var until: Date?
+    static var isOpen: Bool { until.map { Date() < $0 } ?? false }
+
+    /// Glide whatever moves in the next moment.
+    static func open() { until = Date().addingTimeInterval(duration + 0.25) }
+}
+
+/// The place a gliding node is on its way to, so an update during the
+/// glide does not start it again.
+struct NodeGlideTargetComponent: Component {
+    let target: SIMD3<Float>
 }
 #endif

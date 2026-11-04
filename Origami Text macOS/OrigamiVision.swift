@@ -3981,12 +3981,16 @@ struct VisionVolumeToolbar: View {
             }
             .help("Give the room a shape: Hallway, or the articles gathered by meaning, theme, concept, author or the people they mention")
             conceptsMenu
+            // While on, each is ringed as well as filled (4 Nov 2026), so a
+            // live attribute reads at a glance.
             Toggle("Colours", isOn: Binding(get: { model.coloursShown }, set: { model.coloursShown = $0 }))
                 .toggleStyle(.button)
+                .liveRing(model.coloursShown)
                 .help("The colours, beneath the bar: which is which, and lines to every paper of one")
-            Toggle("Relative Volume", isOn: Binding(get: { model.sizeByLength },
-                                                   set: { model.sizeByLength = $0 }))
+            Toggle("Relative Size", isOn: Binding(get: { model.sizeByLength },
+                                                 set: { model.sizeByLength = $0 }))
                 .toggleStyle(.button)
+                .liveRing(model.sizeByLength)
                 .help("Scale each card by its paper's length: the shortest smallest, the longest largest")
             // Where the room stands in the collection: back out to the
             // whole book (in a series' room, the chosen card's volume), or
@@ -9145,6 +9149,24 @@ struct VisionTagLegendView: View {
         }
         .padding(26)
         .frame(width: 420)
+    }
+}
+
+extension View {
+    /// A bar attribute that is on: a white ring round its pill, over the
+    /// fill the button style already gives it (4 Nov 2026). The overlay
+    /// takes the label's own bounds, so the ring is set out round the
+    /// words to clear them, as the pill does.
+    func liveRing(_ on: Bool) -> some View {
+        overlay {
+            if on {
+                Capsule()
+                    .strokeBorder(Color.white.opacity(0.85), lineWidth: 1.5)
+                    .padding(.horizontal, -14)
+                    .padding(.vertical, -7)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 }
 #endif

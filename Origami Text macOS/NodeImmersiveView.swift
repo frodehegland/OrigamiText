@@ -211,6 +211,7 @@ public struct NodeImmersiveView<
             ConnectedNodeComponent.registerComponent()
             MovableConnectionComponent.registerComponent()
             ExtentsComponent.registerComponent()
+            NodeGlideTargetComponent.registerComponent()
             
             MovableConnectionsSystem.registerSystem()
         }

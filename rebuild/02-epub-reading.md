@@ -1328,7 +1328,7 @@ Model errors are logged (`ReadingAI.reason`) into the entry's `note`, never kept
 
 Defined Concepts are re-checked on every pass. Each live library concept, under its term or any alternative name, is matched as a whole word with `ConceptTerm.text(_:contains:)`.
 
-**The store.** `ArticleMetadata` (`EPUBShelf.swift`, shared) holds `{format "origami-article-metadata", version 1, modified, volumes: {bookFolder: {workID: Entry}}}`. Each entry has title, abstract, abstractSource ("book", "summaries", "summaries · Gen:AI", "ai · <model>"), keywords, keywordsSource (likewise, or "terms"), concepts [{id, name}], textHash, made and note. It is written as `origami-article-metadata.json` beside the shelf (`epubsRoot`) and in the community folder, every 8 articles and at the end. The reads and writes are coordinated. Nothing is written into the EPUBs.
+**The store.** `ArticleMetadata` (`EPUBShelf.swift`, shared) holds `{format "origami-article-metadata", version 1, modified, volumes: {bookFolder: {workID: Entry}}}`. Each entry has title, abstract, abstractSource ("book", "summaries", "summaries · Gen:AI", "ai · <model>"), keywords, keywordsSource (likewise, or "terms"), concepts [{id, name}], keySentence and keySentenceSource ("ai · <model>", or "none" when the article offers fewer than two sentences to choose from), tagIDs and tagsSource (the tags the model chose, see *Article covers* below), textHash, made and note. The cover fields are optional, so older files still decode. It is written as `origami-article-metadata.json` beside the shelf (`epubsRoot`) and in the community folder, every 8 articles and at the end. The reads and writes are coordinated. Nothing is written into the EPUBs.
 
 **The headset.** `adoptStanding` reads the file whenever its modification date changes. `VisionModel.boundVolume(for:)` applies `.enriched(with:)`, which supplies an abstract or keywords only where the binding has none, and the Defined Concepts always (`Article.definedConcepts`, `abstractSource`). A newer file forgets every cached binding, bumps `volumeStamp` and rebuilds the series index. Card faces show the abstract ("(AI)" when AI-made), its keywords and its Defined Concepts. `SeriesIndex` likeness uses the concepts. `briefing` adds "[keywords: …] [concepts: …]". The Mac's own `boundVolume(for:)` is not enriched, so the Binder never carries AI abstracts into a new binding.
 
@@ -2471,7 +2471,7 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 
 **Labels face the reader; Size by Length (2 Nov 2026).**
 - **Labels:** every spatial label in the room is listed in `cardSizes.labelIDs`, which `reload` refreshes. That covers a colour's marker, a Shape's group or peak and a keyword, but not the concept galaxy, which turns and tilts on its own. `MapCardTick` turns each listed label to the reader each frame through `liftedFacesHead`, while `anyLifted` holds. A label resting on a wall keeps its stuck pose, since that is checked first.
-- **Size by Length:** the bar's **Relative Volume** toggle (after Colours; first called Size by Length) sets `VisionModel.sizeByLength`, kept in UserDefaults as `visionSizeByLength`; changing it bumps `volumeStamp`.
+- **Size by Length:** the bar's **Relative Size** toggle (after Colours; first called Size by Length, then Relative Volume until 4 Nov 2026; while on, it and Colours wear a white ring round their pill) sets `VisionModel.sizeByLength`, kept in UserDefaults as `visionSizeByLength`; changing it bumps `volumeStamp`.
   - **Scale:** while it is on, each paper's `EPUBMapItem.sizeScale` (part of `isVisuallyEqual`) is `lengthScale(lengthShare)` = 0.75 + 0.75·√share. The shortest paper in its plane stands at three quarters of a card and the longest at one and a half.
   - **What scales:** `cardEntity` multiplies `grown` by it, so the body, face, collision, sphere or blob all scale. The star's measured `cardSizes.base` scales too, so menus stay clear.
 
@@ -2493,7 +2493,11 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Clear Lines:** while any colour is chosen, it stands at the row's end. The old window remains declared but is no longer opened from the bar.
 
 
-**Relative Volume in Color Titles (2 Nov 2026).** In the Color Titles look, a title's visible size is its ink (characters × font size²), not the card's. With Relative Volume on, a paper's `sizeScale` is therefore further multiplied by √(36 / characters), where 36 is `typicalTitleLength` and characters is the closed (short) title's length, at least 8. The result is clamped to 0.4–1.9. The ink a title covers then answers to its paper's length, so a long title on a short paper never stands larger than a short title on a long one.
+**Relative Size in Color Titles (2 Nov 2026; measured 4 Nov).** In the Color Titles look, what counts is the area a title's letters cover in their own font, not the card's. `titleInkArea` measures each closed (short) title in `colorTitle`'s font (9-point semibold serif, `UIFont` with the serif design): its single-run width, capped at three 100-point lines, times the font's line height. With Relative Size on, a paper's `sizeScale` is its `lengthScale` × √(plane's mean title area / its own), clamped to 0.4–1.9. Its letters then cover the mean area × the length scale², so a long title on a short paper never stands larger than a short title on a long one. **In place, animated (4 Nov 2026):** `sizeScale` is not part of `isVisuallyEqual`, so turning Relative Size on or off rebuilds no card. Rebuilding blinked the whole room.
+- **At build:** `cardEntity` records the scale it built at (`BuiltSizeComponent` on the holder, plus `CardSizes.builtScale`, `builtBase` and `builtShown`).
+- **In reload:** the last stamping pass writes each item's `targetScale`. Where that changed, it rescales `cardSizes.base` and `shown` by target ÷ built, so the star's gaps and the lines' ends follow at once, and it sets `MapCardTick.resizePending`.
+- **The resize:** on the next frame `MapCardTick.resize` moves every card's holder to scale target ÷ built over 0.45 s, ease in and out.
+- **A card rebuilt for another reason** starts at its visible scale (`shownScale`) ÷ its new one, and eases to 1. An unfolding card is left to its unfold.
 
 **Lifted cards keep their colours (2 Nov 2026).** The tag mosaic ground no longer skips lifted cards. Open cards carried off their plane and blobs taken by the hand are lifted, and they stood black on their dark slab; *Text & Rinsema Effects*, with its four colours, was the case found. `SphereTextures.strip` builds its gradient from `CGColor(srgbRed:green:blue:alpha:)` components, the gradient's own space.
 
@@ -2516,3 +2520,54 @@ At the foot of the bar's **Shapes** menu, after a divider, three looks are liste
 - **Applying it:** `applyWatchPositions3D` applies the result with a 0.15–2.6 m height range, so Undo View takes it back. Pressing Compact again draws the room in again.
 
 **Deleting lifted words (2 Nov 2026).** `removeFloat` and `setFloatPosition` read and write the float's sidecar at `annotationAddress(docID)`, which is the volume's own for an article in a volume, as `adoptFloats` reads it. They had used the article's id, so a passage lifted from a volume's article was never found to delete and came straight back on the next adopt. A deleted float's lit relation (`relationShown`, `litSelectionRelation`) is cleared with it.
+
+**Article covers (3–4 Nov 2026).** Every paper has a cover. A cover is Author's picture when the book carries one; otherwise the reader draws a Key Sentence cover in the paper's colours. There is never a paper without a cover.
+- **What Author writes** (AuthorKit 89cabc1): a `cover` record `{href, colors, tags [{id, name, color}], chosenBy "words"|"ai", prompt}`, every key optional, in `visual-meta.json`. Per article it is at `document.binding.works[i].cover`. A single-work export, or a document with no binding, also gets `document.cover`, and only that one gets the OPF `properties="cover-image"`. `href` is relative to the OPF's directory, so the reader joins it with `opfDirectory`. Match covers by position in `works[]`, never by heading id: twins share a heading id.
+- **Reading it** (`EPUBShelf.swift`):
+  - `BoundVolume.Article` gains `coverImage` (folder-relative) and `coverColors` (only `#` values), parsed with `BoundVolume.cover(_:opfDirectory:)`.
+  - A book read whole uses `BoundVolume.documentCover(inUnpackedFolder:)`. It finds the OPF through `META-INF/container.xml` and reads `document.cover`. `VisionModel.documentCover(forDocID:)` caches the result per record.
+- **Colours** (`VisionModel.tagColors`), in this order:
+  1. the cover's own colours (the article's, then the book's), exactly as given;
+  2. the tags' word match;
+  3. when nothing matches, the tags the Mac's model chose (`Article.chosenTagIDs`, by tag id, shown in the tag's current colour).
+- **Pictures:** an article's cover leads `imagePaths(forDocID:)` and is exempt from the `CardImages.isFigure` furniture filter. A book's own cover leads `bookImagePaths`.
+- **Shapes ▸ Covers:** a fifth look, `CardLook.covers` ("Covers"), sits after Blobs.
+  - **The face** (`coverFace`) is a 30 × 40-point portrait cover (`coverWidth`, `coverHeight`, Author's 3 : 4), with a two-line, 5-point title up to 60 points wide beneath it. Cover and title together stand within one row of the wall (`rowPitch`, about 10 cm), about 4.7 × 6.3 cm for the cover, so the row below never hides a title. It was 60 × 80 until 4 Nov 2026. A chosen one gets a white edge, the full title and `lookByline`.
+  - **The picture** is `EPUBMapItem.coverPath`: the piece's `coverImage`, else the book's `document.cover`, both made absolute against the record's folder.
+  - **Without a picture,** the face draws `KeySentenceCover` from `EPUBMapItem.keySentence`, falling back to `firstSentence` and then the short title.
+  - **Colours always show:** covers use `tagColors`, not `paintColours`, so they are in full colour whether or not the bar's Colours is on.
+- **`KeySentenceCover`** (end of `EPUBShelf.swift`, every target) is a SwiftUI port of Author's `TypographicCover` (`Liquid Author/Publishing/ArticleCovers.swift`). Keep the two in step.
+  - **The page:** it is drawn on a 1200 × 1600 unit page scaled to the given width.
+  - **The choices:** it uses the same FNV-1a seed and SplitMix64 picks, from the paper's id: six places (top-left, top-right, middle, bottom-left, ruled, band), ten faces, six grains, the fill 0.42–0.73 of the height, a narrowing of 0, 0.1 or 0.2, and whether to split at a pause.
+  - **The palette:** the first colour, deepened 18% toward (0.22, 0.20, 0.19) like dyed leather, is the ground. The next colour with contrast ≥ 3.5 is the ink, otherwise near-black or cream. Another colour is the accent. All colours but the ground are marks: a rule under the words, a band at the foot (the byline set in `ink(on:)`), a strip at the head, or a spine on one edge. One colour alone gets a darker and a lighter shade of itself.
+  - **Text fitting:** the sentence starts at 200 units and shrinks to fit (`minimumScaleFactor` 0.17); the italic remainder after a split is 70 units.
+  - **Grain:** a light `Canvas` (blurred mottle, fibres or weave) under a radial vignette, cheaper than Author's Core Image noise.
+  - **Fonts:** a face missing on the device falls back down its name list, then to the system font (Rockwell → American Typewriter on visionOS).
+  - **AI mark:** a model-chosen sentence wears a small "AI" at the top right.
+  - **Accessibility:** the cover's accessibility label is the sentence.
+- **The key sentence and chosen tags** (macOS, `ArticleEnrichment`, run by Library Upkeep):
+  - **The candidates:** after the abstract and keywords, `sentenceCandidates` gathers whole sentences of 6–32 words from the abstract and the first 9000 characters (`OrigamiReading.flowLines`, no comma breaks, no repeats, at most 40).
+  - **Choosing the sentence:** with fewer than two candidates the entry takes what there is, marked "none". Otherwise `chooseKeySentence` numbers them and asks `OrigamiLLM.respond` for one number. The model only chooses, so the words are always the article's own.
+  - **Choosing tags:** when the article has no cover colours and no tag's words match, `chooseTags` lists the live tags by number and asks for one or two.
+  - **Asking again:** both are asked again when the text hash changes or Redo is on.
+  - **Errors:** they are logged and left unanswered for the next pass, never stored as an answer.
+  - **Review:** the window shows "Key sentence: …" and "Tags chosen: …" with their sources.
+  - **Upkeep:** an article whose entry has no `keySentenceSource` makes its volume due again.
+- **Headset:** `.enriched(with:)` lays `keySentence`, `keySentenceByAI` and `chosenTagIDs` onto each article.
+- **Not yet:** whole books outside bound volumes get no AI key sentence and use their first sentence. Mac and iOS shelf thumbnails, per-article thumbnails in volume contents, and the `prompt` as alt text are still to come. Author passes each cover's index in the volume so neighbours never share both place and face; the reader passes 0 for now.
+
+**Lines edge to edge; marks are ✓ and ✗ (visionOS, 4 Nov 2026).**
+- **Edge to edge:** `ConceptConnectionLines` (a relation's lines, label lines and colour lines) now trims each line to the cards' edges plus 6 mm. It reads the sizes cards stand at now from `CardSizes.shown`, which `cardEntity` sets to the extents × `grown`. A line no longer runs across a Gather's close-standing cards or the chosen card's face, and cards that touch get no line at all. A second Gather ring (past ten cards) can still be crossed by lines to the outer ring.
+- **✓ and ✗ only:** `StanceMarkView` shows only its ✓ (confirm) and ✗ (sever, asked once more). The relation's name, its direction arrow and the AI tag are gone, because the reader has just chosen the relation by name. The ❝ evidence button stays on stances that carry quotes.
+
+**Live attributes ringed (visionOS, 4 Nov 2026).** While on, the bar's **Colours** and **Relative Size** toggles wear a white 1.5-point capsule ring over their pill (`View.liveRing(_:)`, at the end of `OrigamiVision.swift`, hit-testing off).
+
+
+**Relation menus stand clear; faces on person labels (visionOS, 4 Nov 2026).**
+- **Clear of the card:** the open card's relation menus (Connects and Gather on the left, Show Only on the right) now stand `relationMenuGap` (56 doubled points, about 2 cm) from the card's edge; the gap was 12 points. The card's width is taken from the larger of `cardSizes.base` × 1.2 and `cardSizes.shown`, so an open card, which stands larger, no longer crowds its menus. `gatherStar` allows the same gap, so gathered cards stay clear of the menus.
+- **Faces on person labels:** an Authors or People group label (`isPersonLabel`: a `shape:authors.` or `shape:people.` id) carries the person's face in `imagePath`, taken from `model.portraitPaths[OrigamiPortraits.key(title)]` in `reload`'s last stamping pass, so a face that arrives later rebuilds the label. Its face is drawn as a 44-point circle above the name, ringed in the label's ink.
+
+**Gather glides; the Mac builds again (4 Nov 2026).**
+- **Glide:** `NodeGlide` (end of `NodeImmersiveView+Common.swift`, Origami's addition to Author's engine, owed back) opens a 0.75 s window. Within it, the engine's update moves a node whose `item.position` changed by more than 5 mm with `move(to:duration: 0.5, .easeInOut)` instead of setting its position. `NodeGlideTargetComponent` records the target, so a second update during the glide does not restart it.
+- **Gather:** `relationShown`'s `didSet` opens the window whenever a Gather starts, ends (a second tap, the card let go, another relation chosen) or changes, so gathered cards glide in round the card and back to their places.
+- **The Mac build:** `SphereTextures` stood after `EPUBMapView.swift`'s closing `#endif` from 2 Nov, so the macOS target tried to compile RealityKit code and failed. The `#endif` now closes the file.

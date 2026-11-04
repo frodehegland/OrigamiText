@@ -432,7 +432,74 @@ final class OrigamiLLM {
         case endpoint(base: String, models: [String])
         case needsKey(base: String)
         case huggingFace(repo: String)
+        /// An Ollama model by name (4 Nov 2026): "--model kimi-k3.1-pro:cloud",
+        /// "ollama run qwen3:8b", "ollama pull gpt-oss:120b-cloud", or the
+        /// bare name.
+        case ollamaModel(name: String)
         case invalid(String)
+    }
+
+    /// The Ollama model a pasted line names, if it names one: the word after
+    /// `--model` (or `--model=`), after `ollama run` / `ollama pull`, or the
+    /// line itself when it is one model name with a tag ("qwen3:8b",
+    /// "kimi-k3.1-pro:cloud").
+    /// An Ollama model that runs on Ollama's servers rather than here.
+    nonisolated static func isCloudModel(_ name: String) -> Bool {
+        let tag = name.split(separator: ":").last.map(String.init) ?? ""
+        return tag == "cloud" || tag.hasSuffix("-cloud")
+    }
+
+    nonisolated static func ollamaModelName(in pasted: String) -> String? {
+        let words = pasted.split(whereSeparator: \.isWhitespace)
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`\u{201C}\u{201D}")) }
+            .filter { !$0.isEmpty }
+        func plausible(_ name: String) -> String? {
+            name.range(of: #"^[A-Za-z0-9][\w.\-/]*(:[\w.\-]+)?$"#, options: .regularExpression) != nil ? name : nil
+        }
+        for (index, word) in words.enumerated() {
+            if word == "--model", index + 1 < words.count { return plausible(words[index + 1]) }
+            if word.hasPrefix("--model=") { return plausible(String(word.dropFirst("--model=".count))) }
+        }
+        if words.count >= 3, words[0].lowercased() == "ollama", ["run", "pull"].contains(words[1].lowercased()) {
+            return plausible(words[2])
+        }
+        if words.count == 1, words[0].contains(":"), !words[0].contains("://") { return plausible(words[0]) }
+        return nil
+    }
+
+    /// An Ollama model added by name (4 Nov 2026): Ollama on this Mac is
+    /// added as a server if it is not yet, the model fetched through it —
+    /// a `:cloud` model only registers, Ollama's own account then runs it —
+    /// and made the model in use. Progress in `download`.
+    func addOllamaModel(_ name: String) async throws {
+        let base = ollamaBase
+        let host = URL(string: base)?.host() ?? base
+        let key = apiKey(for: base)
+        guard (try? await ChatCompletionsClient.models(base: base, key: key, timeout: 2)) != nil else {
+            throw OrigamiLLMError.generationFailed("Ollama isn\u{2019}t running on \(host). Open the Ollama app, then paste the model again.")
+        }
+        let installed = await OllamaClient.installedModels(base: base, key: key)
+        if !installed.contains(where: { OllamaClient.sameModel($0, name) }) {
+            download = ModelDownload(model: name, status: "Starting\u{2026}")
+            do {
+                try await OllamaClient.pull(base: base, model: name, key: key) { status, fraction in
+                    self.download = ModelDownload(model: name, status: status, fraction: fraction)
+                }
+            } catch {
+                var why = error.localizedDescription
+                if Self.isCloudModel(name),
+                   why.lowercased().contains("unauthorized") || why.lowercased().contains("sign") {
+                    why = "\(name) runs on Ollama\u{2019}s cloud: sign in to Ollama first (its app, or \u{201C}ollama signin\u{201D}), then paste it again."
+                }
+                download = ModelDownload(model: name, status: "", failure: why)
+                throw OrigamiLLMError.generationFailed(why)
+            }
+            download = nil
+        }
+        let models = (try? await ChatCompletionsClient.models(base: base, key: key)) ?? []
+        let sizes = await ChatCompletionsClient.modelSizes(base: base, key: key)
+        addOrUpdateEndpoint(base: base, models: models.contains(name) ? models : models + [name], sizes: sizes, key: nil)
+        selectedID = Self.endpointID(base: ChatCompletionsClient.normalizedBase(base), model: name)
     }
 
     /// Classifies one pasted string: a server URL (tried live), a
@@ -452,11 +519,13 @@ final class OrigamiLLM {
                 return .invalid("Can\u{2019}t reach \(base). Is the server running?")
             }
         }
+        if let name = ollamaModelName(in: trimmed) { return .ollamaModel(name: name) }
         if trimmed.range(of: #"^[\w.-]+/[\w.-]+$"#, options: .regularExpression) != nil {
             return .huggingFace(repo: trimmed)
         }
         return .invalid("""
-            Paste a server address (like http://localhost:11434) or a \
+            Paste a server address (like http://localhost:11434), an Ollama \
+            model (like --model kimi-k3.1-pro:cloud, or qwen3:8b), or a \
             Hugging Face model id (like mlx-community/Qwen3-8B-4bit).
             """)
     }
@@ -978,6 +1047,10 @@ struct LLMModelSettingsSections: View {
     /// The one-tap banner for a detected local server (§6.1).
     @State private var detected: (base: String, models: [String])?
     @State private var showingRecommendations = false
+    /// An Ollama model being added from the paste box.
+    @State private var addingModel: String?
+    /// A cloud model awaiting the §11 confirmation.
+    @State private var pendingCloudModel: String?
 
     var body: some View {
         // The one choice most readers need: a model Origami runs itself.
@@ -1039,7 +1112,7 @@ struct LLMModelSettingsSections: View {
                 }
             }
             HStack {
-                TextField("A server address, such as http://localhost:11434",
+                TextField("A server address, or a model such as --model kimi-k3.1-pro:cloud",
                           text: $pasted)
                     .onSubmit { classifyPasted() }
                 Button("Add") { classifyPasted() }
@@ -1066,7 +1139,27 @@ struct LLMModelSettingsSections: View {
                     status = "Added."
                 }
             }
-            if isClassifying {
+            if let pendingCloudModel {
+                Text("\(pendingCloudModel) runs on Ollama\u{2019}s servers, not on \(OrigamiLLM.thisDevice): the text it reads will be sent to Ollama.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                Button("Add Anyway") {
+                    let name = pendingCloudModel
+                    self.pendingCloudModel = nil
+                    Task { @MainActor in await addModel(name) }
+                }
+            }
+            if let addingModel {
+                HStack(spacing: 8) {
+                    if let fraction = llm.download?.fraction {
+                        ProgressView(value: fraction).frame(width: 120)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text("\(addingModel): \(llm.download?.status.isEmpty == false ? llm.download!.status : "asking Ollama\u{2026}")")
+                        .foregroundStyle(.secondary)
+                }
+            } else if isClassifying {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text("Asking the server\u{2026}").foregroundStyle(.secondary)
@@ -1087,8 +1180,10 @@ struct LLMModelSettingsSections: View {
         } footer: {
             Text("""
                 Ollama and LM Studio are found automatically while they run. \
-                To use a model from Hugging Face, run it in one of them \
-                (\u{201C}ollama pull\u{201D}) and it appears here.
+                Paste an Ollama model \u{2014} \u{201C}--model kimi-k3.1-pro:cloud\u{201D}, \
+                \u{201C}ollama run qwen3:8b\u{201D}, or just its name \u{2014} and it is \
+                fetched through Ollama and chosen. A :cloud model runs on \
+                Ollama\u{2019}s servers and needs you signed in to Ollama.
                 """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1141,6 +1236,7 @@ struct LLMModelSettingsSections: View {
         status = nil
         keyBase = nil
         pendingRemote = nil
+        pendingCloudModel = nil
         Task { @MainActor in
             defer { isClassifying = false }
             switch await OrigamiLLM.classify(text) {
@@ -1162,10 +1258,32 @@ struct LLMModelSettingsSections: View {
                     arrive with the MLX runtime. For now, point the app at a \
                     server (Ollama can run it: \u{201C}ollama pull\u{201D}).
                     """
+            case .ollamaModel(let name):
+                // §11: a cloud model reads on Ollama's servers — said, and
+                // asked, before it is added.
+                if OrigamiLLM.isCloudModel(name) {
+                    pendingCloudModel = name
+                } else {
+                    await addModel(name)
+                }
             case .invalid(let message):
                 status = message
             }
         }
+    }
+
+    /// Fetched through Ollama and made the model in use; the pull's
+    /// progress shows beneath the box meanwhile.
+    private func addModel(_ name: String) async {
+        addingModel = name
+        do {
+            try await llm.addOllamaModel(name)
+            status = "Added \(name), now the model in use."
+            pasted = ""
+        } catch {
+            status = error.localizedDescription
+        }
+        addingModel = nil
     }
 
     private func retryWithKey(_ base: String) {

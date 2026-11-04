@@ -160,7 +160,10 @@ struct EPUBMapItem: ItemProtocol {
             && stamp == other.stamp && firstSentence == other.firstSentence
             && tagColors == other.tagColors && authorFaces == other.authorFaces
             && look == other.look && openLift == other.openLift
-            && sizeScale == other.sizeScale && retro == other.retro
+            // Relative Size is not here: a card changes size in place,
+            // eased by the tick (`MapCardTick.resize`), never rebuilt —
+            // a rebuild blinks the room (4 Nov 2026).
+            && retro == other.retro
             && showsColours == other.showsColours
             // The engine attaches a card's attachment only when it builds
             // the card, so a stance mark coming or going rebuilds it.
@@ -766,6 +769,13 @@ struct EPUBMapView: View {
                 guard wordSpan > 0, let words = wordsByArticle[record.id] else { return nil }
                 return Double(words - shortestWords) / Double(wordSpan)
             }
+            // Relative Size in Color Titles: the area each closed title's
+            // letters cover in their own font, and the plane's mean — a
+            // paper of middling length stands at the mean (4 Nov 2026).
+            let titleAreas: [String: Float] = model.sizeByLength && model.cardLook == .titles
+                ? Dictionary(uniqueKeysWithValues: standing.map { ($0.id, Self.titleInkArea(shortTitle($0.title))) })
+                : [:]
+            let meanTitleArea = titleAreas.isEmpty ? 0 : titleAreas.values.reduce(0, +) / Float(titleAreas.count)
             result += standing.enumerated().map { index, record in
                 let column = index % columns
                 let row = index / columns
@@ -822,15 +832,15 @@ struct EPUBMapView: View {
                 item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
                 item.authorFaces = model.authorFaces(paperAuthors(record.id))
                 item.look = model.cardLook
-                // Relative Volume in Color Titles (2 Nov 2026): a title is
-                // its own size — so its letters are scaled until the ink it
-                // covers (characters × size²) answers to the paper's length,
-                // and a long title on a short paper never outgrows a short
-                // title on a long one.
-                if model.sizeByLength, item.look == .titles {
-                    let characters = Float(max(shortTitle(record.title).count, 8))
-                    item.sizeScale = min(max(item.sizeScale * (Self.typicalTitleLength / characters).squareRoot(),
-                                             0.4), 1.9)
+                // Relative Size in Color Titles (2 Nov 2026; measured 4 Nov):
+                // a title is its own size, so what counts is the area its
+                // letters cover in their font. It is scaled until that area
+                // answers to the paper's length — the plane's mean title
+                // area × the length scale² — and a long title on a short
+                // paper never outgrows a short title on a long one.
+                if model.sizeByLength, item.look == .titles,
+                   let area = titleAreas[record.id], area > 0, meanTitleArea > 0 {
+                    item.sizeScale = min(max(item.sizeScale * (meanTitleArea / area).squareRoot(), 0.4), 1.9)
                 }
                 return item
             }
@@ -1429,6 +1439,27 @@ struct EPUBMapView: View {
         for i in items.indices {
             items[i].visionTheme = visionThemeRaw
             items[i].showsColours = model.coloursShown
+            // An Authors or People group's name wears the person's face,
+            // when the Mac has gathered one (4 Nov 2026) — Origami's People,
+            // Author's pictures, Knowledge Space's people (PortraitPublisher).
+            if Self.isPersonLabel(items[i]) {
+                items[i].imagePath = model.portraitPaths[OrigamiPortraits.key(items[i].title)]
+            }
+            // Relative Size, asked in place: the card's measured sizes follow
+            // at once (the star's gaps, the lines' ends), and the tick eases
+            // its entity there.
+            let id = items[i].id
+            let target = items[i].sizeScale
+            if cardSizes.targetScale[id] != target {
+                cardSizes.targetScale[id] = target
+                if let built = cardSizes.builtScale[id], built > 0 {
+                    cardSizes.shownScale[id] = target
+                    let ratio = target / built
+                    if let base = cardSizes.builtBase[id] { cardSizes.base[id] = base * ratio }
+                    if let shown = cardSizes.builtShown[id] { cardSizes.shown[id] = shown * ratio }
+                    cardTick.resizePending = true
+                }
+            }
         }
         updateSelectChips()
         rebuildDeepRank()
@@ -1452,6 +1483,7 @@ struct EPUBMapView: View {
         let floatEdges: [(from: String, to: String)] = relationShown.map { shown in
             shown.from.hasPrefix("float:") ? shown.ids.map { (from: shown.from, to: $0) } : []
         } ?? []
+        conceptConnectionLines.sizes = cardSizes
         conceptConnectionLines.rebuild(items: linesActive || !floatEdges.isEmpty ? items : [],
                                        edges: linesActive ? conceptEdges() : floatEdges)
         citedToDeepLines.rebuild(items: linesActive ? items : [])
@@ -1978,7 +2010,16 @@ struct EPUBMapView: View {
     @State private var focusMode = false
     /// A relation chosen on a card's star menu: the card, the relation's
     /// name, and the cards it reaches. Only those stand while it does.
-    @State private var relationShown: RelationShown?
+    @State private var relationShown: RelationShown? {
+        // A Gather drawing its cards in, letting them go, or changing: they
+        // glide there and back rather than jump (4 Nov 2026), however it
+        // ends — a second tap, the card let go, another relation chosen.
+        didSet {
+            if oldValue != relationShown, oldValue?.gathered == true || relationShown?.gathered == true {
+                NodeGlide.open()
+            }
+        }
+    }
     /// The one list unfolded on a card — its Connects, Show Only, Both
     /// cite or a verb's options — by "kind|card"; nil when none is.
     @State private var openList: String?
@@ -2009,6 +2050,17 @@ struct EPUBMapView: View {
     final class CardSizes {
         /// Width and height in metres, as an unchosen card stands.
         var base: [String: SIMD2<Float>] = [:]
+        /// Relative Size in place (4 Nov 2026): each card's scale when its
+        /// entity was built, the measured sizes at that build, the scale it
+        /// stands at now, and the one the room asks of it.
+        var builtScale: [String: Float] = [:]
+        var builtBase: [String: SIMD2<Float>] = [:]
+        var builtShown: [String: SIMD2<Float>] = [:]
+        var shownScale: [String: Float] = [:]
+        var targetScale: [String: Float] = [:]
+        /// Width and height in metres as each card stands now — chosen,
+        /// opened, grown — so a line can stop at its edge (4 Nov 2026).
+        var shown: [String: SIMD2<Float>] = [:]
         /// Cards just opened, waiting to be built — each unfolds as it is.
         var unfolding: Set<String> = []
         /// The papers a dragged label carries, worked out once per drag.
@@ -3181,6 +3233,7 @@ struct EPUBMapView: View {
                              stuckOrientation: {
                                  (liftedCards[$0]?.stuck ?? labelStuck[$0]).map(simd_quatf.init(vector:))
                              })
+            cardTick.targetScale = { [cardSizes] in cardSizes.targetScale[$0] }
             // Align to Room's wall: a wall-classified vertical plane on
             // the one tracking session, read when the chip is tapped.
             let roomWall = AnchorEntity(.plane(.vertical, classification: .wall,
@@ -3452,6 +3505,17 @@ struct EPUBMapView: View {
                     ? Self.color(hex: item.paintColours.first ?? "#FFFFFF")
                 : Color.white
             VStack(spacing: 3 * s) {
+                // A person's group (Authors, People): their face above the
+                // name, when one is known.
+                if Self.isPersonLabel(item), let path = item.imagePath,
+                   let face = CardImages.image(path: path, maxPixel: 320) {
+                    Image(uiImage: face)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 44 * s, height: 44 * s)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(ink.opacity(0.6), lineWidth: 1 * s))
+                }
                 // A Landscape's colour is a mountain top.
                 if item.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.landscape.rawValue + ".") {
                     Image(systemName: "mountain.2.fill")
@@ -3927,21 +3991,24 @@ struct EPUBMapView: View {
                 if item.isSelected { shape.strokeBorder(Color.white.opacity(0.9), lineWidth: 1.6 * s) }
             }
             Text(item.isSelected ? item.title : shortTitle(item.title))
-                .font(AppFonts.body(5.5 * s, weight: .regular))
+                .font(AppFonts.body(5 * s, weight: .regular))
                 .foregroundStyle(Color.white)
                 .shadow(color: .black.opacity(0.6), radius: 1.5 * s)
                 .multilineTextAlignment(.center)
                 .lineLimit(item.isSelected ? 4 : 2)
-                .frame(maxWidth: Self.coverWidth * s + 10 * s)
-            if item.isSelected { lookByline(item, size: Self.titleBylineSize * s, width: Self.coverWidth * s + 10 * s) }
+                .frame(maxWidth: Self.coverWidth * s + 30 * s)
+            if item.isSelected { lookByline(item, size: Self.titleBylineSize * s, width: Self.coverWidth * s + 30 * s) }
         }
         .padding(2 * s)
     }
 
     /// A cover's size on its face, in face points before the crisp factor:
-    /// a portrait book cover, 6 × 8 cm at rest — Author's 3 : 4.
-    static let coverWidth: CGFloat = 60
-    static let coverHeight: CGFloat = 80
+    /// Author's 3 : 4, sized so the cover AND its two-line title stand
+    /// within one row of the wall (`rowPitch`, about 10 cm), clear of the
+    /// cover beneath (4 Nov 2026; was 60 × 80, whose titles the next row
+    /// hid). About 4.7 × 6.3 cm in the room, the title under it.
+    static let coverWidth: CGFloat = 30
+    static let coverHeight: CGFloat = 40
 
     /// A soft mosaic of colours: one band of them across the top, the same
     /// turned half round across the bottom, the two melting into each other
@@ -3970,13 +4037,20 @@ struct EPUBMapView: View {
         item.retro.flatMap { name in VisionModel.RetroPalette.all.first { $0.name == name } }
     }
 
+    /// The area a closed Color Title's letters cover, in face points at its
+    /// own font (9-point semibold serif, `colorTitle`): the run's width laid
+    /// in lines of at most 100 points, no more than its three lines, times
+    /// the font's line height. Only the ratios between titles matter.
+    static func titleInkArea(_ title: String) -> Float {
+        let base = UIFont.systemFont(ofSize: 9, weight: .semibold)
+        let font = base.fontDescriptor.withDesign(.serif).map { UIFont(descriptor: $0, size: 9) } ?? base
+        let width = (title as NSString).size(withAttributes: [.font: font]).width
+        return Float(min(width, 3 * 100) * font.lineHeight)
+    }
+
     /// Size by Length: the shortest paper of its plane at three quarters
     /// of a card, the longest half as large again — by the square root of
     /// its share, so the middling lengths spread.
-    /// The characters of a typical closed title, at which a Color Title of a
-    /// paper of middling length stands at its plain size.
-    static let typicalTitleLength: Float = 36
-
     static func lengthScale(_ share: Double?) -> Float {
         guard let share else { return 1 }
         return 0.75 + 0.75 * Float(max(0, min(1, share))).squareRoot()
@@ -4040,6 +4114,7 @@ struct EPUBMapView: View {
         if item.kind == .article, !item.isGhost { grown *= item.sizeScale }
         cardSizes.base[item.id] = SIMD2(extents.x, extents.y)
             * (item.kind == .article && !item.isGhost ? Self.documentCardMagnify * item.sizeScale : 1)
+        cardSizes.shown[item.id] = SIMD2(extents.x * grown, extents.y * grown)
         let holder = ModelEntity(
             mesh: .generateBox(width: extents.x * grown,
                                height: extents.y * grown, depth: 0.004),
@@ -4130,6 +4205,25 @@ struct EPUBMapView: View {
         // middle, like a sheet creased in half, and opens to full height
         // with its star around it, rather than appearing in one frame.
         // It comes forward as it unfolds.
+        // Relative Size turned on or off, or a look that sizes differently:
+        // the card is built at its new size and eases there from its old
+        // one, rather than snapping (4 Nov 2026).
+        let formerScale = cardSizes.shownScale[item.id]
+        cardSizes.shownScale[item.id] = item.sizeScale
+        cardSizes.builtScale[item.id] = item.sizeScale
+        cardSizes.builtBase[item.id] = cardSizes.base[item.id]
+        cardSizes.builtShown[item.id] = cardSizes.shown[item.id]
+        holder.components.set(BuiltSizeComponent(scale: item.sizeScale))
+        if let formerScale, abs(formerScale - item.sizeScale) > 0.001, item.sizeScale > 0,
+           !cardSizes.unfolding.contains(item.id) {
+            holder.scale = SIMD3<Float>(repeating: formerScale / item.sizeScale)
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(16))
+                var resized = holder.transform
+                resized.scale = SIMD3<Float>(repeating: 1)
+                holder.move(to: resized, relativeTo: holder.parent, duration: 0.45, timingFunction: .easeInOut)
+            }
+        }
         if cardSizes.unfolding.remove(item.id) != nil {
             holder.scale = SIMD3<Float>(1, 0.06, 1)
             body.position = .zero
@@ -4603,7 +4697,9 @@ struct EPUBMapView: View {
         // doubled points (1360 to the metre), with a breath of air.
         let fallback = SIMD2<Float>(Float(nodeMaxWidth(for: item) / Self.crisp) / 1000, 0.07)
             * Self.documentCardMagnify
-        let card = (cardSizes.base[item.id] ?? fallback) * 1.2
+        // The card as it stands now — an open one is larger than closed —
+        // so the menus beside it never crowd its edge (4 Nov 2026).
+        let card = simd_max((cardSizes.base[item.id] ?? fallback) * 1.2, cardSizes.shown[item.id] ?? .zero)
         let gap = CGSize(width: CGFloat(card.x) * 1360 * 2 + 28,
                          height: CGFloat(card.y) * 1360 * 2 + 20)
         // Its verbs above it and its relation menus beside it, on the
@@ -4634,7 +4730,7 @@ struct EPUBMapView: View {
                 if !pictures.isEmpty { thumbnailStrip(pictures, of: item).hidden() }
                 // Connects on the card's left, Show Only on its right —
                 // equal widths, so the card stays centred.
-                HStack(spacing: 12) {
+                HStack(spacing: Self.relationMenuGap) {
                     if bar != nil {
                         // Connects, and beneath it Gather.
                         VStack(alignment: .trailing, spacing: 14) {
@@ -4668,8 +4764,18 @@ struct EPUBMapView: View {
         .scaleEffect(0.5)
     }
 
+    /// A group label of the Authors or People Shape: a person's name.
+    static func isPersonLabel(_ item: EPUBMapItem) -> Bool {
+        item.id.hasPrefix(shapeLabelPrefix + RoomShape.authors.rawValue + ".")
+            || item.id.hasPrefix(shapeLabelPrefix + RoomShape.people.rawValue + ".")
+    }
+
     /// Each relation menu's width beside the card, in the star's doubled points.
     private static let relationMenuWidth: CGFloat = 420
+    /// The air between the card's edge and each relation menu, in the
+    /// star's doubled points: about 2 cm in the room, so the menus read
+    /// apart from the card (4 Nov 2026; was 12, about 4 mm).
+    private static let relationMenuGap: CGFloat = 56
 
     /// At most this many miniatures ring a star; the lines reach them all.
     private static let ringLimit = 14
@@ -4785,7 +4891,7 @@ struct EPUBMapView: View {
         let neighbour = other == .zero ? fallback : other
         // Beside the card: its half, its menus (in the star's halved
         // points, 1360 to the metre doubled), a gap, the neighbour's half.
-        let menus = Float(Self.relationMenuWidth) / 2720 + 0.04
+        let menus = Float(Self.relationMenuWidth + Self.relationMenuGap) / 2720 + 0.04
         let rx = own.x / 2 + menus + neighbour.x / 2
         let ry = own.y / 2 + 0.06 + neighbour.y / 2
         let inner = min(count, 10)
@@ -8827,6 +8933,12 @@ struct LookBylineComponent: Component {
     let byline: Entity
 }
 
+/// The Relative Size scale a card's entity was built at (4 Nov 2026), so
+/// the tick can grow or shrink it in place to the room's new one.
+struct BuiltSizeComponent: Component {
+    let scale: Float
+}
+
 /// The card's two faces, cached at build time so the per-frame turner
 /// never walks a card's subtree hunting them by name.
 struct CardFacesComponent: Component {
@@ -10943,6 +11055,7 @@ final class CardFaceTurner {
         started = true
         CardFacesComponent.registerComponent()
         LookBylineComponent.registerComponent()
+        BuiltSizeComponent.registerComponent()
         BlobComponent.registerComponent()
         guard WorldTrackingProvider.isSupported else {
             print("Map/faces: world tracking unsupported — back faces stay dark")
@@ -11226,9 +11339,33 @@ private final class MapCardTick {
         self.stuckOrientation = stuckOrientation
         subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             MainActor.assumeIsolated {
+                self?.resize(scene: event.scene)
                 self?.tick(scene: event.scene)
                 self?.tickBlobs(scene: event.scene, dt: Float(event.deltaTime))
             }
+        }
+    }
+
+    /// Relative Size changed: one pass eases every card to its new scale.
+    var resizePending = false
+    /// The scale the room asks of a card, by id.
+    var targetScale: (@MainActor (String) -> Float?)?
+    private let sizedQuery = EntityQuery(where: .has(BuiltSizeComponent.self))
+
+    /// Each card grows or shrinks to the scale the room now asks, over
+    /// 0.45 s, in place — its entity is never rebuilt (4 Nov 2026).
+    private func resize(scene: RealityKit.Scene) {
+        guard resizePending, let targetScale else { return }
+        resizePending = false
+        for card in scene.performQuery(sizedQuery) {
+            guard let built = card.components[BuiltSizeComponent.self]?.scale, built > 0,
+                  let id = card.components[EPUBNodeIDComponent.self]?.id,
+                  let target = targetScale(id) else { continue }
+            let want = target / built
+            guard abs(card.scale.x - want) > 0.001 else { continue }
+            var resized = card.transform
+            resized.scale = SIMD3<Float>(repeating: want)
+            card.move(to: resized, relativeTo: card.parent, duration: 0.45, timingFunction: .easeInOut)
         }
     }
 
@@ -11503,6 +11640,11 @@ private final class ConceptConnectionLines: MapLineLayer {
     /// together" without drawing the eye away from the cards.
     private static let lineColor = UIColor(white: 0.72, alpha: 1)
 
+    /// The cards' sizes as they stand, so each line runs edge to edge and
+    /// never across a card's face — a Gather's star least of all, where
+    /// the cards stand close (4 Nov 2026).
+    var sizes: EPUBMapView.CardSizes?
+
     func install(in content: RealityViewContent) {
         let r = Entity(); content.add(r); root = r
     }
@@ -11525,6 +11667,7 @@ private final class ConceptConnectionLines: MapLineLayer {
             let line = makeLine(from: fromPos, to: toPos)
             root.addChild(line)
             lineData.append(LineData(line: line, fromID: edge.from, toID: edge.to))
+            trim(line, from: edge.from, at: fromPos, to: edge.to, at: toPos)
         }
     }
 
@@ -11534,8 +11677,26 @@ private final class ConceptConnectionLines: MapLineLayer {
         for data in lineData {
             guard let from = positions[data.fromID],
                   let to = positions[data.toID] else { continue }
-            positionLine(data.line, from: from, to: to)
+            trim(data.line, from: data.fromID, at: from, to: data.toID, at: to)
         }
+    }
+
+    /// The line from the edge of one card to the edge of the other, a few
+    /// millimetres clear of each — none at all when the cards touch.
+    private func trim(_ line: ModelEntity, from fromID: String, at a: SIMD3<Float>,
+                      to toID: String, at b: SIMD3<Float>) {
+        let delta = b - a
+        func share(_ id: String) -> Float {
+            guard let size = sizes?.shown[id] else { return 0 }
+            let half = size / 2 + SIMD2<Float>(repeating: 0.006)
+            let x = abs(delta.x) > 1e-5 ? half.x / abs(delta.x) : .infinity
+            let y = abs(delta.y) > 1e-5 ? half.y / abs(delta.y) : .infinity
+            let t = min(x, y)
+            return t.isFinite ? t : 0
+        }
+        let start = share(fromID), end = share(toID)
+        guard start + end < 1 else { line.isEnabled = false; return }
+        positionLine(line, from: a + delta * start, to: b - delta * end)
     }
 
     private func positionLine(_ line: ModelEntity,
@@ -13076,11 +13237,10 @@ struct RoomConceptDetailView: View {
     }
 }
 /// The mark at the end of a stance's line, on the card it reaches: the
-/// stance's word with its direction (→ the chosen card takes the stance
-/// toward this one, ← this one toward the chosen card), a ✓ to confirm it
-/// and a ✗ to sever it — the severing asked once more before it is done.
-/// The quotes behind it open beneath on ❝. A proposed stance wears AI; a
-/// confirmed one a filled check. Contradicts is warmer, as the rarest.
+/// ✓ to confirm it and ✗ to sever it — the severing asked once more before
+/// it is done — and nothing else (4 Nov 2026): the relation's name is the
+/// one the reader just chose. The quotes behind a stance open beneath on
+/// ❝; a confirmed connection wears a filled check.
 struct StanceMarkView: View {
     let mark: VisionModel.StanceMarkInfo
     let confirm: () -> Void
@@ -13091,13 +13251,9 @@ struct StanceMarkView: View {
     var body: some View {
         VStack(alignment: .center, spacing: 6) {
             HStack(spacing: 6) {
+                // The check and the cross alone (4 Nov 2026, Frode): the
+                // relation was chosen by name, so the mark need not say it.
                 buttons
-                Text((mark.directed ? (mark.outward ? "\u{2192} " : "\u{2190} ") : "") + mark.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(mark.title == "Contradicts" ? Color(red: 1.0, green: 0.62, blue: 0.42) : .white)
-                if !mark.confirmed, mark.isAI {
-                    Text("AI").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-                }
                 // Quotes only where there are some — a stance's.
                 if mark.sourceQuote != nil || mark.targetQuote != nil || mark.rationale != nil {
                     Button { showsEvidence.toggle() } label: { Text("\u{275D}") }
@@ -13290,7 +13446,6 @@ private struct SphereRowStyle: ButtonStyle {
             .hoverEffect(.highlight)
     }
 }
-#endif
 
 // MARK: - Color Spheres' textures (2 Nov 2026)
 
@@ -13337,4 +13492,4 @@ enum SphereTextures {
         return context.makeImage()
     }
 }
-
+#endif
