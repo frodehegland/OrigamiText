@@ -93,6 +93,14 @@ struct EPUBMapItem: ItemProtocol {
     /// A picture the card wears, as an absolute file path: a paper's
     /// first figure as its thumbnail, or a gallery card's own image.
     var imagePath: String?
+    /// Its cover (4 Nov 2026), as an absolute file path — the picture its
+    /// writer's app made to know it by — or nil when the book gives none.
+    var coverPath: String?
+    /// The words of the cover the reader draws when there is no picture
+    /// (4 Nov 2026): its key sentence, the Mac's model's choice — nil
+    /// until chosen, when its first sentence stands in.
+    var keySentence: String?
+    var keySentenceByAI = false
     /// Where the paper stands in its series — "Vol 3 · 2022" — worn only
     /// once the card is chosen or open.
     var stamp: String?
@@ -147,6 +155,8 @@ struct EPUBMapItem: ItemProtocol {
             && isLifted == other.isLifted && lengthShare == other.lengthShare
             && isFaded == other.isFaded && warning == other.warning
             && pieceLabel == other.pieceLabel && imagePath == other.imagePath
+            && coverPath == other.coverPath && keySentence == other.keySentence
+            && keySentenceByAI == other.keySentenceByAI
             && stamp == other.stamp && firstSentence == other.firstSentence
             && tagColors == other.tagColors && authorFaces == other.authorFaces
             && look == other.look && openLift == other.openLift
@@ -804,6 +814,9 @@ struct EPUBMapView: View {
                 item.sizeScale = model.sizeByLength ? Self.lengthScale(item.lengthShare) : 1
                 item.retro = model.retroName
                 item.imagePath = imagePaths(forDocID: record.id).first
+                item.coverPath = coverPath(forDocID: record.id)
+                item.keySentence = model.piece(forDocID: record.id)?.keySentence
+                item.keySentenceByAI = model.piece(forDocID: record.id)?.keySentenceByAI ?? false
                 item.stamp = stamp
                 item.firstSentence = firstSentenceByArticle[record.id]
                 item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
@@ -848,6 +861,9 @@ struct EPUBMapView: View {
                         abstract: cardAbstract(record))
                     item.isLifted = liftedCards[record.id] != nil
                     item.imagePath = imagePaths(forDocID: record.id).first
+                    item.coverPath = coverPath(forDocID: record.id)
+                    item.keySentence = model.piece(forDocID: record.id)?.keySentence
+                    item.keySentenceByAI = model.piece(forDocID: record.id)?.keySentenceByAI ?? false
                     // The opening pages, appendices and records wear the
                     // room's colours and look as its articles do (2 Nov 2026).
                     item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
@@ -2103,9 +2119,27 @@ struct EPUBMapView: View {
         guard BoundVolume.split(articleDocID: id) != nil else { return bookImagePaths(forDocID: id) }
         guard let split = BoundVolume.split(articleDocID: id),
               let volume = model.epubRecords.first(where: { $0.id == split.volume }),
-              let piece = model.piece(forDocID: id), !piece.images.isEmpty else { return [] }
+              let piece = model.piece(forDocID: id), !piece.images.isEmpty || piece.coverImage != nil else { return [] }
         let folder = VisionModel.epubsRoot.appendingPathComponent(volume.folder, isDirectory: true)
-        return piece.images.map { folder.appendingPathComponent($0).path }.filter(CardImages.isFigure)
+        // Its cover first (3 Nov 2026), the picture made to know it by —
+        // never judged furniture, whatever its size.
+        let cover = piece.coverImage.map { [folder.appendingPathComponent($0).path] } ?? []
+        return cover + piece.images.map { folder.appendingPathComponent($0).path }.filter(CardImages.isFigure)
+            .filter { !cover.contains($0) }
+    }
+    /// A paper's cover alone (4 Nov 2026), as an absolute path: a volume's
+    /// piece's own, else a book's `document.cover` — nil when it has none.
+    private func coverPath(forDocID id: String) -> String? {
+        if let split = BoundVolume.split(articleDocID: id) {
+            guard let volume = model.epubRecords.first(where: { $0.id == split.volume }),
+                  let image = model.piece(forDocID: id)?.coverImage else { return nil }
+            return VisionModel.epubsRoot.appendingPathComponent(volume.folder, isDirectory: true)
+                .appendingPathComponent(image).path
+        }
+        guard let record = model.epubRecords.first(where: { $0.id == id }),
+              let image = model.documentCover(forDocID: id)?.image else { return nil }
+        return VisionModel.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+            .appendingPathComponent(image).path
     }
     private func bookImagePaths(forDocID id: String) -> [String] {
         guard let record = model.epubRecords.first(where: { $0.id == id }) else { return [] }
@@ -2119,7 +2153,14 @@ struct EPUBMapView: View {
                   CardImages.isFigure(path: url.path) else { continue }
             paths.append(url.path)
         }
-        return paths.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        paths.sort { $0.localizedStandardCompare($1) == .orderedAscending }
+        // Its own cover first (3 Nov 2026), when it carries one.
+        if let image = model.documentCover(forDocID: id)?.image {
+            let cover = folder.appendingPathComponent(image).path
+            paths.removeAll { $0 == cover }
+            paths.insert(cover, at: 0)
+        }
+        return paths
     }
 
     /// A paper's authors: a volume piece's own bylines, else its shelf
@@ -3335,6 +3376,8 @@ struct EPUBMapView: View {
             colorSphere(for: item)
         } else if item.wearsLook && item.look == .titles {
             colorTitle(for: item)
+        } else if item.wearsLook && item.look == .covers {
+            coverFace(for: item)
         } else if item.isAside {
             // The whole slip fades — the words too, not just the paper.
             Text(shortTitle(item.title))
@@ -3853,6 +3896,52 @@ struct EPUBMapView: View {
             }
         }
     }
+
+    /// Covers' face (4 Nov 2026): the paper's cover — the picture Author
+    /// made for it, or, where the book gives none, the key-sentence cover
+    /// the reader draws in its colours (`KeySentenceCover`) — so there is
+    /// never a paper without one. The title beneath; chosen, a white edge,
+    /// the full title and its authors. A cover is its colours, so they show
+    /// whether the bar's Colours is on or not.
+    @ViewBuilder private func coverFace(for item: EPUBMapItem) -> some View {
+        let s = Self.crisp
+        let shape = RoundedRectangle(cornerRadius: 3 * s)
+        VStack(spacing: 3 * s) {
+            Group {
+                if let path = item.coverPath, let image = CardImages.image(path: path, maxPixel: 700) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    KeySentenceCover(
+                        sentence: item.keySentence ?? item.firstSentence ?? shortTitle(item.title),
+                        byline: shortByline(item.author.components(separatedBy: " \u{00B7} ")[0]),
+                        colors: item.tagColors, seed: item.id,
+                        chosenByAI: item.keySentence != nil && item.keySentenceByAI,
+                        width: Self.coverWidth * s)
+                }
+            }
+            .frame(width: Self.coverWidth * s, height: Self.coverHeight * s)
+            .clipShape(shape)
+            .overlay {
+                if item.isSelected { shape.strokeBorder(Color.white.opacity(0.9), lineWidth: 1.6 * s) }
+            }
+            Text(item.isSelected ? item.title : shortTitle(item.title))
+                .font(AppFonts.body(5.5 * s, weight: .regular))
+                .foregroundStyle(Color.white)
+                .shadow(color: .black.opacity(0.6), radius: 1.5 * s)
+                .multilineTextAlignment(.center)
+                .lineLimit(item.isSelected ? 4 : 2)
+                .frame(maxWidth: Self.coverWidth * s + 10 * s)
+            if item.isSelected { lookByline(item, size: Self.titleBylineSize * s, width: Self.coverWidth * s + 10 * s) }
+        }
+        .padding(2 * s)
+    }
+
+    /// A cover's size on its face, in face points before the crisp factor:
+    /// a portrait book cover, 6 × 8 cm at rest — Author's 3 : 4.
+    static let coverWidth: CGFloat = 60
+    static let coverHeight: CGFloat = 80
 
     /// A soft mosaic of colours: one band of them across the top, the same
     /// turned half round across the bottom, the two melting into each other

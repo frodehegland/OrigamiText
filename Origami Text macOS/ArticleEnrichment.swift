@@ -152,6 +152,7 @@ final class ArticleEnrichment {
         say(concepts.isEmpty
             ? "No Defined Concepts in your library yet — none to look for."
             : "Looking for \(concepts.count) Defined Concepts.")
+        let tags = (model.index.folderURL.flatMap { OrigamiTags.read(from: $0) } ?? .defaults)
         let llm = OrigamiLLM.shared
         if !llm.canRespond { say("No model answers: abstracts the books lack will wait; keywords come from the articles' own terms.") }
 
@@ -224,6 +225,45 @@ final class ArticleEnrichment {
                 entry.keywordsSource = "terms"
             }
 
+            // Its cover's words and colours (4 Nov 2026): the key sentence,
+            // and tags of the model's choosing when none of the tags' words
+            // match — asked again when the text changed or Redo is on.
+            if !unchanged || redoAI {
+                entry.keySentence = nil; entry.keySentenceSource = nil
+                entry.tagIDs = nil; entry.tagsSource = nil
+            }
+            let abstract = (work.article.abstract ?? "").isEmpty ? (entry.abstract ?? "") : (work.article.abstract ?? "")
+            if entry.keySentenceSource == nil {
+                let candidates = Self.sentenceCandidates(abstract: abstract, text: work.text)
+                if candidates.count < 2 {
+                    entry.keySentence = candidates.first
+                    entry.keySentenceSource = "none"
+                } else if llm.canRespond {
+                    do {
+                        let chosen = try await chooseKeySentence(llm, title: work.article.title, from: candidates)
+                        entry.keySentence = chosen.sentence
+                        entry.keySentenceSource = chosen.sentence == nil ? nil : "ai · " + chosen.model
+                    } catch {
+                        say("\(work.article.title): key sentence — \(ReadingAI.reason(error))")
+                    }
+                }
+            }
+            let keywords = work.article.keywords.isEmpty ? entry.keywords : work.article.keywords
+            let matched = !work.article.coverColors.isEmpty
+                || !tags.matching(keywords: keywords, title: work.article.title, abstract: abstract).isEmpty
+            if matched {
+                entry.tagIDs = nil; entry.tagsSource = nil
+            } else if entry.tagsSource == nil, llm.canRespond {
+                do {
+                    let chosen = try await chooseTags(llm, among: tags.tags.filter(\.isOn), title: work.article.title,
+                                                      keywords: keywords, abstract: abstract, text: work.text)
+                    entry.tagIDs = chosen.ids
+                    entry.tagsSource = chosen.ids.isEmpty ? "none" : "ai · " + chosen.model
+                } catch {
+                    say("\(work.article.title): tags — \(ReadingAI.reason(error))")
+                }
+            }
+
             // The reader's Defined Concepts, whole words, any of their names.
             let text = work.article.title + "\n" + work.text
             entry.concepts = concepts.filter { concept in
@@ -271,6 +311,70 @@ final class ArticleEnrichment {
         let reply = try await llm.respond(instructions: instructions, to: prompt, transformingContent: true)
         let parsed = Self.parse(reply.text, wantsAbstract: wanted)
         return (parsed.abstract, parsed.keywords, reply.modelName)
+    }
+
+    /// The sentences a key sentence is chosen from (4 Nov 2026): the
+    /// abstract's, then the article's opening — whole sentences of 6 to 32
+    /// words, nothing repeated, at most 40.
+    nonisolated static func sentenceCandidates(abstract: String, text: String) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for source in [abstract, String(text.prefix(9000))] {
+            for line in OrigamiReading.flowLines(source, breakOnComma: false) {
+                let sentence = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                let words = sentence.split(whereSeparator: \.isWhitespace).count
+                guard (6...32).contains(words), seen.insert(sentence.lowercased()).inserted else { continue }
+                out.append(sentence)
+                if out.count == 40 { return out }
+            }
+        }
+        return out
+    }
+
+    /// The model's choice of key sentence, by number — so the words are
+    /// always the article's own, never the model's.
+    private func chooseKeySentence(_ llm: OrigamiLLM, title: String, from candidates: [String])
+        async throws -> (sentence: String?, model: String) {
+        let numbered = candidates.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+        let prompt = """
+            Article: "\(title)".
+
+            The numbered lines below are sentences from its abstract and opening. Choose the ONE that best \
+            says what the article is about — the line a reader would remember it by, never a transition, \
+            a thanks or a description of the paper's sections. Answer with only that sentence's number — \
+            for example: 4.
+
+            \(numbered)
+            """
+        let reply = try await llm.respond(instructions: "You choose sentences. Reply with a number only.",
+                                          to: prompt, transformingContent: true)
+        let number = reply.text.split(whereSeparator: { !$0.isNumber }).first.flatMap { Int($0) }
+        guard let number, candidates.indices.contains(number - 1) else { return (nil, reply.modelName) }
+        return (candidates[number - 1], reply.modelName)
+    }
+
+    /// One or two of the reader's tags, by the model's choice, for an
+    /// article none of whose words match any tag — the ids, in the tags' order.
+    private func chooseTags(_ llm: OrigamiLLM, among tags: [OrigamiTags.Tag], title: String,
+                            keywords: [String], abstract: String, text: String)
+        async throws -> (ids: [String], model: String) {
+        guard !tags.isEmpty else { return ([], llm.selectedDisplayName) }
+        let list = tags.enumerated().map { "\($0.offset + 1). \($0.element.name)" }.joined(separator: "\n")
+        let prompt = """
+            Article: "\(title)".
+            \(keywords.isEmpty ? "" : "Keywords: \(keywords.joined(separator: ", "))\n")\
+            \(abstract.isEmpty ? "Opening: \(String(text.prefix(1500)))" : "Abstract: \(abstract)")
+
+            Which ONE or TWO of these categories does it belong to?
+            \(list)
+
+            Answer with only their numbers, comma separated — for example: 2, 5.
+            """
+        let reply = try await llm.respond(instructions: "You sort articles into categories. Reply with numbers only.",
+                                          to: prompt, transformingContent: true)
+        let picked = Set(reply.text.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }.map { $0 - 1 })
+            .filter { tags.indices.contains($0) }.sorted().prefix(2)
+        return (picked.map { tags[$0].id }, reply.modelName)
     }
 
     /// "Abstract: … / Keywords: …" read back; a reply without the labels
@@ -472,6 +576,14 @@ struct ArticleEnrichmentView: View {
                                 Text("Defined Concepts: " + concepts.map(\.name).joined(separator: ", "))
                                     .font(.caption)
                                     .foregroundStyle(.tint)
+                            }
+                            if let sentence = entry?.keySentence {
+                                Text("Key sentence: “\(sentence)” (\(entry?.keySentenceSource ?? ""))")
+                                    .font(.caption)
+                            }
+                            if let ids = entry?.tagIDs, !ids.isEmpty {
+                                Text("Tags chosen: " + ids.joined(separator: ", ") + " (\(entry?.tagsSource ?? ""))")
+                                    .font(.caption)
                             }
                             if let note = entry?.note {
                                 Text(note).font(.caption).foregroundStyle(.orange)

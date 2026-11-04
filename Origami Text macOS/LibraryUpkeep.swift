@@ -203,12 +203,13 @@ final class LibraryUpkeep {
             return last.signature != signature || Date.now.timeIntervalSince(last.at) > Self.retryAfter
         }
 
-        // 1. Volumes with articles the metadata record has never read.
+        // 1. Volumes with articles the metadata record has never read, or
+        //    whose cover has no key sentence chosen yet (4 Nov 2026).
         let enrichment = ArticleEnrichment.shared
         let unread = model.epubRecords.filter { record in
             guard let bound = model.boundVolume(for: record) else { return false }
             let entries = enrichment.store[record.folder] ?? [:]
-            return bound.works.contains { entries[$0.id] == nil }
+            return bound.works.contains { entries[$0.id] == nil || entries[$0.id]?.keySentenceSource == nil }
         }
         if !unread.isEmpty {
             let signature = unread.map(\.folder).sorted().joined(separator: "|")

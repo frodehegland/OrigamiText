@@ -1771,16 +1771,18 @@ final class VisionModel {
     /// How the papers look, whatever Shape the room stands in (2 Nov 2026):
     /// as cards; as Color Spheres — a real sphere of the paper's
     /// categories' colours, its title beneath; or as Color Titles — the
-    /// title alone, its letters in those colours with soft edges.
-    /// Kept across launches.
+    /// title alone, its letters in those colours with soft edges; or as
+    /// Covers (4 Nov 2026) — the picture Author made to know it by, in its
+    /// categories' colours, the title beneath. Kept across launches.
     enum CardLook: String, CaseIterable {
-        case cards, spheres, titles, blobs
+        case cards, spheres, titles, blobs, covers
         var title: String {
             switch self {
             case .cards: "Cards"
             case .spheres: "Color Spheres"
             case .titles: "Color Titles"
             case .blobs: "Blobs"
+            case .covers: "Covers"
             }
         }
         /// A ball under the title: Color Spheres, or the soft Blobs.
@@ -2067,6 +2069,10 @@ final class VisionModel {
     /// the Mac's metadata), its title and its abstract, read against the
     /// tags' words.
     func tagColors(forDocID id: String, title: String) -> [String] {
+        // The colours the writer's app gave it (3 Nov 2026, a work's or a
+        // book's `cover`), when it gave any; the tags' own match otherwise.
+        if let piece = piece(forDocID: id), !piece.coverColors.isEmpty { return piece.coverColors }
+        if piece(forDocID: id) == nil, let colors = documentCover(forDocID: id)?.colors, !colors.isEmpty { return colors }
         let keywords: [String]
         let abstract: String
         if let piece = piece(forDocID: id) {
@@ -2079,7 +2085,24 @@ final class VisionModel {
             keywords = []
             abstract = ""
         }
-        return tags.matching(keywords: keywords, title: title, abstract: abstract).map(\.color)
+        let matched = tags.matching(keywords: keywords, title: title, abstract: abstract).map(\.color)
+        guard matched.isEmpty, let chosen = piece(forDocID: id)?.chosenTagIDs, !chosen.isEmpty else { return matched }
+        // None of the tags' words: the tags the Mac's model chose for it
+        // (4 Nov 2026), in their current colours — so no paper goes grey.
+        return tags.tags.filter { $0.isOn && chosen.contains($0.id) }.map(\.color)
+    }
+
+    /// A book read whole: its own cover (3 Nov 2026), read once from its
+    /// unpacked folder and kept.
+    @ObservationIgnored private var documentCovers: [String: (image: String?, colors: [String])?] = [:]
+
+    func documentCover(forDocID id: String) -> (image: String?, colors: [String])? {
+        if let known = documentCovers[id] { return known }
+        guard let record = epubRecords.first(where: { $0.id == id }) else { return nil }
+        let folder = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+        let found = BoundVolume.documentCover(inUnpackedFolder: folder)
+        documentCovers[id] = .some(found)
+        return found
     }
 
     /// The library's locations as the Mac set them, read from the

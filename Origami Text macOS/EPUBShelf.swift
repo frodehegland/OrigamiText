@@ -7,7 +7,7 @@ import Observation
 import KnowledgeIndex
 #endif
 import SwiftUI
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 import UIKit
 #endif
 #if os(macOS)
@@ -3030,6 +3030,18 @@ nonisolated struct BoundVolume: Hashable, Sendable {
         /// The pictures its pages show, folder-relative, in the order the
         /// binding lists them (`resources.images`) — empty when it lists none.
         var images: [String] = []
+        /// Its cover (3 Nov 2026, Author's Article Covers — the work's
+        /// `cover`): a picture to know it by when closed, folder-relative,
+        /// and the colours of its categories, "#RRGGBB", as the writer's
+        /// app found them; nil and empty when the book gives none.
+        var coverImage: String? = nil
+        var coverColors: [String] = []
+        /// Its key sentence and the tags the model chose for it, from the
+        /// Mac's Build Article Metadata (4 Nov 2026) — for the cover the
+        /// reader draws when the book gives none.
+        var keySentence: String? = nil
+        var keySentenceByAI = false
+        var chosenTagIDs: [String] = []
 
         var isWork: Bool { kind == .article || kind == .collection }
         var zone: Zone { kind.zone }
@@ -3142,6 +3154,10 @@ nonisolated struct BoundVolume: Hashable, Sendable {
                 piece.kind = kind; piece.label = label; piece.declared = true
             }
             piece.images = ids(resources, "images").map { OrigamiEPUBImporter.joinedPath(opfDirectory, $0) }
+            if let cover = Self.cover(work["cover"], opfDirectory: opfDirectory) {
+                piece.coverImage = cover.image
+                piece.coverColors = cover.colors
+            }
             pieces.append(piece)
         }
         for matter in binding["matter"] as? [[String: Any]] ?? [] {
@@ -3182,6 +3198,30 @@ nonisolated struct BoundVolume: Hashable, Sendable {
         }
         classify(&ordered, shapes: shapes, volumeTitle: volumeTitle, seriesName: series?.name)
         return BoundVolume(kind: binding["kind"] as? String ?? "book", articles: ordered, series: series)
+    }
+
+    /// A `cover` record (3 Nov 2026): `href` relative to the package
+    /// document, made folder-relative; `colors` "#RRGGBB".
+    static func cover(_ raw: Any?, opfDirectory: String) -> (image: String?, colors: [String])? {
+        guard let cover = raw as? [String: Any] else { return nil }
+        let image = (cover["href"] as? String).flatMap { $0.isEmpty ? nil : OrigamiEPUBImporter.joinedPath(opfDirectory, $0) }
+        let colors = (cover["colors"] as? [String] ?? []).filter { $0.hasPrefix("#") }
+        guard image != nil || !colors.isEmpty else { return nil }
+        return (image, colors)
+    }
+
+    /// A book read whole: its own `document.cover` (3 Nov 2026), from its
+    /// unpacked folder — nil when it has none.
+    static func documentCover(inUnpackedFolder folder: URL) -> (image: String?, colors: [String])? {
+        guard let data = OrigamiEPUBImporter.recordData(
+                inUnpackedFolder: folder, properties: "origami:visual-meta", fileName: "visual-meta.json"),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let document = root["document"] as? [String: Any] else { return nil }
+        let container = (try? String(contentsOf: folder.appendingPathComponent("META-INF/container.xml"),
+                                     encoding: .utf8)) ?? ""
+        let opfPath = container.range(of: #"full-path="([^"]+)""#, options: .regularExpression)
+            .map { String(container[$0].dropFirst("full-path=\"".count).dropLast()) } ?? "package.opf"
+        return cover(document["cover"], opfDirectory: (opfPath as NSString).deletingLastPathComponent)
     }
 
     /// EPUB's structural vocabulary (and the binding's own words), as kinds.
@@ -3801,6 +3841,18 @@ nonisolated enum ArticleMetadata {
         /// uses more than the rest of the series, when no model answered).
         var keywordsSource: String?
         var concepts: [Concept] = []
+        /// The one sentence of its own that best says what it is about —
+        /// the words of its key-sentence cover when it has no picture
+        /// (4 Nov 2026). The model only chooses: the words are the
+        /// article's. "ai · <model>", or "none" when it is too short to
+        /// choose from; nil until a pass has asked.
+        var keySentence: String?
+        var keySentenceSource: String?
+        /// The tags the model chose for it, by `origami-tags.json` id, when
+        /// none of the tags' words matched it — so it is never without a
+        /// colour (4 Nov 2026). "ai · <model>" or "none".
+        var tagIDs: [String]?
+        var tagsSource: String?
         /// The article's text as it was read, hashed — changed text is
         /// read again.
         var textHash: String
@@ -5026,6 +5078,9 @@ extension BoundVolume {
             }
             if copy.articles[index].keywords.isEmpty { copy.articles[index].keywords = entry.keywords }
             copy.articles[index].definedConcepts = entry.concepts.map(\.name)
+            copy.articles[index].keySentence = entry.keySentence
+            copy.articles[index].keySentenceByAI = entry.keySentenceSource?.hasPrefix("ai") == true
+            copy.articles[index].chosenTagIDs = entry.tagIDs ?? []
         }
         return copy
     }
@@ -5375,5 +5430,339 @@ nonisolated struct OrigamiPortraits: Codable, Sendable, Equatable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(portraits) else { return }
         try? data.write(to: community.appendingPathComponent(fileName), options: .atomic)
+    }
+}
+
+// MARK: - Key Sentence covers, drawn by the reader (4 Nov 2026)
+
+/// The cover a paper wears when its book gives none: its key sentence on
+/// the colour of its first category, every other colour as a rule, band
+/// or spine — Author's Key Sentence covers (`TypographicCover` in
+/// Author's ArticleCovers.swift), drawn here as a view rather than a JPEG,
+/// so it takes a tag's new colour at once and is written nowhere. Keep the
+/// two in step: the same faces, places, grains and palette rules, chosen
+/// the same way from the seed, so a paper's cover looks alike in both.
+struct KeySentenceCover: View {
+    let sentence: String
+    let byline: String
+    let colors: [String]
+    /// What the design is chosen from — the paper's id — so its cover is
+    /// the same every time and its neighbours' differ.
+    let seed: String
+    var index = 0
+    /// The sentence was the model's choice: a small mark says so.
+    var chosenByAI = false
+    /// The cover's width; its height is a third more.
+    let width: CGFloat
+
+    private struct Face {
+        let names: [String]
+        let capitals: Bool
+        let kern: CGFloat
+        let leading: CGFloat
+    }
+
+    private static let faces: [Face] = [
+        Face(names: ["DINCondensed-Bold"], capitals: true, kern: 0.04, leading: 1.06),
+        Face(names: ["AvenirNextCondensed-DemiBold"], capitals: true, kern: 0.02, leading: 1.04),
+        Face(names: ["Futura-CondensedMedium"], capitals: true, kern: 0.03, leading: 1.05),
+        Face(names: ["Didot-Bold", "Didot"], capitals: false, kern: 0, leading: 1.08),
+        Face(names: ["BodoniSvtyTwoITCTT-Bold", "Bodoni 72"], capitals: false, kern: 0, leading: 1.1),
+        Face(names: ["Rockwell-Bold", "Rockwell", "AmericanTypewriter-Bold"], capitals: false, kern: 0.01, leading: 1.08),
+        Face(names: ["AmericanTypewriter-Semibold", "AmericanTypewriter"], capitals: false, kern: 0, leading: 1.12),
+        Face(names: ["GillSans-SemiBold", "GillSans"], capitals: true, kern: 0.08, leading: 1.12),
+        Face(names: ["Optima-Bold", "Optima"], capitals: false, kern: 0.01, leading: 1.1),
+        Face(names: ["HelveticaNeue-CondensedBlack", "HelveticaNeue-CondensedBold"], capitals: true, kern: 0.02, leading: 1.02),
+    ]
+    private static let bylineFaces = ["Baskerville", "Didot-Italic", "GillSans", "AvenirNext-Regular",
+                                      "BodoniSvtyTwoITCTT-BookIta", "AmericanTypewriter", "Optima-Regular"]
+    private static let remainderFaces = ["Baskerville-Italic", "Didot-Italic", "BodoniSvtyTwoITCTT-BookIta",
+                                         "HoeflerText-Italic", "Optima-Italic"]
+
+    private enum Place: CaseIterable { case topLeft, topRight, middle, bottomLeft, ruled, band }
+    private enum Grain: CaseIterable { case leather, suede, paper, linen, canvas, smooth }
+
+    /// Author's steady hash (FNV-1a) and SplitMix64.
+    static func seedValue(_ text: String) -> UInt64 {
+        var hash: UInt64 = 1469598103934665603
+        for byte in text.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
+        return hash
+    }
+    private static func mix(_ value: UInt64) -> UInt64 {
+        var z = value &+ 0x9E3779B97F4A7C15
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
+
+    var body: some View {
+        // Drawn on Author's 1200 × 1600 page, in units of it.
+        let u = width / 1200
+        let s = Self.seedValue(seed)
+        func pick(_ salt: UInt64, _ count: Int) -> Int { Int(Self.mix(s ^ salt) % UInt64(count)) }
+        let h = Self.mix(s)
+        let place = Place.allCases[(pick(0x51, Place.allCases.count) + index) % Place.allCases.count]
+        let face = Self.faces[(pick(0xA3, Self.faces.count) + index * 3) % Self.faces.count]
+        let grain = Grain.allCases[pick(0x7C, Grain.allCases.count)]
+        let fill = 0.42 + CGFloat(pick(0x19, 32)) / 100
+        let narrow = CGFloat(pick(0x2E, 3)) * 0.1
+        let splits = pick(0x44, 2) == 0
+        let palette = Palette(colors)
+
+        let margin: CGFloat = 110
+        let footer: CGFloat = place == .band ? 300 : 230
+        let boxWidth = 1200 - margin * 2 - narrow * 1200
+        let boxHeight = (1600 - 130 - footer) * fill / 0.73
+        let boxX = margin + (place == .topRight ? narrow * 1200 : 0)
+        let alignment: TextAlignment = place == .topRight ? .trailing : (place == .middle ? .center : .leading)
+        let horizontal: HorizontalAlignment = place == .topRight ? .trailing : (place == .middle ? .center : .leading)
+
+        var main = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        var rest = ""
+        if splits, let cut = Self.splitPoint(main) {
+            rest = String(main[cut.upperBound...]).trimmingCharacters(in: .whitespaces)
+            main = String(main[..<cut.lowerBound]).trimmingCharacters(in: .whitespaces)
+        }
+        let shown = face.capitals ? main.uppercased() : main
+        let points: CGFloat = 200 * u
+        let marks = palette.marks
+
+        let words = VStack(alignment: horizontal, spacing: 24 * u) {
+            Text(shown)
+                .font(Self.font(face.names, points, bold: true))
+                .kerning(points * face.kern * 0.5)
+                .lineSpacing(points * (face.leading - 1))
+                .foregroundStyle(palette.ink.color)
+                .multilineTextAlignment(alignment)
+                .minimumScaleFactor(0.17)
+            if !rest.isEmpty {
+                Text("…" + rest)
+                    .font(Self.font([Self.remainderFaces[Int((h / 29) % UInt64(Self.remainderFaces.count))]],
+                                    70 * u, bold: false))
+                    .foregroundStyle(palette.accentOrInk.color)
+                    .multilineTextAlignment(alignment)
+                    .minimumScaleFactor(0.4)
+            }
+            if place == .ruled {
+                HStack(spacing: 6 * u) {
+                    ForEach(marks.indices, id: \.self) { i in
+                        Rectangle().fill(marks[i].color).frame(width: 124 * u, height: 14 * u)
+                    }
+                }
+                .padding(.top, 18 * u)
+            }
+        }
+
+        return ZStack(alignment: .topLeading) {
+            palette.ground.color
+            GrainView(grain: grain, seed: h, unit: u)
+            // Every other colour: a band at the foot, a strip at the head,
+            // or a spine along one edge.
+            switch place {
+            case .band:
+                HStack(spacing: 0) {
+                    ForEach(marks.indices, id: \.self) { i in marks[i].color }
+                }
+                .frame(width: 1200 * u, height: 230 * u)
+                .offset(y: (1600 - 230) * u)
+            case .middle:
+                HStack(spacing: 0) {
+                    ForEach(marks.indices, id: \.self) { i in marks[i].color }
+                }
+                .frame(width: 1200 * u, height: 60 * u)
+            case .topLeft, .topRight, .bottomLeft:
+                VStack(spacing: 0) {
+                    ForEach(marks.indices, id: \.self) { i in marks[i].color }
+                }
+                .frame(width: 66 * u, height: 1600 * u)
+                .offset(x: place == .topRight ? (1200 - 66) * u : 0)
+            case .ruled:
+                EmptyView()
+            }
+            switch place {
+            case .middle:
+                words
+                    .frame(width: boxWidth * u, height: (1600 - 130 - footer) * u, alignment: .center)
+                    .offset(x: boxX * u, y: 130 * u)
+            case .bottomLeft:
+                words
+                    .frame(width: boxWidth * u, height: (1600 - 130 - footer - 40) * u, alignment: .bottomLeading)
+                    .offset(x: boxX * u, y: 130 * u)
+            default:
+                words
+                    .frame(width: boxWidth * u, height: boxHeight * u,
+                           alignment: place == .topRight ? .topTrailing : .topLeading)
+                    .offset(x: boxX * u, y: 130 * u)
+            }
+            if !byline.isEmpty {
+                let ink = place == .band ? palette.ink(on: marks[marks.count - 1]) : palette.accentOrInk
+                Text(byline)
+                    .font(Self.font([Self.bylineFaces[Int((h / 31) % UInt64(Self.bylineFaces.count))]], 56 * u, bold: false))
+                    .foregroundStyle(ink.color)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .frame(width: (1200 - margin * 2) * u, height: 90 * u,
+                           alignment: place == .middle ? .center : .trailing)
+                    .offset(x: margin * u, y: (1600 - (place == .band ? 150 : 200)) * u)
+            }
+            if chosenByAI {
+                // The small mark the room's AI-made things wear.
+                Text("AI")
+                    .font(.system(size: 30 * u, weight: .semibold, design: .rounded))
+                    .foregroundStyle(palette.accentOrInk.color.opacity(0.7))
+                    .frame(width: 1200 * u - 40 * u, alignment: .trailing)
+                    .offset(y: 28 * u)
+            }
+        }
+        .frame(width: 1200 * u, height: 1600 * u)
+        .clipped()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(sentence))
+    }
+
+    private static func splitPoint(_ text: String) -> Range<String.Index>? {
+        for mark in [" — ", " – ", ": ", "; ", ", "] {
+            guard let range = text.range(of: mark) else { continue }
+            let before = text[..<range.lowerBound].split(separator: " ").count
+            let after = text[range.upperBound...].split(separator: " ").count
+            if before >= 3, after >= 3 { return range }
+        }
+        return nil
+    }
+
+    /// The first of the names this device has, else the system face.
+    private static func font(_ names: [String], _ size: CGFloat, bold: Bool) -> Font {
+        for name in names {
+            #if os(macOS)
+            if NSFont(name: name, size: size) != nil { return .custom(name, fixedSize: size) }
+            #else
+            if UIFont(name: name, size: size) != nil { return .custom(name, fixedSize: size) }
+            #endif
+        }
+        return .system(size: size, weight: bold ? .bold : .regular)
+    }
+
+    // MARK: Colour, as Author's covers use it
+
+    struct RGB: Equatable {
+        var r: Double, g: Double, b: Double
+        init(_ r: Double, _ g: Double, _ b: Double) { self.r = r; self.g = g; self.b = b }
+        init(hex: String) {
+            let (r, g, b) = OrigamiTags.Tag(id: "", name: "", color: hex, words: []).rgb
+            self.init(r, g, b)
+        }
+        var color: Color { Color(red: r, green: g, blue: b) }
+        func blended(_ fraction: Double, with other: RGB) -> RGB {
+            RGB(r + (other.r - r) * fraction, g + (other.g - g) * fraction, b + (other.b - b) * fraction)
+        }
+        var luminance: Double {
+            func channel(_ v: Double) -> Double { v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+            return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+        }
+        static func contrast(_ a: RGB, _ b: RGB) -> Double {
+            let (x, y) = (a.luminance, b.luminance)
+            return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+        }
+        static let black = RGB(0, 0, 0), white = RGB(1, 1, 1)
+        /// A little deeper and quieter, as dyed leather is.
+        var leather: RGB { blended(0.18, with: RGB(0.22, 0.2, 0.19)) }
+        static func plainInk(on ground: RGB) -> RGB {
+            let dark = RGB(0.12, 0.11, 0.10), light = RGB(0.97, 0.95, 0.90)
+            return contrast(dark, ground) >= contrast(light, ground) ? dark : light
+        }
+    }
+
+    /// The first colour the ground; the next that reads on it the words;
+    /// another the accent; all but the ground as marks. One colour alone
+    /// is given a darker and a lighter shade of itself.
+    private struct Palette {
+        let ground: RGB
+        let ink: RGB
+        let accent: RGB
+        let marks: [RGB]
+
+        init(_ hexes: [String]) {
+            var colours = (hexes.isEmpty ? ["#A89F91"] : hexes).map(RGB.init(hex:))
+            let base = colours[0]
+            if colours.count == 1 {
+                colours.append(base.blended(0.55, with: .black))
+                colours.append(base.blended(0.6, with: .white))
+            }
+            ground = colours[0].leather
+            let others = Array(colours.dropFirst())
+            let readable = others.first { RGB.contrast($0, colours[0].leather) >= 3.5 }
+            ink = readable ?? RGB.plainInk(on: colours[0].leather)
+            let candidate = others.first { $0 != readable && RGB.contrast($0, colours[0].leather) >= 1.5 }
+            accent = candidate ?? (others.first ?? base)
+            marks = hexes.count > 1 ? Array(colours.dropFirst().prefix(hexes.count - 1)) : [colours[1]]
+        }
+
+        var accentOrInk: RGB { RGB.contrast(accent, ground) >= 3 ? accent : ink }
+        func ink(on colour: RGB) -> RGB {
+            RGB.contrast(ground, colour) >= 3 ? ground : RGB.plainInk(on: colour)
+        }
+    }
+
+    /// The ground's grain, lighter than Author's Core Image noise so a
+    /// room of covers stays cheap: soft mottle for leather and suede,
+    /// fibres for paper, a weave for linen and canvas, then a vignette.
+    private struct GrainView: View {
+        let grain: Grain
+        let seed: UInt64
+        let unit: CGFloat
+
+        var body: some View {
+            Canvas { context, size in
+                var state = seed | 1
+                func random() -> CGFloat {
+                    state = state &* 6364136223846793005 &+ 1442695040888963407
+                    return CGFloat(state >> 33) / CGFloat(UInt32.max >> 1)
+                }
+                func mottle(count: Int, radius: CGFloat, alpha: CGFloat) {
+                    var layer = context
+                    layer.addFilter(.blur(radius: radius * 0.6))
+                    for _ in 0..<count {
+                        let r = radius * (0.5 + random())
+                        let rect = CGRect(x: random() * size.width - r, y: random() * size.height - r,
+                                          width: r * 2, height: r * 2 * (0.7 + random() * 0.6))
+                        layer.fill(Path(ellipseIn: rect),
+                                   with: .color((random() > 0.5 ? Color.white : Color.black).opacity(alpha * random())))
+                    }
+                }
+                func lines(every step: CGFloat, alpha: CGFloat, vertical: Bool, long: Bool) {
+                    var at: CGFloat = 0
+                    while at < (vertical ? size.width : size.height) {
+                        let shade = (random() > 0.5 ? Color.white : Color.black).opacity(alpha * (0.4 + random()))
+                        let length = long ? (vertical ? size.height : size.width) : size.width * (0.1 + random() * 0.3)
+                        let start = long ? 0 : random() * size.width
+                        let rect = vertical ? CGRect(x: at, y: 0, width: 1.4 * unit, height: length)
+                                            : CGRect(x: start, y: at, width: length, height: 1.4 * unit)
+                        context.fill(Path(rect), with: .color(shade))
+                        at += step * unit * (0.8 + random() * 0.4)
+                    }
+                }
+                var vignette = 0.18
+                switch grain {
+                case .leather: mottle(count: 70, radius: 90 * unit, alpha: 0.16)
+                case .suede: mottle(count: 120, radius: 40 * unit, alpha: 0.12)
+                case .paper:
+                    lines(every: 9, alpha: 0.05, vertical: false, long: false)
+                    vignette = 0.1
+                case .linen:
+                    lines(every: 8, alpha: 0.05, vertical: false, long: true)
+                    lines(every: 8, alpha: 0.05, vertical: true, long: true)
+                case .canvas:
+                    lines(every: 14, alpha: 0.08, vertical: false, long: true)
+                    lines(every: 14, alpha: 0.08, vertical: true, long: true)
+                case .smooth: vignette = 0.24
+                }
+                let centre = CGPoint(x: size.width / 2, y: size.height / 2)
+                context.fill(Path(CGRect(origin: .zero, size: size)), with: .radialGradient(
+                    Gradient(stops: [.init(color: .black.opacity(0), location: 0.5),
+                                     .init(color: .black.opacity(vignette), location: 1)]),
+                    center: centre, startRadius: 0, endRadius: hypot(size.width, size.height) / 2))
+            }
+            .allowsHitTesting(false)
+        }
     }
 }
