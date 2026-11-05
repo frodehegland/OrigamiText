@@ -2904,6 +2904,8 @@ struct EPUBMapView: View {
         view = view.onEndMoveNode { allItems, _, newItems in
             // The next drag works out its own riders afresh.
             cardSizes.riders = nil
+            // Set down: an open card keeps the turn it was carried with.
+            cardTick.facingWhileMoved.removeAll()
             // An open paper carried off its year's plane keeps its place: it
             // is lifted, free (no surface courts it), its ghost holding the
             // slot it left — Put Back sends it home.
@@ -2990,6 +2992,11 @@ struct EPUBMapView: View {
             // A ghost holds the lifted card's place — the slot is the
             // whole point of it.
             if item.isGhost || item.isFaded { return startPosition }
+            // An open paper standing free turns to the reader while carried.
+            if item.isSelected, item.showsAbstract, standsFree(item),
+               !cardTick.facingWhileMoved.contains(item.id) {
+                cardTick.facingWhileMoved.insert(item.id)
+            }
             // A snapped-off card moves free in every axis and courts
             // the room's surfaces: within reach of one it lands on the
             // plane. State writes only ON CHANGE — a write per frame
@@ -3234,6 +3241,9 @@ struct EPUBMapView: View {
                                  (liftedCards[$0]?.stuck ?? labelStuck[$0]).map(simd_quatf.init(vector:))
                              })
             cardTick.targetScale = { [cardSizes] in cardSizes.targetScale[$0] }
+            cardTick.stillOpen = { id in
+                items.first(where: { $0.id == id }).map { $0.isSelected && $0.showsAbstract } ?? false
+            }
             // Align to Room's wall: a wall-classified vertical plane on
             // the one tracking session, read when the chip is tapped.
             let roomWall = AnchorEntity(.plane(.vertical, classification: .wall,
@@ -5611,10 +5621,32 @@ struct EPUBMapView: View {
             abstractOpenIDs.remove(item.id)
         } else {
             abstractOpenIDs.insert(item.id)
+            faceOnOpen(item)
         }
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index].showsAbstract = abstractOpenIDs.contains(item.id)
         }
+    }
+
+    /// The Shapes whose papers stand free in the room rather than on a
+    /// panel or a wall — Timeline is the Hallway, Weight a curved wall,
+    /// the grouping Shapes small walls on an arc.
+    private static let freeStandingShapes: Set<String> = [
+        RoomShape.constellation, .landscape, .colours, .citations, .territory, .faults,
+    ].reduce(into: []) { $0.insert($1.rawValue) }
+
+    /// Whether a paper stands free: in a free-standing Shape, and not
+    /// resting on a real surface.
+    private func standsFree(_ item: EPUBMapItem) -> Bool {
+        item.kind == .article && !item.isGhost && liftedCards[item.id]?.stuck == nil
+            && Self.freeStandingShapes.contains(roomShape?.shape ?? "")
+    }
+
+    /// A free-standing paper turns to the reader as it opens — once; it
+    /// does not follow the head afterwards (5 Nov 2026).
+    private func faceOnOpen(_ item: EPUBMapItem) {
+        guard standsFree(item) else { return }
+        cardTick.faceOnce.insert(item.id)
     }
 
     // MARK: - Lift — a card snapped off the map, stuck to a surface
@@ -5989,6 +6021,8 @@ struct EPUBMapView: View {
         guard let venue = model.openJournalVenue else { return }
         var all = storedShapes
         all[venue] = StoredShape(shape: shape.rawValue, labels: labels)
+        // Onto a panel, a wall or back to the Hallway: open cards stand upright.
+        if !Self.freeStandingShapes.contains(shape.rawValue) { cardTick.heldFacing = [:] }
         if let data = try? JSONEncoder().encode(all), let text = String(data: data, encoding: .utf8) {
             storedShapesRaw = text
         }
@@ -7757,6 +7791,7 @@ struct EPUBMapView: View {
             abstractOpenIDs.insert(item.id)
             // The rebuilt card unfolds into place (cardEntity).
             cardSizes.unfolding.insert(item.id)
+            faceOnOpen(item)
         }
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index].showsAbstract = abstractOpenIDs.contains(item.id)
@@ -8975,6 +9010,11 @@ final class FistGrab {
     /// Which hand is carrying — the first fist wins; the other hand
     /// is ignored until the carry ends.
     private var driving: Int?
+    /// The room is taken only by BOTH hands closed at once (5 Nov 2026,
+    /// Frode: a single hand read as a fist far too easily, and the space
+    /// slid away under ordinary gestures). The hand that closed first
+    /// carries; once the carry is under way the other hand may open.
+    static let needsBothHands = true
     /// The carry so far, handed to `release` when the fist opens.
     private var carried = SIMD3<Float>.zero
     private var subscription: EventSubscription?
@@ -9124,8 +9164,11 @@ final class FistGrab {
             if closedNow {
                 if driving == index { looseSince = nil }
                 if hands[index].isFist {
-                    guard driving == index, let last = hands[index].lastPalm else { continue }
+                    // A fist waiting for its partner keeps its palm
+                    // current, so the carry starts from where it is.
+                    let previous = hands[index].lastPalm
                     hands[index].lastPalm = palm
+                    guard driving == index, let last = previous else { continue }
                     // Still choosing: nothing moves. A fist that sets off
                     // without a choice carries everything, from here.
                     guard let carrying = choice else {
@@ -9148,14 +9191,14 @@ final class FistGrab {
                     guard now - since >= Self.holdBefore else { continue }
                     hands[index].isFist = true
                     hands[index].lastPalm = palm
-                    if driving == nil {
-                        driving = index
+                    if driving == nil, let first = firstFist() {
+                        driving = first
                         carried = .zero
                         // No chits (2 Nov 2026, Frode: no arm chits at
                         // all): a fist carries everything at once.
                         choice = Self.offersChits ? nil : .everything
                         waited = .zero
-                        grip?(palm)
+                        grip?(hands[first].lastPalm ?? palm)
                     }
                 }
             } else {
@@ -9163,6 +9206,20 @@ final class FistGrab {
                 if !holdsWhileChoosing(index, now: now) { letGo(index) }
             }
         }
+    }
+
+    /// Settings key: the LEFT hand carries instead of the right.
+    static let leftHandCarriesKey = "fistGrabLeftHandCarries"
+
+    /// The hand that carries, once enough hands are fists: always the
+    /// right (or the left, swapped in Settings), whichever closed first
+    /// (5 Nov 2026, Frode). Nil while the other hand is still open.
+    private func firstFist() -> Int? {
+        let fists = hands.indices.filter { hands[$0].isFist }
+        guard fists.count >= (Self.needsBothHands ? hands.count : 1) else { return nil }
+        // hands[0] is the left, hands[1] the right (see install).
+        let carrier = UserDefaults.standard.bool(forKey: Self.leftHandCarriesKey) ? 0 : 1
+        return fists.contains(carrier) ? carrier : nil
     }
 
     /// Whether a choosing fist that has loosened (or left the cameras)
@@ -11309,6 +11366,18 @@ private final class MapCardTick {
     /// a desk must stay lying on it, whoever walks round it.
     private var stuckOrientation: (@MainActor (String) -> simd_quatf?)?
     private let cardQuery = EntityQuery(where: .has(EPUBNodeIDComponent.self))
+    /// Open papers standing free in the room (5 Nov 2026, Frode): turned
+    /// to the reader the moment they open, then left at that angle as the
+    /// reader walks about — and turned again, all the while, as one is
+    /// carried. Held by id, so a rebuilt card keeps its turn.
+    var heldFacing: [String: simd_quatf] = [:]
+    /// Cards to turn to the reader on the next frame, once.
+    var faceOnce: Set<String> = []
+    /// Cards being carried, turning to the reader every frame.
+    var facingWhileMoved: Set<String> = []
+    /// Whether a card is still open — a held turn ends when it closes,
+    /// whichever way it was closed.
+    var stillOpen: (@MainActor (String) -> Bool)?
     /// The bylines of the nodes the reader is facing, shown.
     private var shownBylines: [Entity] = []
     /// How many faced nodes show their authors at once, and how near the
@@ -11454,6 +11523,24 @@ private final class MapCardTick {
                     card.orientation = stuck
                 }
             }
+            // An open paper standing free: turned to the reader as it
+            // opens and while it is carried, otherwise held where it was
+            // last turned.
+            else if faceOnce.contains(id) || facingWhileMoved.contains(id) || heldFacing[id] != nil,
+                    stillOpen?(id) ?? false {
+                if faceOnce.contains(id) || facingWhileMoved.contains(id), let head {
+                    let toHead = head - place
+                    if simd_length(SIMD2(toHead.x, toHead.z)) > 1e-4 {
+                        heldFacing[id] = simd_quatf(angle: atan2(toHead.x, toHead.z),
+                                                    axis: SIMD3<Float>(0, 1, 0))
+                    }
+                    faceOnce.remove(id)
+                }
+                let turn = heldFacing[id] ?? upright
+                if abs(simd_dot(card.orientation.vector, turn.vector)) < 0.99995 {
+                    card.orientation = turn
+                }
+            }
             // The lifted cards billboard at the node — collision and
             // face together — while every other card stands upright
             // (which also rights a card just put back).
@@ -11487,6 +11574,11 @@ private final class MapCardTick {
             } else if abs(simd_dot(card.orientation.vector, upright.vector)) < 0.99995 {
                 card.orientation = upright
             }
+        }
+        // Closed since: the turn is forgotten, and the card stands upright.
+        if !heldFacing.isEmpty || !faceOnce.isEmpty, let stillOpen {
+            for id in heldFacing.keys where !stillOpen(id) { heldFacing[id] = nil }
+            faceOnce = faceOnce.filter(stillOpen)
         }
         for layer in liveLines { layer.relayout(positions: positions) }
         let now = faced.sorted { $0.closeness > $1.closeness }.prefix(Self.facedBylines).map(\.byline)

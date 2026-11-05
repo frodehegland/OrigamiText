@@ -1903,10 +1903,19 @@ final class VisionModel {
 
     /// A series' volumes on the shelf, in the series' own order (its
     /// volume numbers, then dates, then titles).
+    /// A volume sent more than once (Author's letters keep every send)
+    /// stands once: the newest edition by its package's modified stamp.
     func seriesVolumes(_ seriesID: String) -> [EPUBRecord] {
-        epubRecords
-            .compactMap { record in boundVolume(for: record).flatMap { bound in
-                bound.series?.id == seriesID ? (record, bound.series?.volume) : nil } }
+        var newest: [Int: (record: EPUBRecord, modified: Date)] = [:]
+        var unnumbered: [(EPUBRecord, Int?)] = []
+        for record in epubRecords {
+            guard let bound = boundVolume(for: record), bound.series?.id == seriesID else { continue }
+            guard let volume = bound.series?.volume else { unnumbered.append((record, nil)); continue }
+            let modified = packageModified(record)
+            if let held = newest[volume], held.modified >= modified { continue }
+            newest[volume] = (record, modified)
+        }
+        return (newest.map { ($0.value.record, Optional($0.key)) } + unnumbered)
             .sorted { a, b in
                 if a.1 != b.1 { return (a.1 ?? Int.max) < (b.1 ?? Int.max) }
                 if a.0.dateISO != b.0.dateISO { return (a.0.dateISO ?? "") < (b.0.dateISO ?? "") }
@@ -1914,6 +1923,18 @@ final class VisionModel {
             }
             .map(\.0)
     }
+
+    /// When a book's package was last made: its stored .epub's file date
+    /// (the copy keeps the source's), remembered per folder.
+    private func packageModified(_ record: EPUBRecord) -> Date {
+        if let known = packageModifiedDates[record.folder] { return known }
+        let stored = Self.epubsRoot.appendingPathComponent(record.folder + ".epub")
+        let date = (try? stored.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate ?? record.openedAt
+        packageModifiedDates[record.folder] = date
+        return date
+    }
+    @ObservationIgnored private var packageModifiedDates: [String: Date] = [:]
 
     /// Every series with two or more volumes on the shelf — listed first
     /// among the rooms, since it is where a series is best begun.
@@ -2822,6 +2843,7 @@ final class VisionModel {
         }
         if changed { persistEPUBRecords() }
         retireSuperseded(presentFolders: present)
+        retireRemoved(presentFolders: present)
         if changed { rebuildEPUBIndex() }
         adoptStanding()
         // A pin that arrived before its book: the adopted standing may
@@ -2883,6 +2905,44 @@ final class VisionModel {
         }
         UserDefaults.standard.set(pinnedIDs.sorted(), forKey: "epubTopOfPile")
         UserDefaults.standard.set(setAsideIDs.sorted(), forKey: "epubSetAside")
+        persistEPUBRecords()
+        rebuildEPUBIndex()
+    }
+
+    /// Books opened here as files (Files' Open In, a share) — never in
+    /// the community folder, so their absence from it means nothing.
+    @ObservationIgnored private var localOnlyFolders: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "epubLocalOnlyFolders") ?? [])
+
+    private func markLocalOnly(_ folder: String) {
+        guard localOnlyFolders.insert(folder).inserted else { return }
+        UserDefaults.standard.set(localOnlyFolders.sorted(), forKey: "epubLocalOnlyFolders")
+    }
+
+    /// A book deleted on the Mac leaves the community folder; it leaves
+    /// this shelf too (5 Nov 2026, Frode: old Future of Text volumes
+    /// deleted on the Mac still stood in the space). An iCloud placeholder
+    /// counts as present, a book opened here as a file is never retired,
+    /// and a walk that finds the folder empty or mostly missing — iCloud
+    /// not yet answering — retires nothing.
+    private func retireRemoved(presentFolders: Set<String>) {
+        guard !presentFolders.isEmpty else { return }
+        let gone = epubRecords.filter {
+            !presentFolders.contains($0.folder) && !localOnlyFolders.contains($0.folder)
+        }
+        guard !gone.isEmpty, gone.count <= max(10, epubRecords.count / 2) else { return }
+        for old in gone {
+            pinnedIDs.remove(old.id)
+            setAsideIDs.remove(old.id)
+            try? FileManager.default.removeItem(
+                at: Self.epubsRoot.appendingPathComponent(old.folder, isDirectory: true))
+            try? FileManager.default.removeItem(
+                at: Self.epubsRoot.appendingPathComponent(old.folder + ".epub"))
+            epubRecords.removeAll { $0.folder == old.folder }
+        }
+        UserDefaults.standard.set(pinnedIDs.sorted(), forKey: "epubTopOfPile")
+        UserDefaults.standard.set(setAsideIDs.sorted(), forKey: "epubSetAside")
+        forgetBoundVolumes()
         persistEPUBRecords()
         rebuildEPUBIndex()
     }
@@ -3233,6 +3293,11 @@ final class VisionModel {
         let identity = LiquidDoc.identityKeyID(inFileName: name) ?? name
         let safe = identity.replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ":", with: "_")
+        // Not from the community folder: its absence there must not retire it.
+        if let folder = index.folderURL,
+           !url.standardizedFileURL.path.hasPrefix(folder.standardizedFileURL.path) {
+            markLocalOnly(safe)
+        }
         guard let record = epubRecords.first(where: { $0.folder == safe }) else { return nil }
         // This one book parses now, off the main thread, and joins the
         // index alone — the reader opens at once instead of waiting for
@@ -4580,6 +4645,7 @@ struct VisionSettingsView: View {
     /// Swap Arms: every wrist chip on the opposite forearm. The Map's
     /// ArmMenu watches this key and flips live.
     @AppStorage("armMenuInverted") private var armMenuInverted = false
+    @AppStorage(FistGrab.leftHandCarriesKey) private var leftHandCarries = false
     @State private var choosingFolder = false
 
     var body: some View {
@@ -4646,6 +4712,13 @@ struct VisionSettingsView: View {
                     Text("Arm Menus")
                 } footer: {
                     Text("Moves every wrist chip to the opposite forearm — for wearing the working row on the other arm.")
+                }
+                Section {
+                    Toggle("Left Hand Moves the Space", isOn: $leftHandCarries)
+                } header: {
+                    Text("Moving the Space")
+                } footer: {
+                    Text("Close both hands into fists to move everything; the right hand does the moving unless this is on.")
                 }
                 Section {
                     ContextOnlineSettings()
