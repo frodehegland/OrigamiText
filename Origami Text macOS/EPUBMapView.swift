@@ -5364,10 +5364,14 @@ struct EPUBMapView: View {
             } label: {
                 Text((lit.map { "\(title): \($0.hasPrefix(Self.bothCitePrefix) ? "Both cite" : $0)" } ?? title)
                      + (open ? " \u{25B4}" : " \u{25BE}"))
+                    .font(.system(size: 24))
+                    .padding(.horizontal, 6)
+                    .frame(minHeight: 52)
             }
+            .controlSize(.large)
             .tint(lit == nil ? nil : .accentColor)
             if open {
-                VStack(alignment: only ? .leading : .trailing, spacing: 6) {
+                VStack(alignment: only ? .leading : .trailing, spacing: 2) {
                     ForEach(Self.relationCatalog, id: \.self) { name in
                         relationChoice(name, relations.first { $0.title == name }, only: only, gather: gather, of: item, lit: lit)
                     }
@@ -5378,8 +5382,10 @@ struct EPUBMapView: View {
                         openList = openList == "both|" + key ? key : "both|" + key
                     } label: {
                         Text("Both cite\u{2026}" + (openList == "both|" + key ? " \u{25B4}" : " \u{25BE}"))
+                            .modifier(RelationRow(trailing: !only))
                     }
                     .buttonStyle(.plain)
+                    .hoverEffect(.highlight)
                     .disabled(shared.isEmpty)
                     if openList == "both|" + key {
                         ForEach(shared) { relation in
@@ -5388,7 +5394,7 @@ struct EPUBMapView: View {
                         }
                     }
                 }
-                .font(.system(size: 19))
+                .font(.system(size: 24))
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color(white: 0.08).opacity(0.88)))
             }
@@ -5429,13 +5435,14 @@ struct EPUBMapView: View {
                                 }
                             }
                             .fontWeight(on ? .semibold : .regular)
+                            .modifier(RelationRow(trailing: false))
                         }
                         .buttonStyle(.plain)
-                        .padding(.vertical, 11)
+                        .hoverEffect(.highlight)
                         .disabled(relation.ids.isEmpty)
                     }
                 }
-                .font(.system(size: 19))
+                .font(.system(size: 24))
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color(white: 0.08).opacity(0.88)))
             }
@@ -5453,15 +5460,37 @@ struct EPUBMapView: View {
             openList = nil
         } label: {
             let words = relation.map { "\(name)  \($0.ids.count)" + ($0.isAI ? "  \u{00B7} AI" : "") } ?? name
-            if let relation, lit == relation.title {
-                Label(words, systemImage: "checkmark").fontWeight(.semibold)
-            } else {
-                Text(words)
+            Group {
+                if let relation, lit == relation.title {
+                    Label(words, systemImage: "checkmark").fontWeight(.semibold)
+                } else {
+                    Text(words)
+                }
             }
+            .modifier(RelationRow(trailing: !only))
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 11)
+        .hoverEffect(.highlight)
         .disabled(relation == nil)
+    }
+
+    /// A choice in a card's relation menu as a whole row to pinch (Frode,
+    /// 6 Nov 2026): the row's full width and at least 60 points tall, all
+    /// of it the target — with the plain style only the letters were, and
+    /// people found the choices hard to land on.
+    private struct RelationRow: ViewModifier {
+        /// Its words to the right, as Connects' and Gather's, on the card's left.
+        let trailing: Bool
+
+        func body(content: Content) -> some View {
+            content
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .padding(.horizontal, 14)
+                .frame(maxWidth: .infinity, minHeight: 60, alignment: trailing ? .trailing : .leading)
+                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 10))
+                .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
     }
 
     // MARK: - Relations from a reading's selected words (2 Nov 2026)
