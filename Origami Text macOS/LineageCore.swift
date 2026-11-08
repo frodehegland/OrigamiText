@@ -430,8 +430,8 @@ nonisolated enum LineageStyle {
     static let graphite: UInt32 = 0x3B3F46
     static let graphiteDark: UInt32 = 0x9BA0A8
     static let muted: UInt32 = 0x70747A
-    static let roots: UInt32 = 0x2743C4      // ultramarine — what it drew on
-    static let influence: UInt32 = 0xC4791C  // ochre — what built on it
+    static let roots: UInt32 = XRColourRoles.lineageRoots.colour.hex          // ultramarine — what it drew on
+    static let influence: UInt32 = XRColourRoles.lineageInfluence.colour.hex  // ochre — what built on it
 
     /// Alpha and width ramps per bloom depth (index 1…3).
     static let edgeAlpha: [CGFloat] = [0, 0.90, 0.30, 0.11]

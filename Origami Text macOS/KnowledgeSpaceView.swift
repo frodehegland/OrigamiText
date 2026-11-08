@@ -527,12 +527,12 @@ struct ConceptSpatialView: View {
         for relatedID in concept.relatedConceptIDs where conceptIDs.contains(relatedID) {
             result.append(SpatialCardConnection(
                 from: "c_" + selID, to: "c_" + relatedID,
-                fromColor: .purple.opacity(0.55), toColor: .purple.opacity(0.28)))
+                fromColor: XRColourRoles.ksConcept.color(opacity: 0.55), toColor: XRColourRoles.ksConcept.color(opacity: 0.28)))
         }
         for docID in concept.sourceDocIDs {
             result.append(SpatialCardConnection(
                 from: "c_" + selID, to: "d_\(docID)_\(selID)",
-                fromColor: .blue.opacity(0.45), toColor: .blue.opacity(0.22)))
+                fromColor: XRColourRoles.ksDocument.color(opacity: 0.45), toColor: XRColourRoles.ksDocument.color(opacity: 0.22)))
         }
         return result
     }
@@ -596,7 +596,7 @@ struct ConceptSpatialView: View {
                     Image(systemName: "doc.text").font(.system(size: 10))
                     Text("\(c.sourceDocIDs.count)").font(.system(size: 10))
                 }
-                .foregroundStyle(selectedConceptID == c.id ? Color.purple.opacity(0.8) : Color.secondary)
+                .foregroundStyle(selectedConceptID == c.id ? XRColourRoles.ksConcept.color(opacity: 0.8) : Color.secondary)
             }
             .padding(10)
             .frame(width: 160, height: 100)
@@ -605,7 +605,7 @@ struct ConceptSpatialView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(selectedConceptID == c.id
-                                  ? Color.purple.opacity(0.65) : Color.clear, lineWidth: 2))
+                                  ? XRColourRoles.ksConcept.color(opacity: 0.65) : Color.clear, lineWidth: 2))
 
         case .document(let docID, _):
             if let entry = model.index.byID[docID] {
@@ -620,7 +620,7 @@ struct ConceptSpatialView: View {
                 .background(.ultraThinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.blue.opacity(0.4), lineWidth: 1))
+                    .strokeBorder(XRColourRoles.ksDocument.color(opacity: 0.4), lineWidth: 1))
             } else {
                 Color.clear.frame(width: 140, height: 72)
             }

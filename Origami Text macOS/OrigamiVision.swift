@@ -1773,9 +1773,13 @@ final class VisionModel {
     /// categories' colours, its title beneath; or as Color Titles — the
     /// title alone, its letters in those colours with soft edges; or as
     /// Covers (4 Nov 2026) — the picture Author made to know it by, in its
-    /// categories' colours, the title beneath. Kept across launches.
+    /// categories' colours, the title beneath; or Fast (8 Nov 2026) — the
+    /// simplest the room can draw: each paper one flat unlit plate, its
+    /// title baked once into a picture, no live view behind it, so moving
+    /// many papers stays smooth. Opened, a paper is its full card as ever.
+    /// Kept across launches.
     enum CardLook: String, CaseIterable {
-        case cards, spheres, titles, blobs, covers
+        case cards, spheres, titles, blobs, covers, fast
         var title: String {
             switch self {
             case .cards: "Cards"
@@ -1783,6 +1787,7 @@ final class VisionModel {
             case .titles: "Color Titles"
             case .blobs: "Blobs"
             case .covers: "Covers"
+            case .fast: "Fast"
             }
         }
         /// A ball under the title: Color Spheres, or the soft Blobs.
@@ -4010,9 +4015,10 @@ struct VisionVolumeToolbar: View {
                 Text("Layout")
             }
             .help("Arrange the selected articles — every article when none is selected — or the whole wall")
-            // The room's Shape: Hallway (the room as it first stood, time
-            // in depth), or the papers gathered by what they share — only
-            // Hallway orders by time.
+            // Sculptures (8 Nov 2026): the room's form — Hallway (the room
+            // as it first stood, time in depth), or the papers gathered by
+            // what they share; only Hallway orders by time. Shapes, beside
+            // it, is now the papers' own shape alone.
             Menu {
                 ForEach(model.shapeChoices) { choice in
                     Button {
@@ -4027,9 +4033,13 @@ struct VisionVolumeToolbar: View {
                     // Dimmed, never hidden, while its data is not there.
                     .disabled(!model.shapeAvailable.contains(choice.id))
                 }
-                Divider()
-                // Looks, not layouts: the papers stand where the Shape put
-                // them, as cards, coloured spheres or coloured titles.
+            } label: {
+                Text("Sculptures")
+            }
+            .help("Give the room a form: Hallway, or the articles gathered by meaning, theme, concept, author or the people they mention")
+            // Shapes: how each paper stands, wherever the Sculpture put it —
+            // a card, a coloured sphere or title, a blob, a cover, Fast.
+            Menu {
                 ForEach(VisionModel.CardLook.allCases, id: \.self) { look in
                     Button {
                         model.cardLook = look
@@ -4044,7 +4054,7 @@ struct VisionVolumeToolbar: View {
             } label: {
                 Text("Shapes")
             }
-            .help("Give the room a shape: Hallway, or the articles gathered by meaning, theme, concept, author or the people they mention")
+            .help("The papers' shape: cards, spheres, coloured titles, blobs, covers, or Fast plates")
             conceptsMenu
             // While on, each is ringed as well as filled (4 Nov 2026), so a
             // live attribute reads at a glance.
@@ -5560,7 +5570,7 @@ struct VisionReaderView: View {
         while let range = plain.range(of: findTerm, options: [.caseInsensitive, .diacriticInsensitive],
                                       range: searchStart..<plain.endIndex) {
             if let attrRange = Range(range, in: out) {
-                out[attrRange].backgroundColor = Color.yellow.opacity(0.45)
+                out[attrRange].backgroundColor = XRColourRoles.find.color
             }
             searchStart = range.upperBound
         }
@@ -6519,10 +6529,10 @@ struct VisionMarkPill: View {
 
     var body: some View {
         let color: Color = switch mark.tone {
-        case .alarm: .red
-        case .caution: .orange
-        case .info: .blue
-        case .good: .green
+        case .alarm: XRColourRoles.alarm.color
+        case .caution: XRColourRoles.caution.color
+        case .info: XRColourRoles.info.color
+        case .good: XRColourRoles.good.color
         case .positive: .accentColor
         case .quiet: .secondary
         }
@@ -7135,18 +7145,9 @@ enum VisionAnnotationInk {
         return custom?.isEmpty == false ? custom! : kind.rawValue
     }
 
+    /// The kind's default colour, from the XR colour table.
     static func defaultHex(of kind: ReaderAnnotationKind) -> String {
-        switch kind {
-        case .important: "E4572E"
-        case .quotable: "2E8B8B"
-        case .great: "3A9B35"
-        case .disagree: "C93C3C"
-        case .languageIssue: "8E5BC0"
-        case .problematic: "D98E1B"
-        case .whatIsThis: "3B6FD4"
-        case .highlight: "E8C51D"
-        case .strikethrough: "8A8A8A"
-        }
+        XRColourRoles.annotationKinds[kind.rawValue]?.colour.hexString ?? "8A8A8A"
     }
 
     static func color(of kind: ReaderAnnotationKind) -> Color {
@@ -8451,8 +8452,8 @@ nonisolated struct VisionBotStance: Codable, Sendable {
     /// The verdict's color — the same green, red, and gray as the Mac.
     var color: Color {
         switch verdict {
-        case .agree: .green
-        case .disagree: .red
+        case .agree: XRColourRoles.good.color
+        case .disagree: XRColourRoles.alarm.color
         case .neutral: Color.secondary.opacity(0.5)
         }
     }

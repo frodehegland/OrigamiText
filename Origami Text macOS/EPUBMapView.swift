@@ -3441,6 +3441,8 @@ struct EPUBMapView: View {
             colorTitle(for: item)
         } else if item.wearsLook && item.look == .covers {
             coverFace(for: item)
+        } else if item.wearsLook && item.look == .fast {
+            fastFace(for: item)
         } else if item.isAside {
             // The whole slip fades — the words too, not just the paper.
             Text(shortTitle(item.title))
@@ -3495,7 +3497,7 @@ struct EPUBMapView: View {
                     .frame(maxWidth: 150 * s, maxHeight: 120 * s)
                     .clipShape(RoundedRectangle(cornerRadius: 4 * s))
                     .overlay(RoundedRectangle(cornerRadius: 4 * s)
-                        .strokeBorder(item.isSelected ? Color(red: 1.0, green: 0.84, blue: 0.45)
+                        .strokeBorder(item.isSelected ? XRColourRoles.selection.color
                                                       : Color.white.opacity(0.3),
                                       lineWidth: (item.isSelected ? 1.6 : 0.6) * s))
             } else {
@@ -3510,7 +3512,7 @@ struct EPUBMapView: View {
             // A label is words in the air, not a card: larger type, no
             // pane, no border — a soft shadow keeps it legible against
             // the room. Chosen, it turns warm gold (1 Nov 2026).
-            let ink = item.isSelected ? Color(red: 1.0, green: 0.84, blue: 0.45)
+            let ink = item.isSelected ? XRColourRoles.selection.color
                 : item.id.hasPrefix(Self.tagHubPrefix) || item.id.hasPrefix(Self.shapeLabelPrefix)
                     ? Self.color(hex: item.paintColours.first ?? "#FFFFFF")
                 : Color.white
@@ -3620,7 +3622,7 @@ struct EPUBMapView: View {
                     if item.isPinned {
                         Image(systemName: "pin.fill")
                             .font(.system(size: 5 * s))
-                            .foregroundStyle(Color(red: 0.95, green: 0.68, blue: 0.25))
+                            .foregroundStyle(XRColourRoles.pin.color)
                     }
                     // The working name and the first author carry the
                     // card; selection opens the FULL title and every
@@ -3700,8 +3702,8 @@ struct EPUBMapView: View {
                         .padding(.horizontal, 3 * s)
                         .padding(.vertical, 1 * s)
                         .background(Capsule().fill(item.warningIsAlarm
-                                                   ? Color(red: 0.82, green: 0.16, blue: 0.16)
-                                                   : Color(red: 0.88, green: 0.52, blue: 0.10)))
+                                                   ? XRColourRoles.warningAlarm.color
+                                                   : XRColourRoles.warningCaution.color))
                 }
                 // The abstract waits to be asked for — a chosen paper's
                 // Abstract button does it now, as a citation's always
@@ -3971,6 +3973,77 @@ struct EPUBMapView: View {
         }
     }
 
+    /// Fast's face (8 Nov 2026): the title in white on a flat dark plate,
+    /// a thin strip of the paper's colours along its top, a white edge
+    /// when chosen. Nothing here may need a backdrop — no glass, no
+    /// material, no shadow: it is measured as the card's size, then baked
+    /// once into the plate's picture (`FastPlates`), never shown live.
+    @ViewBuilder private func fastFace(for item: EPUBMapItem) -> some View {
+        let s = Self.crisp
+        let shape = RoundedRectangle(cornerRadius: 5 * s)
+        Text(shortTitle(item.title))
+            .font(.system(size: 7 * s, weight: .semibold))
+            .foregroundStyle(Color.white)
+            .multilineTextAlignment(.center)
+            .lineLimit(3)
+            .frame(maxWidth: 100 * s)
+            .padding(.horizontal, 6 * s)
+            .padding(.vertical, 6 * s)
+            .background(shape.fill(Color(white: 0.16)))
+            .overlay(alignment: .top) {
+                if !item.paintColours.isEmpty {
+                    HStack(spacing: 0) {
+                        ForEach(Array(item.paintColours.enumerated()), id: \.offset) { _, hex in
+                            Color(uiColor: Self.uiColor(hex: hex))
+                        }
+                    }
+                    .frame(height: 2 * s)
+                    .padding(.horizontal, 5 * s)
+                }
+            }
+            .overlay {
+                if item.isSelected {
+                    shape.strokeBorder(Color.white.opacity(0.85), lineWidth: 1.4 * s)
+                }
+            }
+            .clipShape(shape)
+    }
+
+    /// A Fast paper's plates: one unlit plane each side, back to back, the
+    /// face baked into their picture. They stand plain dark at once and
+    /// take the picture a beat later (it is made once per face and kept).
+    private func fastPlates(for item: EPUBMapItem, facePoints: CGSize,
+                            size: SIMD2<Float>) -> Entity {
+        let plates = Entity()
+        // Rounded as the face is: 5 points at the crisp factor, in metres.
+        let perPoint = size.x / max(Float(facePoints.width), 1)
+        let radius = min(5 * Float(Self.crisp) * perPoint, min(size.x, size.y) / 2)
+        let mesh = MeshResource.generatePlane(width: size.x, height: size.y, cornerRadius: radius)
+        let plain = UnlitMaterial(color: UIColor(white: 0.16, alpha: 1))
+        let front = ModelEntity(mesh: mesh, materials: [plain])
+        front.position = SIMD3<Float>(0, 0, 0.001)
+        let back = ModelEntity(mesh: mesh, materials: [plain])
+        back.position = SIMD3<Float>(0, 0, -0.001)
+        back.orientation = simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+        plates.addChild(front)
+        plates.addChild(back)
+        let key = [item.title, item.paintColours.joined(separator: ","),
+                   item.isSelected ? "chosen" : "",
+                   "\(Int(facePoints.width))x\(Int(facePoints.height))"].joined(separator: "|")
+        let view = fastFace(for: item)
+            .frame(width: facePoints.width, height: facePoints.height)
+        Task { @MainActor in
+            guard let texture = await FastPlates.texture(key: key, view: view) else { return }
+            var material = UnlitMaterial()
+            // Opaque: the plane's own rounded corners are the face's, so
+            // no blending (and no sorting) is needed.
+            material.color = .init(tint: .white, texture: .init(texture))
+            front.model?.materials = [material]
+            back.model?.materials = [material]
+        }
+        return plates
+    }
+
     /// Covers' face (4 Nov 2026): the paper's cover — the picture Author
     /// made for it, or, where the book gives none, the key-sentence cover
     /// the reader draws in its colours (`KeySentenceCover`) — so there is
@@ -4176,6 +4249,14 @@ struct EPUBMapView: View {
         let body = Entity()
         body.position = SIMD3<Float>(0, 0, lift)
         holder.addChild(body)
+        // Fast (8 Nov 2026): no live face at all — the plates alone, so no
+        // face turner, no byline waiting beneath. Opened, it is a card.
+        let fast = item.wearsLook && item.look == .fast
+        if fast {
+            body.addChild(fastPlates(for: item, facePoints: facePoints,
+                                     size: SIMD2(extents.x * grown, extents.y * grown)))
+        }
+        if !fast {
         let frontFace = face(back: false)
         let backFace = face(back: true)
         // Color Spheres: the words beneath a sphere turn to the reader
@@ -4211,6 +4292,7 @@ struct EPUBMapView: View {
         }
         holder.components.set(CardFacesComponent(front: frontFace, back: backFace,
                                                  makeBack: .init { faceAttachment(back: true) }))
+        }
         // Opening: the card unfolds — it begins folded flat along its
         // middle, like a sheet creased in half, and opens to full height
         // with its star around it, rather than appearing in one frame.
@@ -4685,7 +4767,7 @@ struct EPUBMapView: View {
                             .frame(width: 72, height: 54)
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .overlay(RoundedRectangle(cornerRadius: 6)
-                                .strokeBorder(galleryOf == item.id ? Color(red: 1.0, green: 0.84, blue: 0.45)
+                                .strokeBorder(galleryOf == item.id ? XRColourRoles.selection.color
                                                                    : Color.white.opacity(0.3),
                                               lineWidth: galleryOf == item.id ? 2 : 1))
                     }
@@ -10781,7 +10863,7 @@ final class TranspointLayer {
     private static func makeLine(landsOnSection: Bool) -> ModelEntity {
         var material = UnlitMaterial()
         material.color = .init(tint: landsOnSection
-            ? UIColor(red: 0.20, green: 0.72, blue: 0.80, alpha: 0.85)
+            ? XRColourRoles.citationLine.uiColor
             : UIColor(white: 1, alpha: 0.40))
         let thickness: Float = landsOnSection ? 0.0018 : 0.0012
         return ModelEntity(
@@ -10862,8 +10944,8 @@ struct TranspointCard: View {
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
                                 .background(Capsule().fill(warning.tone == .alarm
-                                                           ? Color(red: 0.82, green: 0.16, blue: 0.16)
-                                                           : Color(red: 0.88, green: 0.52, blue: 0.10)))
+                                                           ? XRColourRoles.warningAlarm.color
+                                                           : XRColourRoles.warningCaution.color))
                         }
                         Text(byline)
                             .font(.system(size: 13))
@@ -10885,7 +10967,7 @@ struct TranspointCard: View {
                     Button { onOpen(section.id) } label: {
                         HStack(spacing: 8) {
                             Circle()
-                                .fill(cited ? Color(red: 0.20, green: 0.72, blue: 0.80)
+                                .fill(cited ? XRColourRoles.citedDot.color
                                             : Color.secondary.opacity(0.35))
                                 .frame(width: 6, height: 6)
                             Text(section.title)
@@ -11033,13 +11115,7 @@ private final class SelectedCitationLines: MapLineLayer {
     }
     private var lineData: [LineData] = []
 
-    static let palette: [UIColor] = [
-        UIColor(red: 0.20, green: 0.75, blue: 0.30, alpha: 0.45),
-        UIColor(red: 0.20, green: 0.45, blue: 0.90, alpha: 0.45),
-        UIColor(red: 0.90, green: 0.80, blue: 0.10, alpha: 0.45),
-        UIColor(red: 0.55, green: 0.55, blue: 0.55, alpha: 0.45),
-        UIColor(red: 0.88, green: 0.20, blue: 0.20, alpha: 0.45),
-    ]
+    static let palette: [UIColor] = XRColourRoles.selectedCitationLines.map(\.uiColor)
 
     func install(in content: RealityViewContent) {
         EPUBNodeIDComponent.registerComponent()
@@ -11842,7 +11918,7 @@ private final class CitedToDeepLines: MapLineLayer {
     private struct LineData { let line: ModelEntity; let fromID: String; let toID: String }
     private var lineData: [LineData] = []
 
-    private static let lineColor = UIColor(red: 1.0, green: 0.72, blue: 0.3, alpha: 0.08)
+    private static let lineColor = XRColourRoles.deeperCitationLine.uiColor
 
     func install(in content: RealityViewContent) {
         let r = Entity(); content.add(r); root = r
@@ -13099,7 +13175,7 @@ final class ConceptSpaceManager {
                 opacity: 0.40,
                 cornerRadius: 0.007,
                 useBorder: true,
-                borderColor: UIColor.systemBlue.withAlphaComponent(0.50)
+                borderColor: XRColourRoles.orbitBorder.uiColor
             )
             orbitResult.modelEntity.components.set(CollisionComponent(
                 shapes: [orbitResult.collisionShape], mode: .default))
@@ -13224,7 +13300,7 @@ final class ConceptSpaceManager {
 
     private func addHighlight(to card: Entity, id: String) {
         var mat = UnlitMaterial()
-        mat.color = .init(tint: UIColor.systemPurple.withAlphaComponent(0.18))
+        mat.color = .init(tint: XRColourRoles.conceptSpaceHighlight.uiColor)
         let highlight = ModelEntity(
             mesh: .generateBox(size: SIMD3<Float>(0.240, 0.130, 0.005)),
             materials: [mat])
@@ -13239,7 +13315,7 @@ final class ConceptSpaceManager {
         let length = simd_length(diff)
         guard length > 0.01 else { return Entity() }
         var mat = UnlitMaterial()
-        mat.color = .init(tint: UIColor.systemPurple.withAlphaComponent(0.28))
+        mat.color = .init(tint: XRColourRoles.conceptSpaceLine.uiColor)
         let entity = ModelEntity(
             mesh: .generateBox(size: SIMD3<Float>(0.004, length, 0.004)),
             materials: [mat])
@@ -13591,6 +13667,32 @@ enum SphereTextures {
                                         colors: colors as CFArray, locations: stops) else { return nil }
         context.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: width, y: 0), options: [])
         return context.makeImage()
+    }
+}
+
+// MARK: - Fast plates' pictures (8 Nov 2026)
+
+/// A Fast paper's face, baked once into a picture and kept: the same title,
+/// colours and choice at the same size share one texture.
+@MainActor
+enum FastPlates {
+    private static var made: [String: TextureResource] = [:]
+    private static var making: [String: Task<TextureResource?, Never>] = [:]
+
+    static func texture(key: String, view: some View) async -> TextureResource? {
+        if let known = made[key] { return known }
+        if let pending = making[key] { return await pending.value }
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 1
+        guard let image = renderer.cgImage else { return nil }
+        let task = Task<TextureResource?, Never> { @MainActor in
+            try? await TextureResource(image: image, options: .init(semantic: .color))
+        }
+        making[key] = task
+        let texture = await task.value
+        making[key] = nil
+        if let texture { made[key] = texture }
+        return texture
     }
 }
 

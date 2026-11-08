@@ -120,6 +120,7 @@
 				TextColoring.swift,
 				VisualMeta.swift,
 				WebAnnotation.swift,
+				XRColourRoles.swift,
 			);
 			target = 5FA61252300CE184002F8851 /* Origami Text iOS */;
 		};
@@ -182,6 +183,7 @@
 				TextColoring.swift,
 				VisualMeta.swift,
 				WebAnnotation.swift,
+				XRColourRoles.swift,
 				ZZStructure.swift,
 			);
 			target = 5FD0137E3005785700F5A4F0 /* Origami Text Vision */;
@@ -1309,6 +1311,8 @@
 				kind = upToNextMajorVersion;
 				minimumVersion = 1.3.3;
 			};
+			traits = (
+			);
 		};
 		5FA35B5C30980A95002DC780 /* XCRemoteSwiftPackageReference "swift-huggingface" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -1317,6 +1321,8 @@
 				kind = upToNextMajorVersion;
 				minimumVersion = 0.9.0;
 			};
+			traits = (
+			);
 		};
 /* End XCRemoteSwiftPackageReference section */
 

@@ -285,14 +285,14 @@ nonisolated enum MarkedTextStyle: Int, CaseIterable, Identifiable, Sendable {
         switch self {
         case .orange, .boldOrange:
             return scheme == .dark
-                ? Color(red: 1, green: 187 / 255, blue: 95 / 255)
+                ? XRColourRoles.markOrangeDark.color
                 : OrigamiReading.markColor
         case .highContrast, .boldHighContrast:
             return scheme == .dark
-                ? Color(white: 236 / 255)
+                ? XRColourRoles.markHighContrastDark.color
                 : OrigamiReading.markColor
         case .blue, .boldBlue:
-            return Color(red: 54 / 255, green: 120 / 255, blue: 176 / 255)
+            return XRColourRoles.markBlue.color
         }
     }
 }
@@ -1010,7 +1010,7 @@ nonisolated enum OrigamiReading {
 
     /// Author's marked-text orange (#BB6A26), the colour marked spans
     /// paint in when a document reads back.
-    static let markColor = Color(red: 0xBB / 255, green: 0x6A / 255, blue: 0x26 / 255)
+    static let markColor = XRColourRoles.markOrangeLight.color
 
     /// A paragraph's text with the format's inline conventions rendered:
     /// markdown (`**bold**`, `*italic*`, backticks, links) through the
