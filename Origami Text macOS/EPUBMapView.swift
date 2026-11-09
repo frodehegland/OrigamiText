@@ -354,6 +354,9 @@ struct EPUBMapView: View {
     @State private var conceptConnectionLines = ConceptConnectionLines()
     /// Amber lines from each selected citation card to the deep works it cites.
     @State private var citedToDeepLines = CitedToDeepLines()
+    /// Drop to Relate: the line and panel between two papers brought
+    /// together (8 Nov 2026).
+    @State private var relateLines = RelateLines()
 
 
     /// Sankey widths or a traditional line graph — the reader's
@@ -1110,7 +1113,11 @@ struct EPUBMapView: View {
             model.layoutViews = Self.offeredWatchViews.map {
                 .init(id: $0.rawValue, title: $0.title)
             }
-            openWindow(id: "volume-toolbar")
+            if model.toolbarHidden {
+                dismissWindow(id: "volume-toolbar")
+            } else {
+                openWindow(id: "volume-toolbar")
+            }
         } else {
             dismissWindow(id: "volume-toolbar")
         }
@@ -1193,7 +1200,10 @@ struct EPUBMapView: View {
                 && built[index].showsAbstract && !built[index].isGhost {
                 guard let p = built[index].position else { continue }
                 var front: Float = 0
-                for other in built where other.id != built[index].id && !other.isGhost {
+                // A Gather's own card stays where it stood (9 Nov 2026): the
+                // star it drew in round it does not push it forward.
+                let star: Set<String> = relationShown.map { $0.gathered && $0.from == built[index].id ? $0.ids : [] } ?? []
+                for other in built where other.id != built[index].id && !other.isGhost && !star.contains(other.id) {
                     guard let q = other.position, abs(q.x - p.x) < 0.55, abs(q.y - p.y) < 0.42 else { continue }
                     var face = q.z
                     if other.isSelected && other.showsAbstract { face += Self.openCardLift }
@@ -1481,7 +1491,8 @@ struct EPUBMapView: View {
         // A lifted passage's lines stand even while a reading is open —
         // it is usually lifted from one.
         let floatEdges: [(from: String, to: String)] = relationShown.map { shown in
-            shown.from.hasPrefix("float:") ? shown.ids.map { (from: shown.from, to: $0) } : []
+            shown.from.hasPrefix("float:") && model.snippetsShown
+                ? shown.ids.map { (from: shown.from, to: $0) } : []
         } ?? []
         conceptConnectionLines.sizes = cardSizes
         conceptConnectionLines.rebuild(items: linesActive || !floatEdges.isEmpty ? items : [],
@@ -1989,7 +2000,11 @@ struct EPUBMapView: View {
         // simply ignores its show, title and active calls.
         // Every chip is away for now (1 Nov 2026, `armChipsWorn`): the
         // menu still installs, so its hand tracking serves the rest.
-        .filter { EPUBMapView.armChipsWorn && $0.underside },
+        .filter { EPUBMapView.armChipsWorn && $0.underside }
+        // The one chit worn while the others rest (9 Nov 2026): Hide
+        // Toolbar / Show Toolbar, on the left forearm (Swap Arms moves it).
+        + [ArmMenu.Chip(id: EPUBMapView.toolbarChipID, title: "Hide Toolbar", side: .left,
+                        underside: EPUBMapView.toolbarChipUnderside)],
        tracksPlanes: true,   // the flat pose finds the actual desk
        inverted: UserDefaults.standard.bool(forKey: "armMenuInverted"))
 
@@ -1997,6 +2012,12 @@ struct EPUBMapView: View {
     /// asking (1 Nov 2026) — the room is worked from its toolbar and
     /// the cards' own menus; set true to bring the undersides back.
     static let armChipsWorn = false
+
+    /// The Hide Toolbar chit, and where on the forearm it sits — on top,
+    /// where a watch would be read, or beneath. The placement is an
+    /// experiment (9 Nov 2026): change this to try the other.
+    static let toolbarChipID = "map.arm.toolbar"
+    static let toolbarChipUnderside = false
 
     /// The Settings' Swap Arms toggle — every chip on the opposite
     /// forearm. Read here as well so a change flips the menu live.
@@ -2048,6 +2069,12 @@ struct EPUBMapView: View {
     /// builds a card, and must not make the view update again.
     @State private var cardSizes = CardSizes()
     final class CardSizes {
+        /// Solid Spheres held against a surface this drag: the surface's
+        /// outward normal, by card — a plain box, written each frame.
+        var solidHits: [String: SIMD3<Float>] = [:]
+        /// The last single tap: the card, and whether it stood chosen and
+        /// open just before it — what a double tap is judged by.
+        var lastTap: (id: String, wasSelected: Bool, wasOpen: Bool, at: Date)?
         /// Width and height in metres, as an unchosen card stands.
         var base: [String: SIMD2<Float>] = [:]
         /// Relative Size in place (4 Nov 2026): each card's scale when its
@@ -2807,6 +2834,21 @@ struct EPUBMapView: View {
     /// The engine and its behavior, one statement per modifier — a long
     /// inline chain of generic closures stalls the type-checker.
     private var engine: some View {
+        // Worked out once per rebuild, not once per card (8 Nov 2026): the
+        // hooks below are asked for every card, and each used to count or
+        // filter the whole room again — the room's size squared.
+        let selected = items.filter { $0.isSelected }
+        let selectedIDs = Set(selected.map(\.id))
+        let selectedCite = Set(selected.flatMap(\.citedIDs))
+        let selectedArticleCount = selected.count(where: { $0.kind == .article })
+        let keeps: Set<String> = (focusMode || relationShown?.only == true) ? focusKeeps() : []
+        // Gather (9 Nov 2026, Frode): every card neither chosen nor gathered
+        // stands at half strength while the star is drawn in — eased in
+        // place by the tick, never rebuilt.
+        cardTick.dimmedIDs = relationShown?.gathered == true
+            ? Set(items.lazy.map(\.id).filter { !selectedIDs.contains($0) && !gatheredIDs.contains($0)
+                && $0 != relationShown?.from })
+            : []
         var view = Engine(
             items,
             connectionEdgeCount,
@@ -2906,6 +2948,45 @@ struct EPUBMapView: View {
             cardSizes.riders = nil
             // Set down: an open card keeps the turn it was carried with.
             cardTick.facingWhileMoved.removeAll()
+            // Solid Spheres let go after meeting a surface spring back off
+            // it (9 Nov 2026), along its normal.
+            if !cardSizes.solidHits.isEmpty {
+                let hits = cardSizes.solidHits
+                cardSizes.solidHits = [:]
+                let bounced = newItems.compactMap { moved -> EPUBMapItem? in
+                    guard let normal = hits[moved.id], let at = moved.position else { return nil }
+                    var away = moved
+                    away.position = at + normal * Self.solidBounce
+                    return away
+                }
+                if !bounced.isEmpty {
+                    let ids = Set(bounced.map(\.id))
+                    NodeGlide.open()
+                    keepPlacements(of: newItems.filter { !ids.contains($0.id) } + bounced)
+                    saveLiftedCards()
+                    selectedCitationLines.rebuild(items: items)
+                    citedToDeepLines.rebuild(items: items)
+                    return
+                }
+            }
+            // Drop to Relate (8 Nov 2026): one paper set down on another
+            // bounces back and the two are read together.
+            let movedPapers = newItems.filter { $0.kind == .article }
+            if movedPapers.count == 1, let moved = movedPapers.first,
+               liftedCards[moved.id] == nil,
+               let target = relateTarget(for: moved) {
+                bounce(moved, from: target)
+                // Dropped again on the paper it is already related to: the
+                // relation goes (9 Nov 2026) — a second drop takes it away.
+                if relateLines.joins(moved.id, target.id) {
+                    relateLines.clear()
+                } else {
+                    relate(moved, with: target)
+                }
+                selectedCitationLines.rebuild(items: items)
+                citedToDeepLines.rebuild(items: items)
+                return
+            }
             // An open paper carried off its year's plane keeps its place: it
             // is lifted, free (no surface courts it), its ghost holding the
             // slot it left — Put Back sends it home.
@@ -3006,6 +3087,22 @@ struct EPUBMapView: View {
             if liftedCards[item.id] == nil, item.kind == .article, item.wearsLook, item.look == .blobs {
                 liftedCards[item.id] = LiftedCard(home: startPosition, sticks: true)
             }
+            // Solid Spheres (9 Nov 2026) leave their slot free in every
+            // axis, sticking to nothing — but no real surface lets them in:
+            // carried into a wall, a table or the floor, they stop on it.
+            if item.kind == .article, item.wearsLook, item.look == .solid {
+                if liftedCards[item.id] == nil {
+                    liftedCards[item.id] = LiftedCard(home: startPosition, sticks: false)
+                }
+                if let hit = roomSurfaces.blocking(from: startPosition, to: proposed,
+                                                   radius: Self.solidRadius) {
+                    cardSizes.solidHits[item.id] = hit.normal
+                    return hit.position
+                }
+                // Drawn back off the surface before letting go: no spring.
+                cardSizes.solidHits[item.id] = nil
+                return proposed
+            }
             if let lifted = liftedCards[item.id] {
                 let reach: Float? = item.look == .blobs ? 0.25 : nil
                 if lifted.sticks ?? true, let pose = surfacePose(for: proposed, reach: reach) {
@@ -3076,8 +3173,9 @@ struct EPUBMapView: View {
         }
         view = view.shouldEnableNode { item in
             // Lifted words stand whatever else the room shows — a Focus,
-            // a Show Only, the Reading Desk (2 Nov 2026).
-            if item.id.hasPrefix("float:") { return true }
+            // a Show Only, the Reading Desk (2 Nov 2026) — unless the bar's
+            // Snippets has put them away (9 Nov 2026).
+            if item.id.hasPrefix("float:") { return model.snippetsShown }
             // A colour chosen on the colour key stands through every Focus.
             if item.id.hasPrefix(Self.tagHubPrefix) { return true }
             guard model.readingDeskDocID == nil else { return false }
@@ -3088,7 +3186,7 @@ struct EPUBMapView: View {
             // stays whole for it.)
             if let relationShown, relationShown.only, relationShown.title != "Images" {
                 return item.id == relationShown.from || relationShown.ids.contains(item.id)
-                    || focusKeeps().contains(item.id)
+                    || keeps.contains(item.id)
             }
             // A concept's own Focus: only that concept and the articles
             // it touches stand; everything unconnected steps away.
@@ -3102,22 +3200,21 @@ struct EPUBMapView: View {
             // below — it used to lose to it, so Focus with exactly two
             // articles selected appeared to do nothing.
             if focusMode {
-                let selected = items.filter { $0.isSelected }
                 guard !selected.isEmpty else { return true }
                 if item.isSelected { return true }
                 // Whatever stands connected in the room stays with it: a
                 // Gather's star, a Connects or Show Only's cards, a chosen
                 // colour's papers, a label's lines (2 Nov 2026).
-                if focusKeeps().contains(item.id) { return true }
+                if keeps.contains(item.id) { return true }
                 // What a chosen card's lit relation reaches — a Gather's
                 // star above all — stays with it.
                 if let relationShown, relationShown.title != "Images",
-                   selected.contains(where: { $0.id == relationShown.from }),
+                   selectedIDs.contains(relationShown.from),
                    relationShown.ids.contains(item.id) { return true }
                 // A selected item references this one (e.g. article → citation).
-                if selected.contains(where: { $0.citedIDs.contains(item.id) }) { return true }
+                if selectedCite.contains(item.id) { return true }
                 // This item references a selected item (e.g. citation → its citing article).
-                if item.citedIDs.contains(where: { id in selected.contains(where: { $0.id == id }) }) {
+                if item.citedIDs.contains(where: selectedIDs.contains) {
                     return true
                 }
                 return false
@@ -3130,7 +3227,7 @@ struct EPUBMapView: View {
         }
         view = view.shouldDrawConnectionForNode { item in
             guard model.readingDeskDocID == nil else { return false }
-            let n = items.count(where: { $0.kind == .article && $0.isSelected })
+            let n = selectedArticleCount
             // 2+ selected: custom colored lines (3+) or no lines (2).
             // Single selection keeps the default hallway weave.
             return item.isSelected && n < 2
@@ -3138,7 +3235,6 @@ struct EPUBMapView: View {
         view = view.connectedNodesToNode { item in
             // Lines appear only when two or more articles are selected —
             // a single selection raises citations silently, no weave.
-            let selectedArticleCount = items.count(where: { $0.kind == .article && $0.isSelected })
             guard selectedArticleCount >= 2 else { return [] }
 
             switch item.kind {
@@ -3219,11 +3315,13 @@ struct EPUBMapView: View {
             selectedCitationLines.install(in: content)
             conceptConnectionLines.install(in: content)
             citedToDeepLines.install(in: content)
+            relateLines.install(in: content)
             cardTick.install(in: content,
                              faceTurner: faceTurner,
                              lines: [selectedCitationLines,
                                      conceptConnectionLines,
-                                     citedToDeepLines],
+                                     citedToDeepLines,
+                                     relateLines],
                              // Lifted cards billboard at the NODE — the
                              // tick yaws card AND collision toward the
                              // head, so gaze can take a lifted card
@@ -3546,8 +3644,12 @@ struct EPUBMapView: View {
                 }
             }
             .shadow(color: .black.opacity(0.6), radius: 3 * s)
-            .padding(.horizontal, 6 * s)
-            .padding(.vertical, 4 * s)
+            // A wider margin and a faint pane behind the words (9 Nov
+            // 2026, Frode): the label is easier to take with the eyes and
+            // the hand, and still reads as words in the air.
+            .padding(.horizontal, 14 * s)
+            .padding(.vertical, 9 * s)
+            .background(RoundedRectangle(cornerRadius: 12 * s).fill(Color.white.opacity(0.07)))
             .frame(maxWidth: 320 * s)
         } else if item.kind == .concept {
             // The arm chips' glass, in the concepts' own serif voice.
@@ -3887,11 +3989,13 @@ struct EPUBMapView: View {
         let first = item.paintColours.first.map { Self.uiColor(hex: $0) } ?? UIColor(white: Self.uncolouredGrey, alpha: 1)
         plain.baseColor = .init(tint: first)
         let blob = item.look == .blobs
-        // A blob is soft: matte, a little see-through, a touch larger.
-        plain.roughness = blob ? 0.62 : 0.32
-        plain.clearcoat = blob ? 0.15 : 0.6
+        // A blob is soft: matte, a little see-through, a touch larger. A
+        // solid sphere is hard: glassy-smooth, fully coated, a touch larger.
+        let solid = item.look == .solid
+        plain.roughness = .init(floatLiteral: blob ? 0.62 : solid ? 0.12 : 0.32)
+        plain.clearcoat = .init(floatLiteral: blob ? 0.15 : solid ? 1 : 0.6)
         if blob { plain.blending = .transparent(opacity: .init(floatLiteral: 0.86)) }
-        let sphere = ModelEntity(mesh: .generateSphere(radius: radius * (blob ? 1.12 : 1)), materials: [plain])
+        let sphere = ModelEntity(mesh: .generateSphere(radius: radius * (blob ? 1.12 : solid ? 1.08 : 1)), materials: [plain])
         sphere.position = SIMD3<Float>(0, y, radius * 0.25)
         // Turned a little, so the bands run round it as it faces the reader.
         sphere.orientation = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(0, 1, 0))
@@ -3974,7 +4078,7 @@ struct EPUBMapView: View {
     }
 
     /// Fast's face (8 Nov 2026): the title in white on a flat dark plate,
-    /// a thin strip of the paper's colours along its top, a white edge
+    /// a thin strip of the paper's colours along its foot, a white edge
     /// when chosen. Nothing here may need a backdrop — no glass, no
     /// material, no shadow: it is measured as the card's size, then baked
     /// once into the plate's picture (`FastPlates`), never shown live.
@@ -3990,7 +4094,7 @@ struct EPUBMapView: View {
             .padding(.horizontal, 6 * s)
             .padding(.vertical, 6 * s)
             .background(shape.fill(Color(white: 0.16)))
-            .overlay(alignment: .top) {
+            .overlay(alignment: .bottom) {
                 if !item.paintColours.isEmpty {
                     HStack(spacing: 0) {
                         ForEach(Array(item.paintColours.enumerated()), id: \.offset) { _, hex in
@@ -4247,6 +4351,11 @@ struct EPUBMapView: View {
         // its saved place, its timeline depth — stays where it is.
         let lift: Float = item.isSelected && item.showsAbstract && !item.isGhost ? item.openLift : 0
         let body = Entity()
+        body.name = MapCardTick.bodyName
+        // Gather's half strength, worn from the build when it stands.
+        if cardTick.dimmedIDs.contains(item.id) {
+            body.components.set(OpacityComponent(opacity: MapCardTick.dimmedOpacity))
+        }
         body.position = SIMD3<Float>(0, 0, lift)
         holder.addChild(body)
         // Fast (8 Nov 2026): no live face at all — the plates alone, so no
@@ -5748,6 +5857,98 @@ struct EPUBMapView: View {
 
     /// Whether a paper stands free: in a free-standing Shape, and not
     /// resting on a real surface.
+    // MARK: - Drop to Relate (8 Nov 2026)
+
+    /// How far a paper dropped on another springs back from it.
+    private static let relateBounce: Float = 0.15
+    /// A Solid Sphere's reach from its node to a surface, and how far it
+    /// springs back off one when let go against it.
+    private static let solidRadius: Float = 0.04
+    private static let solidBounce: Float = 0.12
+
+    /// The paper a dropped one was set down on: another standing paper on
+    /// much the same plane, the two faces overlapping well — the nearest,
+    /// if more than one.
+    private func relateTarget(for moved: EPUBMapItem) -> EPUBMapItem? {
+        guard !moved.isGhost, !moved.isAside, let at = moved.position else { return nil }
+        let mine = cardSizes.shown[moved.id] ?? SIMD2<Float>(0.14, 0.09)
+        var best: (item: EPUBMapItem, gap: Float)?
+        for other in items where other.id != moved.id && other.kind == .article
+            && !other.isGhost && !other.isAside && !other.isFaded {
+            guard let there = other.position else { continue }
+            let size = cardSizes.shown[other.id] ?? mine
+            let d = at - there
+            guard abs(d.z) < 0.08,
+                  abs(d.x) < (mine.x + size.x) * 0.35,
+                  abs(d.y) < (mine.y + size.y) * 0.35 else { continue }
+            let gap = simd_length(SIMD2<Float>(d.x, d.y))
+            if gap < (best?.gap ?? .infinity) { best = (other, gap) }
+        }
+        return best?.item
+    }
+
+    /// The dropped paper springs 15 cm back off the other, away from it
+    /// (back the way it came when it landed dead centre), on its own plane.
+    private func bounce(_ moved: EPUBMapItem, from target: EPUBMapItem) {
+        guard let drop = moved.position, let there = target.position else { return }
+        let start = items.first(where: { $0.id == moved.id })?.position ?? drop
+        var away = SIMD2<Float>(drop.x - there.x, drop.y - there.y)
+        if simd_length(away) < 0.01 { away = SIMD2<Float>(start.x - there.x, start.y - there.y) }
+        if simd_length(away) < 0.01 { away = SIMD2<Float>(0, 1) }
+        away = simd_normalize(away)
+        var bounced = moved
+        bounced.position = SIMD3<Float>(drop.x + away.x * Self.relateBounce,
+                                        drop.y + away.y * Self.relateBounce,
+                                        drop.z)
+        NodeGlide.open()
+        keepPlacements(of: [bounced])
+    }
+
+    /// The model's account of how two papers relate, onto the panel over
+    /// their line as it arrives. All the room knows of each goes in — its
+    /// title, authors, place in the series, abstract or key sentence — and
+    /// how many works the two both cite.
+    private func relate(_ a: EPUBMapItem, with b: EPUBMapItem) {
+        let answer = relateLines.begin(from: a.id, to: b.id,
+                                       first: shortTitle(a.title), second: shortTitle(b.title))
+        func about(_ item: EPUBMapItem) -> String {
+            var lines = ["Title: \(item.title)"]
+            if !item.author.isEmpty { lines.append("Authors: \(item.author)") }
+            if let stamp = item.stamp { lines.append("Published: \(stamp)") }
+            let gist = item.abstract.isEmpty
+                ? (item.keySentence ?? item.firstSentence ?? "")
+                : item.abstract
+            if !gist.isEmpty { lines.append("Abstract: \(gist)") }
+            return lines.joined(separator: "\n")
+        }
+        let shared = Set(a.citedIDs).intersection(b.citedIDs).count
+        let citing = shared > 0
+            ? "The two cite \(shared) of the same works."
+            : "They cite none of the same works."
+        let prompt = "First article:\n\(about(a))\n\nSecond article:\n\(about(b))\n\n\(citing)"
+        let instructions = """
+            A reader has just set one article down on another in a spatial reading room, \
+            asking how the two relate. In two to four plain sentences say what they share, \
+            where they differ or disagree, and what reading them together offers. Draw only \
+            on what is given; if it is too little to tell, say so plainly. No preamble, no \
+            headings, no lists.
+            """
+        relateLines.work = Task { @MainActor in
+            do {
+                let result = try await OrigamiLLM.shared.respond(
+                    instructions: instructions, to: prompt, transformingContent: true,
+                    onPartial: { partial in answer.text = partial })
+                guard !Task.isCancelled else { return }
+                answer.text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                answer.by = result.modelName
+            } catch {
+                guard !Task.isCancelled else { return }
+                answer.failure = error.localizedDescription
+            }
+            answer.working = false
+        }
+    }
+
     private func standsFree(_ item: EPUBMapItem) -> Bool {
         item.kind == .article && !item.isGhost && liftedCards[item.id]?.stuck == nil
             && Self.freeStandingShapes.contains(roomShape?.shape ?? "")
@@ -7768,6 +7969,10 @@ struct EPUBMapView: View {
         guard !item.isGhost, !item.isFaded else { return }
         switch count {
         case 1:
+            // A double tap arrives as this single tap first: what the card
+            // was before it, so the double can answer that (9 Nov 2026).
+            let now = items.first(where: { $0.id == item.id }) ?? item
+            cardSizes.lastTap = (item.id, now.isSelected, abstractOpenIDs.contains(item.id), Date())
             // Selecting draws the citation lines — an article's run to
             // everything it cites; a cited work's run back to every
             // article citing it. One selection at a time; tapping again
@@ -7851,8 +8056,18 @@ struct EPUBMapView: View {
             // if it was not, unfolded to its abstract, its star menu round
             // it with Read — and two taps again fold it (1 Nov 2026).
             // Reading itself is the open card's Read.
+            // Consistently (9 Nov 2026): judged by the card as it stood
+            // before the pair's first tap — which has already chosen or let
+            // it go — a closed card opens, an open one folds, chosen either way.
             if item.kind == .article || item.kind == .cited || item.kind == .citedDeep {
-                toggleOpen(item)
+                let wasOpen: Bool
+                if let last = cardSizes.lastTap, last.id == item.id,
+                   Date().timeIntervalSince(last.at) < 1 {
+                    wasOpen = last.wasOpen
+                } else {
+                    wasOpen = abstractOpenIDs.contains(item.id)
+                }
+                setOpen(item, !wasOpen)
                 return
             }
             guard item.kind == .article else {
@@ -7895,10 +8110,17 @@ struct EPUBMapView: View {
     /// on a paper, its star menu with Read. A card not yet chosen is
     /// chosen first, as a tap would (raising its citations).
     private func toggleOpen(_ item: EPUBMapItem) {
-        if !item.isSelected { handleTap(count: 1, on: item) }
-        if abstractOpenIDs.contains(item.id) {
+        setOpen(item, !abstractOpenIDs.contains(item.id))
+    }
+
+    /// The card chosen — from its standing now, never the copy a gesture
+    /// carried — and opened or folded.
+    private func setOpen(_ item: EPUBMapItem, _ open: Bool) {
+        let current = items.first(where: { $0.id == item.id }) ?? item
+        if !current.isSelected { handleTap(count: 1, on: current) }
+        if !open {
             abstractOpenIDs.remove(item.id)
-        } else {
+        } else if !abstractOpenIDs.contains(item.id) {
             abstractOpenIDs.insert(item.id)
             // The rebuilt card unfolds into place (cardEntity).
             cardSizes.unfolding.insert(item.id)
@@ -7966,6 +8188,11 @@ struct EPUBMapView: View {
     }
 
     private func handleArmTap(on entity: Entity) -> Bool {
+        // A relation's panel: a pinch puts it and its line away.
+        if relateLines.owns(entity) {
+            relateLines.clear()
+            return true
+        }
         // A reading's ✕: closed on the first pinch.
         if let close = readerPanels.closeAction(for: entity) {
             close()
@@ -8080,6 +8307,12 @@ struct EPUBMapView: View {
             armMenu.setChipActive(Self.onlyOverlapChipID, onlyOverlap)
             reload()
             foldLists()
+            return true
+        case Self.toolbarChipID:
+            // The bar away altogether, or back (9 Nov 2026).
+            model.toolbarHidden.toggle()
+            armMenu.setChipTitle(Self.toolbarChipID, model.toolbarHidden ? "Show Toolbar" : "Hide Toolbar")
+            syncVolumeBar()
             return true
         case Self.focusChipID:
             // Show only selected items and their direct connections.
@@ -11114,6 +11347,8 @@ private final class SelectedCitationLines: MapLineLayer {
         let toID: String
     }
     private var lineData: [LineData] = []
+    /// Each line's ends as last laid, so a still line is left alone.
+    private let ends = LineEnds()
 
     static let palette: [UIColor] = XRColourRoles.selectedCitationLines.map(\.uiColor)
 
@@ -11127,6 +11362,7 @@ private final class SelectedCitationLines: MapLineLayer {
     func rebuild(items: [EPUBMapItem]) {
         guard let root else { return }
         for data in lineData { data.line.removeFromParent() }
+        ends.reset()
         lineData = []
 
         let articles = items.filter { $0.kind == .article && $0.isSelected }
@@ -11152,7 +11388,8 @@ private final class SelectedCitationLines: MapLineLayer {
     func relayout(positions: [String: SIMD3<Float>]) {
         for data in lineData {
             guard let from = positions[data.fromID],
-                  let to = positions[data.toID] else { continue }
+                  let to = positions[data.toID],
+                  ends.moved(data.line, from, to) else { continue }
             positionLine(data.line, from: from, to: to)
         }
     }
@@ -11347,6 +11584,41 @@ final class RoomSurfaces {
         }
     }
 
+    /// Solid Spheres (9 Nov 2026): where a ball of `radius` carried from
+    /// `start` toward `proposed` must stop — held on the room's side of
+    /// every real surface it would pass into (within the surface's extent),
+    /// with the surfaces' outward normals summed. Nil when nothing is in
+    /// its way.
+    func blocking(from start: SIMD3<Float>, to proposed: SIMD3<Float>, radius: Float)
+        -> (position: SIMD3<Float>, normal: SIMD3<Float>)? {
+        var position = proposed
+        var normals = SIMD3<Float>.zero
+        for plane in planes.values {
+            let originFromAnchor = plane.originFromAnchorTransform
+            let centre = SIMD3<Float>(originFromAnchor.columns.3.x, originFromAnchor.columns.3.y,
+                                      originFromAnchor.columns.3.z)
+            var normal = SIMD3<Float>(originFromAnchor.columns.1.x, originFromAnchor.columns.1.y,
+                                      originFromAnchor.columns.1.z)
+            guard simd_length(normal) > 1e-4 else { continue }
+            normal = simd_normalize(normal)
+            // The room's side is the side the ball set off from.
+            var from = simd_dot(start - centre, normal)
+            if from < 0 { normal = -normal; from = -from }
+            let now = simd_dot(position - centre, normal)
+            guard now < radius, from > -radius else { continue }
+            // Only where the surface really is: its extent, a ball's grace.
+            let extent = plane.geometry.extent
+            let local = simd_inverse(originFromAnchor * extent.anchorFromExtentTransform)
+                * SIMD4<Float>(position, 1)
+            guard abs(local.x) < extent.width / 2 + radius,
+                  abs(local.z) < extent.height / 2 + radius else { continue }
+            position += normal * (radius - now)
+            normals += normal
+        }
+        guard simd_length(normals) > 1e-4 else { return nil }
+        return (position, simd_normalize(normals))
+    }
+
     /// The surface the reader faces: where a ray from the head along its
     /// heading first meets a known plane within its extent, between 30 cm
     /// and 8 m — and the pose a card takes there (2 Nov 2026, for Stick:
@@ -11503,9 +11775,37 @@ private final class MapCardTick {
         self.stuckOrientation = stuckOrientation
         subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             MainActor.assumeIsolated {
+                self?.applyDim(scene: event.scene)
                 self?.resize(scene: event.scene)
                 self?.tick(scene: event.scene)
                 self?.tickBlobs(scene: event.scene, dt: Float(event.deltaTime))
+            }
+        }
+    }
+
+    /// Gather's dimmed cards (9 Nov 2026): every card neither chosen nor
+    /// gathered, at half strength. Set by the room on each rebuild; a
+    /// change is worn by the next frame, on each card's body — beneath any
+    /// fade the card itself carries, so the two multiply.
+    var dimmedIDs: Set<String> = [] {
+        didSet { if dimmedIDs != oldValue { dimPending = true } }
+    }
+    private var dimPending = false
+    static let bodyName = "card.body"
+    static let dimmedOpacity: Float = 0.5
+
+    private func applyDim(scene: RealityKit.Scene) {
+        guard dimPending else { return }
+        dimPending = false
+        for card in scene.performQuery(cardQuery) {
+            guard let id = card.components[EPUBNodeIDComponent.self]?.id,
+                  let body = card.children.first(where: { $0.name == Self.bodyName }) else { continue }
+            let dimmed = dimmedIDs.contains(id)
+            let current = body.components[OpacityComponent.self]?.opacity
+            if dimmed, current != Self.dimmedOpacity {
+                body.components.set(OpacityComponent(opacity: Self.dimmedOpacity))
+            } else if !dimmed, current != nil {
+                body.components.remove(OpacityComponent.self)
             }
         }
     }
@@ -11594,7 +11894,10 @@ private final class MapCardTick {
     }
 
     private func tick(scene: RealityKit.Scene) {
-        let head = faceTurner?.headPosition()
+        // One ask of ARKit a frame (8 Nov 2026): the head ray carries the
+        // head's place as well; its own query stands in only without one.
+        let ray = faceTurner?.headRay()
+        let head = ray?.position ?? faceTurner?.headPosition()
         let liveLines = lines.filter { $0.needsPositions }
         let lifted = anyLifted?() ?? false
         guard head != nil || !liveLines.isEmpty || lifted else { return }
@@ -11604,7 +11907,6 @@ private final class MapCardTick {
         // authors show — the nearest three, so names are there as the head
         // arrives. (visionOS keeps the eyes' own gaze from apps; the
         // head's heading is the nearest the room may know.)
-        let ray = faceTurner?.headRay()
         var faced: [(byline: Entity, closeness: Float)] = []
         for card in scene.performQuery(cardQuery) {
             let place = card.position(relativeTo: nil)
@@ -11822,6 +12124,8 @@ private final class ConceptConnectionLines: MapLineLayer {
     private var root: Entity?
     private struct LineData { let line: ModelEntity; let fromID: String; let toID: String }
     private var lineData: [LineData] = []
+    /// Each line's ends as last laid, so a still line is left alone.
+    private let ends = LineEnds()
 
     /// Grey and faint (2 Nov 2026, Frode): the lines say "these belong
     /// together" without drawing the eye away from the cards.
@@ -11842,6 +12146,7 @@ private final class ConceptConnectionLines: MapLineLayer {
     func rebuild(items: [EPUBMapItem], edges: [(from: String, to: String)]) {
         guard let root else { return }
         for data in lineData { data.line.removeFromParent() }
+        ends.reset()
         lineData = []
 
         var positions: [String: SIMD3<Float>] = [:]
@@ -11863,7 +12168,9 @@ private final class ConceptConnectionLines: MapLineLayer {
     func relayout(positions: [String: SIMD3<Float>]) {
         for data in lineData {
             guard let from = positions[data.fromID],
-                  let to = positions[data.toID] else { continue }
+                  let to = positions[data.toID],
+                  ends.moved(data.line, from, to, sizes: sizes?.shown[data.fromID], sizes?.shown[data.toID])
+            else { continue }
             trim(data.line, from: data.fromID, at: from, to: data.toID, at: to)
         }
     }
@@ -11917,6 +12224,8 @@ private final class CitedToDeepLines: MapLineLayer {
     private var root: Entity?
     private struct LineData { let line: ModelEntity; let fromID: String; let toID: String }
     private var lineData: [LineData] = []
+    /// Each line's ends as last laid, so a still line is left alone.
+    private let ends = LineEnds()
 
     private static let lineColor = XRColourRoles.deeperCitationLine.uiColor
 
@@ -11927,6 +12236,7 @@ private final class CitedToDeepLines: MapLineLayer {
     func rebuild(items: [EPUBMapItem]) {
         guard let root else { return }
         for data in lineData { data.line.removeFromParent() }
+        ends.reset()
         lineData = []
 
         // Index all item positions by ID for O(1) lookup.
@@ -11952,7 +12262,8 @@ private final class CitedToDeepLines: MapLineLayer {
     func relayout(positions: [String: SIMD3<Float>]) {
         for data in lineData {
             guard let from = positions[data.fromID],
-                  let to = positions[data.toID] else { continue }
+                  let to = positions[data.toID],
+                  ends.moved(data.line, from, to) else { continue }
             positionLine(data.line, from: from, to: to)
         }
     }
@@ -13694,6 +14005,216 @@ enum FastPlates {
         if let texture { made[key] = texture }
         return texture
     }
+}
+
+// MARK: - Drop to Relate (8 Nov 2026)
+
+/// What the model is making of two papers brought together: its words as
+/// they arrive, who made them, or why it could not.
+@MainActor @Observable
+final class RelateAnswer {
+    let first: String
+    let second: String
+    var text = ""
+    var by = ""
+    var failure: String?
+    var working = true
+    init(first: String, second: String) {
+        self.first = first
+        self.second = second
+    }
+}
+
+/// Marks the relation's panel, so a pinch on it puts the relation away.
+struct RelatePanelComponent: Component {}
+
+/// The panel over a relation's line: the two titles, then the model's
+/// account of how they relate — "Reading both…" while it works.
+struct RelatePanelView: View {
+    let answer: RelateAnswer
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("How they relate")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("\(answer.first)  \u{2194}  \(answer.second)")
+                .font(.headline)
+                .lineLimit(4)
+            if let failure = answer.failure {
+                Text(failure)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            } else if answer.text.isEmpty {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Reading both\u{2026}")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text(answer.text)
+                    .font(.body)
+            }
+            HStack {
+                if !answer.by.isEmpty {
+                    Text(answer.by)
+                }
+                Spacer()
+                Text("Pinch to put away")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+        }
+        .padding(22)
+        .frame(width: 440, alignment: .leading)
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 24))
+    }
+}
+
+/// One paper dropped on another (8 Nov 2026, Frode): it bounces back, a
+/// white line pulses between the two while the model reads them, and its
+/// account of how they relate stands over the line. One relation at a
+/// time; the line and panel follow the two cards wherever they are taken,
+/// and a pinch on the panel puts it away.
+@MainActor
+private final class RelateLines: MapLineLayer {
+    private var root: Entity?
+    private var line: ModelEntity?
+    private var panel: Entity?
+    private var ends: (from: String, to: String)?
+    private var answer: RelateAnswer?
+    private var began: CFTimeInterval = 0
+    /// The model's reading, cancelled if another relation takes its place.
+    var work: Task<Void, Never>?
+
+    /// The panel's place above the line's middle, and its size in the room.
+    private static let panelLift = SIMD3<Float>(0, 0.17, 0.05)
+    private static let panelScale: Float = 0.6
+
+    func install(in content: RealityViewContent) {
+        RelatePanelComponent.registerComponent()
+        let r = Entity()
+        r.name = "relate.lines"
+        content.add(r)
+        root = r
+    }
+
+    /// A new relation between two cards; any standing one gives way.
+    func begin(from: String, to: String, first: String, second: String) -> RelateAnswer {
+        clear()
+        let answer = RelateAnswer(first: first, second: second)
+        self.answer = answer
+        ends = (from, to)
+        began = CACurrentMediaTime()
+        guard let root else { return answer }
+        let line = FadingLine.make(tint: .white, opacity: 1, thickness: FadingLine.thick * 1.6)
+        line.isEnabled = false
+        line.components.set(OpacityComponent(opacity: 0.4))
+        root.addChild(line)
+        self.line = line
+        let panel = Entity()
+        panel.components.set(ViewAttachmentComponent(rootView: RelatePanelView(answer: answer)))
+        panel.components.set(BillboardComponent())
+        panel.components.set(RelatePanelComponent())
+        // A pinch target over the whole panel — 440 points at 1360 to the
+        // metre, scaled — generous in height, as the words grow.
+        panel.components.set(CollisionComponent(
+            shapes: [.generateBox(size: SIMD3<Float>(0.34, 0.3, 0.02))]))
+        panel.components.set(InputTargetComponent())
+        panel.scale = SIMD3<Float>(repeating: Self.panelScale)
+        panel.isEnabled = false
+        root.addChild(panel)
+        self.panel = panel
+        return answer
+    }
+
+    /// Whether the relation standing joins these two cards, either way.
+    func joins(_ a: String, _ b: String) -> Bool {
+        guard let ends else { return false }
+        return (ends.from == a && ends.to == b) || (ends.from == b && ends.to == a)
+    }
+
+    /// Whether the entity is (inside) the relation's panel.
+    func owns(_ entity: Entity) -> Bool {
+        var node: Entity? = entity
+        while let current = node {
+            if current.components.has(RelatePanelComponent.self) { return true }
+            node = current.parent
+        }
+        return false
+    }
+
+    func clear() {
+        work?.cancel()
+        work = nil
+        line?.removeFromParent()
+        panel?.removeFromParent()
+        line = nil
+        panel = nil
+        ends = nil
+        answer = nil
+    }
+
+    var needsPositions: Bool { ends != nil }
+
+    func relayout(positions: [String: SIMD3<Float>]) {
+        guard let ends, let line, let panel else { return }
+        guard let a = positions[ends.from], let b = positions[ends.to] else {
+            line.isEnabled = false
+            panel.isEnabled = false
+            return
+        }
+        let diff = b - a
+        let dist = simd_length(diff)
+        if dist > 0.01 {
+            line.isEnabled = true
+            line.position = (a + b) / 2
+            line.scale = SIMD3<Float>(dist, 1, 1)
+            let norm = diff / dist
+            let cross = simd_cross(SIMD3<Float>(1, 0, 0), norm)
+            let crossLen = simd_length(cross)
+            line.orientation = crossLen < 1e-6
+                ? simd_quatf(angle: norm.x < 0 ? Float.pi : 0, axis: SIMD3<Float>(0, 1, 0))
+                : simd_quatf(angle: acos(max(-1, min(1, norm.x))), axis: cross / crossLen)
+        } else {
+            line.isEnabled = false
+        }
+        // Pulsing while the model reads — a breath a second — then steady.
+        let working = answer?.working ?? false
+        let t = Float(CACurrentMediaTime() - began)
+        let opacity: Float = working ? 0.35 + 0.65 * (0.5 + 0.5 * sin(t * 2 * .pi * 1.1)) : 0.9
+        if line.components[OpacityComponent.self]?.opacity != opacity {
+            line.components.set(OpacityComponent(opacity: opacity))
+        }
+        // The panel waits for the bounce to settle before it stands.
+        panel.isEnabled = t > 0.45
+        let place = (a + b) / 2 + Self.panelLift
+        if simd_distance(panel.position, place) > 0.0005 { panel.position = place }
+    }
+}
+
+// MARK: - Still lines left alone (8 Nov 2026)
+
+/// The ends each connecting line was last laid between. The room re-lays
+/// its lines every frame; one whose ends have not moved is not touched, so
+/// RealityKit has nothing to send on for it.
+@MainActor
+final class LineEnds {
+    private var last: [ObjectIdentifier: [Float]] = [:]
+
+    /// Whether the line's ends (and the cards' sizes, for a line trimmed to
+    /// their edges) differ from when it was last laid; noted if so.
+    func moved(_ line: Entity, _ from: SIMD3<Float>, _ to: SIMD3<Float>,
+               sizes a: SIMD2<Float>? = nil, _ b: SIMD2<Float>? = nil) -> Bool {
+        let now = [from.x, from.y, from.z, to.x, to.y, to.z,
+                   a?.x ?? 0, a?.y ?? 0, b?.x ?? 0, b?.y ?? 0]
+        let key = ObjectIdentifier(line)
+        if let was = last[key], zip(was, now).allSatisfy({ abs($0 - $1) < 0.0002 }) { return false }
+        last[key] = now
+        return true
+    }
+
+    func reset() { last = [:] }
 }
 
 // MARK: - Lines that fade toward their ends (4 Nov 2026)

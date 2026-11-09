@@ -115,6 +115,9 @@ final class LibraryUpkeep {
         library.mirror(withCommunity: community)
         // Authors' faces for the headset's cards, every ten minutes.
         PortraitPublisher.shared.publishIfDue(model: model)
+        // Knowledge Space's concepts into the library, every ten minutes —
+        // the mirror carries them on to the headset (9 Nov 2026).
+        KnowledgeSpaceConcepts.shared.importIfDue(model: model)
         let settings = OrigamiLibrarySettings(
             modified: .now,
             conceptsFolder: OrigamiLibrarySettings.defaultConceptsFolder,

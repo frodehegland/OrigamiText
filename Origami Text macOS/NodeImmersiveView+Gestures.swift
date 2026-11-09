@@ -86,18 +86,6 @@ extension NodeImmersiveView {
                     )
                 }
                 
-                var cacheNodes = Set<Items.Element>()
-                var storeNodes = [Items.Element: Entity]()
-                
-                var storeConnections = [Entity]()
-                
-                fetch(
-                    content: content,
-                    cacheNodes: &cacheNodes,
-                    storeNodes: &storeNodes,
-                    storeConnections: &storeConnections
-                )
-                
                 guard let movingItem = value.entity.components[ItemComponent<Items.Element>.self]?.item else {
                     return
                 }
@@ -119,25 +107,32 @@ extension NodeImmersiveView {
                 }
                 
                 if shouldCheckMoveAnotherNodesBlock?(movingItem) ?? false {
-                    for anotherItem in items {
-                        if shouldMoveAnotherNodeBlock?(movingItem, anotherItem) ?? false {
-                            guard let startPosition = storeNodes[anotherItem]?.components[StartPositionComponent.self]?.position else {
-                                continue
-                            }
-
-                            var position = startPosition + getDelta()
-                            // Origami addition (carry back to Author):
-                            // the riders obey the same constraint as
-                            // the dragged node — a citation carried
-                            // with its family keeps its year's Z.
-                            if let constrain = constrainMovedNodeBlock {
-                                position = constrain(anotherItem, position, startPosition)
-                            }
-
-                            storeNodes[anotherItem]?.position = position
-
-                            movingItems.append(anotherItem)
+                    // Origami change (8 Nov 2026, carry back to Author):
+                    // walk the node entities themselves, each carrying its
+                    // item, rather than keying a dictionary by item — the
+                    // items hash every field (a paper's whole abstract),
+                    // and this ran for every node on every drag event.
+                    let delta = getDelta()
+                    for entity in content.entities {
+                        guard let anotherItem = entity.components[ItemComponent<Items.Element>.self]?.item,
+                              shouldMoveAnotherNodeBlock?(movingItem, anotherItem) ?? false,
+                              let startPosition = entity.components[StartPositionComponent.self]?.position
+                        else {
+                            continue
                         }
+
+                        var position = startPosition + delta
+                        // Origami addition (carry back to Author):
+                        // the riders obey the same constraint as
+                        // the dragged node — a citation carried
+                        // with its family keeps its year's Z.
+                        if let constrain = constrainMovedNodeBlock {
+                            position = constrain(anotherItem, position, startPosition)
+                        }
+
+                        if entity.position != position { entity.position = position }
+
+                        movingItems.append(anotherItem)
                     }
                 }
                 
@@ -206,12 +201,11 @@ extension NodeImmersiveView {
                     
                     onPinchOutBlock?()
                 }
-                
-                magnification = value.magnification
+                // Origami change (8 Nov 2026): `magnification` is no
+                // longer written each frame of a pinch — nothing reads it,
+                // and every write asked SwiftUI to look at the whole room.
             }
             .onEnded { _ in
-                magnification = 1.0
-                
                 hasPinchIn = false
                 hasPinchOut = false
             }

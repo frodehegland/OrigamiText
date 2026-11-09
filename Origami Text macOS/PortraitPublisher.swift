@@ -44,6 +44,9 @@ final class PortraitPublisher {
         UserDefaults.standard.set(bookmark, forKey: Self.ksBookmarkKey)
     }
 
+    /// The chosen Knowledge Space folder — its concepts are read from it too.
+    var knowledgeSpaceFolder: URL? { resolveKnowledgeSpaceFolder() }
+
     private func resolveKnowledgeSpaceFolder() -> URL? {
         guard let data = UserDefaults.standard.data(forKey: Self.ksBookmarkKey) else { return nil }
         var stale = false
@@ -154,10 +157,116 @@ final class PortraitPublisher {
     }
 }
 
+/// Knowledge Space's concepts, brought into the concept library by the Mac
+/// on its own (9 Nov 2026) — so the headset, which reads the library from
+/// the community folder, has them with no file to choose. It looks where
+/// Knowledge Space keeps its documents: the folder chosen for its
+/// portraits (Settings ▸ Portraits), and a "Knowledge Space" folder inside
+/// the community folder. Each `.liquid.json` is read once, then again only
+/// when it changes. Run by Library Upkeep (every ten minutes).
+@MainActor @Observable
+final class KnowledgeSpaceConcepts {
+    static let shared = KnowledgeSpaceConcepts()
+
+    private(set) var isRunning = false
+    private(set) var status = "Not brought in yet."
+    @ObservationIgnored private var lastRun = Date.distantPast
+    /// Each document's modification time when last read, by path.
+    private static let seenKey = "knowledgeSpaceConceptsSeen"
+
+    func importIfDue(model: AppModel) {
+        guard Date.now.timeIntervalSince(lastRun) > 600 else { return }
+        importNow(model: model)
+    }
+
+    func importNow(model: AppModel) {
+        guard !isRunning else { return }
+        var folders: [URL] = []
+        if let chosen = PortraitPublisher.shared.knowledgeSpaceFolder { folders.append(chosen) }
+        if let community = model.index.folderURL {
+            folders.append(community.appendingPathComponent("Knowledge Space", isDirectory: true))
+        }
+        guard !folders.isEmpty else {
+            status = "No Knowledge Space folder known — choose it under Portraits."
+            return
+        }
+        isRunning = true
+        lastRun = .now
+        let seen = UserDefaults.standard.dictionary(forKey: Self.seenKey) as? [String: Double] ?? [:]
+        Task {
+            // The changed documents, found off the main thread.
+            let changed = await Task.detached(priority: .background) {
+                Self.changedDocuments(in: folders, seen: seen)
+            }.value
+            var report = ConceptLibraryModel.ImportReport()
+            var nowSeen = seen
+            var read = 0
+            // A hundred at a time: the largest documents run to megabytes.
+            for batch in stride(from: 0, to: changed.count, by: 100).map({ Array(changed[$0..<min($0 + 100, changed.count)]) }) {
+                let docs = await Task.detached(priority: .background) {
+                    Self.decode(batch, scopes: folders)
+                }.value
+                let part = model.conceptLibrary.importConcepts(from: docs)
+                report.added += part.added
+                report.revised += part.revised
+                report.used += part.used
+                report.skipped += part.skipped
+                read += docs.count
+                for file in batch { nowSeen[file.path] = file.modified }
+            }
+            UserDefaults.standard.set(nowSeen, forKey: Self.seenKey)
+            if changed.isEmpty {
+                status = "Up to date — \(seen.count) Knowledge Space documents read."
+            } else {
+                status = "\(read) Knowledge Space document\(read == 1 ? "" : "s") read: \(report.summary)."
+                // Into the community folder for the headset at once.
+                if let community = model.index.folderURL {
+                    _ = model.conceptLibrary.mirror(withCommunity: community)
+                }
+            }
+            isRunning = false
+        }
+    }
+
+    private struct Found: Sendable {
+        let url: URL
+        let path: String
+        let modified: Double
+    }
+
+    private nonisolated static func changedDocuments(in folders: [URL], seen: [String: Double]) -> [Found] {
+        var found: [Found] = []
+        for folder in folders {
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+            guard let names = try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
+            for url in names where url.lastPathComponent.hasSuffix(".liquid.json") {
+                let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate?.timeIntervalSince1970 ?? 0
+                if seen[url.path] != modified {
+                    found.append(Found(url: url, path: url.path, modified: modified))
+                }
+            }
+        }
+        return found
+    }
+
+    private nonisolated static func decode(_ files: [Found], scopes: [URL]) -> [LiquidDoc] {
+        let scoped = scopes.map { $0.startAccessingSecurityScopedResource() }
+        defer { for (folder, on) in zip(scopes, scoped) where on { folder.stopAccessingSecurityScopedResource() } }
+        return files.compactMap { file in
+            guard let data = try? Data(contentsOf: file.url) else { return nil }
+            return try? LiquidDoc.decode(data: data, fileURL: file.url)
+        }
+    }
+}
+
 /// Settings ▸ Portraits: where the faces come from, and Import Now.
 struct PortraitsSettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var publisher = PortraitPublisher.shared
+    @State private var ksConcepts = KnowledgeSpaceConcepts.shared
 
     var body: some View {
         Form {
@@ -182,6 +291,20 @@ struct PortraitsSettingsView: View {
                 Text("Author Pictures")
             } footer: {
                 Text("Faces from your People, from Author and from Knowledge Space are gathered into the community folder\u{2019}s Portraits, where Vision Pro shows them on the cards in place of the authors\u{2019} names. Your own People come first, then Author, then Knowledge Space. Library Upkeep gathers new ones every ten minutes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                HStack {
+                    Text(ksConcepts.status).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(ksConcepts.isRunning ? "Bringing In\u{2026}" : "Bring In Now") { ksConcepts.importNow(model: model) }
+                        .disabled(ksConcepts.isRunning)
+                }
+            } header: {
+                Text("Knowledge Space Concepts")
+            } footer: {
+                Text("The concepts in Knowledge Space\u{2019}s documents \u{2014} in the folder chosen above, and in a Knowledge Space folder inside the community folder \u{2014} join your Defined Concepts, and from there every device\u{2019}s, Vision Pro\u{2019}s included. Library Upkeep reads new and changed documents every ten minutes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

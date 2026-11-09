@@ -1779,7 +1779,7 @@ final class VisionModel {
     /// many papers stays smooth. Opened, a paper is its full card as ever.
     /// Kept across launches.
     enum CardLook: String, CaseIterable {
-        case cards, spheres, titles, blobs, covers, fast
+        case cards, spheres, titles, blobs, covers, fast, solid
         var title: String {
             switch self {
             case .cards: "Cards"
@@ -1788,10 +1788,13 @@ final class VisionModel {
             case .blobs: "Blobs"
             case .covers: "Covers"
             case .fast: "Fast"
+            case .solid: "Solid Spheres"
             }
         }
-        /// A ball under the title: Color Spheres, or the soft Blobs.
-        var isRound: Bool { self == .spheres || self == .blobs }
+        /// A ball under the title: Color Spheres, the soft Blobs, or the
+        /// Solid Spheres (9 Nov 2026), which meet the room's real walls,
+        /// tables and floor and spring back off them, never passing through.
+        var isRound: Bool { self == .spheres || self == .blobs || self == .solid }
     }
     /// Size by Length (2 Nov 2026): each paper's card scaled by its length
     /// among its plane's papers. Kept across launches.
@@ -1803,6 +1806,23 @@ final class VisionModel {
             volumeStamp += 1
         }
     }
+    /// The bar's Snippets (9 Nov 2026): the words dragged out of readings
+    /// into the room, shown or put away together. Shown unless turned off.
+    var snippetsShown = UserDefaults.standard.object(forKey: "visionSnippetsShown") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(snippetsShown, forKey: "visionSnippetsShown")
+            volumeStamp += 1
+        }
+    }
+    /// The bar folded to a single icon (9 Nov 2026): the `<` at its left
+    /// folds it, the icon's `>` opens it again. Kept across launches.
+    var toolbarCollapsed = UserDefaults.standard.bool(forKey: "visionToolbarCollapsed") {
+        didSet { UserDefaults.standard.set(toolbarCollapsed, forKey: "visionToolbarCollapsed") }
+    }
+    /// The bar put away altogether by the arm's Hide Toolbar chit (9 Nov
+    /// 2026) — its window closed until Show Toolbar. Each session begins
+    /// with the bar shown.
+    var toolbarHidden = false
     var sizeByLength = UserDefaults.standard.bool(forKey: "visionSizeByLength") {
         didSet {
             UserDefaults.standard.set(sizeByLength, forKey: "visionSizeByLength")
@@ -2080,6 +2100,19 @@ final class VisionModel {
         volumeStamp += 1
     }
 
+    /// Clear Labels (9 Nov 2026): the labels the reader put into the room
+    /// taken out of it — every colour marker and every keyword or concept
+    /// brought in — and their lines with them. The Sculpture's own group
+    /// names stay: they are the room's shape, not things put into it.
+    var hasSpaceLabels: Bool { !chosenTagColors.isEmpty || !roomKeywords.isEmpty }
+
+    func clearSpaceLabels() {
+        tagDrops = [:]
+        chosenTagColors = []
+        if let venue = openJournalVenue { spaceKeywords[venue] = [] }
+        volumeStamp += 1
+    }
+
     func dropTagColor(_ hex: String, at point: SIMD3<Float>) {
         tagDrops[hex] = point
         if chosenTagColors.contains(hex) { volumeStamp += 1 } else { chosenTagColors.insert(hex) }
@@ -2193,44 +2226,17 @@ final class VisionModel {
         return made == true
     }
 
-    /// Knowledge Space's concepts, brought in: every `concepts` entry of
-    /// its `.liquid.json` documents (the files chosen, or every one in a
-    /// folder chosen) — name, description and tag — into the library,
-    /// each remembered by its Knowledge Space id so a second import
-    /// updates rather than repeats.
-    func importKnowledgeSpaceConcepts(from urls: [URL]) {
-        var files: [URL] = []
-        for url in urls {
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
-                let walk = FileManager.default.enumerator(at: url, includingPropertiesForKeys: nil)
-                while let next = walk?.nextObject() as? URL {
-                    if files.count >= 2000 { break }
-                    if next.lastPathComponent.hasSuffix(".liquid.json") || next.pathExtension == "json" {
-                        files.append(next)
-                    }
-                }
-            } else {
-                files.append(url)
-            }
+    /// The library read again from the community folder. Knowledge Space's
+    /// concepts come through the Mac, which reads its folder and mirrors the
+    /// library here (9 Nov 2026) — nothing to choose on the headset.
+    func refreshConcepts() {
+        if let folder = index.folderURL, let settings = OrigamiLibrarySettings.read(from: folder) {
+            adoptLibrarySettings(settings)
         }
-        var added = 0, read = 0
-        for url in urls { _ = url.startAccessingSecurityScopedResource() }
-        defer { for url in urls { url.stopAccessingSecurityScopedResource() } }
-        for file in files {
-            guard let data = try? Data(contentsOf: file),
-                  let doc = try? LiquidDoc.decode(data: data, fileURL: file) else { continue }
-            read += 1
-            for concept in doc.concepts {
-                let tags = concept.tag.map { [$0] } ?? []
-                if defineConcept(term: concept.name, definition: concept.description, tags: tags,
-                                 sourceID: "ks-" + concept.id, origin: doc.title) {
-                    added += 1
-                }
-            }
-        }
-        conceptsMessage = "Knowledge Space: \(added) concept\(added == 1 ? "" : "s") brought in from \(read) document\(read == 1 ? "" : "s")."
+        reloadConcepts()
+        let count = libraryTerms.count
+        let source = librarySettings.map { " \u{2014} kept by \($0.setBy), Knowledge Space\u{2019}s included" } ?? ""
+        conceptsMessage = "\(count) concept\(count == 1 ? "" : "s") in the library\(source)."
     }
 
     // MARK: Relations from selected words (2 Nov 2026)
@@ -3869,9 +3875,31 @@ struct VisionVolumeToolbar: View {
     /// takes dictation.
     @State private var keywordDraft = ""
 
-    @State private var importingConcepts = false
-
     var body: some View {
+        if model.toolbarCollapsed {
+            // Folded: one icon and its `>`, the window shrinking to it.
+            Button {
+                withAnimation(nil) { model.toolbarCollapsed = false }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "slider.horizontal.3")
+                    Image(systemName: "chevron.right")
+                }
+                .font(.system(size: 18, weight: .semibold))
+                .padding(.horizontal, 22)
+                .frame(height: 56)
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .hoverEffect()
+            .glassBackgroundEffect()
+            .help("Open the bar")
+        } else {
+            fullBar
+        }
+    }
+
+    private var fullBar: some View {
         VStack(spacing: 10) {
             roomRow
                 .font(.system(size: 16))
@@ -3890,22 +3918,22 @@ struct VisionVolumeToolbar: View {
                     .glassBackgroundEffect()
             }
         }
-            .fileImporter(isPresented: $importingConcepts,
-                          allowedContentTypes: [.json, .folder],
-                          allowsMultipleSelection: true) { result in
-                if case .success(let urls) = result { model.importKnowledgeSpaceConcepts(from: urls) }
-            }
             .task { model.reloadConcepts() }
     }
 
-    /// Concepts: make one, bring Knowledge Space's in, or put one of the
-    /// library's into the room as a label.
+    /// Concepts: make one, look again for what the Mac has brought in —
+    /// Knowledge Space's among them, with no file to choose (9 Nov 2026) —
+    /// or put one of the library's into the room as a label.
     private var conceptsMenu: some View {
         Menu {
             Button("New Concept\u{2026}", systemImage: "plus") { openWindow(id: "new-concept") }
-            Button("Import from Knowledge Space\u{2026}", systemImage: "square.and.arrow.down") {
-                importingConcepts = true
+            Button("Refresh from the Library", systemImage: "arrow.clockwise") {
+                model.refreshConcepts()
             }
+            Button("Clear Labels from the Room", systemImage: "xmark.circle") {
+                model.clearSpaceLabels()
+            }
+            .disabled(!model.hasSpaceLabels)
             if let message = model.conceptsMessage {
                 Text(message)
             }
@@ -3925,7 +3953,7 @@ struct VisionVolumeToolbar: View {
         } label: {
             Text("Concepts")
         }
-        .help("Make a concept, bring Knowledge Space's in, or put one into the room")
+        .help("Make a concept, refresh the library (Knowledge Space's concepts arrive through your Mac), or put one into the room")
     }
 
     /// The room's row: Documents first and Ask last; between them the
@@ -3933,6 +3961,17 @@ struct VisionVolumeToolbar: View {
     /// Shapes — then where the room stands: Volume (All, or one).
     private var roomRow: some View {
         HStack(spacing: 40) {
+            // Fold the bar away to a single icon (9 Nov 2026).
+            Button {
+                withAnimation(nil) { model.toolbarCollapsed = true }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 18, weight: .semibold))
+                    .frame(width: 32, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .hoverEffect()
+            .help("Fold the bar away")
             // Back to the document chooser: the library, where another
             // journal, volume or series is chosen (the arm's Documents
             // chip, now the arm chips are away).
@@ -4054,7 +4093,7 @@ struct VisionVolumeToolbar: View {
             } label: {
                 Text("Shapes")
             }
-            .help("The papers' shape: cards, spheres, coloured titles, blobs, covers, or Fast plates")
+            .help("The papers' shape: cards, spheres, coloured titles, blobs, covers, Fast plates, or solid spheres that bounce off the room")
             conceptsMenu
             // While on, each is ringed as well as filled (4 Nov 2026), so a
             // live attribute reads at a glance.
@@ -4062,6 +4101,10 @@ struct VisionVolumeToolbar: View {
                 .toggleStyle(.button)
                 .liveRing(model.coloursShown)
                 .help("The colours, beneath the bar: which is which, and lines to every paper of one")
+            Toggle("Snippets", isOn: Binding(get: { model.snippetsShown }, set: { model.snippetsShown = $0 }))
+                .toggleStyle(.button)
+                .liveRing(model.snippetsShown)
+                .help("Show or put away the snippets — the words dragged out of readings into the room")
             Toggle("Relative Size", isOn: Binding(get: { model.sizeByLength },
                                                  set: { model.sizeByLength = $0 }))
                 .toggleStyle(.button)
@@ -4721,7 +4764,7 @@ struct VisionSettingsView: View {
                 } header: {
                     Text("Arm Menus")
                 } footer: {
-                    Text("Moves every wrist chip to the opposite forearm — for wearing the working row on the other arm.")
+                    Text("Moves every wrist chip — the Hide Toolbar chit included, on the left arm unless this is on — to the opposite forearm.")
                 }
                 Section {
                     Toggle("Left Hand Moves the Space", isOn: $leftHandCarries)
@@ -9143,11 +9186,14 @@ struct VisionColourStrip: View {
                             model.dropTagColor(tag.color, at: SIMD3<Float>(m(p.x), -m(p.y), m(p.z)))
                         })
             }
-            if !model.chosenTagColors.isEmpty {
-                Divider().frame(height: 44)
-                Button("Clear Lines") { model.clearColourLines() }
-                    .buttonStyle(.bordered)
-            }
+            Divider().frame(height: 44)
+            Button("Clear Lines") { model.clearColourLines() }
+                .buttonStyle(.bordered)
+                .disabled(model.chosenTagColors.isEmpty)
+            Button("Clear Labels") { model.clearSpaceLabels() }
+                .buttonStyle(.bordered)
+                .disabled(!model.hasSpaceLabels)
+                .help("Take every colour marker and keyword out of the room")
         }
     }
 }
@@ -9214,8 +9260,11 @@ struct VisionTagLegendView: View {
                             model.dropTagColor(tag.color, at: SIMD3<Float>(m(p.x), -m(p.y), m(p.z)))
                         })
             }
-            if !model.chosenTagColors.isEmpty {
+            HStack {
                 Button("Clear Lines") { model.clearColourLines() }
+                    .disabled(model.chosenTagColors.isEmpty)
+                Button("Clear Labels") { model.clearSpaceLabels() }
+                    .disabled(!model.hasSpaceLabels)
             }
             Text("Set on the Mac, in Settings \u{25B8} Tags.")
                 .font(.caption2)
