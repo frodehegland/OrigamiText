@@ -72,6 +72,10 @@ struct EPUBMapItem: ItemProtocol {
     /// Size by Length (2 Nov 2026): how much larger or smaller the card
     /// stands for its paper's length — 1 while the bar's toggle is off.
     var sizeScale: Float = 1
+    /// Relative Size's width (9 Nov 2026): a card of a longer paper is
+    /// wider as well as larger, so its size reads in its width more than
+    /// its height. 1 when Relative Size is off, and for every look but Cards.
+    var widthScale: CGFloat = 1
     /// Retro's palette name, or nil (2 Nov 2026).
     var retro: String?
     /// Whether the bar's Colours is on (2 Nov 2026): a node shows its
@@ -153,6 +157,7 @@ struct EPUBMapItem: ItemProtocol {
             && abstract == other.abstract && visionTheme == other.visionTheme
             && isGhost == other.isGhost && showsAbstract == other.showsAbstract
             && isLifted == other.isLifted && lengthShare == other.lengthShare
+            && widthScale == other.widthScale
             && isFaded == other.isFaded && warning == other.warning
             && pieceLabel == other.pieceLabel && imagePath == other.imagePath
             && coverPath == other.coverPath && keySentence == other.keySentence
@@ -787,8 +792,8 @@ struct EPUBMapView: View {
                 let agePlace: Float? = articleYear(record).flatMap { year in
                     newestArticleYear.map { Float($0 - year) / Float(articleSpan) }
                 }
-                let depth: Float = plane.depth
-                    ?? -1.2 - (agePlace ?? 0) * min(1.2, Float(articleSpan) * 0.1)
+                let depth: Float = stretchedDepth(plane.depth
+                    ?? -1.2 - (agePlace ?? 0) * min(1.2, Float(articleSpan) * 0.1))
                 let seed = SIMD3<Float>(
                     (Float(column) - Float(columns - 1) / 2) * Self.columnPitch,
                     seedTop - Float(row) * Self.rowPitch,
@@ -827,6 +832,9 @@ struct EPUBMapView: View {
                 item.isLifted = liftedCards[record.id] != nil
                 item.lengthShare = lengthShare(record)
                 item.sizeScale = model.sizeByLength ? Self.lengthScale(item.lengthShare) : 1
+                if model.sizeByLength, model.cardLook == .cards {
+                    item.widthScale = Self.lengthWidth(item.lengthShare)
+                }
                 item.retro = model.retroName
                 item.imagePath = imagePaths(forDocID: record.id).first
                 item.coverPath = coverPath(forDocID: record.id)
@@ -859,7 +867,7 @@ struct EPUBMapView: View {
                     let seed = SIMD3<Float>(
                         (leftOfWall ? -edge : edge) * Self.columnPitch,
                         seedTop - Float(index) * Self.rowPitch,
-                        plane.depth ?? -1.2) + spaceShift + documentsShift
+                        stretchedDepth(plane.depth ?? -1.2)) + spaceShift + documentsShift
                     if plane.depth != nil { yearZ[record.id] = seed.z }
                     var position = placed[record.id] ?? seed
                     if liftedCards[record.id] == nil,
@@ -1144,6 +1152,10 @@ struct EPUBMapView: View {
             runCompact()
         case .closeIn:
             runCloseIn()
+        case .widen:
+            runWiden(depthOnly: false)
+        case .widenDepth:
+            runWiden(depthOnly: true)
         case .card(let itemID, let verb):
             performCardVerb(verb, on: itemID)
         }
@@ -2156,6 +2168,8 @@ struct EPUBMapView: View {
     /// no longer reclaims it. Wall gives the timeline back. One venue a
     /// line, kept across launches.
     @AppStorage("mapTimeFreeVenues") private var timeFreeVenues = ""
+    /// Widen Depth's stretch of time's planes behind the nearest (9 Nov 2026).
+    @AppStorage("mapDepthStretch") private var depthStretch = 1.0
 
     private var isTimeFree: Bool {
         guard let venue = model.openJournalVenue else { return false }
@@ -3471,7 +3485,7 @@ struct EPUBMapView: View {
         // (17 Sep 2026.)
         let chosen: CGFloat = item.isSelected && !item.isGhost ? 1.1 : 1.0
         switch item.kind {
-        case .article: return 100.0 * chosen * Self.crisp
+        case .article: return 100.0 * chosen * item.widthScale * Self.crisp
         case .cited: return 75.0 * chosen * Self.crisp
         case .citedDeep: return 60.0 * chosen * Self.crisp
         case .concept: return 240.0 * Self.crisp
@@ -3488,7 +3502,10 @@ struct EPUBMapView: View {
         guard item.kind == .article, !item.isSelected,
               !item.isGhost, !item.isAside,
               let share = item.lengthShare else { return 0 }
-        return lengthRise * CGFloat(max(0, min(1, share)))
+        // Under Relative Size the length shows in the width; the sheet
+        // rises only a little (9 Nov 2026).
+        let rise = item.widthScale != 1 ? lengthRise * 0.35 : lengthRise
+        return rise * CGFloat(max(0, min(1, share)))
     }
 
     /// The title up to its colon — the working name, not the subtitle.
@@ -3876,6 +3893,9 @@ struct EPUBMapView: View {
             // takes it whole, greys a dimmer shade), in a monospaced hand.
             .colorMultiply(item.paintColours.isEmpty ? (retroPalette(item)?.text ?? .white) : .white)
             .fontDesign(retroPalette(item) == nil ? nil : .monospaced)
+            // Relative Size's width (9 Nov 2026): the card fills the width
+            // its paper's length gives it, short title or long.
+            .frame(minWidth: item.widthScale != 1 ? (100 * item.widthScale - 16) * s : nil)
             .padding(.horizontal, (item.kind == .article ? 8 : 7) * s)
             // A long paper is a taller sheet: the length's share of the
             // journal's range buys up to `lengthRise` more points of
@@ -4317,7 +4337,17 @@ struct EPUBMapView: View {
     /// its share, so the middling lengths spread.
     static func lengthScale(_ share: Double?) -> Float {
         guard let share else { return 1 }
-        return 0.75 + 0.75 * Float(max(0, min(1, share))).squareRoot()
+        // 0.8 for the shortest to 1.45 for the longest (9 Nov 2026; was
+        // 0.75–1.5 in both directions, before the width took its share).
+        return 0.8 + 0.65 * Float(max(0, min(1, share))).squareRoot()
+    }
+
+    /// Relative Size's width on a card: 0.9 for the shortest to 1.35 for the
+    /// longest — on top of the size above, so the longest paper's card is
+    /// nearly twice as wide as an even one, and its title wraps shorter.
+    static func lengthWidth(_ share: Double?) -> CGFloat {
+        guard let share else { return 1 }
+        return 0.9 + 0.45 * CGFloat(max(0, min(1, share))).squareRoot()
     }
 
     /// How far a card rests off a real surface it sticks to: flush, a
@@ -6445,7 +6475,10 @@ struct EPUBMapView: View {
     /// The room takes a Shape.
     private func runShape(_ shape: RoomShape) {
         switch shape {
-        case .timeline: runTimelineShape()
+        case .timeline:
+            // The room as it first stood: Widen Depth's stretch let go too.
+            depthStretch = 1
+            runTimelineShape()
         case .constellation: runConstellationShape()
         case .weight: runWeightShape()
         case .landscape: runLandscapeShape()
@@ -6745,6 +6778,58 @@ struct EPUBMapView: View {
     /// down, each keeping its own depth (its year's plane) — but never
     /// closer than a centimetre between two cards' edges, so nothing
     /// overlaps. The room itself stays where it stands.
+    /// Widen and Widen Depth (9 Nov 2026), beside Close In. Widen spreads
+    /// the nodes a quarter further apart across the room and up and down,
+    /// about their middle, and deepens time as Widen Depth does. Widen Depth
+    /// deepens time alone: the years' (or volumes') planes stand a quarter
+    /// further apart behind the nearest, the papers keeping their order, and
+    /// the citations' corridor deepens a step. While an arrangement has the
+    /// room free of time, the papers' own depths are spread instead.
+    private func runWiden(depthOnly: Bool) {
+        let nodes = items.filter {
+            !$0.isGhost && !$0.isAside && $0.position != nil && liftedCards[$0.id]?.stuck == nil
+                && labelStuck[$0.id] == nil && !$0.id.hasPrefix("float:")
+                && $0.kind != .cited && $0.kind != .citedDeep
+        }
+        let spread: Float = 1.25
+        // Read once: Widen's own move frees the room from time.
+        let wasTimeFree = isTimeFree
+        if !depthOnly || wasTimeFree, nodes.count > 1 {
+            let positions = nodes.map { $0.position! }
+            let centre = positions.reduce(SIMD3<Float>(repeating: 0), +) / Float(positions.count)
+            // Depth spreads back from the nearest plane, so the room does not
+            // come toward the reader.
+            let front = positions.map(\.z).max() ?? centre.z
+            var at: [String: SIMD3<Float>] = [:]
+            for (node, p) in zip(nodes, positions) {
+                var wide = p
+                if !depthOnly {
+                    wide.x = centre.x + (p.x - centre.x) * spread
+                    wide.y = centre.y + (p.y - centre.y) * spread
+                }
+                wide.z = front + (p.z - front) * spread
+                at[node.id] = wide
+            }
+            NodeGlide.open()
+            applyWatchPositions3D(at, heights: 0.15...2.6)
+        }
+        // Time itself, while the room keeps to it: the planes stand further apart.
+        if depthOnly, !wasTimeFree {
+            depthStretch = min(depthStretch * Double(spread), Self.maxDepthStretch)
+        }
+        NodeGlide.open()
+        stepCitedDepth(deeper: true)
+    }
+
+    /// How far Widen Depth may stretch time's planes apart.
+    private static let maxDepthStretch = 4.0
+
+    /// A plane's depth with Widen Depth's stretch: the nearest plane (-1.2)
+    /// stays where it is, every deeper one stands further back.
+    private func stretchedDepth(_ depth: Float) -> Float {
+        -1.2 + (depth + 1.2) * Float(depthStretch)
+    }
+
     private func runCloseIn() {
         let nodes = items.filter {
             !$0.isGhost && !$0.isAside && $0.position != nil && liftedCards[$0.id]?.stuck == nil
@@ -11716,6 +11801,9 @@ final class RoomSurfaces {
         let extentFromOrigin: simd_float4x4
         let halfWidth: Float
         let halfHeight: Float
+        /// What the headset took it for: the floor, a seat, a table…
+        let isFloor: Bool
+        let isSeatOrTable: Bool
     }
 
     /// Every surface known now.
@@ -11731,7 +11819,9 @@ final class RoomSurfaces {
                                                 originFromAnchor.columns.3.z),
                            normal: normal,
                            extentFromOrigin: simd_inverse(originFromAnchor * extent.anchorFromExtentTransform),
-                           halfWidth: extent.width / 2, halfHeight: extent.height / 2)
+                           halfWidth: extent.width / 2, halfHeight: extent.height / 2,
+                           isFloor: plane.classification == .floor,
+                           isSeatOrTable: plane.classification == .seat || plane.classification == .table)
         }
     }
 
@@ -14376,6 +14466,9 @@ final class RubberBalls {
     }
 
     private var flights: [String: Flight] = [:]
+    /// The real floor as RealityKit anchors it — the same anchor the floor's
+    /// timelines stand on — read when no classified floor plane is known.
+    private var floorAnchor: AnchorEntity?
     private var surfaces: [RoomSurfaces.Surface] = []
     private var surfacesRead: Double = 0
     private var subscription: EventSubscription?
@@ -14389,6 +14482,10 @@ final class RubberBalls {
     func install(in content: RealityViewContent, surfaces: RoomSurfaces) {
         SolidBallComponent.registerComponent()
         roomSurfaces = surfaces
+        let floor = AnchorEntity(.plane(.horizontal, classification: .floor,
+                                        minimumBounds: SIMD2<Float>(0.5, 0.5)))
+        content.add(floor)
+        floorAnchor = floor
         subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             MainActor.assumeIsolated {
                 self?.step(scene: event.scene, dt: Float(event.deltaTime))
@@ -14428,7 +14525,7 @@ final class RubberBalls {
             surfaces = roomSurfaces?.surfaces() ?? []
             surfacesRead = now
         }
-        let floorY = surfaces.filter { $0.normal.y > 0.85 && $0.centre.y < 0.4 }.map(\.centre.y).min() ?? 0
+        let floorY = floorHeight()
         var entities: [String: Entity] = [:]
         for node in scene.performQuery(nodeQuery) {
             if let id = node.components[EPUBNodeIDComponent.self]?.id, flights[id] != nil { entities[id] = node }
@@ -14441,7 +14538,13 @@ final class RubberBalls {
                 flight.measured = true
                 if let pivot = Self.pivot(in: node) {
                     flight.offset = pivot.position(relativeTo: nil) - node.position(relativeTo: nil)
-                    flight.radius = pivot.components[SolidBallComponent.self]?.radius ?? flight.radius
+                    // The ball as drawn, measured in the room — not reckoned
+                    // from the card's sizes — so it rests on the floor, not
+                    // above it.
+                    let drawn = pivot.visualBounds(relativeTo: nil).extents
+                    let measured = min(drawn.x, drawn.y, drawn.z) / 2
+                    flight.radius = measured > 0.002 ? measured
+                        : pivot.components[SolidBallComponent.self]?.radius ?? flight.radius
                     flight.centre += flight.offset
                 }
             }
@@ -14464,6 +14567,22 @@ final class RubberBalls {
                 flights[id] = flight
             }
         }
+    }
+
+    /// The floor's height, the surest first (9 Nov 2026 — balls had been
+    /// coming to rest on a seat or a low table, or on the room's origin, when
+    /// the floor itself was not yet found): a plane the headset classified
+    /// as floor; else the floor anchor; else the lowest upward surface near
+    /// the ground that is not a seat or a table; else the room's own level.
+    private func floorHeight() -> Float {
+        if let floor = surfaces.filter(\.isFloor).map(\.centre.y).min() { return floor }
+        if let anchor = floorAnchor, anchor.isAnchored {
+            let y = anchor.position(relativeTo: nil).y
+            if (-1.0...0.6).contains(y) { return y }
+        }
+        if let low = surfaces.filter({ $0.normal.y > 0.85 && $0.centre.y < 0.3 && !$0.isSeatOrTable })
+            .map(\.centre.y).min() { return low }
+        return 0
     }
 
     /// One short step: gravity, the air, and whatever surface it meets.

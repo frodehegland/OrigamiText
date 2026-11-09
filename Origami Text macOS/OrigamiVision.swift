@@ -1693,6 +1693,10 @@ final class VisionModel {
             case compact
             /// Close In: the nodes drawn nearer one another, the room kept.
             case closeIn
+            /// Widen: the nodes spread further apart, time deepened too.
+            case widen
+            /// Widen Depth: time's planes and the citations' corridor deeper.
+            case widenDepth
             /// A verb on the bar's second row, for the chosen card: its
             /// id, then the verb's (`CardBar.Verb.id`).
             case card(String, String)
@@ -4021,6 +4025,10 @@ struct VisionVolumeToolbar: View {
                 // Close In (9 Nov 2026): first, for the room grown too
                 // spread out — the nodes nearer one another, each time.
                 Button("Close In") { model.volumeBarRequest = .init(action: .closeIn) }
+                // Widen and Widen Depth (9 Nov 2026): the other way — across
+                // every dimension, or in depth alone, time kept in order.
+                Button("Widen") { model.volumeBarRequest = .init(action: .widen) }
+                Button("Widen Depth") { model.volumeBarRequest = .init(action: .widenDepth) }
                 Section("Arrange") {
                     ForEach(model.layoutArrangements) { choice in
                         Button(choice.title) {
