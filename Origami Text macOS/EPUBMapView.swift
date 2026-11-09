@@ -59,6 +59,10 @@ struct EPUBMapItem: ItemProtocol {
     /// The card opened to its abstract — asked for with the selected
     /// card's Abstract button, not by selection itself.
     var showsAbstract = false
+    /// Standing in the Exhibition (9 Nov 2026): the card reads as an open
+    /// one — full title, every author, its abstract — without being chosen,
+    /// so the room's selection and citations are left as they were.
+    var isExhibited = false
     /// Snapped off the map with Lift: the card reads as a slightly
     /// extruded object, apart from the flat wall.
     var isLifted = false
@@ -127,7 +131,7 @@ struct EPUBMapItem: ItemProtocol {
     /// Drawn in a look of its own — a sphere or a coloured title — rather
     /// than as a card: a paper standing, not set aside nor opened.
     var wearsLook: Bool {
-        look != .cards && kind == .article && !isAside && !isGhost && !showsAbstract
+        look != .cards && kind == .article && !isAside && !isGhost && !showsAbstract && !isExhibited
     }
     struct AuthorFace: Hashable {
         var name: String
@@ -156,6 +160,7 @@ struct EPUBMapItem: ItemProtocol {
             && isShared == other.isShared && citationCount == other.citationCount
             && abstract == other.abstract && visionTheme == other.visionTheme
             && isGhost == other.isGhost && showsAbstract == other.showsAbstract
+            && isExhibited == other.isExhibited
             && isLifted == other.isLifted && lengthShare == other.lengthShare
             && widthScale == other.widthScale
             && isFaded == other.isFaded && warning == other.warning
@@ -1156,6 +1161,8 @@ struct EPUBMapView: View {
             runWiden(depthOnly: false)
         case .widenDepth:
             runWiden(depthOnly: true)
+        case .toggleGrounded:
+            toggleGrounded()
         case .card(let itemID, let verb):
             performCardVerb(verb, on: itemID)
         }
@@ -1252,6 +1259,7 @@ struct EPUBMapView: View {
             // Retro is the whole room's (9 Nov 2026): every card carries it,
             // so a change of palette rebuilds the labels and citations too.
             for index in built.indices { built[index].retro = model.retroName }
+            stageExhibition(&built)
             items = built
             // The colour key's counts: how many papers here carry each.
             var tagCounts: [String: Int] = [:]
@@ -1272,6 +1280,7 @@ struct EPUBMapView: View {
             raisedArticleIDs = []
             deepParentIDs = []
             citedYearRange = nil
+            cardTick.standColours = [:]
         }
         if conceptSpaceMode {
             // Concept cards keep their selection through the rebuild,
@@ -3115,7 +3124,8 @@ struct EPUBMapView: View {
             // card, a label, a galaxy concept, a snippet.
             if !cardTick.facingWhileMoved.contains(item.id) {
                 let openFree = item.isSelected && item.showsAbstract && standsFree(item)
-                if openFree || liftedCards[item.id] != nil || Self.isSpatialLabel(item)
+                // An exhibit turns too, keeping its lean (MapCardTick.leaning).
+                if openFree || item.isExhibited || liftedCards[item.id] != nil || Self.isSpatialLabel(item)
                     || item.id.hasPrefix("concept:") || item.id.hasPrefix("float:") {
                     cardTick.facingWhileMoved.insert(item.id)
                     if openFree { cardTick.openTurns.insert(item.id) }
@@ -3767,6 +3777,9 @@ struct EPUBMapView: View {
             // border brightens and thickens, the card grows a touch
             // (the entity's scale, set in cardEntity).
             let selected = item.isSelected
+            // What an open card shows — the Exhibition's too, though its
+            // cards are not chosen: the border stays selection's alone.
+            let open = selected || item.isExhibited
             VStack(spacing: (item.kind == .citedDeep ? 1.5 : 2.5) * s) {
                 // A paper with pictures wears its first as a thumbnail, so
                 // it is known at a glance as the views change (1 Nov 2026).
@@ -3797,7 +3810,7 @@ struct EPUBMapView: View {
                     // Not bold: a card carries one title and nothing
                     // competes with it, so weight is asked to do work
                     // the card's own size already does. (18 Sep 2026.)
-                    Text(selected ? item.title : shortTitle(item.title))
+                    Text(open ? item.title : shortTitle(item.title))
                         .font(retroPalette(item) == nil ? AppFonts.body(titleSize * s, weight: .regular)
                               : .system(size: titleSize * s * 0.92, design: .monospaced))
                         .foregroundStyle(Color.white)
@@ -3806,14 +3819,14 @@ struct EPUBMapView: View {
                 // in its series. Closed: the first authors alone, then the
                 // paper's first sentence, small, in serif (1 Nov 2026).
                 if !item.authorFaces.isEmpty {
-                    authorFaceRow(item.authorFaces, selected: selected, s: s)
-                    if selected, let stamp = item.stamp {
+                    authorFaceRow(item.authorFaces, selected: open, s: s)
+                    if open, let stamp = item.stamp {
                         Text(stamp)
                             .font(.system(size: 5.5 * s))
                             .foregroundStyle(Color.white.opacity(0.65))
                     }
                 } else {
-                    Text(selected ? ([item.author] + [item.stamp].compactMap { $0 }).joined(separator: " · ")
+                    Text(open ? ([item.author] + [item.stamp].compactMap { $0 }).joined(separator: " · ")
                                   : shortByline(item.author))
                         .font(.system(size: 5.5 * s))
                         .foregroundStyle(Color.white.opacity(0.65))
@@ -3821,7 +3834,7 @@ struct EPUBMapView: View {
                 // Its categories: a small rectangle of each colour, in the
                 // tags' order (set on the Mac, 2 Nov 2026).
                 if !item.paintColours.isEmpty {
-                    if selected && item.showsAbstract {
+                    if (selected && item.showsAbstract) || item.isExhibited {
                         // Open: each colour names its category beside it, in
                         // small sans-serif (2 Nov 2026) — in a row, or one
                         // under another when the row will not fit.
@@ -3852,7 +3865,7 @@ struct EPUBMapView: View {
                         .padding(.top, 0.8 * s)
                     }
                 }
-                if !selected, !item.showsAbstract, let sentence = item.firstSentence {
+                if !open, !item.showsAbstract, let sentence = item.firstSentence {
                     Text(sentence)
                         .font(.system(size: 4.6 * s, design: retroPalette(item) == nil ? .serif : .monospaced))
                         .foregroundStyle(Color.white.opacity(0.75))
@@ -3876,8 +3889,8 @@ struct EPUBMapView: View {
                 // Abstract button does it now, as a citation's always
                 // has (29 Sep 2026; the paper used to open it with
                 // selection itself).
-                if withAbstract && selected && !item.abstract.isEmpty,
-                   item.showsAbstract {
+                if withAbstract && !item.abstract.isEmpty,
+                   (selected && item.showsAbstract) || item.isExhibited {
                     // The full abstract in fine print — readable
                     // without stepping right up to the card.
                     // In the system's serif, New York (1 Nov 2026).
@@ -6383,7 +6396,7 @@ struct EPUBMapView: View {
     /// line to each of its papers.
     enum RoomShape: String, CaseIterable {
         case timeline, meaning, themes, concepts, authors, people, images, constellation, colours, weight, landscape,
-             citations, territory, faults
+             citations, territory, faults, exhibition
 
         var title: String {
             switch self {
@@ -6402,6 +6415,7 @@ struct EPUBMapView: View {
             case .citations: "Citation Mountains"
             case .territory: "Your Territory"
             case .faults: "Fault Lines"
+            case .exhibition: "Exhibition"
             }
         }
     }
@@ -6417,6 +6431,9 @@ struct EPUBMapView: View {
     struct StoredShape: Codable {
         var shape: String
         var labels: [ShapeLabel]
+        /// Connect to Ground (9 Nov 2026): every paper on a stand to the
+        /// floor, whatever the Sculpture. Kept with the room's Sculpture.
+        var grounded: Bool?
     }
 
     static let shapeLabelPrefix = "shape:"
@@ -6435,7 +6452,7 @@ struct EPUBMapView: View {
     private func storeShape(_ shape: RoomShape, labels: [ShapeLabel]) {
         guard let venue = model.openJournalVenue else { return }
         var all = storedShapes
-        all[venue] = StoredShape(shape: shape.rawValue, labels: labels)
+        all[venue] = StoredShape(shape: shape.rawValue, labels: labels, grounded: all[venue]?.grounded)
         // Onto a panel, a wall or back to the Hallway: open cards stand upright.
         if !Self.freeStandingShapes.contains(shape.rawValue) { cardTick.heldFacing = [:] }
         if let data = try? JSONEncoder().encode(all), let text = String(data: data, encoding: .utf8) {
@@ -6455,7 +6472,7 @@ struct EPUBMapView: View {
                                       RoomShape.meaning.rawValue, RoomShape.images.rawValue,
                                       RoomShape.constellation.rawValue, RoomShape.colours.rawValue,
                                       RoomShape.weight.rawValue, RoomShape.landscape.rawValue,
-                                      RoomShape.territory.rawValue]
+                                      RoomShape.territory.rawValue, RoomShape.exhibition.rawValue]
         if corpus != nil { available.insert(RoomShape.citations.rawValue) }
         if !(corpus?.stances ?? []).isEmpty { available.insert(RoomShape.faults.rawValue) }
         if !(corpus?.themes ?? []).isEmpty { available.insert(RoomShape.themes.rawValue) }
@@ -6470,6 +6487,54 @@ struct EPUBMapView: View {
         if model.shapeAvailable != available { model.shapeAvailable = available }
         let current = roomShape?.shape ?? RoomShape.timeline.rawValue
         if model.currentShapeID != current { model.currentShapeID = current }
+        let grounded = roomShape?.grounded ?? false
+        if model.roomGrounded != grounded { model.roomGrounded = grounded }
+    }
+
+    /// The Exhibition and Connect to Ground on each rebuild (9 Nov 2026):
+    /// in the Exhibition every standing paper reads open and leans back
+    /// toward the reader — a paper carried since keeps the turn it was set
+    /// down at; with either, each paper's stand in its first colour (grey
+    /// for one without), handed to the tick that keeps it under its card.
+    private func stageExhibition(_ built: inout [EPUBMapItem]) {
+        let exhibiting = roomShape?.shape == RoomShape.exhibition.rawValue
+        let grounded = exhibiting || (roomShape?.grounded ?? false)
+        let reader = spaceShift + documentsShift
+        var leaning: Set<String> = []
+        var stands: [String: String] = [:]
+        for index in built.indices {
+            let item = built[index]
+            guard item.kind == .article, !item.isGhost, !item.isAside,
+                  let place = item.position, liftedCards[item.id]?.stuck == nil else { continue }
+            if exhibiting {
+                built[index].isExhibited = true
+                leaning.insert(item.id)
+                if cardTick.heldFacing[item.id] == nil {
+                    cardTick.heldFacing[item.id] = Self.exhibitTurn(at: place, toward: reader)
+                }
+            }
+            if grounded { stands[item.id] = item.tagColors.first ?? "" }
+        }
+        // Out of the Exhibition: its cards stand upright again.
+        for id in cardTick.leaning.subtracting(leaning) { cardTick.heldFacing[id] = nil }
+        cardTick.leaning = leaning
+        cardTick.standsFromMiddle = exhibiting
+        cardTick.standColours = stands
+    }
+
+    /// Sculptures ▸ Connect to Ground (9 Nov 2026): stands to the floor
+    /// under every paper, or none — the Exhibition has them either way.
+    private func toggleGrounded() {
+        guard let venue = model.openJournalVenue else { return }
+        var all = storedShapes
+        var stored = all[venue] ?? StoredShape(shape: RoomShape.timeline.rawValue, labels: [])
+        stored.grounded = !(stored.grounded ?? false)
+        all[venue] = stored
+        if let data = try? JSONEncoder().encode(all), let text = String(data: data, encoding: .utf8) {
+            storedShapesRaw = text
+        }
+        model.roomGrounded = stored.grounded ?? false
+        reload()
     }
 
     /// The room takes a Shape.
@@ -6486,6 +6551,7 @@ struct EPUBMapView: View {
         case .citations: runCitationMountainsShape()
         case .territory: runTerritoryShape()
         case .faults: runFaultLinesShape()
+        case .exhibition: runExhibitionShape()
         default:
             let targets = shapeTargets()
             guard targets.count > 2 else { return }
@@ -6511,6 +6577,55 @@ struct EPUBMapView: View {
         savePlacedNow()
         reload()
         updateWatchChips()
+    }
+
+    /// An exhibit's lean (9 Nov 2026): back 45° like a drafting table, its
+    /// top edge away from the reader, its face turned up.
+    static let exhibitTilt = simd_quatf(angle: -.pi / 4, axis: SIMD3<Float>(1, 0, 0))
+
+    /// Turned to the reader's place, yaw only, then leant back on its stand.
+    static func exhibitTurn(at place: SIMD3<Float>, toward reader: SIMD3<Float>) -> simd_quatf {
+        let to = reader - place
+        return simd_quatf(angle: atan2(to.x, to.z), axis: SIMD3<Float>(0, 1, 0)) * exhibitTilt
+    }
+
+    /// The Exhibition (9 Nov 2026, as in Knowledge Space): every paper open
+    /// on its own stand at table height, in rings round the reader, oldest
+    /// first — the first ring centred straight ahead, each further ring a
+    /// step out, a little higher, and offset half a place so it shows
+    /// between the nearer ones. Each stand wears the paper's first colour.
+    private func runExhibitionShape() {
+        let targets = shapeTargets().sorted {
+            let a = watchDate($0.id), b = watchDate($1.id)
+            return a != b ? a < b : $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+        guard !targets.isEmpty else { return }
+        let reader = spaceShift + documentsShift
+        let baseRadius: Float = 1.5, ringGap: Float = 0.9, spacing: Float = 0.45
+        let baseHeight: Float = 1.0, rise: Float = 0.12
+        var placedNow: [String: SIMD3<Float>] = [:]
+        var start = 0, ring = 0
+        while start < targets.count {
+            let r = baseRadius + Float(ring) * ringGap
+            let capacity = max(1, Int(2 * Float.pi * r / spacing))
+            let members = targets[start..<min(start + capacity, targets.count)]
+            let step = 2 * Float.pi / Float(capacity)
+            let offset = ring % 2 == 0 ? 0 : step / 2
+            for (i, item) in members.enumerated() {
+                // Azimuth 0 is straight ahead, -z, as the other Sculptures stand.
+                let azimuth = (Float(i) - Float(members.count - 1) / 2) * step + offset
+                placedNow[item.id] = SIMD3<Float>(reader.x + sin(azimuth) * r,
+                                                  baseHeight + Float(ring) * rise,
+                                                  reader.z - cos(azimuth) * r)
+            }
+            start += members.count
+            ring += 1
+        }
+        storeShape(.exhibition, labels: [])
+        // Each turned afresh to where the reader stands now.
+        for id in placedNow.keys { cardTick.heldFacing[id] = nil }
+        NodeGlide.open()
+        applyWatchPositions3D(placedNow, heights: 0.6...2.6)
     }
 
     /// The groups a Shape makes of the papers, each with how typical each
@@ -6593,7 +6708,7 @@ struct EPUBMapView: View {
             }
             return plain([("Many pictures", many), ("Several pictures", several), ("One picture", one)],
                          rest: "Text only")
-        case .timeline, .constellation, .weight, .landscape, .citations, .territory, .faults:
+        case .timeline, .constellation, .weight, .landscape, .citations, .territory, .faults, .exhibition:
             return []
         }
     }
@@ -11993,6 +12108,21 @@ private final class MapCardTick {
     var openTurns: Set<String> = []
     /// Cards being carried, turning to the reader every frame.
     var facingWhileMoved: Set<String> = []
+    /// The Exhibition's papers (9 Nov 2026): carried, each turns to the
+    /// reader still leant back on its stand.
+    var leaning: Set<String> = []
+    /// The stands to the floor (9 Nov 2026) — the Exhibition's, and Connect
+    /// to Ground's under any Sculpture: by card id, its "#RRGGBB" colour,
+    /// empty for grey. Set by the room on each rebuild.
+    var standColours: [String: String] = [:] {
+        didSet { if standColours != oldValue { standsPending = true } }
+    }
+    /// The Exhibition's lean on a lectern: the pole meets the card's
+    /// middle. Else — Connect to Ground — the middle of its lower edge.
+    var standsFromMiddle = false
+    private var standsPending = false
+    private var standRoot: Entity?
+    private var stands: [String: (stand: Entity, colour: String)] = [:]
     /// Whether a card is still open — a held turn ends when it closes,
     /// whichever way it was closed.
     var stillOpen: (@MainActor (String) -> Bool)?
@@ -12014,6 +12144,11 @@ private final class MapCardTick {
         self.anyLifted = anyLifted
         self.liftedFacesHead = liftedFacesHead
         self.stuckOrientation = stuckOrientation
+        // The stands hang from a root at the world's origin, on the floor.
+        let root = Entity()
+        root.name = "map.stands"
+        content.add(root)
+        standRoot = root
         subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             MainActor.assumeIsolated {
                 self?.applyDim(scene: event.scene)
@@ -12141,7 +12276,9 @@ private final class MapCardTick {
         let head = ray?.position ?? faceTurner?.headPosition()
         let liveLines = lines.filter { $0.needsPositions }
         let lifted = anyLifted?() ?? false
-        guard head != nil || !liveLines.isEmpty || lifted else { return }
+        syncStands()
+        guard head != nil || !liveLines.isEmpty || lifted || !stands.isEmpty else { return }
+        var standing: Set<String> = []
         var positions: [String: SIMD3<Float>] = [:]
         let upright = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
         // The nodes the head points most nearly at, within about 9°: their
@@ -12185,6 +12322,7 @@ private final class MapCardTick {
                         if id.hasPrefix("concept:") {
                             turn = turn * simd_quatf(angle: -atan2(toHead.y, flat), axis: SIMD3<Float>(1, 0, 0))
                         }
+                        if leaning.contains(id) { turn = turn * EPUBMapView.exhibitTilt }
                         heldFacing[id] = turn
                     }
                 }
@@ -12195,6 +12333,14 @@ private final class MapCardTick {
             } else if abs(simd_dot(card.orientation.vector, upright.vector)) < 0.99995 {
                 card.orientation = upright
             }
+            if stands[id] != nil, card.isEnabledInHierarchy {
+                placeStand(id, under: card, at: place)
+                standing.insert(id)
+            }
+        }
+        // A stand whose card is not in sight this frame goes with it.
+        for (id, entry) in stands where entry.stand.isEnabled != standing.contains(id) {
+            entry.stand.isEnabled = standing.contains(id)
         }
         // An open paper closed since: its turn is forgotten, and it stands
         // upright again.
@@ -12209,6 +12355,62 @@ private final class MapCardTick {
         for old in shownBylines where !now.contains(where: { $0 === old }) { old.isEnabled = false }
         for byline in now where !byline.isEnabled { byline.isEnabled = true }
         shownBylines = now
+    }
+
+    /// The stands the room asks for, made or taken away: a pole to the
+    /// floor and a foot on it, in the paper's colour.
+    private func syncStands() {
+        standFrame &+= 1
+        guard standsPending, let standRoot else { return }
+        standsPending = false
+        for (id, entry) in stands where standColours[id] != entry.colour {
+            entry.stand.removeFromParent()
+            stands[id] = nil
+            standDrop[id] = nil
+        }
+        for (id, colour) in standColours where stands[id] == nil {
+            let tint = colour.isEmpty ? UIColor.gray : UIColor(EPUBMapView.color(hex: colour))
+            let material = SimpleMaterial(color: tint, roughness: 0.45, isMetallic: false)
+            let stand = Entity()
+            stand.name = "map.stand." + id
+            let pole = ModelEntity(mesh: .generateCylinder(height: 1, radius: 0.008), materials: [material])
+            pole.name = "pole"
+            let foot = ModelEntity(mesh: .generateCylinder(height: 0.008, radius: 0.09), materials: [material])
+            foot.name = "foot"
+            foot.position = [0, 0.004, 0]
+            stand.addChild(pole)
+            stand.addChild(foot)
+            stand.isEnabled = false
+            standRoot.addChild(stand)
+            stands[id] = (stand, colour)
+        }
+    }
+
+    /// How far below its middle each card's lower edge hangs, by id —
+    /// measured now and then, not every frame, as a card opens or folds.
+    private var standDrop: [String: (drop: Float, frame: Int)] = [:]
+    private var standFrame = 0
+
+    /// One stand straight down to the floor from its card: from just behind
+    /// its middle on a lectern, else from the middle of its lower edge, as a
+    /// sign on a post.
+    private func placeStand(_ id: String, under card: Entity, at place: SIMD3<Float>) {
+        guard let entry = stands[id], let pole = entry.stand.findEntity(named: "pole") else { return }
+        let top: SIMD3<Float>
+        if standsFromMiddle {
+            top = place + card.orientation(relativeTo: nil).act(SIMD3<Float>(0, 0, -0.01))
+        } else {
+            // Measured again every half second or so.
+            if standDrop[id].map({ standFrame - $0.frame > 45 }) ?? true {
+                let bounds = card.visualBounds(relativeTo: nil)
+                standDrop[id] = (max(place.y - bounds.min.y, 0), standFrame)
+            }
+            top = place - SIMD3<Float>(0, standDrop[id]?.drop ?? 0, 0)
+        }
+        let height = max(top.y, 0.01)
+        entry.stand.position = SIMD3<Float>(top.x, 0, top.z)
+        pole.position = SIMD3<Float>(0, height / 2, 0)
+        pole.scale = SIMD3<Float>(1, height, 1)
     }
 }
 

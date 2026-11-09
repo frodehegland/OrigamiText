@@ -1697,6 +1697,8 @@ final class VisionModel {
             case widen
             /// Widen Depth: time's planes and the citations' corridor deeper.
             case widenDepth
+            /// Connect to Ground: every paper on a stand to the floor, or not.
+            case toggleGrounded
             /// A verb on the bar's second row, for the chosen card: its
             /// id, then the verb's (`CardBar.Verb.id`).
             case card(String, String)
@@ -1774,6 +1776,9 @@ final class VisionModel {
     var shapeChoices: [LayoutChoice] = []
     var shapeAvailable: Set<String> = []
     var currentShapeID: String?
+    /// Connect to Ground (9 Nov 2026): the room's papers on stands to the
+    /// floor, published by the Hallway for the Sculptures menu.
+    var roomGrounded = false
     /// How the papers look, whatever Shape the room stands in (2 Nov 2026):
     /// as cards; as Color Spheres — a real sphere of the paper's
     /// categories' colours, its title beneath; or as Color Titles — the
@@ -4086,6 +4091,20 @@ struct VisionVolumeToolbar: View {
                     // Dimmed, never hidden, while its data is not there.
                     .disabled(!model.shapeAvailable.contains(choice.id))
                 }
+                // Connect to Ground (Frode, 9 Nov 2026): stands to the floor
+                // under any Sculpture; the Exhibition has them whatever this says.
+                Divider()
+                let inExhibition = model.currentShapeID == "exhibition"
+                Button {
+                    model.volumeBarRequest = .init(action: .toggleGrounded)
+                } label: {
+                    if model.roomGrounded || inExhibition {
+                        Label("Connect to Ground", systemImage: "checkmark")
+                    } else {
+                        Text("Connect to Ground")
+                    }
+                }
+                .disabled(inExhibition)
             } label: {
                 Text("Sculptures")
             }
