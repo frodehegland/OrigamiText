@@ -1691,6 +1691,8 @@ final class VisionModel {
             case shape(String)
             /// Compact: every node drawn in toward the room's middle.
             case compact
+            /// Close In: the nodes drawn nearer one another, the room kept.
+            case closeIn
             /// A verb on the bar's second row, for the chosen card: its
             /// id, then the verb's (`CardBar.Verb.id`).
             case card(String, String)
@@ -3877,22 +3879,19 @@ struct VisionVolumeToolbar: View {
 
     var body: some View {
         if model.toolbarCollapsed {
-            // Folded: one icon and its `>`, the window shrinking to it.
+            // Folded: the `>` alone, on the window's own glass — no second
+            // pane of its own (9 Nov 2026).
             Button {
                 withAnimation(nil) { model.toolbarCollapsed = false }
             } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "slider.horizontal.3")
-                    Image(systemName: "chevron.right")
-                }
-                .font(.system(size: 18, weight: .semibold))
-                .padding(.horizontal, 22)
-                .frame(height: 56)
-                .contentShape(Capsule())
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 18, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .hoverEffect()
-            .glassBackgroundEffect()
+            .padding(6)
             .help("Open the bar")
         } else {
             fullBar
@@ -3914,7 +3913,11 @@ struct VisionVolumeToolbar: View {
                 VisionColourStrip()
                     .fixedSize()
                     .padding(.horizontal, 24)
-                    .padding(.vertical, 12)
+                    .padding(.top, 12)
+                    // A deeper foot (9 Nov 2026): a colour pinched and
+                    // slipped a little downward stays on the bar instead of
+                    // being drawn out into the room.
+                    .padding(.bottom, 34)
                     .glassBackgroundEffect()
             }
         }
@@ -4015,6 +4018,9 @@ struct VisionVolumeToolbar: View {
             }
             .help("Select every article in the room, raising what each cites; again lets them go")
             Menu {
+                // Close In (9 Nov 2026): first, for the room grown too
+                // spread out — the nodes nearer one another, each time.
+                Button("Close In") { model.volumeBarRequest = .init(action: .closeIn) }
                 Section("Arrange") {
                     ForEach(model.layoutArrangements) { choice in
                         Button(choice.title) {

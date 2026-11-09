@@ -245,6 +245,8 @@ struct EPUBMapView: View {
     @State private var faceTurner = CardFaceTurner()
     /// Every real surface in the room, for a lifted card to rest on.
     @State private var roomSurfaces = RoomSurfaces()
+    /// Solid Spheres thrown: rubber balls in flight (9 Nov 2026).
+    @State private var rubberBalls = RubberBalls()
     /// The one per-frame card sweep feeding the turner and the lines.
     @State private var cardTick = MapCardTick()
 
@@ -1140,6 +1142,8 @@ struct EPUBMapView: View {
             if let shape = RoomShape(rawValue: name) { runShape(shape) }
         case .compact:
             runCompact()
+        case .closeIn:
+            runCloseIn()
         case .card(let itemID, let verb):
             performCardVerb(verb, on: itemID)
         }
@@ -1233,6 +1237,9 @@ struct EPUBMapView: View {
                     built[index].stanceMark = mark
                 }
             }
+            // Retro is the whole room's (9 Nov 2026): every card carries it,
+            // so a change of palette rebuilds the labels and citations too.
+            for index in built.indices { built[index].retro = model.retroName }
             items = built
             // The colour key's counts: how many papers here carry each.
             var tagCounts: [String: Int] = [:]
@@ -2072,6 +2079,9 @@ struct EPUBMapView: View {
         /// Solid Spheres held against a surface this drag: the surface's
         /// outward normal, by card — a plain box, written each frame.
         var solidHits: [String: SIMD3<Float>] = [:]
+        /// Where each Solid Sphere's drag has been, and when — the last few
+        /// frames, for the speed it leaves the hand at.
+        var solidSamples: [String: [(CFTimeInterval, SIMD3<Float>)]] = [:]
         /// The last single tap: the card, and whether it stood chosen and
         /// open just before it — what a double tap is judged by.
         var lastTap: (id: String, wasSelected: Bool, wasOpen: Bool, at: Date)?
@@ -2948,21 +2958,34 @@ struct EPUBMapView: View {
             cardSizes.riders = nil
             // Set down: an open card keeps the turn it was carried with.
             cardTick.facingWhileMoved.removeAll()
-            // Solid Spheres let go after meeting a surface spring back off
-            // it (9 Nov 2026), along its normal.
-            if !cardSizes.solidHits.isEmpty {
+            // Solid Spheres let go are rubber balls (9 Nov 2026): thrown,
+            // they fly at the hand's speed; let go still, they drop; pressed
+            // into a wall, it pushes them back off — and they bounce about
+            // the room until they come to rest on the floor (RubberBalls).
+            if !cardSizes.solidSamples.isEmpty {
+                let samples = cardSizes.solidSamples
                 let hits = cardSizes.solidHits
+                cardSizes.solidSamples = [:]
                 cardSizes.solidHits = [:]
-                let bounced = newItems.compactMap { moved -> EPUBMapItem? in
-                    guard let normal = hits[moved.id], let at = moved.position else { return nil }
-                    var away = moved
-                    away.position = at + normal * Self.solidBounce
-                    return away
+                let released = CACurrentMediaTime()
+                var thrown = Set<String>()
+                for moved in newItems {
+                    guard let path = samples[moved.id], let last = path.last,
+                          let at = moved.position else { continue }
+                    // The hand's speed over its last tenth of a second — none
+                    // if it had stopped before letting go.
+                    var velocity = SIMD3<Float>.zero
+                    if released - last.0 < 0.1,
+                       let first = path.first(where: { last.0 - $0.0 <= 0.12 }),
+                       last.0 - first.0 > 0.02 {
+                        velocity = (last.1 - first.1) / Float(last.0 - first.0)
+                    }
+                    rubberBalls.launch(id: moved.id, node: at, velocity: velocity,
+                                       pressedAgainst: hits[moved.id])
+                    thrown.insert(moved.id)
                 }
-                if !bounced.isEmpty {
-                    let ids = Set(bounced.map(\.id))
-                    NodeGlide.open()
-                    keepPlacements(of: newItems.filter { !ids.contains($0.id) } + bounced)
+                if !thrown.isEmpty {
+                    keepPlacements(of: Array(newItems))
                     saveLiftedCards()
                     selectedCitationLines.rebuild(items: items)
                     citedToDeepLines.rebuild(items: items)
@@ -3073,10 +3096,16 @@ struct EPUBMapView: View {
             // A ghost holds the lifted card's place — the slot is the
             // whole point of it.
             if item.isGhost || item.isFaded { return startPosition }
-            // An open paper standing free turns to the reader while carried.
-            if item.isSelected, item.showsAbstract, standsFree(item),
-               !cardTick.facingWhileMoved.contains(item.id) {
-                cardTick.facingWhileMoved.insert(item.id)
+            // Fabien billboarding (9 Nov 2026): only while carried does a
+            // node turn to the reader — an open paper standing free, a lifted
+            // card, a label, a galaxy concept, a snippet.
+            if !cardTick.facingWhileMoved.contains(item.id) {
+                let openFree = item.isSelected && item.showsAbstract && standsFree(item)
+                if openFree || liftedCards[item.id] != nil || Self.isSpatialLabel(item)
+                    || item.id.hasPrefix("concept:") || item.id.hasPrefix("float:") {
+                    cardTick.facingWhileMoved.insert(item.id)
+                    if openFree { cardTick.openTurns.insert(item.id) }
+                }
             }
             // A snapped-off card moves free in every axis and courts
             // the room's surfaces: within reach of one it lands on the
@@ -3094,14 +3123,23 @@ struct EPUBMapView: View {
                 if liftedCards[item.id] == nil {
                     liftedCards[item.id] = LiftedCard(home: startPosition, sticks: false)
                 }
+                // Taken in flight: caught.
+                if rubberBalls.isFlying { rubberBalls.catchBall(item.id) }
+                var place = proposed
                 if let hit = roomSurfaces.blocking(from: startPosition, to: proposed,
                                                    radius: Self.solidRadius) {
                     cardSizes.solidHits[item.id] = hit.normal
-                    return hit.position
+                    place = hit.position
+                } else {
+                    // Drawn back off the surface before letting go: no pop.
+                    cardSizes.solidHits[item.id] = nil
                 }
-                // Drawn back off the surface before letting go: no spring.
-                cardSizes.solidHits[item.id] = nil
-                return proposed
+                // The hand's last moments, for the throw's speed.
+                var samples = cardSizes.solidSamples[item.id] ?? []
+                samples.append((CACurrentMediaTime(), place))
+                if samples.count > 12 { samples.removeFirst(samples.count - 12) }
+                cardSizes.solidSamples[item.id] = samples
+                return place
             }
             if let lifted = liftedCards[item.id] {
                 let reach: Float? = item.look == .blobs ? 0.25 : nil
@@ -3302,6 +3340,14 @@ struct EPUBMapView: View {
             // card lifted a minute from now needs the walls already
             // known, not scanned at the moment of the drop.
             roomSurfaces.install()
+            rubberBalls.install(in: content, surfaces: roomSurfaces)
+            // A ball come to rest stays where it lies.
+            rubberBalls.onRest = { id, place in
+                guard var item = items.first(where: { $0.id == id }) else { return }
+                item.position = place
+                keepPlacements(of: [item])
+                saveLiftedCards()
+            }
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
             floorBandLeft.install(in: content)
@@ -3527,8 +3573,8 @@ struct EPUBMapView: View {
             // alone, very transparent — a slot, not a card. No frame:
             // the faint words themselves are the marker.
             Text(shortTitle(item.title))
-                .font(AppFonts.body(6 * s, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.6))
+                .font(bodyFont(item, size: 6 * s, weight: .semibold))
+                .foregroundStyle(roomInk(item, Color.white).opacity(0.6))
                 .lineLimit(1)
                 .padding(.horizontal, 7 * s)
                 .padding(.vertical, 5 * s)
@@ -3544,8 +3590,8 @@ struct EPUBMapView: View {
         } else if item.isAside {
             // The whole slip fades — the words too, not just the paper.
             Text(shortTitle(item.title))
-                .font(AppFonts.body(5.5 * s, weight: .semibold))
-                .foregroundStyle(Color.white)
+                .font(bodyFont(item, size: 5.5 * s, weight: .semibold))
+                .foregroundStyle(roomInk(item, Color.white))
                 .lineLimit(1)
                 .padding(.horizontal, 5 * s)
                 .padding(.vertical, 3 * s)
@@ -3564,13 +3610,12 @@ struct EPUBMapView: View {
             VStack(alignment: .leading, spacing: 0) {
                 if item.title.isEmpty {
                     Text("Note")
-                        .font(.system(size: 6 * s, weight: .semibold,
-                                      design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.35))
+                        .font(roomFont(item, size: 6 * s, weight: .semibold, design: .rounded))
+                        .foregroundStyle(roomInk(item, Color.white).opacity(0.35))
                 } else {
                     Text(item.title)
-                        .font(.system(size: 6.5 * s, design: .rounded))
-                        .foregroundStyle(Color.white)
+                        .font(roomFont(item, size: 6.5 * s, design: .rounded))
+                        .foregroundStyle(roomInk(item, Color.white))
                         .multilineTextAlignment(.leading)
                         .lineLimit(8)
                 }
@@ -3600,8 +3645,8 @@ struct EPUBMapView: View {
                                       lineWidth: (item.isSelected ? 1.6 : 0.6) * s))
             } else {
                 Text("Picture not found")
-                    .font(.system(size: 6 * s))
-                    .foregroundStyle(Color.white.opacity(0.6))
+                    .font(roomFont(item, size: 6 * s, design: .default))
+                    .foregroundStyle(roomInk(item, Color.white).opacity(0.6))
                     .padding(6 * s)
             }
         } else if item.id.hasPrefix(Self.tagHubPrefix) {
@@ -3610,10 +3655,13 @@ struct EPUBMapView: View {
             // A label is words in the air, not a card: larger type, no
             // pane, no border — a soft shadow keeps it legible against
             // the room. Chosen, it turns warm gold (1 Nov 2026).
-            let ink = item.isSelected ? XRColourRoles.selection.color
+            // Under Retro a label speaks in the palette: its text colour, its
+            // line colour while chosen.
+            let ink = retroPalette(item).map { item.isSelected ? $0.line : $0.text }
+                ?? (item.isSelected ? XRColourRoles.selection.color
                 : item.id.hasPrefix(Self.tagHubPrefix) || item.id.hasPrefix(Self.shapeLabelPrefix)
                     ? Self.color(hex: item.paintColours.first ?? "#FFFFFF")
-                : Color.white
+                : Color.white)
             VStack(spacing: 3 * s) {
                 // A person's group (Authors, People): their face above the
                 // name, when one is known.
@@ -3629,16 +3677,16 @@ struct EPUBMapView: View {
                 // A Landscape's colour is a mountain top.
                 if item.id.hasPrefix(Self.shapeLabelPrefix + RoomShape.landscape.rawValue + ".") {
                     Image(systemName: "mountain.2.fill")
-                        .font(.system(size: 30 * s))
+                        .font(roomFont(item, size: 30 * s, design: .default))
                         .foregroundStyle(ink)
                 }
                 Text(item.title)
-                    .font(.system(size: 22 * s, weight: .semibold, design: .serif))
+                    .font(roomFont(item, size: 22 * s, weight: .semibold, design: .serif))
                     .foregroundStyle(ink)
                     .multilineTextAlignment(.center)
                 if !item.author.isEmpty {
                     Text(item.author)
-                        .font(.system(size: 10 * s, design: .serif))
+                        .font(roomFont(item, size: 10 * s, design: .serif))
                         .foregroundStyle(ink.opacity(0.7))
                         .multilineTextAlignment(.center)
                 }
@@ -3657,13 +3705,13 @@ struct EPUBMapView: View {
             // so the pane blurs the room behind it like the chips do.
             VStack(spacing: 4 * s) {
                 Text(item.title)
-                    .font(.system(size: 12 * s, weight: .semibold, design: .serif))
-                    .foregroundStyle(Color.white)
+                    .font(roomFont(item, size: 12 * s, weight: .semibold, design: .serif))
+                    .foregroundStyle(roomInk(item, Color.white))
                     .multilineTextAlignment(.center)
                 if !item.author.isEmpty {
                     Text(item.author)
-                        .font(.system(size: 9 * s, design: .serif))
-                        .foregroundStyle(Color.white.opacity(0.65))
+                        .font(roomFont(item, size: 9 * s, design: .serif))
+                        .foregroundStyle(roomInk(item, Color.white).opacity(0.65))
                         .multilineTextAlignment(.center)
                 }
             }
@@ -3905,12 +3953,12 @@ struct EPUBMapView: View {
         let colour = Self.color(hex: item.paintColours.first ?? "#FFFFFF")
         VStack(spacing: 3 * s) {
             Text(item.title)
-                .font(.system(size: 10 * s, weight: .semibold, design: .serif))
+                .font(roomFont(item, size: 10 * s, weight: .semibold, design: .serif))
                 .foregroundStyle(colour)
                 .multilineTextAlignment(.center)
             Text(item.author)
-                .font(.system(size: 5 * s))
-                .foregroundStyle(Color(white: 0.75))
+                .font(roomFont(item, size: 5 * s, design: .default))
+                .foregroundStyle(roomInk(item, Color(white: 0.75), dimmed: 0.75))
         }
         .padding(.horizontal, 9 * s)
         .padding(.vertical, 6 * s)
@@ -3936,8 +3984,8 @@ struct EPUBMapView: View {
                     }
                 }
             Text(item.isSelected ? item.title : shortTitle(item.title))
-                .font(AppFonts.body(5.5 * s, weight: .regular))
-                .foregroundStyle(Color.white)
+                .font(bodyFont(item, size: 5.5 * s, weight: .regular))
+                .foregroundStyle(roomInk(item, Color.white))
                 .shadow(color: .black.opacity(0.6), radius: 1.5 * s)
                 .multilineTextAlignment(.center)
                 .lineLimit(item.isSelected ? 4 : 2)
@@ -3954,8 +4002,8 @@ struct EPUBMapView: View {
         let names = item.author.components(separatedBy: " \u{00B7} ")[0]
         if !names.isEmpty {
             Text(item.isSelected ? names : shortByline(names))
-                .font(.system(size: size))
-                .foregroundStyle(Color(white: 0.75))
+                .font(roomFont(item, size: size, design: .default))
+                .foregroundStyle(roomInk(item, Color(white: 0.75), dimmed: 0.75))
                 .multilineTextAlignment(.center)
                 .lineLimit(item.isSelected ? 3 : 1)
                 .frame(maxWidth: width)
@@ -4029,6 +4077,16 @@ struct EPUBMapView: View {
                 sphere.model?.materials = [material]
             }
         }
+        if solid {
+            // A rubber ball's pivot (RubberBalls): it squashes where the
+            // ball strikes, the ball within rolling.
+            let pivot = ModelEntity()
+            pivot.position = sphere.position
+            sphere.position = .zero
+            pivot.addChild(sphere)
+            pivot.components.set(SolidBallComponent(radius: radius * 1.08))
+            return pivot
+        }
         return sphere
     }
 
@@ -4044,7 +4102,7 @@ struct EPUBMapView: View {
     @ViewBuilder private func colorTitle(for item: EPUBMapItem) -> some View {
         let s = Self.crisp
         let label = Text(item.isSelected ? item.title : shortTitle(item.title))
-            .font(.system(size: 9 * s, weight: .semibold, design: .serif))
+            .font(roomFont(item, size: 9 * s, weight: .semibold, design: .serif))
             .multilineTextAlignment(.center)
             .lineLimit(item.isSelected ? 5 : 3)
         VStack(spacing: 2 * s) {
@@ -4086,8 +4144,8 @@ struct EPUBMapView: View {
         let s = Self.crisp
         let shape = RoundedRectangle(cornerRadius: 5 * s)
         Text(shortTitle(item.title))
-            .font(.system(size: 7 * s, weight: .semibold))
-            .foregroundStyle(Color.white)
+            .font(roomFont(item, size: 7 * s, weight: .semibold, design: .default))
+            .foregroundStyle(roomInk(item, Color.white))
             .multilineTextAlignment(.center)
             .lineLimit(3)
             .frame(maxWidth: 100 * s)
@@ -4132,7 +4190,7 @@ struct EPUBMapView: View {
         plates.addChild(front)
         plates.addChild(back)
         let key = [item.title, item.paintColours.joined(separator: ","),
-                   item.isSelected ? "chosen" : "",
+                   item.isSelected ? "chosen" : "", item.retro ?? "",
                    "\(Int(facePoints.width))x\(Int(facePoints.height))"].joined(separator: "|")
         let view = fastFace(for: item)
             .frame(width: facePoints.width, height: facePoints.height)
@@ -4178,8 +4236,8 @@ struct EPUBMapView: View {
                 if item.isSelected { shape.strokeBorder(Color.white.opacity(0.9), lineWidth: 1.6 * s) }
             }
             Text(item.isSelected ? item.title : shortTitle(item.title))
-                .font(AppFonts.body(5 * s, weight: .regular))
-                .foregroundStyle(Color.white)
+                .font(bodyFont(item, size: 5 * s, weight: .regular))
+                .foregroundStyle(roomInk(item, Color.white))
                 .shadow(color: .black.opacity(0.6), radius: 1.5 * s)
                 .multilineTextAlignment(.center)
                 .lineLimit(item.isSelected ? 4 : 2)
@@ -4220,6 +4278,25 @@ struct EPUBMapView: View {
     }
 
     /// The Retro palette a card wears, if any.
+    /// Retro reaches all the room's words (9 Nov 2026), not the papers'
+    /// alone: labels, citations, concepts, notes, snippets, the titles under
+    /// spheres — monospaced, in the palette's text colour.
+    private func roomFont(_ item: EPUBMapItem, size: CGFloat, weight: Font.Weight = .regular,
+                          design: Font.Design) -> Font {
+        .system(size: size, weight: weight, design: retroPalette(item) == nil ? design : .monospaced)
+    }
+
+    private func bodyFont(_ item: EPUBMapItem, size: CGFloat, weight: Font.Weight) -> Font {
+        retroPalette(item) == nil ? AppFonts.body(size, weight: weight)
+            : .system(size: size, weight: weight, design: .monospaced)
+    }
+
+    /// The words' ink: the palette's text colour under Retro — dimmed as the
+    /// grey it stands for was — else the room's own.
+    private func roomInk(_ item: EPUBMapItem, _ normal: Color, dimmed: Double = 1) -> Color {
+        retroPalette(item).map { $0.text.opacity(dimmed) } ?? normal
+    }
+
     private func retroPalette(_ item: EPUBMapItem) -> VisionModel.RetroPalette? {
         item.retro.flatMap { name in VisionModel.RetroPalette.all.first { $0.name == name } }
     }
@@ -4446,9 +4523,9 @@ struct EPUBMapView: View {
         // facing, and must read at once from wherever they now are.
         // (A colour key's marker turns to the reader in MapCardTick, unless
         // it rests on a wall — a billboard would turn it off the wall.)
-        if item.id.hasPrefix("float:") {
-            holder.components.set(BillboardComponent())
-        }
+        // (Fabien billboarding, 9 Nov 2026: a floated passage no longer
+        // turns by itself either — it turns while carried, in MapCardTick,
+        // and keeps the angle it was let go at.)
         // A lifted card is an OBJECT now, not a leaf of the wall: a
         // slim dark extrusion behind the face sets it apart from the
         // flat cards still standing in the map.
@@ -5864,7 +5941,6 @@ struct EPUBMapView: View {
     /// A Solid Sphere's reach from its node to a surface, and how far it
     /// springs back off one when let go against it.
     private static let solidRadius: Float = 0.04
-    private static let solidBounce: Float = 0.12
 
     /// The paper a dropped one was set down on: another standing paper on
     /// much the same plane, the two faces overlapping well — the nearest,
@@ -5954,12 +6030,9 @@ struct EPUBMapView: View {
             && Self.freeStandingShapes.contains(roomShape?.shape ?? "")
     }
 
-    /// A free-standing paper turns to the reader as it opens — once; it
-    /// does not follow the head afterwards (5 Nov 2026).
-    private func faceOnOpen(_ item: EPUBMapItem) {
-        guard standsFree(item) else { return }
-        cardTick.faceOnce.insert(item.id)
-    }
+    /// A free-standing paper opening no longer turns to the reader by
+    /// itself (Fabien billboarding, 9 Nov 2026): only carrying turns it.
+    private func faceOnOpen(_ item: EPUBMapItem) {}
 
     // MARK: - Lift — a card snapped off the map, stuck to a surface
 
@@ -6667,6 +6740,57 @@ struct EPUBMapView: View {
     /// widths, heights and a hand's depth) so none overlaps. Again and the
     /// room draws in again. A card resting on a real surface stays there.
     /// Undo View takes it back.
+    /// Close In (9 Nov 2026): the nodes drawn nearer one another — a fifth
+    /// of the way to their middle each time, across the room and up and
+    /// down, each keeping its own depth (its year's plane) — but never
+    /// closer than a centimetre between two cards' edges, so nothing
+    /// overlaps. The room itself stays where it stands.
+    private func runCloseIn() {
+        let nodes = items.filter {
+            !$0.isGhost && !$0.isAside && $0.position != nil && liftedCards[$0.id]?.stuck == nil
+                && labelStuck[$0.id] == nil && !$0.id.hasPrefix("float:")
+        }
+        guard nodes.count > 1 else { return }
+        let positions = nodes.map { $0.position! }
+        let centre = positions.reduce(SIMD3<Float>(repeating: 0), +) / Float(positions.count)
+        let ids = nodes.map(\.id)
+        var at = Dictionary(uniqueKeysWithValues: zip(ids, positions.map { p -> SIMD3<Float> in
+            var near = centre + (p - centre) * 0.8
+            near.z = p.z
+            return near
+        }))
+        let size = Dictionary(uniqueKeysWithValues: ids.map { id in
+            (id, cardSizes.shown[id] ?? SIMD2<Float>(0.14, 0.06))
+        })
+        // Cards that would now overlap are eased apart along whichever way
+        // frees them soonest — sideways or up and down.
+        for _ in 0..<40 {
+            var moved = false
+            for i in ids.indices {
+                for j in (i + 1)..<ids.count {
+                    let a = ids[i], b = ids[j]
+                    let d = at[b]! - at[a]!
+                    guard abs(d.z) < 0.05 else { continue }
+                    let need = (size[a]! + size[b]!) / 2 + SIMD2<Float>(repeating: 0.01)
+                    let over = need - SIMD2<Float>(abs(d.x), abs(d.y))
+                    guard over.x > 0, over.y > 0 else { continue }
+                    var shove = SIMD3<Float>.zero
+                    if over.x < over.y {
+                        shove.x = (d.x >= 0 ? 1 : -1) * over.x / 2
+                    } else {
+                        shove.y = (d.y >= 0 ? 1 : -1) * over.y / 2
+                    }
+                    at[a]! -= shove
+                    at[b]! += shove
+                    moved = true
+                }
+            }
+            if !moved { break }
+        }
+        NodeGlide.open()
+        applyWatchPositions3D(at, heights: 0.15...2.6)
+    }
+
     private func runCompact() {
         let nodes = items.filter {
             !$0.isGhost && !$0.isAside && $0.position != nil && liftedCards[$0.id]?.stuck == nil
@@ -11584,6 +11708,33 @@ final class RoomSurfaces {
         }
     }
 
+    /// A known surface for the rubber balls: its centre, its normal, and
+    /// its extent as half sizes in its own frame (9 Nov 2026).
+    struct Surface {
+        let centre: SIMD3<Float>
+        let normal: SIMD3<Float>
+        let extentFromOrigin: simd_float4x4
+        let halfWidth: Float
+        let halfHeight: Float
+    }
+
+    /// Every surface known now.
+    func surfaces() -> [Surface] {
+        planes.values.compactMap { plane in
+            let originFromAnchor = plane.originFromAnchorTransform
+            var normal = SIMD3<Float>(originFromAnchor.columns.1.x, originFromAnchor.columns.1.y,
+                                      originFromAnchor.columns.1.z)
+            guard simd_length(normal) > 1e-4 else { return nil }
+            normal = simd_normalize(normal)
+            let extent = plane.geometry.extent
+            return Surface(centre: SIMD3<Float>(originFromAnchor.columns.3.x, originFromAnchor.columns.3.y,
+                                                originFromAnchor.columns.3.z),
+                           normal: normal,
+                           extentFromOrigin: simd_inverse(originFromAnchor * extent.anchorFromExtentTransform),
+                           halfWidth: extent.width / 2, halfHeight: extent.height / 2)
+        }
+    }
+
     /// Solid Spheres (9 Nov 2026): where a ball of `radius` carried from
     /// `start` toward `proposed` must stop — held on the room's side of
     /// every real surface it would pass into (within the surface's extent),
@@ -11748,8 +11899,8 @@ private final class MapCardTick {
     /// reader walks about — and turned again, all the while, as one is
     /// carried. Held by id, so a rebuilt card keeps its turn.
     var heldFacing: [String: simd_quatf] = [:]
-    /// Cards to turn to the reader on the next frame, once.
-    var faceOnce: Set<String> = []
+    /// The open papers among them: their held turn ends when they close.
+    var openTurns: Set<String> = []
     /// Cards being carried, turning to the reader every frame.
     var facingWhileMoved: Set<String> = []
     /// Whether a card is still open — a held turn ends when it closes,
@@ -11930,62 +12081,38 @@ private final class MapCardTick {
                     card.orientation = stuck
                 }
             }
-            // An open paper standing free: turned to the reader as it
-            // opens and while it is carried, otherwise held where it was
-            // last turned.
-            else if faceOnce.contains(id) || facingWhileMoved.contains(id) || heldFacing[id] != nil,
-                    stillOpen?(id) ?? false {
-                if faceOnce.contains(id) || facingWhileMoved.contains(id), let head {
+            // Fabien billboarding (9 Nov 2026): a node turns to the reader
+            // only while the hand is moving it — an open paper standing
+            // free, a lifted card, a label, a concept of the galaxy (tilted
+            // too, the shell standing above the eyes), a snippet. Let go,
+            // it keeps the angle it was carried at; nothing turns by itself.
+            else if facingWhileMoved.contains(id) || heldFacing[id] != nil {
+                if facingWhileMoved.contains(id), let head {
                     let toHead = head - place
-                    if simd_length(SIMD2(toHead.x, toHead.z)) > 1e-4 {
-                        heldFacing[id] = simd_quatf(angle: atan2(toHead.x, toHead.z),
-                                                    axis: SIMD3<Float>(0, 1, 0))
+                    let flat = simd_length(SIMD2(toHead.x, toHead.z))
+                    if flat > 1e-4 {
+                        var turn = simd_quatf(angle: atan2(toHead.x, toHead.z), axis: SIMD3<Float>(0, 1, 0))
+                        if id.hasPrefix("concept:") {
+                            turn = turn * simd_quatf(angle: -atan2(toHead.y, flat), axis: SIMD3<Float>(1, 0, 0))
+                        }
+                        heldFacing[id] = turn
                     }
-                    faceOnce.remove(id)
                 }
                 let turn = heldFacing[id] ?? upright
                 if abs(simd_dot(card.orientation.vector, turn.vector)) < 0.99995 {
                     card.orientation = turn
                 }
-            }
-            // The lifted cards billboard at the node — collision and
-            // face together — while every other card stands upright
-            // (which also rights a card just put back).
-            else if lifted, liftedFacesHead?(id) == true, let head {
-                let toHead = head - place
-                if simd_length(SIMD2(toHead.x, toHead.z)) > 1e-4 {
-                    let turn = simd_quatf(angle: atan2(toHead.x, toHead.z),
-                                          axis: SIMD3<Float>(0, 1, 0))
-                    if abs(simd_dot(card.orientation.vector, turn.vector)) < 0.99995 {
-                        card.orientation = turn
-                    }
-                }
-            }
-            // The concept galaxy's cards turn to the reader, tilted as
-            // well as turned — the shell stands above and beside the
-            // eyes, and a card read from below must lean to them. The
-            // face and its collision turn together, as a lifted card's.
-            else if id.hasPrefix("concept:"), let head {
-                let toHead = head - place
-                let flat = simd_length(SIMD2(toHead.x, toHead.z))
-                if flat > 1e-4 {
-                    let yaw = simd_quatf(angle: atan2(toHead.x, toHead.z),
-                                         axis: SIMD3<Float>(0, 1, 0))
-                    let pitch = simd_quatf(angle: -atan2(toHead.y, flat),
-                                           axis: SIMD3<Float>(1, 0, 0))
-                    let turn = yaw * pitch
-                    if abs(simd_dot(card.orientation.vector, turn.vector)) < 0.99995 {
-                        card.orientation = turn
-                    }
-                }
             } else if abs(simd_dot(card.orientation.vector, upright.vector)) < 0.99995 {
                 card.orientation = upright
             }
         }
-        // Closed since: the turn is forgotten, and the card stands upright.
-        if !heldFacing.isEmpty || !faceOnce.isEmpty, let stillOpen {
-            for id in heldFacing.keys where !stillOpen(id) { heldFacing[id] = nil }
-            faceOnce = faceOnce.filter(stillOpen)
+        // An open paper closed since: its turn is forgotten, and it stands
+        // upright again.
+        if !openTurns.isEmpty, let stillOpen {
+            for id in openTurns where !stillOpen(id) {
+                heldFacing[id] = nil
+                openTurns.remove(id)
+            }
         }
         for layer in liveLines { layer.relayout(positions: positions) }
         let now = faced.sorted { $0.closeness > $1.closeness }.prefix(Self.facedBylines).map(\.byline)
@@ -14190,6 +14317,232 @@ private final class RelateLines: MapLineLayer {
         panel.isEnabled = t > 0.45
         let place = (a + b) / 2 + Self.panelLift
         if simd_distance(panel.position, place) > 0.0005 { panel.position = place }
+    }
+}
+
+// MARK: - Rubber balls (9 Nov 2026 — for Tom Haymes)
+
+/// A Solid Sphere's ball, found by the rubber-ball flight: its pivot (which
+/// squashes on impact, the ball within keeping its bands' turn) and the
+/// ball's radius in the room.
+struct SolidBallComponent: Component {
+    let radius: Float
+}
+
+/// Solid Spheres behave as rubber balls once let go. Thrown, one flies off
+/// the hand at the speed it left it; falls under gravity; bounces off every
+/// real surface the headset has found (walls, tables, the ceiling, the
+/// floor) with a rubber ball's spring and a little scuff; squashes where it
+/// strikes; and rolls to rest on the floor. Taken again in flight, it is
+/// caught. At rest, the room is told where it lies, and it stays there.
+///
+/// The flight is its own: the map engine places every card itself, so the
+/// ball is moved here each frame rather than handed to RealityKit's physics,
+/// which would fight it. Steps are a few milliseconds long, so a hard throw
+/// cannot pass through a wall between two frames.
+@MainActor
+final class RubberBalls {
+    /// Gravity, m/s².
+    static let gravity: Float = 9.81
+    /// The share of its speed into a surface a ball keeps coming off it —
+    /// a lively rubber ball.
+    static let restitution: Float = 0.78
+    /// The share of its speed along a surface kept through a bounce.
+    static let scuff: Float = 0.86
+    /// Slowing while it rolls on the floor, m/s², and in the air, per second.
+    static let rolling: Float = 0.8
+    static let airDrag: Float = 0.04
+    /// Below this speed into the floor a bounce becomes a roll.
+    static let settleBounce: Float = 0.35
+    /// The fastest a hand may throw, m/s, and a pressed ball's pop off a wall.
+    static let maxThrow: Float = 9
+    static let pop: Float = 0.9
+    /// The longest a flight may last, s.
+    static let maxFlight: Double = 20
+
+    private struct Flight {
+        var centre: SIMD3<Float>        // the ball's centre, world
+        var velocity: SIMD3<Float>
+        var offset = SIMD3<Float>.zero  // node → ball centre, world
+        var radius: Float = 0.02
+        /// The ball's place on its card read on the first frame of flight.
+        var measured = false
+        var rolling = false
+        var still: Double = 0
+        var squash: Float = 0
+        var squashAxis = SIMD3<Float>(0, 1, 0)
+        var squashSpeed: Float = 0
+        let began: Double
+    }
+
+    private var flights: [String: Flight] = [:]
+    private var surfaces: [RoomSurfaces.Surface] = []
+    private var surfacesRead: Double = 0
+    private var subscription: EventSubscription?
+    private weak var roomSurfaces: RoomSurfaces?
+    private let nodeQuery = EntityQuery(where: .has(EPUBNodeIDComponent.self))
+    /// A ball come to rest: its node's place, for the room to keep.
+    var onRest: ((String, SIMD3<Float>) -> Void)?
+
+    var isFlying: Bool { !flights.isEmpty }
+
+    func install(in content: RealityViewContent, surfaces: RoomSurfaces) {
+        SolidBallComponent.registerComponent()
+        roomSurfaces = surfaces
+        subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+            MainActor.assumeIsolated {
+                self?.step(scene: event.scene, dt: Float(event.deltaTime))
+            }
+        }
+    }
+
+    /// A ball let go at `node` with the hand's `velocity`.
+    func launch(id: String, node: SIMD3<Float>, velocity: SIMD3<Float>,
+                pressedAgainst normal: SIMD3<Float>?) {
+        var v = velocity
+        let speed = simd_length(v)
+        if speed > Self.maxThrow { v *= Self.maxThrow / speed }
+        // Let go pressed into a wall: the rubber pushes back.
+        if let normal { v += normal * Self.pop }
+        flights[id] = Flight(centre: node, velocity: v, began: CACurrentMediaTime())
+    }
+
+    /// Taken by the hand in flight: caught, left wherever the hand has it.
+    func catchBall(_ id: String) {
+        flights[id] = nil
+    }
+
+    private static func pivot(in entity: Entity) -> Entity? {
+        if entity.components.has(SolidBallComponent.self) { return entity }
+        for child in entity.children {
+            if let found = pivot(in: child) { return found }
+        }
+        return nil
+    }
+
+    private func step(scene: RealityKit.Scene, dt frame: Float) {
+        guard !flights.isEmpty, frame > 0 else { return }
+        let now = CACurrentMediaTime()
+        // The room's surfaces, read again twice a second while balls fly.
+        if now - surfacesRead > 0.5 {
+            surfaces = roomSurfaces?.surfaces() ?? []
+            surfacesRead = now
+        }
+        let floorY = surfaces.filter { $0.normal.y > 0.85 && $0.centre.y < 0.4 }.map(\.centre.y).min() ?? 0
+        var entities: [String: Entity] = [:]
+        for node in scene.performQuery(nodeQuery) {
+            if let id = node.components[EPUBNodeIDComponent.self]?.id, flights[id] != nil { entities[id] = node }
+        }
+        let dt = min(frame, 1 / 20)
+        let steps = max(1, Int((dt / 0.004).rounded(.up)))
+        let h = dt / Float(steps)
+        for (id, var flight) in flights {
+            if !flight.measured, let node = entities[id] {
+                flight.measured = true
+                if let pivot = Self.pivot(in: node) {
+                    flight.offset = pivot.position(relativeTo: nil) - node.position(relativeTo: nil)
+                    flight.radius = pivot.components[SolidBallComponent.self]?.radius ?? flight.radius
+                    flight.centre += flight.offset
+                }
+            }
+            for _ in 0..<steps { advance(&flight, by: h, floorY: floorY) }
+            // The squash springs back, a little overshoot and settle.
+            flight.squashSpeed += (-flight.squash * 900 - flight.squashSpeed * 22) * dt
+            flight.squash += flight.squashSpeed * dt
+            let speed = simd_length(flight.velocity)
+            flight.still = flight.rolling && speed < 0.03 ? flight.still + Double(dt) : 0
+            if let node = entities[id] {
+                node.setPosition(flight.centre - flight.offset, relativeTo: nil)
+                if let pivot = Self.pivot(in: node) { wear(flight, on: pivot, dt: dt) }
+            }
+            let done = flight.still > 0.25 || now - flight.began > Self.maxFlight
+            if done {
+                flights[id] = nil
+                if let pivot = entities[id].flatMap(Self.pivot(in:)) { pivot.scale = .one }
+                onRest?(id, flight.centre - flight.offset)
+            } else {
+                flights[id] = flight
+            }
+        }
+    }
+
+    /// One short step: gravity, the air, and whatever surface it meets.
+    private func advance(_ f: inout Flight, by h: Float, floorY: Float) {
+        // Gravity always: a ball rolling on a table rolls off its edge and
+        // drops; whatever it rests on holds it up step by step.
+        f.velocity.y -= Self.gravity * h
+        f.velocity *= max(0, 1 - Self.airDrag * h)
+        f.rolling = false
+        let before = f.centre
+        f.centre += f.velocity * h
+        // Every surface found, approached from the room's side.
+        for surface in surfaces {
+            var n = surface.normal
+            var was = simd_dot(before - surface.centre, n)
+            if was < 0 { n = -n; was = -was }
+            let now = simd_dot(f.centre - surface.centre, n)
+            guard now < f.radius, was > -f.radius else { continue }
+            let local = surface.extentFromOrigin * SIMD4<Float>(f.centre, 1)
+            guard abs(local.x) < surface.halfWidth + f.radius * 0.5,
+                  abs(local.z) < surface.halfHeight + f.radius * 0.5 else { continue }
+            hit(&f, normal: n, depth: f.radius - now)
+        }
+        // The floor: the one found, else the room's own level — always there.
+        if f.centre.y < floorY + f.radius {
+            hit(&f, normal: SIMD3<Float>(0, 1, 0), depth: floorY + f.radius - f.centre.y)
+        }
+        // Rolling on whatever holds it up — the floor, a table — slowing.
+        if f.rolling {
+            let flat = SIMD3<Float>(f.velocity.x, 0, f.velocity.z)
+            let speed = simd_length(flat)
+            if speed > 1e-4 {
+                let slowed = max(0, speed - Self.rolling * h)
+                f.velocity = flat * (slowed / speed)
+            }
+        }
+    }
+
+    /// Off a surface: out of it, its speed into it turned back with rubber's
+    /// spring, its speed along it scuffed — and a squash for the eye.
+    private func hit(_ f: inout Flight, normal n: SIMD3<Float>, depth: Float) {
+        f.centre += n * depth
+        let into = simd_dot(f.velocity, n)
+        guard into < 0 else { return }
+        let along = f.velocity - n * into
+        let isFloor = n.y > 0.85
+        if isFloor && -into < Self.settleBounce {
+            f.velocity = along
+            f.rolling = true
+        } else {
+            f.velocity = along * Self.scuff - n * into * Self.restitution
+            f.rolling = false
+        }
+        let blow = min(0.32, -into * 0.06)
+        if blow > f.squash {
+            f.squash = blow
+            f.squashSpeed = 0
+            f.squashAxis = n
+        }
+    }
+
+    /// The ball as the flight has it: squashed along the surface it struck,
+    /// and turning as it rolls.
+    private func wear(_ f: Flight, on pivot: Entity, dt: Float) {
+        let s = max(-0.2, min(0.35, f.squash))
+        if abs(s) > 0.002 {
+            pivot.setOrientation(simd_quatf(from: SIMD3<Float>(1, 0, 0), to: f.squashAxis), relativeTo: nil)
+            pivot.scale = SIMD3<Float>(1 - s, 1 + s * 0.5, 1 + s * 0.5)
+        } else if pivot.scale != .one {
+            pivot.scale = .one
+        }
+        // Rolling (or spinning on along a wall): the ball within turns.
+        let flat = SIMD3<Float>(f.velocity.x, 0, f.velocity.z)
+        let speed = simd_length(flat)
+        if speed > 0.01, let ball = pivot.children.first {
+            let axis = simd_normalize(simd_cross(SIMD3<Float>(0, 1, 0), flat))
+            let turn = simd_quatf(angle: speed / max(f.radius, 0.005) * dt, axis: axis)
+            ball.setOrientation(turn * ball.orientation(relativeTo: nil), relativeTo: nil)
+        }
     }
 }
 
