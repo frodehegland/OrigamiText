@@ -2942,7 +2942,9 @@ struct EPUBMapView: View {
                 // An open paper: its pictures, the miniature ring while a
                 // relation is lit, and — on the most recently chosen card
                 // alone — its verbs (2 Nov 2026).
-                if item.kind == .article, item.isSelected, item.showsAbstract,
+                // An exhibit reads open already, so once chosen it wears its
+                // star at once (10 Nov 2026).
+                if item.kind == .article, item.isSelected, item.showsAbstract || item.isExhibited,
                    !item.isGhost, !item.isAside {
                     return AnyView(paperStar(for: item))
                 }
@@ -2997,7 +2999,7 @@ struct EPUBMapView: View {
             // 6 mm behind its face — so the card keeps every pinch, and
             // the verbs stand clear around its edges. The open card has
             // come forward (openCardLift), and its star with it.
-            if item.kind == .article, item.isSelected, item.showsAbstract,
+            if item.kind == .article, item.isSelected, item.showsAbstract || item.isExhibited,
                !item.isGhost, !item.isAside {
                 return AnchorRule(anchor: SIMD3<Float>(0.5, 0.5, 0.5),
                                   offset: SIMD3<Float>(0, 0, item.openLift - 0.006))
@@ -3160,6 +3162,9 @@ struct EPUBMapView: View {
             // A ghost holds the lifted card's place — the slot is the
             // whole point of it.
             if item.isGhost || item.isFaded { return startPosition }
+            // The left hand does not move nodes (10 Nov 2026): it pinches
+            // on one to begin a connection; only the right hand carries.
+            if twoHandPinch.leftHandHolds { return startPosition }
             // Fabien billboarding (9 Nov 2026): only while carried does a
             // node turn to the reader — an open paper standing free, a lifted
             // card, a label, a galaxy concept, a snippet.
@@ -3429,8 +3434,15 @@ struct EPUBMapView: View {
             relateLines.install(in: content)
             dustSeed.install(in: content)
             connectorSpindles.install(in: content)
+            connectorSpindles.sizes = cardSizes
             twoHandPinch.install(in: content)
-            twoHandPinch.onSummon = { place in dustSeed.spawn(at: place) }
+            // Summoned from the node the left hand pinched on: already its
+            // first end, the fire trailing from it to the dust.
+            twoHandPinch.onSummon = { place, node in
+                dustSeed.spawn(at: place)
+                dustSeed.bind(to: node)
+            }
+            twoHandPinch.nodeAt = { point in dustNode(at: point) }
             // Still pinched, the right hand draws the dust where it goes.
             twoHandPinch.onCarry = { place in dustSeed.dust?.position = place }
             twoHandPinch.allowed = { [fistGrab] in !fistGrab.anyFist }
@@ -3980,7 +3992,10 @@ struct EPUBMapView: View {
             // attachment's backing square past the corners).
             .background {
                 // With Colours on, a paper's colours outrank Retro's black.
-                if retroPalette(item) != nil && item.paintColours.isEmpty && !item.isLifted {
+                // A lifted card wears its pane too (10 Nov 2026): without one
+                // an open paper carried off its plane stood as words over its
+                // dark slab, and read as greyed out.
+                if retroPalette(item) != nil && item.paintColours.isEmpty {
                     RoundedRectangle(cornerRadius: 8 * s).fill(Color.black)
                 } else if !item.paintColours.isEmpty {
                     // (A lifted card keeps its colours too — off its slot it
@@ -3996,10 +4011,10 @@ struct EPUBMapView: View {
                         RoundedRectangle(cornerRadius: 8 * s)
                             .fill(Color.black.opacity(selected ? 0.42 : 0.36))
                     }
-                } else if selected && !item.isLifted {
+                } else if selected {
                     RoundedRectangle(cornerRadius: 8 * s)
                         .fill(Color(white: 0.12))
-                } else if !item.isLifted {
+                } else {
                     // Papers and citations stand on a solid, nearly opaque
                     // ground (1 Nov 2026) — the words read cleanly while
                     // the views change, and no card pays for a live blur
@@ -6065,6 +6080,21 @@ struct EPUBMapView: View {
         dustSeed.dissolve()
         model.editingConnectorID = connector.id
         openWindow(id: "connector")
+    }
+
+    /// The node a hand's pinch is on or right beside: within its face's
+    /// half-width and 4 cm more of its middle, however the card is turned.
+    private func dustNode(at point: SIMD3<Float>) -> String? {
+        var best: (id: String, gap: Float)?
+        for item in items where !item.isGhost && !item.isAside && !item.isFaded {
+            guard let place = item.position else { continue }
+            let size = cardSizes.shown[item.id] ?? SIMD2<Float>(0.14, 0.07)
+            let reach = max(size.x, size.y) / 2 + 0.04
+            let gap = simd_distance(place, point)
+            guard gap < reach else { continue }
+            if gap < (best?.gap ?? .infinity) { best = (item.id, gap) }
+        }
+        return best?.id
     }
 
     /// The open room's connectors, as fire.
@@ -9928,6 +9958,9 @@ final class FistGrab {
 
     private func tick() {
         let now = CACurrentMediaTime()
+        // Let go moving briskly, the room coasts on, slowing, before it is
+        // set down (10 Nov 2026) — the carry reads as having weight.
+        coast(now: now)
         for index in hands.indices {
             // A hand the cameras have lost keeps its LAST pose on the
             // anchor — it does not always fall to the origin — so a
@@ -10010,6 +10043,11 @@ final class FistGrab {
                     let delta = (palm - last) * Self.carryGain
                     if delta != .zero, let taken = move?(delta, carrying) {
                         carried += taken
+                        // How fast the room is going, smoothed, for the coast.
+                        if let at = lastMoveAt, now - at > 1e-4 {
+                            velocity = velocity * 0.6 + taken / Float(now - at) * 0.4
+                        }
+                        lastMoveAt = now
                     }
                 } else {
                     // Held long enough? Then the hand takes the room —
@@ -10020,8 +10058,12 @@ final class FistGrab {
                     hands[index].isFist = true
                     hands[index].lastPalm = palm
                     if driving == nil, let first = firstFist() {
+                        // A coast still under way ends where it is.
+                        finishCoast()
                         driving = first
                         carried = .zero
+                        velocity = .zero
+                        lastMoveAt = nil
                         // No chits (2 Nov 2026, Frode: no arm chits at
                         // all): a fist carries everything at once.
                         choice = Self.offersChits ? nil : .everything
@@ -10071,9 +10113,54 @@ final class FistGrab {
         driving = nil
         looseSince = nil
         settle?()
+        // Moving briskly: the room glides on and slows before it is set
+        // down; otherwise it is set down at once.
+        // Level (10 Nov 2026): opening a fist dips the palm, and that dip
+        // must not carry on — the glide is across the floor, never up or down.
+        var level = velocity
+        level.y = 0
+        if let choice, simd_length(level) > Self.coastFrom {
+            let speed = simd_length(level)
+            coasting = (level * min(1, Self.coastCap / speed), choice, CACurrentMediaTime())
+            self.choice = nil
+            return
+        }
         if let choice { release?(carried, choice) }
         choice = nil
         carried = .zero
+    }
+
+    /// The coast after a brisk release: its velocity (m/s), what it carries,
+    /// and its last frame's time.
+    private var coasting: (velocity: SIMD3<Float>, part: FistCarry, at: CFTimeInterval)?
+    private var velocity = SIMD3<Float>.zero
+    private var lastMoveAt: CFTimeInterval?
+    /// Coasting begins above this speed (m/s), is held to this one, slows
+    /// at this rate (1/s — it travels about a sixth of its speed in
+    /// metres), and stops below the last.
+    static let coastFrom: Float = 0.25
+    static let coastCap: Float = 2.0
+    static let coastDrag: Float = 6
+    static let coastStop: Float = 0.02
+
+    private func coast(now: CFTimeInterval) {
+        guard var glide = coasting else { return }
+        let dt = Float(min(now - glide.at, 1.0 / 20))
+        glide.at = now
+        glide.velocity *= exp(-Self.coastDrag * dt)
+        if let taken = move?(glide.velocity * dt, glide.part) { carried += taken }
+        coasting = glide
+        if simd_length(glide.velocity) < Self.coastStop { finishCoast() }
+    }
+
+    /// The coast ends: the room is set down where it has got to.
+    private func finishCoast() {
+        guard let glide = coasting else { return }
+        coasting = nil
+        release?(carried, glide.part)
+        carried = .zero
+        velocity = .zero
+        lastMoveAt = nil
     }
 
     /// The other hand's choice, from the chits: the fist carries this
@@ -15241,8 +15328,11 @@ final class SpaceJelly {
                                   omega: Self.nearOmega + (Self.farOmega - Self.nearOmega) * t)
         }
         // In the card's own frame: a card turned to the reader trails along
-        // the way the room went, not along its own face.
-        let local = node.convert(direction: delta, from: nil)
+        // the way the room went, not along its own face — and only across
+        // the floor (10 Nov 2026): no bounce up and down as it settles.
+        var level = delta
+        level.y = 0
+        let local = node.convert(direction: level, from: nil)
         springs[key]!.offset -= local
         let trail = simd_length(springs[key]!.offset)
         if trail > Self.maxTrail { springs[key]!.offset *= Self.maxTrail / trail }
@@ -15284,12 +15374,27 @@ final class TwoHandPinch {
     private var openness: [(palm: AnchorEntity, middle: AnchorEntity)] = []
     private var pinched = [false, false]
     private var wasPinched = [false, false]
+    /// When each hand's pinch began.
+    private var pinchBegan: [CFTimeInterval] = [0, 0]
+
+    /// The left hand holds the pinch now — alone, or begun after the
+    /// right's (10 Nov 2026): the left hand chooses and connects, it does
+    /// not carry nodes, so a node it takes stays where it stands.
+    var leftHandHolds: Bool {
+        pinched[0] && (!pinched[1] || pinchBegan[0] > pinchBegan[1])
+    }
     private var leftAt: CFTimeInterval?
+    /// The node the left hand pinched on — the connector's first end.
+    private var leftNode: String?
     /// The right pinch that summoned the dust, still held: it carries it.
     private var carrying = false
     private var subscription: EventSubscription?
-    /// The moment it happens: where the right hand pinched.
-    var onSummon: ((SIMD3<Float>) -> Void)?
+    /// The moment it happens: where the right hand pinched, and the node
+    /// the left hand pinched on.
+    var onSummon: ((SIMD3<Float>, String) -> Void)?
+    /// The node a point is on or very near, if any (10 Nov 2026): the left
+    /// hand's pinch must be on the node the connection starts from.
+    var nodeAt: ((SIMD3<Float>) -> String?)?
     /// The right hand, still pinched, moving the dust it summoned.
     var onCarry: ((SIMD3<Float>) -> Void)?
     /// Whether summoning may happen now (no fist carrying, say).
@@ -15339,14 +15444,23 @@ final class TwoHandPinch {
 
     private func tick() {
         guard tips.count == 2, openness.count == 2 else { return }
-        _ = pinchPoint(0)
+        let left = pinchPoint(0)
         let right = pinchPoint(1)
         let now = CACurrentMediaTime()
+        for hand in 0..<2 where pinched[hand] && !wasPinched[hand] { pinchBegan[hand] = now }
         defer { wasPinched = pinched }
         // The left hand's pinch begins: the window opens.
         if pinched[0], !wasPinched[0] {
-            leftAt = now
-            print("Dust: left pinch")
+            // Only a pinch on (or right beside) a node begins a connection.
+            if let left, let node = nodeAt?(left) {
+                leftAt = now
+                leftNode = node
+                print("Dust: left pinch on \(node)")
+            } else {
+                leftAt = nil
+                leftNode = nil
+                print("Dust: left pinch, but not on a node")
+            }
         }
         // The right, carrying the dust it summoned, until it lets go.
         if carrying {
@@ -15354,7 +15468,7 @@ final class TwoHandPinch {
             return
         }
         guard pinched[1], !wasPinched[1], let right else { return }
-        guard let leftAt else { print("Dust: right pinch, but no left pinch before it"); return }
+        guard let leftAt, let leftNode else { print("Dust: right pinch, but no left pinch on a node before it"); return }
         let after = now - leftAt
         guard after >= 0.25, after <= 2.5 else {
             print("Dust: right pinch \(String(format: "%.2f", after)) s after the left — wants 0.25–2.5 s")
@@ -15363,9 +15477,10 @@ final class TwoHandPinch {
         guard isOpen(1) else { print("Dust: right hand reads as a fist"); return }
         guard allowed?() ?? true else { print("Dust: a fist is carrying the space"); return }
         self.leftAt = nil
+        self.leftNode = nil
         carrying = true
-        print("Dust: summoned")
-        onSummon?(right)
+        print("Dust: summoned from \(leftNode)")
+        onSummon?(right, leftNode)
     }
 }
 
@@ -15409,9 +15524,11 @@ private final class DustSeed: MapLineLayer {
         seed.position = place
         var motes = ParticleEmitterComponent()
         motes.emitterShape = .sphere
-        motes.emitterShapeSize = SIMD3<Float>(repeating: 0.035)
+        // Gathered at the middle (10 Nov 2026): born in a small core and
+        // barely drifting, inside the metal sphere.
+        motes.emitterShapeSize = SIMD3<Float>(repeating: 0.014)
         motes.birthLocation = .volume
-        motes.speed = 0.006
+        motes.speed = 0.0015
         motes.mainEmitter.birthRate = 260
         motes.mainEmitter.lifeSpan = 1.6
         motes.mainEmitter.size = 0.0018
@@ -15419,12 +15536,16 @@ private final class DustSeed: MapLineLayer {
         motes.mainEmitter.color = .evolving(start: .single(UIColor(white: 1, alpha: 1)),
                                             end: .single(UIColor(red: 1, green: 0.85, blue: 0.55, alpha: 0)))
         seed.components.set(motes)
-        // A faint warm core, so the cloud reads as one thing to take.
-        var glow = UnlitMaterial(color: UIColor(white: 1, alpha: 0.18))
-        glow.blending = .transparent(opacity: .init(floatLiteral: 0.18))
-        glow.writesDepth = false
-        let core = ModelEntity(mesh: .generateSphere(radius: 0.012), materials: [glow])
-        seed.addChild(core)
+        // A sphere of polished, see-through metal holds the dust (10 Nov
+        // 2026), so the cloud reads as one thing to take.
+        var metal = PhysicallyBasedMaterial()
+        metal.baseColor = .init(tint: UIColor(white: 0.9, alpha: 1))
+        metal.metallic = .init(floatLiteral: 1)
+        metal.roughness = .init(floatLiteral: 0.12)
+        metal.blending = .transparent(opacity: .init(floatLiteral: 0.38))
+        metal.writesDepth = false
+        let shell = ModelEntity(mesh: .generateSphere(radius: 0.032), materials: [metal])
+        seed.addChild(shell)
         seed.components.set(CollisionComponent(shapes: [.generateSphere(radius: 0.05)]))
         seed.components.set(InputTargetComponent())
         seed.components.set(HoverEffectComponent())
@@ -15477,7 +15598,6 @@ final class Lightning {
     private var core: [ModelEntity] = []
     private var halo: [ModelEntity] = []
     private static let segments = 14
-    private var frame = 0
     private var jitter: [SIMD2<Float>] = []
     private let fire: Bool
 
@@ -15512,22 +15632,22 @@ final class Lightning {
         if simd_length(side) < 1e-3 { side = simd_cross(along, SIMD3<Float>(1, 0, 0)) }
         side = simd_normalize(side)
         let up = simd_cross(side, along)
-        // The jag changes every other frame — the flicker.
-        frame &+= 1
-        if frame % 2 == 0 || jitter.allSatisfy({ $0 == .zero }) {
-            let reach = min(0.018, length * 0.05) * (fire ? 1 : 0.4)
-            jitter = (0...Self.segments).map { i in
-                let u = Float(i) / Float(Self.segments)
-                let taper = sin(u * .pi)
-                return SIMD2<Float>(Float.random(in: -1...1), Float.random(in: -1...1)) * reach * taper
-            }
+        // Nearly straight (10 Nov 2026, Frode: much less fluttering): no
+        // random jag, only a slow smooth sway of a few millimetres along
+        // the strand, still at its ends.
+        let reach = min(0.003, length * 0.01) * (fire ? 1 : 0.6)
+        jitter = (0...Self.segments).map { i in
+            let u = Float(i) / Float(Self.segments)
+            let taper = sin(u * .pi)
+            let f = Float(i)
+            return SIMD2<Float>(sin(time * 0.9 + f * 0.55), cos(time * 0.7 + f * 0.8)) * reach * taper
         }
         let points = (0...Self.segments).map { i -> SIMD3<Float> in
             let u = Float(i) / Float(Self.segments)
             return a + span * u + side * jitter[i].x + up * jitter[i].y
         }
-        // A pulse along it: brighter, then quieter, as fire breathes.
-        let pulse = 0.75 + 0.25 * sin(time * 9)
+        // A gentle breath, about every four seconds.
+        let pulse = 0.9 + 0.1 * sin(time * 1.6)
         for i in 0..<Self.segments {
             let p = points[i], q = points[i + 1]
             let d = q - p
@@ -15547,22 +15667,25 @@ final class Lightning {
     }
 }
 
-/// The room's dust connectors: each a strand of electric fire between its
-/// two nodes, following them; a spark at its middle; its words beside it.
-/// A double tap on the fire opens its window.
+/// The room's dust connectors (simplified 10 Nov 2026, Frode: once made,
+/// no animation): each a plain still line between its two nodes, stopping
+/// at their borders, following them; its words above its middle. A double
+/// tap on the line opens its window.
 @MainActor
 private final class ConnectorSpindles: MapLineLayer {
     static let hitPrefix = "connector.hit."
     private var root: Entity?
+    /// The cards' measured sizes, so each line stops at their borders.
+    var sizes: EPUBMapView.CardSizes?
     private struct Spindle {
         let connector: VisionModel.NodeConnector
-        let fire: Lightning
+        let line: ModelEntity
         let hit: Entity
         let label: Entity
     }
     private var spindles: [Spindle] = []
     private var shown: [VisionModel.NodeConnector] = []
-    private let began = CACurrentMediaTime()
+    private let ends = LineEnds()
 
     func install(in content: RealityViewContent) {
         let r = Entity()
@@ -15584,27 +15707,20 @@ private final class ConnectorSpindles: MapLineLayer {
         guard connectors != shown, let root else { return }
         shown = connectors
         for s in spindles {
-            s.fire.entity.removeFromParent()
+            s.line.removeFromParent()
             s.hit.removeFromParent()
             s.label.removeFromParent()
         }
+        ends.reset()
+        var white = UnlitMaterial(color: UIColor(white: 1, alpha: 0.85))
+        white.blending = .transparent(opacity: .init(floatLiteral: 0.85))
+        let unit = MeshResource.generateBox(size: SIMD3<Float>(1, 1, 1))
         spindles = connectors.map { c in
-            let fire = Lightning(fire: true)
-            root.addChild(fire.entity)
-            // Sparks rising off its middle.
-            var sparks = ParticleEmitterComponent()
-            sparks.emitterShape = .sphere
-            sparks.emitterShapeSize = SIMD3<Float>(repeating: 0.01)
-            sparks.speed = 0.03
-            sparks.mainEmitter.birthRate = 40
-            sparks.mainEmitter.lifeSpan = 0.6
-            sparks.mainEmitter.size = 0.0015
-            sparks.mainEmitter.blendMode = .additive
-            sparks.mainEmitter.color = .evolving(start: .single(.white),
-                                                 end: .single(UIColor(red: 1, green: 0.7, blue: 0.35, alpha: 0)))
+            let line = ModelEntity(mesh: unit, materials: [white])
+            line.isEnabled = false
+            root.addChild(line)
             let hit = Entity()
             hit.name = Self.hitPrefix + c.id
-            hit.components.set(sparks)
             hit.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(1, 0.035, 0.035))]))
             hit.components.set(InputTargetComponent())
             hit.components.set(HoverEffectComponent())
@@ -15614,32 +15730,56 @@ private final class ConnectorSpindles: MapLineLayer {
             label.components.set(BillboardComponent())
             label.scale = SIMD3<Float>(repeating: 0.5)
             root.addChild(label)
-            return Spindle(connector: c, fire: fire, hit: hit, label: label)
+            return Spindle(connector: c, line: line, hit: hit, label: label)
         }
     }
 
     var needsPositions: Bool { !spindles.isEmpty }
 
+    /// How far along the way to the other card this card's border lies,
+    /// by its measured face — as the room's other lines are trimmed.
+    private func share(_ id: String, _ delta: SIMD3<Float>) -> Float {
+        guard let size = sizes?.shown[id] else { return 0 }
+        let half = size / 2 + SIMD2<Float>(repeating: 0.006)
+        let x = abs(delta.x) > 1e-5 ? half.x / abs(delta.x) : .infinity
+        let y = abs(delta.y) > 1e-5 ? half.y / abs(delta.y) : .infinity
+        let t = min(x, y)
+        return t.isFinite ? t : 0
+    }
+
     func relayout(positions: [String: SIMD3<Float>]) {
-        let t = Float(CACurrentMediaTime() - began)
         for s in spindles {
             guard let a = positions[s.connector.from], let b = positions[s.connector.to] else {
-                s.fire.entity.isEnabled = false
+                s.line.isEnabled = false
                 s.hit.isEnabled = false
                 s.label.isEnabled = false
                 continue
             }
-            s.fire.update(from: a, to: b, time: t)
-            let span = b - a
+            // Still lines are left alone.
+            guard ends.moved(s.line, a, b, sizes: sizes?.shown[s.connector.from], sizes?.shown[s.connector.to])
+            else { continue }
+            let delta = b - a
+            let start = share(s.connector.from, delta), stop = share(s.connector.to, delta)
+            guard start + stop < 1 else {
+                s.line.isEnabled = false
+                s.hit.isEnabled = false
+                s.label.isEnabled = false
+                continue
+            }
+            let p = a + delta * start, q = b - delta * stop
+            let span = q - p
             let length = simd_length(span)
-            s.hit.isEnabled = length > 0.02
-            s.label.isEnabled = length > 0.02
-            guard length > 0.02 else { continue }
-            let mid = (a + b) / 2
-            // The pinch target lies along the fire, short of the cards.
+            let turn = simd_quatf(from: SIMD3<Float>(1, 0, 0), to: span / max(length, 1e-5))
+            let mid = (p + q) / 2
+            s.line.isEnabled = true
+            s.line.position = mid
+            s.line.orientation = turn
+            s.line.scale = SIMD3<Float>(length, 0.0016, 0.0016)
+            s.hit.isEnabled = true
             s.hit.position = mid
-            s.hit.orientation = simd_quatf(from: SIMD3<Float>(1, 0, 0), to: span / length)
-            s.hit.scale = SIMD3<Float>(max(length - 0.12, 0.04), 1, 1)
+            s.hit.orientation = turn
+            s.hit.scale = SIMD3<Float>(max(length, 0.04), 1, 1)
+            s.label.isEnabled = true
             s.label.position = mid + SIMD3<Float>(0, 0.035, 0)
         }
     }
