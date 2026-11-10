@@ -3445,6 +3445,8 @@ struct EPUBMapView: View {
             twoHandPinch.nodeAt = { point in dustNode(at: point) }
             // Still pinched, the right hand draws the dust where it goes.
             twoHandPinch.onCarry = { place in dustSeed.dust?.position = place }
+            // Let go over another node, the connection is made.
+            twoHandPinch.onRelease = { dropDust() }
             twoHandPinch.allowed = { [fistGrab] in !fistGrab.anyFist }
             rebuildSpindles()
             cardTick.install(in: content,
@@ -3494,6 +3496,7 @@ struct EPUBMapView: View {
                 in: content,
                 grip: { palm in
                     spaceJelly.grip = palm
+                    spaceJelly.takeHold()
                     if FistGrab.offersChits {
                         fistChooser.show(above: palm, facing: faceTurner.headPosition())
                     }
@@ -3529,6 +3532,7 @@ struct EPUBMapView: View {
                     return delta
                 },
                 release: { carried, part in
+                    spaceJelly.letGo()
                     switch part {
                     case .everything: commitSpaceShift(carried)
                     case .documents: commitDocumentsShift(carried)
@@ -9923,9 +9927,27 @@ final class FistGrab {
     /// enough that a flicker of noise or a hand passing through a curl
     /// cannot grab; short enough that a deliberate fist feels immediate.
     private static let holdBefore: Double = 0.2
-    /// The carry is geared up — the space moves further than the hand,
-    /// so a large room crosses the floor without long reaches.
-    private static let carryGain: Float = 2.5
+    /// The carry is geared — the space can move further than the hand, so
+    /// a large room crosses the floor without long reaches (it was a fixed
+    /// 2.5 until 10 Nov 2026). Accelerated now: the gear follows the hand's speed,
+    /// as a trackpad's pointer does — a slow hand moves the room less than
+    /// itself, for placing it finely; a fast sweep carries it much further.
+    /// Slower than `slowSpeed` m/s the gear is `slowGain`; faster than
+    /// `fastSpeed`, `fastGain`; smoothly between.
+    private static let slowGain: Float = 0.6
+    private static let fastGain: Float = 3.5
+    private static let slowSpeed: Float = 0.08
+    private static let fastSpeed: Float = 0.7
+    /// The hand's speed, smoothed over a few frames, and when it was read.
+    private var handSpeed: Float = 0
+    private var handReadAt: CFTimeInterval?
+
+    /// The gear for the hand's speed now.
+    private func gear(for speed: Float) -> Float {
+        let t = max(0, min(1, (speed - Self.slowSpeed) / (Self.fastSpeed - Self.slowSpeed)))
+        let eased = t * t * (3 - 2 * t)
+        return Self.slowGain + (Self.fastGain - Self.slowGain) * eased
+    }
 
     func install(in content: RealityViewContent,
                  grip: @escaping (SIMD3<Float>) -> Void,
@@ -10040,7 +10062,14 @@ final class FistGrab {
                         }
                         continue
                     }
-                    let delta = (palm - last) * Self.carryGain
+                    // The hand's speed, smoothed, sets the gear.
+                    let step = palm - last
+                    if let at = handReadAt, now - at > 1e-4 {
+                        let speed = simd_length(step) / Float(now - at)
+                        handSpeed = handSpeed * 0.7 + speed * 0.3
+                    }
+                    handReadAt = now
+                    let delta = step * gear(for: handSpeed)
                     if delta != .zero, let taken = move?(delta, carrying) {
                         carried += taken
                         // How fast the room is going, smoothed, for the coast.
@@ -10064,6 +10093,8 @@ final class FistGrab {
                         carried = .zero
                         velocity = .zero
                         lastMoveAt = nil
+                        handSpeed = 0
+                        handReadAt = nil
                         // No chits (2 Nov 2026, Frode: no arm chits at
                         // all): a fist carries everything at once.
                         choice = Self.offersChits ? nil : .everything
@@ -10119,7 +10150,7 @@ final class FistGrab {
         // must not carry on — the glide is across the floor, never up or down.
         var level = velocity
         level.y = 0
-        if let choice, simd_length(level) > Self.coastFrom {
+        if Self.coasts, let choice, simd_length(level) > Self.coastFrom {
             let speed = simd_length(level)
             coasting = (level * min(1, Self.coastCap / speed), choice, CACurrentMediaTime())
             self.choice = nil
@@ -10138,6 +10169,9 @@ final class FistGrab {
     /// Coasting begins above this speed (m/s), is held to this one, slows
     /// at this rate (1/s — it travels about a sixth of its speed in
     /// metres), and stops below the last.
+    /// Off (10 Nov 2026, Frode: an instant stop, as before) — set this
+    /// to true to bring the glide back.
+    static let coasts = false
     static let coastFrom: Float = 0.25
     static let coastCap: Float = 2.0
     static let coastDrag: Float = 6
@@ -15298,6 +15332,14 @@ final class SpaceJelly {
 
     private var springs: [ObjectIdentifier: Spring] = [:]
     private var subscription: EventSubscription?
+    /// Let go (10 Nov 2026): no wobble back — every face goes home at once,
+    /// critically damped, in about a tenth of a second, without overshoot.
+    private var calm = false
+
+    /// The fist has let go.
+    func letGo() { calm = true }
+    /// A fist has taken hold again.
+    func takeHold() { calm = false }
 
     /// How far, in the room, a card's face hangs from its place now — nil
     /// while it is still. The stands and lines are drawn to the face, so
@@ -15344,8 +15386,12 @@ final class SpaceJelly {
         for (key, var spring) in springs {
             guard let body = spring.body, body.parent != nil else { springs[key] = nil; continue }
             // Semi-implicit Euler: steady at these stiffnesses and steps.
-            let accel = -spring.omega * spring.omega * spring.offset
-                - 2 * Self.damping * spring.omega * spring.velocity
+            // Let go, the spring is stiff and critically damped: home at
+            // once, never past it.
+            let omega = calm ? Float(40) : spring.omega
+            let damping = calm ? Float(1) : Self.damping
+            let accel = -omega * omega * spring.offset
+                - 2 * damping * omega * spring.velocity
             spring.velocity += accel * dt
             spring.offset += spring.velocity * dt
             if simd_length(spring.offset) < 0.0003, simd_length(spring.velocity) < 0.003 {
@@ -15397,6 +15443,8 @@ final class TwoHandPinch {
     var nodeAt: ((SIMD3<Float>) -> String?)?
     /// The right hand, still pinched, moving the dust it summoned.
     var onCarry: ((SIMD3<Float>) -> Void)?
+    /// The right hand letting the dust go — laid where it is.
+    var onRelease: (() -> Void)?
     /// Whether summoning may happen now (no fist carrying, say).
     var allowed: (() -> Bool)?
 
@@ -15464,7 +15512,13 @@ final class TwoHandPinch {
         }
         // The right, carrying the dust it summoned, until it lets go.
         if carrying {
-            if pinched[1], let right { onCarry?(right) } else { carrying = false }
+            if pinched[1], let right {
+                onCarry?(right)
+            } else {
+                carrying = false
+                print("Dust: let go")
+                onRelease?()
+            }
             return
         }
         guard pinched[1], !wasPinched[1], let right else { return }
@@ -15526,12 +15580,12 @@ private final class DustSeed: MapLineLayer {
         motes.emitterShape = .sphere
         // Gathered at the middle (10 Nov 2026): born in a small core and
         // barely drifting, inside the metal sphere.
-        motes.emitterShapeSize = SIMD3<Float>(repeating: 0.014)
+        motes.emitterShapeSize = SIMD3<Float>(repeating: 0.008)
         motes.birthLocation = .volume
         motes.speed = 0.0015
         motes.mainEmitter.birthRate = 260
         motes.mainEmitter.lifeSpan = 1.6
-        motes.mainEmitter.size = 0.0018
+        motes.mainEmitter.size = 0.0012
         motes.mainEmitter.blendMode = .additive
         motes.mainEmitter.color = .evolving(start: .single(UIColor(white: 1, alpha: 1)),
                                             end: .single(UIColor(red: 1, green: 0.85, blue: 0.55, alpha: 0)))
@@ -15544,9 +15598,10 @@ private final class DustSeed: MapLineLayer {
         metal.roughness = .init(floatLiteral: 0.12)
         metal.blending = .transparent(opacity: .init(floatLiteral: 0.38))
         metal.writesDepth = false
-        let shell = ModelEntity(mesh: .generateSphere(radius: 0.032), materials: [metal])
+        // Small (10 Nov 2026): a pea of metal in the hand, not a ball.
+        let shell = ModelEntity(mesh: .generateSphere(radius: 0.018), materials: [metal])
         seed.addChild(shell)
-        seed.components.set(CollisionComponent(shapes: [.generateSphere(radius: 0.05)]))
+        seed.components.set(CollisionComponent(shapes: [.generateSphere(radius: 0.035)]))
         seed.components.set(InputTargetComponent())
         seed.components.set(HoverEffectComponent())
         root.addChild(seed)
@@ -15580,11 +15635,8 @@ private final class DustSeed: MapLineLayer {
         // A slow breath.
         dust.scale = SIMD3<Float>(repeating: 1 + 0.14 * sin(t * 2.6))
         guard let boundTo, let node = positions[boundTo] else { return }
-        // Beside its node while not in hand, following it.
-        if dragStart == nil {
-            let place = node + SIMD3<Float>(0, 0.1, 0.03)
-            if simd_distance(dust.position, place) > 0.0005 { dust.position = place }
-        }
+        // It stays wherever the hand put it (10 Nov 2026) — it is no longer
+        // parked beside its node, which took it from the right hand.
         tail?.update(from: node, to: dust.position, time: t)
     }
 }

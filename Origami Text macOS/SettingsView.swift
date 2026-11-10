@@ -77,6 +77,9 @@ enum ReaderLayoutStyle: String, CaseIterable, Identifiable {
 /// open Settings onto a particular one.
 enum SettingsTab: Hashable {
     case author, editor, reading, overview, assistive, annotation, layout, library, hypermedia, ai, modules, openSource
+    /// The AI tab's prompts, relevance and profiles (10 Nov 2026): its own
+    /// tab, so neither fills more than a laptop's screen.
+    case aiPrompts
     case concepts
     case tags
     case portraits
@@ -116,9 +119,12 @@ struct SettingsView: View {
             HypermediaSettingsView()
                 .tabItem { Label("Hypermedia", systemImage: "network") }
                 .tag(SettingsTab.hypermedia)
-            AISettingsView()
+            AISettingsView(part: .models)
                 .tabItem { Label("AI", systemImage: "sparkles") }
                 .tag(SettingsTab.ai)
+            AISettingsView(part: .prompts)
+                .tabItem { Label("AI Prompts", systemImage: "text.bubble") }
+                .tag(SettingsTab.aiPrompts)
             ConceptsSettingsView()
                 .tabItem { Label("Concepts", systemImage: "character.book.closed") }
                 .tag(SettingsTab.concepts)
@@ -990,6 +996,18 @@ private struct ServeAISettingsSection: View {
 }
 
 private struct AISettingsView: View {
+    /// Which half of AI this tab shows: the models (and serving Vision
+    /// Pro), or the prompts, relevance and profiles.
+    enum Part { case models, prompts }
+    let part: Part
+
+    /// As tall as the screen allows and no taller — the Form scrolls
+    /// within it — so a 14-inch Mac sees the whole window (10 Nov 2026).
+    private var height: CGFloat {
+        let visible = NSScreen.main?.visibleFrame.height ?? 900
+        return min(760, max(420, visible - 160))
+    }
+
     @AppStorage(AppSettings.aiReadingSummaryPromptKey) private var summaryPrompt =
         ReadingAnalysisKind.summary.defaultPrompt
     @AppStorage(AppSettings.aiReadingIssuesPromptKey) private var issuesPrompt =
@@ -1028,11 +1046,21 @@ private struct AISettingsView: View {
 
     var body: some View {
         Form {
-            // The language model itself: Apple's built-in, or any
-            // OpenAI-compatible server (Ollama, LM Studio) — chosen
-            // once, used by the reading's AI.
-            LLMModelSettingsSections()
-            ServeAISettingsSection()
+            if part == .models {
+                // The language model itself: Apple's built-in, or any
+                // OpenAI-compatible server (Ollama, LM Studio) — chosen
+                // once, used by the reading's AI.
+                LLMModelSettingsSections()
+                ServeAISettingsSection()
+            } else {
+                promptSections
+            }
+        }
+        .formStyle(.grouped)
+        .frame(height: height)
+    }
+
+    @ViewBuilder private var promptSections: some View {
             Section {
                 Picker("Prompt", selection: $selection) {
                     ForEach(["Summary", "Issues", "Person Profiles"],
@@ -1070,8 +1098,6 @@ private struct AISettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        }
-        .formStyle(.grouped)
     }
 }
 

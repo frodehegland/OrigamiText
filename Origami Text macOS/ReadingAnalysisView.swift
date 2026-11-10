@@ -129,8 +129,8 @@ enum ReadingAnalysisKind: String, CaseIterable, Identifiable {
     }
 }
 
-/// Edit Prompt: Settings opened on its AI tab, where every AI prompt —
-/// the reading's and the library's — is written.
+/// Edit Prompt: Settings opened on its AI Prompts tab, where every AI
+/// prompt — the reading's and the library's — is written.
 struct EditPromptButton: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
@@ -138,7 +138,7 @@ struct EditPromptButton: View {
     var body: some View {
         // Regenerate and Remove's light style: small grey words.
         Button("Edit Prompt") {
-            model.settingsTab = .ai
+            model.settingsTab = .aiPrompts
             openSettings()
         }
         .buttonStyle(.plain)
