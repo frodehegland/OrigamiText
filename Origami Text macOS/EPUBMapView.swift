@@ -278,6 +278,8 @@ struct EPUBMapView: View {
     /// The fist: close either hand to grab the whole space and carry
     /// it; open the hand to set it down.
     @State private var fistGrab = FistGrab()
+    /// The carried space's give: each card's face springs after its place.
+    @State private var spaceJelly = SpaceJelly()
     /// The chits a closed fist offers: what it should carry.
     @State private var fistChooser = FistChooser()
     /// How far in depth the fist may carry the citations or the papers
@@ -369,6 +371,10 @@ struct EPUBMapView: View {
     /// Drop to Relate: the line and panel between two papers brought
     /// together (8 Nov 2026).
     @State private var relateLines = RelateLines()
+    /// Dust connectors (9 Nov 2026): the summoning, the dust, the fire.
+    @State private var twoHandPinch = TwoHandPinch()
+    @State private var dustSeed = DustSeed()
+    @State private var connectorSpindles = ConnectorSpindles()
 
 
     /// Sankey widths or a traditional line graph — the reader's
@@ -1161,8 +1167,12 @@ struct EPUBMapView: View {
             runWiden(depthOnly: false)
         case .widenDepth:
             runWiden(depthOnly: true)
+        case .closeInDepth:
+            runWiden(depthOnly: true, closer: true)
         case .toggleGrounded:
             toggleGrounded()
+        case .toggleCeiling:
+            toggleCeiling()
         case .card(let itemID, let verb):
             performCardVerb(verb, on: itemID)
         }
@@ -2758,6 +2768,14 @@ struct EPUBMapView: View {
                 DragGesture(coordinateSpace: .global)
                     .targetedToAnyEntity()
                     .onChanged { value in
+                        // The dust, carried by hand (9 Nov 2026).
+                        if dustSeed.owns(value.entity), let dust = dustSeed.dust {
+                            let start = dustSeed.dragStart ?? dust.position
+                            dustSeed.dragStart = start
+                            dust.position = start + value.convert(
+                                value.gestureValue.translation3D, from: .local, to: .scene)
+                            return
+                        }
                         if let (docID, root) = readerPanels.panel(for: value.entity) {
                             let start = readerPanels.dragStart[docID] ?? root.position
                             readerPanels.dragStart[docID] = start
@@ -2779,6 +2797,11 @@ struct EPUBMapView: View {
                         // fight.
                     }
                     .onEnded { value in
+                        if dustSeed.owns(value.entity) {
+                            dustSeed.dragStart = nil
+                            dropDust()
+                            return
+                        }
                         readerPanels.dragStart = [:]
                         // A pad pulled off the wrist: where the hand
                         // let go, a note stands. A pinch that barely
@@ -2810,6 +2833,24 @@ struct EPUBMapView: View {
                         readCard(item)
                     }
                     .onEnded { _ in cardSizes.spreadOpened = nil })
+            // Two taps on a connector's fire open its window; on loose dust,
+            // let it go (9 Nov 2026).
+            .simultaneousGesture(
+                SpatialTapGesture(count: 2)
+                    .targetedToAnyEntity()
+                    .onEnded { value in
+                        if let id = connectorSpindles.connectorID(for: value.entity) {
+                            model.editingConnectorID = id
+                            openWindow(id: "connector")
+                        } else if dustSeed.owns(value.entity) {
+                            dustSeed.dissolve()
+                        }
+                    })
+            .onChange(of: model.connectors) { rebuildSpindles() }
+            .onChange(of: model.openJournalVenue) {
+                dustSeed.dissolve()
+                rebuildSpindles()
+            }
             // A long-pinch on the Concepts chip offers the way back for
             // hidden concepts: the Reveal All Concepts chip steps out
             // beside it.
@@ -3386,12 +3427,22 @@ struct EPUBMapView: View {
             conceptConnectionLines.install(in: content)
             citedToDeepLines.install(in: content)
             relateLines.install(in: content)
+            dustSeed.install(in: content)
+            connectorSpindles.install(in: content)
+            twoHandPinch.install(in: content)
+            twoHandPinch.onSummon = { place in dustSeed.spawn(at: place) }
+            // Still pinched, the right hand draws the dust where it goes.
+            twoHandPinch.onCarry = { place in dustSeed.dust?.position = place }
+            twoHandPinch.allowed = { [fistGrab] in !fistGrab.anyFist }
+            rebuildSpindles()
             cardTick.install(in: content,
                              faceTurner: faceTurner,
                              lines: [selectedCitationLines,
                                      conceptConnectionLines,
                                      citedToDeepLines,
-                                     relateLines],
+                                     relateLines,
+                                     dustSeed,
+                                     connectorSpindles],
                              // Lifted cards billboard at the NODE — the
                              // tick yaws card AND collision toward the
                              // head, so gaze can take a lifted card
@@ -3409,6 +3460,8 @@ struct EPUBMapView: View {
                                  (liftedCards[$0]?.stuck ?? labelStuck[$0]).map(simd_quatf.init(vector:))
                              })
             cardTick.targetScale = { [cardSizes] in cardSizes.targetScale[$0] }
+            cardTick.ceilingHeight = { [roomSurfaces] in roomSurfaces.ceilingHeight() ?? MapCardTick.usualCeiling }
+            cardTick.faceShift = { [spaceJelly] node in spaceJelly.faceShift(node) }
             cardTick.stillOpen = { id in
                 items.first(where: { $0.id == id }).map { $0.isSelected && $0.showsAbstract } ?? false
             }
@@ -3424,9 +3477,11 @@ struct EPUBMapView: View {
             content.add(desk)
             deskAnchor = desk
             fistChooser.install(in: content)
+            spaceJelly.install(in: content)
             fistGrab.install(
                 in: content,
                 grip: { palm in
+                    spaceJelly.grip = palm
                     if FistGrab.offersChits {
                         fistChooser.show(above: palm, facing: faceTurner.headPosition())
                     }
@@ -3456,6 +3511,8 @@ struct EPUBMapView: View {
                         case .citations: if isDocument { continue }
                         }
                         entity.position += delta
+                        // Its face hangs back on a spring, and catches up.
+                        spaceJelly.carry(entity, by: delta)
                     }
                     return delta
                 },
@@ -4501,7 +4558,7 @@ struct EPUBMapView: View {
             body.addChild(sphereEntity(for: item, facePoints: facePoints, grown: grown))
         }
         // A sphere's or a coloured title's authors wait beneath it, unseen,
-        // until the reader faces it (MapCardTick); chosen, they stand in
+        // until a finger touches it (MapCardTick); chosen, they stand in
         // the face itself (2 Nov 2026).
         if item.wearsLook, !item.isSelected, !item.author.isEmpty {
             let spheres = item.look.isRound
@@ -5314,7 +5371,9 @@ struct EPUBMapView: View {
             // (Hide is Put Aside now, under the card beside Pin.)
             verbs = [Verb(id: "focus", title: relationFocus || focusMode ? "Un-Focus" : "Focus",
                           isOn: relationFocus || focusMode)]
-            verbs.append(Verb(id: "transpoint", title: "Transpoint"))
+            // Unfold (9 Nov 2026, in Transpoint's place — which the reading's
+            // own title bar still offers): the card unfolds into its reading.
+            verbs.append(Verb(id: "unfold", title: "Unfold"))
             // Stick: the card lands on a real surface it is brought near —
             // a wall, a table — and keeps that pose; otherwise it moves free
             // in space. Off its slot, Put Back sends it home (2 Nov 2026).
@@ -5353,6 +5412,7 @@ struct EPUBMapView: View {
         case "lift": toggleLift(item)
         case "stick": toggleStick(item)
         case "transpoint": model.transpointDocID = item.id
+        case "unfold": readCard(item)
         case "articles":
             if let record = model.record(forDocID: item.id) { model.openArticles(of: record) }
         case "pictures":
@@ -5977,6 +6037,41 @@ struct EPUBMapView: View {
 
     /// Whether a paper stands free: in a free-standing Shape, and not
     /// resting on a real surface.
+    // MARK: - Dust connectors (9 Nov 2026)
+
+    /// The dust let go: on a node, it settles there — or, laid on a second
+    /// node, becomes a connector between the two, and its window opens to
+    /// say what they are to each other. Let go in the air, it stays.
+    private func dropDust() {
+        guard let dust = dustSeed.dust else { return }
+        let at = dust.position(relativeTo: nil)
+        var best: (item: EPUBMapItem, gap: Float)?
+        for item in items where !item.isGhost && !item.isAside && !item.isFaded {
+            guard let place = item.position else { continue }
+            let gap = simd_distance(place, at)
+            if gap < 0.16, gap < (best?.gap ?? .infinity) { best = (item, gap) }
+        }
+        guard let target = best?.item else { return }
+        guard let first = dustSeed.boundTo else {
+            dustSeed.bind(to: target.id)
+            return
+        }
+        guard first != target.id, let venue = model.openJournalVenue,
+              let from = items.first(where: { $0.id == first }) else { return }
+        let connector = VisionModel.NodeConnector(
+            venue: venue, from: from.id, to: target.id,
+            fromTitle: shortTitle(from.title), toTitle: shortTitle(target.title))
+        model.connectors.append(connector)
+        dustSeed.dissolve()
+        model.editingConnectorID = connector.id
+        openWindow(id: "connector")
+    }
+
+    /// The open room's connectors, as fire.
+    private func rebuildSpindles() {
+        connectorSpindles.rebuild(model.connectors.filter { $0.venue == model.openJournalVenue })
+    }
+
     // MARK: - Drop to Relate (8 Nov 2026)
 
     /// How far a paper dropped on another springs back from it.
@@ -6434,6 +6529,9 @@ struct EPUBMapView: View {
         /// Connect to Ground (9 Nov 2026): every paper on a stand to the
         /// floor, whatever the Sculpture. Kept with the room's Sculpture.
         var grounded: Bool?
+        /// Connect to Ceiling (9 Nov 2026): every paper hung by a line from
+        /// the ceiling instead — no plate up there. Ground or Ceiling, not both.
+        var ceiling: Bool?
     }
 
     static let shapeLabelPrefix = "shape:"
@@ -6489,6 +6587,8 @@ struct EPUBMapView: View {
         if model.currentShapeID != current { model.currentShapeID = current }
         let grounded = roomShape?.grounded ?? false
         if model.roomGrounded != grounded { model.roomGrounded = grounded }
+        let ceiling = roomShape?.ceiling ?? false
+        if model.roomCeiling != ceiling { model.roomCeiling = ceiling }
     }
 
     /// The Exhibition and Connect to Ground on each rebuild (9 Nov 2026):
@@ -6498,7 +6598,8 @@ struct EPUBMapView: View {
     /// for one without), handed to the tick that keeps it under its card.
     private func stageExhibition(_ built: inout [EPUBMapItem]) {
         let exhibiting = roomShape?.shape == RoomShape.exhibition.rawValue
-        let grounded = exhibiting || (roomShape?.grounded ?? false)
+        let ceiling = roomShape?.ceiling ?? false
+        let grounded = exhibiting || ceiling || (roomShape?.grounded ?? false)
         let reader = spaceShift + documentsShift
         var leaning: Set<String> = []
         var stands: [String: String] = [:]
@@ -6519,6 +6620,7 @@ struct EPUBMapView: View {
         for id in cardTick.leaning.subtracting(leaning) { cardTick.heldFacing[id] = nil }
         cardTick.leaning = leaning
         cardTick.standsFromMiddle = exhibiting
+        cardTick.hangsFromCeiling = ceiling
         cardTick.standColours = stands
     }
 
@@ -6529,11 +6631,31 @@ struct EPUBMapView: View {
         var all = storedShapes
         var stored = all[venue] ?? StoredShape(shape: RoomShape.timeline.rawValue, labels: [])
         stored.grounded = !(stored.grounded ?? false)
+        if stored.grounded == true { stored.ceiling = false }
         all[venue] = stored
         if let data = try? JSONEncoder().encode(all), let text = String(data: data, encoding: .utf8) {
             storedShapesRaw = text
         }
         model.roomGrounded = stored.grounded ?? false
+        model.roomCeiling = stored.ceiling ?? false
+        reload()
+    }
+
+    /// Sculptures ▸ Connect to Ceiling (9 Nov 2026): a line from every
+    /// paper up to the ceiling, or none; on, Connect to Ground goes off. In
+    /// the Exhibition the papers hang from it in place of their stands.
+    private func toggleCeiling() {
+        guard let venue = model.openJournalVenue else { return }
+        var all = storedShapes
+        var stored = all[venue] ?? StoredShape(shape: RoomShape.timeline.rawValue, labels: [])
+        stored.ceiling = !(stored.ceiling ?? false)
+        if stored.ceiling == true { stored.grounded = false }
+        all[venue] = stored
+        if let data = try? JSONEncoder().encode(all), let text = String(data: data, encoding: .utf8) {
+            storedShapesRaw = text
+        }
+        model.roomGrounded = stored.grounded ?? false
+        model.roomCeiling = stored.ceiling ?? false
         reload()
     }
 
@@ -6888,11 +7010,6 @@ struct EPUBMapView: View {
     /// widths, heights and a hand's depth) so none overlaps. Again and the
     /// room draws in again. A card resting on a real surface stays there.
     /// Undo View takes it back.
-    /// Close In (9 Nov 2026): the nodes drawn nearer one another — a fifth
-    /// of the way to their middle each time, across the room and up and
-    /// down, each keeping its own depth (its year's plane) — but never
-    /// closer than a centimetre between two cards' edges, so nothing
-    /// overlaps. The room itself stays where it stands.
     /// Widen and Widen Depth (9 Nov 2026), beside Close In. Widen spreads
     /// the nodes a quarter further apart across the room and up and down,
     /// about their middle, and deepens time as Widen Depth does. Widen Depth
@@ -6900,13 +7017,17 @@ struct EPUBMapView: View {
     /// further apart behind the nearest, the papers keeping their order, and
     /// the citations' corridor deepens a step. While an arrangement has the
     /// room free of time, the papers' own depths are spread instead.
-    private func runWiden(depthOnly: Bool) {
+    /// Close In Depth (9 Nov 2026) is Widen Depth run the other way: the
+    /// planes a fifth nearer one another, the corridor a step shallower.
+    private func runWiden(depthOnly: Bool, closer: Bool = false) {
         let nodes = items.filter {
             !$0.isGhost && !$0.isAside && $0.position != nil && liftedCards[$0.id]?.stuck == nil
                 && labelStuck[$0.id] == nil && !$0.id.hasPrefix("float:")
                 && $0.kind != .cited && $0.kind != .citedDeep
         }
-        let spread: Float = 1.25
+        // Gentle steps (9 Nov 2026, Frode: each was too much): an eighth
+        // further apart, or a tenth nearer, a press.
+        let spread: Float = closer ? Self.closeInStep : Self.widenStep
         // Read once: Widen's own move frees the room from time.
         let wasTimeFree = isTimeFree
         if !depthOnly || wasTimeFree, nodes.count > 1 {
@@ -6928,16 +7049,44 @@ struct EPUBMapView: View {
             NodeGlide.open()
             applyWatchPositions3D(at, heights: 0.15...2.6)
         }
-        // Time itself, while the room keeps to it: the planes stand further apart.
+        // Time itself, while the room keeps to it: the planes stand further
+        // apart, or nearer.
         if depthOnly, !wasTimeFree {
-            depthStretch = min(depthStretch * Double(spread), Self.maxDepthStretch)
+            depthStretch = min(max(depthStretch * Double(spread), Self.minDepthStretch), Self.maxDepthStretch)
         }
         NodeGlide.open()
-        stepCitedDepth(deeper: true)
+        nudgeCitedDepth(by: spread)
     }
 
-    /// How far Widen Depth may stretch time's planes apart.
+    /// One press of Widen (or Widen Depth), and of Close In (or Close In
+    /// Depth): an eighth further apart, a tenth nearer.
+    static let widenStep: Float = 1.12
+    static let closeInStep: Float = 0.9
+
+    /// The citations' corridor deepened or shallowed by a Widen or Close In
+    /// press's own small factor — the two-hand pinch keeps its big step.
+    /// Pressed shallower than the corridor goes, the citations lie flat on
+    /// the wall; deeper from flat, they stand in time again.
+    private func nudgeCitedDepth(by factor: Float) {
+        if citedSpace.zMapping == .flat {
+            guard factor > 1 else { return }
+            citedSpace.zMapping = .date
+            citedSpaceFlat = false
+        } else if factor < 1, citedSpace.depth <= CitedSpace.depthRange.lowerBound + 0.001 {
+            citedSpace.zMapping = .flat
+            citedSpaceFlat = true
+        } else {
+            citedSpace.depth = min(max(citedSpace.depth * factor, CitedSpace.depthRange.lowerBound),
+                                   CitedSpace.depthRange.upperBound)
+            citedDepthSetting = Double(citedSpace.depth)
+        }
+        reload()
+    }
+
+    /// How far Widen Depth may stretch time's planes apart, and Close In
+    /// Depth draw them together — never all into one plane.
     private static let maxDepthStretch = 4.0
+    private static let minDepthStretch = 0.2
 
     /// A plane's depth with Widen Depth's stretch: the nearest plane (-1.2)
     /// stays where it is, every deeper one stands further back.
@@ -6945,6 +7094,11 @@ struct EPUBMapView: View {
         -1.2 + (depth + 1.2) * Float(depthStretch)
     }
 
+    /// Close In (9 Nov 2026): the nodes drawn nearer one another — a fifth
+    /// of the way to their middle each time, across the room and up and
+    /// down, each keeping its own depth (its year's plane) — but never
+    /// closer than a centimetre between two cards' edges, so nothing
+    /// overlaps. The room itself stays where it stands.
     private func runCloseIn() {
         let nodes = items.filter {
             !$0.isGhost && !$0.isAside && $0.position != nil && liftedCards[$0.id]?.stuck == nil
@@ -6955,7 +7109,7 @@ struct EPUBMapView: View {
         let centre = positions.reduce(SIMD3<Float>(repeating: 0), +) / Float(positions.count)
         let ids = nodes.map(\.id)
         var at = Dictionary(uniqueKeysWithValues: zip(ids, positions.map { p -> SIMD3<Float> in
-            var near = centre + (p - centre) * 0.8
+            var near = centre + (p - centre) * Self.closeInStep
             near.z = p.z
             return near
         }))
@@ -8427,7 +8581,7 @@ struct EPUBMapView: View {
             model.openArticles(of: record)
             return
         }
-        openReading(docID: item.id, title: item.title)
+        openReading(docID: item.id, title: item.title, unfolding: true)
     }
 
     /// Open, or fold: a card chosen and unfolded shows its abstract and,
@@ -8802,7 +8956,7 @@ struct EPUBMapView: View {
     ///   (A journal-less book's card can stand high on the wall, which
     ///   is how a single article opened above the reader's head.)
     private func openReading(docID: String, title: String,
-                             toReader: Bool = false) {
+                             toReader: Bool = false, unfolding: Bool = false) {
         // Opened to read: whatever lines the card was drawing go — the
         // reading starts clear (2 Nov 2026).
         if relationShown?.from == docID {
@@ -8823,11 +8977,15 @@ struct EPUBMapView: View {
         // the card's own place stands in, as before.)
         let head = faceTurner.headPose()
         let place = head != nil || toReader ? inFrontOfReader(head) : readingPlace(for: docID)
+        if unfolding, readerModeRaw == "horizontal" { model.unfoldingDocIDs.insert(docID) }
         readerPanels.open(
             docID: docID,
             at: place,
             facing: head.map { -$0.forward },
             home: readingPlace(for: docID),
+            unfoldingFrom: unfolding ? readingPlace(for: docID) : nil,
+            // Horizontal folds its pages out after the panel has grown.
+            unfoldsPages: unfolding && readerModeRaw == "horizontal",
             view: panelView(docID: docID, title: title),
             onClose: { closeReader(docID) })
         model.openDocIDs.insert(docID)
@@ -9630,8 +9788,8 @@ struct BlobComponent: Component {
     var axis = SIMD3<Float>(1, 0, 0)
 }
 
-/// A sphere's or a coloured title's authors, shown only while the reader
-/// faces the node (2 Nov 2026).
+/// A sphere's or a coloured title's authors, shown when a finger touches
+/// the node (9 Nov 2026; until then, while the reader faced it).
 struct LookBylineComponent: Component {
     let byline: Entity
 }
@@ -9675,6 +9833,8 @@ final class FistGrab {
     }
 
     private var hands: [Hand] = []
+    /// Whether either hand is a fist now — the dust's summoning waits.
+    var anyFist: Bool { hands.contains { $0.isFist } }
     /// Which hand is carrying — the first fist wins; the other hand
     /// is ignored until the carry ends.
     private var driving: Int?
@@ -10812,6 +10972,8 @@ final class ReaderPanels {
     ///   them square however they are turned.
     func open(docID: String, at position: SIMD3<Float>,
               facing: SIMD3<Float>? = nil, home: SIMD3<Float>? = nil,
+              unfoldingFrom card: SIMD3<Float>? = nil,
+              unfoldsPages: Bool = false,
               view: AnyView, onClose: @escaping () -> Void) {
         guard let content else { return }
         // Already open: bring it to the asked place instead.
@@ -10886,6 +11048,39 @@ final class ReaderPanels {
 
         content.add(root)
         roots[docID] = root
+        if let card { unfold(root, from: card, pages: unfoldsPages) }
+    }
+
+    /// The card unfolding into its reading (9 Nov 2026): the page begins
+    /// where the card stood, the card's size and folded flat; it travels to
+    /// its place opening out to its full width as a strip, then unfolds to
+    /// its full height — a sheet opened along its fold.
+    private func unfold(_ root: Entity, from card: SIMD3<Float>, pages: Bool) {
+        let open = root.transform
+        var folded = open
+        folded.translation = card
+        if pages {
+            // Horizontal (9 Nov 2026): the first page alone, at the card's
+            // size, grows to its own as it travels; the reading view then
+            // folds the other pages out beside it.
+            folded.scale = SIMD3<Float>(repeating: 0.36)
+            root.transform = folded
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(16))
+                root.move(to: open, relativeTo: root.parent, duration: 0.45, timingFunction: .easeOut)
+            }
+            return
+        }
+        folded.scale = SIMD3<Float>(0.24, 0.03, 0.24)
+        root.transform = folded
+        var strip = open
+        strip.scale = SIMD3<Float>(1, 0.05, 1)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(16))
+            root.move(to: strip, relativeTo: root.parent, duration: 0.4, timingFunction: .easeOut)
+            try? await Task.sleep(for: .milliseconds(400))
+            root.move(to: open, relativeTo: root.parent, duration: 0.32, timingFunction: .easeInOut)
+        }
     }
 
     func close(docID: String) {
@@ -11921,6 +12116,15 @@ final class RoomSurfaces {
         let isSeatOrTable: Bool
     }
 
+    /// The ceiling's height (9 Nov 2026): the lowest plane the headset
+    /// classified as ceiling, above head height; nil until one is found.
+    func ceilingHeight() -> Float? {
+        planes.values.filter { $0.surfaceClassification == .ceiling }
+            .map { $0.originFromAnchorTransform.columns.3.y }
+            .filter { $0 > 1.9 && $0 < 6 }
+            .min()
+    }
+
     /// Every surface known now.
     func surfaces() -> [Surface] {
         planes.values.compactMap { plane in
@@ -11935,8 +12139,8 @@ final class RoomSurfaces {
                            normal: normal,
                            extentFromOrigin: simd_inverse(originFromAnchor * extent.anchorFromExtentTransform),
                            halfWidth: extent.width / 2, halfHeight: extent.height / 2,
-                           isFloor: plane.classification == .floor,
-                           isSeatOrTable: plane.classification == .seat || plane.classification == .table)
+                           isFloor: plane.surfaceClassification == .floor,
+                           isSeatOrTable: plane.surfaceClassification == .seat || plane.surfaceClassification == .table)
         }
     }
 
@@ -12119,19 +12323,37 @@ private final class MapCardTick {
     }
     /// The Exhibition's lean on a lectern: the pole meets the card's
     /// middle. Else — Connect to Ground — the middle of its lower edge.
-    var standsFromMiddle = false
+    var standsFromMiddle = false {
+        didSet { if standsFromMiddle != oldValue { standsPending = true } }
+    }
+    private var builtFromMiddle = false
+    /// Connect to Ceiling (9 Nov 2026): the lines run up to the ceiling,
+    /// and there is no plate there — the stands are rebuilt when it turns.
+    var hangsFromCeiling = false {
+        didSet { if hangsFromCeiling != oldValue { standsPending = true } }
+    }
+    private var builtHanging = false
+    /// The ceiling's height: the one the headset found, else a room's usual.
+    var ceilingHeight: (@MainActor () -> Float)?
+    /// How far a card's face swings from its place on the carried space's
+    /// spring (`SpaceJelly`), so lines and stands follow the face.
+    var faceShift: (@MainActor (Entity) -> SIMD3<Float>?)?
     private var standsPending = false
     private var standRoot: Entity?
     private var stands: [String: (stand: Entity, colour: String)] = [:]
     /// Whether a card is still open — a held turn ends when it closes,
     /// whichever way it was closed.
     var stillOpen: (@MainActor (String) -> Bool)?
-    /// The bylines of the nodes the reader is facing, shown.
-    private var shownBylines: [Entity] = []
-    /// How many faced nodes show their authors at once, and how near the
-    /// heading they must stand (cos 0.988 ≈ 9°).
-    private static let facedBylines = 3
-    private static let facedCloseness: Float = 0.988
+    /// Touch for the authors (9 Nov 2026, Frode's experiment): a node's
+    /// authors show when an index finger touches it, no longer when the
+    /// head faces it. Both fingertips, followed by hand anchors.
+    private var fingerTips: [AnchorEntity] = []
+    /// The bylines shown, by card id, and until when.
+    private var touchedBylines: [String: (byline: Entity, until: TimeInterval)] = [:]
+    /// How near a fingertip must come to a node's face to touch it, and how
+    /// long the authors stay once the finger draws back, to be read.
+    private static let touchReach: Float = 0.015
+    private static let bylineLingers: TimeInterval = 4
 
     func install(in content: RealityViewContent,
                  faceTurner: CardFaceTurner,
@@ -12149,6 +12371,11 @@ private final class MapCardTick {
         root.name = "map.stands"
         content.add(root)
         standRoot = root
+        fingerTips = [AnchoringComponent.Target.Chirality.left, .right].map { side in
+            let tip = AnchorEntity(.hand(side, location: .joint(for: .indexFingerTip)))
+            content.add(tip)
+            return tip
+        }
         subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             MainActor.assumeIsolated {
                 self?.applyDim(scene: event.scene)
@@ -12281,25 +12508,27 @@ private final class MapCardTick {
         var standing: Set<String> = []
         var positions: [String: SIMD3<Float>] = [:]
         let upright = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
-        // The nodes the head points most nearly at, within about 9°: their
-        // authors show — the nearest three, so names are there as the head
-        // arrives. (visionOS keeps the eyes' own gaze from apps; the
-        // head's heading is the nearest the room may know.)
-        var faced: [(byline: Entity, closeness: Float)] = []
+        // The fingertips the cameras hold now: a node one touches shows its
+        // authors (a lost hand's anchor keeps its last place, so both tests).
+        let tips = fingerTips.compactMap { tip -> SIMD3<Float>? in
+            let at = tip.position(relativeTo: nil)
+            return tip.isAnchored && at != .zero ? at : nil
+        }
+        let now = CACurrentMediaTime()
         for card in scene.performQuery(cardQuery) {
             let place = card.position(relativeTo: nil)
-            if let ray, let look = card.components[LookBylineComponent.self], card.isEnabled {
-                let to = place - ray.position
-                let distance = simd_length(to)
-                if distance > 0.1 {
-                    let closeness = simd_dot(to / distance, ray.forward)
-                    if closeness > Self.facedCloseness { faced.append((look.byline, closeness)) }
-                }
+            if !tips.isEmpty, let look = card.components[LookBylineComponent.self], card.isEnabled,
+               let id = card.components[EPUBNodeIDComponent.self]?.id,
+               tips.contains(where: { touches($0, card, at: place) }) {
+                touchedBylines[id] = (look.byline, now + Self.bylineLingers)
             }
             if let head { faceTurner?.turn(card: card, at: place, head: head) }
             guard let id = card.components[EPUBNodeIDComponent.self]?.id
             else { continue }
-            if !liveLines.isEmpty { positions[id] = place }
+            // Where the card is seen: its place, or its face swinging on the
+            // carried space's spring — the lines and stands follow that.
+            let face = faceShift.flatMap { $0(card) }.map { place + $0 } ?? place
+            if !liveLines.isEmpty { positions[id] = face }
             // A card resting on a real surface wears that surface's
             // pose — flat on a table, flush to a wall — and neither
             // billboards nor rights itself.
@@ -12334,7 +12563,7 @@ private final class MapCardTick {
                 card.orientation = upright
             }
             if stands[id] != nil, card.isEnabledInHierarchy {
-                placeStand(id, under: card, at: place)
+                placeStand(id, under: card, at: face)
                 standing.insert(id)
             }
         }
@@ -12351,10 +12580,24 @@ private final class MapCardTick {
             }
         }
         for layer in liveLines { layer.relayout(positions: positions) }
-        let now = faced.sorted { $0.closeness > $1.closeness }.prefix(Self.facedBylines).map(\.byline)
-        for old in shownBylines where !now.contains(where: { $0 === old }) { old.isEnabled = false }
-        for byline in now where !byline.isEnabled { byline.isEnabled = true }
-        shownBylines = now
+        // Each touched node's authors, until their time is up — then put away.
+        for (id, shown) in touchedBylines {
+            if shown.until > now {
+                if !shown.byline.isEnabled { shown.byline.isEnabled = true }
+            } else {
+                shown.byline.isEnabled = false
+                touchedBylines[id] = nil
+            }
+        }
+    }
+
+    /// Whether a fingertip is on a node: near its middle first, cheaply,
+    /// then within a centimetre and a half of what is drawn of it.
+    private func touches(_ tip: SIMD3<Float>, _ card: Entity, at place: SIMD3<Float>) -> Bool {
+        guard simd_distance(tip, place) < 0.3 else { return false }
+        let bounds = card.visualBounds(relativeTo: nil)
+        let reach = SIMD3<Float>(repeating: Self.touchReach)
+        return all(tip .>= bounds.min - reach) && all(tip .<= bounds.max + reach)
     }
 
     /// The stands the room asks for, made or taken away: a pole to the
@@ -12363,7 +12606,11 @@ private final class MapCardTick {
         standFrame &+= 1
         guard standsPending, let standRoot else { return }
         standsPending = false
-        for (id, entry) in stands where standColours[id] != entry.colour {
+        // Turned between ground and ceiling: every stand made afresh.
+        let remake = builtHanging != hangsFromCeiling || builtFromMiddle != standsFromMiddle
+        builtHanging = hangsFromCeiling
+        builtFromMiddle = standsFromMiddle
+        for (id, entry) in stands where remake || standColours[id] != entry.colour {
             entry.stand.removeFromParent()
             stands[id] = nil
             standDrop[id] = nil
@@ -12373,18 +12620,70 @@ private final class MapCardTick {
             let material = SimpleMaterial(color: tint, roughness: 0.45, isMetallic: false)
             let stand = Entity()
             stand.name = "map.stand." + id
-            let pole = ModelEntity(mesh: .generateCylinder(height: 1, radius: 0.008), materials: [material])
+            // Thinner (9 Nov 2026): a 3.5 mm pole on a slim foot.
+            let pole = ModelEntity(mesh: .generateCylinder(height: 1, radius: Self.poleRadius), materials: [material])
             pole.name = "pole"
-            let foot = ModelEntity(mesh: .generateCylinder(height: 0.008, radius: 0.09), materials: [material])
-            foot.name = "foot"
-            foot.position = [0, 0.004, 0]
             stand.addChild(pole)
-            stand.addChild(foot)
+            // Hung from the ceiling, the line alone: no plate up there.
+            if standsFromMiddle, !hangsFromCeiling {
+                // The Exhibition's base (9 Nov 2026): small, in the paper's
+                // colour at its middle, fading out to nothing at its edge.
+                stand.addChild(Self.fadingBase(tint: tint))
+            } else if !hangsFromCeiling {
+                let foot = ModelEntity(mesh: .generateCylinder(height: 0.004, radius: 0.06), materials: [material])
+                foot.name = "foot"
+                foot.position = [0, 0.002, 0]
+                stand.addChild(foot)
+            }
             stand.isEnabled = false
             standRoot.addChild(stand)
             stands[id] = (stand, colour)
         }
     }
+
+    static let poleRadius: Float = 0.0035
+    /// The Exhibition base's reach on the floor.
+    static let baseRadius: Float = 0.045
+
+    /// A disc on the floor in `tint`, solid at its middle and fading to
+    /// nothing at its rim — one shared radial picture, tinted per stand.
+    static func fadingBase(tint: UIColor) -> ModelEntity {
+        var material = UnlitMaterial()
+        if let texture = fadeTexture {
+            material.color = .init(tint: tint, texture: .init(texture))
+        } else {
+            material.color = .init(tint: tint.withAlphaComponent(0.6))
+        }
+        material.blending = .transparent(opacity: .init(floatLiteral: 1))
+        // Unseen depth: the floor's passthrough never cuts it, nor it the pole.
+        material.writesDepth = false
+        let disc = ModelEntity(mesh: .generatePlane(width: baseRadius * 2, depth: baseRadius * 2),
+                               materials: [material])
+        disc.name = "foot"
+        disc.position = [0, 0.002, 0]
+        return disc
+    }
+
+    /// White, its alpha falling from 1 at the middle to 0 at the rim.
+    private static let fadeTexture: TextureResource? = {
+        let size = 128
+        guard let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
+                                        colors: [CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
+                                                 CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.55),
+                                                 CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0)] as CFArray,
+                                        locations: [0, 0.35, 1])
+        else { return nil }
+        let centre = CGPoint(x: size / 2, y: size / 2)
+        context.drawRadialGradient(gradient, startCenter: centre, startRadius: 0,
+                                   endCenter: centre, endRadius: CGFloat(size) / 2, options: [])
+        guard let image = context.makeImage() else { return nil }
+        return try? TextureResource(image: image, options: .init(semantic: .color))
+    }()
+    /// A room's usual ceiling, when the headset has not found its own.
+    static let usualCeiling: Float = 2.6
 
     /// How far below its middle each card's lower edge hangs, by id —
     /// measured now and then, not every frame, as a card opens or folds.
@@ -12400,12 +12699,24 @@ private final class MapCardTick {
         if standsFromMiddle {
             top = place + card.orientation(relativeTo: nil).act(SIMD3<Float>(0, 0, -0.01))
         } else {
-            // Measured again every half second or so.
+            // Measured again every half second or so: the lower edge, or —
+            // hung from the ceiling — the upper.
             if standDrop[id].map({ standFrame - $0.frame > 45 }) ?? true {
                 let bounds = card.visualBounds(relativeTo: nil)
-                standDrop[id] = (max(place.y - bounds.min.y, 0), standFrame)
+                let edge = hangsFromCeiling ? bounds.max.y - place.y : place.y - bounds.min.y
+                standDrop[id] = (max(edge, 0), standFrame)
             }
-            top = place - SIMD3<Float>(0, standDrop[id]?.drop ?? 0, 0)
+            let edge = standDrop[id]?.drop ?? 0
+            top = place + SIMD3<Float>(0, hangsFromCeiling ? edge : -edge, 0)
+        }
+        if hangsFromCeiling {
+            // From the card up to the ceiling.
+            let ceiling = ceilingHeight?() ?? Self.usualCeiling
+            let length = max(ceiling - top.y, 0.01)
+            entry.stand.position = SIMD3<Float>(top.x, top.y, top.z)
+            pole.position = SIMD3<Float>(0, length / 2, 0)
+            pole.scale = SIMD3<Float>(1, length, 1)
+            return
         }
         let height = max(top.y, 0.01)
         entry.stand.position = SIMD3<Float>(top.x, 0, top.z)
@@ -14863,6 +15174,501 @@ final class RubberBalls {
             let axis = simd_normalize(simd_cross(SIMD3<Float>(0, 1, 0), flat))
             let turn = simd_quatf(angle: speed / max(f.radius, 0.005) * dt, axis: axis)
             ball.setOrientation(turn * ball.orientation(relativeTo: nil), relativeTo: nil)
+        }
+    }
+}
+
+// MARK: - The carried space's give (9 Nov 2026)
+
+/// The fist carries the space exactly — every node's place moves with it,
+/// and the commit is unchanged — but what the reader sees of each card
+/// hangs on a spring behind that place: carried, a card trails a little,
+/// stopping it overshoots and wobbles to rest. Cards near the fist follow
+/// tightly; those further off are looser, so the room moves like something
+/// with body rather than a rigid sheet. Only the card's `card.body` moves,
+/// so its collision, its lines and its saved place are never disturbed.
+@MainActor
+final class SpaceJelly {
+    /// Where the fist took hold — the stiffest point of the room.
+    var grip: SIMD3<Float>?
+    /// The spring's natural frequency, rad/s, at the fist and 2 m off, and
+    /// its damping ratio (under 1: an overshoot, a wobble, then still).
+    // More give (9 Nov 2026, Frode): softer springs and a longer leash,
+    // so a hard carry swings the room's cards well behind and back.
+    static let nearOmega: Float = 15
+    static let farOmega: Float = 6
+    static let damping: Float = 0.3
+    /// The furthest a card's face may trail its place.
+    static let maxTrail: Float = 0.6
+
+    private struct Spring {
+        weak var body: Entity?
+        let base: SIMD3<Float>
+        var offset = SIMD3<Float>.zero
+        var velocity = SIMD3<Float>.zero
+        let omega: Float
+    }
+
+    private var springs: [ObjectIdentifier: Spring] = [:]
+    private var subscription: EventSubscription?
+
+    /// How far, in the room, a card's face hangs from its place now — nil
+    /// while it is still. The stands and lines are drawn to the face, so
+    /// they swing with it (9 Nov 2026).
+    func faceShift(_ node: Entity) -> SIMD3<Float>? {
+        guard !springs.isEmpty,
+              let body = node.children.first(where: { $0.name == MapCardTick.bodyName }),
+              let spring = springs[ObjectIdentifier(body)] else { return nil }
+        return node.convert(direction: spring.offset, to: nil)
+    }
+
+    func install(in content: RealityViewContent) {
+        guard subscription == nil else { return }
+        subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+            MainActor.assumeIsolated { self?.step(dt: Float(event.deltaTime)) }
+        }
+    }
+
+    /// The node has been carried by `delta` (world): its face stays behind,
+    /// to be pulled after it.
+    func carry(_ node: Entity, by delta: SIMD3<Float>) {
+        guard let body = node.children.first(where: { $0.name == MapCardTick.bodyName }) else { return }
+        let key = ObjectIdentifier(body)
+        if springs[key] == nil {
+            let distance = grip.map { simd_distance($0, node.position(relativeTo: nil)) } ?? 1
+            let t = min(1, distance / 2)
+            springs[key] = Spring(body: body, base: body.position,
+                                  omega: Self.nearOmega + (Self.farOmega - Self.nearOmega) * t)
+        }
+        // In the card's own frame: a card turned to the reader trails along
+        // the way the room went, not along its own face.
+        let local = node.convert(direction: delta, from: nil)
+        springs[key]!.offset -= local
+        let trail = simd_length(springs[key]!.offset)
+        if trail > Self.maxTrail { springs[key]!.offset *= Self.maxTrail / trail }
+    }
+
+    private func step(dt frame: Float) {
+        guard !springs.isEmpty, frame > 0 else { return }
+        let dt = min(frame, 1 / 30)
+        for (key, var spring) in springs {
+            guard let body = spring.body, body.parent != nil else { springs[key] = nil; continue }
+            // Semi-implicit Euler: steady at these stiffnesses and steps.
+            let accel = -spring.omega * spring.omega * spring.offset
+                - 2 * Self.damping * spring.omega * spring.velocity
+            spring.velocity += accel * dt
+            spring.offset += spring.velocity * dt
+            if simd_length(spring.offset) < 0.0003, simd_length(spring.velocity) < 0.003 {
+                body.position = spring.base
+                springs[key] = nil
+                continue
+            }
+            body.position = spring.base + spring.offset
+            springs[key] = spring
+        }
+    }
+}
+
+// MARK: - Dust connectors (9 Nov 2026)
+
+/// Left hand pinches, then the right (9 Nov 2026, eased the same night):
+/// the left's pinch may be a tap — held or let go — and the right's must
+/// come between a quarter second and two and a half seconds after it, so a
+/// two-hand spread, whose pinches land together, never summons it. The dust
+/// appears at the right hand and follows it while that pinch is held.
+@MainActor
+final class TwoHandPinch {
+    private var tips: [(thumb: AnchorEntity, index: AnchorEntity)] = []
+    /// Each hand's palm and middle fingertip: a pinch leaves the middle
+    /// finger open, a fist curls it — so two fists never summon dust.
+    private var openness: [(palm: AnchorEntity, middle: AnchorEntity)] = []
+    private var pinched = [false, false]
+    private var wasPinched = [false, false]
+    private var leftAt: CFTimeInterval?
+    /// The right pinch that summoned the dust, still held: it carries it.
+    private var carrying = false
+    private var subscription: EventSubscription?
+    /// The moment it happens: where the right hand pinched.
+    var onSummon: ((SIMD3<Float>) -> Void)?
+    /// The right hand, still pinched, moving the dust it summoned.
+    var onCarry: ((SIMD3<Float>) -> Void)?
+    /// Whether summoning may happen now (no fist carrying, say).
+    var allowed: (() -> Bool)?
+
+    /// Thumb and index tips closer than this pinch; further than the
+    /// second they part — no flicker between. (Tracked joints sit inside
+    /// the fingertips: touching tips read 1.5–2.5 cm apart.)
+    static let closeWithin: Float = 0.025
+    static let openBeyond: Float = 0.04
+
+    func install(in content: RealityViewContent) {
+        guard subscription == nil else { return }
+        for side in [AnchoringComponent.Target.Chirality.left, .right] {
+            let thumb = AnchorEntity(.hand(side, location: .joint(for: .thumbTip)))
+            let index = AnchorEntity(.hand(side, location: .joint(for: .indexFingerTip)))
+            let palm = AnchorEntity(.hand(side, location: .palm))
+            let middle = AnchorEntity(.hand(side, location: .joint(for: .middleFingerTip)))
+            content.add(thumb)
+            content.add(index)
+            content.add(palm)
+            content.add(middle)
+            tips.append((thumb, index))
+            openness.append((palm, middle))
+        }
+        subscription = content.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+    }
+
+    private func pinchPoint(_ hand: Int) -> SIMD3<Float>? {
+        let (thumb, index) = tips[hand]
+        guard thumb.isAnchored, index.isAnchored else { pinched[hand] = false; return nil }
+        let a = thumb.position(relativeTo: nil), b = index.position(relativeTo: nil)
+        guard a != .zero, b != .zero else { pinched[hand] = false; return nil }
+        let gap = simd_distance(a, b)
+        pinched[hand] = pinched[hand] ? gap < Self.openBeyond : gap < Self.closeWithin
+        return (a + b) / 2
+    }
+
+    /// The hand open enough to be pinching, not making a fist.
+    private func isOpen(_ hand: Int) -> Bool {
+        let (palm, middle) = openness[hand]
+        guard palm.isAnchored, middle.isAnchored else { return true }
+        return simd_distance(palm.position(relativeTo: nil), middle.position(relativeTo: nil)) > 0.055
+    }
+
+    private func tick() {
+        guard tips.count == 2, openness.count == 2 else { return }
+        _ = pinchPoint(0)
+        let right = pinchPoint(1)
+        let now = CACurrentMediaTime()
+        defer { wasPinched = pinched }
+        // The left hand's pinch begins: the window opens.
+        if pinched[0], !wasPinched[0] {
+            leftAt = now
+            print("Dust: left pinch")
+        }
+        // The right, carrying the dust it summoned, until it lets go.
+        if carrying {
+            if pinched[1], let right { onCarry?(right) } else { carrying = false }
+            return
+        }
+        guard pinched[1], !wasPinched[1], let right else { return }
+        guard let leftAt else { print("Dust: right pinch, but no left pinch before it"); return }
+        let after = now - leftAt
+        guard after >= 0.25, after <= 2.5 else {
+            print("Dust: right pinch \(String(format: "%.2f", after)) s after the left — wants 0.25–2.5 s")
+            return
+        }
+        guard isOpen(1) else { print("Dust: right hand reads as a fist"); return }
+        guard allowed?() ?? true else { print("Dust: a fist is carrying the space"); return }
+        self.leftAt = nil
+        carrying = true
+        print("Dust: summoned")
+        onSummon?(right)
+    }
+}
+
+/// The summoned dust: a small pulsing constellation of glowing motes. Taken
+/// and laid on a node it settles beside that node, fire trailing from the
+/// node to it; laid on another node, it becomes a connector between the two.
+/// A double tap on loose dust lets it go.
+@MainActor
+private final class DustSeed: MapLineLayer {
+    static let name = "dust.seed"
+    private var root: Entity?
+    private(set) var dust: Entity?
+    /// The node it was laid on first, when it has been.
+    private(set) var boundTo: String?
+    var dragStart: SIMD3<Float>?
+    private var tail: Lightning?
+    private var began: CFTimeInterval = 0
+
+    func install(in content: RealityViewContent) {
+        let r = Entity()
+        r.name = "dust.root"
+        content.add(r)
+        root = r
+    }
+
+    func owns(_ entity: Entity) -> Bool {
+        var node: Entity? = entity
+        while let current = node {
+            if current.name == Self.name { return true }
+            node = current.parent
+        }
+        return false
+    }
+
+    /// Dust, here — any dust already standing gives way.
+    func spawn(at place: SIMD3<Float>) {
+        dissolve()
+        guard let root else { return }
+        let seed = Entity()
+        seed.name = Self.name
+        seed.position = place
+        var motes = ParticleEmitterComponent()
+        motes.emitterShape = .sphere
+        motes.emitterShapeSize = SIMD3<Float>(repeating: 0.035)
+        motes.birthLocation = .volume
+        motes.speed = 0.006
+        motes.mainEmitter.birthRate = 260
+        motes.mainEmitter.lifeSpan = 1.6
+        motes.mainEmitter.size = 0.0018
+        motes.mainEmitter.blendMode = .additive
+        motes.mainEmitter.color = .evolving(start: .single(UIColor(white: 1, alpha: 1)),
+                                            end: .single(UIColor(red: 1, green: 0.85, blue: 0.55, alpha: 0)))
+        seed.components.set(motes)
+        // A faint warm core, so the cloud reads as one thing to take.
+        var glow = UnlitMaterial(color: UIColor(white: 1, alpha: 0.18))
+        glow.blending = .transparent(opacity: .init(floatLiteral: 0.18))
+        glow.writesDepth = false
+        let core = ModelEntity(mesh: .generateSphere(radius: 0.012), materials: [glow])
+        seed.addChild(core)
+        seed.components.set(CollisionComponent(shapes: [.generateSphere(radius: 0.05)]))
+        seed.components.set(InputTargetComponent())
+        seed.components.set(HoverEffectComponent())
+        root.addChild(seed)
+        dust = seed
+        began = CACurrentMediaTime()
+    }
+
+    func bind(to id: String) {
+        boundTo = id
+        if tail == nil, let root {
+            let line = Lightning(fire: false)
+            root.addChild(line.entity)
+            tail = line
+        }
+    }
+
+    func dissolve() {
+        dust?.removeFromParent()
+        dust = nil
+        boundTo = nil
+        dragStart = nil
+        tail?.entity.removeFromParent()
+        tail = nil
+    }
+
+    var needsPositions: Bool { dust != nil }
+
+    func relayout(positions: [String: SIMD3<Float>]) {
+        guard let dust else { return }
+        let t = Float(CACurrentMediaTime() - began)
+        // A slow breath.
+        dust.scale = SIMD3<Float>(repeating: 1 + 0.14 * sin(t * 2.6))
+        guard let boundTo, let node = positions[boundTo] else { return }
+        // Beside its node while not in hand, following it.
+        if dragStart == nil {
+            let place = node + SIMD3<Float>(0, 0.1, 0.03)
+            if simd_distance(dust.position, place) > 0.0005 { dust.position = place }
+        }
+        tail?.update(from: node, to: dust.position, time: t)
+    }
+}
+
+/// A line of electric fire: a jagged strand that flickers, a brighter core
+/// in a soft glow, quietest at its ends. (`fire: false` — the dust's faint
+/// trailing thread.)
+@MainActor
+final class Lightning {
+    let entity = Entity()
+    private var core: [ModelEntity] = []
+    private var halo: [ModelEntity] = []
+    private static let segments = 14
+    private var frame = 0
+    private var jitter: [SIMD2<Float>] = []
+    private let fire: Bool
+
+    init(fire: Bool) {
+        self.fire = fire
+        let unit = MeshResource.generateBox(size: SIMD3<Float>(1, 1, 1))
+        var bright = UnlitMaterial(color: UIColor(white: 1, alpha: fire ? 0.95 : 0.5))
+        bright.blending = .transparent(opacity: .init(floatLiteral: fire ? 0.95 : 0.5))
+        bright.writesDepth = false
+        var soft = UnlitMaterial(color: UIColor(red: 1, green: 0.88, blue: 0.7, alpha: fire ? 0.22 : 0.1))
+        soft.blending = .transparent(opacity: .init(floatLiteral: fire ? 0.22 : 0.1))
+        soft.writesDepth = false
+        for _ in 0..<Self.segments {
+            let c = ModelEntity(mesh: unit, materials: [bright])
+            let h = ModelEntity(mesh: unit, materials: [soft])
+            entity.addChild(c)
+            entity.addChild(h)
+            core.append(c)
+            halo.append(h)
+        }
+        jitter = Array(repeating: .zero, count: Self.segments + 1)
+    }
+
+    func update(from a: SIMD3<Float>, to b: SIMD3<Float>, time: Float) {
+        let span = b - a
+        let length = simd_length(span)
+        guard length > 0.01 else { entity.isEnabled = false; return }
+        entity.isEnabled = true
+        let along = span / length
+        // Two directions across the strand to jag it in.
+        var side = simd_cross(along, SIMD3<Float>(0, 1, 0))
+        if simd_length(side) < 1e-3 { side = simd_cross(along, SIMD3<Float>(1, 0, 0)) }
+        side = simd_normalize(side)
+        let up = simd_cross(side, along)
+        // The jag changes every other frame — the flicker.
+        frame &+= 1
+        if frame % 2 == 0 || jitter.allSatisfy({ $0 == .zero }) {
+            let reach = min(0.018, length * 0.05) * (fire ? 1 : 0.4)
+            jitter = (0...Self.segments).map { i in
+                let u = Float(i) / Float(Self.segments)
+                let taper = sin(u * .pi)
+                return SIMD2<Float>(Float.random(in: -1...1), Float.random(in: -1...1)) * reach * taper
+            }
+        }
+        let points = (0...Self.segments).map { i -> SIMD3<Float> in
+            let u = Float(i) / Float(Self.segments)
+            return a + span * u + side * jitter[i].x + up * jitter[i].y
+        }
+        // A pulse along it: brighter, then quieter, as fire breathes.
+        let pulse = 0.75 + 0.25 * sin(time * 9)
+        for i in 0..<Self.segments {
+            let p = points[i], q = points[i + 1]
+            let d = q - p
+            let l = simd_length(d)
+            guard l > 1e-5 else { continue }
+            let turn = simd_quatf(from: SIMD3<Float>(1, 0, 0), to: d / l)
+            let mid = (p + q) / 2
+            let u = (Float(i) + 0.5) / Float(Self.segments)
+            let ends = 0.4 + 0.6 * sin(u * .pi)
+            core[i].position = mid
+            core[i].orientation = turn
+            core[i].scale = SIMD3<Float>(l, 0.0011 * ends * pulse, 0.0011 * ends * pulse) * (fire ? 1 : 0.7)
+            halo[i].position = mid
+            halo[i].orientation = turn
+            halo[i].scale = SIMD3<Float>(l, 0.006 * ends * pulse, 0.006 * ends * pulse) * (fire ? 1 : 0.6)
+        }
+    }
+}
+
+/// The room's dust connectors: each a strand of electric fire between its
+/// two nodes, following them; a spark at its middle; its words beside it.
+/// A double tap on the fire opens its window.
+@MainActor
+private final class ConnectorSpindles: MapLineLayer {
+    static let hitPrefix = "connector.hit."
+    private var root: Entity?
+    private struct Spindle {
+        let connector: VisionModel.NodeConnector
+        let fire: Lightning
+        let hit: Entity
+        let label: Entity
+    }
+    private var spindles: [Spindle] = []
+    private var shown: [VisionModel.NodeConnector] = []
+    private let began = CACurrentMediaTime()
+
+    func install(in content: RealityViewContent) {
+        let r = Entity()
+        r.name = "connector.spindles"
+        content.add(r)
+        root = r
+    }
+
+    func connectorID(for entity: Entity) -> String? {
+        var node: Entity? = entity
+        while let current = node {
+            if current.name.hasPrefix(Self.hitPrefix) { return String(current.name.dropFirst(Self.hitPrefix.count)) }
+            node = current.parent
+        }
+        return nil
+    }
+
+    func rebuild(_ connectors: [VisionModel.NodeConnector]) {
+        guard connectors != shown, let root else { return }
+        shown = connectors
+        for s in spindles {
+            s.fire.entity.removeFromParent()
+            s.hit.removeFromParent()
+            s.label.removeFromParent()
+        }
+        spindles = connectors.map { c in
+            let fire = Lightning(fire: true)
+            root.addChild(fire.entity)
+            // Sparks rising off its middle.
+            var sparks = ParticleEmitterComponent()
+            sparks.emitterShape = .sphere
+            sparks.emitterShapeSize = SIMD3<Float>(repeating: 0.01)
+            sparks.speed = 0.03
+            sparks.mainEmitter.birthRate = 40
+            sparks.mainEmitter.lifeSpan = 0.6
+            sparks.mainEmitter.size = 0.0015
+            sparks.mainEmitter.blendMode = .additive
+            sparks.mainEmitter.color = .evolving(start: .single(.white),
+                                                 end: .single(UIColor(red: 1, green: 0.7, blue: 0.35, alpha: 0)))
+            let hit = Entity()
+            hit.name = Self.hitPrefix + c.id
+            hit.components.set(sparks)
+            hit.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(1, 0.035, 0.035))]))
+            hit.components.set(InputTargetComponent())
+            hit.components.set(HoverEffectComponent())
+            root.addChild(hit)
+            let label = Entity()
+            label.components.set(ViewAttachmentComponent(rootView: ConnectorLabel(connector: c)))
+            label.components.set(BillboardComponent())
+            label.scale = SIMD3<Float>(repeating: 0.5)
+            root.addChild(label)
+            return Spindle(connector: c, fire: fire, hit: hit, label: label)
+        }
+    }
+
+    var needsPositions: Bool { !spindles.isEmpty }
+
+    func relayout(positions: [String: SIMD3<Float>]) {
+        let t = Float(CACurrentMediaTime() - began)
+        for s in spindles {
+            guard let a = positions[s.connector.from], let b = positions[s.connector.to] else {
+                s.fire.entity.isEnabled = false
+                s.hit.isEnabled = false
+                s.label.isEnabled = false
+                continue
+            }
+            s.fire.update(from: a, to: b, time: t)
+            let span = b - a
+            let length = simd_length(span)
+            s.hit.isEnabled = length > 0.02
+            s.label.isEnabled = length > 0.02
+            guard length > 0.02 else { continue }
+            let mid = (a + b) / 2
+            // The pinch target lies along the fire, short of the cards.
+            s.hit.position = mid
+            s.hit.orientation = simd_quatf(from: SIMD3<Float>(1, 0, 0), to: span / length)
+            s.hit.scale = SIMD3<Float>(max(length - 0.12, 0.04), 1, 1)
+            s.label.position = mid + SIMD3<Float>(0, 0.035, 0)
+        }
+    }
+}
+
+/// The words beside a connector: its kind, what the reader said, and which
+/// to read first — nothing while there is nothing to say.
+struct ConnectorLabel: View {
+    let connector: VisionModel.NodeConnector
+
+    var body: some View {
+        let first = connector.readFirst.map { $0 == connector.from ? connector.fromTitle : connector.toTitle }
+        let lines = [connector.kind, connector.note.isEmpty ? nil : connector.note,
+                     first.map { "Read first: " + $0 }, connector.weight].compactMap { $0 }
+        if !lines.isEmpty {
+            VStack(spacing: 3) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                    Text(line)
+                        .font(.system(size: index == 0 ? 15 : 12, weight: index == 0 ? .semibold : .regular))
+                        .foregroundStyle(Color.white.opacity(index == 0 ? 1 : 0.8))
+                        .lineLimit(3)
+                }
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 260)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.45)))
+            .allowsHitTesting(false)
         }
     }
 }

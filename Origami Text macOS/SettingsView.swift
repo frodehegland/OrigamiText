@@ -962,6 +962,33 @@ private struct AuthorSettingsView: View {
 /// on this Mac only — no text leaves it. One editor, a picker to choose
 /// which prompt it edits: the reading foot's AI group (Summary,
 /// Issues) and the continual Person Profiles.
+/// Settings ▸ AI ▸ Vision Pro (9 Nov 2026): the Mac serving its AI to the
+/// headset — whichever model is chosen above answers for it.
+private struct ServeAISettingsSection: View {
+    @Environment(AppModel.self) private var model
+    @State private var server = MacAIServer.shared
+    @State private var on = MacAIServer.shared.isEnabled
+
+    var body: some View {
+        Section {
+            Toggle("Serve AI to Vision Pro", isOn: $on)
+                .onChange(of: on) {
+                    server.isEnabled = on
+                    server.keepUp(community: model.index.folderURL)
+                }
+            Text(server.status + (server.answered > 0 ? " \(server.answered) answered." : ""))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Vision Pro")
+        } footer: {
+            Text("While on, this Mac answers Vision Pro\u{2019}s AI requests with the model chosen above \u{2014} one Origami downloaded and runs here, Apple Intelligence, or a server you added \u{2014} so the headset needs no Ollama and nothing typed: it finds this Mac through the community folder, which also carries the private key only your devices hold. Your Mac must be awake and on the same network.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 private struct AISettingsView: View {
     @AppStorage(AppSettings.aiReadingSummaryPromptKey) private var summaryPrompt =
         ReadingAnalysisKind.summary.defaultPrompt
@@ -1005,6 +1032,7 @@ private struct AISettingsView: View {
             // OpenAI-compatible server (Ollama, LM Studio) — chosen
             // once, used by the reading's AI.
             LLMModelSettingsSections()
+            ServeAISettingsSection()
             Section {
                 Picker("Prompt", selection: $selection) {
                     ForEach(["Summary", "Issues", "Person Profiles"],

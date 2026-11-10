@@ -55,6 +55,46 @@ nonisolated enum OrigamiLLMError: LocalizedError {
     }
 }
 
+// MARK: - The Mac as the headset's AI (9 Nov 2026)
+
+/// Where the Mac's Origami Text serves its AI to the other devices: written
+/// by the Mac into the community folder when Settings ▸ AI ▸ Serve AI to
+/// Vision Pro is on, read by the headset — so it finds its Mac with nothing
+/// to type. The token keeps the service to devices that share the folder.
+nonisolated struct MacAIHost: Codable, Equatable, Sendable {
+    static let fileName = "origami-ai-host.json"
+    var base: String
+    /// The same service by the Mac's network addresses, tried if its name
+    /// does not answer.
+    var alternates: [String] = []
+    var token: String
+    /// What the Mac answers with, for the headset to name.
+    var model: String
+    var macName: String
+    var modified: Date
+
+    static func read(from community: URL) -> MacAIHost? {
+        let scoped = community.startAccessingSecurityScopedResource()
+        defer { if scoped { community.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: community.appendingPathComponent(fileName)) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(MacAIHost.self, from: data)
+    }
+
+    static func write(_ host: MacAIHost?, to community: URL) {
+        let scoped = community.startAccessingSecurityScopedResource()
+        defer { if scoped { community.stopAccessingSecurityScopedResource() } }
+        let url = community.appendingPathComponent(fileName)
+        guard let host else { try? FileManager.default.removeItem(at: url); return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(host) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 // MARK: - An endpoint (spec §6)
 
 /// One server the user added: its base URL and the models found on it.
@@ -85,6 +125,37 @@ nonisolated struct OrigamiEndpoint: Codable, Identifiable, Hashable {
 @MainActor @Observable
 final class OrigamiLLM {
     static let shared = OrigamiLLM()
+
+    /// The Mac serving its AI, as the community folder names it — read by
+    /// the headset (9 Nov 2026). Asked after a chosen server and before the
+    /// headset's own model.
+    var macHost: MacAIHost?
+
+    /// The Mac's AI, asked by its name and then its addresses: the text,
+    /// and the name to show — or nil when there is no Mac to ask.
+    private func askMac(instructions: String?, prompt: String,
+                        jsonSchema: (name: String, schema: [String: Any])? = nil,
+                        temperature: Double? = nil,
+                        onPartial: (@MainActor (String) -> Void)?) async throws -> (String, String)? {
+        #if os(macOS)
+        return nil
+        #else
+        guard let host = macHost else { return nil }
+        var lastError: OrigamiLLMError?
+        for base in [host.base] + host.alternates {
+            do {
+                let text = try await ChatCompletionsClient.respond(
+                    base: base, model: host.model, key: host.token,
+                    instructions: instructions, prompt: prompt, jsonSchema: jsonSchema,
+                    temperature: temperature, onPartial: onPartial)
+                return (text, "\(host.macName) \u{00B7} \(host.model)")
+            } catch let error as OrigamiLLMError where error.allowsFallback {
+                lastError = error
+            }
+        }
+        throw lastError ?? OrigamiLLMError.serverUnreachable(host.macName)
+        #endif
+    }
 
     /// The device the built-in model runs on, for the settings' words.
     nonisolated static var thisDevice: String {
@@ -253,6 +324,9 @@ final class OrigamiLLM {
             return (text, choice.modelName)
         }
         #endif
+        // Why a server could not answer — shown instead of the built-in
+        // model's own excuse when that cannot answer either (9 Nov 2026).
+        var unreached: OrigamiLLMError?
         if let (endpoint, model) = selectedEndpointModel() {
             do {
                 let text = try await ChatCompletionsClient.respond(
@@ -263,12 +337,25 @@ final class OrigamiLLM {
                 return (text, "\(endpoint.hostLabel) \u{00B7} \(model)")
             } catch let error as OrigamiLLMError where error.allowsFallback {
                 noteFallback(from: model)
+                unreached = error
             }
         }
-        let text = try await appleRespond(instructions: instructions, to: prompt,
-                                          transformingContent: transformingContent,
-                                          onPartial: onPartial)
-        return (text, "Apple\u{2019}s built-in model")
+        do {
+            if let answer = try await askMac(instructions: instructions, prompt: prompt,
+                                             onPartial: onPartial) {
+                return answer
+            }
+        } catch let error as OrigamiLLMError where error.allowsFallback {
+            unreached = unreached ?? error
+        }
+        do {
+            let text = try await appleRespond(instructions: instructions, to: prompt,
+                                              transformingContent: transformingContent,
+                                              onPartial: onPartial)
+            return (text, "Apple\u{2019}s built-in model")
+        } catch OrigamiLLMError.appleUnavailable where unreached != nil {
+            throw unreached!
+        }
     }
 
     private func noteFallback(from model: String) {
@@ -304,6 +391,7 @@ final class OrigamiLLM {
             return (try Self.decode(T.self, from: text, host: choice.modelName), choice.modelName)
         }
         #endif
+        var unreached: OrigamiLLMError?
         if let (endpoint, model) = selectedEndpointModel() {
             do {
                 let schema = try Self.jsonSchema(for: T.self)
@@ -320,10 +408,25 @@ final class OrigamiLLM {
                         "\(endpoint.hostLabel) \u{00B7} \(model)")
             } catch let error as OrigamiLLMError where error.allowsFallback {
                 noteFallback(from: model)
+                unreached = error
             }
         }
+        // The Mac's AI, asked for the same JSON a server is.
+        do {
+            let schema = try Self.jsonSchema(for: T.self)
+            let shape = "Reply with one JSON object only \u{2014} no prose, no code fence \u{2014} matching this JSON Schema:\n"
+                + (String(data: try JSONSerialization.data(withJSONObject: schema), encoding: .utf8) ?? "")
+            if let (text, name) = try await askMac(
+                instructions: [instructions, shape].compactMap { $0 }.joined(separator: "\n\n"),
+                prompt: prompt, jsonSchema: (name: String(describing: T.self), schema: schema),
+                temperature: options.temperature, onPartial: nil) {
+                return (try Self.decode(T.self, from: text, host: name), name)
+            }
+        } catch let error as OrigamiLLMError where error.allowsFallback {
+            unreached = unreached ?? error
+        }
         guard case .available = SystemLanguageModel.default.availability else {
-            throw OrigamiLLMError.appleUnavailable
+            throw unreached ?? OrigamiLLMError.appleUnavailable
         }
         let session = Self.appleSession(instructions: instructions,
                                         transformingContent: transformingContent)
@@ -365,6 +468,7 @@ final class OrigamiLLM {
         if selectedLocalChoice != nil { return true }
         #endif
         if selectedEndpointModel() != nil { return true }
+        if macHost != nil { return true }
         #if canImport(FoundationModels)
         if case .available = SystemLanguageModel.default.availability { return true }
         #endif
@@ -377,7 +481,7 @@ final class OrigamiLLM {
     /// reply is not the JSON asked for.
     func respondJSON<T: Decodable>(_ type: T.Type, instructions: String,
                                    prompt: String) async throws -> T? {
-        var chosen = selectedEndpointModel() != nil
+        var chosen = selectedEndpointModel() != nil || macHost != nil
         #if os(macOS)
         if selectedLocalChoice != nil { chosen = true }
         #endif
@@ -1056,6 +1160,29 @@ struct LLMModelSettingsSections: View {
         // The one choice most readers need: a model Origami runs itself.
         #if os(macOS) && canImport(MLXLLM) && canImport(MLXEmbedders) && canImport(MLXHuggingFace)
         LocalModelsSettingsSection()
+        #endif
+        #if !os(macOS)
+        // The Mac answering for this device (9 Nov 2026): found through the
+        // community folder, asked after a chosen server, before Apple's.
+        Section {
+            if let host = llm.macHost {
+                LabeledContent("Your Mac") {
+                    Text("\(host.macName) \u{00B7} \(host.model)")
+                        .foregroundStyle(.secondary)
+                }
+                Text(llm.selectedEndpointModel() == nil
+                     ? "Answering for this device."
+                     : "Answering whenever the server chosen below cannot.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("No Mac is serving its AI yet. On the Mac, turn on Settings \u{25B8} AI \u{25B8} Serve AI to Vision Pro; this device finds it through the community folder.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("AI from Your Mac")
+        }
         #endif
 
         Section {

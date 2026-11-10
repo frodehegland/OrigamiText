@@ -118,6 +118,9 @@ final class LibraryUpkeep {
         // Knowledge Space's concepts into the library, every ten minutes —
         // the mirror carries them on to the headset (9 Nov 2026).
         KnowledgeSpaceConcepts.shared.importIfDue(model: model)
+        // The Mac's AI served to Vision Pro, when Settings has it on —
+        // listening, and where it answers kept in the community folder.
+        MacAIServer.shared.keepUp(community: community)
         let settings = OrigamiLibrarySettings(
             modified: .now,
             conceptsFolder: OrigamiLibrarySettings.defaultConceptsFolder,

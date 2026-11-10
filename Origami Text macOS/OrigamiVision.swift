@@ -776,6 +776,16 @@ struct OrigamiVisionApp: App {
         }
 
         // New Concept, from the room's bar.
+        // A dust connector's editor (9 Nov 2026).
+        Window("Connection", id: "connector") {
+            VisionConnectorView()
+                .environment(model)
+        }
+        .windowResizability(.contentSize)
+        .defaultWindowPlacement { _, _ in
+            WindowPlacement(.utilityPanel)
+        }
+
         Window("New Concept", id: "new-concept") {
             VisionNewConceptView()
                 .environment(model)
@@ -1510,6 +1520,13 @@ final class VisionModel {
             if let settings = OrigamiLibrarySettings.read(from: folder) {
                 await MainActor.run { self.adoptLibrarySettings(settings) }
             }
+            // The Mac serving its AI to this headset (9 Nov 2026) — or none,
+            // when it has stopped. Asked after a chosen server, before the
+            // headset's own model.
+            let macHost = MacAIHost.read(from: folder)
+            await MainActor.run {
+                if OrigamiLLM.shared.macHost != macHost { OrigamiLLM.shared.macHost = macHost }
+            }
             // The categories' names, colours and words, as the Mac set them.
             if let tags = OrigamiTags.read(from: folder) {
                 await MainActor.run { self.adoptTags(tags) }
@@ -1697,8 +1714,12 @@ final class VisionModel {
             case widen
             /// Widen Depth: time's planes and the citations' corridor deeper.
             case widenDepth
+            /// Close In Depth: time's planes nearer, the corridor shallower.
+            case closeInDepth
             /// Connect to Ground: every paper on a stand to the floor, or not.
             case toggleGrounded
+            /// Connect to Ceiling: a line from every paper to the ceiling.
+            case toggleCeiling
             /// A verb on the bar's second row, for the chosen card: its
             /// id, then the verb's (`CardBar.Verb.id`).
             case card(String, String)
@@ -1779,6 +1800,8 @@ final class VisionModel {
     /// Connect to Ground (9 Nov 2026): the room's papers on stands to the
     /// floor, published by the Hallway for the Sculptures menu.
     var roomGrounded = false
+    /// Whether the room's papers hang from the ceiling (9 Nov 2026).
+    var roomCeiling = false
     /// How the papers look, whatever Shape the room stands in (2 Nov 2026):
     /// as cards; as Color Spheres — a real sphere of the paper's
     /// categories' colours, its title beneath; or as Color Titles — the
@@ -1830,6 +1853,57 @@ final class VisionModel {
     var toolbarCollapsed = UserDefaults.standard.bool(forKey: "visionToolbarCollapsed") {
         didSet { UserDefaults.standard.set(toolbarCollapsed, forKey: "visionToolbarCollapsed") }
     }
+    // MARK: Dust connectors (9 Nov 2026)
+
+    /// A connection the reader made by hand between two nodes: summoned as
+    /// dust (left pinch, then right), laid on one node and then another,
+    /// standing as a spindle of electric fire. What it says is the reader's:
+    /// written or spoken, a kind, which to read first, how much it matters.
+    struct NodeConnector: Codable, Identifiable, Equatable {
+        var id = UUID().uuidString
+        var venue: String
+        var from: String
+        var to: String
+        var fromTitle: String
+        var toTitle: String
+        var note = ""
+        var kind: String?
+        /// The node to read first — `from`, `to`, or nil for either.
+        var readFirst: String?
+        var weight: String?
+    }
+
+    static let connectorKinds = ["Supports", "Extends", "Contradicts", "Answers", "Asks the Same",
+                                 "Example Of", "Background For", "Builds On"]
+    static let connectorWeights = ["Essential", "Useful", "In Passing"]
+
+    var connectors: [NodeConnector] = {
+        guard let data = UserDefaults.standard.data(forKey: "visionNodeConnectors") else { return [] }
+        return (try? JSONDecoder().decode([NodeConnector].self, from: data)) ?? []
+    }() {
+        didSet {
+            if let data = try? JSONEncoder().encode(connectors) {
+                UserDefaults.standard.set(data, forKey: "visionNodeConnectors")
+            }
+        }
+    }
+    /// The connector the editor window is showing.
+    var editingConnectorID: String?
+
+    /// Readings just unfolded from their cards (9 Nov 2026): the reading
+    /// view, appearing, folds its pages out one by one, then lets the id go.
+    var unfoldingDocIDs: Set<String> = []
+
+    func updateConnector(_ id: String, _ change: (inout NodeConnector) -> Void) {
+        guard let index = connectors.firstIndex(where: { $0.id == id }) else { return }
+        change(&connectors[index])
+    }
+
+    func removeConnector(_ id: String) {
+        connectors.removeAll { $0.id == id }
+        if editingConnectorID == id { editingConnectorID = nil }
+    }
+
     /// The bar put away altogether by the arm's Hide Toolbar chit (9 Nov
     /// 2026) — its window closed until Show Toolbar. Each session begins
     /// with the bar shown.
@@ -4034,6 +4108,7 @@ struct VisionVolumeToolbar: View {
                 // every dimension, or in depth alone, time kept in order.
                 Button("Widen") { model.volumeBarRequest = .init(action: .widen) }
                 Button("Widen Depth") { model.volumeBarRequest = .init(action: .widenDepth) }
+                Button("Close In Depth") { model.volumeBarRequest = .init(action: .closeInDepth) }
                 Section("Arrange") {
                     ForEach(model.layoutArrangements) { choice in
                         Button(choice.title) {
@@ -4098,13 +4173,24 @@ struct VisionVolumeToolbar: View {
                 Button {
                     model.volumeBarRequest = .init(action: .toggleGrounded)
                 } label: {
-                    if model.roomGrounded || inExhibition {
+                    if model.roomGrounded || (inExhibition && !model.roomCeiling) {
                         Label("Connect to Ground", systemImage: "checkmark")
                     } else {
                         Text("Connect to Ground")
                     }
                 }
                 .disabled(inExhibition)
+                // Connect to Ceiling (9 Nov 2026): lines up to the ceiling,
+                // no plate there — in the Exhibition, in place of the stands.
+                Button {
+                    model.volumeBarRequest = .init(action: .toggleCeiling)
+                } label: {
+                    if model.roomCeiling {
+                        Label("Connect to Ceiling", systemImage: "checkmark")
+                    } else {
+                        Text("Connect to Ceiling")
+                    }
+                }
             } label: {
                 Text("Sculptures")
             }
@@ -4905,6 +4991,10 @@ struct VisionReaderView: View {
     /// Outline: the sections clicked open, by heading id.
     @State private var expanded: Set<String> = []
     @State private var showsContents = false
+    /// Unfolding from its card (9 Nov 2026): how many of Horizontal's pages
+    /// stand open, and how far the row is shifted to keep them centred.
+    @State private var foldOpen = Int.max
+    @State private var foldShift: CGFloat = 0
     /// Focus: the one paragraph being read.
     @State private var focusIndex = 0
     /// The AI reading: the summary once made, and its making.
@@ -5233,6 +5323,35 @@ struct VisionReaderView: View {
     /// `ReaderPanels.remeasure`.)
     private static let panelWidthCeiling: CGFloat = 3900
 
+    /// The reading unfolding from its card (9 Nov 2026): first its first
+    /// page alone, centred where the card stood (the panel meanwhile grows
+    /// from the card's size to its own), then each next page swinging open
+    /// from the edge of the one before, the row sliding to keep the open
+    /// pages centred, until the reading stands whole.
+    private func unfold(pages: Int, pitch: CGFloat, fullWidth: CGFloat) {
+        guard pages > 1 else { return }
+        let width = min(fullWidth, hostGrows ? Self.panelWidthCeiling : fullWidth)
+        func centred(_ open: Int) -> CGFloat { max(0, (width - CGFloat(open) * pitch) / 2) }
+        foldOpen = 1
+        foldShift = centred(1)
+        Task { @MainActor in
+            // The panel's own growth from the card first.
+            try? await Task.sleep(for: .milliseconds(450))
+            let staged = min(pages, 10)
+            for open in 2...max(staged, 2) {
+                withAnimation(.spring(duration: 0.38, bounce: 0.15)) {
+                    foldOpen = open
+                    foldShift = centred(open)
+                }
+                try? await Task.sleep(for: .milliseconds(110))
+            }
+            withAnimation(.easeOut(duration: 0.3)) {
+                foldOpen = .max
+                foldShift = 0
+            }
+        }
+    }
+
     private func horizontalView(_ doc: LiquidDoc) -> some View {
         let pages = horizontalPages(of: doc)
         let pose = model.pose(of: docID)
@@ -5265,11 +5384,21 @@ struct VisionReaderView: View {
                     .containerRelativeFrame(.vertical)
                     .glassBackgroundEffect(in: .rect(cornerRadius: 18),
                                            displayMode: isDesk ? .never : .always)
+                    // A page not yet unfolded lies folded back against the
+                    // one before it, swinging open from that page's edge.
+                    .rotation3DEffect(.degrees(index < foldOpen ? 0 : -88),
+                                      axis: (x: 0, y: 1, z: 0), anchor: .leading)
+                    .opacity(index < foldOpen ? 1 : 0)
                 }
             }
+            .offset(x: foldShift)
             .scrollTargetLayout()
         }
         .scrollTargetBehavior(.viewAligned)
+        .onAppear {
+            guard model.unfoldingDocIDs.remove(docID) != nil else { return }
+            unfold(pages: pages.count, pitch: columnWidth + gap, fullWidth: fullWidth)
+        }
         // Where the host grows — the Map's panel, which sets no width
         // of its own in Horizontal — the reader takes the columns'
         // whole width, so every column that fits under the texture
@@ -9130,6 +9259,102 @@ struct VisionSpeakerStatementsView: View {
 /// spoken (the keyboard's microphone), kept in the Defined Concepts
 /// library — and, if asked, put into the room at once as a label that can
 /// draw lines to, gather or leave only the papers using it.
+/// A dust connector's own window (9 Nov 2026): what the two nodes are to
+/// each other — written, or spoken through the keyboard's microphone — its
+/// kind, which to read first, how much it matters, and the way to remove it.
+struct VisionConnectorView: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.dismissWindow) private var dismissWindow
+    @State private var note = ""
+
+    var body: some View {
+        if let id = model.editingConnectorID,
+           let connector = model.connectors.first(where: { $0.id == id }) {
+            editor(connector)
+        } else {
+            VStack(spacing: 14) {
+                Text("No connector chosen").font(.title3)
+                Text("Double-tap a connector's fire in the room to open it here.")
+                    .foregroundStyle(.secondary)
+                Button("Close") { dismissWindow() }
+            }
+            .padding(28)
+            .frame(width: 520)
+        }
+    }
+
+    private func editor(_ c: VisionModel.NodeConnector) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Connection").font(.title2.weight(.semibold))
+            Text("\(c.fromTitle)  \u{2194}  \(c.toTitle)")
+                .font(.headline)
+                .lineLimit(3)
+            TextField("How do they relate? Write it, or tap the microphone and say it.",
+                      text: $note, axis: .vertical)
+                .lineLimit(3...8)
+                .textFieldStyle(.roundedBorder)
+                .onAppear { note = c.note }
+                .onChange(of: model.editingConnectorID) { note = c.note }
+            Text("Relationship").font(.subheadline.weight(.semibold))
+            chips(VisionModel.connectorKinds, chosen: c.kind) { pick in
+                model.updateConnector(c.id) { $0.kind = $0.kind == pick ? nil : pick }
+            }
+            Text("Read First").font(.subheadline.weight(.semibold))
+            HStack {
+                choice(c.fromTitle, on: c.readFirst == c.from) {
+                    model.updateConnector(c.id) { $0.readFirst = $0.readFirst == c.from ? nil : c.from }
+                }
+                choice(c.toTitle, on: c.readFirst == c.to) {
+                    model.updateConnector(c.id) { $0.readFirst = $0.readFirst == c.to ? nil : c.to }
+                }
+                choice("Either", on: c.readFirst == nil) {
+                    model.updateConnector(c.id) { $0.readFirst = nil }
+                }
+            }
+            Text("Matters").font(.subheadline.weight(.semibold))
+            chips(VisionModel.connectorWeights, chosen: c.weight) { pick in
+                model.updateConnector(c.id) { $0.weight = $0.weight == pick ? nil : pick }
+            }
+            HStack {
+                Button("Remove Connector", role: .destructive) {
+                    model.removeConnector(c.id)
+                    dismissWindow()
+                }
+                Spacer()
+                Button("Done") {
+                    model.updateConnector(c.id) {
+                        $0.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    dismissWindow()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(28)
+        .frame(width: 560)
+    }
+
+    private func chips(_ names: [String], chosen: String?, pick: @escaping (String) -> Void) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], alignment: .leading, spacing: 8) {
+            ForEach(names, id: \.self) { name in
+                choice(name, on: chosen == name) { pick(name) }
+            }
+        }
+    }
+
+    private func choice(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).lineLimit(1)
+                .padding(.horizontal, 6)
+        }
+        .buttonStyle(.bordered)
+        .tint(on ? .accentColor : nil)
+        .overlay {
+            if on { Capsule().strokeBorder(Color.white.opacity(0.85), lineWidth: 1.5) }
+        }
+    }
+}
+
 struct VisionNewConceptView: View {
     @Environment(VisionModel.self) private var model
     @Environment(\.dismissWindow) private var dismissWindow
