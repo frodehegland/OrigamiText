@@ -29,7 +29,7 @@ final class ReadAloudController {
     // MARK: - Private
 
     private let appleEngine = AppleSpeechEngine()
-    #if arch(arm64)
+    #if arch(arm64) && canImport(Qwen3TTS)
     private let qwen3Engine = Qwen3SpeechEngine()
     #endif
     private var eventTask: Task<Void, Never>?
@@ -37,7 +37,7 @@ final class ReadAloudController {
     private var pendingOptions: SpeechOptions = .default
 
     private var preferredEngine: any SpeechEngine {
-        #if arch(arm64)
+        #if arch(arm64) && canImport(Qwen3TTS)
         if engineID == "qwen3" { return qwen3Engine }
         #endif
         return appleEngine
@@ -164,7 +164,7 @@ final class ReadAloudController {
         eventTask?.cancel()
         eventTask = nil
         appleEngine.stopSync()
-        #if arch(arm64)
+        #if arch(arm64) && canImport(Qwen3TTS)
         Task { await qwen3Engine.stop() }
         #endif
         isPlaying = false

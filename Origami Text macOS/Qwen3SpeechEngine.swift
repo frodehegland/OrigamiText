@@ -1,4 +1,4 @@
-#if arch(arm64)
+#if arch(arm64) && canImport(Qwen3TTS)
 import Foundation
 import Qwen3TTS
 import AudioCommon

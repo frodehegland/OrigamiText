@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		5F02BA9F3069BA7E004EE9D2 /* Quartz.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F1962D43053FF1A00922704 /* Quartz.framework */; };
 		5F02BAAB3069BA7E004EE9D2 /* EPUBQuickLook.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5F02BA9E3069BA7E004EE9D2 /* EPUBQuickLook.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		5F72863D304376EC000585CD /* AudioCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 5F72863C304376EC000585CD /* AudioCommon */; };
 		5FA35B50309809F9002DC780 /* MLXEmbedders in Frameworks */ = {isa = PBXBuildFile; productRef = 5FA35B4F309809F9002DC780 /* MLXEmbedders */; };
 		5FA35B52309809F9002DC780 /* MLXHuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = 5FA35B51309809F9002DC780 /* MLXHuggingFace */; };
 		5FA35B54309809F9002DC780 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 5FA35B53309809F9002DC780 /* MLXLLM */; };
@@ -20,8 +19,6 @@
 		5FAFC90C301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
 		5FAFC90D301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
 		5FAFC90E301BAF9C00FDBED8 /* Ori-logo-2.icon in Resources */ = {isa = PBXBuildFile; fileRef = 5FAFC90B301BAF9C00FDBED8 /* Ori-logo-2.icon */; };
-		5FC2206930438F25001E8E0C /* Qwen3TTS in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC2206830438F25001E8E0C /* Qwen3TTS */; };
-		5FC2206B304391F6001E8E0C /* Qwen3TTS in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC2206A304391F6001E8E0C /* Qwen3TTS */; };
 		5FC96C9C30960577005A8546 /* LiquidAI in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96C9B30960577005A8546 /* LiquidAI */; };
 		5FC96C9E30960577005A8546 /* LiquidAssistant in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96C9D30960577005A8546 /* LiquidAssistant */; };
 		5FC96CA030960577005A8546 /* LiquidSpeech in Frameworks */ = {isa = PBXBuildFile; productRef = 5FC96C9F30960577005A8546 /* LiquidSpeech */; };
@@ -253,8 +250,6 @@
 				5FA35B54309809F9002DC780 /* MLXLLM in Frameworks */,
 				5FA35B5B30980A78002DC780 /* Tokenizers in Frameworks */,
 				5FA35B52309809F9002DC780 /* MLXHuggingFace in Frameworks */,
-				5F72863D304376EC000585CD /* AudioCommon in Frameworks */,
-				5FC2206B304391F6001E8E0C /* Qwen3TTS in Frameworks */,
 				5FA35B5E30980A95002DC780 /* HuggingFace in Frameworks */,
 			);
 		};
@@ -270,7 +265,6 @@
 				5FC96CB430960577005A8546 /* LiquidAI in Frameworks */,
 				5FC96CB530960577005A8546 /* LiquidSpeech in Frameworks */,
 				5FC96CB630960577005A8546 /* LiquidAssistant in Frameworks */,
-				5FC2206930438F25001E8E0C /* Qwen3TTS in Frameworks */,
 			);
 		};
 		5FA6125C300CE184002F8851 /* Frameworks */ = {
@@ -355,8 +349,6 @@
 				5FC96CA130960577005A8546 /* LiquidAI */,
 				5FC96CA230960577005A8546 /* LiquidSpeech */,
 				5FC96CA330960577005A8546 /* LiquidAssistant */,
-				5F72863C304376EC000585CD /* AudioCommon */,
-				5FC2206A304391F6001E8E0C /* Qwen3TTS */,
 				5FA35B4F309809F9002DC780 /* MLXEmbedders */,
 				5FA35B51309809F9002DC780 /* MLXHuggingFace */,
 				5FA35B53309809F9002DC780 /* MLXLLM */,
@@ -405,7 +397,6 @@
 				5FC96CA430960577005A8546 /* LiquidAI */,
 				5FC96CA530960577005A8546 /* LiquidSpeech */,
 				5FC96CA630960577005A8546 /* LiquidAssistant */,
-				5FC2206830438F25001E8E0C /* Qwen3TTS */,
 			);
 			productName = "Origami Text";
 			productReference = 5FA61253300CE184002F8851 /* Origami Text.app */;
@@ -518,7 +509,6 @@
 			mainGroup = 000000000000000000000001;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */,
 				5FC96C9A30960577005A8546 /* XCLocalSwiftPackageReference "../LiquidKit/LiquidShared" */,
 				5FA35B4E309809F9002DC780 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
 				5FA35B5930980A78002DC780 /* XCRemoteSwiftPackageReference "swift-transformers" */,
@@ -1288,14 +1278,6 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/soniqo/speech-swift";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
-		};
 		5FA35B4E309809F9002DC780 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm";
@@ -1327,11 +1309,6 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		5F72863C304376EC000585CD /* AudioCommon */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
-			productName = AudioCommon;
-		};
 		5FA35B4F309809F9002DC780 /* MLXEmbedders */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 5FA35B4E309809F9002DC780 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
@@ -1366,16 +1343,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5FA35B5C30980A95002DC780 /* XCRemoteSwiftPackageReference "swift-huggingface" */;
 			productName = HuggingFace;
-		};
-		5FC2206830438F25001E8E0C /* Qwen3TTS */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
-			productName = Qwen3TTS;
-		};
-		5FC2206A304391F6001E8E0C /* Qwen3TTS */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5F728639304376EC000585CD /* XCRemoteSwiftPackageReference "speech-swift" */;
-			productName = Qwen3TTS;
 		};
 		5FC96C9B30960577005A8546 /* LiquidAI */ = {
 			isa = XCSwiftPackageProductDependency;

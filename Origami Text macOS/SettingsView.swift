@@ -273,7 +273,7 @@ private struct ReadAloudSettingsSection: View {
     var body: some View {
         Picker("Voice", selection: $engineID) {
             Text("Apple (system voices)").tag("apple")
-            #if arch(arm64)
+            #if arch(arm64) && canImport(Qwen3TTS)
             Text("Neural \u{2014} Qwen3-TTS (on-device)").tag("qwen3")
             #endif
         }
@@ -289,7 +289,7 @@ private struct ReadAloudSettingsSection: View {
             .pickerStyle(.menu)
         }
 
-        #if arch(arm64)
+        #if arch(arm64) && canImport(Qwen3TTS)
         if engineID == "qwen3" {
             Qwen3InstallRow()
         }
@@ -305,7 +305,7 @@ private struct ReadAloudSettingsSection: View {
     }
 }
 
-#if arch(arm64)
+#if arch(arm64) && canImport(Qwen3TTS)
 private struct Qwen3InstallRow: View {
     // Observe the shared installer directly — @Observable propagates changes
     private var installer: VoiceInstaller { VoiceInstaller.shared }
