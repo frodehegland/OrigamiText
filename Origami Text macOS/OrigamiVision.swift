@@ -1716,6 +1716,9 @@ final class VisionModel {
             case widenDepth
             /// Close In Depth: time's planes nearer, the corridor shallower.
             case closeInDepth
+            /// Arrange in Front: everything in the room carried before the
+            /// reader, its nearest node 1 m from their face.
+            case arrangeInFront
             /// Connect to Ground: every paper on a stand to the floor, or not.
             case toggleGrounded
             /// Connect to Ceiling: a line from every paper to the ceiling.
@@ -1943,6 +1946,24 @@ final class VisionModel {
         }
     }
 
+    /// How a series' hallway stands (11 Nov 2026). The standard hallway
+    /// keeps its newest volume at 1.2 m and its planes 0.9 m apart. The
+    /// FoT '26 hallways, made for showing every volume of The Future of
+    /// Text at once, bring the newest to 1 m and close the planes to
+    /// 30 cm; the first wears Fast plates, whatever Shapes says, so the
+    /// whole series stays quick in the hand, the second the chosen Shapes.
+    enum HallwayStyle: String {
+        case standard, fot26, fot26Cards
+    }
+    var hallwayStyle = HallwayStyle(rawValue: UserDefaults.standard.string(forKey: "visionHallwayStyle") ?? "") ?? .standard {
+        didSet { UserDefaults.standard.set(hallwayStyle.rawValue, forKey: "visionHallwayStyle") }
+    }
+    /// The look the room's papers wear: Shapes' choice, except in the
+    /// FoT '26 hallway, which stands in Fast plates.
+    var roomCardLook: CardLook {
+        openSeriesID != nil && hallwayStyle == .fot26 ? .fast : cardLook
+    }
+
     /// The corpus record for these cards, with each piece's id in the
     /// room — nil when the Mac has published none for them.
     func roomCorpus(for docIDs: [String]) -> (corpus: CorpusRelations.Corpus, docOfPiece: [String: String])? {
@@ -2062,6 +2083,18 @@ final class VisionModel {
         guard openJournalVenue != venue else { return }
         if !isVolumeRoom { venueBeforeArticles = openJournalVenue }
         openJournalVenue = venue
+    }
+
+    /// The series' hallway in the given style — restanding it at once
+    /// when only the style changed.
+    func openSeries(_ seriesID: String, style: HallwayStyle) {
+        let restyled = hallwayStyle != style
+        hallwayStyle = style
+        if openSeriesID == seriesID {
+            if restyled { volumeStamp += 1 }
+        } else {
+            openSeries(seriesID)
+        }
     }
 
     /// Every piece the room's volume (or series) holds, by the id it reads
@@ -4144,6 +4177,10 @@ struct VisionVolumeToolbar: View {
                         }
                     }
                 }
+                // Arrange in Front (11 Nov 2026): the whole room, as it
+                // stands, carried before the reader, starting 1 m away.
+                Divider()
+                Button("Arrange in Front") { model.volumeBarRequest = .init(action: .arrangeInFront) }
             } label: {
                 Text("Layout")
             }
@@ -4200,9 +4237,14 @@ struct VisionVolumeToolbar: View {
             Menu {
                 ForEach(VisionModel.CardLook.allCases, id: \.self) { look in
                     Button {
+                        // A Shape chosen in the Fast FoT '26 hallway keeps
+                        // the hallway and wears the Shape.
+                        if model.openSeriesID != nil, model.hallwayStyle == .fot26 {
+                            model.hallwayStyle = .fot26Cards
+                        }
                         model.cardLook = look
                     } label: {
-                        if model.cardLook == look {
+                        if model.roomCardLook == look {
                             Label(look.title, systemImage: "checkmark")
                         } else {
                             Text(look.title)
@@ -4220,10 +4262,6 @@ struct VisionVolumeToolbar: View {
                 .toggleStyle(.button)
                 .liveRing(model.coloursShown)
                 .help("The colours, beneath the bar: which is which, and lines to every paper of one")
-            Toggle("Snippets", isOn: Binding(get: { model.snippetsShown }, set: { model.snippetsShown = $0 }))
-                .toggleStyle(.button)
-                .liveRing(model.snippetsShown)
-                .help("Show or put away the snippets — the words dragged out of readings into the room")
             Toggle("Relative Size", isOn: Binding(get: { model.sizeByLength },
                                                  set: { model.sizeByLength = $0 }))
                 .toggleStyle(.button)
@@ -4240,12 +4278,22 @@ struct VisionVolumeToolbar: View {
                 ?? model.openVolume.flatMap { model.boundVolume(for: $0)?.series?.id }
             let volumes = seriesID.map { model.seriesVolumes($0) } ?? []
             Menu {
-                Button {
-                    if let seriesID { model.openSeries(seriesID) }
-                } label: {
-                    if model.openSeriesID != nil { Label("All", systemImage: "checkmark") } else { Text("All") }
+                // All, and the FoT '26 hallways (11 Nov 2026): every volume
+                // nearer and closer together, Fast plates or the chosen Shapes.
+                ForEach([(VisionModel.HallwayStyle.standard, "All"),
+                         (.fot26, "All, FOT '26"),
+                         (.fot26Cards, "All, FOT '26 Cards")], id: \.0) { style, title in
+                    Button {
+                        if let seriesID { model.openSeries(seriesID, style: style) }
+                    } label: {
+                        if model.openSeriesID != nil && model.hallwayStyle == style {
+                            Label(title, systemImage: "checkmark")
+                        } else {
+                            Text(title)
+                        }
+                    }
+                    .disabled(volumes.count < 2)
                 }
-                .disabled(volumes.count < 2)
                 Divider()
                 ForEach(volumes, id: \.id) { volume in
                     Button {
@@ -4262,7 +4310,7 @@ struct VisionVolumeToolbar: View {
                 Text("Volume")
             }
             .disabled(volumes.isEmpty)
-            .help("All the series' volumes in one room, or one volume alone")
+            .help("All the series' volumes in one room — or the FOT '26 hallway, the newest 1 m away and each older volume 30 cm behind — or one volume alone")
             Button("Ask") {
                 model.assistantFocusID = nil
                 openWindow(id: "volume-assistant")

@@ -715,13 +715,37 @@ struct EPUBMapView: View {
             func volume(_ record: EPUBRecord) -> String? {
                 BoundVolume.split(articleDocID: record.id)?.volume
             }
+            // The FoT '26 hallways (11 Nov 2026): the newest volume 1 m
+            // before the reader, each older one 30 cm behind it.
+            let fot = model.hallwayStyle != .standard
+            let nearest: Float = fot ? -1.0 : -1.2
+            let gap = fot ? Self.fotPlaneGap : Self.seriesPlaneGap
+            // The standard hallway by year (11 Nov 2026, Frode): each volume
+            // `hallwayYearGap` (1 m) further back for every year older than
+            // the newest — never closer than `seriesPlaneGap` to the volume
+            // in front, so two volumes of one year (or one with no year)
+            // still stand apart. Widen Depth and Close In Depth stretch it.
+            let yearOf: (EPUBRecord) -> Int? = { $0.dateISO.flatMap { Int($0.prefix(4)) } }
+            let newestYear = volumes.compactMap(yearOf).max()
+            var behindOf: [Int: Float] = [:]
+            var inFront: Float?
+            for index in volumes.indices.reversed() {
+                let byOrder = Float(volumes.count - 1 - index) * gap
+                var behind = byOrder
+                if !fot, let newestYear {
+                    let byYear = yearOf(volumes[index]).map { Float(newestYear - $0) * Self.hallwayYearGap }
+                    behind = max(byYear ?? 0, inFront.map { $0 + Self.seriesPlaneGap } ?? 0)
+                }
+                behindOf[index] = behind
+                inFront = behind
+            }
             planes = volumes.enumerated().map { index, volumeRecord in
                 let mine: (EPUBRecord) -> Bool = { volume($0) == volumeRecord.id }
-                let behind = Float(volumes.count - 1 - index)
+                let behind = behindOf[index] ?? 0
                 return Plane(standing: standing.filter(mine),
                              opening: openingSide.filter(mine),
                              closing: closingSide.filter(mine),
-                             depth: -1.2 - behind * Self.seriesPlaneGap,
+                             depth: nearest - behind,
                              volumeNumber: model.boundVolume(for: volumeRecord)?.series?.volume,
                              year: volumeRecord.dateISO.flatMap { Int($0.prefix(4)) },
                              lengthPeers: lengthPeers.filter(mine))
@@ -793,7 +817,7 @@ struct EPUBMapView: View {
             // Relative Size in Color Titles: the area each closed title's
             // letters cover in their own font, and the plane's mean — a
             // paper of middling length stands at the mean (4 Nov 2026).
-            let titleAreas: [String: Float] = model.sizeByLength && model.cardLook == .titles
+            let titleAreas: [String: Float] = model.sizeByLength && model.roomCardLook == .titles
                 ? Dictionary(uniqueKeysWithValues: standing.map { ($0.id, Self.titleInkArea(shortTitle($0.title))) })
                 : [:]
             let meanTitleArea = titleAreas.isEmpty ? 0 : titleAreas.values.reduce(0, +) / Float(titleAreas.count)
@@ -843,7 +867,7 @@ struct EPUBMapView: View {
                 item.isLifted = liftedCards[record.id] != nil
                 item.lengthShare = lengthShare(record)
                 item.sizeScale = model.sizeByLength ? Self.lengthScale(item.lengthShare) : 1
-                if model.sizeByLength, model.cardLook == .cards {
+                if model.sizeByLength, model.roomCardLook == .cards {
                     item.widthScale = Self.lengthWidth(item.lengthShare)
                 }
                 item.retro = model.retroName
@@ -855,7 +879,7 @@ struct EPUBMapView: View {
                 item.firstSentence = firstSentenceByArticle[record.id]
                 item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
                 item.authorFaces = model.authorFaces(paperAuthors(record.id))
-                item.look = model.cardLook
+                item.look = model.roomCardLook
                 // Relative Size in Color Titles (2 Nov 2026; measured 4 Nov):
                 // a title is its own size, so what counts is the area its
                 // letters cover in their font. It is scaled until that area
@@ -902,7 +926,7 @@ struct EPUBMapView: View {
                     // room's colours and look as its articles do (2 Nov 2026).
                     item.tagColors = model.tagColors(forDocID: record.id, title: record.title)
                     item.authorFaces = model.authorFaces(paperAuthors(record.id))
-                    item.look = model.cardLook
+                    item.look = model.roomCardLook
                     return item
                 }
             }
@@ -1169,6 +1193,8 @@ struct EPUBMapView: View {
             runWiden(depthOnly: true)
         case .closeInDepth:
             runWiden(depthOnly: true, closer: true)
+        case .arrangeInFront:
+            arrangeInFront()
         case .toggleGrounded:
             toggleGrounded()
         case .toggleCeiling:
@@ -1186,6 +1212,23 @@ struct EPUBMapView: View {
             liftedCards = [:]
             saveLiftedCards()
             savePlacedNow()
+        }
+        // In the hallway (11 Nov 2026, Frode): a paper carried off its plane
+        // while open goes back to its plane's depth once folded. It keeps
+        // where it stands across and up and down, its ghost goes, and like
+        // every closed card it moves only across its plane. A card resting
+        // on a real surface stays there, and so do blobs and solid spheres,
+        // which are meant to leave their slots.
+        if !isTimeFree, model.roomCardLook != .blobs, model.roomCardLook != .solid {
+            let articles = Set(items.lazy.filter { $0.kind == .article }.map(\.id))
+            let folded = liftedCards.filter { id, lifted in
+                lifted.stuck == nil && articles.contains(id) && !abstractOpenIDs.contains(id)
+                    && !model.openDocIDs.contains(id)
+            }
+            if !folded.isEmpty {
+                for id in folded.keys { liftedCards[id] = nil }
+                saveLiftedCards()
+            }
         }
         var selected = Set(items.filter(\.isSelected).map(\.id))
         // The colour key's Clear Lines: every colour marker let go — its
@@ -1480,6 +1523,16 @@ struct EPUBMapView: View {
            !items.contains(where: { $0.id == focused }) {
             focusedConceptID = nil
             focusedConceptArticleIDs = []
+        }
+        // No card further than 10 m across the floor from where the
+        // reader's head first stood (11 Nov 2026, Frode): whatever a
+        // layout, Sculpture, Widen or carry asked, a card beyond it stands
+        // on the circle's edge, on the line toward that first place.
+        if cardSizes.readerOrigin == nil, let head = faceTurner.headPose() {
+            cardSizes.readerOrigin = head.position
+        }
+        for i in items.indices {
+            if let p = items[i].position { items[i].position = withinMaxReach(p) }
         }
         // Stamp every item with the current theme so a theme switch makes
         // them visually unequal to their cached counterparts, triggering a
@@ -2107,6 +2160,12 @@ struct EPUBMapView: View {
     /// builds a card, and must not make the view update again.
     @State private var cardSizes = CardSizes()
     final class CardSizes {
+        /// A Sculpture is being placed — its positions are brought within reach.
+        var shaping = false
+        /// Where the reader's head first stood in the room (11 Nov 2026):
+        /// the centre of the 10 m circle no card may leave. Read once,
+        /// from the first head pose the room has.
+        var readerOrigin: SIMD3<Float>?
         /// Solid Spheres held against a surface this drag: the surface's
         /// outward normal, by card — a plain box, written each frame.
         var solidHits: [String: SIMD3<Float>] = [:]
@@ -2543,6 +2602,14 @@ struct EPUBMapView: View {
     /// still legible from the newest.
     /// Doubled from 0.45 on 1 Nov 2026, at Frode's asking.
     private static let seriesPlaneGap: Float = 0.9
+    /// How far across the floor any card may stand from where the
+    /// reader's head first stood (11 Nov 2026).
+    private static let maxReach: Float = 10
+    /// The standard hallway's depth for each year a volume is older than
+    /// the newest (11 Nov 2026).
+    private static let hallwayYearGap: Float = 1.0
+    /// The FoT '26 hallways' planes: 30 cm apart (11 Nov 2026).
+    private static let fotPlaneGap: Float = 0.3
     /// Rings and ellipses are squashed to the card's own proportion,
     /// so a step outward is a row's step down.
     private static let pitchAspect = rowPitch / columnPitch
@@ -2920,8 +2987,8 @@ struct EPUBMapView: View {
         // stands at half strength while the star is drawn in — eased in
         // place by the tick, never rebuilt.
         cardTick.dimmedIDs = relationShown?.gathered == true
-            ? Set(items.lazy.map(\.id).filter { !selectedIDs.contains($0) && !gatheredIDs.contains($0)
-                && $0 != relationShown?.from })
+            ? Set(items.lazy.filter { !$0.showsAbstract && !$0.isExhibited }.map(\.id).filter {
+                !selectedIDs.contains($0) && !gatheredIDs.contains($0) && $0 != relationShown?.from })
             : []
         var view = Engine(
             items,
@@ -4013,9 +4080,11 @@ struct EPUBMapView: View {
                             .opacity(0.62)
                             .clipShape(RoundedRectangle(cornerRadius: 8 * s))
                         RoundedRectangle(cornerRadius: 8 * s)
-                            .fill(Color.black.opacity(selected ? 0.42 : 0.36))
+                            .fill(Color.black.opacity(selected || open ? 0.42 : 0.36))
                     }
-                } else if selected {
+                } else if selected || open {
+                    // Open, chosen or not (11 Nov 2026), it reads at full
+                    // contrast: the solid pane, nothing of the room behind.
                     RoundedRectangle(cornerRadius: 8 * s)
                         .fill(Color(white: 0.12))
                 } else {
@@ -4668,8 +4737,9 @@ struct EPUBMapView: View {
         // nothing behind it on its own.)
         // An open paper is solid as well (2 Nov 2026): nothing of the room
         // or its lines shows through it while it is being read from.
-        if item.isSelected, item.kind == .cited || item.kind == .citedDeep
-            || (item.kind == .article && item.showsAbstract),
+        if (item.isSelected && (item.kind == .cited || item.kind == .citedDeep
+            || (item.kind == .article && item.showsAbstract)))
+            || (item.kind == .article && item.isExhibited),
            !item.isLifted {
             // A breath inside the face (3%), so no edge of it can show past
             // the card's own frame should the live face lay out a hair
@@ -6695,6 +6765,10 @@ struct EPUBMapView: View {
 
     /// The room takes a Shape.
     private func runShape(_ shape: RoomShape) {
+        // Whatever it builds is brought within reach of the reader
+        // (10 Nov 2026) — see `nearReader`.
+        cardSizes.shaping = true
+        defer { cardSizes.shaping = false }
         switch shape {
         case .timeline:
             // The room as it first stood: Widen Depth's stretch let go too.
@@ -7061,7 +7135,9 @@ struct EPUBMapView: View {
         }
         // Gentle steps (9 Nov 2026, Frode: each was too much): an eighth
         // further apart, or a tenth nearer, a press.
-        let spread: Float = closer ? Self.closeInStep : Self.widenStep
+        // Close In Depth a quarter nearer a press (11 Nov 2026, Frode: a
+        // tenth of the FoT '26 hallway's 30 cm gaps could not be seen).
+        let spread: Float = closer ? (depthOnly ? Self.closeInDepthStep : Self.closeInStep) : Self.widenStep
         // Read once: Widen's own move frees the room from time.
         let wasTimeFree = isTimeFree
         if !depthOnly || wasTimeFree, nodes.count > 1 {
@@ -7096,6 +7172,7 @@ struct EPUBMapView: View {
     /// Depth): an eighth further apart, a tenth nearer.
     static let widenStep: Float = 1.12
     static let closeInStep: Float = 0.9
+    static let closeInDepthStep: Float = 0.75
 
     /// The citations' corridor deepened or shallowed by a Widen or Close In
     /// press's own small factor — the two-hand pinch keeps its big step.
@@ -7125,7 +7202,9 @@ struct EPUBMapView: View {
     /// A plane's depth with Widen Depth's stretch: the nearest plane (-1.2)
     /// stays where it is, every deeper one stands further back.
     private func stretchedDepth(_ depth: Float) -> Float {
-        -1.2 + (depth + 1.2) * Float(depthStretch)
+        // The FoT '26 hallways' nearest plane is 1 m away, and stays there.
+        let nearest: Float = model.openSeriesID != nil && model.hallwayStyle != .standard ? -1.0 : -1.2
+        return nearest + (depth - nearest) * Float(depthStretch)
     }
 
     /// Close In (9 Nov 2026): the nodes drawn nearer one another — a fifth
@@ -7760,16 +7839,139 @@ struct EPUBMapView: View {
     /// Writes arranged positions in all three axes — the Experimental
     /// layouts', free of the timeline — frees the room's depth, keeps
     /// the moment before for Undo, and rebuilds.
+    /// A place held within 10 m across the floor of where the reader's
+    /// head first stood (11 Nov 2026): beyond it, on the circle's edge, on
+    /// the line toward that first place, its height kept. Until a head
+    /// pose arrives (and in the simulator), the room's origin is the centre.
+    private func withinMaxReach(_ p: SIMD3<Float>) -> SIMD3<Float> {
+        let origin = cardSizes.readerOrigin ?? .zero
+        let flat = SIMD2<Float>(p.x - origin.x, p.z - origin.z)
+        let reach = simd_length(flat)
+        guard reach > Self.maxReach else { return p }
+        let edge = flat * (Self.maxReach / reach)
+        return SIMD3<Float>(origin.x + edge.x, p.y, origin.z + edge.y)
+    }
+
+    /// No two cards in one space (11 Nov 2026, Frode: a Sculpture such as
+    /// Concepts stood some on top of one another — a group taller than the
+    /// room's heights had its rows pressed together). The cards given are
+    /// set down one at a time, from the top of the room down: a card whose
+    /// place is free keeps it exactly; one whose face would overlap a card
+    /// already standing within 4 cm in depth (their measured sizes and 2 cm
+    /// of air) takes the nearest free place, sought ring by ring in steps
+    /// of its own size across and up and down, within the heights. Depth is
+    /// never changed, so a hallway keeps its planes. Cards standing but not
+    /// given here stay where they are and are kept clear of. Neighbours are
+    /// found through a coarse grid, so a room of hundreds stays quick
+    /// (300 cards piled in three places: none overlapping, 30 ms).
+    private func separateCards(_ at: inout [String: SIMD3<Float>], heights: ClosedRange<Float>) {
+        guard !at.isEmpty else { return }
+        let fallback = SIMD2<Float>(0.14, 0.06)
+        func size(_ id: String) -> SIMD2<Float> { cardSizes.shown[id] ?? cardSizes.base[id] ?? fallback }
+        let air: Float = 0.02, depthReach: Float = 0.04, cell: Float = 0.5
+        func key(_ p: SIMD3<Float>) -> SIMD3<Int32> {
+            SIMD3<Int32>(Int32((p.x / cell).rounded(.down)), Int32((p.y / cell).rounded(.down)),
+                         Int32((p.z / cell).rounded(.down)))
+        }
+        var grid: [SIMD3<Int32>: [(id: String, p: SIMD3<Float>)]] = [:]
+        // (A Sculpture's group names are not in the way: the new Sculpture
+        // stands its own.)
+        for item in items where at[item.id] == nil && !item.isGhost && !item.isAside
+            && !item.id.hasPrefix(Self.shapeLabelPrefix) {
+            if let p = item.position { grid[key(p), default: []].append((item.id, p)) }
+        }
+        func free(_ p: SIMD3<Float>, _ s: SIMD2<Float>) -> Bool {
+            let k = key(p)
+            for dx in Int32(-1)...1 { for dy in Int32(-1)...1 { for dz in Int32(-1)...1 {
+                for other in grid[k &+ SIMD3<Int32>(dx, dy, dz)] ?? [] {
+                    let d = other.p - p
+                    guard abs(d.z) < depthReach else { continue }
+                    let need = (s + size(other.id)) / 2 + SIMD2<Float>(repeating: air)
+                    if abs(d.x) < need.x, abs(d.y) < need.y { return false }
+                }
+            }}}
+            return true
+        }
+        let order = at.keys.sorted { a, b in
+            let pa = at[a]!, pb = at[b]!
+            return (pa.y, -pa.x, a) > (pb.y, -pb.x, b)
+        }
+        for id in order {
+            guard let wanted = at[id] else { continue }
+            let s = size(id)
+            var spot = wanted
+            if !free(wanted, s) {
+                let step = s + SIMD2<Float>(repeating: air)
+                func reach(_ o: SIMD2<Int>) -> Float {
+                    let x = Float(o.x) * step.x, y = Float(o.y) * step.y
+                    return x * x + y * y
+                }
+                search: for ring in 1...60 {
+                    var offsets: [SIMD2<Int>] = []
+                    for i in -ring...ring {
+                        for j in -ring...ring where max(abs(i), abs(j)) == ring { offsets.append(SIMD2(i, j)) }
+                    }
+                    offsets.sort { reach($0) < reach($1) }
+                    for o in offsets {
+                        let c = SIMD3<Float>(wanted.x + Float(o.x) * step.x, wanted.y + Float(o.y) * step.y, wanted.z)
+                        guard heights.contains(c.y) else { continue }
+                        if free(c, s) { spot = c; break search }
+                    }
+                }
+            }
+            at[id] = spot
+            grid[key(spot), default: []].append((id, spot))
+        }
+    }
+
+    /// A Sculpture brought within reach (10 Nov 2026, Frode: some stood a
+    /// very long way off): if even its nearest node stands more than 1.6 m
+    /// from the reader across the floor, the whole of it slides toward them
+    /// until that node is 1.2 m away — its shape and depth order kept; and
+    /// if it then still reaches past 6 m, it is drawn in round the reader,
+    /// no node closer than a metre.
+    private func nearReader(_ xyz: [String: SIMD3<Float>]) -> [String: SIMD3<Float>] {
+        guard xyz.count > 1 else { return xyz }
+        let reader = faceTurner.headPose()?.position ?? (spaceShift + documentsShift)
+        func flat(_ p: SIMD3<Float>) -> SIMD2<Float> { SIMD2(p.x - reader.x, p.z - reader.z) }
+        var placed = xyz
+        let distances = placed.values.map { simd_length(flat($0)) }
+        guard let nearest = distances.min(), nearest > 1.6 else { return placed }
+        let centre = placed.values.reduce(SIMD2<Float>.zero) { $0 + flat($1) } / Float(placed.count)
+        let toward = simd_length(centre) > 1e-3 ? -simd_normalize(centre) : SIMD2<Float>(0, 1)
+        let slide = toward * (nearest - 1.2)
+        for (id, p) in placed { placed[id] = SIMD3(p.x + slide.x, p.y, p.z + slide.y) }
+        let farthest = placed.values.map { simd_length(flat($0)) }.max() ?? 0
+        let closest = placed.values.map { simd_length(flat($0)) }.min() ?? 1
+        if farthest > 6 {
+            let scale = max(6 / farthest, min(1, 1 / max(closest, 1e-3)))
+            for (id, p) in placed {
+                let f = flat(p) * scale
+                placed[id] = SIMD3(reader.x + f.x, p.y, reader.z + f.y)
+            }
+        }
+        return placed
+    }
+
     private func applyWatchPositions3D(_ xyz: [String: SIMD3<Float>],
                                        heights: ClosedRange<Float> = 0.95...2.2) {
+        let xyz = cardSizes.shaping ? nearReader(xyz) : xyz
+        // Every place as it will be shown — the room's bounds and the 10 m
+        // reach applied first — then eased apart, so no two cards share a
+        // space however the arrangement or those bounds packed them.
+        var final: [String: SIMD3<Float>] = [:]
+        for item in items where item.position != nil {
+            guard var position = xyz[item.id] else { continue }
+            position.x = min(max(position.x, spaceShift.x - 5), spaceShift.x + 5)
+            position.y = min(max(position.y, heights.lowerBound), heights.upperBound)
+            final[item.id] = withinMaxReach(position)
+        }
+        separateCards(&final, heights: heights)
         var snapshot: [String: SIMD3<Float>] = [:]
         var moved: [EPUBMapItem] = []
         for index in items.indices {
-            guard let target = xyz[items[index].id], let before = items[index].position else { continue }
+            guard let position = final[items[index].id], let before = items[index].position else { continue }
             snapshot[items[index].id] = before
-            var position = target
-            position.x = min(max(position.x, spaceShift.x - 5), spaceShift.x + 5)
-            position.y = min(max(position.y, heights.lowerBound), heights.upperBound)
             items[index].position = position
             moved.append(items[index])
         }
@@ -8643,6 +8845,9 @@ struct EPUBMapView: View {
         }
         cardSizes.barItemID = item.id
         syncCardBar()
+        // Folded off its plane, a paper goes back to its plane's depth now
+        // (see reload), not at the room's next rebuild.
+        if !open, liftedCards[item.id] != nil { reload() }
     }
 
     /// One close for every door a panel offers — the title bar's ✕ and
@@ -9441,6 +9646,136 @@ struct EPUBMapView: View {
         carrySpace(target - centre)
     }
 
+    /// Arrange in Front (11 Nov 2026, Frode): everything in the room
+    /// brought before the reader, starting 1 m in front of their face.
+    ///
+    /// The room is measured by its bulk — the papers, labels and snippets
+    /// standing, not the ghosts, lifted cards or the citations' corridor,
+    /// and with the nearest and farthest twentieth set aside — so one
+    /// stray node beside the reader, or one left far off, cannot hold the
+    /// rest where it is. The whole space is carried so that bulk's nearest
+    /// stands 1 m ahead along the reader's gaze, centred across it, its
+    /// middle at their eyes. Where it then still reaches further than a
+    /// room can be seen whole — deeper than 3 m, wider than 3.6 m, taller
+    /// than 1.6 m — it is drawn in along that axis alone, and any node left
+    /// outside (a stray, one behind the reader) is brought to the edge of
+    /// that box; cards on one plane made to overlap are eased apart. Undo
+    /// View gives back the carry and the places together.
+    private func arrangeInFront() {
+        let pose = faceTurner.headPose()
+        // No head pose (the simulator): the reader at the room's origin,
+        // eyes at walking height, looking into the room.
+        let eye = pose?.position ?? SIMD3<Float>(0, CitedSpace.walkHeight, 0)
+        let forward = pose?.forward ?? SIMD3<Float>(0, 0, -1)
+        let right = SIMD3<Float>(-forward.z, 0, forward.x)
+        let eyeHeight = min(max(eye.y, 1.2), 1.8)
+        let nearest: Float = 1.0
+        let deepest: Float = 3.0, widest: Float = 3.6, tallest: Float = 1.6
+
+        let nodes = items.filter {
+            !$0.isAside && !$0.isGhost && $0.position != nil && liftedCards[$0.id] == nil
+                && labelStuck[$0.id] == nil && $0.kind != .cited && $0.kind != .citedDeep
+        }
+        guard !nodes.isEmpty else { return }
+        func local(_ p: SIMD3<Float>) -> SIMD3<Float> {
+            let d = p - eye
+            return SIMD3<Float>(simd_dot(d, forward), simd_dot(d, right), p.y)
+        }
+        func world(_ l: SIMD3<Float>) -> SIMD3<Float> {
+            SIMD3<Float>(eye.x, 0, eye.z) + forward * l.x + right * l.y + SIMD3<Float>(0, l.z, 0)
+        }
+        /// The bulk's extent along one axis: the nearest and farthest
+        /// twentieth left out once there are enough nodes to spare them.
+        func span(_ values: [Float]) -> ClosedRange<Float> {
+            let sorted = values.sorted()
+            let trim = sorted.count >= 20 ? sorted.count / 20 : 0
+            return sorted[trim]...sorted[sorted.count - 1 - trim]
+        }
+        let before = nodes.map { local($0.position!) }
+        let ahead = span(before.map(\.x)), side = span(before.map(\.y)), up = span(before.map(\.z))
+
+        let snapshot = Dictionary(uniqueKeysWithValues: items.compactMap { item in
+            item.position.map { (item.id, $0) }
+        })
+        let wasTimeFree = isTimeFree
+        // 1. The carry: the whole space, the corridor and ghosts with it.
+        let delta = forward * (nearest - ahead.lowerBound)
+            - right * ((side.lowerBound + side.upperBound) / 2)
+            + SIMD3<Float>(0, eyeHeight - (up.lowerBound + up.upperBound) / 2, 0)
+        commitSpaceShift(delta)
+
+        // 2. The fit: each axis drawn in only if it reaches too far, then
+        // every node held inside the box.
+        let depthScale = min(1, deepest / max(ahead.upperBound - ahead.lowerBound, 1e-3))
+        let widthScale = min(1, widest / max(side.upperBound - side.lowerBound, 1e-3))
+        let heightScale = min(1, tallest / max(up.upperBound - up.lowerBound, 1e-3))
+        let low = max(0.3, eyeHeight - tallest / 2), high = min(2.5, eyeHeight + tallest / 2)
+        var at: [String: SIMD3<Float>] = [:]
+        for node in nodes {
+            guard let index = items.firstIndex(where: { $0.id == node.id }),
+                  let position = items[index].position else { continue }
+            let l = local(position)
+            var fitted = SIMD3<Float>(nearest + (l.x - nearest) * depthScale,
+                                      l.y * widthScale,
+                                      eyeHeight + (l.z - eyeHeight) * heightScale)
+            fitted.x = min(max(fitted.x, nearest), nearest + deepest)
+            fitted.y = min(max(fitted.y, -widest / 2), widest / 2)
+            fitted.z = min(max(fitted.z, low), high)
+            let target = world(fitted)
+            if simd_distance(target, position) > 0.005 { at[node.id] = target }
+        }
+        // Drawn in, cards on one plane may now overlap: eased apart
+        // sideways or up and down, whichever frees them soonest.
+        if !at.isEmpty {
+            var placedNow = Dictionary(uniqueKeysWithValues: nodes.compactMap { node in
+                (at[node.id] ?? items.first(where: { $0.id == node.id })?.position).map { (node.id, $0) }
+            })
+            let ids = Array(placedNow.keys)
+            let size = Dictionary(uniqueKeysWithValues: ids.map { ($0, cardSizes.shown[$0] ?? SIMD2<Float>(0.14, 0.06)) })
+            for _ in 0..<40 {
+                var moved = false
+                for i in ids.indices {
+                    for j in (i + 1)..<ids.count {
+                        let a = ids[i], b = ids[j]
+                        let d = placedNow[b]! - placedNow[a]!
+                        guard abs(simd_dot(d, forward)) < 0.05 else { continue }
+                        let across = simd_dot(d, right)
+                        let need = (size[a]! + size[b]!) / 2 + SIMD2<Float>(repeating: 0.01)
+                        let over = need - SIMD2<Float>(abs(across), abs(d.y))
+                        guard over.x > 0, over.y > 0 else { continue }
+                        let shove = over.x < over.y
+                            ? right * ((across >= 0 ? 1 : -1) * over.x / 2)
+                            : SIMD3<Float>(0, (d.y >= 0 ? 1 : -1) * over.y / 2, 0)
+                        placedNow[a]! -= shove
+                        placedNow[b]! += shove
+                        at[a] = placedNow[a]
+                        at[b] = placedNow[b]
+                        moved = true
+                    }
+                }
+                if !moved { break }
+            }
+        }
+        if !at.isEmpty {
+            var moved: [EPUBMapItem] = []
+            for index in items.indices {
+                guard let target = at[items[index].id] else { continue }
+                items[index].position = target
+                moved.append(items[index])
+            }
+            // The places are now the room's own, free of time's planes,
+            // as any arrangement's are.
+            setTimeFree(true)
+            keepPlacements(of: moved)
+        }
+        // Undo View: the carry first, then every place as it stood.
+        watchUndo = snapshot
+        watchUndoShift = delta
+        watchUndoTimeFree = at.isEmpty ? nil : wasTimeFree
+        reload()
+        updateWatchChips()
+    }
+
     /// One carry of the whole space, remembered so Undo View can give
     /// it back — the last one, as with every other arrangement here:
     /// one step home, not a history.
@@ -9864,9 +10199,50 @@ final class FistGrab {
         /// before it takes the room — a single noisy frame used to be
         /// enough, and the whole space leapt at 2.5× the hand.
         var closedSince: Double?
+        /// The palm smoothed for carrying (11 Nov 2026), and the filter's
+        /// own state: its smoothed speed and when it last read.
+        var smoothPalm: SIMD3<Float>?
+        var smoothVelocity = SIMD3<Float>.zero
+        var smoothAt: CFTimeInterval?
     }
 
     private var hands: [Hand] = []
+
+    /// The jiggle taken out of a carry (11 Nov 2026, Frode): the palm's
+    /// tracked place trembles a millimetre or so from frame to frame, and
+    /// the carry used it raw — the gear multiplied the tremor and the cards'
+    /// springs rang with it. The palm the carry reads is a One Euro filter's:
+    /// at rest or moving slowly it is smoothed hard (cut off at
+    /// `smoothMinCutoff` Hz), and the faster the hand goes the higher the
+    /// cut-off (`smoothBeta` Hz for each m/s), so a sweep is followed
+    /// without lag. The fist's own pose — curled or not — still reads the
+    /// raw joints.
+    private static let smoothMinCutoff: Float = 1.0
+    private static let smoothBeta: Float = 10
+    private static let smoothSpeedCutoff: Float = 1.0
+
+    private func smoothedPalm(_ index: Int, raw: SIMD3<Float>, now: CFTimeInterval) -> SIMD3<Float> {
+        guard let previous = hands[index].smoothPalm, let at = hands[index].smoothAt, now - at > 1e-4 else {
+            hands[index].smoothPalm = raw
+            hands[index].smoothVelocity = .zero
+            hands[index].smoothAt = now
+            return raw
+        }
+        let dt = Float(min(now - at, 0.1))
+        func alpha(_ cutoff: Float) -> Float {
+            let tau = 1 / (2 * Float.pi * cutoff)
+            return 1 / (1 + tau / dt)
+        }
+        let rawVelocity = (raw - previous) / dt
+        let velocity = hands[index].smoothVelocity
+            + (rawVelocity - hands[index].smoothVelocity) * alpha(Self.smoothSpeedCutoff)
+        let cutoff = Self.smoothMinCutoff + Self.smoothBeta * simd_length(velocity)
+        let palm = previous + (raw - previous) * alpha(cutoff)
+        hands[index].smoothPalm = palm
+        hands[index].smoothVelocity = velocity
+        hands[index].smoothAt = now
+        return palm
+    }
     /// Whether either hand is a fist now — the dust's summoning waits.
     var anyFist: Bool { hands.contains { $0.isFist } }
     /// Which hand is carrying — the first fist wins; the other hand
@@ -9991,9 +10367,12 @@ final class FistGrab {
             // the anchor must be live, and its place real.
             let palm = hands[index].palm.position(relativeTo: nil)
             guard hands[index].palm.isAnchored, palm != .zero else {
+                hands[index].smoothPalm = nil
                 if !holdsWhileChoosing(index, now: now) { letGo(index) }
                 continue
             }
+            // The palm the carry follows: smoothed, the tremor gone.
+            let carryPalm = smoothedPalm(index, raw: palm, now: now)
 
             // Only joints the cameras actually hold get a vote; a
             // closed fist hides its own fingers, so joints do drop out.
@@ -10050,12 +10429,12 @@ final class FistGrab {
                     // A fist waiting for its partner keeps its palm
                     // current, so the carry starts from where it is.
                     let previous = hands[index].lastPalm
-                    hands[index].lastPalm = palm
+                    hands[index].lastPalm = carryPalm
                     guard driving == index, let last = previous else { continue }
                     // Still choosing: nothing moves. A fist that sets off
                     // without a choice carries everything, from here.
                     guard let carrying = choice else {
-                        waited += palm - last
+                        waited += carryPalm - last
                         if simd_length(waited) > Self.chooseWithin {
                             choice = .everything
                             settle?()
@@ -10063,7 +10442,7 @@ final class FistGrab {
                         continue
                     }
                     // The hand's speed, smoothed, sets the gear.
-                    let step = palm - last
+                    let step = carryPalm - last
                     if let at = handReadAt, now - at > 1e-4 {
                         let speed = simd_length(step) / Float(now - at)
                         handSpeed = handSpeed * 0.7 + speed * 0.3
@@ -10085,7 +10464,7 @@ final class FistGrab {
                     hands[index].closedSince = since
                     guard now - since >= Self.holdBefore else { continue }
                     hands[index].isFist = true
-                    hands[index].lastPalm = palm
+                    hands[index].lastPalm = carryPalm
                     if driving == nil, let first = firstFist() {
                         // A coast still under way ends where it is.
                         finishCoast()
@@ -10099,7 +10478,7 @@ final class FistGrab {
                         // all): a fist carries everything at once.
                         choice = Self.offersChits ? nil : .everything
                         waited = .zero
-                        grip?(hands[first].lastPalm ?? palm)
+                        grip?(hands[first].lastPalm ?? carryPalm)
                     }
                 }
             } else {
@@ -15318,7 +15697,10 @@ final class SpaceJelly {
     // so a hard carry swings the room's cards well behind and back.
     static let nearOmega: Float = 15
     static let farOmega: Float = 6
-    static let damping: Float = 0.3
+    /// 0.3 until 11 Nov 2026: the hand's tremor kept the cards ringing — a
+    /// jiggle through the carry. 0.55 still trails and catches up with a
+    /// small overshoot, but settles before the next tremor can add to it.
+    static let damping: Float = 0.55
     /// The furthest a card's face may trail its place.
     static let maxTrail: Float = 0.6
 
