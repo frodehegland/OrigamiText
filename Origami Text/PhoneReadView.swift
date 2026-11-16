@@ -347,14 +347,14 @@ struct PhoneShelfRow: View {
                 Button {
                     model.bringBack(record)
                 } label: {
-                    Label("Bring Back", systemImage: "arrow.uturn.backward")
+                    Label("Bring Back", systemImage: "archivebox.fill")
                 }
                 .tint(.indigo)
             } else {
                 Button {
                     model.setAside(record)
                 } label: {
-                    Label("Set Aside", systemImage: "moon.zzz")
+                    Label("Set Aside", systemImage: "archivebox")
                 }
                 .tint(.indigo)
             }
@@ -369,13 +369,13 @@ struct PhoneShelfRow: View {
                     model.markToRead(id: record.id, at: nil, quote: nil)
                 }
             }
-            Toggle("Pin", isOn: Binding(
+            Toggle("Pin", systemImage: "pin", isOn: Binding(
                 get: { model.isTopOfPile(record) },
                 set: { _ in model.toggleTopOfPile(record) }))
             if model.isSetAside(record) {
-                Button("Bring Back") { model.bringBack(record) }
+                Button("Bring Back", systemImage: "archivebox.fill") { model.bringBack(record) }
             } else {
-                Button("Set Aside") { model.setAside(record) }
+                Button("Set Aside", systemImage: "archivebox") { model.setAside(record) }
             }
             Divider()
             // A note on the book itself — no words selected, none

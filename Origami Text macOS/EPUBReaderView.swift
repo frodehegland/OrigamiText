@@ -495,7 +495,7 @@ Button { model.toggleTopOfPile(record) } label: {
                     if model.isSetAside(record) { model.bringBack(record) }
                     else { model.setAside(record) }
                 } label: {
-                    Image(systemName: "arrow.down")
+                    Image(systemName: model.isSetAside(record) ? "archivebox.fill" : "archivebox")
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)

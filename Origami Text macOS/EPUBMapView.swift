@@ -191,6 +191,18 @@ struct EPUBMapView: View {
     /// The room is quiet by default — citations rise only for the
     /// raised article. Empty until a journal is opened from the panel.
     @State private var items: [EPUBMapItem] = []
+    /// The chosen cards a layout has just placed (16 Nov 2026, Frode): an
+    /// arrangement is one thing done, and then each card is the reader's
+    /// to move alone — none carries the rest of the selection with it,
+    /// until the selection itself next changes.
+    @State private var arrangedFree: Set<String> = []
+    /// Concepts just pulled off a card into the room (16 Nov 2026): they
+    /// stand wherever they were let go, whatever Focus, Gather or Hide
+    /// All Concepts would otherwise keep away, until the Concepts menu
+    /// next shows or hides them all.
+    @State private var pulledConceptIDs: Set<String> = []
+    /// The ids of every chosen card, for `ArrangementRelease`.
+    private var selectedIDSet: Set<String> { Set(items.lazy.filter(\.isSelected).map(\.id)) }
 
     /// Lift, take two (15 Sep evening): the lifted card is billboarded
     /// and moves free — no surface pose fighting the hand — with the
@@ -1459,24 +1471,32 @@ struct EPUBMapView: View {
         // The bar's Authors (16 Nov 2026): a card for every author of the
         // standing papers — the face, when the Mac gathered one, and the
         // name — in rows above the wall, most papers first.
-        if model.authorCardsShown {
-            let papers = items.filter { $0.kind == .article && !$0.isGhost && !$0.isAside }
-            var order: [String] = []
-            var people: [String: (name: String, count: Int)] = [:]
-            for paper in papers {
-                for name in paperAuthors(paper.id) {
-                    let key = OrigamiPortraits.key(name)
-                    guard !key.isEmpty else { continue }
-                    if people[key] == nil { order.append(key); people[key] = (name, 0) }
-                    people[key]?.count += 1
-                }
+        // Who wrote the standing papers, kept whether or not the cards
+        // stand: a concept naming one of them is that person's card.
+        let authorPapers = items.filter { $0.kind == .article && !$0.isGhost && !$0.isAside }
+        var authorOrder: [String] = []
+        var people: [String: (name: String, count: Int)] = [:]
+        for paper in authorPapers {
+            for name in paperAuthors(paper.id) {
+                let key = OrigamiPortraits.key(name)
+                guard !key.isEmpty else { continue }
+                if people[key] == nil { authorOrder.append(key); people[key] = (name, 0) }
+                people[key]?.count += 1
             }
+        }
+        Self.roomAuthorCounts = people.mapValues(\.count)
+        if model.authorCardsShown {
+            let papers = authorPapers
+            var order = authorOrder
             order.sort { (people[$0]?.count ?? 0, $1) > (people[$1]?.count ?? 0, $0) }
             // One of each person (16 Nov 2026, Frode): an author already
             // standing as a concept is that concept — which wears their
             // picture — and gets no second card.
             let asConcepts = Set(items.filter { Self.isConceptPill($0) }.map { OrigamiPortraits.key($0.title) })
             order.removeAll { asConcepts.contains($0) }
+            // Thrown to the floor, a person's card is put away like any
+            // concept; Reveal All Concepts brings it back.
+            order.removeAll { hiddenConceptIDs.contains(Self.personItemPrefix + $0) }
             let places = papers.compactMap(\.position)
             let top = places.map(\.y).max() ?? 1.6
             let midX = places.isEmpty ? 0 : (places.map(\.x).min()! + places.map(\.x).max()!) / 2
@@ -1500,6 +1520,9 @@ struct EPUBMapView: View {
                 return item
             }
         }
+        // Frames (16 Nov 2026, Frode): every concept of a frame's kind
+        // stands in its columns.
+        layFrameMembers(people: people, selected: selected)
         // A paper's gallery, raised from its star menu's Images: each of
         // its pictures a card of its own, standing to the paper's right in
         // rows of four, joined to it by a line each (relationShown).
@@ -1648,6 +1671,16 @@ struct EPUBMapView: View {
             // Author's pictures, Knowledge Space's people (PortraitPublisher).
             if Self.isPersonLabel(items[i]) {
                 items[i].imagePath = model.portraitPaths[OrigamiPortraits.key(items[i].title)]
+            }
+            // A concept naming a person stands as their card (16 Nov 2026,
+            // Frode): the face, the name, how many of the room's papers are
+            // theirs — the same card the bar's Authors raises.
+            if !items[i].id.hasPrefix(Self.personItemPrefix), isPersonConcept(items[i]) {
+                let key = OrigamiPortraits.key(items[i].title)
+                items[i].imagePath = model.portraitPaths[key]
+                if let count = Self.roomAuthorCounts[key] {
+                    items[i].author = "\(count) paper\(count == 1 ? "" : "s")"
+                }
             }
             // Relative Size, asked in place: the card's measured sizes follow
             // at once (the star's gaps, the lines' ends), and the tick eases
@@ -2807,6 +2840,11 @@ struct EPUBMapView: View {
             .onChange(of: model.roomKeywords) {
                 reload()
             }
+            // A new choice after a layout: the chosen move together again.
+            // Showing or hiding all concepts takes back the pulled ones.
+            .modifier(ArrangementRelease(selection: selectedIDSet, conceptsShown: model.conceptsShown,
+                                         onSelection: { arrangedFree = [] },
+                                         onConcepts: { pulledConceptIDs = [] }))
             .onChange(of: model.volumeBarRequest) {
                 performVolumeBarRequest()
             }
@@ -2921,6 +2959,8 @@ struct EPUBMapView: View {
                 // ladder folds, and the reload re-evaluates every
                 // card's standing through the engine's enable hook.
                 readerPanels.hideAll(except: model.readingDeskDocID)
+                // The frames go with the rest of the room (16 Nov 2026).
+                RoomFrames.shared.root.isEnabled = model.readingDeskDocID == nil
                 // Leaving the desk for the Hallway, or another document
                 // taking it, ends a Transpoint.
                 if let transpointDocID = model.transpointDocID,
@@ -2967,6 +3007,19 @@ struct EPUBMapView: View {
                                 value.gestureValue.translation3D, from: .local, to: .scene)
                             return
                         }
+                        // A reading's endnotes, carried by their bar (16 Nov 2026).
+                        if let docID = readerPanels.stripHandle(for: value.entity) {
+                            readerPanels.moveStrip(docID: docID, travel: value.convert(
+                                value.gestureValue.translation3D, from: .local, to: .scene))
+                            return
+                        }
+                        // A reading's scale dot (16 Nov 2026): the page
+                        // grows or shrinks with the hand.
+                        if let docID = readerPanels.scaleDot(for: value.entity) {
+                            readerPanels.scale(docID: docID,
+                                               hand: value.convert(value.location3D, from: .local, to: .scene))
+                            return
+                        }
                         if let (docID, root) = readerPanels.panel(for: value.entity) {
                             let start = readerPanels.dragStart[docID] ?? root.position
                             readerPanels.dragStart[docID] = start
@@ -2975,8 +3028,10 @@ struct EPUBMapView: View {
                             // Held by its bar, the page turns to face the
                             // reader as it goes; let go, it keeps the angle
                             // it had. (No head pose in the simulator: it
-                            // keeps its facing there.)
-                            if let head = faceTurner.headPose() {
+                            // keeps its facing there.) With the left fist
+                            // clenched it keeps its angle as it goes (16 Nov
+                            // 2026, Frode).
+                            if !fistGrab.isLeftFist, let head = faceTurner.headPose() {
                                 readerPanels.turn(docID: docID, toward: head.position)
                             }
                         }
@@ -2991,6 +3046,14 @@ struct EPUBMapView: View {
                         if dustSeed.owns(value.entity) {
                             dustSeed.dragStart = nil
                             dropDust()
+                            return
+                        }
+                        if let docID = readerPanels.scaleDot(for: value.entity) {
+                            readerPanels.endScale(docID: docID)
+                            return
+                        }
+                        if let docID = readerPanels.stripHandle(for: value.entity) {
+                            readerPanels.endStripMove(docID: docID)
                             return
                         }
                         readerPanels.dragStart = [:]
@@ -3284,6 +3347,51 @@ struct EPUBMapView: View {
                 citedToDeepLines.rebuild(items: items)
                 return
             }
+            // An author's card let go on one of their own papers (16 Nov
+            // 2026, Frode) goes back in: into its frame when it came out of
+            // one, gone when it was pulled off a card, home to the Authors
+            // rows when it is one of theirs.
+            for moved in newItems where isPersonConcept(moved) {
+                guard let paper = ownPaper(under: moved) else { continue }
+                let frames = RoomFrames.shared
+                print("AuthorHome: \(moved.title) onto \(paper.title)")
+                placed[moved.id] = nil
+                savePlacedNow()
+                if let frame = frames.frameID(pulling: moved.id) {
+                    frames.putBack(moved.id, in: frame)
+                } else if frames.standsInFrame(moved.id) {
+                    reload()
+                } else if moved.id.hasPrefix(Self.keywordItemPrefix) {
+                    pulledConceptIDs.remove(moved.id)
+                    removeKeyword(moved)
+                } else {
+                    reload()
+                }
+                return
+            }
+            // Frames (16 Nov 2026, Frode): a member let go away from its
+            // frame stands loose there; one let go over a frame of its kind,
+            // within 12 cm of its face, goes back into it.
+            for moved in newItems where Self.isConceptPill(moved) {
+                guard let pos = moved.position, pos.y >= 0.15, let kind = frameKind(of: moved) else { continue }
+                let frames = RoomFrames.shared
+                let home = frames.frameID(near: pos, kind: kind)
+                if frames.standsInFrame(moved.id) {
+                    if home == nil {
+                        frames.pullOut(moved.id)
+                        placed[moved.id] = pos
+                        keepAsKeyword(moved)
+                        savePlacedNow()
+                    }
+                    reload()
+                    return
+                } else if let home {
+                    placed[moved.id] = nil
+                    savePlacedNow()
+                    frames.putBack(moved.id, in: home)
+                    return
+                }
+            }
             // An open paper carried off its year's plane keeps its place: it
             // is lifted, free (no surface courts it), its ghost holding the
             // slot it left — Put Back sends it home.
@@ -3311,6 +3419,12 @@ struct EPUBMapView: View {
                 // A brief puff of smoke where it lands (15 Nov 2026, Frode).
                 smokePuffs.puff(at: SIMD3<Float>(pos.x, max(pos.y, 0.02), pos.z))
                 placed[moved.id] = nil
+                // A frame raised it from the room's concepts: put away from
+                // the frame too, or it would be raised again (16 Nov 2026).
+                if moved.id.hasPrefix(Self.keywordItemPrefix),
+                   RoomFrames.shared.standsInFrame(moved.id) || RoomFrames.shared.isPulled(moved.id) {
+                    hiddenConceptIDs.insert(moved.id)
+                }
                 if moved.id.hasPrefix(Self.keywordItemPrefix) {
                     removeKeyword(moved)
                 } else {
@@ -3361,7 +3475,7 @@ struct EPUBMapView: View {
         view = view.shouldCheckMoveAnotherNodes { item in
             // A concept moves alone (16 Nov 2026, Frode): its lines follow
             // it, the papers and concepts they reach stay where they are.
-            item.isSelected && !Self.isConceptPill(item)
+            item.isSelected && !Self.isConceptPill(item) && !arrangedFree.contains(item.id)
                 && (item.kind == .article || item.kind == .concept
                     || item.kind == .cited || item.kind == .citedDeep)
         }
@@ -3375,7 +3489,7 @@ struct EPUBMapView: View {
                 }
                 return cardSizes.riders?.ids.contains(item.id) ?? false
             }
-            guard item.isSelected else { return false }
+            guard item.isSelected, !arrangedFree.contains(item.id) else { return false }
             let citations: Set<EPUBMapItem.Kind> = [.cited, .citedDeep]
             if citations.contains(moving.kind) {
                 return citations.contains(item.kind)
@@ -3386,6 +3500,9 @@ struct EPUBMapView: View {
             return moving.kind == .concept && item.kind == .concept
         }
         view = view.constrainMovedNode { item, proposed, startPosition in
+            // An author's name being pulled off this card: the pinch is the
+            // name's, and the card stays where it stands (16 Nov 2026, Frode).
+            if AuthorNameHandle.pulling { return startPosition }
             // A ghost holds the lifted card's place — the slot is the
             // whole point of it.
             if item.isGhost || item.isFaded { return startPosition }
@@ -3395,7 +3512,11 @@ struct EPUBMapView: View {
             // Fabien billboarding (9 Nov 2026): only while carried does a
             // node turn to the reader — an open paper standing free, a lifted
             // card, a label, a galaxy concept, a snippet.
-            if !cardTick.facingWhileMoved.contains(item.id) {
+            // The left fist clenched (16 Nov 2026, Frode): carried without
+            // turning — the node keeps the angle it has.
+            if fistGrab.isLeftFist {
+                cardTick.facingWhileMoved.remove(item.id)
+            } else if !cardTick.facingWhileMoved.contains(item.id) {
                 let openFree = item.isSelected && item.showsAbstract && standsFree(item)
                 // An exhibit turns too, keeping its lean (MapCardTick.leaning).
                 // (A lifted card no longer turns, 15 Nov 2026, Frode: it
@@ -3478,6 +3599,8 @@ struct EPUBMapView: View {
             // A label snaps onto a real surface it is brought near —
             // flush to a wall, flat on a table — and keeps that pose until
             // pulled off. State writes only on change, as a lifted card's.
+            // A frame's member is carried free: let go, it is out or back.
+            if RoomFrames.shared.standsInFrame(item.id) { return proposed }
             if Self.isSpatialLabel(item) {
                 // A colour key's marker courts a wall from further off — and
                 // so does a concept (16 Nov 2026, Frode), to walls alone: the
@@ -3528,11 +3651,25 @@ struct EPUBMapView: View {
             // Snippets has put them away (9 Nov 2026).
             if item.id.hasPrefix("float:") { return model.snippetsShown }
             // A colour chosen on the colour key stands through every Focus.
-            if item.id.hasPrefix(Self.tagHubPrefix) { return true }
+            // (Not through a reading's Focus, 16 Nov 2026.)
+            if item.id.hasPrefix(Self.tagHubPrefix) { return model.readingDeskDocID == nil }
             // No group names in the room for now (16 Nov 2026, Frode): a
             // Shape's labels — its authors, themes, people, rows — stand
             // away; `groupLabelsShown` brings them back.
             if item.id.hasPrefix(Self.shapeLabelPrefix), !Self.groupLabelsShown { return false }
+            // Focus — the Reading Desk — puts the frames' cards away too.
+            if model.readingDeskDocID != nil, Self.isConceptPill(item) { return false }
+            // A frame's members stand while it does (16 Nov 2026, Frode),
+            // whatever else the room hides; they wait while it is folded or
+            // being moved and resized.
+            if RoomFrames.shared.standsInFrame(item.id) { return true }
+            if RoomFrames.shared.isWaiting(item.id) { return false }
+            // Authors off in the bar (16 Nov 2026, Frode): no loose person's
+            // card stands, however it came — pulled from a card or put in. One
+            // pulled out of a frame is the frame's, and stands.
+            if !model.authorCardsShown, isPersonConcept(item), !RoomFrames.shared.isPulled(item.id) { return false }
+            // A concept just pulled out stands where it was let go.
+            if pulledConceptIDs.contains(item.id) { return true }
             // The Concepts menu's Hide All Concepts puts every pill away.
             if Self.isConceptPill(item), !model.conceptsShown { return false }
             guard model.readingDeskDocID == nil else { return false }
@@ -3659,6 +3796,7 @@ struct EPUBMapView: View {
             // card lifted a minute from now needs the walls already
             // known, not scanned at the moment of the drop.
             roomSurfaces.install()
+            installFrames(in: content)
             rubberBalls.install(in: content, surfaces: roomSurfaces)
             // A ball come to rest stays where it lies.
             rubberBalls.onRest = { id, place in
@@ -3719,7 +3857,7 @@ struct EPUBMapView: View {
                              // from any side; everything else stands
                              // upright.
                              anyLifted: { !liftedCards.isEmpty || !labelStuck.isEmpty
-                                 || !cardSizes.labelIDs.isEmpty },
+                                 || !cardSizes.labelIDs.isEmpty || RoomFrames.shared.hasMembers },
                              // Every label in the room turns to the reader —
                              // a colour's name, a Shape's group, a keyword —
                              // unless it rests on a wall (2 Nov 2026).
@@ -3727,7 +3865,9 @@ struct EPUBMapView: View {
                              // A card that has taken a real surface
                              // keeps that surface's pose instead.
                              stuckOrientation: {
-                                 (liftedCards[$0]?.stuck ?? labelStuck[$0]).map(simd_quatf.init(vector:))
+                                 // In a frame: facing out of it.
+                                 RoomFrames.shared.orientation(of: $0)
+                                     ?? (liftedCards[$0]?.stuck ?? labelStuck[$0]).map(simd_quatf.init(vector:))
                              })
             cardTick.targetScale = { [cardSizes] in cardSizes.targetScale[$0] }
             cardTick.ceilingHeight = { [roomSurfaces] in roomSurfaces.ceilingHeight() ?? MapCardTick.usualCeiling }
@@ -3822,7 +3962,9 @@ struct EPUBMapView: View {
         // have a little more room to run. Choosing alone changes nothing
         // but the border (15 Nov 2026, Frode; was any chosen card).
         // A fifth wider again (16 Nov 2026, Frode): 1.32, was 1.1.
-        let chosen: CGFloat = item.isSelected && item.showsAbstract && !item.isGhost ? 1.32 : 1.0
+        // Every paper in the Exhibition reads open, so wears the same width.
+        let open = (item.isSelected && item.showsAbstract) || item.isExhibited
+        let chosen: CGFloat = open && !item.isGhost ? 1.32 : 1.0
         switch item.kind {
         case .article: return 100.0 * chosen * item.widthScale * Self.crisp
         case .cited: return 75.0 * chosen * Self.crisp
@@ -4008,7 +4150,9 @@ struct EPUBMapView: View {
             }
         } else if item.id.hasPrefix(Self.tagHubPrefix) {
             colourHub(for: item)
-        } else if item.id.hasPrefix(Self.personItemPrefix) {
+        } else if isPersonConcept(item) {
+            // One card for a person, whichever way they came into the room —
+            // and always so in an Authors frame (16 Nov 2026, Frode).
             personCard(item)
         } else if Self.isConceptPill(item) {
             // A concept in the room is a pill (15 Nov 2026, Frode), as in
@@ -4795,10 +4939,13 @@ struct EPUBMapView: View {
         }
         // The card's size as it stands unchosen — the star menu's gap.
         // Size by Length: the whole card, body and words, at its paper's size.
-        if item.kind == .article, !item.isGhost { grown *= item.sizeScale }
+        // A concept in a frame stands at the frame's scale (16 Nov 2026).
+        if (item.kind == .article && !item.isGhost) || item.kind == .concept { grown *= item.sizeScale }
         cardSizes.base[item.id] = SIMD2(extents.x, extents.y)
             * (item.kind == .article && !item.isGhost ? Self.documentCardMagnify * item.sizeScale : 1)
         cardSizes.shown[item.id] = SIMD2(extents.x * grown, extents.y * grown)
+        // An open card's face rides forward of its node by this much.
+        let lift: Float = item.isSelected && item.showsAbstract && !item.isGhost ? item.openLift : 0
         let holder = ModelEntity(
             mesh: .generateBox(width: extents.x * grown,
                                height: extents.y * grown, depth: 0.004),
@@ -4823,7 +4970,8 @@ struct EPUBMapView: View {
                     // into the room as a concept.
                     .overlayPreferenceValue(AuthorAnchors.self) { anchors in
                         if !back, item.kind == .article, item.isSelected, item.showsAbstract {
-                            authorHandles(anchors, item: item, faceScale: Float(1.36 / Self.crisp) * grown)
+                            authorHandles(anchors, item: item, faceScale: Float(1.36 / Self.crisp) * grown,
+                                          holder: holder, lift: lift)
                         }
                     }
                     .frame(maxWidth: nodeMaxWidth(for: item))
@@ -4854,7 +5002,6 @@ struct EPUBMapView: View {
         // (1 Nov 2026): everything seen of it rides one child, moved
         // `openCardLift` out along the card's facing, while the node —
         // its saved place, its timeline depth — stays where it is.
-        let lift: Float = item.isSelected && item.showsAbstract && !item.isGhost ? item.openLift : 0
         let body = Entity()
         body.name = MapCardTick.bodyName
         // Gather's half strength, worn from the build when it stands.
@@ -4980,7 +5127,7 @@ struct EPUBMapView: View {
         // is tall, its ends domed, clear and a little milky, the room's
         // light on its curves, a breath of its kind's colour — the words on
         // its face.
-        if Self.isConceptPill(item), item.isSelected {
+        if Self.isConceptPill(item), item.isSelected, !isPersonConcept(item) {
             body.addChild(Self.conceptGlass(width: extents.x * grown, height: extents.y * grown,
                                             tint: model.conceptKindColour(item.title)))
         }
@@ -5076,10 +5223,8 @@ struct EPUBMapView: View {
         // A chosen concept pill threads itself, unasked (15 Nov 2026,
         // Frode): to every paper using it, and to every other concept in
         // the room that shares a paper with it.
-        // A chosen author's card: a line to each of their papers.
-        for item in items where item.isSelected && item.id.hasPrefix(Self.personItemPrefix) {
-            for docID in labelMembers(item) { edges.append((from: item.id, to: docID)) }
-        }
+        // A chosen author's card is a concept now, threaded with the rest
+        // below: to each of their papers and to the concepts sharing one.
         let pills = model.conceptsShown ? items.filter { Self.isConceptPill($0) && !$0.isGhost } : []
         // A card's concepts shown round it (its Concepts, 16 Nov 2026,
         // Frode): a line from the card to each of those concepts already
@@ -5247,7 +5392,7 @@ struct EPUBMapView: View {
             case "articles": return matchesSelectKind(.documents, item)
             case "other": return item.kind == .article
                 && model.piece(forDocID: item.id)?.zone == .appendices
-            case "authors": return item.id.hasPrefix(Self.personItemPrefix)
+            case "authors": return isPersonConcept(item)
             default: return false
             }
         }.map(\.id))
@@ -5605,11 +5750,10 @@ struct EPUBMapView: View {
             // and widths, so the card keeps the middle.
             VStack(spacing: Self.starButtonGap) {
                 if let bar, Self.starMenusShown { cardVerbs(bar) }
+                // The row under the card mirrored unseen above it, so the
+                // card keeps the middle (Unfold moved below, 16 Nov 2026).
                 if wears {
-                    ZStack {
-                        pileVerbs(for: item).hidden()
-                        readButton(for: item)
-                    }
+                    footVerbs(for: item).hidden()
                 }
                 HStack(alignment: .center, spacing: Self.starButtonGap) {
                     // Each side a column of one width, its button halfway
@@ -5639,10 +5783,10 @@ struct EPUBMapView: View {
                     .frame(width: Self.sideColumnWidth, height: gap.height, alignment: .leading)
                 }
 
-                // Under the card: Pin and Set Aside — and the authors' row
-                // mirrored unseen, so the card keeps the middle.
+                // Under the card: Unfold, then — further along — Pin and Set
+                // Aside (16 Nov 2026, Frode).
                 if wears {
-                    pileVerbs(for: item)
+                    footVerbs(for: item)
                 }
                 if let bar, Self.starMenusShown { cardVerbs(bar).hidden() }
             }
@@ -5768,11 +5912,25 @@ struct EPUBMapView: View {
         // cm): measured from the place, the concept landed behind the open
         // card and was never seen (16 Nov 2026).
         if source.isSelected, source.showsAbstract, !source.isGhost { card.z += source.openLift }
+        // A little in front of the card's face, so it never stands inside it.
+        placeConcept(raw, at: card + offset + SIMD3<Float>(0, 0, 0.02))
+    }
+
+    /// A concept raised only for a frame, taken out of it: kept in the room
+    /// as a keyword, so it stands there after the frame is gone.
+    private func keepAsKeyword(_ item: EPUBMapItem) {
+        guard item.id.hasPrefix(Self.keywordItemPrefix),
+              !model.roomKeywords.contains(where: { $0.caseInsensitiveCompare(item.title) == .orderedSame }) else { return }
+        model.addSpaceKeyword(item.title)
+    }
+
+    /// A concept stood in the room at `point`, the room's own metres.
+    private func placeConcept(_ raw: String, at point: SIMD3<Float>) {
         let term = raw.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
         guard !term.isEmpty else { return }
         let id = Self.keywordItemPrefix + term.lowercased()
-        // A little in front of the card's face, so it never stands inside it.
-        placed[id] = card + offset + SIMD3<Float>(0, 0, 0.02)
+        placed[id] = point
+        pulledConceptIDs.insert(id)
         savePlacedNow()
         if model.roomKeywords.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) {
             reload()
@@ -6341,9 +6499,18 @@ struct EPUBMapView: View {
     /// as dropping it to the floor does.
     private func pileVerbs(for item: EPUBMapItem) -> some View {
         HStack(spacing: 10) {
-            Button(item.isPinned ? "Unpin" : "Pin") { performCardVerb("pin", on: item.id) }
-                .tint(item.isPinned ? .accentColor : nil)
-            Button("Set Aside") { performCardVerb("hide", on: item.id) }
+            // Icons (16 Nov 2026, Frode): a pin, and an archive box for Set Aside.
+            Button { performCardVerb("pin", on: item.id) } label: {
+                Image(systemName: item.isPinned ? "pin.fill" : "pin")
+            }
+            .tint(item.isPinned ? .accentColor : nil)
+            .help(item.isPinned ? "Unpin" : "Pin")
+            .accessibilityLabel(item.isPinned ? "Unpin" : "Pin")
+            Button { performCardVerb("hide", on: item.id) } label: {
+                Image(systemName: "archivebox")
+            }
+            .help("Set Aside")
+            .accessibilityLabel("Set Aside")
             // While this card's Gather stands (2 Nov 2026): Select Gathered
             // chooses them all, so one drag carries the whole star. (Focus
             // is the card's own Focus, above it.)
@@ -6456,7 +6623,7 @@ struct EPUBMapView: View {
     /// on the face, invisible, to pinch (the name goes into the room) or to
     /// pull out and let go where it should stand as a concept.
     @ViewBuilder private func authorHandles(_ anchors: [String: SwiftUI.Anchor<CGRect>], item: EPUBMapItem,
-                                            faceScale: Float) -> some View {
+                                            faceScale: Float, holder: Entity, lift: Float) -> some View {
         GeometryReader { proxy in
             // The face's points, in the room's metres.
             let metresPerPoint = faceScale / 1360
@@ -6466,12 +6633,42 @@ struct EPUBMapView: View {
                     let start = SIMD3<Float>(Float(rect.midX - proxy.size.width / 2) * metresPerPoint,
                                              -Float(rect.midY - proxy.size.height / 2) * metresPerPoint, 0)
                     AuthorNameHandle(name: name, size: rect.size, pullScale: CGFloat(1 / faceScale),
+                                     card: AnyView(pulledPersonCard(name)
+                                        // Drawn inside the face: at the room's own size.
+                                        .scaleEffect(1.36 / Self.crisp / CGFloat(faceScale))),
                                      onTap: { model.addSpaceKeyword(name) },
-                                     onDrop: { travel in dropConcept(name, from: item.id, at: start + travel) })
+                                     onDrop: { [weak holder] travel in
+                                         // Where the name stood, in the room: through the card
+                                         // itself, so its turn toward the reader, its lift and
+                                         // its size all count — then the hand's travel, so the
+                                         // concept stands where it was let go (16 Nov 2026).
+                                         // A card rebuilt while the hand pulled leaves this
+                                         // one out of the room: measure from its node then.
+                                         guard let holder, holder.scene != nil else {
+                                             print("AuthorPull: \(name) — card rebuilt, from its node")
+                                             dropConcept(name, from: item.id, at: start + travel)
+                                             return
+                                         }
+                                         let from = holder.convert(position: start + SIMD3<Float>(0, 0, lift + 0.003),
+                                                                   to: nil)
+                                         print("AuthorPull: \(name) at \(from + travel)")
+                                         placeConcept(name, at: from + travel)
+                                     })
                         .position(x: rect.midX, y: rect.midY)
                 }
             }
         }
+    }
+
+    /// The author's card as it will stand, for the hand to carry out.
+    private func pulledPersonCard(_ name: String) -> some View {
+        let key = OrigamiPortraits.key(name)
+        var item = EPUBMapItem(id: Self.personItemPrefix + key, title: name,
+                               author: Self.roomAuthorCounts[key].map { "\($0) paper\($0 == 1 ? "" : "s")" } ?? "",
+                               kind: .concept, position: nil)
+        item.imagePath = model.portraitPaths[key]
+        item.isSelected = true
+        return personCard(item)
     }
 
     /// An open card's authors just above it, each a person pill that can be
@@ -6493,7 +6690,20 @@ struct EPUBMapView: View {
         }
     }
 
-    /// Above an open card: Unfold, the card opened fully into its reading.
+    /// The row under an open card (16 Nov 2026, Frode): Unfold at its left,
+    /// set apart from Pin and Set Aside by a wider gap.
+    private func footVerbs(for item: EPUBMapItem) -> some View {
+        HStack(spacing: Self.unfoldGap) {
+            readButton(for: item)
+            pileVerbs(for: item)
+        }
+    }
+
+    /// The air between Unfold and Pin — three times the row's own 10.
+    private static let unfoldGap: CGFloat = 30
+
+    /// Under an open card, at the left: Unfold, the card opened fully into
+    /// its reading.
     private func readButton(for item: EPUBMapItem) -> some View {
         Button("Unfold") { performCardVerb("unfold", on: item.id) }
             .buttonStyle(.bordered)
@@ -7065,6 +7275,25 @@ struct EPUBMapView: View {
         return best?.item
     }
 
+    /// The paper by this person a card was let go on: one of the room's
+    /// papers they wrote, its face — forward of its node by its lift when
+    /// open — under the card's middle, within 10 cm of it. The nearest.
+    private func ownPaper(under moved: EPUBMapItem) -> EPUBMapItem? {
+        guard let at = moved.position else { return nil }
+        let papers = labelMembers(moved)
+        var best: (item: EPUBMapItem, gap: Float)?
+        for paper in items where paper.kind == .article && papers.contains(paper.id) && !paper.isGhost {
+            guard var face = paper.position else { continue }
+            if paper.isSelected, paper.showsAbstract { face.z += paper.openLift }
+            let size = cardSizes.shown[paper.id] ?? SIMD2<Float>(0.14, 0.09)
+            let d = at - face
+            guard abs(d.z) < 0.1, abs(d.x) < size.x / 2, abs(d.y) < size.y / 2 else { continue }
+            let gap = simd_length(d)
+            if gap < (best?.gap ?? .infinity) { best = (paper, gap) }
+        }
+        return best?.item
+    }
+
     /// The dropped paper springs 15 cm back off the other, away from it
     /// (back the way it came when it landed dead centre), on its own plane.
     private func bounce(_ moved: EPUBMapItem, from target: EPUBMapItem) {
@@ -7437,6 +7666,7 @@ struct EPUBMapView: View {
             watchUndoShift = nil
             watchUndoTimeFree = nil
         }
+        arrangedFree = Set(moved.filter(\.isSelected).map(\.id))
         keepPlacements(of: moved)
         reload()
         updateWatchChips()
@@ -8873,6 +9103,7 @@ struct EPUBMapView: View {
         watchUndoShift = nil
         watchUndoTimeFree = isTimeFree
         setTimeFree(true)
+        arrangedFree = Set(moved.filter(\.isSelected).map(\.id))
         keepPlacements(of: moved)
         reload()
         updateWatchChips()
@@ -9323,10 +9554,150 @@ struct EPUBMapView: View {
     /// The bar's Authors: a card per author, by name key.
     static let personItemPrefix = "person:"
 
+    /// An author's card is a concept like any other (16 Nov 2026, Frode),
+    /// only drawn as a card.
     static func isConceptPill(_ item: EPUBMapItem) -> Bool {
         isSpatialLabel(item) && !item.id.hasPrefix(shapeLabelPrefix)
-            && !item.id.hasPrefix(personItemPrefix)
             && !item.id.hasPrefix(tagHubPrefix) && !item.id.hasPrefix("topic:")
+    }
+
+    /// The room's frames (16 Nov 2026): put up in the space, told how to
+    /// reach the room — its shared folder, the reader's head, the walls —
+    /// and what to do when their members change.
+    private func installFrames(in content: RealityViewContent) {
+        let frames = RoomFrames.shared
+        frames.community = { [model] in model.index.folderURL }
+        frames.headPose = { [faceTurner] in faceTurner.headPose() }
+        frames.wallNear = { [roomSurfaces, faceTurner] place, reach in
+            roomSurfaces.nearestPose(to: place, reach: reach, head: faceTurner.headPose()?.position, wallsOnly: true)
+        }
+        frames.membersChanged = { reload() }
+        frames.placeLoose = { places in
+            for (id, place) in places {
+                placed[id] = place
+                if let item = items.first(where: { $0.id == id }) { keepAsKeyword(item) }
+            }
+            savePlacedNow()
+        }
+        frames.forgetLoose = { ids in
+            for id in ids { placed[id] = nil }
+            savePlacedNow()
+        }
+        frames.titleOf = { id in
+            items.first(where: { $0.id == id })?.title
+                ?? String(id.split(separator: ":", maxSplits: 1).last ?? Substring(id))
+        }
+        frames.venue = model.openJournalVenue
+        frames.install(in: content)
+    }
+
+    /// The frame kind a concept belongs in: Authors for the room's authors,
+    /// People for anyone else who is a person, else the kind the room's
+    /// concepts file it under — a keyword or an unfiled concept, Concepts.
+    private func frameKind(of item: EPUBMapItem) -> String? {
+        guard Self.isConceptPill(item), !item.isGhost else { return nil }
+        // A person keeps the frame they came from: Authors or People.
+        if let kind = RoomFrames.shared.kind(ofMember: item.id) ?? RoomFrames.shared.kind(ofPulled: item.id),
+           kind == RoomFrame.authorsKind || kind == ConceptKind.person.rawValue {
+            return kind
+        }
+        if isPersonConcept(item) {
+            let key = item.id.hasPrefix(Self.personItemPrefix)
+                ? String(item.id.dropFirst(Self.personItemPrefix.count)) : OrigamiPortraits.key(item.title)
+            return Self.roomAuthorCounts[key] != nil ? RoomFrame.authorsKind : ConceptKind.person.rawValue
+        }
+        return (model.conceptKind(of: item.title) ?? .concept).rawValue
+    }
+
+    /// Each frame in sight gathers every concept of its kind (16 Nov 2026,
+    /// Frode), as Knowledge Space's side panels do: those standing in the
+    /// room, and — so the frame is whole — the room's authors or the room's
+    /// concepts of that kind not standing yet, raised for it. They are laid
+    /// alphabetically in its columns, smaller together when many, facing
+    /// out of it; the pulled-out stand loose where they were let go.
+    private func layFrameMembers(people: [String: (name: String, count: Int)], selected: Set<String>) {
+        let frames = RoomFrames.shared
+        if frames.venue != model.openJournalVenue { frames.venue = model.openJournalVenue }
+        var laidFrames: Set<String> = []
+        for frame in frames.shownHere {
+            laidFrames.insert(frame.id)
+            let m = RoomFrames.matrix(frame.transform)
+            let middle = RoomFrames.translation(m)
+            var members: [(id: String, title: String)] = []
+            var named = Set<String>()
+            for item in items where frameKind(of: item) == frame.kind {
+                let key = frame.kind == RoomFrame.authorsKind ? OrigamiPortraits.key(item.title) : ConceptTerm.normalise(item.title)
+                guard named.insert(key).inserted else { continue }
+                members.append((item.id, item.title))
+            }
+            // Raised for the frame: who or what is not standing yet.
+            var raised: [EPUBMapItem] = []
+            if frame.kind == RoomFrame.authorsKind {
+                for (key, person) in people where !named.contains(key) {
+                    let id = Self.personItemPrefix + key
+                    guard !hiddenConceptIDs.contains(id) else { continue }
+                    named.insert(key)
+                    var item = EPUBMapItem(id: id, title: person.name,
+                                           author: "\(person.count) paper\(person.count == 1 ? "" : "s")",
+                                           kind: .concept, position: placed[id] ?? middle)
+                    item.imagePath = model.portraitPaths[key]
+                    item.isSelected = selected.contains(id)
+                    raised.append(item)
+                    members.append((id, person.name))
+                }
+            } else {
+                for term in model.roomTerms {
+                    let kind = term.kind.flatMap(ConceptKind.init(fileKey:)) ?? .concept
+                    guard kind.rawValue == frame.kind else { continue }
+                    let key = ConceptTerm.normalise(term.term)
+                    guard !named.contains(key) else { continue }
+                    // A room author is the Authors frame's, not People's.
+                    if kind == .person, Self.roomAuthorCounts[OrigamiPortraits.key(term.term)] != nil { continue }
+                    let id = Self.keywordItemPrefix + term.term.lowercased()
+                    guard !hiddenConceptIDs.contains(id) else { continue }
+                    named.insert(key)
+                    var item = EPUBMapItem(id: id, title: term.term, author: "", kind: .concept,
+                                           position: placed[id] ?? middle)
+                    item.isSelected = selected.contains(id)
+                    raised.append(item)
+                    members.append((id, term.term))
+                }
+            }
+            items += raised
+            members.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            let shown = members.prefix(RoomFrames.memberLimit).map { member -> (id: String, size: SIMD2<Float>) in
+                let estimate = member.id.hasPrefix(Self.personItemPrefix) || frame.kind == RoomFrame.authorsKind
+                    ? SIMD2<Float>(0.088, 0.075)
+                    : SIMD2<Float>(0.03 + Float(member.title.count) * 0.0065, 0.03)
+                return (member.id, cardSizes.base[member.id] ?? estimate)
+            }
+            let laid = frames.lay(frameID: frame.id, members: shown)
+            for index in items.indices {
+                guard let place = laid[items[index].id] else { continue }
+                items[index].position = place.position
+                items[index].sizeScale = place.scale
+            }
+        }
+        frames.forgetMembers(except: laidFrames)
+    }
+
+    /// The room's authors, by name key, with how many standing papers are
+    /// theirs — kept by each rebuild.
+    private static var roomAuthorCounts: [String: Int] = [:]
+
+    /// A concept that is a person: an author's card from the bar, or a
+    /// concept naming one of the room's authors, someone whose face the
+    /// Mac gathered, or anyone the concepts file as a person. It stands
+    /// as the person's card, never as a pill.
+    private func isPersonConcept(_ item: EPUBMapItem) -> Bool {
+        guard Self.isConceptPill(item) else { return false }
+        if item.id.hasPrefix(Self.personItemPrefix) { return true }
+        // A person by their frame, in it or lifted out of it.
+        if RoomFrames.shared.isPersonMember(item.id) { return true }
+        let key = OrigamiPortraits.key(item.title)
+        guard !key.isEmpty else { return false }
+        return Self.roomAuthorCounts[key] != nil || model.portraitPaths[key] != nil
+            || model.conceptIsPerson(item.title)
     }
 
     static func isSpatialLabel(_ item: EPUBMapItem) -> Bool {
@@ -9345,15 +9716,36 @@ struct EPUBMapView: View {
         if let label = roomShape?.labels.first(where: { $0.id == item.id }) {
             return Set(label.members)
         }
-        // An author's card: the papers they wrote.
-        if item.id.hasPrefix(Self.personItemPrefix) {
-            let key = String(item.id.dropFirst(Self.personItemPrefix.count))
-            return Set(items.filter {
-                $0.kind == .article && !$0.isGhost
-                    && paperAuthors($0.id).contains { OrigamiPortraits.key($0) == key }
-            }.map(\.id))
+        // A person (16 Nov 2026, Frode): what they wrote — the room's papers
+        // and any cited work standing with their name on it — and every
+        // paper that mentions them.
+        if isPersonConcept(item) {
+            let key = item.id.hasPrefix(Self.personItemPrefix)
+                ? String(item.id.dropFirst(Self.personItemPrefix.count)) : OrigamiPortraits.key(item.title)
+            let written = items.filter { other in
+                guard !other.isGhost else { return false }
+                switch other.kind {
+                case .article: return paperAuthors(other.id).contains { OrigamiPortraits.key($0) == key }
+                case .cited, .citedDeep: return Self.byline(other.author, names: item.title)
+                case .concept: return false
+                }
+            }
+            return Set(written.map(\.id)).union(keywordMatches(item.title))
         }
         return keywordMatches(item.title)
+    }
+
+    /// Whether a cited work's byline names this person: their surname as a
+    /// word, and their first initial starting a word ("D. Engelbart",
+    /// "Engelbart, Douglas C.") — or no first name to check.
+    static func byline(_ authors: String, names person: String) -> Bool {
+        let words = person.split(whereSeparator: { $0 == " " || $0 == "." }).map(String.init)
+        guard let surname = words.last, surname.count > 2 else { return false }
+        let line = authors.lowercased()
+        let tokens = line.split(whereSeparator: { !$0.isLetter && $0 != "-" && $0 != "'" }).map(String.init)
+        guard tokens.contains(surname.lowercased()) else { return false }
+        guard words.count > 1, let initial = words.first?.lowercased().first else { return true }
+        return tokens.contains { $0.first == initial && $0 != surname.lowercased() }
     }
 
     /// The papers brought round a keyword: a small wall of them hanging
@@ -9807,6 +10199,10 @@ struct EPUBMapView: View {
             model.litSelectionRelation = nil
         }
         model.readerSelectedWords[docID] = nil
+        // Its endnotes and pictures go with it.
+        model.endnoteShelves[docID] = nil
+        model.picturesShown.remove(docID)
+        model.conceptShelves[docID]?.shown = false
         if model.transpointDocID == docID {
             model.transpointDocID = nil
         }
@@ -10168,15 +10564,23 @@ struct EPUBMapView: View {
         let head = faceTurner.headPose()
         let place = head != nil || toReader ? inFrontOfReader(head) : readingPlace(for: docID)
         if unfolding, readerModeRaw == "horizontal" { model.unfoldingDocIDs.insert(docID) }
+        // Unfolded from a card (16 Nov 2026, Frode): straight ahead of the
+        // reader, turned as the card it came from was turned.
+        let facing = unfolding ? readerPanels.cardFacing(of: docID) ?? head.map { -$0.forward }
+                               : head.map { -$0.forward }
         readerPanels.open(
             docID: docID,
             at: place,
-            facing: head.map { -$0.forward },
+            facing: facing,
             home: readingPlace(for: docID),
             unfoldingFrom: unfolding ? readingPlace(for: docID) : nil,
             // Horizontal folds its pages out after the panel has grown.
             unfoldsPages: unfolding && readerModeRaw == "horizontal",
             view: panelView(docID: docID, title: title),
+            // Its endnotes, when asked for, above the page (16 Nov 2026).
+            above: AnyView(VisionEndnoteStrip(docID: docID).environment(model)),
+            // Its concepts, when asked for, under it.
+            below: AnyView(VisionConceptShelf(docID: docID).environment(model)),
             onClose: { closeReader(docID) })
         model.openDocIDs.insert(docID)
     }
@@ -10292,7 +10696,11 @@ struct EPUBMapView: View {
         _ head: (position: SIMD3<Float>, forward: SIMD3<Float>)?
     ) -> SIMD3<Float> {
         guard let head else { return SIMD3<Float>(0, 1.4, -1.0) + spaceShift }
-        return head.position + head.forward * 0.85 + SIMD3<Float>(0, -0.12, 0)
+        // Straight ahead along the heading alone (16 Nov 2026, Frode): the
+        // head's tilt no longer carries the page off to one side.
+        var ahead = SIMD3<Float>(head.forward.x, 0, head.forward.z)
+        ahead = simd_length(ahead) > 1e-4 ? simd_normalize(ahead) : SIMD3<Float>(0, 0, -1)
+        return head.position + ahead * 0.85 + SIMD3<Float>(0, -0.12, 0)
     }
 
     /// The panel a reading wears, built the one way.
@@ -11452,6 +11860,11 @@ final class FistGrab {
         }
     }
 
+    /// Whether the LEFT hand is held closed now (16 Nov 2026, Frode): while
+    /// it is, what the right hand carries keeps its angle — no turning to
+    /// the reader.
+    var isLeftFist: Bool { hands.indices.contains(0) && hands[0].isFist }
+
     /// Settings key: the LEFT hand carries instead of the right.
     static let leftHandCarriesKey = "fistGrabLeftHandCarries"
 
@@ -12117,6 +12530,18 @@ struct ReaderHandleComponent: Component {
     var docID: String
 }
 
+/// Marks an in-situ reader's scale dot, right of its grab bar (16 Nov
+/// 2026, Frode): dragged, the whole reading grows or shrinks.
+struct ReaderScaleComponent: Component {
+    var docID: String
+}
+
+/// Marks the grab bar along the top of a reading's endnotes (16 Nov 2026,
+/// Frode): dragged, the notes move wherever the reader wants them.
+struct ReaderStripHandleComponent: Component {
+    var docID: String
+}
+
 /// Marks an in-situ reader's ✕, carrying its document. The close is
 /// taken by the room's own entity tap, as the wrist chips are: a SwiftUI
 /// tap inside the attachment competed with the room's tap, double-tap
@@ -12136,6 +12561,22 @@ private struct ReaderHandleOutline: View {
             // Fainter (16 Nov 2026; was 75 %).
             .strokeBorder(.white.opacity(0.4), lineWidth: 1.4)
             .frame(width: width, height: 11)
+            .allowsHitTesting(false)
+    }
+}
+
+/// The reading's Scale and Fold (16 Nov 2026, Frode): the word in a
+/// pill's border only. Touches pass to the clear pill beneath.
+private struct ReaderButtonOutline: View {
+    let word: String
+
+    var body: some View {
+        Text(word)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: CGFloat(ReaderPanels.buttonWidth) * 1360,
+                   height: CGFloat(ReaderPanels.buttonHeight) * 1360)
+            .overlay(Capsule().strokeBorder(.white.opacity(0.7), lineWidth: 1.2))
             .allowsHitTesting(false)
     }
 }
@@ -12405,6 +12846,8 @@ final class ReaderPanels {
 
     func install(in content: RealityViewContent) {
         ReaderHandleComponent.registerComponent()
+        ReaderScaleComponent.registerComponent()
+        ReaderStripHandleComponent.registerComponent()
         ReaderCloseComponent.registerComponent()
         self.content = content
         let desk = AnchorEntity(.plane(.horizontal, classification: .table,
@@ -12455,7 +12898,8 @@ final class ReaderPanels {
               facing: SIMD3<Float>? = nil, home: SIMD3<Float>? = nil,
               unfoldingFrom card: SIMD3<Float>? = nil,
               unfoldsPages: Bool = false,
-              view: AnyView, onClose: @escaping () -> Void) {
+              view: AnyView, above: AnyView? = nil, below: AnyView? = nil,
+              onClose: @escaping () -> Void) {
         guard let content else { return }
         // Already open: bring it to the asked place instead.
         if let standing = roots[docID] {
@@ -12476,11 +12920,54 @@ final class ReaderPanels {
             yaws[docID] = turn
             root.orientation = turn
         }
+        // The size the reader last gave this reading (16 Nov 2026); else
+        // three fifths of the reading's old size (16 Nov 2026, Frode).
+        root.scale = SIMD3<Float>(repeating: Self.savedScales[docID] ?? Self.defaultScale)
 
         let page = Entity()
         page.components.set(ViewAttachmentComponent(rootView: view))
         root.addChild(page)
         pages[docID] = page
+        // What stands above the page (16 Nov 2026): the reading's endnotes,
+        // kept 1.5 cm over its top edge as the page and the strip change size.
+        var strip: Entity?
+        var stripHandle: Entity?
+        if let above {
+            let made = Entity()
+            made.components.set(ViewAttachmentComponent(rootView: above))
+            made.position = SIMD3<Float>(0, 0.32, 0.004)
+            root.addChild(made)
+            strip = made
+            strips[docID] = made
+            // Its grab bar, along its top edge (16 Nov 2026, Frode): drag it
+            // and the notes go where the hand takes them, and stay there.
+            var clear = UnlitMaterial()
+            clear.color = .init(tint: .white)
+            clear.blending = .transparent(opacity: 0.001)
+            let handle = ModelEntity(mesh: .generatePlane(width: 0.08, height: 0.008, cornerRadius: 0.004),
+                                     materials: [clear])
+            handle.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(0.12, 0.03, 0.02))]))
+            handle.components.set(InputTargetComponent())
+            handle.components.set(HoverEffectComponent())
+            handle.components.set(ReaderStripHandleComponent(docID: docID))
+            let outline = Entity()
+            outline.components.set(ViewAttachmentComponent(rootView: ReaderHandleOutline(width: 0.08 * 1360)))
+            outline.position = SIMD3<Float>(0, 0, 0.001)
+            handle.addChild(outline)
+            handle.isEnabled = false
+            made.addChild(handle)
+            stripHandle = handle
+        }
+        // And under it (16 Nov 2026): the reading's concepts, kept 3.5 cm
+        // under its foot — clear of Fold, the bar and Scale.
+        var shelf: Entity?
+        if let below {
+            let made = Entity()
+            made.components.set(ViewAttachmentComponent(rootView: below))
+            made.position = SIMD3<Float>(0, -0.36, 0.004)
+            root.addChild(made)
+            shelf = made
+        }
 
         // The handle: the system's own kind of grab bar, as an outline
         // (15 Nov 2026, Frode, was a solid white pill), and nearer the page:
@@ -12505,16 +12992,81 @@ final class ReaderPanels {
         outline.position = SIMD3<Float>(0, 0, 0.001)
         bar.addChild(outline)
         root.addChild(bar)
+        // The scale dot (16 Nov 2026, Frode): a small white dot just right
+        // of the bar. Dragged away from the page's middle the reading
+        // grows, toward it it shrinks — the dot rides the page, so it stays
+        // under the hand.
+        // Only its border (16 Nov 2026, Frode): the disc under it all but
+        // clear, kept so the gaze still lights it.
+        let dot = ModelEntity(mesh: .generatePlane(width: Self.buttonWidth, height: Self.buttonHeight,
+                                                   cornerRadius: Self.buttonHeight / 2),
+                              materials: [material])
+        dot.position = SIMD3<Float>(0.05 + Self.scaleDotGap, -0.305, 0)
+        dot.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(Self.buttonWidth + 0.01,
+                                                                                      0.03, 0.02))]))
+        dot.components.set(InputTargetComponent())
+        dot.components.set(HoverEffectComponent())
+        dot.components.set(ReaderScaleComponent(docID: docID))
+        let ring = Entity()
+        ring.components.set(ViewAttachmentComponent(rootView: ReaderButtonOutline(word: "Scale")))
+        ring.position = SIMD3<Float>(0, 0, 0.001)
+        dot.addChild(ring)
+        root.addChild(dot)
+        // The close, left of the bar for balance (16 Nov 2026, Frode): Fold
+        // in the same outline pill; pinched, the reading folds into its card.
+        let close = ModelEntity(mesh: .generatePlane(width: Self.buttonWidth, height: Self.buttonHeight,
+                                                     cornerRadius: Self.buttonHeight / 2),
+                                materials: [material])
+        close.position = SIMD3<Float>(-0.05 - Self.scaleDotGap, -0.305, 0)
+        close.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(Self.buttonWidth + 0.01,
+                                                                                        0.03, 0.02))]))
+        close.components.set(InputTargetComponent())
+        close.components.set(HoverEffectComponent())
+        close.components.set(ReaderCloseComponent(docID: docID))
+        let cross = Entity()
+        cross.components.set(ViewAttachmentComponent(rootView: ReaderButtonOutline(word: "Fold")))
+        cross.position = SIMD3<Float>(0, 0, 0.001)
+        close.addChild(cross)
+        root.addChild(close)
         // One whole document wide (15 Nov 2026, Frode): the bar follows
         // the page's measured width — which changes with the view (the
         // Horizontal pages, the margin) — checked twice a second while the
         // reading stands.
-        Task { @MainActor [weak bar, weak page, weak outline] in
+        Task { @MainActor [weak self, weak bar, weak page, weak outline, weak dot, weak close, weak strip,
+                           weak stripHandle, weak shelf] in
             var width: Float = 0.10
             while let bar, let page, let outline, bar.parent != nil {
+                if let strip, let holder = bar.parent {
+                    // The notes' own height: the strip's attachment alone, not
+                    // its grab bar (which would push itself up each look).
+                    let height = strip.visualBounds(recursive: false, relativeTo: strip).extents.y
+                    let standing = height > 0.02
+                    stripHandle?.isEnabled = standing
+                    stripHandle?.position = SIMD3<Float>(0, height / 2 + 0.012, 0.002)
+                    // Nothing standing: the next notes come up above the page
+                    // again, wherever the last were moved to.
+                    if !standing, let self, let docID = self.docID(ofStrip: strip) { self.stripMoved.remove(docID) }
+                    if let self, let docID = self.docID(ofStrip: strip), !self.stripMoved.contains(docID) {
+                        let top = page.visualBounds(relativeTo: holder).max.y
+                        let y = top + 0.015 + height / 2
+                        if top.isFinite, abs(strip.position.y - y) > 0.002 || abs(strip.position.x) > 0.002 {
+                            strip.position = SIMD3<Float>(0, y, 0.004)
+                        }
+                    }
+                }
+                if let shelf, let holder = bar.parent {
+                    let foot = page.visualBounds(relativeTo: holder).min.y
+                    let height = shelf.visualBounds(relativeTo: shelf).extents.y
+                    let y = foot - 0.035 - height / 2
+                    if foot.isFinite, abs(shelf.position.y - y) > 0.002 { shelf.position.y = y }
+                }
                 // Two thirds of the page's width (16 Nov 2026, Frode; was all
                 // of it).
-                let measured = page.visualBounds(relativeTo: bar.parent).extents.x * 2 / 3
+                // Never longer than half a metre in the room (16 Nov 2026, Frode),
+                // whatever the reading's width or its scale.
+                let roomScale = max(bar.parent?.scale.x ?? 1, 0.01)
+                let measured = min(page.visualBounds(relativeTo: bar.parent).extents.x * 2 / 3,
+                                   Self.barLongest / roomScale)
                 if measured > 0.05, abs(measured - width) > 0.005 {
                     width = measured
                     bar.model?.mesh = .generatePlane(width: width, height: 0.008, cornerRadius: 0.004)
@@ -12522,6 +13074,8 @@ final class ReaderPanels {
                         shapes: [.generateBox(size: SIMD3<Float>(width + 0.04, 0.035, 0.03))]))
                     outline.components.set(ViewAttachmentComponent(
                         rootView: ReaderHandleOutline(width: CGFloat(width) * 1360)))
+                    dot?.position.x = width / 2 + Self.scaleDotGap
+                    close?.position.x = -width / 2 - Self.scaleDotGap
                 }
                 try? await Task.sleep(for: .milliseconds(500))
             }
@@ -12559,7 +13113,8 @@ final class ReaderPanels {
         folded.scale = SIMD3<Float>(0.24, 0.03, 0.24)
         root.transform = folded
         var strip = open
-        strip.scale = SIMD3<Float>(1, 0.05, 1)
+        // At the reading's own size (a scaled one opens at its scale).
+        strip.scale = open.scale * SIMD3<Float>(1, 0.05, 1)
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(16))
             root.move(to: strip, relativeTo: root.parent, duration: 0.4, timingFunction: .easeOut)
@@ -12569,6 +13124,9 @@ final class ReaderPanels {
     }
 
     func close(docID: String) {
+        strips[docID] = nil
+        stripMoved.remove(docID)
+        stripStart[docID] = nil
         roots[docID]?.removeFromParent()
         roots[docID] = nil
         pages[docID] = nil
@@ -12667,6 +13225,24 @@ final class ReaderPanels {
 
     private typealias MapItemComponent =
         NodeImmersiveView<[EPUBMapItem], AnyView, AnyView>.ItemComponent<EPUBMapItem>
+
+    /// The way a document's card faces in the room, flattened to the floor:
+    /// its own turn — a wall's, a Shape's, one turned to the reader once
+    /// opened. Nil when the card is not standing.
+    func cardFacing(of docID: String) -> SIMD3<Float>? {
+        guard let card = cardEntity(for: docID) else { return nil }
+        var holder: Entity = card
+        var queue = [card]
+        while let next = queue.first {
+            queue.removeFirst()
+            if next.components[EPUBNodeIDComponent.self]?.id == docID { holder = next; break }
+            queue += next.children
+        }
+        var front = holder.orientation(relativeTo: nil).act(SIMD3<Float>(0, 0, 1))
+        front.y = 0
+        guard simd_length(front) > 1e-4 else { return nil }
+        return simd_normalize(front)
+    }
 
     /// The engine-owned card for a document, found by its item.
     private func cardEntity(for docID: String) -> Entity? {
@@ -12768,6 +13344,90 @@ final class ReaderPanels {
 
     /// The panel a touched entity belongs to — the handle bar answers,
     /// walking up parents.
+    /// Scale and Fold, word pills (16 Nov 2026, Frode: "sometimes icons are
+    /// not what we need"): each 4.4 × 1.6 cm, their middles this far past
+    /// the bar's ends.
+    static let buttonWidth: Float = 0.044
+    static let buttonHeight: Float = 0.016
+    private static let scaleDotGap: Float = 0.034
+    /// The grab bar's longest, in the room's metres: half a metre (16 Nov
+    /// 2026, Frode; was 1 m).
+    private static let barLongest: Float = 0.5
+    /// An open reading's size when the reader has given it none.
+    private static let defaultScale: Float = 0.6
+    /// How small and large a reading may be made.
+    private static let scaleRange: ClosedRange<Float> = 0.4...3
+
+    /// Each reading's own size, kept between sessions, by document.
+    private static var savedScales: [String: Float] {
+        get { (UserDefaults.standard.dictionary(forKey: "visionReaderScales") as? [String: Double] ?? [:]).mapValues(Float.init) }
+        set { UserDefaults.standard.set(newValue.mapValues(Double.init), forKey: "visionReaderScales") }
+    }
+
+    /// A scale drag's start: the reading's scale and the hand's distance
+    /// from the page's middle, by document.
+    private var scaleStart: [String: (scale: Float, distance: Float)] = [:]
+
+    /// Each reading's endnotes strip, and the ones the reader has moved.
+    private var strips: [String: Entity] = [:]
+    private var stripMoved: Set<String> = []
+    private var stripStart: [String: SIMD3<Float>] = [:]
+
+    private func docID(ofStrip strip: Entity) -> String? {
+        strips.first { $0.value === strip }?.key
+    }
+
+    /// The reading an endnotes grab bar belongs to.
+    func stripHandle(for entity: Entity) -> String? {
+        entity.components[ReaderStripHandleComponent.self]?.docID
+    }
+
+    /// The notes carried by their bar: `travel` is the hand's, in the
+    /// room's metres, turned into the reading's own axes and scale.
+    func moveStrip(docID: String, travel: SIMD3<Float>) {
+        guard let strip = strips[docID], let root = roots[docID] else { return }
+        let start = stripStart[docID] ?? strip.position
+        stripStart[docID] = start
+        stripMoved.insert(docID)
+        strip.position = start + root.convert(direction: travel, from: nil)
+    }
+
+    func endStripMove(docID: String) {
+        stripStart[docID] = nil
+    }
+
+    /// The reading a scale dot belongs to.
+    func scaleDot(for entity: Entity) -> String? {
+        entity.components[ReaderScaleComponent.self]?.docID
+    }
+
+    /// The scale dot dragged to `hand` (the room's metres): the reading
+    /// scaled by how much further from — or nearer to — its middle the hand
+    /// is than when the drag began, in the page's own plane.
+    func scale(docID: String, hand: SIMD3<Float>) {
+        guard let root = roots[docID] else { return }
+        let middle = root.position(relativeTo: nil)
+        let normal = root.orientation(relativeTo: nil).act(SIMD3<Float>(0, 0, 1))
+        var offset = hand - middle
+        offset -= simd_dot(offset, normal) * normal
+        let distance = simd_length(offset)
+        guard distance > 0.01 else { return }
+        if scaleStart[docID] == nil { scaleStart[docID] = (root.scale.x, distance) }
+        guard let start = scaleStart[docID] else { return }
+        let next = min(max(start.scale * distance / start.distance, Self.scaleRange.lowerBound),
+                       Self.scaleRange.upperBound)
+        root.scale = SIMD3<Float>(repeating: next)
+    }
+
+    /// The scale drag let go: the size kept for this reading.
+    func endScale(docID: String) {
+        scaleStart[docID] = nil
+        guard let root = roots[docID] else { return }
+        var saved = Self.savedScales
+        saved[docID] = root.scale.x
+        Self.savedScales = saved
+    }
+
     func panel(for entity: Entity) -> (docID: String, root: Entity)? {
         var node: Entity? = entity
         while let current = node {
@@ -12789,8 +13449,9 @@ final class ReaderPanels {
     /// World-space TOP edge of the panel — half the panel's real-world
     /// height (~0.30m) above its centre — for line attachments.
     func worldTopPosition(of docID: String) -> SIMD3<Float>? {
-        guard let center = roots[docID]?.position(relativeTo: nil) else { return nil }
-        return center + SIMD3<Float>(0, 0.30, 0)
+        guard let root = roots[docID] else { return nil }
+        // Half the page's height, at the size the reader gave it.
+        return root.position(relativeTo: nil) + SIMD3<Float>(0, 0.30 * root.scale.y, 0)
     }
 
     /// How wide the page really is, in metres — the attachment's own
@@ -17408,6 +18069,25 @@ struct DraggableConceptPill: View {
 }
 
 
+/// The two releases a room watches for (16 Nov 2026): a new selection
+/// lets a layout's cards move together again, and Show All / Hide All
+/// Concepts takes back the concepts pulled out of cards.
+struct ArrangementRelease: ViewModifier {
+    let selection: Set<String>
+    let conceptsShown: Bool
+    let onSelection: () -> Void
+    let onConcepts: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: selection) { onSelection() }
+            .onChange(of: conceptsShown) { onConcepts() }
+            // The room's frames take their own gestures (16 Nov 2026).
+            .modifier(RoomFrameGestures())
+    }
+}
+
+
 /// Where an open card's author names stand on its face, by name — so a
 /// handle can lie over each (16 Nov 2026).
 struct AuthorAnchors: PreferenceKey {
@@ -17418,21 +18098,26 @@ struct AuthorAnchors: PreferenceKey {
 }
 
 /// An author's name on an open card, as a handle: clear over the printed
-/// name; pinched, the name goes into the room; pulled, a person pill
+/// name; pinched, the name goes into the room; pulled, the author's card
 /// follows the hand and, let go 5 cm or more away, the name stands there
 /// as a concept. `pullScale` turns the room's points into the face's.
 struct AuthorNameHandle: View {
     let name: String
     let size: CGSize
     let pullScale: CGFloat
+    /// The author's card, drawn at the room's size, carried while pulled.
+    let card: AnyView
     let onTap: () -> Void
     let onDrop: (SIMD3<Float>) -> Void
 
     @Environment(\.physicalMetrics) private var metrics
     @State private var pull = Vector3D.zero
 
+    /// True while any name is being pulled: the card under it must not
+    /// move with the same pinch.
+    @MainActor static var pulling = false
+
     var body: some View {
-        let person = ConceptKind.person.defaultColour
         ZStack {
             RoundedRectangle(cornerRadius: 3)
                 .fill(Color.white.opacity(0.001))
@@ -17440,12 +18125,8 @@ struct AuthorNameHandle: View {
                 .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 3))
                 .hoverEffect(.highlight)
             if pull != .zero {
-                ConceptPill(name: name, colour: Color(red: person.red, green: person.green, blue: person.blue),
-                            selected: true, small: true,
-                            // The face is drawn larger and scaled down: the
-                            // pill is drawn up by the same, to read at its
-                            // usual size while it follows the hand.
-                            scale: 1.36 * pullScale)
+                card
+                    .fixedSize()
                     .offset(x: pull.x * pullScale, y: pull.y * pullScale)
                     .offset(z: pull.z * pullScale)
             }
@@ -17454,8 +18135,12 @@ struct AuthorNameHandle: View {
         .onTapGesture { onTap() }
         .gesture(
             DragGesture(minimumDistance: 3, coordinateSpace: .immersiveSpace)
-                .onChanged { value in pull = value.translation3D }
+                .onChanged { value in
+                    Self.pulling = true
+                    pull = value.translation3D
+                }
                 .onEnded { value in
+                    Self.pulling = false
                     let moved = value.translation3D
                     pull = .zero
                     func metres(_ points: Double) -> Float {
@@ -17466,5 +18151,7 @@ struct AuthorNameHandle: View {
                     onDrop(travel)
                 }
         )
+        // A pull cut short when the card is rebuilt never ends: let go here.
+        .onDisappear { if pull != .zero { Self.pulling = false } }
     }
 }

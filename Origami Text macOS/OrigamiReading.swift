@@ -2574,3 +2574,228 @@ struct SelectionDot: View {
         .animation(.easeOut(duration: 0.12), value: lifted)
     }
 }
+
+// MARK: - Abstract links
+
+/// Links from a paper's abstract into its body (16 Nov 2026, Frode — an
+/// experiment): each sentence of the abstract, or of the first paragraph
+/// when there is no abstract, gains a small "→ Section" link to the one or
+/// two paragraphs that take up what it says, so a reader can go from the
+/// abstract to the part of the paper they want — not only by the table of
+/// contents. Worked out on the device, from the words alone: content words
+/// reduced to their lemmas, weighed by how rare they are in the paper
+/// (TF-IDF), each sentence matched to the paragraphs that share its rare
+/// words most. Nothing is stored; nothing leaves the device.
+nonisolated enum AbstractLinks {
+    static let scheme = "origami-abstract"
+
+    /// Whether the links are drawn: the readers' Linked Abstract word
+    /// (16 Nov 2026, Frode), off until turned on.
+    static let defaultsKey = "origamiAbstractLinks"
+    static var isOn: Bool { UserDefaults.standard.bool(forKey: defaultsKey) }
+
+    /// The paragraph a link names, from the link.
+    static func target(from url: URL) -> String? {
+        guard url.scheme == scheme else { return nil }
+        let raw = String(url.absoluteString.dropFirst(scheme.count + 1))
+        return raw.removingPercentEncoding ?? raw
+    }
+
+    /// The abstract's paragraph in the body: the paragraph saying the
+    /// document's own abstract, else the one after an "Abstract" heading,
+    /// else the first paragraph of prose.
+    static func source(in doc: LiquidDoc) -> LiquidDoc.Paragraph? {
+        let body = doc.body ?? []
+        if let abstract = doc.abstract?.trimmingCharacters(in: .whitespacesAndNewlines), abstract.count > 40 {
+            let opening = String(abstract.prefix(60)).lowercased()
+            if let match = body.first(where: { $0.heading == nil && $0.text.lowercased().contains(opening) }) {
+                return match
+            }
+        }
+        if let heading = body.firstIndex(where: {
+            $0.heading != nil && $0.text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                .trimmingCharacters(in: .punctuationCharacters) == "abstract"
+        }), let next = body[(heading + 1)...].first(where: { isProse($0) }) {
+            return next
+        }
+        return body.first(where: { isProse($0) && words(in: $0.text) >= 25 })
+    }
+
+    /// The abstract paragraph's text with its links written in, as the
+    /// readers' inline markdown — nil for any other paragraph, or when
+    /// nothing in the paper takes up the abstract.
+    static func linkedText(for paragraph: LiquidDoc.Paragraph, in doc: LiquidDoc) -> String? {
+        guard isOn, paragraph.heading == nil else { return nil }
+        let key = "\(doc.id)|\(doc.body?.count ?? 0)|\(paragraph.id)|\(paragraph.text.hashValue)"
+        if let known = cache.value(key) { return known.isEmpty ? nil : known }
+        guard let source = source(in: doc), source.id == paragraph.id else {
+            cache.set(key, "")
+            return nil
+        }
+        let text = link(source, in: doc)
+        cache.set(key, text ?? "")
+        return text
+    }
+
+    // MARK: The matching
+
+    private static func link(_ source: LiquidDoc.Paragraph, in doc: LiquidDoc) -> String? {
+        let body = doc.body ?? []
+        // The paragraphs to point at: the paper's own prose, after the
+        // abstract, and before its notes and references.
+        var candidates: [(paragraph: LiquidDoc.Paragraph, section: String)] = []
+        var section = ""
+        var past = false
+        for paragraph in body {
+            if paragraph.id == source.id { past = true; continue }
+            if paragraph.heading != nil {
+                let title = paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lowered = title.lowercased()
+                if paragraph.id == "notes" || ["references", "bibliography", "works cited", "notes", "endnotes",
+                                               "acknowledgements", "acknowledgments"].contains(lowered) { break }
+                section = title
+                continue
+            }
+            guard past, isProse(paragraph), words(in: paragraph.text) >= 12 else { continue }
+            candidates.append((paragraph, section))
+        }
+        guard candidates.count >= 2 else { return nil }
+
+        let bags = candidates.map { terms(in: $0.paragraph.text) }
+        var documentFrequency: [String: Int] = [:]
+        for bag in bags { for term in bag.keys { documentFrequency[term, default: 0] += 1 } }
+        let count = Double(bags.count)
+        func idf(_ term: String) -> Double {
+            log((count + 1) / (Double(documentFrequency[term] ?? 0) + 1)) + 1
+        }
+        let vectors: [[String: Double]] = bags.map { bag in
+            var vector: [String: Double] = [:]
+            for (term, n) in bag { vector[term] = (1 + log(Double(n))) * idf(term) }
+            return vector
+        }
+        let norms = vectors.map { sqrt($0.values.reduce(0) { $0 + $1 * $1 }) }
+
+        // The abstract, sentence by sentence.
+        let text = source.text
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        var sentences: [Range<String.Index>] = []
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            sentences.append(range)
+            return true
+        }
+        var insertions: [(at: String.Index, links: String)] = []
+        for range in sentences {
+            let bag = terms(in: String(text[range]))
+            guard bag.count >= 3 else { continue }
+            var query: [String: Double] = [:]
+            for term in bag.keys where documentFrequency[term] != nil { query[term] = idf(term) }
+            let queryNorm = sqrt(query.values.reduce(0) { $0 + $1 * $1 })
+            guard queryNorm > 0 else { continue }
+            var scored: [(index: Int, score: Double, shared: Int)] = []
+            for (index, vector) in vectors.enumerated() where norms[index] > 0 {
+                var dot = 0.0, shared = 0
+                for (term, weight) in query {
+                    if let other = vector[term] { dot += weight * other; shared += 1 }
+                }
+                guard shared >= 2 else { continue }
+                scored.append((index, dot / (queryNorm * norms[index]), shared))
+            }
+            scored.sort { $0.score > $1.score }
+            // The best, and a second only from another part of the paper
+            // and nearly as good.
+            guard let best = scored.first, best.score >= threshold else { continue }
+            var chosen = [best.index]
+            if let second = scored.dropFirst().first(where: {
+                candidates[$0.index].section != candidates[best.index].section
+            }), second.score >= max(threshold, best.score * 0.8) {
+                chosen.append(second.index)
+            }
+            let links = chosen.map { index -> String in
+                let candidate = candidates[index]
+                let label = shortLabel(candidate.section, ordinal: index + 1)
+                let id = candidate.paragraph.id.addingPercentEncoding(withAllowedCharacters: idAllowed)
+                    ?? candidate.paragraph.id
+                // Braced, arrow and all (16 Nov 2026, Frode): {→ Section}.
+                return "[{\u{2192}\u{00A0}\(label)}](\(scheme):\(id))"
+            }.joined(separator: " ")
+            // After the sentence's own words, before the space that follows.
+            var end = range.upperBound
+            while end > range.lowerBound, text[text.index(before: end)].isWhitespace { end = text.index(before: end) }
+            insertions.append((end, " " + links))
+        }
+        guard !insertions.isEmpty else { return nil }
+        var out = text
+        for insertion in insertions.reversed() { out.insert(contentsOf: insertion.links, at: insertion.at) }
+        return out
+    }
+
+    /// How alike a sentence and a paragraph must be to be linked — set by
+    /// eye on the Future of Text papers; the experiment's one knob.
+    private static let threshold = 0.12
+
+    /// A section's name, short: its first four words — or, under no
+    /// heading, the paragraph's place.
+    private static func shortLabel(_ section: String, ordinal: Int) -> String {
+        let clean = section.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+            .replacingOccurrences(of: "*", with: "")
+        let parts = clean.split(separator: " ")
+        guard !parts.isEmpty else { return "\u{00B6}\(ordinal)" }
+        let short = parts.prefix(4).joined(separator: "\u{00A0}")
+        return parts.count > 4 ? short + "\u{2026}" : short
+    }
+
+    private static func isProse(_ paragraph: LiquidDoc.Paragraph) -> Bool {
+        guard paragraph.heading == nil else { return false }
+        let text = paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !text.isEmpty && !text.hasPrefix("![") && !text.hasPrefix("```") && !text.hasPrefix("|")
+            && text != "---"
+    }
+
+    private static func words(in text: String) -> Int {
+        text.split(whereSeparator: { $0.isWhitespace }).count
+    }
+
+    /// Content words, as lemmas, counted — markup tokens and short or
+    /// common words left out.
+    private static func terms(in text: String) -> [String: Int] {
+        let plain = text.replacingOccurrences(of: #"\[[a-z]+:[^\]]*\]"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\]\([^)]*\)"#, with: "] ", options: .regularExpression)
+        let tagger = NLTagger(tagSchemes: [.lemma])
+        tagger.string = plain
+        var counts: [String: Int] = [:]
+        tagger.enumerateTags(in: plain.startIndex..<plain.endIndex, unit: .word, scheme: .lemma,
+                             options: [.omitWhitespace, .omitPunctuation, .omitOther]) { tag, range in
+            let word = (tag?.rawValue ?? String(plain[range])).lowercased()
+            guard word.count > 3, !stopwords.contains(word), word.contains(where: \.isLetter) else { return true }
+            counts[word, default: 0] += 1
+            return true
+        }
+        return counts
+    }
+
+    private static let stopwords: Set<String> = [
+        "this", "that", "these", "those", "with", "from", "into", "onto", "upon", "about", "which", "what",
+        "when", "where", "while", "there", "their", "they", "them", "then", "than", "have", "been", "were",
+        "will", "would", "could", "should", "also", "such", "some", "more", "most", "many", "much", "very",
+        "only", "other", "each", "both", "over", "under", "between", "through", "within", "without", "here",
+        "being", "does", "doing", "make", "made", "just", "like", "even", "well", "however", "because",
+        "paper", "article", "chapter", "section", "work", "present", "discuss", "describe", "show", "find",
+        "use", "using", "used", "include", "including", "provide", "first", "second", "number", "different",
+    ]
+
+    private static let idAllowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+
+    private final class Cache: @unchecked Sendable {
+        private var values: [String: String] = [:]
+        private let lock = NSLock()
+        func value(_ key: String) -> String? { lock.withLock { values[key] } }
+        func set(_ key: String, _ value: String) {
+            lock.withLock {
+                if values.count > 200 { values.removeAll() }
+                values[key] = value
+            }
+        }
+    }
+    private static let cache = Cache()
+}

@@ -1,6 +1,7 @@
 import Compression
 import CryptoKit
 import Foundation
+import ImageIO
 
 nonisolated enum OrigamiEPUBImportError: LocalizedError {
     case notAnEPUB
@@ -2701,15 +2702,40 @@ nonisolated enum OrigamiEPUBImporter {
                 // LINKS-SPEC §1). The href is kept opaque: XMLParser has
                 // already decoded `&amp;`, and nothing else is touched.
                 let wrapper = element.name == "figure" ? element.parent(of: image) : nil
-                let link = wrapper?.name == "a"
+                var link = wrapper?.name == "a"
                     ? wrapper?.attributes["href"].flatMap { $0.isEmpty ? nil : $0 } : nil
+                // The largest picture the book holds for this figure (16 Nov
+                // 2026, Frode): the src, every srcset candidate, and a
+                // wrapping link to an image inside the book — the one with
+                // the most pixels is kept. A link that turns out to be the
+                // larger picture is that, not a link to open.
+                var chosenSrc = src
+                var chosen = resolveImage(src)
+                var chosenPixels = chosen.map(epubImagePixels) ?? 0
+                var candidates = (image.attributes["srcset"] ?? "").split(separator: ",").compactMap {
+                    $0.split(whereSeparator: \.isWhitespace).first.map(String.init)
+                }
+                if let href = link, !href.contains("://"), !href.hasPrefix("#"),
+                   ["jpg", "jpeg", "png", "gif", "webp", "heic", "tif", "tiff"]
+                       .contains((href as NSString).pathExtension.lowercased()) {
+                    candidates.append(href)
+                }
+                for candidate in candidates where candidate != src {
+                    guard let data = resolveImage(candidate), !data.isEmpty else { continue }
+                    let pixels = epubImagePixels(data)
+                    guard pixels > chosenPixels else { continue }
+                    chosen = data
+                    chosenSrc = candidate
+                    chosenPixels = pixels
+                    if candidate == link { link = nil }
+                }
                 let figureKey = link == nil ? nil
                     : wrapper?.attributes["data-citation-key"].flatMap { $0.isEmpty ? nil : $0 }
                 let paragraphID = stableID()
-                if let data = resolveImage(src), !data.isEmpty {
+                if let data = chosen, !data.isEmpty {
                     assetOrdinal += 1
                     let assetID = address("img\(assetOrdinal)")
-                    let name = (src as NSString).lastPathComponent
+                    let name = (chosenSrc as NSString).lastPathComponent
                     let ext = (name as NSString).pathExtension.lowercased()
                     assets.append(LiquidDoc.Asset(
                         id: assetID,
@@ -4145,3 +4171,14 @@ nonisolated enum NumberedReferences {
     }
 }
 
+
+
+/// How many pixels an image's bytes hold, read from its header alone —
+/// nothing decoded. 0 when they are not an image ImageIO knows.
+nonisolated func epubImagePixels(_ data: Data) -> Int {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? Int,
+          let height = properties[kCGImagePropertyPixelHeight] as? Int else { return 0 }
+    return width * height
+}

@@ -200,6 +200,8 @@ struct OrigamiReadingView: View {
         return mode
     }
 
+    /// Read so the reading redraws when Linked Abstract is switched.
+    @AppStorage(AbstractLinks.defaultsKey) private var abstractLinksOn = false
     @AppStorage("origamiCitationStyle") private var citationsRaw =
         OrigamiCitationStyle.authorDate.rawValue
     /// The note marks' style — declared so a Settings change repaints
@@ -1334,7 +1336,7 @@ Button { model.toggleTopOfPile(record) } label: {
                 if model.isSetAside(record) { model.bringBack(record) }
                 else { model.setAside(record) }
             } label: {
-                Image(systemName: "arrow.down")
+                Image(systemName: model.isSetAside(record) ? "archivebox.fill" : "archivebox")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
@@ -3547,6 +3549,11 @@ Button { model.toggleTopOfPile(record) } label: {
     /// and closes its detail, citations open their source card,
     /// everything else opens as links do.
     private func handleLink(_ url: URL) -> Bool {
+        // From the abstract to the paragraph that takes it up (16 Nov 2026).
+        if let target = AbstractLinks.target(from: url) {
+            model.pendingReaderFragment = target
+            return true
+        }
         if url.scheme == "origami-stretch" {
             let id = String(url.absoluteString.dropFirst("origami-stretch:".count))
             toggleStretch(id)
@@ -3802,7 +3809,9 @@ Button { model.toggleTopOfPile(record) } label: {
     /// flow lines. Headings stay as written.
     private func readingText(for paragraph: LiquidDoc.Paragraph) -> String {
         guard paragraph.heading == nil else { return paragraph.text }
-        var text = paragraph.text
+        // The abstract's links into the paper (16 Nov 2026, an experiment).
+        var text = abstractLinksOn ? (AbstractLinks.linkedText(for: paragraph, in: doc) ?? paragraph.text)
+                                   : paragraph.text
         if expandParagraphs, let split = paragraphSplits[paragraph.id] {
             text = split
         }
@@ -4170,6 +4179,8 @@ Button { model.toggleTopOfPile(record) } label: {
 /// are always there to click.
 struct ReadingFootBar: View {
     @Environment(AppModel.self) private var model
+    /// Linked Abstract, the readers' switch (16 Nov 2026).
+    @AppStorage(AbstractLinks.defaultsKey) private var abstractLinksOn = false
     @Environment(\.colorScheme) private var colorScheme
     /// The bound volume's articles, listed to read one alone.
     @State private var showsArticles = false
@@ -4392,6 +4403,20 @@ struct ReadingFootBar: View {
                     .accessibilityLabel("Contents")
                     .popover(isPresented: showContents) { contents() }
                 }
+                // Linked Abstract (16 Nov 2026, Frode): the abstract's
+                // {→ Section} links into the paper, on or off.
+                Button {
+                    abstractLinksOn.toggle()
+                } label: {
+                    Text("Linked Abstract")
+                        .font(.callout.weight(abstractLinksOn ? .semibold : .regular))
+                        .foregroundStyle(abstractLinksOn ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .fixedSize()
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(abstractLinksOn ? "Hide the abstract's links into the paper"
+                                      : "Link each sentence of the abstract to the parts of the paper that take it up")
                 if let typeMenu {
                     Menu {
                         typeMenu()

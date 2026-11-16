@@ -2661,8 +2661,10 @@ struct ProceedingsMapNode: View {
             if let menu {
                 menu()
             } else {
-                Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
+                Button(item.isPinned ? "Unpin" : "Pin",
+                       systemImage: item.isPinned ? "pin.slash" : "pin", action: togglePin)
                 Button(item.isSetAside ? "Bring Back" : "Set Aside",
+                       systemImage: item.isSetAside ? "archivebox.fill" : "archivebox",
                        action: toggleSetAside)
             }
         }
@@ -2749,8 +2751,10 @@ struct ProceedingsMapNode: View {
             if isLifted {
                 HStack(spacing: 6) {
                     liftAction(item.isPinned ? "Unpin" : "Pin",
+                               systemImage: item.isPinned ? "pin.fill" : "pin",
                                action: togglePin)
                     liftAction(item.isSetAside ? "Bring Back" : "Set Aside",
+                               systemImage: item.isSetAside ? "archivebox.fill" : "archivebox",
                                action: toggleSetAside)
                 }
                 .padding(.top, 5)
@@ -2892,10 +2896,12 @@ struct ProceedingsMapNode: View {
     #if !os(macOS)
     /// A pile choice on the lifted card — small, quiet, gone when the
     /// card sets down.
-    private func liftAction(_ title: String,
+    /// A lifted card's action, as its icon (16 Nov 2026, Frode); the word
+    /// is its accessibility label.
+    private func liftAction(_ title: String, systemImage: String,
                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
+            Image(systemName: systemImage)
                 .font(.caption2)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
@@ -2903,6 +2909,7 @@ struct ProceedingsMapNode: View {
                 .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.3)))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
     #endif
 }
@@ -3401,6 +3408,32 @@ nonisolated struct BoundVolume: Hashable, Sendable {
     /// paragraphs (its file's, from its heading up to the next piece's),
     /// its title and authors, and the concepts and references its pages
     /// use. Everything else rides along from the volume.
+    /// The volume's notes a run of paragraphs marks (`[note:id]`), in the
+    /// order first marked, under a Notes heading — none, nothing. A mark
+    /// finds its note as the readers do: the id itself, the id after a
+    /// `#`, or after a chapter prefix's `-`.
+    static func notes(markedIn paragraphs: [LiquidDoc.Paragraph],
+                      from body: [LiquidDoc.Paragraph]) -> [LiquidDoc.Paragraph] {
+        guard let start = body.firstIndex(where: { $0.id == "notes" && $0.heading != nil }),
+              let regex = try? NSRegularExpression(pattern: #"\[note:([^\]]+)\]"#) else { return [] }
+        let notes = Array(body[(start + 1)...].prefix { $0.heading == nil })
+        var found: [LiquidDoc.Paragraph] = []
+        var seen = Set<String>()
+        for paragraph in paragraphs where paragraph.text.contains("[note:") {
+            let text = paragraph.text as NSString
+            for match in regex.matches(in: paragraph.text, range: NSRange(location: 0, length: text.length)) {
+                let id = text.substring(with: match.range(at: 1))
+                guard let note = notes.first(where: { $0.id == id })
+                        ?? notes.first(where: { $0.id.hasSuffix("#" + id) })
+                        ?? notes.first(where: { $0.id.hasSuffix("-" + id) }),
+                      seen.insert(note.id).inserted else { continue }
+                found.append(note)
+            }
+        }
+        guard !found.isEmpty else { return [] }
+        return [LiquidDoc.Paragraph(id: "notes", heading: 1, text: "Notes")] + found
+    }
+
     func document(for article: Article, in volume: LiquidDoc) -> LiquidDoc {
         let body = volume.body ?? []
         let prefix = article.file + "#"
@@ -3418,6 +3451,12 @@ nonisolated struct BoundVolume: Hashable, Sendable {
                 slice.append(body[index])
             }
         }
+
+        // Its own endnotes (16 Nov 2026): the volume files every note under
+        // one Notes section closing its body, outside any article's slice;
+        // the notes this article's marks point at follow it, under its own
+        // Notes heading, so its reading finds them.
+        slice += Self.notes(markedIn: slice, from: body)
 
         var doc = LiquidDoc(format: volume.format,
                             id: Self.articleDocID(volume: volume.id, article: article.id),

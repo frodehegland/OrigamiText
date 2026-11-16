@@ -599,11 +599,11 @@ struct SidebarView: View {
                         .tag(SidebarItem.epubPublicationAuthor(name, author))
                         .contextMenu {
                             if pinnedAuthorSet.contains(author) {
-                                Button("Unpin") { model.unpinGlobalAuthor(author) }
+                                Button("Unpin", systemImage: "pin.slash") { model.unpinGlobalAuthor(author) }
                             } else {
-                                Button("Pin") { model.pinGlobalAuthor(author) }
+                                Button("Pin", systemImage: "pin") { model.pinGlobalAuthor(author) }
                             }
-                            Button("Set Aside") { model.setAsideAuthor(author, inPublication: name) }
+                            Button("Set Aside", systemImage: "archivebox") { model.setAsideAuthor(author, inPublication: name) }
                         }
                 }
             } label: {
@@ -859,11 +859,11 @@ struct SidebarView: View {
             .tag(SidebarItem.epubPublicationTopic(venue, topic))
             .contextMenu {
                 if pinned {
-                    Button("Unpin") { model.unpinGlobalTopic(topic) }
+                    Button("Unpin", systemImage: "pin.slash") { model.unpinGlobalTopic(topic) }
                 } else {
-                    Button("Pin") { model.pinGlobalTopic(topic) }
+                    Button("Pin", systemImage: "pin") { model.pinGlobalTopic(topic) }
                 }
-                Button("Set Aside") { model.setAsideTopic(topic, inPublication: venue) }
+                Button("Set Aside", systemImage: "archivebox") { model.setAsideTopic(topic, inPublication: venue) }
             }
     }
 

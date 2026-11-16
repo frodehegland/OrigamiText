@@ -1,0 +1,1670 @@
+//
+//  RoomFrames.swift
+//  Origami Text (visionOS)
+//
+//  Frames in the room (16 Nov 2026, Frode): Knowledge Space's side panels
+//  (Liquid XR Space: LiquidWallPicture's container walls, ConceptWallView's
+//  columns, WallEditPanel, ContainerTopBar) brought to the Hallway. A frame
+//  is put up anywhere — a corner of the room, flat on a wall — and holds
+//  every concept of one kind standing in the room: the Authors (their
+//  cards), or the room's concepts, people, artifacts, events, locations or
+//  institutions. Its picture, frame colour (woods with their grain),
+//  thickness, transparency and Offset Frame are its own; it can be moved
+//  and resized by its handles, turned, snapped to a real wall, folded to
+//  its title, and its members pulled out into the room or put back.
+//
+//  Frames are kept per room (by journal or volume venue) in the community
+//  folder's origami-room-frames.json, each frame newest-wins with
+//  tombstones, mirrored in Application Support — so they follow the room
+//  to any headset and the Mac can read them. A photo chosen from Photos is
+//  kept in the community folder's Frame Pictures too.
+//
+//  Keep in step with Knowledge Space's LiquidWallPicture where they share
+//  ideas; the frame's looks are its, the members are Origami's own cards.
+//
+
+#if os(visionOS)
+import SwiftUI
+import RealityKit
+import UIKit
+import ImageIO
+import PhotosUI
+
+/// One frame in a room.
+struct RoomFrame: Codable, Identifiable, Equatable {
+    let id: String
+    /// The room it stands in: the journal's or volume's venue.
+    var venue: String
+    /// What it holds: "authors", or a ConceptKind's raw value.
+    var kind: String
+    var width: Float
+    var height: Float
+    /// Column-major world matrix: right, up, normal (out of the frame,
+    /// toward the reader), middle.
+    var transform: [Float]
+    /// "grey", "builtin:<name>", "default:<name>" or "photo:<file name>".
+    var picture: String
+    /// A Style raw value; nil, unframed.
+    var frame: String?
+    var frameThickness: String?
+    /// A Transparency raw value; nil, opaque.
+    var transparency: String?
+    /// The border standing out from the wall, the picture set back in it
+    /// (Knowledge Space's default); false, the border just behind the
+    /// picture.
+    var offsetFrame: Bool?
+    /// Folded: tiny, only its title showing — and here its full size and
+    /// place, to unfold to.
+    var unfolded: Unfolded?
+    /// Members standing loose in the room, pulled out of it.
+    var pulled: [String] = []
+    /// Put away from the bar's Frames: kept where it stands, out of sight.
+    var hidden: Bool?
+    /// A tombstone: deleted, kept so another device's copy does not bring
+    /// it back.
+    var deleted: Bool?
+    var modified: Date
+
+    struct Unfolded: Codable, Equatable {
+        var width: Float
+        var height: Float
+        var transform: [Float]
+    }
+
+    var isFolded: Bool { unfolded != nil }
+    var isShown: Bool { hidden != true && deleted != true }
+
+    /// Authors and the six concept kinds, as the bar offers them.
+    static let authorsKind = "authors"
+    static let kinds: [String] = [authorsKind] + ConceptKind.allCases.map(\.rawValue)
+
+    static func title(of kind: String) -> String {
+        switch kind {
+        case authorsKind: "Authors"
+        case ConceptKind.concept.rawValue: "Concepts"
+        case ConceptKind.person.rawValue: "People"
+        case ConceptKind.artifact.rawValue: "Artifacts"
+        case ConceptKind.event.rawValue: "Events"
+        case ConceptKind.location.rawValue: "Locations"
+        case ConceptKind.institution.rawValue: "Institutions"
+        default: kind.capitalized
+        }
+    }
+
+    var title: String { Self.title(of: kind) }
+}
+
+/// What a frame's body or one of its handles is, for the room's gestures.
+struct RoomFrameHitComponent: Component {
+    let frameID: String
+    /// −1, 0 or 1 along the frame's right and up: a resize handle's side
+    /// or corner. Both 0: the frame itself.
+    var x: Float = 0
+    var y: Float = 0
+    var isRotate = false
+}
+
+@MainActor
+@Observable
+final class RoomFrames {
+    static let shared = RoomFrames()
+
+    // MARK: Looks (Knowledge Space's, as it has them)
+
+    enum Style: String, CaseIterable, Identifiable {
+        case blackMatte = "Black Matte"
+        case blackShiny = "Black Shiny"
+        case darkWood = "Dark Brown Wood"
+        case midWood = "Mid-Brown Wood"
+        case lightWood = "Light Brown Wood"
+        case lightGrey = "Light Grey"
+        case midGrey = "Mid Grey"
+        case darkGrey = "Dark Grey"
+        var id: String { rawValue }
+
+        var colour: UIColor {
+            switch self {
+            case .blackMatte: UIColor(white: 0.05, alpha: 1)
+            case .blackShiny: UIColor(white: 0.02, alpha: 1)
+            case .darkWood: UIColor(red: 0.24, green: 0.14, blue: 0.08, alpha: 1)
+            case .midWood: UIColor(red: 0.46, green: 0.29, blue: 0.16, alpha: 1)
+            case .lightWood: UIColor(red: 0.74, green: 0.57, blue: 0.38, alpha: 1)
+            case .lightGrey: UIColor(white: 0.78, alpha: 1)
+            case .midGrey: UIColor(white: 0.5, alpha: 1)
+            case .darkGrey: UIColor(white: 0.24, alpha: 1)
+            }
+        }
+
+        var isWood: Bool { self == .darkWood || self == .midWood || self == .lightWood }
+    }
+
+    enum Thickness: String, CaseIterable, Identifiable {
+        case veryThin = "Very Thin"
+        case thin = "Thin"
+        case medium = "Medium"
+        case wide = "Wide"
+        case substantial = "Substantial"
+        var id: String { rawValue }
+
+        var width: Float {
+            switch self {
+            case .veryThin: 0.012
+            case .thin: 0.025
+            case .medium: 0.045
+            case .wide: 0.075
+            case .substantial: 0.12
+            }
+        }
+    }
+
+    nonisolated enum BuiltIn: String, CaseIterable, Identifiable {
+        case slate = "Slate"
+        case dusk = "Dusk"
+        case nightSky = "Night Sky"
+        case warmPaper = "Warm Paper"
+        var id: String { rawValue }
+    }
+
+    nonisolated enum DefaultPhoto: String, CaseIterable, Identifiable {
+        case forest1 = "Forest 1"
+        case forest2 = "Forest 2"
+        case forest3 = "Forest 3"
+        case forest4 = "Forest 4"
+        case romanRuin1 = "Roman Ruin 1"
+        case romanRuin2 = "Roman Ruin 2"
+        var id: String { rawValue }
+
+        var resourceName: String {
+            switch self {
+            case .forest1: "frame_forest_1"
+            case .forest2: "frame_forest_2"
+            case .forest3: "frame_forest_3"
+            case .forest4: "frame_forest_4"
+            case .romanRuin1: "frame_roman_ruin_1"
+            case .romanRuin2: "frame_roman_ruin_2"
+            }
+        }
+    }
+
+    enum Transparency: String, CaseIterable, Identifiable {
+        case opaque = "Opaque"
+        case barely = "Barely Transparent"
+        case slightly = "Slightly Transparent"
+        case mid = "Mid Transparent"
+        case very = "Very Transparent"
+        var id: String { rawValue }
+        var opacity: Float {
+            switch self {
+            case .opaque: 1
+            case .barely: 0.93
+            case .slightly: 0.75
+            case .mid: 0.5
+            case .very: 0.25
+            }
+        }
+    }
+
+    /// Every new frame: Slate, in a very thin black matte frame, offset.
+    static let defaultPicture = "builtin:" + BuiltIn.slate.rawValue
+    static let defaultStyle = Style.blackMatte
+    static let defaultThickness = Thickness.veryThin
+    /// A new frame's size, in metres.
+    static let newSize = SIMD2<Float>(1.2, 0.8)
+    /// Folded: about a third of a metre across.
+    static let foldedWidth: Float = 0.34
+    /// The members stand this far before the picture.
+    static let frontOffset: Float = 0.02
+    /// A member let go within this of its frame's face, over it, goes back.
+    static let stickDistance: Float = 0.12
+    /// The most members one frame lays out; the rest wait (alphabetical).
+    static let memberLimit = 150
+
+    // MARK: State
+
+    /// Every frame of every room, tombstones and all.
+    private(set) var frames: [RoomFrame] = []
+    /// The room open now.
+    var venue: String? {
+        didSet { if venue != oldValue { showAll() } }
+    }
+    /// The frames being moved and resized — one from its own menu, or every
+    /// frame in the room from the bar's Frames ▸ Edit & Move.
+    private(set) var arrangingIDs: Set<String> = []
+    /// The frame whose title menu is open, and its page.
+    var menuOpenFor: String?
+    /// Asked for a picture from Photos: the map, which can open windows,
+    /// watches this.
+    private(set) var chooserRequests = 0
+    @ObservationIgnored private(set) var chooserTargetID: String?
+
+    /// Members as last laid: frame by member id, their places in the room,
+    /// their scale and the frame's facing.
+    @ObservationIgnored private(set) var memberFrame: [String: String] = [:]
+    @ObservationIgnored private(set) var slots: [String: SIMD3<Float>] = [:]
+    @ObservationIgnored private(set) var slotScale: [String: Float] = [:]
+
+    // MARK: Hooks the room sets
+
+    /// The community folder, where frames are shared.
+    @ObservationIgnored var community: () -> URL? = { nil }
+    /// The reader's head: its place and its heading.
+    @ObservationIgnored var headPose: () -> (position: SIMD3<Float>, forward: SIMD3<Float>)? = { nil }
+    /// The nearest real wall to a place within reach: where a card lands
+    /// on it and its turn.
+    @ObservationIgnored var wallNear: (SIMD3<Float>, Float) -> (position: SIMD3<Float>, orientation: simd_quatf)? = { _, _ in nil }
+    /// Something about who stands in a frame changed: the room rebuilds.
+    @ObservationIgnored var membersChanged: () -> Void = {}
+    /// Members taken out to stand loose at these places.
+    @ObservationIgnored var placeLoose: ([String: SIMD3<Float>]) -> Void = { _ in }
+    /// Members put back: their loose places forgotten.
+    @ObservationIgnored var forgetLoose: (Set<String>) -> Void = { _ in }
+
+    @ObservationIgnored let root = Entity()
+    @ObservationIgnored private var entities: [String: ModelEntity] = [:]
+    @ObservationIgnored private var frameKeys: [String: String] = [:]
+    @ObservationIgnored private var textures: [String: (picture: String, texture: TextureResource, aspect: Float)] = [:]
+    @ObservationIgnored private var pictureTextures: [String: (texture: TextureResource, aspect: Float)] = [:]
+    @ObservationIgnored private var loading: [String: String] = [:]
+    @ObservationIgnored private var dragStart: (id: String, middle: SIMD3<Float>, grab: SIMD3<Float>)?
+    @ObservationIgnored private var resizeStart: (id: String, width: Float, height: Float)?
+    @ObservationIgnored private var rotateStart: String?
+    @ObservationIgnored private var installed = false
+
+    private init() {
+        frames = Self.read(community: nil)
+    }
+
+    /// The room's frames, in sight or put away — not the deleted.
+    var here: [RoomFrame] {
+        guard let venue else { return [] }
+        return frames.filter { $0.venue == venue && $0.deleted != true }
+    }
+
+    /// The room's frames in sight.
+    var shownHere: [RoomFrame] { here.filter(\.isShown) }
+
+    func frame(_ id: String) -> RoomFrame? { frames.first { $0.id == id } }
+
+    /// Whether a frame of this kind stands in sight in the room.
+    func isShown(kind: String) -> Bool { shownHere.contains { $0.kind == kind } }
+
+    /// Whether a frame's members stand laid in it: in sight, not folded,
+    /// not being moved and resized.
+    func laysMembers(_ frame: RoomFrame) -> Bool {
+        frame.isShown && !frame.isFolded && !arrangingIDs.contains(frame.id)
+    }
+
+    /// The frame a member belongs to, while it stands in it.
+    func standsInFrame(_ id: String) -> Bool { memberFrame[id] != nil }
+
+    /// Whether a member has been pulled out of one of the room's frames.
+    func isPulled(_ id: String) -> Bool { here.contains { $0.isShown && $0.pulled.contains(id) } }
+
+    /// The kind of frame a member stands in, if it stands in one.
+    func kind(ofMember id: String) -> String? {
+        memberFrame[id].flatMap { frame($0)?.kind }
+    }
+
+    /// The kind of frame a member came out of, while it stands loose.
+    func kind(ofPulled id: String) -> String? {
+        here.first { $0.isShown && $0.pulled.contains(id) }?.kind
+    }
+
+    /// Whether a card is a person by its frame: standing in, or pulled out
+    /// of, an Authors or People frame (16 Nov 2026, Frode) — so it keeps
+    /// the person's card when lifted out, whatever else is known of it.
+    func isPersonMember(_ id: String) -> Bool {
+        guard let kind = kind(ofMember: id) ?? kind(ofPulled: id) else { return false }
+        return kind == RoomFrame.authorsKind || kind == ConceptKind.person.rawValue
+    }
+
+    /// The frame in this room a member was pulled out of, if any.
+    func frameID(pulling memberID: String) -> String? {
+        here.first { $0.isShown && $0.pulled.contains(memberID) }?.id
+    }
+
+    /// The turn a member wears in its frame: the frame's own.
+    func orientation(of memberID: String) -> simd_quatf? {
+        guard let frameID = memberFrame[memberID], let frame = frame(frameID) else { return nil }
+        return Self.rotation(Self.matrix(frame.transform))
+    }
+
+    var hasMembers: Bool { !memberFrame.isEmpty }
+
+    // MARK: Installing
+
+    func install(in content: RealityViewContent) {
+        if root.parent == nil { content.add(root) }
+        guard !installed else { return }
+        installed = true
+        refresh()
+    }
+
+    /// Read again from both homes, merged, and shown.
+    func refresh() {
+        let merged = Self.read(community: community())
+        if merged != frames { frames = merged }
+        showAll()
+    }
+
+    private func showAll() {
+        for frame in frames { show(frame) }
+        for (id, entity) in entities where !frames.contains(where: { $0.id == id && $0.deleted != true }) {
+            entity.removeFromParent()
+            entities[id] = nil
+            frameKeys[id] = nil
+        }
+    }
+
+    // MARK: Putting up, hiding, deleting
+
+    /// The bar's Frames ▸ a kind: a frame of it shown if hidden, hidden if
+    /// shown; none in the room, one put up before the reader, Move & Resize
+    /// on so it can be carried where it is wanted.
+    func toggle(kind: String) {
+        if let frame = here.first(where: { $0.kind == kind }) {
+            update(frame.id) { $0.hidden = $0.isShown ? true : nil }
+            if !(self.frame(frame.id)?.isShown ?? false) { arrangingIDs.remove(frame.id) }
+            membersChanged()
+            return
+        }
+        putUp(kind: kind)
+    }
+
+    /// Another frame of a kind, before the reader.
+    func putUp(kind: String) {
+        guard let venue else { return }
+        let head = headPose() ?? (SIMD3<Float>(0, 1.5, 0), SIMD3<Float>(0, 0, -1))
+        var forward = SIMD3<Float>(head.forward.x, 0, head.forward.z)
+        forward = simd_length(forward) > 1e-4 ? simd_normalize(forward) : SIMD3<Float>(0, 0, -1)
+        let middle = SIMD3<Float>(head.position.x, head.position.y, head.position.z) + forward * 1.5
+        let normal = -forward
+        let up = SIMD3<Float>(0, 1, 0)
+        let right = simd_normalize(simd_cross(up, normal))
+        let m = simd_float4x4(SIMD4<Float>(right, 0), SIMD4<Float>(up, 0), SIMD4<Float>(normal, 0),
+                              SIMD4<Float>(middle, 1))
+        let frame = RoomFrame(id: UUID().uuidString, venue: venue, kind: kind,
+                              width: Self.newSize.x, height: Self.newSize.y, transform: Self.columns(m),
+                              picture: Self.defaultPicture, frame: Self.defaultStyle.rawValue,
+                              frameThickness: Self.defaultThickness.rawValue, modified: Date())
+        frames.append(frame)
+        arrangingIDs.insert(frame.id)
+        show(frame)
+        save()
+        membersChanged()
+    }
+
+    /// Deleted: gone from the room on every device; its loose members stay.
+    func remove(_ id: String) {
+        arrangingIDs.remove(id)
+        if menuOpenFor == id { menuOpenFor = nil }
+        update(id) { $0.deleted = true; $0.pulled = [] }
+        entities[id]?.removeFromParent()
+        entities[id] = nil
+        frameKeys[id] = nil
+        membersChanged()
+    }
+
+    func hide(_ id: String) {
+        arrangingIDs.remove(id)
+        if menuOpenFor == id { menuOpenFor = nil }
+        update(id) { $0.hidden = true }
+        membersChanged()
+    }
+
+    // MARK: Looks, chosen
+
+    func choose(picture: String, for id: String) { update(id) { $0.picture = picture } }
+
+    func setStyle(_ style: Style?, for id: String) {
+        update(id) {
+            $0.frame = style?.rawValue
+            if style != nil, $0.frameThickness == nil { $0.frameThickness = Thickness.medium.rawValue }
+        }
+    }
+
+    func setThickness(_ thickness: Thickness, for id: String) {
+        update(id) {
+            if $0.frame == nil { $0.frame = Style.blackMatte.rawValue }
+            $0.frameThickness = thickness.rawValue
+        }
+    }
+
+    func setTransparency(_ level: Transparency, for id: String) {
+        update(id) { $0.transparency = level == .opaque ? nil : level.rawValue }
+    }
+
+    func setOffsetFrame(_ on: Bool, for id: String) { update(id) { $0.offsetFrame = on } }
+
+    func requestChooser(for id: String) {
+        chooserTargetID = id
+        chooserRequests += 1
+    }
+
+    /// A photo from Photos for the frame the chooser was asked for: kept,
+    /// at most 4096 px on its longest side, in the community folder's
+    /// Frame Pictures (and this headset's own copy).
+    func choosePhoto(_ data: Data) {
+        guard let id = chooserTargetID,
+              let image = Self.downsampled(data, longestSide: 4096),
+              let jpeg = image.jpegData(compressionQuality: 0.88) else { return }
+        let name = UUID().uuidString + ".jpg"
+        let local = Self.localPictures
+        try? FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        try? jpeg.write(to: local.appendingPathComponent(name))
+        if let folder = community() {
+            Self.withScope(folder) { url in
+                let shared = url.appendingPathComponent(Self.sharedPictures, isDirectory: true)
+                try? FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+                try? jpeg.write(to: shared.appendingPathComponent(name))
+            }
+        }
+        choose(picture: "photo:" + name, for: id)
+    }
+
+    // MARK: Move & Resize
+
+    func isArranging(_ id: String) -> Bool { arrangingIDs.contains(id) }
+
+    func toggleArranging(_ id: String) {
+        if arrangingIDs.contains(id) {
+            finishArranging(id)
+        } else {
+            arrangingIDs.insert(id)
+            menuOpenFor = nil
+            showAll()
+            membersChanged()
+        }
+    }
+
+    /// Done on one frame: kept where it stands, flat on a wall near it.
+    func finishArranging(_ id: String) {
+        guard arrangingIDs.remove(id) != nil else { return }
+        alignToWall(id)
+        showAll()
+        save()
+        membersChanged()
+    }
+
+    /// Whether every frame in sight in the room is being moved and resized.
+    var isEditingAll: Bool {
+        let open = shownHere.filter { !$0.isFolded }
+        return !open.isEmpty && open.allSatisfy { arrangingIDs.contains($0.id) }
+    }
+
+    /// The bar's Frames ▸ Edit & Move (16 Nov 2026, Frode): every frame in
+    /// sight into Move & Resize at once — its handles, its buttons — or,
+    /// all of them already, every one done and kept.
+    func toggleEditAll() {
+        if isEditingAll {
+            let ids = arrangingIDs
+            arrangingIDs = []
+            for id in ids { alignToWall(id) }
+        } else {
+            menuOpenFor = nil
+            for frame in shownHere where !frame.isFolded { arrangingIDs.insert(frame.id) }
+        }
+        showAll()
+        save()
+        membersChanged()
+    }
+
+    /// Pinched and carried: follows the hand, upright, facing as it faced.
+    /// Folded, it moves so at any time and turns to the reader as it goes.
+    func drag(_ entity: Entity, to world: SIMD3<Float>) {
+        guard let hit = entity.components[RoomFrameHitComponent.self] else { return }
+        if hit.isRotate { rotate(hit, to: world); return }
+        if hit.x != 0 || hit.y != 0 { pull(hit, to: world); return }
+        guard let index = frames.firstIndex(where: { $0.id == hit.frameID }),
+              arrangingIDs.contains(hit.frameID) || frames[index].isFolded,
+              let entity = entities[hit.frameID] else { return }
+        var m = Self.matrix(frames[index].transform)
+        let middle = Self.translation(m)
+        if dragStart?.id != hit.frameID { dragStart = (hit.frameID, middle, world) }
+        guard let start = dragStart else { return }
+        let moved = start.middle + (world - start.grab)
+        if frames[index].isFolded, let eye = headPose()?.position {
+            var toward = SIMD3<Float>(eye.x - moved.x, 0, eye.z - moved.z)
+            if simd_length(toward) > 0.05 {
+                toward = simd_normalize(toward)
+                let up = SIMD3<Float>(0, 1, 0)
+                let right = simd_normalize(simd_cross(up, toward))
+                m.columns.0 = SIMD4<Float>(right, 0)
+                m.columns.1 = SIMD4<Float>(up, 0)
+                m.columns.2 = SIMD4<Float>(toward, 0)
+            }
+        }
+        m.columns.3 = SIMD4<Float>(moved, 1)
+        frames[index].transform = Self.columns(m)
+        entity.transform = Transform(matrix: m)
+    }
+
+    /// Both hands: larger or smaller, its shape kept.
+    func resize(_ entity: Entity, by magnification: Double) {
+        guard let id = entity.components[RoomFrameHitComponent.self]?.frameID, arrangingIDs.contains(id),
+              let index = frames.firstIndex(where: { $0.id == id }) else { return }
+        if resizeStart?.id != id { resizeStart = (id, frames[index].width, frames[index].height) }
+        guard let start = resizeStart else { return }
+        let width = min(max(start.width * Float(magnification), 0.3), 15)
+        frames[index].width = width
+        frames[index].height = width * start.height / max(start.width, 0.01)
+        show(frames[index])
+    }
+
+    /// A handle pulled: its side, or both at a corner, follows the hand
+    /// along the frame; the opposite side stays.
+    private func pull(_ grip: RoomFrameHitComponent, to world: SIMD3<Float>) {
+        guard arrangingIDs.contains(grip.frameID),
+              let index = frames.firstIndex(where: { $0.id == grip.frameID }) else { return }
+        var m = Self.matrix(frames[index].transform)
+        let right = SIMD3<Float>(m.columns.0.x, m.columns.0.y, m.columns.0.z)
+        let up = SIMD3<Float>(m.columns.1.x, m.columns.1.y, m.columns.1.z)
+        let normal = SIMD3<Float>(m.columns.2.x, m.columns.2.y, m.columns.2.z)
+        let middle = Self.translation(m)
+        let onFrame = world - simd_dot(world - middle, normal) * normal
+        if resizeStart?.id != grip.frameID {
+            resizeStart = (grip.frameID, frames[index].width, frames[index].height)
+            dragStart = (grip.frameID, middle, onFrame)
+        }
+        guard let size = resizeStart, let start = dragStart else { return }
+        let moved = onFrame - start.grab
+        let width = grip.x == 0 ? size.width : min(max(size.width + grip.x * simd_dot(moved, right), 0.3), 20)
+        let height = grip.y == 0 ? size.height : min(max(size.height + grip.y * simd_dot(moved, up), 0.3), 10)
+        let newMiddle = start.middle + right * (grip.x * (width - size.width) / 2)
+            + up * (grip.y * (height - size.height) / 2)
+        m.columns.3 = SIMD4<Float>(newMiddle, 1)
+        frames[index].width = width
+        frames[index].height = height
+        frames[index].transform = Self.columns(m)
+        show(frames[index])
+    }
+
+    /// A rotate handle pulled: the frame turns about its centre to face
+    /// where the hand carried that side, upright.
+    private func rotate(_ grip: RoomFrameHitComponent, to world: SIMD3<Float>) {
+        guard arrangingIDs.contains(grip.frameID),
+              let index = frames.firstIndex(where: { $0.id == grip.frameID }) else { return }
+        var m = Self.matrix(frames[index].transform)
+        let middle = Self.translation(m)
+        let flat = SIMD3<Float>(world.x - middle.x, 0, world.z - middle.z)
+        guard simd_length(flat) > 0.05 else { return }
+        let direction = simd_normalize(flat)
+        let right = grip.x >= 0 ? direction : -direction
+        let up = SIMD3<Float>(0, 1, 0)
+        let normal = simd_normalize(simd_cross(right, up))
+        m.columns.0 = SIMD4<Float>(right, 0)
+        m.columns.1 = SIMD4<Float>(up, 0)
+        m.columns.2 = SIMD4<Float>(normal, 0)
+        frames[index].transform = Self.columns(m)
+        rotateStart = grip.frameID
+        show(frames[index])
+    }
+
+    /// Let go: flat on a real wall within 15 cm, and kept. A folded frame
+    /// carried somewhere new keeps its turn.
+    func endGesture() {
+        let moved = resizeStart?.id ?? dragStart?.id ?? rotateStart
+        dragStart = nil
+        resizeStart = nil
+        rotateStart = nil
+        guard let moved else { return }
+        if frame(moved)?.isFolded != true { alignToWall(moved) }
+        if let frame = frame(moved) { show(frame) }
+        update(moved) { _ in }
+        if !arrangingIDs.contains(moved) { membersChanged() }
+    }
+
+    /// Flat on the wall nearest it, where it is — only when brought within
+    /// 15 cm of one: a frame left out in the room stays.
+    private func alignToWall(_ id: String, reach: Float = 0.15) {
+        guard let index = frames.firstIndex(where: { $0.id == id }) else { return }
+        let m = Self.matrix(frames[index].transform)
+        guard let pose = wallNear(Self.translation(m), reach) else { return }
+        frames[index].transform = Self.columns(Self.matrix(pose.orientation, at: pose.position))
+        show(frames[index])
+    }
+
+    /// Snap to Wall: flat on the nearest wall found, however far.
+    func snapToWall(_ id: String) {
+        alignToWall(id, reach: 50)
+        update(id) { _ in }
+    }
+
+    /// Turn 90° right or left about the room's up.
+    func turn(_ id: String, clockwise: Bool) {
+        guard let index = frames.firstIndex(where: { $0.id == id }) else { return }
+        var m = Self.matrix(frames[index].transform)
+        let right = SIMD3<Float>(m.columns.0.x, m.columns.0.y, m.columns.0.z)
+        let normal = SIMD3<Float>(m.columns.2.x, m.columns.2.y, m.columns.2.z)
+        m.columns.0 = SIMD4<Float>(clockwise ? normal : -normal, 0)
+        m.columns.2 = SIMD4<Float>(clockwise ? -right : right, 0)
+        frames[index].transform = Self.columns(m)
+        update(id) { _ in }
+    }
+
+    /// Lift from Wall: 20 cm out toward the reader, so it can be taken hold
+    /// of again.
+    func liftFromWall(_ id: String) {
+        guard let index = frames.firstIndex(where: { $0.id == id }) else { return }
+        var m = Self.matrix(frames[index].transform)
+        let normal = SIMD3<Float>(m.columns.2.x, m.columns.2.y, m.columns.2.z)
+        m.columns.3 = SIMD4<Float>(Self.translation(m) + normal * 0.2, 1)
+        frames[index].transform = Self.columns(m)
+        update(id) { _ in }
+        membersChanged()
+    }
+
+    // MARK: Folding
+
+    func fold(_ id: String) {
+        guard let frame = frame(id), !frame.isFolded else { return }
+        arrangingIDs.remove(id)
+        menuOpenFor = nil
+        update(id) {
+            $0.unfolded = .init(width: $0.width, height: $0.height, transform: $0.transform)
+            let width = min(Self.foldedWidth, $0.width)
+            $0.height = min(max(width * $0.height / max($0.width, 0.01), 0.12), width)
+            $0.width = width
+        }
+        membersChanged()
+    }
+
+    func unfold(_ id: String) {
+        guard let full = frame(id)?.unfolded else { return }
+        menuOpenFor = nil
+        update(id) {
+            $0.width = full.width
+            $0.height = full.height
+            $0.transform = full.transform
+            $0.unfolded = nil
+        }
+        membersChanged()
+    }
+
+    // MARK: Members
+
+    /// A member pulled out to stand loose in the room.
+    func pullOut(_ memberID: String) {
+        guard let frameID = memberFrame[memberID] else { return }
+        update(frameID) { if !$0.pulled.contains(memberID) { $0.pulled.append(memberID) } }
+    }
+
+    /// A member put back in its frame.
+    func putBack(_ memberID: String, in frameID: String) {
+        update(frameID) { $0.pulled.removeAll { $0 == memberID } }
+        forgetLoose([memberID])
+        membersChanged()
+    }
+
+    /// Move All Out: every member lifted 10 cm out of the frame, keeping
+    /// the frame's arrangement, loose in the room from then on.
+    func moveAllOut(_ frameID: String) {
+        guard let frame = frame(frameID) else { return }
+        menuOpenFor = nil
+        let normal = Self.normal(Self.matrix(frame.transform))
+        var places: [String: SIMD3<Float>] = [:]
+        for (id, owner) in memberFrame where owner == frameID {
+            if let slot = slots[id] { places[id] = slot + normal * 0.1 }
+        }
+        guard !places.isEmpty else { return }
+        update(frameID) { $0.pulled = Array(Set($0.pulled).union(places.keys)).sorted() }
+        placeLoose(places)
+        membersChanged()
+    }
+
+    /// Put All Back: every pulled member home again.
+    func putAllBack(_ frameID: String) {
+        guard let frame = frame(frameID) else { return }
+        menuOpenFor = nil
+        let ids = Set(frame.pulled)
+        update(frameID) { $0.pulled = [] }
+        forgetLoose(ids)
+        membersChanged()
+    }
+
+    /// The frame of this kind a place is over, within `stickDistance` of
+    /// its face — where a member let go goes back. Nil: none.
+    func frameID(near position: SIMD3<Float>, kind: String) -> String? {
+        for frame in shownHere where frame.kind == kind && !frame.isFolded {
+            let m = Self.matrix(frame.transform)
+            let offset = position - Self.translation(m)
+            let out = simd_dot(offset, Self.normal(m))
+            guard out > -0.3, out - Self.frontOffset <= Self.stickDistance,
+                  abs(simd_dot(offset, Self.right(m))) <= frame.width / 2 + 0.05,
+                  abs(simd_dot(offset, Self.up(m))) <= frame.height / 2 + 0.05 else { continue }
+            return frame.id
+        }
+        return nil
+    }
+
+    /// Members of a frame in sight that is folded or being arranged: they
+    /// wait, out of sight, until it is laid again.
+    @ObservationIgnored private var waiting: Set<String> = []
+    func isWaiting(_ id: String) -> Bool { waiting.contains(id) }
+
+    /// The members of frames no longer laid, let go.
+    func forgetMembers(except laid: Set<String>) {
+        for (id, owner) in memberFrame where !laid.contains(owner) {
+            memberFrame[id] = nil
+            slots[id] = nil
+            slotScale[id] = nil
+        }
+        let shownIDs = Set(shownHere.map(\.id))
+        waitingOwner = waitingOwner.filter { shownIDs.contains($0.value) && laid.contains($0.value) }
+        waiting = Set(waitingOwner.keys)
+    }
+    @ObservationIgnored private var waitingOwner: [String: String] = [:]
+
+    /// Lays one frame's members in its columns (Knowledge Space's): top to
+    /// bottom then left to right, alphabetical as given, each column as
+    /// wide as its widest, the block centred within 92% of the frame,
+    /// everything smaller together (never below a third) until it fits.
+    /// The pulled stand loose; their places stay as shadows.
+    func lay(frameID: String, members: [(id: String, size: SIMD2<Float>)]) -> [String: (position: SIMD3<Float>, scale: Float)] {
+        for (id, owner) in memberFrame where owner == frameID { memberFrame[id] = nil; slots[id] = nil; slotScale[id] = nil }
+        for (id, owner) in waitingOwner where owner == frameID { waitingOwner[id] = nil }
+        guard let frame = frame(frameID), laysMembers(frame), !members.isEmpty else {
+            if let frame = frame(frameID), frame.isShown {
+                for member in members where !frame.pulled.contains(member.id) { waitingOwner[member.id] = frameID }
+            }
+            waiting = Set(waitingOwner.keys)
+            placeShadows(for: frameID, names: [:])
+            return [:]
+        }
+        waiting = Set(waitingOwner.keys)
+        let m = Self.matrix(frame.transform)
+        let widths = members.map(\.size.x)
+        let height = min(members.map(\.size.y).max() ?? 0.04, 0.12)
+        let placed = Self.columns(widths: widths, height: height,
+                                  frameWidth: frame.width, frameHeight: frame.height)
+        var result: [String: (position: SIMD3<Float>, scale: Float)] = [:]
+        var shadows: [String: SIMD3<Float>] = [:]
+        for (index, member) in members.enumerated() {
+            let local = SIMD3<Float>(placed.places[index].x, placed.places[index].y, Self.frontOffset)
+            let world = Self.translation(m) + Self.right(m) * local.x + Self.up(m) * local.y + Self.normal(m) * local.z
+            if frame.pulled.contains(member.id) {
+                shadows[member.id] = SIMD3<Float>(local.x, local.y, 0.004)
+                continue
+            }
+            memberFrame[member.id] = frameID
+            slots[member.id] = world
+            slotScale[member.id] = placed.scale
+            result[member.id] = (world, placed.scale)
+        }
+        placeShadows(for: frameID, names: shadows, scale: placed.scale)
+        return result
+    }
+
+    /// Knowledge Space's columns: each member's middle in the frame's own
+    /// plane, and the scale all share.
+    nonisolated static func columns(widths: [Float], height: Float, frameWidth: Float, frameHeight: Float)
+        -> (places: [SIMD2<Float>], scale: Float) {
+        let usableWidth = frameWidth * 0.92, usableHeight = frameHeight * 0.92
+        let gap: Float = 0.02
+        let columnGap = gap / 2
+        func plan(_ scale: Float) -> (rows: Int, columnWidths: [Float], width: Float) {
+            let rowHeight = (height + gap) * scale
+            let rows = max(1, Int((usableHeight + gap * scale) / rowHeight))
+            var columnWidths: [Float] = []
+            var start = 0
+            while start < widths.count {
+                let end = min(start + rows, widths.count)
+                columnWidths.append((widths[start..<end].max() ?? 0) * scale)
+                start = end
+            }
+            let width = columnWidths.reduce(0, +) + columnGap * scale * Float(max(columnWidths.count - 1, 0))
+            return (rows, columnWidths, width)
+        }
+        var scale: Float = 1
+        while scale > 0.34, plan(scale).width > usableWidth { scale -= 0.04 }
+        scale = max(scale, 0.34)
+        let layout = plan(scale)
+        let usedRows = min(layout.rows, widths.count)
+        let blockHeight = Float(usedRows) * (height + gap) * scale - gap * scale
+        var lefts: [Float] = []
+        var x = -layout.width / 2
+        for width in layout.columnWidths {
+            lefts.append(x)
+            x += width + columnGap * scale
+        }
+        var places: [SIMD2<Float>] = []
+        for index in widths.indices {
+            let column = index / layout.rows, row = index % layout.rows
+            let px = lefts[column] + widths[index] * scale / 2
+            let py = blockHeight / 2 - Float(row) * (height + gap) * scale - height * scale / 2
+            places.append(SIMD2(px, py))
+        }
+        return (places, scale)
+    }
+
+    // MARK: Drawing
+
+    /// A frame's entity made or remade: its picture on a plane drawn behind
+    /// everything, its border, its title, and its handles while arranging.
+    private func show(_ frame: RoomFrame) {
+        guard frame.deleted != true else { return }
+        let entity = entities[frame.id] ?? {
+            let made = ModelEntity()
+            made.name = "roomFrame:" + frame.id
+            root.addChild(made)
+            entities[frame.id] = made
+            return made
+        }()
+        let previous = entity.model?.materials
+        entity.model = ModelComponent(mesh: .generatePlane(width: frame.width, height: frame.height),
+                                      materials: previous ?? [Self.greyMaterial])
+        if frame.transform.count == 16 { entity.transform = Transform(matrix: Self.matrix(frame.transform)) }
+        entity.components.set(RoomFrameHitComponent(frameID: frame.id))
+        entity.components.set(ModelSortGroupComponent(group: .planarUIAlwaysBehind, order: 0))
+        let shown = frame.venue == venue && frame.isShown && frame.transform.count == 16
+        if entity.isEnabled != shown { entity.isEnabled = shown }
+        decorate(entity, for: frame)
+        border(entity, for: frame)
+        placeTitle(on: entity, for: frame)
+        let level = frame.transparency.flatMap(Transparency.init(rawValue:)) ?? .opaque
+        if level == .opaque {
+            entity.components.remove(OpacityComponent.self)
+        } else {
+            entity.components.set(OpacityComponent(opacity: level.opacity))
+        }
+        showPicture(frame, on: entity, shown: shown)
+    }
+
+    private func showPicture(_ frame: RoomFrame, on entity: ModelEntity, shown: Bool) {
+        if frame.picture == "grey" {
+            entity.model?.materials = [Self.greyMaterial]
+            textures[frame.id] = nil
+            return
+        }
+        let aspect = frame.width / max(frame.height, 0.01)
+        if let made = textures[frame.id], made.picture == frame.picture {
+            Self.show(made.texture, imageAspect: made.aspect, frameAspect: aspect, on: entity)
+            return
+        }
+        if let made = pictureTextures[frame.picture] {
+            textures[frame.id] = (frame.picture, made.texture, made.aspect)
+            Self.show(made.texture, imageAspect: made.aspect, frameAspect: aspect, on: entity)
+            return
+        }
+        guard shown else { return }
+        let picture = frame.picture, id = frame.id
+        guard loading[id] != picture else { return }
+        loading[id] = picture
+        let folder = community()
+        Task { @MainActor in
+            defer { if self.loading[id] == picture { self.loading[id] = nil } }
+            let drawn = await Task.detached(priority: .userInitiated) {
+                Self.wholeImage(for: picture, community: folder)?.cgImage
+            }.value
+            guard let image = drawn,
+                  let texture = try? await TextureResource(image: image, options: .init(semantic: .color,
+                                                                                        mipmapsMode: .allocateAndGenerateAll)),
+                  let current = self.frame(id), current.picture == picture,
+                  let entity = self.entities[id] else { return }
+            let imageAspect = Float(image.width) / Float(max(image.height, 1))
+            self.pictureTextures[picture] = (texture, imageAspect)
+            self.textures[id] = (picture, texture, imageAspect)
+            Self.show(texture, imageAspect: imageAspect, frameAspect: current.width / max(current.height, 0.01), on: entity)
+        }
+    }
+
+    private static var greyMaterial: UnlitMaterial { UnlitMaterial(color: UIColor(white: 0.16, alpha: 1)) }
+
+    private static let sharpSampler: MaterialParameters.Texture.Sampler = {
+        let descriptor = MTLSamplerDescriptor()
+        descriptor.minFilter = .linear
+        descriptor.magFilter = .linear
+        descriptor.mipFilter = .linear
+        descriptor.maxAnisotropy = 16
+        descriptor.sAddressMode = .clampToEdge
+        descriptor.tAddressMode = .clampToEdge
+        return .init(descriptor)
+    }()
+
+    /// The image filling the frame, its middle kept: cropped, never squashed.
+    private static func show(_ texture: TextureResource, imageAspect: Float, frameAspect: Float, on entity: ModelEntity) {
+        var material = UnlitMaterial()
+        material.color = .init(tint: .white, texture: .init(texture, sampler: sharpSampler))
+        let scale: SIMD2<Float> = frameAspect > imageAspect ? [1, imageAspect / frameAspect] : [frameAspect / imageAspect, 1]
+        material.textureCoordinateTransform = .init(offset: (SIMD2<Float>(1, 1) - scale) / 2, scale: scale)
+        entity.model?.materials = [material]
+    }
+
+    /// How far a frame's border stands past its edge; nothing, unframed.
+    func borderWidth(of frame: RoomFrame) -> Float {
+        guard frame.frame != nil else { return 0 }
+        return (frame.frameThickness.flatMap(Thickness.init(rawValue:)) ?? Self.defaultThickness).width
+    }
+
+    /// The border: four bars round the edge, remade only when its style,
+    /// thickness, offset or the frame's size change. Wood wears its grain.
+    private func border(_ entity: ModelEntity, for frame: RoomFrame) {
+        let style = frame.frame.flatMap(Style.init(rawValue:))
+        let thickness = frame.frameThickness.flatMap(Thickness.init(rawValue:)) ?? .medium
+        let offset = frame.offsetFrame ?? true
+        let key = style.map { "\($0.rawValue)|\(thickness.rawValue)|\(frame.width)|\(frame.height)|\(offset)" } ?? "none"
+        guard frameKeys[frame.id] != key else { return }
+        frameKeys[frame.id] = key
+        entity.findEntity(named: "border")?.removeFromParent()
+        guard let style else { return }
+        let holder = Entity()
+        holder.name = "border"
+        let bar = thickness.width
+        let depth = max(0.015, bar * 0.6)
+        let material = Self.material(style)
+        let w = frame.width, h = frame.height
+        // Offset: from the wall out, the picture set into it; else from
+        // just behind the picture.
+        let z = depth / 2 - (offset ? 0.03 : 0.01)
+        for (size, at) in [(SIMD3<Float>(w + 2 * bar, bar, depth), SIMD3<Float>(0, h / 2 + bar / 2, z)),
+                           (SIMD3<Float>(w + 2 * bar, bar, depth), SIMD3<Float>(0, -h / 2 - bar / 2, z)),
+                           (SIMD3<Float>(bar, h, depth), SIMD3<Float>(-w / 2 - bar / 2, 0, z)),
+                           (SIMD3<Float>(bar, h, depth), SIMD3<Float>(w / 2 + bar / 2, 0, z))] {
+            let piece = ModelEntity(mesh: .generateBox(size: size, cornerRadius: min(bar, depth) * 0.12),
+                                    materials: [material])
+            piece.components.set(ModelSortGroupComponent(group: .planarUIAlwaysBehind, order: 1))
+            piece.position = at
+            holder.addChild(piece)
+        }
+        entity.addChild(holder)
+        if style.isWood {
+            Task { @MainActor in
+                guard let grained = await Self.woodMaterial(style), self.frameKeys[frame.id] == key else { return }
+                for case let piece as ModelEntity in holder.children { piece.model?.materials = [grained] }
+            }
+        }
+    }
+
+    private static func material(_ style: Style) -> PhysicallyBasedMaterial {
+        var material = PhysicallyBasedMaterial()
+        material.baseColor = .init(tint: style.colour)
+        material.metallic = .init(floatLiteral: 0)
+        switch style {
+        case .blackMatte:
+            material.baseColor = .init(tint: .black)
+            material.roughness = .init(floatLiteral: 1)
+            material.specular = .init(floatLiteral: 0)
+        case .blackShiny:
+            material.roughness = .init(floatLiteral: 0.12)
+            material.clearcoat = .init(floatLiteral: 1)
+            material.clearcoatRoughness = .init(floatLiteral: 0.03)
+        case .lightGrey, .midGrey, .darkGrey:
+            material.roughness = .init(floatLiteral: 0.5)
+            material.clearcoat = .init(floatLiteral: 0.2)
+        default:
+            material.roughness = .init(floatLiteral: 0.55)
+        }
+        return material
+    }
+
+    private static var woodMaterials: [Style: PhysicallyBasedMaterial] = [:]
+
+    /// Wood: its colour streaked with grain along the bar, a little sheen.
+    private static func woodMaterial(_ style: Style) async -> PhysicallyBasedMaterial? {
+        if let made = woodMaterials[style] { return made }
+        let size = CGSize(width: 1024, height: 128)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            let cg = context.cgContext
+            style.colour.setFill()
+            cg.fill(CGRect(origin: .zero, size: size))
+            var seed: UInt64 = 0xBEEF &+ UInt64(style.rawValue.count)
+            func next() -> CGFloat {
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                return CGFloat(seed >> 33) / CGFloat(1 << 31)
+            }
+            for _ in 0..<140 {
+                let y = next() * size.height
+                let dark = next() > 0.35
+                UIColor(white: dark ? 0 : 1, alpha: 0.05 + next() * 0.12).setStroke()
+                cg.setLineWidth(0.6 + next() * 2.2)
+                cg.move(to: CGPoint(x: 0, y: y))
+                var x: CGFloat = 0
+                var yy = y
+                while x < size.width {
+                    x += 40 + next() * 60
+                    yy += (next() - 0.5) * 3
+                    cg.addLine(to: CGPoint(x: x, y: yy))
+                }
+                cg.strokePath()
+            }
+        }
+        guard let cgImage = image.cgImage,
+              let texture = try? await TextureResource(image: cgImage, options: .init(semantic: .color)) else { return nil }
+        var material = PhysicallyBasedMaterial()
+        material.baseColor = .init(tint: .white, texture: .init(texture))
+        material.roughness = .init(floatLiteral: 0.5)
+        material.metallic = .init(floatLiteral: 0)
+        material.clearcoat = .init(floatLiteral: 0.3)
+        woodMaterials[style] = material
+        return material
+    }
+
+    /// The title over the frame — or, folded, in its middle — and its menu.
+    private func placeTitle(on entity: ModelEntity, for frame: RoomFrame) {
+        let title = entity.findEntity(named: "title") ?? {
+            let made = Entity()
+            made.name = "title"
+            made.components.set(ViewAttachmentComponent(rootView: RoomFrameTitle(frameID: frame.id)))
+            entity.addChild(made)
+            return made
+        }()
+        title.position = frame.isFolded
+            ? [0, 0, Self.frontOffset + 0.02]
+            : [0, frame.height / 2 + borderWidth(of: frame) + 0.022, 0.07]
+    }
+
+    /// While arranging: a thin light edge, a handle at each corner and side,
+    /// a blue rotate handle beside each upright side, and the frame's own
+    /// buttons. Folded: taken hold of anywhere. Otherwise nothing takes the
+    /// pinch but the title.
+    private func decorate(_ entity: ModelEntity, for frame: RoomFrame) {
+        entity.findEntity(named: "edge")?.removeFromParent()
+        let arranging = arrangingIDs.contains(frame.id)
+        guard arranging else {
+            entity.children.filter {
+                $0.name.hasPrefix("handle") || $0.name.hasPrefix("rotate") || $0.name == "buttons"
+            }.forEach { $0.removeFromParent() }
+            if frame.isFolded {
+                entity.components.set(InputTargetComponent())
+                entity.components.set(CollisionComponent(shapes: [.generateBox(size: [frame.width, frame.height, 0.03])]))
+                entity.components.set(HoverEffectComponent())
+            } else {
+                entity.components.remove(InputTargetComponent.self)
+                entity.components.remove(CollisionComponent.self)
+                entity.components.remove(HoverEffectComponent.self)
+            }
+            return
+        }
+        entity.components.set(InputTargetComponent())
+        entity.components.set(CollisionComponent(shapes: [.generateBox(size: [frame.width, frame.height, 0.02])]))
+        entity.components.remove(HoverEffectComponent.self)
+        entity.addChild(Self.edge(width: frame.width, height: frame.height))
+        let halfWidth = frame.width / 2, halfHeight = frame.height / 2
+        for x in [-1, 0, 1] {
+            for y in [-1, 0, 1] where x != 0 || y != 0 {
+                let name = "handle.\(x).\(y)"
+                let handle = entity.findEntity(named: name) ?? {
+                    let made = ModelEntity(mesh: .generateSphere(radius: x != 0 && y != 0 ? 0.035 : 0.028),
+                                           materials: [UnlitMaterial(color: UIColor(white: 0.95, alpha: 1))])
+                    made.name = name
+                    made.components.set(RoomFrameHitComponent(frameID: frame.id, x: Float(x), y: Float(y)))
+                    made.components.set(InputTargetComponent())
+                    made.components.set(CollisionComponent(shapes: [.generateSphere(radius: 0.07)]))
+                    made.components.set(HoverEffectComponent())
+                    entity.addChild(made)
+                    return made
+                }()
+                handle.position = [Float(x) * halfWidth, Float(y) * halfHeight, 0.05]
+            }
+        }
+        for x in [-1, 1] {
+            let name = "rotate.\(x)"
+            let handle = entity.findEntity(named: name) ?? {
+                let made = ModelEntity(mesh: .generateSphere(radius: 0.032),
+                                       materials: [UnlitMaterial(color: UIColor(red: 0.25, green: 0.56, blue: 1.0, alpha: 1.0))])
+                made.name = name
+                made.components.set(RoomFrameHitComponent(frameID: frame.id, x: Float(x), isRotate: true))
+                made.components.set(InputTargetComponent())
+                made.components.set(CollisionComponent(shapes: [.generateSphere(radius: 0.07)]))
+                made.components.set(HoverEffectComponent())
+                let icon = Entity()
+                icon.components.set(ViewAttachmentComponent(rootView:
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)))
+                icon.position = [0, 0, 0.033]
+                made.addChild(icon)
+                entity.addChild(made)
+                return made
+            }()
+            handle.position = [Float(x) * (halfWidth + 0.09), 0, 0.05]
+        }
+        let buttons = entity.findEntity(named: "buttons") ?? {
+            let made = Entity()
+            made.name = "buttons"
+            made.components.set(ViewAttachmentComponent(rootView: RoomFrameArrangeButtons(frameID: frame.id)))
+            entity.addChild(made)
+            return made
+        }()
+        buttons.position = [0, -halfHeight - 0.09, 0.06]
+    }
+
+    private static func edge(width: Float, height: Float) -> Entity {
+        let frame = Entity()
+        frame.name = "edge"
+        let material = UnlitMaterial(color: UIColor(white: 0.9, alpha: 1))
+        let line: Float = 0.006
+        for (size, at) in [(SIMD3<Float>(width, line, line), SIMD3<Float>(0, height / 2, 0.003)),
+                           (SIMD3<Float>(width, line, line), SIMD3<Float>(0, -height / 2, 0.003)),
+                           (SIMD3<Float>(line, height, line), SIMD3<Float>(width / 2, 0, 0.003)),
+                           (SIMD3<Float>(line, height, line), SIMD3<Float>(-width / 2, 0, 0.003))] {
+            let bar = ModelEntity(mesh: .generateBox(size: size), materials: [material])
+            bar.components.set(ModelSortGroupComponent(group: .planarUIAlwaysBehind, order: 2))
+            bar.position = at
+            frame.addChild(bar)
+        }
+        return frame
+    }
+
+    /// The pulled members' places, kept as faint names in the frame — half
+    /// seen, set back a little, so the frame still reads whole.
+    private func placeShadows(for frameID: String, names: [String: SIMD3<Float>], scale: Float = 1) {
+        guard let entity = entities[frameID] else { return }
+        let holder = entity.findEntity(named: "shadows") ?? {
+            let made = Entity()
+            made.name = "shadows"
+            entity.addChild(made)
+            return made
+        }()
+        let key = names.keys.sorted().joined(separator: "|") + "\(scale)"
+        guard holder.components[ShadowKeyComponent.self]?.key != key else {
+            for child in holder.children { if let at = names[child.name] { child.position = at } }
+            return
+        }
+        holder.components.set(ShadowKeyComponent(key: key))
+        holder.children.removeAll()
+        for (id, at) in names {
+            let shadow = Entity()
+            shadow.name = id
+            shadow.components.set(ViewAttachmentComponent(rootView:
+                Text(Self.shadowTitle(id))
+                    .font(.system(size: 22 * CGFloat(scale), weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().strokeBorder(Color.white.opacity(0.6), lineWidth: 1))
+                    .opacity(0.5)))
+            shadow.position = at
+            holder.addChild(shadow)
+        }
+    }
+
+    /// A member id's name, for its shadow: keyword:/person: prefixes away.
+    @ObservationIgnored var titleOf: (String) -> String = { id in
+        id.split(separator: ":", maxSplits: 1).last.map(String.init) ?? id
+    }
+    private static func shadowTitle(_ id: String) -> String { RoomFrames.shared.titleOf(id) }
+
+    // MARK: Keeping
+
+    private func update(_ id: String, _ change: (inout RoomFrame) -> Void) {
+        guard let index = frames.firstIndex(where: { $0.id == id }) else { return }
+        change(&frames[index])
+        frames[index].modified = Date()
+        show(frames[index])
+        save()
+    }
+
+    private func save() {
+        let folder = community()
+        Self.write(frames, community: folder)
+    }
+
+    nonisolated private static let sharedName = "origami-room-frames.json"
+    nonisolated private static let sharedPictures = "Frame Pictures"
+
+    nonisolated private struct File: Codable {
+        var frames: [String: RoomFrame] = [:]
+    }
+
+    nonisolated private static var mirrorURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base.appendingPathComponent(sharedName)
+    }
+
+    nonisolated private static var localPictures: URL {
+        URL.applicationSupportDirectory.appendingPathComponent(sharedPictures, isDirectory: true)
+    }
+
+    nonisolated private static var encoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        return encoder
+    }
+
+    nonisolated private static var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        return decoder
+    }
+
+    private static func read(community folder: URL?) -> [RoomFrame] {
+        let mirror = readFile(at: mirrorURL)
+        let shared = folder.flatMap { url in withScope(url) { readFile(at: $0.appendingPathComponent(sharedName)) } }
+        var merged = mirror?.frames ?? [:]
+        for (id, frame) in shared?.frames ?? [:] {
+            if let held = merged[id], held.modified >= frame.modified { continue }
+            merged[id] = frame
+        }
+        return merged.values.sorted { $0.id < $1.id }
+    }
+
+    private static func write(_ frames: [RoomFrame], community folder: URL?) {
+        // Merged with what is there, so another headset's frames stand.
+        var file = File(frames: Dictionary(uniqueKeysWithValues: read(community: folder).map { ($0.id, $0) }))
+        for frame in frames {
+            if let held = file.frames[frame.id], held.modified > frame.modified { continue }
+            file.frames[frame.id] = frame
+        }
+        guard let data = try? encoder.encode(file) else { return }
+        try? data.write(to: mirrorURL, options: .atomic)
+        if let folder {
+            withScope(folder) { try? data.write(to: $0.appendingPathComponent(sharedName), options: .atomic) }
+        }
+    }
+
+    nonisolated private static func readFile(at url: URL) -> File? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? decoder.decode(File.self, from: data)
+    }
+
+    nonisolated private static func withScope<T>(_ url: URL, _ body: (URL) -> T) -> T {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return body(url)
+    }
+
+    // MARK: Pictures
+
+    nonisolated private static func wholeImage(for picture: String, community folder: URL?) -> UIImage? {
+        if picture.hasPrefix("photo:") {
+            let name = String(picture.dropFirst("photo:".count))
+            let local = localPictures.appendingPathComponent(name)
+            if let image = UIImage(contentsOfFile: local.path) { return image }
+            guard let folder else { return nil }
+            return withScope(folder) { url in
+                let shared = url.appendingPathComponent(sharedPictures, isDirectory: true).appendingPathComponent(name)
+                guard let data = try? Data(contentsOf: shared) else { return nil }
+                // Kept here too, so the next room needs no folder.
+                try? FileManager.default.createDirectory(at: localPictures, withIntermediateDirectories: true)
+                try? data.write(to: local)
+                return UIImage(data: data)
+            }
+        }
+        if picture.hasPrefix("builtin:"), let builtIn = BuiltIn(rawValue: String(picture.dropFirst("builtin:".count))) {
+            return drawn(builtIn, aspect: 2)
+        }
+        if picture.hasPrefix("default:"), let photo = DefaultPhoto(rawValue: String(picture.dropFirst("default:".count))),
+           let url = photoURL(photo) {
+            return UIImage(contentsOfFile: url.path)
+        }
+        return nil
+    }
+
+    nonisolated static func photoURL(_ photo: DefaultPhoto) -> URL? {
+        Bundle.main.url(forResource: photo.resourceName, withExtension: "jpg")
+            ?? Bundle.main.url(forResource: photo.resourceName, withExtension: "jpg", subdirectory: sharedPictures)
+    }
+
+    static func thumbnail(_ builtIn: BuiltIn) -> UIImage { drawn(builtIn, aspect: 1.6) }
+
+    static func thumbnail(_ photo: DefaultPhoto) -> UIImage? {
+        guard let url = photoURL(photo), let data = try? Data(contentsOf: url) else { return nil }
+        return downsampled(data, longestSide: 240)
+    }
+
+    nonisolated private static func downsampled(_ data: Data, longestSide: CGFloat) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
+        else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: Int(longestSide),
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return UIImage(cgImage: image)
+    }
+
+    /// Knowledge Space's own pictures, drawn — no files to ship.
+    nonisolated private static func drawn(_ builtIn: BuiltIn, aspect: CGFloat) -> UIImage {
+        let width: CGFloat = 2048
+        let size = CGSize(width: width, height: max(256, width / max(aspect, 0.1)))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            let cg = context.cgContext
+            func gradient(_ top: UIColor, _ bottom: UIColor) {
+                let colours = [top.cgColor, bottom.cgColor] as CFArray
+                if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colours, locations: [0, 1]) {
+                    cg.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
+                }
+            }
+            switch builtIn {
+            case .slate:
+                gradient(UIColor(red: 0.22, green: 0.26, blue: 0.31, alpha: 1), UIColor(red: 0.12, green: 0.14, blue: 0.17, alpha: 1))
+            case .dusk:
+                gradient(UIColor(red: 0.16, green: 0.12, blue: 0.30, alpha: 1), UIColor(red: 0.78, green: 0.42, blue: 0.30, alpha: 1))
+            case .warmPaper:
+                gradient(UIColor(red: 0.86, green: 0.82, blue: 0.74, alpha: 1), UIColor(red: 0.76, green: 0.71, blue: 0.62, alpha: 1))
+            case .nightSky:
+                gradient(UIColor(red: 0.03, green: 0.04, blue: 0.10, alpha: 1), UIColor(red: 0.07, green: 0.10, blue: 0.20, alpha: 1))
+                var seed: UInt64 = 0x5EED
+                func next() -> CGFloat {
+                    seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                    return CGFloat(seed >> 33) / CGFloat(1 << 31)
+                }
+                for _ in 0..<900 {
+                    let radius = 0.6 + next() * next() * 2.4
+                    UIColor(white: 1, alpha: 0.35 + next() * 0.65).setFill()
+                    cg.fillEllipse(in: CGRect(x: next() * size.width, y: next() * size.height, width: radius, height: radius))
+                }
+            }
+        }
+    }
+
+    // MARK: Matrices
+
+    nonisolated static func matrix(_ values: [Float]) -> simd_float4x4 {
+        guard values.count == 16 else { return matrix_identity_float4x4 }
+        return simd_float4x4(SIMD4(values[0], values[1], values[2], values[3]),
+                             SIMD4(values[4], values[5], values[6], values[7]),
+                             SIMD4(values[8], values[9], values[10], values[11]),
+                             SIMD4(values[12], values[13], values[14], values[15]))
+    }
+
+    nonisolated static func matrix(_ rotation: simd_quatf, at position: SIMD3<Float>) -> simd_float4x4 {
+        var m = simd_float4x4(rotation)
+        m.columns.3 = SIMD4<Float>(position, 1)
+        return m
+    }
+
+    nonisolated static func columns(_ m: simd_float4x4) -> [Float] {
+        [m.columns.0, m.columns.1, m.columns.2, m.columns.3].flatMap { [$0.x, $0.y, $0.z, $0.w] }
+    }
+
+    nonisolated static func translation(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
+    nonisolated static func right(_ m: simd_float4x4) -> SIMD3<Float> { simd_normalize(SIMD3(m.columns.0.x, m.columns.0.y, m.columns.0.z)) }
+    nonisolated static func up(_ m: simd_float4x4) -> SIMD3<Float> { simd_normalize(SIMD3(m.columns.1.x, m.columns.1.y, m.columns.1.z)) }
+    nonisolated static func normal(_ m: simd_float4x4) -> SIMD3<Float> { simd_normalize(SIMD3(m.columns.2.x, m.columns.2.y, m.columns.2.z)) }
+
+    nonisolated static func rotation(_ m: simd_float4x4) -> simd_quatf {
+        simd_quatf(simd_float3x3(right(m), up(m), normal(m)))
+    }
+}
+
+private struct ShadowKeyComponent: Component {
+    let key: String
+}
+
+// MARK: - The frame's title and menu
+
+/// The title over a frame: its kind's name in a capsule on the border's
+/// colour. Pinched, its menu opens beneath it — Edit's pages, Move &
+/// Resize, Move All Out, Put All Back, Fold, Hide, Delete.
+struct RoomFrameTitle: View {
+    let frameID: String
+
+    private enum Page { case main, picture, style, thickness, transparency }
+    @State private var page = Page.main
+    @State private var confirmingDelete = false
+
+    var body: some View {
+        let frames = RoomFrames.shared
+        let frame = frames.frame(frameID)
+        let open = frames.menuOpenFor == frameID
+        VStack(spacing: 14) {
+            Button {
+                frames.menuOpenFor = open ? nil : frameID
+            } label: {
+                Text(frame?.title ?? "")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundStyle(titleInk(frame))
+                    .padding(.horizontal, 26)
+                    .padding(.vertical, 10)
+                    .background(Capsule().fill(titleGround(frame)))
+                    .contentShape(.hoverEffect, Capsule())
+                    .hoverEffect(.highlight)
+            }
+            .buttonStyle(.plain)
+            if open, let frame {
+                menu(frame, frames)
+                    .padding(24)
+                    .frame(width: 620, alignment: .leading)
+                    .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 36))
+            }
+        }
+        .onChange(of: open) { _, now in
+            if !now { page = .main; confirmingDelete = false }
+        }
+    }
+
+    @ViewBuilder private func menu(_ frame: RoomFrame, _ frames: RoomFrames) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            switch page {
+            case .main:
+                row("Picture", systemImage: "photo", more: true) { page = .picture }
+                row("Frame Color", systemImage: "square.dashed", more: true) { page = .style }
+                row("Frame Thickness", systemImage: "line.3.horizontal", more: true) { page = .thickness }
+                row("Transparency", systemImage: "square.dashed.inset.filled", more: true) { page = .transparency }
+                Divider().padding(.vertical, 6)
+                row("Move & Resize", systemImage: "arrow.up.and.down.and.arrow.left.and.right") {
+                    frames.toggleArranging(frameID)
+                }
+                row("Lift from Wall", systemImage: "arrow.up.square") { frames.liftFromWall(frameID) }
+                row("Snap to Wall", systemImage: "rectangle.portrait.and.arrow.forward") { frames.snapToWall(frameID) }
+                Divider().padding(.vertical, 6)
+                row("Move All Out", systemImage: "arrow.up.right.square") { frames.moveAllOut(frameID) }
+                row("Put All Back", systemImage: "arrow.down.left.square") { frames.putAllBack(frameID) }
+                    .disabled(frame.pulled.isEmpty)
+                row(frame.isFolded ? "Unfold Frame" : "Fold Frame",
+                    systemImage: frame.isFolded ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left") {
+                    if frame.isFolded { frames.unfold(frameID) } else { frames.fold(frameID) }
+                }
+                row("Hide", systemImage: "eye.slash") { frames.hide(frameID) }
+                Divider().padding(.vertical, 6)
+                row(confirmingDelete ? "Delete This Frame?" : "Delete", systemImage: "trash", destructive: true) {
+                    guard confirmingDelete else { confirmingDelete = true; return }
+                    frames.remove(frameID)
+                }
+            case .picture:
+                back
+                pick("Dark Grey", on: frame.picture == "grey") { frames.choose(picture: "grey", for: frameID) }
+                ForEach(RoomFrames.BuiltIn.allCases) { builtIn in
+                    pick(builtIn.rawValue, thumbnail: RoomFrames.thumbnail(builtIn),
+                         on: frame.picture == "builtin:" + builtIn.rawValue) {
+                        frames.choose(picture: "builtin:" + builtIn.rawValue, for: frameID)
+                    }
+                }
+                ForEach(RoomFrames.DefaultPhoto.allCases) { photo in
+                    pick(photo.rawValue, thumbnail: RoomFrames.thumbnail(photo),
+                         on: frame.picture == "default:" + photo.rawValue) {
+                        frames.choose(picture: "default:" + photo.rawValue, for: frameID)
+                    }
+                }
+                Divider().padding(.vertical, 6)
+                row("Choose from Photos…", systemImage: "photo.on.rectangle") {
+                    frames.menuOpenFor = nil
+                    frames.requestChooser(for: frameID)
+                }
+            case .style:
+                back
+                pick("No Frame", on: frame.frame == nil) { frames.setStyle(nil, for: frameID) }
+                ForEach(RoomFrames.Style.allCases) { style in
+                    pick(style.rawValue, on: frame.frame == style.rawValue) { frames.setStyle(style, for: frameID) }
+                }
+                Divider().padding(.vertical, 6)
+                pick("Offset Frame", on: frame.offsetFrame ?? true) {
+                    frames.setOffsetFrame(!(frame.offsetFrame ?? true), for: frameID)
+                }
+            case .thickness:
+                back
+                ForEach(RoomFrames.Thickness.allCases) { thickness in
+                    pick(thickness.rawValue, on: frame.frame != nil && frame.frameThickness == thickness.rawValue) {
+                        frames.setThickness(thickness, for: frameID)
+                    }
+                }
+            case .transparency:
+                back
+                let current = frame.transparency ?? RoomFrames.Transparency.opaque.rawValue
+                ForEach(RoomFrames.Transparency.allCases) { level in
+                    pick(level.rawValue, on: current == level.rawValue) { frames.setTransparency(level, for: frameID) }
+                }
+            }
+        }
+    }
+
+    private var back: some View {
+        row("Back", systemImage: "chevron.left") { page = .main }
+            .padding(.bottom, 6)
+    }
+
+    private func row(_ title: String, systemImage: String, more: Bool = false, destructive: Bool = false,
+                     action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 16) {
+                Image(systemName: systemImage).frame(width: 34)
+                Text(title)
+                Spacer(minLength: 12)
+                if more { Image(systemName: "chevron.right").foregroundStyle(.secondary) }
+            }
+            .font(.system(size: 26, weight: .medium))
+            .foregroundStyle(destructive ? Color.red : Color.primary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 14))
+            .contentShape(Rectangle())
+            .hoverEffect(.highlight)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func pick(_ title: String, thumbnail: UIImage? = nil, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 16) {
+                Image(systemName: "checkmark").opacity(on ? 1 : 0).frame(width: 34)
+                if let thumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 64, height: 40)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                Text(title)
+                Spacer(minLength: 12)
+            }
+            .font(.system(size: 26, weight: .medium))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 14))
+            .contentShape(Rectangle())
+            .hoverEffect(.highlight)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The title's ground: the border's colour, dark grey unframed.
+    private func titleGround(_ frame: RoomFrame?) -> Color {
+        guard let style = frame?.frame.flatMap(RoomFrames.Style.init(rawValue:)) else { return Color(white: 0.16) }
+        return Color(uiColor: style.colour)
+    }
+
+    private func titleInk(_ frame: RoomFrame?) -> Color {
+        guard let style = frame?.frame.flatMap(RoomFrames.Style.init(rawValue:)) else { return .white }
+        var white: CGFloat = 0
+        style.colour.getWhite(&white, alpha: nil)
+        return white > 0.6 ? .black : .white
+    }
+}
+
+/// While a frame is being moved and resized: Done, Snap to Wall, the two
+/// turns and Delete, in a row under it.
+struct RoomFrameArrangeButtons: View {
+    let frameID: String
+
+    var body: some View {
+        let frames = RoomFrames.shared
+        HStack(spacing: 18) {
+            Button("Done") { frames.finishArranging(frameID) }
+                .font(.system(size: 34, weight: .bold))
+            Button("Snap to Wall") { frames.snapToWall(frameID) }
+            Button("Turn Left", systemImage: "rotate.left") { frames.turn(frameID, clockwise: false) }
+            Button("Turn Right", systemImage: "rotate.right") { frames.turn(frameID, clockwise: true) }
+            Button("Delete", systemImage: "trash", role: .destructive) { frames.remove(frameID) }
+        }
+        .font(.system(size: 28, weight: .semibold))
+        .padding(22)
+        .glassBackgroundEffect()
+    }
+}
+
+/// The picture chooser's window: Photos cannot open from the room itself.
+struct RoomFramePictureChooser: View {
+    @Environment(\.dismissWindow) private var dismissWindow
+    @State private var photo: PhotosPickerItem?
+
+    static let windowID = "frame-picture"
+
+    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 14)]
+
+    var body: some View {
+        let frames = RoomFrames.shared
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Frame Picture")
+                .font(.title2.weight(.semibold))
+            LazyVGrid(columns: columns, spacing: 14) {
+                PhotosPicker(selection: $photo, matching: .images) {
+                    VStack(spacing: 6) {
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(.thinMaterial)
+                            .overlay(Image(systemName: "photo.on.rectangle").font(.largeTitle))
+                            .frame(height: 94)
+                        Text("From Photos…").font(.callout)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+            HStack {
+                Spacer()
+                Button("Done") { dismissWindow(id: Self.windowID) }
+            }
+        }
+        .padding(24)
+        .frame(width: 420)
+        .onChange(of: photo) { _, item in
+            guard let item else { return }
+            Task { @MainActor in
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    frames.choosePhoto(data)
+                    dismissWindow(id: Self.windowID)
+                }
+                photo = nil
+            }
+        }
+    }
+}
+
+// MARK: - The room's hold on its frames
+
+/// The gestures a frame takes in the room — carried, its handles pulled,
+/// resized with both hands — and the chooser's window when Photos is
+/// asked for. A modifier, so the room's long chain stays type-checkable.
+struct RoomFrameGestures: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content
+            .simultaneousGesture(
+                DragGesture()
+                    .targetedToEntity(where: .has(RoomFrameHitComponent.self))
+                    .onChanged { value in
+                        let world = value.convert(value.location3D, from: .local, to: .scene)
+                        RoomFrames.shared.drag(value.entity, to: world)
+                    }
+                    .onEnded { _ in RoomFrames.shared.endGesture() })
+            .simultaneousGesture(
+                MagnifyGesture()
+                    .targetedToEntity(where: .has(RoomFrameHitComponent.self))
+                    .onChanged { value in RoomFrames.shared.resize(value.entity, by: value.magnification) }
+                    .onEnded { _ in RoomFrames.shared.endGesture() })
+            .onChange(of: RoomFrames.shared.chooserRequests) {
+                openWindow(id: RoomFramePictureChooser.windowID)
+            }
+    }
+}
+#endif

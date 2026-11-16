@@ -2,6 +2,7 @@
 import SwiftUI
 import RealityKit
 import AVFoundation
+import AVKit
 import NaturalLanguage
 import UniformTypeIdentifiers
 import FoundationModels
@@ -636,10 +637,16 @@ struct VisionFigureWindow: View {
     var body: some View {
         VStack(spacing: 12) {
             if let asset, let image = visionFigureImage(for: asset) {
+                // The window opens to the picture's own shape (16 Nov 2026,
+                // Frode): its ideal size is the image fitted within 1400 ×
+                // 1000 points, never under 360 wide, so no band stands either
+                // side or above and below it.
+                let fitted = Self.fittedSize(of: image.size)
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(idealWidth: fitted.width, maxWidth: .infinity,
+                           idealHeight: fitted.height, maxHeight: .infinity)
                     .accessibilityLabel(asset.alt ?? "Figure")
                 if let caption = asset.alt, !caption.isEmpty {
                     Text(caption)
@@ -667,6 +674,17 @@ struct VisionFigureWindow: View {
             }
         }
         .padding(20)
+    }
+
+    /// An image's size fitted within the window's bounds, its shape kept.
+    static func fittedSize(of size: CGSize) -> CGSize {
+        guard size.width > 0, size.height > 0 else { return CGSize(width: 860, height: 660) }
+        let scale = min(1400 / size.width, 1000 / size.height)
+        var fitted = CGSize(width: size.width * scale, height: size.height * scale)
+        if fitted.width < 360 {
+            fitted = CGSize(width: 360, height: 360 * size.height / size.width)
+        }
+        return fitted
     }
 }
 
@@ -786,6 +804,15 @@ struct OrigamiVisionApp: App {
             WindowPlacement(.utilityPanel)
         }
 
+        // A room frame's picture from Photos (16 Nov 2026).
+        Window("Frame Picture", id: RoomFramePictureChooser.windowID) {
+            RoomFramePictureChooser()
+        }
+        .windowResizability(.contentSize)
+        .defaultWindowPlacement { _, _ in
+            WindowPlacement(.utilityPanel)
+        }
+
         Window("New Concept", id: "new-concept") {
             VisionNewConceptView()
                 .environment(model)
@@ -896,6 +923,27 @@ struct OrigamiVisionApp: App {
             }
         }
         .defaultSize(width: 900, height: 700)
+        // Opened at the size the figure asks for — the picture's own shape
+        // (16 Nov 2026, Frode).
+        .defaultWindowPlacement { content, _ in
+            WindowPlacement(.utilityPanel, size: content.sizeThatFits(.unspecified))
+        }
+
+        // A YouTube video a document links to (16 Nov 2026), in a window
+        // as large or small as the reader makes it.
+        WindowGroup(id: "youtube", for: YouTubeVideo.self) { $video in
+            if let video { VisionYouTubeWindow(video: video) }
+        }
+        .defaultSize(width: 1280, height: 720)
+        .defaultWindowPlacement { _, _ in
+            WindowPlacement(.utilityPanel)
+        }
+
+        // A book's own sound or film (16 Nov 2026).
+        WindowGroup(id: "media", for: URL.self) { $url in
+            if let url { VisionMediaPlayer(url: url) }
+        }
+        .defaultSize(width: 960, height: 560)
         .defaultWindowPlacement { _, _ in
             WindowPlacement(.utilityPanel)
         }
@@ -1313,6 +1361,211 @@ final class VisionModel {
     /// everything else in the Hallway steps away while this is set.
     /// Toggled from the reader panel's own toolbar.
     var readingDeskDocID: String?
+
+    /// A reading's endnotes standing above its page in the room (16 Nov
+    /// 2026, Frode): all of them (the bar's E), or those spawned from their
+    /// marks in the text — and the one lit, with its mark.
+    struct EndnoteShelf: Equatable {
+        var all = false
+        var ids: [String] = []
+        var focus: String?
+        /// Lit from the strip: the reading turns to its mark's page.
+        var focusFromStrip = false
+        var isEmpty: Bool { !all && ids.isEmpty }
+    }
+    var endnoteShelves: [String: EndnoteShelf] = [:]
+
+    /// The readings whose media stand above their page (16 Nov 2026,
+    /// Frode): pictures, 3D objects, sound and film.
+    var picturesShown: Set<String> = []
+
+    /// One piece of a reading's media (16 Nov 2026, Frode): a picture, a
+    /// 3D object (its poster, and the paragraph that stands it in the room),
+    /// or a sound or a film the book carries.
+    enum ReadingMedia: Identifiable {
+        case picture(LiquidDoc.Asset)
+        case object(LiquidDoc.SpatialFigure, paragraphID: String, poster: LiquidDoc.Asset?)
+        case sound(URL, label: String)
+        case film(URL, label: String)
+
+        var id: String {
+            switch self {
+            case .picture(let asset): "picture:" + asset.id
+            case .object(_, let paragraphID, _): "object:" + paragraphID
+            case .sound(let url, _): "sound:" + url.absoluteString
+            case .film(let url, _): "film:" + url.absoluteString
+            }
+        }
+    }
+
+    /// A reading's media in the order its words show them — only its own:
+    /// an article of a bound volume carries the whole volume's assets, so
+    /// only what its paragraphs name counts.
+    func media(of docID: String) -> [ReadingMedia] {
+        guard let doc = document(docID) else { return [] }
+        let play = try? NSRegularExpression(
+            pattern: #"\[\x{25B6} Play (audio|video)(?:: ([^\]]*))?\]\(origami-media:([^)]+)\)"#)
+        var found: [ReadingMedia] = []
+        for paragraph in doc.body ?? [] {
+            if let figure = LiquidDoc.modelReference(in: paragraph.text) {
+                let poster = figure.posterID.flatMap { id in doc.assets.first { $0.id == id } }
+                found.append(.object(figure, paragraphID: paragraph.id, poster: poster))
+            } else if let image = LiquidDoc.imageReference(in: paragraph.text),
+                      let asset = doc.assets.first(where: { $0.id == image.id }),
+                      asset.mediaType.hasPrefix("image/"), asset.mediaType != "image/svg+xml" {
+                found.append(.picture(asset))
+            } else if paragraph.text.contains("origami-media:"), let play {
+                let text = paragraph.text as NSString
+                for match in play.matches(in: paragraph.text, range: NSRange(location: 0, length: text.length)) {
+                    let kind = text.substring(with: match.range(at: 1))
+                    let label = match.range(at: 2).location == NSNotFound ? "" : text.substring(with: match.range(at: 2))
+                    let raw = text.substring(with: match.range(at: 3))
+                    guard let url = mediaURL(raw, docID: docID) else { continue }
+                    found.append(kind == "audio" ? .sound(url, label: label) : .film(url, label: label))
+                }
+            }
+        }
+        return found
+    }
+
+    /// Where a book's own sound or film is on this headset: beside the
+    /// document, or in the book's unpacked folder.
+    func mediaURL(_ raw: String, docID: String) -> URL? {
+        let path = raw.removingPercentEncoding ?? raw
+        if let doc = document(docID) {
+            let beside = doc.fileURL.appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: beside.path) { return beside }
+        }
+        let volume = BoundVolume.split(articleDocID: docID)?.volume ?? docID
+        guard let record = epubRecords.first(where: { $0.id == volume }) else { return nil }
+        let unpacked = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+            .appendingPathComponent(path)
+        return FileManager.default.fileExists(atPath: unpacked.path) ? unpacked : nil
+    }
+
+    /// A reading's concepts under its page (16 Nov 2026, Frode): the room's
+    /// defined concepts the paper names — or, when it names none, the ones a
+    /// model reads out of it — and the one lit in the words.
+    struct ConceptShelf: Equatable {
+        var shown = false
+        var focus: String?
+        var focusFromShelf = false
+        /// Read out of the paper by a model, when the room's held none.
+        var produced: [LibraryTerm] = []
+        var working = false
+        var error: String?
+    }
+    var conceptShelves: [String: ConceptShelf] = [:]
+
+    /// The concepts a reading's shelf shows: the room's it names, else the
+    /// model's.
+    func shelfConcepts(of docID: String) -> [LibraryTerm] {
+        let gathered = concepts(mentionedIn: docID)
+        return gathered.isEmpty ? (conceptShelves[docID]?.produced ?? []) : gathered
+    }
+
+    /// The bar's C: the shelf shown or put away; shown with nothing to
+    /// gather, a model reads the paper's key concepts out of it.
+    func toggleConcepts(_ docID: String) {
+        var shelf = conceptShelves[docID] ?? ConceptShelf()
+        shelf.shown.toggle()
+        if !shelf.shown { shelf.focus = nil }
+        conceptShelves[docID] = shelf
+        if shelf.shown, concepts(mentionedIn: docID).isEmpty, shelf.produced.isEmpty, !shelf.working {
+            produceConcepts(docID)
+        }
+    }
+
+    func focusConcept(_ term: String, in docID: String) {
+        var shelf = conceptShelves[docID] ?? ConceptShelf()
+        let again = shelf.focus == term
+        shelf.focus = again ? nil : term
+        shelf.focusFromShelf = !again
+        conceptShelves[docID] = shelf
+    }
+
+    /// The paper's key concepts read out of it by the reader's chosen model,
+    /// each a term and a sentence of what it means here.
+    private func produceConcepts(_ docID: String) {
+        guard let doc = document(docID) else { return }
+        conceptShelves[docID, default: ConceptShelf()].working = true
+        conceptShelves[docID]?.error = nil
+        let text = (doc.body ?? []).map(\.text).joined(separator: "\n")
+        let title = doc.title
+        Task { @MainActor in
+            defer { conceptShelves[docID]?.working = false }
+            do {
+                let answer = try await OrigamiLLM.shared.respond(
+                    instructions: """
+                    You name the key concepts a reader needs to understand a document: \
+                    the terms, ideas, systems and named works it relies on. For each, one \
+                    plain sentence of what it means in this document. Never invent what \
+                    the text does not support. Answer only with lines of the form \
+                    Term — meaning
+                    """,
+                    to: "The key concepts of \u{201C}\(title)\u{201D} (at most 12):\n\n" + String(text.prefix(12_000)),
+                    onPartial: { _ in })
+                let terms: [LibraryTerm] = answer.text.split(separator: "\n").compactMap { line in
+                    let clean = line.trimmingCharacters(in: CharacterSet(charactersIn: "-*•0123456789. ").union(.whitespaces))
+                    let parts = clean.components(separatedBy: " \u{2014} ")
+                    guard parts.count >= 2, let term = parts.first?.trimmingCharacters(in: .whitespaces),
+                          !term.isEmpty, term.count < 80 else { return nil }
+                    return LibraryTerm(id: "ai:" + term.lowercased(), term: term,
+                                       definition: parts.dropFirst().joined(separator: " \u{2014} "), kind: "ai")
+                }
+                conceptShelves[docID]?.produced = Array(terms.prefix(12))
+                if terms.isEmpty { conceptShelves[docID]?.error = "The model named no concepts." }
+            } catch {
+                conceptShelves[docID]?.error = error.localizedDescription
+            }
+        }
+    }
+
+    /// A reading's endnotes: the paragraphs of its Notes section, which the
+    /// import closes the body with (under the heading id "notes").
+    func endnotes(of docID: String) -> [LiquidDoc.Paragraph] {
+        guard let body = document(docID)?.body,
+              let start = body.firstIndex(where: { $0.id == "notes" && $0.heading != nil }) else { return [] }
+        return Array(body[(start + 1)...].prefix { $0.heading == nil })
+    }
+
+    /// The bar's E: every endnote above the page, or none.
+    func toggleEndnotes(_ docID: String) {
+        if endnoteShelves[docID]?.all == true {
+            endnoteShelves[docID] = nil
+        } else {
+            var shelf = endnoteShelves[docID] ?? EndnoteShelf()
+            shelf.all = true
+            endnoteShelves[docID] = shelf
+        }
+    }
+
+    /// A note's mark pinched in the text: the note brought up above the
+    /// page if it is not standing there, and lit either way.
+    func spawnEndnote(_ noteID: String, in docID: String) {
+        var shelf = endnoteShelves[docID] ?? EndnoteShelf()
+        if !shelf.all, !shelf.ids.contains(noteID) { shelf.ids.append(noteID) }
+        shelf.focus = noteID
+        shelf.focusFromStrip = false
+        endnoteShelves[docID] = shelf
+    }
+
+    /// A note pinched above the page: lit, and its mark found in the text.
+    func focusEndnote(_ noteID: String, in docID: String) {
+        var shelf = endnoteShelves[docID] ?? EndnoteShelf()
+        let again = shelf.focus == noteID
+        shelf.focus = again ? nil : noteID
+        shelf.focusFromStrip = !again
+        endnoteShelves[docID] = shelf
+    }
+
+    /// A note put back from above the page.
+    func dismissEndnote(_ noteID: String, in docID: String) {
+        guard var shelf = endnoteShelves[docID] else { return }
+        shelf.ids.removeAll { $0 == noteID }
+        if shelf.focus == noteID { shelf.focus = nil }
+        endnoteShelves[docID] = shelf.isEmpty ? nil : shelf
+    }
 
     /// Transpoint: the document whose cited works stand behind it, 5 cm
     /// back and to the sides, with lines from its citing passages —
@@ -2516,6 +2769,19 @@ final class VisionModel {
         return Color(red: colour.red, green: colour.green, blue: colour.blue)
     }
 
+    /// The kind the room's concepts file this name under, if any.
+    func conceptKind(of name: String) -> ConceptKind? {
+        let key = ConceptTerm.normalise(name)
+        return roomTerms.first(where: { ConceptTerm.normalise($0.term) == key })?.kind.flatMap(ConceptKind.init(fileKey:))
+    }
+
+    /// Whether the room's concepts file this name as a person.
+    func conceptIsPerson(_ name: String) -> Bool {
+        let key = ConceptTerm.normalise(name)
+        guard let kind = roomTerms.first(where: { ConceptTerm.normalise($0.term) == key })?.kind else { return false }
+        return ConceptKind(fileKey: kind) == .person
+    }
+
     /// The room's articles whose text names any of these words — Select
     /// by a concept kind (15 Nov 2026).
     func roomArticleIDs(mentioningAnyOf names: [String]) -> Set<String> {
@@ -2852,8 +3118,8 @@ final class VisionModel {
         return shownZones.contains(zone)
     }
 
-    /// Whether the room's volume holds any presentations — the bar offers
-    /// Presentations only then.
+    /// Whether the room's volume holds any presentations — the bar's
+    /// Presentations is dimmed otherwise.
     var roomHasPresentations: Bool {
         guard isVolumeRoom, let venue = openJournalVenue else { return false }
         return records(inVenue: venue).contains { piece(forDocID: $0.id)?.kind == .presentation }
@@ -4386,17 +4652,6 @@ struct VisionVolumeToolbar: View {
             // is put away, so off is never mistaken for on.
             HStack(spacing: 18) {
                 ForEach(BoundVolume.Zone.allCases, id: \.self) { zone in
-                    // Presentations, before Articles, only in a volume that
-                    // holds some (16 Nov 2026, Frode).
-                    if zone == .articles, model.roomHasPresentations {
-                        Button {
-                            model.presentationsShown.toggle()
-                        } label: {
-                            Text("Presentations")
-                                .foregroundStyle(model.presentationsShown ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
-                        }
-                        .help(model.presentationsShown ? "Put away the presentations" : "Show the presentations")
-                    }
                     let on = model.shownZones.contains(zone)
                     Button {
                         if on { model.shownZones.remove(zone) } else { model.shownZones.insert(zone) }
@@ -4407,6 +4662,18 @@ struct VisionVolumeToolbar: View {
                             .foregroundStyle(on ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
                     }
                     .help(on ? "Put away \(zone.title)" : "Show \(zone.title)")
+                    // Presentations, after Articles (16 Nov 2026, Frode):
+                    // always in the bar, dimmed in a volume that has none.
+                    if zone == .articles {
+                        Button {
+                            model.presentationsShown.toggle()
+                        } label: {
+                            Text("Presentations")
+                                .foregroundStyle(model.presentationsShown ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+                        }
+                        .help(model.presentationsShown ? "Put away the presentations" : "Show the presentations")
+                        .disabled(!model.roomHasPresentations)
+                    }
                 }
             }
             // A journal has no opening pages or appendices to put away:
@@ -4421,6 +4688,27 @@ struct VisionVolumeToolbar: View {
                     .foregroundStyle(model.authorCardsShown ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
             }
             .help(model.authorCardsShown ? "Put away the authors" : "Show a card for each author, with their face")
+            // Frames (16 Nov 2026, Frode): Knowledge Space's side panels — a
+            // frame put up anywhere in the room holding every author, or
+            // every concept of one kind. Each kind ticked while its frame
+            // stands; chosen again, it is put away (kept where it stood).
+            Menu {
+                ForEach(RoomFrame.kinds, id: \.self) { kind in
+                    Toggle(RoomFrame.title(of: kind), isOn: Binding(
+                        get: { RoomFrames.shared.isShown(kind: kind) },
+                        set: { _ in RoomFrames.shared.toggle(kind: kind) }))
+                }
+                // Every frame in the room into Move & Resize at once, and
+                // out again (16 Nov 2026, Frode). Dimmed with none up.
+                Divider()
+                Toggle("Edit & Move", isOn: Binding(
+                    get: { RoomFrames.shared.isEditingAll },
+                    set: { _ in RoomFrames.shared.toggleEditAll() }))
+                    .disabled(RoomFrames.shared.shownHere.isEmpty)
+            } label: {
+                Text("Frames")
+            }
+            .help("Put up a frame holding every author, or every concept of one kind")
             // Select (15 Nov 2026, was the one Select All button): every
             // article, nothing, or one category's articles.
             Menu {
@@ -5405,6 +5693,10 @@ struct VisionReaderView: View {
     /// above the bar; a section chosen turns Horizontal to its page.
     @State private var contentsOpen = false
     @State private var jumpPage: Int?
+    /// Linked Abstract (16 Nov 2026, Frode): the abstract's links, on or off.
+    @AppStorage(AbstractLinks.defaultsKey) private var abstractLinksOn = false
+    /// The paragraph an abstract link landed on, lit for a moment.
+    @State private var abstractTarget: String?
     /// Unfolding from its card (9 Nov 2026): how many of Horizontal's pages
     /// stand open, and how far the row is shifted to keep them centred.
     @State private var foldOpen = Int.max
@@ -5470,6 +5762,12 @@ struct VisionReaderView: View {
         if inRoom, chosen == .faithful || chosen == .scroll { return .horizontal }
         return chosen
     }
+
+    /// In the room, Horizontal one page at a time (16 Nov 2026, Frode): its
+    /// word pinched again narrows the reading to a single page, swiped
+    /// through. Kept as the reading's Scroll setting, which the room reads
+    /// as Horizontal — so the panel is measured again as it changes.
+    private var singlePage: Bool { inRoom && Mode(rawValue: modeRaw) == .scroll }
 
     private var isDesk: Bool { model.readingDeskDocID == docID }
     private var deskTheme: ReadingDeskTheme {
@@ -5774,7 +6072,12 @@ struct VisionReaderView: View {
     /// Horizontal stands this wide in the room. What went wrong was
     /// never the ceiling but the moment of measuring — see
     /// `ReaderPanels.remeasure`.)
-    private static let panelWidthCeiling: CGFloat = 3900
+    ///
+    /// Raised to 7600 (16 Nov 2026, Frode: more pages side by side), was
+    /// 3900. The headset's GPU draws textures to 16384 px, so 7600 pt at
+    /// twice its points keeps a margin. If a very long reading's body goes
+    /// missing on the device, this is the one figure to bring back down.
+    private static let panelWidthCeiling: CGFloat = 7600
 
     /// The reading unfolding from its card (9 Nov 2026): first its first
     /// page alone, centred where the card stood (the panel meanwhile grows
@@ -5925,6 +6228,21 @@ struct VisionReaderView: View {
             withAnimation { pageProxy.scrollTo(page, anchor: .leading) }
             jumpPage = nil
         }
+        // A concept pinched under the page: the first page using it.
+        .onChange(of: model.conceptShelves[docID]?.focus) {
+            guard let shelf = model.conceptShelves[docID], shelf.focusFromShelf, let term = shelf.focus?.lowercased(),
+                  let paragraph = readable(of: doc).first(where: { $0.text.lowercased().contains(term) }),
+                  let page = pages.firstIndex(where: { $0.contains { $0.id == paragraph.id } }) else { return }
+            withAnimation { pageProxy.scrollTo(page, anchor: .leading) }
+        }
+        // A note pinched above the page (16 Nov 2026): the page its mark
+        // stands on brought round.
+        .onChange(of: model.endnoteShelves[docID]?.focus) {
+            guard let shelf = model.endnoteShelves[docID], shelf.focusFromStrip, let focus = shelf.focus,
+                  let paragraphID = markParagraphID(for: focus, in: doc),
+                  let page = pages.firstIndex(where: { $0.contains { $0.id == paragraphID } }) else { return }
+            withAnimation { pageProxy.scrollTo(page, anchor: .leading) }
+        }
         }
         .onAppear {
             guard model.unfoldingDocIDs.remove(docID) != nil else { return }
@@ -5939,7 +6257,8 @@ struct VisionReaderView: View {
         // a wide child in a 660pt window overflows it and SwiftUI
         // centres the overflow, so Horizontal came out blank, shifted
         // or cut off. There the columns stay inside the width there is.
-        .frame(width: hostGrows ? min(fullWidth, Self.panelWidthCeiling) : nil)
+        .frame(width: hostGrows ? (singlePage ? min(fullWidth, columnWidth + gap * 2)
+                                              : min(fullWidth, Self.panelWidthCeiling)) : nil)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             footBar(doc, proxy: nil)
         }
@@ -6568,10 +6887,17 @@ struct VisionReaderView: View {
     private func inline(_ paragraph: LiquidDoc.Paragraph, doc: LiquidDoc,
                         trailingStretch: (id: String, run: [LiquidDoc.Paragraph])? = nil)
         -> AttributedString {
-        var out = OrigamiReading.inlineAttributed(paragraph.text, in: doc,
-                                                  citations: .authorDate,
+        // The abstract's links into the paper (16 Nov 2026, an experiment).
+        let words = abstractLinksOn ? (AbstractLinks.linkedText(for: paragraph, in: doc) ?? paragraph.text)
+                                    : paragraph.text
+        var out = OrigamiReading.inlineAttributed(words,
+                                                  in: doc, citations: .authorDate,
                                                   appearance: readingScheme)
         out = painted(out, paragraphID: paragraph.id)
+        if let focus = model.endnoteShelves[docID]?.focus { out = markingNote(focus, in: out, doc: doc) }
+        if let concept = model.conceptShelves[docID]?.focus { out = markingConcept(concept, in: out) }
+        // Landed on from the abstract: lit a moment.
+        if abstractTarget == paragraph.id { out.backgroundColor = Color.accentColor.opacity(0.22) }
         if !findTerm.isEmpty { out = markingFound(out) }
         if let trailing = trailingStretch,
            let url = URL(string: OrigamiReading.stretchScheme + ":" + trailing.id) {
@@ -6583,6 +6909,49 @@ struct VisionReaderView: View {
         return out
     }
 
+    /// The lit endnote's marks, lit in the words (16 Nov 2026).
+    private func markingNote(_ noteID: String, in attributed: AttributedString,
+                             doc: LiquidDoc) -> AttributedString {
+        var out = attributed
+        let ranges = out.runs.compactMap { run -> Range<AttributedString.Index>? in
+            guard let link = run.link, let id = OrigamiReading.noteID(from: link),
+                  OrigamiReading.endnote(withID: id, in: doc)?.id == noteID else { return nil }
+            return run.range
+        }
+        for range in ranges {
+            out[range].backgroundColor = Color.accentColor.opacity(0.55)
+            out[range].foregroundColor = .white
+        }
+        return out
+    }
+
+    /// Every use of the lit concept in the words, lit (16 Nov 2026).
+    private func markingConcept(_ term: String, in attributed: AttributedString) -> AttributedString {
+        var out = attributed
+        let plain = String(out.characters)
+        guard let regex = try? NSRegularExpression(
+            pattern: "\\b" + NSRegularExpression.escapedPattern(for: term) + "\\b", options: [.caseInsensitive]) else { return out }
+        for match in regex.matches(in: plain, range: NSRange(plain.startIndex..., in: plain)) {
+            guard let range = Range(match.range, in: plain), let attrRange = Range(range, in: out) else { continue }
+            out[attrRange].backgroundColor = Color.yellow.opacity(0.45)
+        }
+        return out
+    }
+
+    /// The paragraph carrying a note's mark, outside the Notes themselves.
+    private func markParagraphID(for noteID: String, in doc: LiquidDoc) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: #"\[note:([^\]]+)\]"#) else { return nil }
+        let notes = Set(model.endnotes(of: docID).map(\.id))
+        for paragraph in doc.body ?? [] where !notes.contains(paragraph.id) && paragraph.text.contains("[note:") {
+            let text = paragraph.text as NSString
+            for match in regex.matches(in: paragraph.text, range: NSRange(location: 0, length: text.length)) {
+                let id = text.substring(with: match.range(at: 1))
+                if OrigamiReading.endnote(withID: id, in: doc)?.id == noteID { return paragraph.id }
+            }
+        }
+        return nil
+    }
+
     /// The reading's own schemes, caught; true consumes the tap.
     private func handle(_ url: URL, doc: LiquidDoc) -> Bool {
         if let key = OrigamiReading.citationKey(from: url) {
@@ -6590,13 +6959,45 @@ struct VisionReaderView: View {
             return true
         }
         if let noteID = OrigamiReading.noteID(from: url) {
-            noteTarget = NoteTarget(noteID: noteID)
+            // In the room (16 Nov 2026, Frode): the note stands above the
+            // page — brought up if it is not there — and lights with its mark.
+            if inRoom, let note = OrigamiReading.endnote(withID: noteID, in: doc) {
+                model.spawnEndnote(note.id, in: docID)
+            } else {
+                noteTarget = NoteTarget(noteID: noteID)
+            }
             return true
         }
         if url.scheme == OrigamiReading.stretchScheme {
             let raw = String(url.absoluteString
                 .dropFirst(OrigamiReading.stretchScheme.count + 1))
             toggleStretch(raw.removingPercentEncoding ?? raw)
+            return true
+        }
+        // From the abstract to the paragraph that takes it up (16 Nov 2026):
+        // Horizontal turns to its page, and the paragraph lights a moment.
+        if let target = AbstractLinks.target(from: url) {
+            if let page = horizontalPages(of: doc).firstIndex(where: { $0.contains { $0.id == target } }) {
+                jumpPage = page
+            }
+            abstractTarget = target
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                if abstractTarget == target { withAnimation { abstractTarget = nil } }
+            }
+            return true
+        }
+        // A YouTube link (16 Nov 2026, Frode): the video in a resizable
+        // window here, not Safari.
+        if let video = YouTubeVideo(url: url) {
+            openWindow(id: "youtube", value: video)
+            return true
+        }
+        // A book's own sound or film (16 Nov 2026): played in a window of
+        // its own — the headset had no way to open them before.
+        if url.scheme == "origami-media" {
+            let raw = String(url.absoluteString.dropFirst("origami-media:".count))
+            if let file = model.mediaURL(raw, docID: docID) { openWindow(id: "media", value: file) }
             return true
         }
         return false
@@ -6986,30 +7387,26 @@ struct VisionReaderView: View {
         let headings = (doc.body ?? []).filter { $0.effectiveHeading != nil }
         // In the room (15 Nov 2026, Frode) no Scrolling, Scroll or
         // Horizontal: the reading is Horizontal, and a chosen view pinched
-        // again goes back to it. Fold, in an outline pill, leads the bar.
-        let modes: [Mode] = inRoom ? [.focus, .outline, .ai, .references]
+        // again goes back to it. (No Fold here any more, 16 Nov 2026, Frode:
+        // the ✕ left of the grab bar closes the reading.)
+        // In the room the first word is Horizontal (16 Nov 2026, Frode; was
+        // the Focus view), and Focus, after References, is the room's: only
+        // this reading stands.
+        let modes: [Mode] = inRoom ? [.horizontal, .outline, .ai, .references]
             : [.faithful, .scroll, .horizontal, .focus, .outline, .ai, .references]
         let bar = HStack(spacing: 12) {
             Spacer(minLength: 0)
-            if inRoom, let fold {
-                Button(action: fold) {
-                    Text("Fold")
-                        .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 5)
-                        .overlay(Capsule().strokeBorder(.primary.opacity(0.6), lineWidth: 1.2))
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .help("Fold the reading back into its card")
-                separator
-            }
             ForEach(Array(modes.enumerated()), id: \.offset) { index, word in
                 if index > 0 { separator }
-                modeWord(word.word, chosen: mode == word && findTerm.isEmpty) {
+                modeWord(word.word, chosen: mode == word && findTerm.isEmpty && !(word == .horizontal && singlePage)) {
                     findTerm = ""
                     modeBeforeFind = nil
-                    modeRaw = inRoom && mode == word ? Mode.horizontal.rawValue : word.rawValue
+                    if inRoom, word == .horizontal, mode == .horizontal {
+                        // Horizontal toggles: every page side by side, or one.
+                        modeRaw = singlePage ? Mode.horizontal.rawValue : Mode.scroll.rawValue
+                    } else {
+                        modeRaw = inRoom && mode == word ? Mode.horizontal.rawValue : word.rawValue
+                    }
                     if word == .outline { expanded = [] }
                     if word == .focus { focusIndex = 0 }
                 }
@@ -7019,14 +7416,70 @@ struct VisionReaderView: View {
             // bar now.
             if inRoom {
                 separator
+                // Pictures (16 Nov 2026, Frode): every image the paper
+                // carries, above the page; dimmed for a paper with none.
+                let pictured = !model.media(of: docID).isEmpty
+                let picturing = model.picturesShown.contains(docID)
                 Button {
-                    model.readingDeskDocID = isDesk ? nil : docID
+                    if picturing { model.picturesShown.remove(docID) } else { model.picturesShown.insert(docID) }
                 } label: {
-                    Image(systemName: isDesk ? "doc.on.doc" : "doc")
-                        .foregroundStyle(isDesk ? .primary : .secondary)
+                    Image(systemName: picturing ? "photo.fill" : "photo")
+                        .foregroundStyle(picturing ? .primary : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help(isDesk ? "Back to the Hallway" : "Reading Desk — just this document")
+                .disabled(!pictured)
+                .opacity(pictured ? 1 : 0.35)
+                .help(pictured ? "Media — every picture, object, sound and film in the paper, above the page"
+                               : "This paper has no pictures or other media")
+                separator
+                // Linked Abstract (16 Nov 2026, Frode): the abstract's
+                // {→ Section} links into the paper, on or off.
+                modeWord("Linked Abstract", chosen: abstractLinksOn) { abstractLinksOn.toggle() }
+                    .help(abstractLinksOn ? "Hide the abstract's links into the paper"
+                                          : "Link each sentence of the abstract to the parts of the paper that take it up")
+                separator
+                // C (16 Nov 2026, Frode): the concepts the paper names — or,
+                // with none, the model's reading of them — under the page.
+                // Dimmed only when there are none and no model to ask.
+                let conceptsHere = !model.concepts(mentionedIn: docID).isEmpty || OrigamiLLM.shared.canRespond
+                modeWord("C", chosen: model.conceptShelves[docID]?.shown == true) {
+                    model.toggleConcepts(docID)
+                }
+                .disabled(!conceptsHere)
+                .opacity(conceptsHere ? 1 : 0.35)
+                .help(conceptsHere ? "Concepts — what the paper relies on, under the page" : "No concepts known and no model to ask")
+                separator
+                // E (16 Nov 2026, Frode): the endnotes above the page; dimmed
+                // for a paper with none.
+                let notes = !model.endnotes(of: docID).isEmpty
+                modeWord("E", chosen: model.endnoteShelves[docID]?.all == true) {
+                    model.toggleEndnotes(docID)
+                }
+                .disabled(!notes)
+                .opacity(notes ? 1 : 0.35)
+                .help(notes ? "Endnotes — above the page" : "This paper has no endnotes")
+                separator
+                // Focus (16 Nov 2026, Frode): everything else in the room put
+                // away — cards, lines, frames, other readings — this reading
+                // alone; pinched again, or the reading folded, all comes back.
+                // (It is the Reading Desk's, which its doc icon was.)
+                // Focus (16 Nov 2026, Frode, as it was): the reading's Focus
+                // view — one page or less — and, with it, the room put away
+                // but for this reading. Pinched again, or folded, both end.
+                let focusing = mode == .focus
+                modeWord("Focus", chosen: focusing) {
+                    findTerm = ""
+                    modeBeforeFind = nil
+                    if focusing {
+                        modeRaw = Mode.horizontal.rawValue
+                        if isDesk { model.readingDeskDocID = nil }
+                    } else {
+                        focusIndex = 0
+                        modeRaw = Mode.focus.rawValue
+                        model.readingDeskDocID = docID
+                    }
+                }
+                .help(focusing ? "Back to the pages, and the room" : "Focus — one page or less, and only this document in the room")
                 Button {
                     switch model.pose(of: docID) {
                     case .upright: model.panelPoses[docID] = .tilted
@@ -7038,17 +7491,28 @@ struct VisionReaderView: View {
                 }
                 .buttonStyle(.plain)
                 .help(poseHelp)
-                // To Read, as the title bar carried it (16 Nov 2026). (Its
-                // Transpoint went the same day, Frode: not wanted here.)
-                let toRead = model.isToRead(docID)
+                // Pin and Set Aside, in To Read's place (16 Nov 2026, Frode):
+                // the paper first in the pile, or put aside.
+                let pinned = model.pinnedIDs.contains(docID)
                 Button {
-                    model.toggleToRead(docID)
+                    model.togglePinned(docID)
                 } label: {
-                    Image(systemName: toRead ? "bookmark.fill" : "bookmark")
-                        .foregroundStyle(toRead ? .primary : .secondary)
+                    Image(systemName: pinned ? "pin.fill" : "pin")
+                        .foregroundStyle(pinned ? .primary : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help(toRead ? "Remove from To Read" : "To Read — first in every list, on every device")
+                .help(pinned ? "Unpin" : "Pin — first in the pile")
+                .accessibilityLabel(pinned ? "Unpin" : "Pin")
+                let aside = model.setAsideIDs.contains(docID)
+                Button {
+                    model.toggleSetAside(docID)
+                } label: {
+                    Image(systemName: aside ? "archivebox.fill" : "archivebox")
+                        .foregroundStyle(aside ? .primary : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(aside ? "Bring Back" : "Set Aside")
+                .accessibilityLabel(aside ? "Bring Back" : "Set Aside")
             }
             separator
             if findFieldOpen {
@@ -8091,6 +8555,399 @@ private struct VisionCitationSheet: View {
 }
 
 /// An endnote, opened from its dagger — the note's own links live.
+/// A reading's endnotes standing above its page in the room (16 Nov 2026,
+/// Frode): a row of small glass cards, each the note's mark and its words.
+/// Pinched, a note lights and its mark is found in the text; pinched again
+/// it goes dark. A note brought up from its mark has a × to put it back.
+struct VisionEndnoteStrip: View {
+    @Environment(VisionModel.self) private var model
+    let docID: String
+
+    var body: some View {
+        let shelf = model.endnoteShelves[docID]
+        let all = model.endnotes(of: docID)
+        let shown = shelf.map { shelf in
+            shelf.all ? all : shelf.ids.compactMap { id in all.first { $0.id == id } }
+        } ?? []
+        let doc = model.document(docID)
+        let media = model.picturesShown.contains(docID) ? model.media(of: docID) : []
+        VStack(spacing: 12) {
+            if !media.isEmpty { mediaRow(media) }
+            if shown.isEmpty {
+                if media.isEmpty { Color.clear.frame(width: 1, height: 1) }
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal) {
+                        HStack(alignment: .top, spacing: 12) {
+                            ForEach(shown, id: \.id) { note in
+                                card(note, doc: doc, lit: shelf?.focus == note.id,
+                                     spawned: shelf?.all != true)
+                                    .id(note.id)
+                            }
+                        }
+                        .padding(14)
+                    }
+                    .frame(maxWidth: 1600)
+                    .fixedSize(horizontal: shown.count <= 4, vertical: true)
+                    .onChange(of: shelf?.focus) {
+                        if let focus = shelf?.focus { withAnimation { proxy.scrollTo(focus, anchor: .center) } }
+                    }
+                }
+                .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 22))
+            }
+        }
+    }
+
+    @Environment(\.openWindow) private var openWindow
+
+    /// The paper's media in a row above it (16 Nov 2026, Frode), each at a
+    /// reading height: a picture in its own shape, opening in its window; a
+    /// 3D object's poster, standing it in the room (or sending it back); a
+    /// sound or a film, played in a window of its own.
+    private func mediaRow(_ media: [VisionModel.ReadingMedia]) -> some View {
+        ScrollView(.horizontal) {
+            HStack(alignment: .bottom, spacing: 12) {
+                ForEach(media) { piece in
+                    switch piece {
+                    case .picture(let asset):
+                        if let image = visionFigureImage(for: asset) {
+                            tile(badge: nil, help: asset.alt ?? "Open this picture") {
+                                Image(uiImage: image).resizable().scaledToFit()
+                            } act: {
+                                openWindow(id: "figure", value: VisionFigureTarget(docID: docID, assetID: asset.id))
+                            }
+                        }
+                    case .object(let figure, let paragraphID, let poster):
+                        let standing = model.standingModels.contains(paragraphID)
+                        tile(badge: "3D", help: standing ? "Send the object back into the paper" : "Stand the object in the room") {
+                            if let poster, let image = visionFigureImage(for: poster) {
+                                Image(uiImage: image).resizable().scaledToFit().grayscale(standing ? 1 : 0)
+                            } else {
+                                placeholder("cube", figure.alt.isEmpty ? "3D object" : figure.alt)
+                            }
+                        } act: {
+                            if standing {
+                                model.modelReturn = paragraphID
+                            } else {
+                                // One whole pull, let go a reach out: the object
+                                // comes through its picture and stands.
+                                model.modelPull = VisionModel.ModelPull(docID: docID, paragraphID: paragraphID,
+                                                                        travel: CGSize(width: 260, height: 0),
+                                                                        released: true)
+                            }
+                        }
+                    case .sound(let url, let label):
+                        tile(badge: nil, help: "Play this sound") {
+                            placeholder("waveform", label.isEmpty ? "Sound" : label)
+                        } act: { openWindow(id: "media", value: url) }
+                    case .film(let url, let label):
+                        tile(badge: nil, help: "Play this film") {
+                            placeholder("play.rectangle", label.isEmpty ? "Film" : label)
+                        } act: { openWindow(id: "media", value: url) }
+                    }
+                }
+            }
+            .padding(14)
+        }
+        // As wide as its media (16 Nov 2026, Frode: not held to 1600), up
+        // to a single texture's comfortable width; past that it scrolls.
+        .frame(width: min(Self.rowWidth(of: media), 7000))
+        .fixedSize(horizontal: false, vertical: true)
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 22))
+    }
+
+    /// The media row's own width: each tile 180 pt high at its own shape
+    /// (200 for the drawn tiles), 12 between, 14 either side.
+    private static func rowWidth(of media: [VisionModel.ReadingMedia]) -> CGFloat {
+        let tiles = media.map { piece -> CGFloat in
+            switch piece {
+            case .picture(let asset):
+                guard let image = visionFigureImage(for: asset), image.size.height > 0 else { return 200 }
+                return 180 * image.size.width / image.size.height
+            case .object(_, _, let poster):
+                guard let poster, let image = visionFigureImage(for: poster), image.size.height > 0 else { return 200 }
+                return 180 * image.size.width / image.size.height
+            case .sound, .film:
+                return 200
+            }
+        }
+        return tiles.reduce(0, +) + CGFloat(max(tiles.count - 1, 0)) * 12 + 28
+    }
+
+    /// One piece of media, 180 pt high, a badge at its corner.
+    private func tile<Face: View>(badge: String?, help: String, @ViewBuilder face: () -> Face,
+                                  act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            face()
+                .frame(height: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(alignment: .topLeading) {
+                    if let badge {
+                        Text(badge)
+                            .font(.caption.weight(.bold))
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .glassBackgroundEffect(in: Capsule())
+                            .padding(8)
+                    }
+                }
+                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 8))
+                .hoverEffect(.highlight)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private func placeholder(_ symbol: String, _ label: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 44))
+            Text(label).font(.callout).lineLimit(2).multilineTextAlignment(.center)
+        }
+        .frame(width: 200, height: 180)
+        .background(Color.white.opacity(0.06))
+    }
+
+    private func card(_ note: LiquidDoc.Paragraph, doc: LiquidDoc?, lit: Bool, spawned: Bool) -> some View {
+        let words = doc.map { OrigamiReading.inlineAttributed(note.text, in: $0, citations: .authorDate,
+                                                            appearance: .dark) }
+            ?? AttributedString(note.text)
+        return Button {
+            model.focusEndnote(note.id, in: docID)
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Text(OrigamiReading.noteMark(for: note.id))
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(lit ? Color.white : Color.accentColor)
+                Text(words)
+                    .font(AppFonts.body(14))
+                    .lineLimit(6)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(12)
+            .frame(width: 300, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 14).fill(lit ? Color.accentColor.opacity(0.45)
+                                                                     : Color.white.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(lit ? Color.white.opacity(0.8) : Color.white.opacity(0.2), lineWidth: lit ? 1.6 : 0.8))
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 14))
+            .hoverEffect(.highlight)
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            if spawned {
+                Button {
+                    model.dismissEndnote(note.id, in: docID)
+                } label: {
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+                }
+                .buttonBorderShape(.circle)
+                .controlSize(.mini)
+                .padding(4)
+            }
+        }
+    }
+}
+
+/// A reading's concepts under its page in the room (16 Nov 2026, Frode): a
+/// row of cards, each a concept the paper relies on and what it means — the
+/// room's defined concepts it names, or, with none, a model's reading,
+/// marked AI. Pinched, a concept's every use lights in the words and the
+/// reading turns to the first.
+struct VisionConceptShelf: View {
+    @Environment(VisionModel.self) private var model
+    let docID: String
+
+    var body: some View {
+        let shelf = model.conceptShelves[docID]
+        if shelf?.shown == true {
+            let terms = model.shelfConcepts(of: docID)
+            Group {
+                if terms.isEmpty {
+                    HStack(spacing: 10) {
+                        if shelf?.working == true { ProgressView() }
+                        Text(shelf?.working == true ? "Reading the paper for its concepts…"
+                             : (shelf?.error ?? "No concepts found."))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(18)
+                } else {
+                    ScrollView(.horizontal) {
+                        HStack(alignment: .top, spacing: 12) {
+                            ForEach(terms) { term in card(term, lit: shelf?.focus == term.term) }
+                        }
+                        .padding(14)
+                    }
+                    .frame(maxWidth: 1600)
+                    .fixedSize(horizontal: terms.count <= 4, vertical: true)
+                }
+            }
+            .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 22))
+        } else {
+            Color.clear.frame(width: 1, height: 1)
+        }
+    }
+
+    private func card(_ term: VisionModel.LibraryTerm, lit: Bool) -> some View {
+        let byModel = term.kind == "ai"
+        let colour = byModel ? nil : model.conceptKindColour(term.term)
+        return Button {
+            model.focusConcept(term.term, in: docID)
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(term.term)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(colour ?? .primary)
+                    if byModel {
+                        Text("AI").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                    }
+                }
+                if !term.definition.isEmpty {
+                    Text(term.definition)
+                        .font(AppFonts.body(13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(5)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            .padding(12)
+            .frame(width: 260, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 14).fill(lit ? Color.yellow.opacity(0.25) : Color.white.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(lit ? Color.yellow.opacity(0.8) : Color.white.opacity(0.2), lineWidth: lit ? 1.6 : 0.8))
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 14))
+            .hoverEffect(.highlight)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A YouTube video a document links to (16 Nov 2026, Frode): its id and
+/// where to start, read from any of YouTube's link forms — watch?v=, the
+/// youtu.be short link, /embed/, /shorts/, /live/, m. and music. hosts —
+/// with t= or start= in seconds or as 1h2m3s.
+struct YouTubeVideo: Codable, Hashable {
+    let id: String
+    var start: Int?
+
+    init?(url: URL) {
+        guard let host = url.host?.lowercased() else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        var found: String?
+        if host == "youtu.be" {
+            found = parts.first
+        } else if host == "youtube.com" || host.hasSuffix(".youtube.com") || host == "youtube-nocookie.com"
+                    || host.hasSuffix(".youtube-nocookie.com") {
+            if parts.first == "watch" {
+                found = query.first { $0.name == "v" }?.value
+            } else if let first = parts.first, ["embed", "shorts", "live", "v"].contains(first), parts.count > 1 {
+                found = parts[1]
+            }
+        }
+        guard let id = found, id.count >= 6,
+              id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) else { return nil }
+        self.id = id
+        let time = query.first { $0.name == "t" || $0.name == "start" }?.value
+            ?? url.fragment.flatMap { $0.hasPrefix("t=") ? String($0.dropFirst(2)) : nil }
+        start = time.flatMap(Self.seconds)
+    }
+
+    /// "90", "90s", "1m30s", "1h2m3s" in seconds.
+    static func seconds(_ text: String) -> Int? {
+        if let plain = Int(text) { return plain }
+        var total = 0, number = 0, any = false
+        for character in text.lowercased() {
+            if let digit = character.wholeNumberValue {
+                number = number * 10 + digit
+            } else {
+                switch character {
+                case "h": total += number * 3600
+                case "m": total += number * 60
+                case "s": total += number
+                default: return nil
+                }
+                number = 0
+                any = true
+            }
+        }
+        return any ? total + number : nil
+    }
+
+    var watchURL: URL? {
+        URL(string: "https://m.youtube.com/watch?v=\(id)" + (start.map { "&t=\($0)s" } ?? ""))
+    }
+
+    /// The official embed player on a page of its own, so the player has
+    /// an origin — YouTube refuses to play a bare embed with none.
+    var embedPage: String {
+        let begin = start.map { "&start=\($0)" } ?? ""
+        return """
+        <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>html,body{margin:0;height:100%;background:#000}iframe{position:fixed;inset:0;width:100%;height:100%;border:0}</style>
+        </head><body><iframe src="https://www.youtube-nocookie.com/embed/\(id)?autoplay=1&playsinline=1&rel=0\(begin)"
+        allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen
+        referrerpolicy="strict-origin-when-cross-origin"></iframe></body></html>
+        """
+    }
+}
+
+/// A YouTube video in a resizable window of its own (16 Nov 2026, Frode),
+/// so a document's video plays without leaving Origami Text — for a
+/// presentation above all. The embed player first; if YouTube will not
+/// play that one embedded, YouTube's own page in the same window.
+struct VisionYouTubeWindow: View {
+    let video: YouTubeVideo
+    @State private var page = WebPage()
+    @State private var onYouTubePage = false
+
+    var body: some View {
+        WebView(page)
+            .webViewElementFullscreenBehavior(.enabled)
+            .webViewBackForwardNavigationGestures(.disabled)
+            .ignoresSafeArea()
+            .ornament(attachmentAnchor: .scene(.bottom)) {
+                HStack(spacing: 14) {
+                    Button(onYouTubePage ? "Player Only" : "YouTube Page") {
+                        onYouTubePage.toggle()
+                        load()
+                    }
+                    if let url = video.watchURL {
+                        Link(destination: url) { Label("Open in Safari", systemImage: "safari") }
+                    }
+                }
+                .padding(12)
+                .glassBackgroundEffect()
+            }
+            .onAppear { load() }
+    }
+
+    private func load() {
+        if onYouTubePage, let url = video.watchURL {
+            page.load(URLRequest(url: url))
+        } else if let origin = URL(string: "https://www.youtube-nocookie.com/") {
+            page.load(html: video.embedPage, baseURL: origin)
+        }
+    }
+}
+
+/// A book's own sound or film, playing in a window of its own.
+struct VisionMediaPlayer: View {
+    let url: URL
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        VideoPlayer(player: player)
+            .onAppear {
+                let made = AVPlayer(url: url)
+                player = made
+                made.play()
+            }
+            .onDisappear { player?.pause() }
+    }
+}
+
 private struct VisionEndnoteSheet: View {
     let text: AttributedString
     let onClose: () -> Void

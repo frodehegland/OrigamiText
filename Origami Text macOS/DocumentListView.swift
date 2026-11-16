@@ -72,13 +72,13 @@ struct EPUBPileMenu: View {
         Button(model.isToRead(record) ? "Remove from To Read" : "To Read") {
             model.toggleToRead(record)
         }
-        Toggle("Pin", isOn: Binding(
+        Toggle("Pin", systemImage: "pin", isOn: Binding(
             get: { model.isTopOfPile(record) },
             set: { _ in model.toggleTopOfPile(record) }))
         if model.isSetAside(record) {
-            Button("Bring Back") { model.bringBack(record) }
+            Button("Bring Back", systemImage: "archivebox.fill") { model.bringBack(record) }
         } else {
-            Button("Set Aside") { model.setAside(record) }
+            Button("Set Aside", systemImage: "archivebox") { model.setAside(record) }
         }
         Divider()
         // The document's own .epub, one click away — for inspection,
@@ -770,12 +770,12 @@ struct AuthorsListView: View {
         .listRowBackground(Color.clear)
         .contextMenu {
             if isAside {
-                Button("Bring Back") { model.bringBackGlobalAuthor(author) }
+                Button("Bring Back", systemImage: "archivebox.fill") { model.bringBackGlobalAuthor(author) }
             } else {
-                Button(isPinned ? "Unpin" : "Pin") {
+                Button(isPinned ? "Unpin" : "Pin", systemImage: isPinned ? "pin.slash" : "pin") {
                     isPinned ? model.unpinGlobalAuthor(author) : model.pinGlobalAuthor(author)
                 }
-                Button("Set Aside") { model.setAsideGlobalAuthor(author) }
+                Button("Set Aside", systemImage: "archivebox") { model.setAsideGlobalAuthor(author) }
             }
         }
     }
@@ -1310,7 +1310,7 @@ struct JournalBooksListView: View {
             Button {
                 withAnimation(.snappy) { showsSetAside.toggle() }
             } label: {
-                Text("Set Aside")
+                Label("Set Aside", systemImage: "archivebox")
                     .font(.caption)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 3)
@@ -2214,7 +2214,7 @@ struct HypermediaDocsListView: View {
                 }
                 .buttonStyle(.plain)
                 .contextMenu {
-                    Toggle("Pin", isOn: Binding(
+                    Toggle("Pin", systemImage: "pin", isOn: Binding(
                         get: { model.epubTopOfPile.contains(doc.id) },
                         set: { _ in model.toggleTopOfPile(id: doc.id) }))
                 }
