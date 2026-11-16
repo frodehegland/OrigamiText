@@ -3025,15 +3025,13 @@ struct EPUBMapView: View {
                             readerPanels.dragStart[docID] = start
                             root.position = start + value.convert(
                                 value.gestureValue.translation3D, from: .local, to: .scene)
-                            // Held by its bar, the page turns to face the
-                            // reader as it goes; let go, it keeps the angle
-                            // it had. (No head pose in the simulator: it
-                            // keeps its facing there.) With the left fist
-                            // clenched it keeps its angle as it goes (16 Nov
-                            // 2026, Frode).
-                            if !fistGrab.isLeftFist, let head = faceTurner.headPose() {
-                                readerPanels.turn(docID: docID, toward: head.position)
-                            }
+                            // Held by its bar, the page keeps the angle it has
+                            // (16 Nov 2026, Frode: it swivelled too much);
+                            // shaken as it is held, it squares itself to the
+                            // reader along the room's main axis.
+                            readerPanels.carried(docID: docID,
+                                                 hand: value.convert(value.location3D, from: .local, to: .scene),
+                                                 head: faceTurner.headPose()?.position)
                         }
                         // A model standing in the room needs nothing
                         // here: RealityKit's ManipulationComponent
@@ -3797,6 +3795,23 @@ struct EPUBMapView: View {
             // known, not scanned at the moment of the drop.
             roomSurfaces.install()
             installFrames(in: content)
+            // The room's main axis for a shaken reading (16 Nov 2026): the
+            // normal of its largest wall found.
+            readerPanels.roomAxis = { [roomSurfaces] in
+                roomSurfaces.surfaces()
+                    .filter { !$0.isFloor && !$0.isSeatOrTable && abs($0.normal.y) < 0.3 }
+                    .max { $0.halfWidth * $0.halfHeight < $1.halfWidth * $1.halfHeight }?.normal
+            }
+            // The lit endnote's line (16 Nov 2026): what joins a note to its
+            // mark, read off the model each frame.
+            readerPanels.endnoteLink = { [model] docID in
+                guard let shelf = model.endnoteShelves[docID], let focus = shelf.focus, shelf.markParagraph != nil,
+                      let card = model.endnoteGeometry.cards[docID + "|" + focus],
+                      let strip = model.endnoteGeometry.strips[docID],
+                      let mark = model.endnoteGeometry.marks[docID],
+                      let page = model.figureGeometry.size(ofPage: docID) else { return nil }
+                return (card, strip, mark, page)
+            }
             rubberBalls.install(in: content, surfaces: roomSurfaces)
             // A ball come to rest stays where it lies.
             rubberBalls.onRest = { id, place in
@@ -12858,7 +12873,66 @@ final class ReaderPanels {
         // anchor resolves or refines — X and Z stay the reader's, so a
         // drag slides the page across the desk, never off it.
         snapTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
-            MainActor.assumeIsolated { self?.snapFlatPanels() }
+            MainActor.assumeIsolated {
+                self?.snapFlatPanels()
+                self?.layEndnoteLines()
+            }
+        }
+    }
+
+    // MARK: The lit endnote's line (16 Nov 2026, Frode)
+
+    /// What the line reads each frame: each reading's lit note and the
+    /// paragraph of its mark, where the note's card stands in its strip, and
+    /// where that paragraph stands on the page — set by the room.
+    var endnoteLink: (_ docID: String) -> (card: CGRect, strip: CGSize, mark: CGRect, page: CGSize)? = { _ in nil }
+    private var endnoteLines: [String: ModelEntity] = [:]
+
+    /// A thin line from the lit note's card, at its foot, to the start of the
+    /// paragraph holding its mark — following the page as it scrolls, the
+    /// strip as it is carried, the reading as it moves or is scaled.
+    private func layEndnoteLines() {
+        for (docID, root) in roots {
+            guard let link = endnoteLink(docID), let strip = strips[docID], let page = pages[docID],
+                  link.page.width > 1, link.strip.width > 1 else {
+                endnoteLines[docID]?.isEnabled = false
+                continue
+            }
+            let width = page.visualBounds(relativeTo: page).extents.x
+            guard width.isFinite, width > 0.01 else { continue }
+            let perPoint = width / Float(link.page.width)
+            let markY = link.mark.minY + 14
+            // A mark scrolled out of the page: no line to nowhere.
+            guard markY > 0, markY < link.page.height,
+                  link.mark.minX >= 0, link.mark.minX < link.page.width else {
+                endnoteLines[docID]?.isEnabled = false
+                continue
+            }
+            let markLocal = SIMD3<Float>(Float(link.mark.minX - link.page.width / 2) * perPoint,
+                                         Float(link.page.height / 2 - markY) * perPoint, 0.004)
+            let cardLocal = SIMD3<Float>(Float(link.card.midX - link.strip.width / 2) / 1360,
+                                         -Float(link.card.maxY - link.strip.height / 2) / 1360, 0.002)
+            let from = strip.convert(position: cardLocal, to: nil)
+            let to = root.convert(position: markLocal, to: nil)
+            let line = endnoteLines[docID] ?? {
+                var ink = UnlitMaterial(color: .white)
+                ink.blending = .transparent(opacity: 0.85)
+                let made = ModelEntity(mesh: .generateCylinder(height: 1, radius: 0.0012), materials: [ink])
+                content?.add(made)
+                endnoteLines[docID] = made
+                return made
+            }()
+            let span = to - from
+            let length = simd_length(span)
+            guard length > 0.005 else { line.isEnabled = false; continue }
+            line.isEnabled = true
+            line.position = (from + to) / 2
+            line.orientation = simd_quatf(from: SIMD3<Float>(0, 1, 0), to: span / length)
+            line.scale = SIMD3<Float>(1, length, 1)
+        }
+        for (docID, line) in endnoteLines where roots[docID] == nil {
+            line.removeFromParent()
+            endnoteLines[docID] = nil
         }
     }
 
@@ -13330,6 +13404,79 @@ final class ReaderPanels {
     /// drafting board or lying flat keeps its lean. The facing is kept as
     /// the panel's own, so when the bar is let go it stays at whatever
     /// angle it last had, and a later change of pose composes with it.
+    // MARK: Squared by a shake (16 Nov 2026, Frode)
+
+    /// The room's main axis: the normal of its largest wall, flat — set by
+    /// the room; nil before a wall is known, when the space's own axes serve.
+    var roomAxis: () -> SIMD3<Float>? = { nil }
+    private var shakeSamples: [String: [(time: Double, hand: SIMD3<Float>)]] = [:]
+    private var lastShake: [String: Double] = [:]
+
+    /// The hand carrying a reading, sampled: a quick shake — three turns of
+    /// direction within 0.8 s, each a centimetre or more, over 4 cm all told
+    /// — squares the reading to the reader, at most once a second.
+    func carried(docID: String, hand: SIMD3<Float>, head: SIMD3<Float>?) {
+        let now = CACurrentMediaTime()
+        var samples = (shakeSamples[docID] ?? []).filter { now - $0.time < 0.8 }
+        samples.append((now, hand))
+        shakeSamples[docID] = samples
+        guard let head, now - (lastShake[docID] ?? 0) > 1, Self.isShake(samples.map(\.hand)) else { return }
+        lastShake[docID] = now
+        shakeSamples[docID] = []
+        square(docID: docID, toward: head)
+    }
+
+    nonisolated static func isShake(_ points: [SIMD3<Float>]) -> Bool {
+        guard points.count >= 6 else { return false }
+        // Along whichever axis the hand ranged most.
+        let mins = points.reduce(points[0]) { simd_min($0, $1) }
+        let maxs = points.reduce(points[0]) { simd_max($0, $1) }
+        let range = maxs - mins
+        let axis = range.x >= range.y && range.x >= range.z ? 0 : (range.y >= range.z ? 1 : 2)
+        guard range[axis] >= 0.04 else { return false }
+        var turns = 0, heading: Float = 0, run: Float = 0
+        for (a, b) in zip(points, points.dropFirst()) {
+            let step = b[axis] - a[axis]
+            if heading == 0 || (step > 0) == (heading > 0) {
+                if step != 0, heading == 0 { heading = step }
+                run += abs(step)
+            } else if run >= 0.01 {
+                turns += 1
+                heading = step
+                run = abs(step)
+            } else {
+                run += abs(step)
+            }
+        }
+        return turns >= 3
+    }
+
+    /// Faces the reader, turned to the nearest of the room's four main
+    /// directions — square to its walls, never at the odd angle the hand
+    /// left it.
+    func square(docID: String, toward head: SIMD3<Float>) {
+        guard let root = roots[docID] else { return }
+        var toHead = head - root.position(relativeTo: nil)
+        toHead.y = 0
+        guard simd_length(toHead) > 1e-3 else { return }
+        toHead = simd_normalize(toHead)
+        var axis = roomAxis() ?? SIMD3<Float>(0, 0, 1)
+        axis.y = 0
+        axis = simd_length(axis) > 1e-3 ? simd_normalize(axis) : SIMD3<Float>(0, 0, 1)
+        let across = SIMD3<Float>(axis.z, 0, -axis.x)
+        let facing = [axis, -axis, across, -across].max { simd_dot($0, toHead) < simd_dot($1, toHead) } ?? axis
+        let turn = Self.yaw(facing: facing)
+        yaws[docID] = turn
+        let lean: Float = switch appliedPoses[docID] ?? .upright {
+        case .upright: 0
+        case .tilted: Self.tiltedAngle
+        case .flat: -.pi / 2
+        }
+        // Set at once: the hand still carries the page, and an eased move of
+        // the whole transform would fight it for the place.
+        root.orientation = simd_mul(turn, simd_quatf(angle: lean, axis: SIMD3<Float>(1, 0, 0)))
+    }
+
     func turn(docID: String, toward point: SIMD3<Float>) {
         guard let root = roots[docID] else { return }
         let facing = Self.yaw(facing: point - root.position(relativeTo: nil))
@@ -13367,6 +13514,9 @@ final class ReaderPanels {
     /// A scale drag's start: the reading's scale and the hand's distance
     /// from the page's middle, by document.
     private var scaleStart: [String: (scale: Float, distance: Float)] = [:]
+
+    /// A reading's endnotes strip, for the line from a lit note.
+    func strip(of docID: String) -> Entity? { strips[docID] }
 
     /// Each reading's endnotes strip, and the ones the reader has moved.
     private var strips: [String: Entity] = [:]

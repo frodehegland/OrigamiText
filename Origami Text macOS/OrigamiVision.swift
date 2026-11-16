@@ -1060,9 +1060,21 @@ final class TranspointGeometry {
     func clear() { frames = [:] }
 }
 
+/// Where a lit endnote and its mark stand (16 Nov 2026, Frode): the note's
+/// card in its strip, the strip's size, and the paragraph holding the mark
+/// on its page — in points, written during layout, read each frame by the
+/// line that joins them. Not observed, as FigureGeometry is not.
+@MainActor
+final class EndnoteLinkGeometry {
+    var cards: [String: CGRect] = [:]
+    var strips: [String: CGSize] = [:]
+    var marks: [String: CGRect] = [:]
+}
+
 @MainActor @Observable
 final class VisionModel {
     let index = LibraryIndex()
+    @ObservationIgnored let endnoteGeometry = EndnoteLinkGeometry()
     let bots = VisionBotStore()
     private static let bookmarkKey = "communityFolderBookmark"
     /// The folder's path in the clear, so a folder that cannot be
@@ -1371,6 +1383,8 @@ final class VisionModel {
         var focus: String?
         /// Lit from the strip: the reading turns to its mark's page.
         var focusFromStrip = false
+        /// The paragraph holding the lit note's mark — the line's other end.
+        var markParagraph: String?
         var isEmpty: Bool { !all && ids.isEmpty }
     }
     var endnoteShelves: [String: EndnoteShelf] = [:]
@@ -1547,6 +1561,8 @@ final class VisionModel {
         if !shelf.all, !shelf.ids.contains(noteID) { shelf.ids.append(noteID) }
         shelf.focus = noteID
         shelf.focusFromStrip = false
+        shelf.markParagraph = markParagraph(of: noteID, in: docID)
+        endnoteGeometry.marks[docID] = nil   // the new mark says where it is
         endnoteShelves[docID] = shelf
     }
 
@@ -1556,7 +1572,25 @@ final class VisionModel {
         let again = shelf.focus == noteID
         shelf.focus = again ? nil : noteID
         shelf.focusFromStrip = !again
+        shelf.markParagraph = again ? nil : markParagraph(of: noteID, in: docID)
+        endnoteGeometry.marks[docID] = nil   // the new mark says where it is
         endnoteShelves[docID] = shelf
+    }
+
+    /// The paragraph carrying a note's mark, outside the Notes themselves.
+    func markParagraph(of noteID: String, in docID: String) -> String? {
+        guard let doc = document(docID),
+              let regex = try? NSRegularExpression(pattern: #"\[note:([^\]]+)\]"#) else { return nil }
+        let notes = Set(endnotes(of: docID).map(\.id))
+        for paragraph in doc.body ?? [] where !notes.contains(paragraph.id) && paragraph.text.contains("[note:") {
+            let text = paragraph.text as NSString
+            for match in regex.matches(in: paragraph.text, range: NSRange(location: 0, length: text.length)) {
+                if OrigamiReading.endnote(withID: text.substring(with: match.range(at: 1)), in: doc)?.id == noteID {
+                    return paragraph.id
+                }
+            }
+        }
+        return nil
     }
 
     /// A note put back from above the page.
@@ -2494,21 +2528,50 @@ final class VisionModel {
         return faces.contains { $0.path != nil } ? faces : []
     }
 
-    /// Copies each face the index names into Caches/Portraits, once per
-    /// source change (the file is named by its source hash).
+    /// Copies each face the index names into Caches/Portraits.
+    ///
+    /// Named by the index's source hash AND the shared file's own size and
+    /// date (16 Nov 2026, Frode: Mark Anderson stood as a football player,
+    /// not his cartoon). iCloud can bring the new index before the new
+    /// picture: named by the hash alone, the old picture was copied under
+    /// the new name and kept for good. Now a picture that arrives later is
+    /// a new name, copied again. Read coordinated, and fetched first when
+    /// iCloud has not brought it down; a copy that has been replaced goes.
     nonisolated static func cachePortraits(_ portraits: OrigamiPortraits, from folder: URL) -> [String: String] {
         let fm = FileManager.default
         guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return [:] }
         let local = caches.appendingPathComponent("Portraits", isDirectory: true)
         try? fm.createDirectory(at: local, withIntermediateDirectories: true)
         var faces: [String: String] = [:]
+        var kept = Set<String>()
         for entry in portraits.people {
-            let target = local.appendingPathComponent(entry.sourceHash + ".png")
+            let source = folder.appendingPathComponent(entry.file)
+            let values = try? source.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey,
+                                                              .ubiquitousItemDownloadingStatusKey])
+            if let status = values?.ubiquitousItemDownloadingStatus, status != .current {
+                // Not here yet, or out of date: asked for, and read next time.
+                try? fm.startDownloadingUbiquitousItem(at: source)
+                if status == .notDownloaded { continue }
+            }
+            let size = values?.fileSize ?? 0
+            let stamp = Int(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)
+            let name = "\(entry.sourceHash)-\(size)-\(stamp).png"
+            let target = local.appendingPathComponent(name)
             if !fm.fileExists(atPath: target.path) {
-                guard let data = try? Data(contentsOf: folder.appendingPathComponent(entry.file)) else { continue }
+                var data: Data?
+                var failure: NSError?
+                NSFileCoordinator().coordinate(readingItemAt: source, options: [], error: &failure) { url in
+                    data = try? Data(contentsOf: url)
+                }
+                guard let data, !data.isEmpty else { continue }
                 try? data.write(to: target, options: .atomic)
             }
             faces[entry.key] = target.path
+            kept.insert(name)
+        }
+        // Copies no face uses any more (an older picture, a removed person).
+        for file in (try? fm.contentsOfDirectory(atPath: local.path)) ?? [] where !kept.contains(file) {
+            try? fm.removeItem(at: local.appendingPathComponent(file))
         }
         return faces
     }
@@ -4267,6 +4330,7 @@ struct VisionOpeningView: View {
                     if case .unreachable(let path) = model.folderStatus {
                         folderLostNote(path: path)
                     }
+                    justAddedSection
                     switch shelf {
                     case .articles: articlesList
                     case .journals: journalsList
@@ -4425,6 +4489,48 @@ struct VisionOpeningView: View {
     }
 
     /// Articles: every article on the shelf, alphabetically by title.
+    /// Just Added (16 Nov 2026, Frode): every document that arrived on this
+    /// headset in the last ten minutes, newest first, above both tabs — a
+    /// new paper is otherwise hard to find among the shelf's hundreds. It
+    /// looks again every half minute, so each leaves as it turns ten
+    /// minutes old; with none, it is not there at all.
+    @ViewBuilder private var justAddedSection: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            let fresh = model.epubRecords
+                .filter { context.date.timeIntervalSince($0.openedAt) < Self.justAddedWindow }
+                .sorted { $0.openedAt > $1.openedAt }
+            if !fresh.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("JUST ADDED")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 6)
+                    List(fresh) { record in
+                        VisionShelfRow(record: record, open: {
+                            model.openInRoom(record)
+                            dismissWindow(id: "library")
+                        }, openArticles: {
+                            model.openArticles(of: record)
+                            dismissWindow(id: "library")
+                        })
+                        .badge(Text(Self.ago(record.openedAt, now: context.date)))
+                    }
+                    .frame(height: min(CGFloat(fresh.count) * 66 + 20, 230))
+                }
+                Divider()
+            }
+        }
+    }
+
+    /// How long a document counts as just added: ten minutes.
+    private static let justAddedWindow: TimeInterval = 600
+
+    private static func ago(_ date: Date, now: Date) -> String {
+        let minutes = Int(now.timeIntervalSince(date) / 60)
+        return minutes < 1 ? "now" : "\(minutes) min"
+    }
+
     @ViewBuilder private var articlesList: some View {
         let records = model.epubRecords.sorted {
             $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
@@ -7149,6 +7255,18 @@ struct VisionReaderView: View {
                     }
             }
         }
+        // The lit endnote's mark (16 Nov 2026): its paragraph says where it
+        // stands, so the line from the note meets it as the page scrolls.
+        .background {
+            if model.endnoteShelves[docID]?.markParagraph == paragraph.id {
+                Color.clear
+                    .onGeometryChange(for: CGRect.self) { proxy in
+                        proxy.frame(in: .named(FigureGeometry.pageSpace))
+                    } action: { frame in
+                        model.endnoteGeometry.marks[docID] = frame
+                    }
+            }
+        }
         .id(paragraph.id)   // the contents land here
     }
 
@@ -8563,6 +8681,9 @@ struct VisionEndnoteStrip: View {
     @Environment(VisionModel.self) private var model
     let docID: String
 
+    /// The strip's own points, which its cards are measured in.
+    static let space = "origamiEndnoteStrip"
+
     var body: some View {
         let shelf = model.endnoteShelves[docID]
         let all = model.endnotes(of: docID)
@@ -8583,6 +8704,12 @@ struct VisionEndnoteStrip: View {
                                 card(note, doc: doc, lit: shelf?.focus == note.id,
                                      spawned: shelf?.all != true)
                                     .id(note.id)
+                                    // Where the card stands, for its line.
+                                    .onGeometryChange(for: CGRect.self) { proxy in
+                                        proxy.frame(in: .named(Self.space))
+                                    } action: { frame in
+                                        model.endnoteGeometry.cards[docID + "|" + note.id] = frame
+                                    }
                             }
                         }
                         .padding(14)
@@ -8593,8 +8720,13 @@ struct VisionEndnoteStrip: View {
                         if let focus = shelf?.focus { withAnimation { proxy.scrollTo(focus, anchor: .center) } }
                     }
                 }
-                .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 22))
+                // No glass behind the row (16 Nov 2026, Frode): each note is
+                // its own frame.
             }
+        }
+        .coordinateSpace(name: Self.space)
+        .onGeometryChange(for: CGSize.self) { proxy in proxy.size } action: { size in
+            model.endnoteGeometry.strips[docID] = size
         }
     }
 
@@ -8725,10 +8857,11 @@ struct VisionEndnoteStrip: View {
             }
             .padding(12)
             .frame(width: 300, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 14).fill(lit ? Color.accentColor.opacity(0.45)
-                                                                     : Color.white.opacity(0.06)))
+            // One frame: its own glass, tinted while lit, and its edge.
+            .background(RoundedRectangle(cornerRadius: 14).fill(lit ? Color.accentColor.opacity(0.45) : Color.clear))
+            .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(lit ? Color.white.opacity(0.8) : Color.white.opacity(0.2), lineWidth: lit ? 1.6 : 0.8))
+                .strokeBorder(lit ? Color.white.opacity(0.8) : Color.white.opacity(0.25), lineWidth: lit ? 1.6 : 0.8))
             .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 14))
             .hoverEffect(.highlight)
         }
