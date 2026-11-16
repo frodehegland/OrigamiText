@@ -18100,7 +18100,6 @@ enum FadingLine {
         return made
     }
 }
-#endif
 
 
 /// A concept as a pill (15 Nov 2026), after Author's LiquidConceptPill and
@@ -18305,3 +18304,4 @@ struct AuthorNameHandle: View {
         .onDisappear { if pull != .zero { Self.pulling = false } }
     }
 }
+#endif
