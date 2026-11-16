@@ -2834,6 +2834,31 @@ final class VisionModel {
         !isVolumeRoom || shownZones.contains(zone)
     }
 
+    /// The bar's Presentations (16 Nov 2026, Frode): a volume's written-up
+    /// talks shown or put away apart from its articles, though both stand
+    /// on the wall. Shown unless put away.
+    var presentationsShown = UserDefaults.standard.object(forKey: "volumePresentationsShown") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(presentationsShown, forKey: "volumePresentationsShown")
+            volumeStamp += 1
+        }
+    }
+
+    /// Whether a piece stands, by its zone — or, a presentation, by the
+    /// bar's own Presentations.
+    func showsPiece(_ docID: String, zone: BoundVolume.Zone) -> Bool {
+        guard isVolumeRoom else { return true }
+        if piece(forDocID: docID)?.kind == .presentation { return presentationsShown }
+        return shownZones.contains(zone)
+    }
+
+    /// Whether the room's volume holds any presentations — the bar offers
+    /// Presentations only then.
+    var roomHasPresentations: Bool {
+        guard isVolumeRoom, let venue = openJournalVenue else { return false }
+        return records(inVenue: venue).contains { piece(forDocID: $0.id)?.kind == .presentation }
+    }
+
     /// Bumped when a volume's reading of itself changes (a correction), so
     /// the room re-stands its cards.
     var volumeStamp = 0
@@ -4361,6 +4386,17 @@ struct VisionVolumeToolbar: View {
             // is put away, so off is never mistaken for on.
             HStack(spacing: 18) {
                 ForEach(BoundVolume.Zone.allCases, id: \.self) { zone in
+                    // Presentations, before Articles, only in a volume that
+                    // holds some (16 Nov 2026, Frode).
+                    if zone == .articles, model.roomHasPresentations {
+                        Button {
+                            model.presentationsShown.toggle()
+                        } label: {
+                            Text("Presentations")
+                                .foregroundStyle(model.presentationsShown ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+                        }
+                        .help(model.presentationsShown ? "Put away the presentations" : "Show the presentations")
+                    }
                     let on = model.shownZones.contains(zone)
                     Button {
                         if on { model.shownZones.remove(zone) } else { model.shownZones.insert(zone) }

@@ -2946,6 +2946,10 @@ nonisolated struct BoundVolume: Hashable, Sendable {
     enum Kind: String, Codable, CaseIterable, Hashable, Sendable {
         /// A contribution: what the volume is for.
         case article
+        /// A contribution reporting a talk given at an event — the Future
+        /// of Text Symposium's presentations (16 Nov 2026, Frode). Stands
+        /// with the articles.
+        case presentation
         /// Opening pages: title page, dedication, acknowledgements,
         /// foreword, preface, introduction, welcome, how to read.
         case front
@@ -2962,7 +2966,7 @@ nonisolated struct BoundVolume: Hashable, Sendable {
             switch self {
             case .front: .opening
             case .back, .appendix: .appendices
-            case .article, .part, .collection: .articles
+            case .article, .presentation, .part, .collection: .articles
             }
         }
 
@@ -2970,6 +2974,7 @@ nonisolated struct BoundVolume: Hashable, Sendable {
         var title: String {
             switch self {
             case .article: "Article"
+            case .presentation: "Presentation"
             case .front: "Opening"
             case .part: "Part Title"
             case .collection: "Collection"
@@ -3043,7 +3048,7 @@ nonisolated struct BoundVolume: Hashable, Sendable {
         var keySentenceByAI = false
         var chosenTagIDs: [String] = []
 
-        var isWork: Bool { kind == .article || kind == .collection }
+        var isWork: Bool { kind == .article || kind == .presentation || kind == .collection }
         var zone: Zone { kind.zone }
         var byline: String { authors.joined(separator: ", ") }
     }
@@ -3227,6 +3232,7 @@ nonisolated struct BoundVolume: Hashable, Sendable {
     /// EPUB's structural vocabulary (and the binding's own words), as kinds.
     static let declaredKinds: [String: Kind] = [
         "article": .article, "chapter": .article, "work": .article,
+        "presentation": .presentation,
         "titlepage": .front, "halftitlepage": .front, "dedication": .front, "epigraph": .front,
         "acknowledgments": .front, "acknowledgements": .front, "foreword": .front,
         "preface": .front, "introduction": .front, "prologue": .front, "frontmatter": .front,
@@ -3293,7 +3299,9 @@ nonisolated struct BoundVolume: Hashable, Sendable {
         for index in pieces.indices {
             var piece = pieces[index]
             defer {
-                if piece.kind == .article || piece.kind == .collection { articleSeen = true }
+                if piece.kind == .article || piece.kind == .presentation || piece.kind == .collection {
+                    articleSeen = true
+                }
                 if articleSeen, piece.kind.zone == .appendices { closingBegun = true }
                 pieces[index] = piece
             }
