@@ -143,19 +143,35 @@ final class OrigamiLLM {
         guard let host = macHost else { return nil }
         var lastError: OrigamiLLMError?
         for base in [host.base] + host.alternates {
+            let reached = ChatCompletionsClient.Reached()
             do {
+                // A Mac that answers the door and then says nothing — its
+                // model still loading, or busy with the library's own work —
+                // is given up on after half a minute of silence (15 Nov
+                // 2026), so the headset's own model can answer instead of
+                // the reader watching "Reading…" for five minutes.
                 let text = try await ChatCompletionsClient.respond(
                     base: base, model: host.model, key: host.token,
                     instructions: instructions, prompt: prompt, jsonSchema: jsonSchema,
-                    temperature: temperature, onPartial: onPartial)
+                    temperature: temperature, idleTimeout: Self.macSilence, reached: reached,
+                    onPartial: onPartial)
                 return (text, "\(host.macName) \u{00B7} \(host.model)")
             } catch let error as OrigamiLLMError where error.allowsFallback {
                 lastError = error
+                // Reached — it answered the door — but silent: its other
+                // addresses reach the same busy Mac, so they are not waited
+                // on too. An address that never answered (a stale one) is
+                // passed over for the next as before.
+                if reached.value { break }
             }
         }
         throw lastError ?? OrigamiLLMError.serverUnreachable(host.macName)
         #endif
     }
+
+    /// How long the Mac may stay silent, mid-answer or before its first
+    /// word, before the headset stops waiting for it.
+    static let macSilence: TimeInterval = 30
 
     /// The device the built-in model runs on, for the settings' words.
     nonisolated static var thisDevice: String {
@@ -736,6 +752,13 @@ final class OrigamiLLM {
 /// Ollama, LM Studio, MLX-LM's server, and the hosted providers all
 /// speak.
 nonisolated enum ChatCompletionsClient {
+    /// Set once a server has answered a request with its 200 header — so a
+    /// caller can tell a server that was reached and then fell silent from
+    /// an address that never answered at all.
+    final class Reached: @unchecked Sendable {
+        var value = false
+    }
+
 
     /// scheme://host[:port] with trailing slashes and a trailing /v1
     /// stripped — users paste http://localhost:11434, not .../v1.
@@ -804,6 +827,8 @@ nonisolated enum ChatCompletionsClient {
                         instructions: String?, prompt: String,
                         jsonSchema: (name: String, schema: [String: Any])? = nil,
                         temperature: Double? = nil,
+                        idleTimeout: TimeInterval = 300,
+                        reached: Reached? = nil,
                         onPartial: (@MainActor (String) -> Void)? = nil)
         async throws -> String {
         guard let url = URL(string: base + "/v1/chat/completions") else {
@@ -814,7 +839,8 @@ nonisolated enum ChatCompletionsClient {
             messages.append(["role": "system", "content": instructions])
         }
         messages.append(["role": "user", "content": prompt])
-        var request = URLRequest(url: url, timeoutInterval: 300)
+        // The longest wait between any two pieces of the reply.
+        var request = URLRequest(url: url, timeoutInterval: idleTimeout)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let key { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
@@ -838,12 +864,14 @@ nonisolated enum ChatCompletionsClient {
                 return try await respond(base: base, model: model, key: key,
                                          instructions: instructions, prompt: prompt,
                                          jsonSchema: nil, temperature: temperature,
+                                         idleTimeout: idleTimeout, reached: reached,
                                          onPartial: onPartial)
             }
             guard status == 200 else {
                 throw OrigamiLLMError.generationFailed(
                     "\(host) answered with status \(status).")
             }
+            reached?.value = true
             var text = ""
             for try await line in bytes.lines {
                 guard line.hasPrefix("data:") else { continue }

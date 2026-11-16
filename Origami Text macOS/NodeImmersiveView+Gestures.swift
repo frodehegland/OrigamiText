@@ -33,7 +33,11 @@ extension NodeImmersiveView {
     
     func doubleTapGesture() -> some Gesture {
         SpatialTapGesture(count: 2)
-            .targetedToAnyEntity()
+            // Origami change (16 Nov 2026, carry back to Author): only the
+            // nodes take a double tap. Asked before the single tap, a double
+            // on anything else — an arm chip, a reading's handle — was taken
+            // here and answered nothing, and every single tap there waited.
+            .targetedToEntity(where: .has(ItemComponent<Items.Element>.self))
             .onEnded { value in
                 guard let item = value.entity.components[ItemComponent<Items.Element>.self]?.item else {
                     return

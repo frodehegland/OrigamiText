@@ -1698,7 +1698,17 @@ final class VisionModel {
     /// them and clears the request.
     struct VolumeBarRequest: Equatable {
         enum Action: Equatable {
+            /// The bar's Select menu (15 Nov 2026): every article, nothing
+            /// at all, or the articles of one category by its "#RRGGBB".
             case selectAll
+            case deselectAll
+            case selectCategory(String)
+            /// The room's articles naming any of its own concepts of one
+            /// kind (person, artifact, …).
+            case selectConceptKind(String)
+            /// Select ▸ Articles, Other, Authors (16 Nov 2026): every card of
+            /// that family, and those alone.
+            case selectFamily(String)
             /// An arrangement of the selected cards (every card when
             /// none is selected), by the Hallway's own option name.
             case arrange(String)
@@ -1719,6 +1729,12 @@ final class VisionModel {
             /// Arrange in Front: everything in the room carried before the
             /// reader, its nearest node 1 m from their face.
             case arrangeInFront
+            /// Re-Center: the whole room carried, unchanged, close before
+            /// the reader — its nearest nodes 70 cm away.
+            case reCenter
+            /// Remove Ghosts: every lifted card back in its slot, so no
+            /// place-holder is left standing.
+            case removeGhosts
             /// Connect to Ground: every paper on a stand to the floor, or not.
             case toggleGrounded
             /// Connect to Ceiling: a line from every paper to the ceiling.
@@ -1851,8 +1867,48 @@ final class VisionModel {
             volumeStamp += 1
         }
     }
-    /// The bar folded to a single icon (9 Nov 2026): the `<` at its left
-    /// folds it, the icon's `>` opens it again. Kept across launches.
+    /// Where the room's toolbar stands (16 Nov 2026), reported by the
+    /// toolbar window in the immersive space's own terms: the middle of its
+    /// lower edge, which way is its right and which way behind it, and its
+    /// width — so set-aside cards can bunch up behind it.
+    struct ToolbarAnchor: Equatable {
+        var bottom: SIMD3<Float>
+        var right: SIMD3<Float>
+        var back: SIMD3<Float>
+        var width: Float
+    }
+    var toolbarAnchor: ToolbarAnchor?
+
+    /// A new place for the toolbar: kept, and the room told when it has
+    /// moved far enough to matter to the cards behind it.
+    func noteToolbar(_ anchor: ToolbarAnchor) {
+        let moved = toolbarAnchor.map { simd_distance($0.bottom, anchor.bottom) > 0.03
+            || abs($0.width - anchor.width) > 0.03 || simd_dot($0.back, anchor.back) < 0.99 } ?? true
+        guard moved else { return }
+        toolbarAnchor = anchor
+        if !setAsideIDs.isEmpty { volumeStamp += 1 }
+    }
+
+    /// The bar's Authors (16 Nov 2026): a card for each author of the
+    /// room's papers — the name, and the face when one is known.
+    var authorCardsShown = UserDefaults.standard.bool(forKey: "visionAuthorCardsShown") {
+        didSet {
+            UserDefaults.standard.set(authorCardsShown, forKey: "visionAuthorCardsShown")
+            volumeStamp += 1
+        }
+    }
+
+    /// The Concepts menu's Show All / Hide All (15 Nov 2026): every concept
+    /// pill in the room, shown or put away together. Shown unless hidden.
+    var conceptsShown = UserDefaults.standard.object(forKey: "visionConceptsShown") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(conceptsShown, forKey: "visionConceptsShown")
+            volumeStamp += 1
+        }
+    }
+    /// The bar folded to a single icon (9 Nov 2026). Nothing folds it since
+    /// the `<` went (15 Nov 2026, the arm's Hide Toolbar does that work);
+    /// the icon's `>` still opens a bar folded before then.
     var toolbarCollapsed = UserDefaults.standard.bool(forKey: "visionToolbarCollapsed") {
         didSet { UserDefaults.standard.set(toolbarCollapsed, forKey: "visionToolbarCollapsed") }
     }
@@ -2143,6 +2199,9 @@ final class VisionModel {
         let id: String
         let term: String
         let definition: String
+        /// Author's kind for a document's concept — concept, person,
+        /// artifact, location, institution, event (15 Nov 2026).
+        var kind: String? = nil
     }
     private(set) var libraryTerms: [LibraryTerm] = []
     /// What the last import did, in a line.
@@ -2344,6 +2403,140 @@ final class VisionModel {
         return made == true
     }
 
+    /// The Defined Concepts the open room's documents carry themselves
+    /// (15 Nov 2026, Frode): each EPUB's own glossary — a bound volume's
+    /// read once for all its articles — and the concepts the Mac found in
+    /// each article, by name, the first definition kept. Shown in the
+    /// Concepts menu whether or not the library holds them.
+    private(set) var roomTerms: [LibraryTerm] = []
+
+    func reloadRoomConcepts() {
+        guard let venue = openJournalVenue else {
+            if !roomTerms.isEmpty { roomTerms = [] }
+            return
+        }
+        var byName: [String: LibraryTerm] = [:]
+        func add(_ name: String, _ definition: String, kind: String?) {
+            let term = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !term.isEmpty, kind != "heading" else { return }
+            let key = ConceptTerm.normalise(term)
+            let known = byName[key]
+            byName[key] = LibraryTerm(
+                id: "doc:" + key, term: known?.term ?? term,
+                definition: (known?.definition.isEmpty ?? true) ? definition : known!.definition,
+                kind: known?.kind ?? kind)
+        }
+        var docIDs: [String] = []
+        for record in records(inVenue: venue) {
+            let docID = BoundVolume.split(articleDocID: record.id)?.volume ?? record.id
+            if !docIDs.contains(docID) { docIDs.append(docID) }
+            for name in piece(forDocID: record.id)?.definedConcepts ?? [] { add(name, "", kind: nil) }
+        }
+        for id in docIDs {
+            // The book's own Visual-Meta, read from its unpacked folder
+            // (15 Nov 2026): the headset's loaded document did not carry
+            // the concepts, so the menu stood empty for Author's books.
+            if let record = epubRecords.first(where: { $0.id == id }) {
+                let folder = Self.epubsRoot.appendingPathComponent(record.folder, isDirectory: true)
+                if let data = OrigamiEPUBImporter.recordData(inUnpackedFolder: folder,
+                                                             properties: "origami:visual-meta",
+                                                             fileName: "visual-meta.json"),
+                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                   let concepts = object["concepts"] as? [[String: Any]] {
+                    for concept in concepts {
+                        guard let name = concept["name"] as? String else { continue }
+                        add(name, concept["description"] as? String ?? "",
+                            kind: (concept["tag"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                    }
+                }
+            }
+            for concept in index.byID[id]?.doc.concepts ?? [] {
+                add(concept.name, concept.userDefinition ?? concept.description, kind: concept.tag)
+            }
+        }
+        let terms = byName.values.sorted { $0.term.localizedCaseInsensitiveCompare($1.term) == .orderedAscending }
+        if terms != roomTerms { roomTerms = terms }
+    }
+
+    /// A concept kind as the menus name it.
+    static func conceptKindTitle(_ kind: String) -> String {
+        switch kind {
+        case "concept": "Concepts"
+        case "person": "People"
+        case "artifact": "Artifacts"
+        case "location": "Locations"
+        case "institution": "Institutions"
+        case "event": "Events"
+        default: kind.capitalized
+        }
+    }
+
+    /// The kinds the room's own concepts come in, each with how many —
+    /// for Select ▸ By Concept Kind.
+    var roomConceptKinds: [(kind: String, count: Int)] {
+        Dictionary(grouping: roomTerms.compactMap(\.kind), by: { $0 })
+            .map { (kind: $0.key, count: $0.value.count) }
+            .sorted { $0.kind < $1.kind }
+    }
+
+    /// The document's own concepts one paper's text mentions (15 Nov
+    /// 2026): its title and every paragraph, read once per paper and kept
+    /// until the room's concepts change. For the pills its silver sphere
+    /// shows round the card.
+    @ObservationIgnored private var mentionedConcepts: [String: (count: Int, terms: [LibraryTerm])] = [:]
+
+    func concepts(mentionedIn docID: String) -> [LibraryTerm] {
+        if let known = mentionedConcepts[docID], known.count == roomTerms.count { return known.terms }
+        var text = (record(forDocID: docID)?.title ?? "").lowercased()
+        if let doc = document(docID) {
+            text += "\n" + (doc.body ?? []).map(\.text).joined(separator: "\n").lowercased()
+        }
+        let defined = Set((piece(forDocID: docID)?.definedConcepts ?? []).map { $0.lowercased() })
+        // The paper's own authors are not among its concepts (16 Nov 2026,
+        // Frode): their names stand on the card already, to pull out from.
+        let record = record(forDocID: docID)
+        let authors = Set(((record?.authors ?? []) + [record?.author ?? ""])
+            .flatMap { $0.components(separatedBy: " \u{00B7} ") }
+            .map(OrigamiPortraits.key).filter { !$0.isEmpty })
+        let terms = roomTerms.filter { term in
+            let needle = term.term.lowercased()
+            guard !authors.contains(OrigamiPortraits.key(term.term)) else { return false }
+            return needle.count > 1 && (defined.contains(needle) || text.contains(needle))
+        }
+        mentionedConcepts[docID] = (roomTerms.count, terms)
+        return terms
+    }
+
+    /// A concept's kind colour, as Author and Knowledge Space paint it.
+    func conceptKindColour(_ name: String) -> Color? {
+        let key = ConceptTerm.normalise(name)
+        guard let kind = roomTerms.first(where: { ConceptTerm.normalise($0.term) == key })?.kind,
+              let known = ConceptKind(fileKey: kind) else { return nil }
+        let colour = known.defaultColour
+        return Color(red: colour.red, green: colour.green, blue: colour.blue)
+    }
+
+    /// The room's articles whose text names any of these words — Select
+    /// by a concept kind (15 Nov 2026).
+    func roomArticleIDs(mentioningAnyOf names: [String]) -> Set<String> {
+        guard let venue = openJournalVenue else { return [] }
+        let needles = names.map { $0.lowercased() }.filter { $0.count > 1 }
+        guard !needles.isEmpty else { return [] }
+        var matches: Set<String> = []
+        for record in records(inVenue: venue) {
+            let title = record.title.lowercased()
+            if needles.contains(where: title.contains) { matches.insert(record.id); continue }
+            guard let doc = document(record.id) else { continue }
+            if (doc.body ?? []).contains(where: { paragraph in
+                let text = paragraph.text.lowercased()
+                return needles.contains(where: text.contains)
+            }) {
+                matches.insert(record.id)
+            }
+        }
+        return matches
+    }
+
     /// The library read again from the community folder. Knowledge Space's
     /// concepts come through the Mac, which reads its folder and mirrors the
     /// library here (9 Nov 2026) — nothing to choose on the headset.
@@ -2352,6 +2545,7 @@ final class VisionModel {
             adoptLibrarySettings(settings)
         }
         reloadConcepts()
+        reloadRoomConcepts()
         let count = libraryTerms.count
         let source = librarySettings.map { " \u{2014} kept by \($0.setBy), Knowledge Space\u{2019}s included" } ?? ""
         conceptsMessage = "\(count) concept\(count == 1 ? "" : "s") in the library\(source)."
@@ -3989,6 +4183,7 @@ struct VisionOpeningView: View {
 struct VisionVolumeToolbar: View {
     @Environment(VisionModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.physicalMetrics) private var metrics
     /// The keyword being spoken or typed — its keyboard's microphone
     /// takes dictation.
     @State private var keywordDraft = ""
@@ -4015,6 +4210,34 @@ struct VisionVolumeToolbar: View {
     }
 
     private var fullBar: some View {
+        barColumn
+            // Where the bar stands, told to the room (16 Nov 2026): set-aside
+            // cards bunch up behind it.
+            .onGeometryChange3D(for: VisionModel.ToolbarAnchor?.self) { proxy in
+                guard let transform = proxy.transform(in: .immersiveSpace) else { return nil }
+                let size = proxy.size
+                func metres(_ points: Double) -> Float {
+                    Float(metrics.convert(CGFloat(points), to: .meters))
+                }
+                // SwiftUI's y runs down; the room's runs up.
+                func room(_ p: Point3D) -> SIMD3<Float> {
+                    SIMD3<Float>(metres(p.x), -metres(p.y), metres(p.z))
+                }
+                let bottom = Point3D(x: size.width / 2, y: size.height, z: 0).applying(transform)
+                let rightEnd = Point3D(x: size.width, y: size.height, z: 0).applying(transform)
+                let behind = Point3D(x: size.width / 2, y: size.height, z: -100).applying(transform)
+                let b = room(bottom)
+                let r = room(rightEnd) - b
+                let k = room(behind) - b
+                guard simd_length(r) > 0.01, simd_length(k) > 0.001 else { return nil }
+                return VisionModel.ToolbarAnchor(bottom: b, right: simd_normalize(r),
+                                                 back: simd_normalize(k), width: simd_length(r) * 2)
+            } action: { anchor in
+                if let anchor { model.noteToolbar(anchor) }
+            }
+    }
+
+    private var barColumn: some View {
         VStack(spacing: 10) {
             roomRow
                 .font(.system(size: 16))
@@ -4038,6 +4261,8 @@ struct VisionVolumeToolbar: View {
             }
         }
             .task { model.reloadConcepts() }
+            // The room's own concepts, read again as the room changes.
+            .task(id: model.openJournalVenue) { model.reloadRoomConcepts() }
     }
 
     /// Concepts: make one, look again for what the Mac has brought in —
@@ -4046,6 +4271,11 @@ struct VisionVolumeToolbar: View {
     private var conceptsMenu: some View {
         Menu {
             Button("New Concept\u{2026}", systemImage: "plus") { openWindow(id: "new-concept") }
+            // Every concept in the room at once (15 Nov 2026).
+            Button("Show All Concepts", systemImage: "eye") { model.conceptsShown = true }
+                .disabled(model.conceptsShown)
+            Button("Hide All Concepts", systemImage: "eye.slash") { model.conceptsShown = false }
+                .disabled(!model.conceptsShown)
             Button("Refresh from the Library", systemImage: "arrow.clockwise") {
                 model.refreshConcepts()
             }
@@ -4057,10 +4287,34 @@ struct VisionVolumeToolbar: View {
                 Text(message)
             }
             Divider()
+            // The documents' own concepts first (15 Nov 2026): what the
+            // EPUBs in the room define, library or not.
+            Section("In This Document") {
+                if model.roomTerms.isEmpty {
+                    Text("This document defines no concepts")
+                } else {
+                    // One submenu per kind, so every concept is reachable.
+                    ForEach(model.roomConceptKinds, id: \.kind) { entry in
+                        Menu("\(VisionModel.conceptKindTitle(entry.kind)) (\(entry.count))") {
+                            ForEach(model.roomTerms.filter { $0.kind == entry.kind }) { concept in
+                                Button(concept.term) { model.addSpaceKeyword(concept.term) }
+                            }
+                        }
+                    }
+                    let unkinded = model.roomTerms.filter { $0.kind == nil }
+                    if !unkinded.isEmpty {
+                        Menu("Other (\(unkinded.count))") {
+                            ForEach(unkinded) { concept in
+                                Button(concept.term) { model.addSpaceKeyword(concept.term) }
+                            }
+                        }
+                    }
+                }
+            }
             if model.libraryTerms.isEmpty {
                 Text("No concepts in the library yet")
             } else {
-                Section("Into the Room") {
+                Section("From the Library") {
                     ForEach(model.libraryTerms.prefix(60)) { concept in
                         Button(concept.term) { model.addSpaceKeyword(concept.term) }
                     }
@@ -4080,17 +4334,8 @@ struct VisionVolumeToolbar: View {
     /// Shapes — then where the room stands: Volume (All, or one).
     private var roomRow: some View {
         HStack(spacing: 40) {
-            // Fold the bar away to a single icon (9 Nov 2026).
-            Button {
-                withAnimation(nil) { model.toolbarCollapsed = true }
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 18, weight: .semibold))
-                    .frame(width: 32, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .hoverEffect()
-            .help("Fold the bar away")
+            // No `<` to fold the bar any more (15 Nov 2026): the arm's
+            // Hide Toolbar chit shows and hides it.
             // Back to the document chooser: the library, where another
             // journal, volume or series is chosen (the arm's Documents
             // chip, now the arm chips are away).
@@ -4120,7 +4365,9 @@ struct VisionVolumeToolbar: View {
                     Button {
                         if on { model.shownZones.remove(zone) } else { model.shownZones.insert(zone) }
                     } label: {
-                        Text(zone.title)
+                        // "Other" for the appendices and records here (16 Nov
+                        // 2026, Frode); the Mac keeps its longer name.
+                        Text(zone == .appendices ? "Other" : zone.title)
                             .foregroundStyle(on ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
                     }
                     .help(on ? "Put away \(zone.title)" : "Show \(zone.title)")
@@ -4129,10 +4376,53 @@ struct VisionVolumeToolbar: View {
             // A journal has no opening pages or appendices to put away:
             // the zones stay in the bar, dimmed, never hidden.
             .disabled(!model.isVolumeRoom)
-            Button(model.allArticlesSelected ? "Deselect All" : "Select All") {
-                model.volumeBarRequest = .init(action: .selectAll)
+            // Authors (16 Nov 2026): a card for each author, name and face,
+            // shown or put away — full while shown, pale while away.
+            Button {
+                model.authorCardsShown.toggle()
+            } label: {
+                Text("Authors")
+                    .foregroundStyle(model.authorCardsShown ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
             }
-            .help("Select every article in the room, raising what each cites; again lets them go")
+            .help(model.authorCardsShown ? "Put away the authors" : "Show a card for each author, with their face")
+            // Select (15 Nov 2026, was the one Select All button): every
+            // article, nothing, or one category's articles.
+            Menu {
+                Button("Select All") { model.volumeBarRequest = .init(action: .selectAll) }
+                    .disabled(model.allArticlesSelected)
+                Button("Deselect All") { model.volumeBarRequest = .init(action: .deselectAll) }
+                // A family at a time (16 Nov 2026, Frode): the wall's
+                // articles, the Other pieces, the authors' cards.
+                Divider()
+                Button("Articles") { model.volumeBarRequest = .init(action: .selectFamily("articles")) }
+                Button("Other") { model.volumeBarRequest = .init(action: .selectFamily("other")) }
+                    .disabled(!model.isVolumeRoom)
+                Button("Authors") { model.volumeBarRequest = .init(action: .selectFamily("authors")) }
+                Section("By Category") {
+                    ForEach(model.tags.tags.filter(\.isOn)) { tag in
+                        let count = model.roomTagCounts[tag.color] ?? 0
+                        Button("\(tag.name) (\(count))") {
+                            model.volumeBarRequest = .init(action: .selectCategory(tag.color))
+                        }
+                        .disabled(count == 0)
+                    }
+                }
+                // The kinds of the document's own concepts (15 Nov 2026):
+                // the articles naming any concept of that kind.
+                Section("By Concept Kind") {
+                    if model.roomConceptKinds.isEmpty {
+                        Text("This document defines no concepts")
+                    }
+                    ForEach(model.roomConceptKinds, id: \.kind) { entry in
+                        Button("\(VisionModel.conceptKindTitle(entry.kind)) (\(entry.count))") {
+                            model.volumeBarRequest = .init(action: .selectConceptKind(entry.kind))
+                        }
+                    }
+                }
+            } label: {
+                Text("Select")
+            }
+            .help("Select every article in the room, none, or the articles of one category")
             Menu {
                 // Close In (9 Nov 2026): first, for the room grown too
                 // spread out — the nodes nearer one another, each time.
@@ -4181,6 +4471,11 @@ struct VisionVolumeToolbar: View {
                 // stands, carried before the reader, starting 1 m away.
                 Divider()
                 Button("Arrange in Front") { model.volumeBarRequest = .init(action: .arrangeInFront) }
+                // Re-Center (15 Nov 2026): the room as it is, close in front.
+                Button("Re-Center") { model.volumeBarRequest = .init(action: .reCenter) }
+                // Remove Ghosts (15 Nov 2026): the faint titles lifted cards
+                // leave in their slots, gone — each card back in its place.
+                Button("Remove Ghosts") { model.volumeBarRequest = .init(action: .removeGhosts) }
             } label: {
                 Text("Layout")
             }
@@ -5021,12 +5316,37 @@ extension EnvironmentValues {
     /// gets the middle of the reading with its edges cut away, or a
     /// column boundary and apparently nothing at all.
     @Entry var visionReadingHostGrows = false
+    /// Set by the Map's panel (15 Nov 2026): the reading stands in the
+    /// room, so its foot bar carries the Reading Desk toggle and the
+    /// pose cycle the panel's title bar used to.
+    @Entry var visionReadingInRoom = false
+    /// The room's Fold for a reading: the panel folds back into its card.
+    @Entry var visionReadingFold: (() -> Void)? = nil
+}
+
+/// The room's foot bar in near-white ink: its primary, secondary and
+/// tertiary styles all close to white on a dark scheme, so the commands
+/// read at once on any paper behind them.
+private struct RoomInk: ViewModifier {
+    let on: Bool
+
+    func body(content: Content) -> some View {
+        if on {
+            content
+                .foregroundStyle(Color.white, Color.white.opacity(0.88), Color.white.opacity(0.7))
+                .environment(\.colorScheme, .dark)
+        } else {
+            content
+        }
+    }
 }
 
 struct VisionReaderView: View {
     @Environment(VisionModel.self) private var model
     /// Set by the Map's panel, which sizes itself to this reading.
     @Environment(\.visionReadingHostGrows) private var hostGrows
+    @Environment(\.visionReadingInRoom) private var inRoom
+    @Environment(\.visionReadingFold) private var fold
     @Environment(\.openWindow) private var openWindow
     let docID: String
     /// The speaker whose statements are being browsed, sheet-presented.
@@ -5039,6 +5359,16 @@ struct VisionReaderView: View {
     /// Outline: the sections clicked open, by heading id.
     @State private var expanded: Set<String> = []
     @State private var showsContents = false
+    /// The reading's colours (15 Nov 2026, Frode): one of the app's reader
+    /// themes, Sepia among them, on the page; empty is the room's glass.
+    @AppStorage("visionReadingTheme") private var readingThemeRaw = ""
+    /// The foot bar's Aa unfolded: type size and the themes, in a strip
+    /// above the bar (no presented menu opens on a room attachment).
+    @State private var themesOpen = false
+    /// The room's Contents (16 Nov 2026): the reading's sections, unfolded
+    /// above the bar; a section chosen turns Horizontal to its page.
+    @State private var contentsOpen = false
+    @State private var jumpPage: Int?
     /// Unfolding from its card (9 Nov 2026): how many of Horizontal's pages
     /// stand open, and how far the row is shifted to keep them centred.
     @State private var foldOpen = Int.max
@@ -5097,7 +5427,13 @@ struct VisionReaderView: View {
     @State private var noteDraft = ""
     @Environment(\.colorScheme) private var colorScheme
 
-    private var mode: Mode { Mode(rawValue: modeRaw) ?? .scroll }
+    private var mode: Mode {
+        let chosen = Mode(rawValue: modeRaw) ?? .scroll
+        // In the room it reads Horizontal always (15 Nov 2026, Frode),
+        // unless Focus, Outline, AI or References is chosen.
+        if inRoom, chosen == .faithful || chosen == .scroll { return .horizontal }
+        return chosen
+    }
 
     private var isDesk: Bool { model.readingDeskDocID == docID }
     private var deskTheme: ReadingDeskTheme {
@@ -5108,8 +5444,16 @@ struct VisionReaderView: View {
     /// stands on paper, the room's otherwise. Everything that colours
     /// ink — the environment AND the attributed text, whose colours are
     /// baked at build time — must read this, never `colorScheme` raw.
+    private var readingTheme: ReaderTheme? { ReaderTheme(rawValue: readingThemeRaw) }
+    /// The chosen theme's paper, read in its light dress — a page held up
+    /// in the room; nil for the room's glass.
+    private var themePage: Color? {
+        readingTheme.map { $0.background(for: .light) ?? .white }
+    }
+
     private var readingScheme: ColorScheme {
-        isDesk ? deskTheme.scheme : colorScheme
+        if readingTheme != nil { return .light }
+        return isDesk ? deskTheme.scheme : colorScheme
     }
 
     /// A page lying flat on the table is read from above at arm's
@@ -5168,6 +5512,10 @@ struct VisionReaderView: View {
                     focusView(doc)
                 case .ai:
                     aiView(doc)
+                case .outline where inRoom:
+                    // The whole outline, in the headings' own type (16 Nov
+                    // 2026, Frode); a heading pinched turns Horizontal to it.
+                    outlineView(doc)
                 case .scroll, .outline:
                     scrollBody(doc)
                 case .references:
@@ -5186,8 +5534,15 @@ struct VisionReaderView: View {
             // theme's colour scheme rides with its page: light paper
             // reads in dark ink, never visionOS's default white.
             .background {
-                if isDesk { deskTheme.page.ignoresSafeArea() }
+                // A chosen theme's paper outranks the desk's; Horizontal's
+                // columns each wear it instead (horizontalView).
+                if let themePage, mode != .horizontal {
+                    themePage.ignoresSafeArea()
+                } else if isDesk, readingTheme == nil {
+                    deskTheme.page.ignoresSafeArea()
+                }
             }
+            .foregroundStyle(readingTheme?.textColor(for: .light) ?? .primary)
             .environment(\.colorScheme, readingScheme)
             // Opening a reading no longer makes it the desk: the desk —
             // this document alone, every node stepped away — is entered
@@ -5257,12 +5612,26 @@ struct VisionReaderView: View {
             }
             .onDisappear {
                 readAloud.stop()
+                // In the room the panel's own Fold says when a reading has
+                // closed (16 Nov 2026): a panel remade for a new view or
+                // theme disappears AFTER its successor appears, and taking
+                // the reading out here brought its card back into the room
+                // as a closed card while the reading stood open.
+                guard !inRoom else { return }
                 model.openDocIDs.remove(docID)
                 model.openDocCitations.removeValue(forKey: docID)
             }
         } else {
-            ContentUnavailableView("Document Not Available", systemImage: "doc",
-                                   description: Text("This document is not in the library folder."))
+            ContentUnavailableView {
+                Label("Document Not Available", systemImage: "doc")
+            } description: {
+                Text("This document is not in the library folder.")
+            } actions: {
+                // In the room the panel has no other close (16 Nov 2026).
+                if inRoom, let fold {
+                    Button("Fold", action: fold)
+                }
+            }
         }
     }
 
@@ -5400,13 +5769,59 @@ struct VisionReaderView: View {
         }
     }
 
+    /// The room's Outline (16 Nov 2026, Frode): every heading of the
+    /// article, every level, in the reading's own heading type and
+    /// indented by level — the whole shape of it at once. A heading
+    /// pinched turns Horizontal to the page it starts on.
+    private func outlineView(_ doc: LiquidDoc) -> some View {
+        let headings = readable(of: doc).filter { $0.effectiveHeading != nil }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(doc.title)
+                    .font(AppFonts.heading((30 + fontDelta) * typeScale))
+                    .padding(.bottom, 2)
+                Text("\(doc.displayAuthor) · \(doc.listedDateText)")
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 12)
+                if headings.isEmpty {
+                    Text("This article has no headings.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(headings) { heading in
+                    Button {
+                        // Kept on the model: changing the view remakes this
+                        // panel, and the reading's own state goes with it.
+                        model.readerJump[docID] = heading.id
+                        modeRaw = Mode.horizontal.rawValue
+                    } label: {
+                        Text(heading.text)
+                            .font(font(for: heading))
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, CGFloat(max((heading.effectiveHeading ?? 1) - 1, 0)) * 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .hoverEffect(.highlight)
+                }
+            }
+            .frame(maxWidth: 640, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .padding(28)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            footBar(doc, proxy: nil)
+        }
+    }
+
     private func horizontalView(_ doc: LiquidDoc) -> some View {
         let pages = horizontalPages(of: doc)
         let pose = model.pose(of: docID)
         let columnWidth: CGFloat = pose == .flat ? 280 : 560
         let gap: CGFloat = isDesk ? 0 : 12
         let fullWidth = CGFloat(pages.count) * (columnWidth + gap)
-        return ScrollView(.horizontal) {
+        return ScrollViewReader { pageProxy in
+        ScrollView(.horizontal) {
             LazyHStack(alignment: .top, spacing: gap) {
                 ForEach(Array(pages.enumerated()), id: \.offset) { index, page in
                     ScrollView {
@@ -5430,19 +5845,51 @@ struct VisionReaderView: View {
                     }
                     .frame(width: columnWidth)
                     .containerRelativeFrame(.vertical)
+                    // A chosen theme: each column its paper.
+                    .background {
+                        if let themePage {
+                            RoundedRectangle(cornerRadius: 18).fill(themePage)
+                        }
+                    }
                     .glassBackgroundEffect(in: .rect(cornerRadius: 18),
-                                           displayMode: isDesk ? .never : .always)
+                                           displayMode: isDesk || themePage != nil ? .never : .always)
                     // A page not yet unfolded lies folded back against the
                     // one before it, swinging open from that page's edge.
                     .rotation3DEffect(.degrees(index < foldOpen ? 0 : -88),
                                       axis: (x: 0, y: 1, z: 0), anchor: .leading)
                     .opacity(index < foldOpen ? 1 : 0)
+                    .id(index)
                 }
             }
             .offset(x: foldShift)
             .scrollTargetLayout()
         }
         .scrollTargetBehavior(.viewAligned)
+        // A section chosen while another view stood: its page brought round
+        // once the pages are laid out.
+        .task {
+            // Or a heading chosen in the Outline, kept on the model.
+            // Read, not taken: the panel is remade just after the view
+            // changes, and the remade one must find it too; it is let go a
+            // moment later.
+            var page = jumpPage
+            if page == nil, let heading = model.readerJump[docID] {
+                page = pages.firstIndex { $0.contains { $0.id == heading } }
+            }
+            guard let page else { return }
+            try? await Task.sleep(for: .milliseconds(120))
+            pageProxy.scrollTo(page, anchor: .leading)
+            jumpPage = nil
+            try? await Task.sleep(for: .milliseconds(1200))
+            model.readerJump[docID] = nil
+        }
+        // A section chosen in the room's Contents: its page brought round.
+        .onChange(of: jumpPage) {
+            guard let page = jumpPage else { return }
+            withAnimation { pageProxy.scrollTo(page, anchor: .leading) }
+            jumpPage = nil
+        }
+        }
         .onAppear {
             guard model.unfoldingDocIDs.remove(docID) != nil else { return }
             unfold(pages: pages.count, pitch: columnWidth + gap, fullWidth: fullWidth)
@@ -5837,7 +6284,31 @@ struct VisionReaderView: View {
     /// The readable body, the appendix machinery left out.
     private func readable(of doc: LiquidDoc) -> [LiquidDoc.Paragraph] {
         let appendixIDs = doc.visualMetaParagraphIDs
-        return (doc.body ?? []).filter { !appendixIDs.contains($0.id) }
+        let body = (doc.body ?? []).filter { !appendixIDs.contains($0.id) }
+        // No masthead twice (16 Nov 2026, Frode): the reading sets the title
+        // and author above the text already, so the article's own title
+        // line and byline at its head — the bold title, the plain names —
+        // are left out. Only among its first few paragraphs, and only a
+        // line that is the title, or short and names the authors.
+        func letters(_ text: String) -> String {
+            text.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains)
+                .map(String.init).joined()
+        }
+        let title = letters(doc.title)
+        let surnames = doc.displayAuthor
+            .components(separatedBy: CharacterSet(charactersIn: ",;&·\u{00B7}").union(.newlines))
+            .compactMap { $0.split(separator: " ").last.map { letters(String($0)) } }
+            .filter { $0.count > 1 }
+        var masthead: Set<String> = []
+        for paragraph in body.prefix(4) {
+            let text = letters(paragraph.text)
+            guard !text.isEmpty else { continue }
+            let isTitle = !title.isEmpty && (text == title || (text.count > 8 && title.hasPrefix(text)))
+            let isByline = paragraph.text.count < 160 && !surnames.isEmpty
+                && surnames.allSatisfy { text.contains($0) }
+            if isTitle || isByline { masthead.insert(paragraph.id) } else { break }
+        }
+        return masthead.isEmpty ? body : body.filter { !masthead.contains($0.id) }
     }
 
     private func shownParagraphs(of doc: LiquidDoc) -> [LiquidDoc.Paragraph] {
@@ -6477,19 +6948,71 @@ struct VisionReaderView: View {
 
     private func footBar(_ doc: LiquidDoc, proxy: ScrollViewProxy?) -> some View {
         let headings = (doc.body ?? []).filter { $0.effectiveHeading != nil }
-        let modes: [Mode] = [.faithful, .scroll, .horizontal, .focus,
-                             .outline, .ai, .references]
-        return HStack(spacing: 12) {
-            Spacer()
+        // In the room (15 Nov 2026, Frode) no Scrolling, Scroll or
+        // Horizontal: the reading is Horizontal, and a chosen view pinched
+        // again goes back to it. Fold, in an outline pill, leads the bar.
+        let modes: [Mode] = inRoom ? [.focus, .outline, .ai, .references]
+            : [.faithful, .scroll, .horizontal, .focus, .outline, .ai, .references]
+        let bar = HStack(spacing: 12) {
+            Spacer(minLength: 0)
+            if inRoom, let fold {
+                Button(action: fold) {
+                    Text("Fold")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 5)
+                        .overlay(Capsule().strokeBorder(.primary.opacity(0.6), lineWidth: 1.2))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Fold the reading back into its card")
+                separator
+            }
             ForEach(Array(modes.enumerated()), id: \.offset) { index, word in
                 if index > 0 { separator }
                 modeWord(word.word, chosen: mode == word && findTerm.isEmpty) {
                     findTerm = ""
                     modeBeforeFind = nil
-                    modeRaw = word.rawValue
+                    modeRaw = inRoom && mode == word ? Mode.horizontal.rawValue : word.rawValue
                     if word == .outline { expanded = [] }
                     if word == .focus { focusIndex = 0 }
                 }
+            }
+            // In the room (15 Nov 2026, Frode): the Reading Desk toggle and
+            // the pose cycle, right of References — the panel has no title
+            // bar now.
+            if inRoom {
+                separator
+                Button {
+                    model.readingDeskDocID = isDesk ? nil : docID
+                } label: {
+                    Image(systemName: isDesk ? "doc.on.doc" : "doc")
+                        .foregroundStyle(isDesk ? .primary : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(isDesk ? "Back to the Hallway" : "Reading Desk — just this document")
+                Button {
+                    switch model.pose(of: docID) {
+                    case .upright: model.panelPoses[docID] = .tilted
+                    case .tilted: model.panelPoses[docID] = .flat
+                    case .flat: model.panelPoses[docID] = nil
+                    }
+                } label: {
+                    Image(systemName: poseIcon).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(poseHelp)
+                // To Read, as the title bar carried it (16 Nov 2026). (Its
+                // Transpoint went the same day, Frode: not wanted here.)
+                let toRead = model.isToRead(docID)
+                Button {
+                    model.toggleToRead(docID)
+                } label: {
+                    Image(systemName: toRead ? "bookmark.fill" : "bookmark")
+                        .foregroundStyle(toRead ? .primary : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(toRead ? "Remove from To Read" : "To Read — first in every list, on every device")
             }
             separator
             if findFieldOpen {
@@ -6510,6 +7033,9 @@ struct VisionReaderView: View {
             }
             .buttonStyle(.plain)
             .help("Find — the paper folded to every use of the words")
+            // In the room (16 Nov 2026, Frode): no margin, no reading aloud,
+            // and no Contents — Outline is the whole outline now.
+            if !inRoom {
             Button {
                 marginOn.toggle()
                 if marginOn, mode != .scroll, mode != .outline {
@@ -6561,6 +7087,20 @@ struct VisionReaderView: View {
                 }
                 .frame(minWidth: 320, minHeight: 240)
             }
+            }
+            if inRoom {
+                // Type size and the themes, unfolding above the bar.
+                Button {
+                    themesOpen.toggle()
+                    if themesOpen { contentsOpen = false }
+                } label: {
+                    Text("Aa")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(themesOpen ? .primary : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Type size and colours")
+            } else {
             Menu {
                 Button("Bigger") { fontDelta = min(fontDelta + 1, 12) }
                 Button("Smaller") { fontDelta = max(fontDelta - 1, -4) }
@@ -6575,13 +7115,173 @@ struct VisionReaderView: View {
             .buttonStyle(.plain)
             .fixedSize()
             .help("The reading's type size")
+            }
             Spacer()
         }
+        // High contrast in the room (16 Nov 2026, Frode): every command
+        // almost white, whatever the reading's colours — the chosen view
+        // white, the rest a breath under it.
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .glassBackgroundEffect()
+        // After the glass, so the glass itself goes dark under the ink.
+        .modifier(RoomInk(on: inRoom))
         .padding(.horizontal, 24)
         .padding(.bottom, 8)
+        // Aa unfolded, in the room: the strip stands above the bar, in
+        // room of its own (15 Nov 2026: laid over the bar it was cut off
+        // at the top).
+        return VStack(spacing: 6) {
+            if inRoom, themesOpen {
+                themeStrip
+                    .padding(.horizontal, 24)
+            }
+            if inRoom, contentsOpen {
+                contentsStrip(doc, headings: headings)
+                    .padding(.horizontal, 24)
+            }
+            bar
+        }
+    }
+
+    /// The reading's sections in the room, above the bar: each one turns
+    /// Horizontal to the page it starts on; OK puts the list away.
+    private func contentsStrip(_ doc: LiquidDoc, headings: [LiquidDoc.Paragraph]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Contents").font(.callout.weight(.semibold))
+                Spacer()
+                Button {
+                    contentsOpen = false
+                } label: {
+                    Text("OK")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 5)
+                        .overlay(Capsule().strokeBorder(.primary.opacity(0.6), lineWidth: 1.2))
+                        .contentShape(Capsule())
+                }
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(headings) { heading in
+                        Button {
+                            let pages = horizontalPages(of: doc)
+                            let page = pages.firstIndex { $0.contains { $0.id == heading.id } } ?? 0
+                            modeRaw = Mode.horizontal.rawValue
+                            jumpPage = page
+                            contentsOpen = false
+                        } label: {
+                            Text(heading.text)
+                                .lineLimit(1)
+                                .padding(.leading, CGFloat(max((heading.effectiveHeading ?? 1) - 1, 0)) * 14)
+                                .padding(.vertical, 6)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .hoverEffect(.highlight)
+                    }
+                }
+            }
+            .frame(maxHeight: 300)
+        }
+        .font(.callout)
+        .buttonStyle(.plain)
+        .frame(maxWidth: 520)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .glassBackgroundEffect()
+        .environment(\.colorScheme, .dark)
+    }
+
+    /// Type size, then the reading's colours: the room's glass and every
+    /// reader theme (Sepia, Cream, Night…), each a swatch of its paper with
+    /// a line of its ink, the chosen one ringed.
+    private var themeStrip: some View {
+        HStack(spacing: 10) {
+            Button { fontDelta = max(fontDelta - 1, -4) } label: { Text("A\u{2212}") }
+            Button { fontDelta = min(fontDelta + 1, 12) } label: { Text("A+") }
+            Button { fontDelta = 0 } label: { Text("Reset") }
+            separator
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    themeSwatch(name: "Glass", paper: nil, ink: nil, chosen: readingTheme == nil) {
+                        readingThemeRaw = ""
+                    }
+                    ForEach(ReaderTheme.allCases) { theme in
+                        themeSwatch(name: theme.displayName,
+                                    paper: theme.background(for: .light) ?? .white,
+                                    ink: theme.textColor(for: .light) ?? .black,
+                                    chosen: readingTheme == theme) {
+                            readingThemeRaw = theme.rawValue
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: 520)
+            separator
+            // OK closes the chooser (15 Nov 2026).
+            Button {
+                themesOpen = false
+            } label: {
+                Text("OK")
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 5)
+                    .overlay(Capsule().strokeBorder(.primary.opacity(0.6), lineWidth: 1.2))
+                    .contentShape(Capsule())
+            }
+        }
+        .font(.callout)
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .glassBackgroundEffect()
+        .environment(\.colorScheme, .dark)
+    }
+
+    private func themeSwatch(name: String, paper: Color?, ink: Color?, chosen: Bool,
+                             choose: @escaping () -> Void) -> some View {
+        Button(action: choose) {
+            VStack(spacing: 4) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(paper ?? Color.white.opacity(0.12))
+                    Text("Aa")
+                        .font(.system(size: 13, weight: .semibold, design: .serif))
+                        .foregroundStyle(ink ?? .white)
+                }
+                .frame(width: 44, height: 30)
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(chosen ? Color.accentColor : Color.white.opacity(0.3),
+                                  lineWidth: chosen ? 2 : 0.8))
+                Text(name)
+                    .font(.caption2)
+                    .foregroundStyle(chosen ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: 64)
+            .contentShape(Rectangle())
+        }
+        .hoverEffect(.highlight)
+    }
+
+    /// The pose cycle's icon and words: standing → the 45° drafting
+    /// board → flat on the table → standing again.
+    private var poseIcon: String {
+        switch model.pose(of: docID) {
+        case .upright: "arrow.down.to.line.compact"
+        case .tilted: "arrow.down.to.line"
+        case .flat: "arrow.up.to.line.compact"
+        }
+    }
+
+    private var poseHelp: String {
+        switch model.pose(of: docID) {
+        case .upright: "Tilt the page like a drafting board"
+        case .tilted: "Lay the page flat on the table"
+        case .flat: "Stand the page back up"
+        }
     }
 
     private var separator: some View {
@@ -6595,6 +7295,8 @@ struct VisionReaderView: View {
             Text(word)
                 .font(.callout.weight(chosen ? .semibold : .regular))
                 .foregroundStyle(chosen ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                // Never squeezed to "F…" (16 Nov 2026): the word whole, to pinch.
+                .fixedSize()
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

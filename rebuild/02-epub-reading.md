@@ -1987,7 +1987,7 @@ This supersedes the star's buttons (5.20, 5.27, 5.29) and every row of verbs tha
 
 There is no Close: tapping the card lets it go.
 
-**Row 1, in order:** Documents · Keyword · Opening/Articles/Appendices · Select All · Layout · Shapes · **Whole Volume** · **Whole Series** · Ask.
+**Row 1, in order:** Documents · Keyword · Opening/Articles/Appendices · Select (a menu since 15 Nov 2026) · Layout · Shapes · **Whole Volume** · **Whole Series** · Ask.
 - **Whole Volume** runs `openWholeVolume(from: cardBar?.itemID)`. It is dimmed unless the room is a volume's, or the chosen card is a volume's article.
 - **Whole Series** runs `openSeries(wholeSeriesID)`. It is dimmed unless the room is a volume's whose series has two or more volumes on the shelf, and the series room is not already standing.
 - **In a series' hallway** neither stands grey; both become menus of the series' volumes:

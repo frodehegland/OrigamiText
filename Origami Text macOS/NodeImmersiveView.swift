@@ -200,9 +200,13 @@ public struct NodeImmersiveView<
                 }
             }
         }
-        .gesture(tapGesture())
-        .gesture(doubleTapGesture())
-        .gesture(tripleTapGesture())
+        // Origami change (15 Nov 2026, carry back to Author): the double tap
+        // is asked first, and a single tap counts only once it is clear no
+        // second is coming — as Author's LiquidSurface does. Attached one
+        // after another, the single tap took every pinch, so a double pinch
+        // arrived as two singles (select, then let go) and never opened.
+        // (The triple tap answered nothing and is no longer attached.)
+        .gesture(doubleTapGesture().exclusively(before: tapGesture()))
         .gesture(longTapGesture())
         .gesture(dragGesture())
         .gesture(pinchGesture())
