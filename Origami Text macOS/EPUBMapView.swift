@@ -233,8 +233,15 @@ struct EPUBMapView: View {
 
     private static func loadLiftedCards() -> [String: LiftedCard] {
         guard let data = UserDefaults.standard.data(forKey: liftedCardsKey),
-              let cards = try? JSONDecoder().decode([String: LiftedCard].self, from: data)
+              var cards = try? JSONDecoder().decode([String: LiftedCard].self, from: data)
         else { return [:] }
+        // Knowledge objects stick to no real surface (18 Nov 2026, Frode):
+        // a card stuck to a wall, a table or the floor before lets go,
+        // standing upright where it lay.
+        for id in cards.keys where cards[id]?.stuck != nil {
+            cards[id]?.stuck = nil
+            cards[id]?.sticks = false
+        }
         return cards
     }
 
@@ -2519,7 +2526,12 @@ struct EPUBMapView: View {
     nonisolated private static func loadLabelStuck() -> [String: SIMD4<Float>] {
         guard let raw = UserDefaults.standard.dictionary(forKey: "mapLabelSurfacePoses") as? [String: [Double]]
         else { return [:] }
-        return raw.compactMapValues { v in
+        // Only the context keeps a surface (18 Nov 2026, Frode): a concept
+        // stuck to a wall before lets go; a Shape's label, a colour's
+        // marker and a topic magnet keep theirs.
+        return raw.filter { id, _ in
+            id.hasPrefix(shapeLabelPrefix) || id.hasPrefix(tagHubPrefix) || id.hasPrefix("topic:")
+        }.compactMapValues { v in
             v.count == 4 ? SIMD4<Float>(Float(v[0]), Float(v[1]), Float(v[2]), Float(v[3])) : nil
         }
     }
@@ -3329,9 +3341,12 @@ struct EPUBMapView: View {
             }
             // Drop to Relate (8 Nov 2026): one paper set down on another
             // bounces back and the two are read together.
+            // Every look relates (18 Nov 2026, Frode) — blobs, which are
+            // lifted as they are carried, and any lifted card — but a Solid
+            // Sphere, which is a billiard ball.
             let movedPapers = newItems.filter { $0.kind == .article }
             if movedPapers.count == 1, let moved = movedPapers.first,
-               liftedCards[moved.id] == nil,
+               !(moved.wearsLook && moved.look == .solid),
                let target = relateTarget(for: moved) {
                 bounce(moved, from: target)
                 // Dropped again on the paper it is already related to: the
@@ -3366,6 +3381,55 @@ struct EPUBMapView: View {
                     reload()
                 }
                 return
+            }
+            // Panels (18 Nov 2026, Frode): any article or concept let go
+            // over a panel, within 12 cm of its face, sticks to it; one
+            // carried off its panel stands loose where it was let go.
+            for moved in newItems where Self.isKnowledgeObject(moved) && !moved.isGhost
+                && !(moved.kind == .article && moved.showsAbstract) {
+                guard let pos = moved.position else { continue }
+                let frames = RoomFrames.shared
+                let panel = frames.frameID(near: pos, kind: RoomFrame.panelKind)
+                let holder = frames.panelHolding(moved.id)
+                if let panel {
+                    // Let go on its own panel: back in its place there.
+                    guard panel != holder else { reload(); return }
+                    // A paper keeps its slot: off it, its ghost holds the
+                    // place, and Put Back sends it home as a lifted card.
+                    if moved.kind == .article || moved.kind == .cited || moved.kind == .citedDeep,
+                       liftedCards[moved.id] == nil,
+                       let before = items.first(where: { $0.id == moved.id })?.position {
+                        liftedCards[moved.id] = LiftedCard(home: before, sticks: false)
+                        saveLiftedCards()
+                    }
+                    if Self.isConceptPill(moved) {
+                        keepAsKeyword(moved)
+                        placed[moved.id] = nil
+                        savePlacedNow()
+                    }
+                    frames.stick(moved.id, to: panel)
+                    return
+                } else if holder != nil {
+                    frames.unstick(moved.id)
+                    placed[moved.id] = pos
+                    if Self.isConceptPill(moved) { keepAsKeyword(moved) }
+                    savePlacedNow()
+                    reload()
+                    return
+                } else if frames.panelLoose.contains(moved.id) {
+                    // Loose from a panel: carried into a frame of its kind it
+                    // is that frame's, thrown to the floor it is put away —
+                    // the code below does both, once the panel lets it go;
+                    // anywhere else it stands where it is set down.
+                    let intoFrame = frameKind(of: moved).flatMap { frames.frameID(near: pos, kind: $0) } != nil
+                    if intoFrame || pos.y < 0.15 {
+                        frames.release(moved.id)
+                    } else {
+                        placed[moved.id] = pos
+                        savePlacedNow()
+                        return
+                    }
+                }
             }
             // Frames (16 Nov 2026, Frode): a member let go away from its
             // frame stands loose there; one let go over a frame of its kind,
@@ -3529,8 +3593,9 @@ struct EPUBMapView: View {
             // the room's surfaces: within reach of one it lands on the
             // plane. State writes only ON CHANGE — a write per frame
             // invalidates the whole view and drags like mud.
-            // Blobs stick to what they touch (2 Nov 2026): a blob taken by
-            // the hand leaves its slot, free, courting the room's surfaces.
+            // A blob taken by the hand leaves its slot, free (2 Nov 2026) —
+            // floating now, as every paper (18 Nov 2026: knowledge objects
+            // stick to no real surface).
             if liftedCards[item.id] == nil, item.kind == .article, item.wearsLook, item.look == .blobs {
                 liftedCards[item.id] = LiftedCard(home: startPosition, sticks: true)
             }
@@ -3572,7 +3637,12 @@ struct EPUBMapView: View {
             }
             if let lifted = liftedCards[item.id] {
                 let reach: Float? = item.look == .blobs ? 0.25 : nil
-                if lifted.sticks ?? true, let pose = surfacePose(for: proposed, reach: reach) {
+                // Knowledge objects float (18 Nov 2026, Frode): an article
+                // or a citation lands on no real wall, table or floor — the
+                // room's surfaces are the context's (frames, labels), the
+                // papers and concepts the sculpture's.
+                if !Self.isKnowledgeObject(item), lifted.sticks ?? true,
+                   let pose = surfacePose(for: proposed, reach: reach) {
                     if lifted.stuck != pose.orientation.vector {
                         liftedCards[item.id]?.stuck = pose.orientation.vector
                     }
@@ -3603,9 +3673,13 @@ struct EPUBMapView: View {
                 // A colour key's marker courts a wall from further off — and
                 // so does a concept (16 Nov 2026, Frode), to walls alone: the
                 // floor is where a concept is thrown away.
+                // A concept is a knowledge object (18 Nov 2026, Frode): it
+                // floats, sticking to no real surface — a frame is where it
+                // is put up. A colour key's marker and the Shapes' labels,
+                // the room's context, still land on walls and tables.
                 let concept = Self.isConceptPill(item)
-                let reach: Float? = item.id.hasPrefix(Self.tagHubPrefix) || concept ? 0.3 : nil
-                if let pose = surfacePose(for: proposed, reach: reach, wallsOnly: concept) {
+                let reach: Float? = item.id.hasPrefix(Self.tagHubPrefix) ? 0.3 : nil
+                if !concept, let pose = surfacePose(for: proposed, reach: reach) {
                     if labelStuck[item.id] != pose.orientation.vector {
                         labelStuck[item.id] = pose.orientation.vector
                         saveLabelStuck()
@@ -3662,6 +3736,9 @@ struct EPUBMapView: View {
             // being moved and resized.
             if RoomFrames.shared.standsInFrame(item.id) { return true }
             if RoomFrames.shared.isWaiting(item.id) { return false }
+            // Carried off a panel (18 Nov 2026, Frode): it stands where it was
+            // let go, whatever the room hides.
+            if RoomFrames.shared.panelLoose.contains(item.id) { return true }
             // Authors off in the bar (16 Nov 2026, Frode): no loose person's
             // card stands, however it came — pulled from a card or put in. One
             // pulled out of a frame is the frame's, and stands.
@@ -3797,6 +3874,10 @@ struct EPUBMapView: View {
             installFrames(in: content)
             // The room's main axis for a shaken reading (16 Nov 2026): the
             // normal of its largest wall found.
+            // A reading laid flat rests on the table under it (18 Nov 2026).
+            readerPanels.tableBelow = { [roomSurfaces] place in
+                roomSurfaces.tableTop(under: place)
+            }
             readerPanels.roomAxis = { [roomSurfaces] in
                 roomSurfaces.surfaces()
                     .filter { !$0.isFloor && !$0.isSeatOrTable && abs($0.normal.y) < 0.3 }
@@ -3814,11 +3895,19 @@ struct EPUBMapView: View {
             }
             rubberBalls.install(in: content, surfaces: roomSurfaces)
             // A ball come to rest stays where it lies.
-            rubberBalls.onRest = { id, place in
+            // Done bouncing (18 Nov 2026, Frode): the ball glides home — to
+            // the slot it was taken from, or where it stood when struck — and
+            // its ghost goes.
+            rubberBalls.onRest = { id, _, start in
                 guard var item = items.first(where: { $0.id == id }) else { return }
-                item.position = place
-                keepPlacements(of: [item])
+                let home = liftedCards[id]?.home ?? start
+                liftedCards[id] = nil
                 saveLiftedCards()
+                item.position = home
+                NodeGlide.open()
+                keepPlacements(of: [item])
+                savePlacedNow()
+                reload()
             }
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
@@ -6301,11 +6390,9 @@ struct EPUBMapView: View {
             // Unfold (9 Nov 2026, in Transpoint's place — which the reading's
             // own title bar still offers): the card unfolds into its reading.
             verbs.append(Verb(id: "unfold", title: "Unfold"))
-            // Stick: the card lands on a real surface it is brought near —
-            // a wall, a table — and keeps that pose; otherwise it moves free
-            // in space. Off its slot, Put Back sends it home (2 Nov 2026).
-            let sticks = liftedCards[item.id].map { $0.sticks ?? true } ?? false
-            verbs.append(Verb(id: "stick", title: sticks ? "Unstick" : "Stick", isOn: sticks))
+            // No Stick (18 Nov 2026, Frode): a paper sticks to no real
+            // surface now — it moves free in space. Off its slot, Put Back
+            // sends it home (2 Nov 2026).
             if liftedCards[item.id] != nil { verbs.append(Verb(id: "lift", title: "Put Back")) }
             // (Whole Volume and Whole Series are where the room stands in
             // the collection: the bar's first row.)
@@ -6339,7 +6426,6 @@ struct EPUBMapView: View {
         case "open": toggleOpen(item)
         case "record": openCitationCard(for: item)
         case "lift": toggleLift(item)
-        case "stick": toggleStick(item)
         case "transpoint": model.transpointDocID = item.id
         case "unfold": readCard(item)
         case "articles":
@@ -7277,7 +7363,9 @@ struct EPUBMapView: View {
         let mine = cardSizes.shown[moved.id] ?? SIMD2<Float>(0.14, 0.09)
         var best: (item: EPUBMapItem, gap: Float)?
         for other in items where other.id != moved.id && other.kind == .article
-            && !other.isGhost && !other.isAside && !other.isFaded {
+            && !other.isGhost && !other.isAside && !other.isFaded
+            // A Solid Sphere is a billiard ball, never read with another.
+            && !(other.wearsLook && other.look == .solid) {
             guard let there = other.position else { continue }
             let size = cardSizes.shown[other.id] ?? mine
             let d = at - there
@@ -7382,35 +7470,6 @@ struct EPUBMapView: View {
 
     // MARK: - Lift — a card snapped off the map, stuck to a surface
 
-    /// Lift: the card snaps off the map — a ghost holds its place —
-    /// and rides the hand free of the year planes, courting the room's
-    /// surfaces. Put Back: it returns whole to the held place.
-    /// Stick on: a card still on its slot is lifted to court the surfaces;
-    /// one already off it starts to. Off: it lets go of any surface and
-    /// stands upright where it is, free.
-    private func toggleStick(_ item: EPUBMapItem) {
-        if let lifted = liftedCards[item.id] {
-            let sticks = !(lifted.sticks ?? true)
-            liftedCards[item.id]?.sticks = sticks
-            if !sticks { liftedCards[item.id]?.stuck = nil }
-            saveLiftedCards()
-            reload()
-        } else {
-            lift(item, sticks: true)
-        }
-        // Stick on: the card goes straight to the surface the reader faces
-        // — a wall across the room, the table below — and rests on it.
-        // Facing open air, it stands lifted and lands on the first surface
-        // it is carried near.
-        guard liftedCards[item.id]?.sticks == true, let ray = faceTurner.headRay(),
-              let pose = roomSurfaces.facedPose(from: ray.position, along: ray.forward) else { return }
-        liftedCards[item.id]?.stuck = pose.orientation.vector
-        placed[item.id] = pose.position
-        saveLiftedCards()
-        savePlacedNow()
-        reload()
-    }
-
     private func toggleLift(_ item: EPUBMapItem) {
         if liftedCards[item.id] != nil {
             putBack(item)
@@ -7437,7 +7496,8 @@ struct EPUBMapView: View {
     /// the room (not one stuck to a real surface) back in its slot, so its
     /// ghost goes — as pinching each ghost does.
     private func removeGhosts() {
-        let home = liftedCards.filter { $0.value.stuck == nil }
+        // A paper stuck to a panel keeps its ghost: it is put up, not stray.
+        let home = liftedCards.filter { $0.value.stuck == nil && RoomFrames.shared.panelHolding($0.key) == nil }
         guard !home.isEmpty else { return }
         for (id, lifted) in home {
             liftedCards[id] = nil
@@ -7451,6 +7511,8 @@ struct EPUBMapView: View {
 
     private func putBack(_ item: EPUBMapItem) {
         guard let lifted = liftedCards[item.id] else { return }
+        // Home from a panel too (18 Nov 2026).
+        RoomFrames.shared.release(item.id)
         liftedCards[item.id] = nil
         placed[item.id] = lifted.home
         saveLiftedCards()
@@ -9571,6 +9633,14 @@ struct EPUBMapView: View {
 
     /// An author's card is a concept like any other (16 Nov 2026, Frode),
     /// only drawn as a card.
+    /// The sculpture's things (18 Nov 2026, Frode): papers, citations and
+    /// concepts — they float in the room and stick to no real surface.
+    /// The room's surfaces hold its context: frames, labels, markers.
+    static func isKnowledgeObject(_ item: EPUBMapItem) -> Bool {
+        item.kind == .article || item.kind == .cited || item.kind == .citedDeep
+            || isConceptPill(item)
+    }
+
     static func isConceptPill(_ item: EPUBMapItem) -> Bool {
         isSpatialLabel(item) && !item.id.hasPrefix(shapeLabelPrefix)
             && !item.id.hasPrefix(tagHubPrefix) && !item.id.hasPrefix("topic:")
@@ -9583,6 +9653,7 @@ struct EPUBMapView: View {
         let frames = RoomFrames.shared
         frames.community = { [model] in model.index.folderURL }
         frames.headPose = { [faceTurner] in faceTurner.headPose() }
+        PhysicalRooms.shared.headPosition = { [faceTurner] in faceTurner.headPose()?.position }
         frames.wallNear = { [roomSurfaces, faceTurner] place, reach in
             roomSurfaces.nearestPose(to: place, reach: reach, head: faceTurner.headPose()?.position, wallsOnly: true)
         }
@@ -9634,8 +9705,15 @@ struct EPUBMapView: View {
         let frames = RoomFrames.shared
         if frames.venue != model.openJournalVenue { frames.venue = model.openJournalVenue }
         var laidFrames: Set<String> = []
+        // What the panels hold is theirs alone: no frame of a kind gathers
+        // it, nor raises another of it (18 Nov 2026, Frode).
+        let onPanels = frames.panelMembers.union(frames.panelLoose)
         for frame in frames.shownHere {
             laidFrames.insert(frame.id)
+            if frame.isPanel {
+                layPanel(frame, people: people, selected: selected)
+                continue
+            }
             let m = RoomFrames.matrix(frame.transform)
             let middle = RoomFrames.translation(m)
             var members: [(id: String, title: String)] = []
@@ -9643,6 +9721,7 @@ struct EPUBMapView: View {
             for item in items where frameKind(of: item) == frame.kind {
                 let key = frame.kind == RoomFrame.authorsKind ? OrigamiPortraits.key(item.title) : ConceptTerm.normalise(item.title)
                 guard named.insert(key).inserted else { continue }
+                if onPanels.contains(item.id) { continue }
                 members.append((item.id, item.title))
             }
             // Raised for the frame: who or what is not standing yet.
@@ -9694,6 +9773,54 @@ struct EPUBMapView: View {
             }
         }
         frames.forgetMembers(except: laidFrames)
+    }
+
+    /// A panel's members laid in its columns, in the order they were stuck
+    /// (18 Nov 2026, Frode): the articles and concepts standing in the room
+    /// that were let go on it — an author's card raised for it if the room
+    /// does not stand one now. Nothing else is gathered.
+    private func layPanel(_ frame: RoomFrame, people: [String: (name: String, count: Int)],
+                          selected: Set<String>) {
+        let middle = RoomFrames.translation(RoomFrames.matrix(frame.transform))
+        var members: [(id: String, size: SIMD2<Float>)] = []
+        for id in (frame.members ?? []).prefix(RoomFrames.memberLimit) {
+            if let item = items.first(where: { $0.id == id && !$0.isGhost }) {
+                let estimate: SIMD2<Float> = item.kind == .article
+                    ? SIMD2<Float>(0.16, 0.1)
+                    : isPersonConcept(item) ? SIMD2<Float>(0.088, 0.075)
+                    : SIMD2<Float>(0.03 + Float(item.title.count) * 0.0065, 0.03)
+                members.append((id, cardSizes.base[id] ?? estimate))
+            } else if id.hasPrefix(Self.personItemPrefix),
+                      let person = people[String(id.dropFirst(Self.personItemPrefix.count))] {
+                let key = String(id.dropFirst(Self.personItemPrefix.count))
+                var item = EPUBMapItem(id: id, title: person.name,
+                                       author: "\(person.count) paper\(person.count == 1 ? "" : "s")",
+                                       kind: .concept, position: middle)
+                item.imagePath = model.portraitPaths[key]
+                item.isSelected = selected.contains(id)
+                items.append(item)
+                members.append((id, cardSizes.base[id] ?? SIMD2<Float>(0.088, 0.075)))
+            }
+        }
+        // An author's card carried off the panel stands where it was let go,
+        // raised for it if the room does not stand one.
+        for id in frame.pulled where id.hasPrefix(Self.personItemPrefix)
+            && !items.contains(where: { $0.id == id }) {
+            let key = String(id.dropFirst(Self.personItemPrefix.count))
+            guard let person = people[key] else { continue }
+            var item = EPUBMapItem(id: id, title: person.name,
+                                   author: "\(person.count) paper\(person.count == 1 ? "" : "s")",
+                                   kind: .concept, position: placed[id] ?? middle)
+            item.imagePath = model.portraitPaths[key]
+            item.isSelected = selected.contains(id)
+            items.append(item)
+        }
+        let laid = RoomFrames.shared.lay(frameID: frame.id, members: members)
+        for index in items.indices {
+            guard let place = laid[items[index].id] else { continue }
+            items[index].position = place.position
+            items[index].sizeScale = place.scale
+        }
     }
 
     /// The room's authors, by name key, with how many standing papers are
@@ -11385,14 +11512,20 @@ struct EPUBMapView: View {
         UserDefaults.standard.set(data, forKey: savedViewsKey)
     }
 
-    /// Save View: the standing articles' places, space-relative, into
-    /// the first free slot (the last slot rewrites once all are full).
+    /// Save View: the sculpture — the standing articles' places and the
+    /// loose concepts' (18 Nov 2026, Frode), space-relative — into the
+    /// first free slot (the last slot rewrites once all are full). What
+    /// stands in a frame or on a panel is the room's context, a room
+    /// layout's, not the View's.
     private func saveCurrentView() {
         savedViews = loadSavedViews()
+        let frames = RoomFrames.shared
         let positions = Dictionary(uniqueKeysWithValues: items.compactMap {
             item -> (String, SIMD3<Float>)? in
-            guard item.kind == .article, !item.isAside, !item.isGhost,
-                  let position = item.position else { return nil }
+            guard !item.isAside, !item.isGhost, let position = item.position else { return nil }
+            let sculpture = item.kind == .article
+                || (Self.isConceptPill(item) && !frames.standsInFrame(item.id))
+            guard sculpture else { return nil }
             return (item.id, position - spaceShift)
         })
         guard !positions.isEmpty else { return }
@@ -11410,6 +11543,9 @@ struct EPUBMapView: View {
         var moved: [EPUBMapItem] = []
         for index in items.indices {
             guard let stored = saved[items[index].id],
+                  // A concept now in a frame or on a panel stays there: the
+                  // View is the sculpture's, not the context's.
+                  !RoomFrames.shared.standsInFrame(items[index].id),
                   let current = items[index].position else { continue }
             snapshot[items[index].id] = current
             items[index].position = stored + spaceShift
@@ -12953,9 +13089,20 @@ final class ReaderPanels {
     // passthrough surface, never a visible hover.
     private static let flatClearance: Float = 0.002
 
+    /// The table under a place, as the room's plane detection finds it:
+    /// its top's world height, nil where no table is (set by the room).
+    var tableBelow: (SIMD3<Float>) -> Float? = { _ in nil }
+
+    /// Where a flat page lies (18 Nov 2026, Frode): on whatever table is
+    /// under it — a desk, a counter — so carried across the room it lands
+    /// on the next one; over no table, at the desk's or a table's height.
+    private func flatY(for root: Entity) -> Float {
+        tableBelow(root.position(relativeTo: nil)).map { $0 + Self.flatClearance } ?? flatY
+    }
+
     private func snapFlatPanels() {
-        let target = flatY
         for (id, root) in roots where appliedPoses[id] == .flat {
+            let target = flatY(for: root)
             if abs(root.position.y - target) > 0.005 {
                 root.position.y = target
             }
@@ -13393,7 +13540,7 @@ final class ReaderPanels {
                 root.position.y = Self.tiltedHeight
             case .flat:
                 root.orientation = leaning(-.pi / 2)
-                root.position.y = flatY
+                root.position.y = flatY(for: root)
             }
             appliedPoses[id] = pose
         }
@@ -14366,6 +14513,8 @@ final class RoomSurfaces {
     private let session = ARKitSession()
     private let planeDetection = PlaneDetectionProvider(
         alignments: [.horizontal, .vertical])
+    /// The physical rooms' world anchors (18 Nov 2026), on this same session.
+    private let worldTracking = WorldTrackingProvider()
     private var planes: [UUID: PlaneAnchor] = [:]
     private var started = false
 
@@ -14379,17 +14528,50 @@ final class RoomSurfaces {
         // around the same @State) must not run ARKit twice.
         guard !started else { return }
         started = true
-        guard PlaneDetectionProvider.isSupported else {
-            print("Map/surfaces: plane detection unsupported — lifted cards float")
-            return
-        }
-        Task { [session, planeDetection] in
+        var providers: [any DataProvider] = []
+        if PlaneDetectionProvider.isSupported { providers.append(planeDetection) }
+        else { print("Map/surfaces: plane detection unsupported — lifted cards float") }
+        let tracksWorld = WorldTrackingProvider.isSupported
+        if tracksWorld { providers.append(worldTracking) }
+        guard !providers.isEmpty else { return }
+        // The physical rooms ask this session for their anchors.
+        let rooms = PhysicalRooms.shared
+        rooms.addAnchor = { [worldTracking] transform in
+            let anchor = WorldAnchor(originFromAnchorTransform: transform)
             do {
-                try await session.run([planeDetection])
+                try await worldTracking.addAnchor(anchor)
+                return anchor.id
+            } catch {
+                print("Map/rooms: world anchor not added: \(error)")
+                return nil
+            }
+        }
+        rooms.removeAnchor = { [worldTracking] id in
+            try? await worldTracking.removeAnchor(forID: id)
+        }
+        Task { [session, planeDetection, worldTracking] in
+            do {
+                try await session.run(providers)
             } catch {
                 print("Map/surfaces: plane detection failed to run: \(error)")
                 return
             }
+            if tracksWorld {
+                rooms.trackingStarted()
+                Task { @MainActor in
+                    for await update in worldTracking.anchorUpdates {
+                        switch update.event {
+                        case .added, .updated:
+                            rooms.anchorUpdated(id: update.anchor.id,
+                                                transform: update.anchor.originFromAnchorTransform,
+                                                tracked: update.anchor.isTracked)
+                        case .removed:
+                            rooms.anchorRemoved(id: update.anchor.id)
+                        }
+                    }
+                }
+            }
+            guard PlaneDetectionProvider.isSupported else { return }
             for await update in planeDetection.anchorUpdates {
                 switch update.event {
                 case .added, .updated: self.planes[update.anchor.id] = update.anchor
@@ -14410,6 +14592,32 @@ final class RoomSurfaces {
         /// What the headset took it for: the floor, a seat, a table…
         let isFloor: Bool
         let isSeatOrTable: Bool
+    }
+
+    /// The top of the table under a place (18 Nov 2026, Frode): the highest
+    /// level surface at a table's height — knee to chest, 50 cm to 1.2 m:
+    /// a table, a desk, a counter, never a seat or the floor — whose own
+    /// extent is under it, a hand's breadth of grace at the edges. An open
+    /// reading laid flat rests on it.
+    func tableTop(under place: SIMD3<Float>) -> Float? {
+        var best: Float?
+        for plane in planes.values {
+            let classification = plane.surfaceClassification
+            guard classification != .floor, classification != .ceiling, classification != .seat else { continue }
+            let originFromAnchor = plane.originFromAnchorTransform
+            let normal = SIMD3<Float>(originFromAnchor.columns.1.x, originFromAnchor.columns.1.y,
+                                      originFromAnchor.columns.1.z)
+            guard simd_length(normal) > 1e-4, abs(simd_normalize(normal).y) > 0.85 else { continue }
+            let y = originFromAnchor.columns.3.y
+            guard (0.5...1.2).contains(y) else { continue }
+            let extent = plane.geometry.extent
+            let local = simd_inverse(originFromAnchor * extent.anchorFromExtentTransform)
+                * SIMD4<Float>(place.x, y, place.z, 1)
+            guard abs(local.x) < extent.width / 2 + 0.1,
+                  abs(local.z) < extent.height / 2 + 0.1 else { continue }
+            if y > (best ?? -.infinity) { best = y }
+        }
+        return best
     }
 
     /// The ceiling's height (9 Nov 2026): the lowest plane the headset
@@ -17180,9 +17388,24 @@ final class RubberBalls {
         var squashAxis = SIMD3<Float>(0, 1, 0)
         var squashSpeed: Float = 0
         let began: Double
+        /// Where its node stood when the flight began — home, when the room
+        /// knows no slot of its own for it (18 Nov 2026).
+        var start = SIMD3<Float>.zero
+    }
+
+    /// A ball standing still in the room, which a flying one may strike
+    /// (18 Nov 2026, Frode: billiard balls).
+    private struct Standing {
+        let node: Entity
+        let centre: SIMD3<Float>
+        let offset: SIMD3<Float>
+        let radius: Float
     }
 
     private var flights: [String: Flight] = [:]
+    private var standing: [String: Standing] = [:]
+    /// The share of their closing speed two balls keep — billiard balls'.
+    static let ballRestitution: Float = 0.92
     /// The real floor as RealityKit anchors it — the same anchor the floor's
     /// timelines stand on — read when no classified floor plane is known.
     private var floorAnchor: AnchorEntity?
@@ -17191,8 +17414,8 @@ final class RubberBalls {
     private var subscription: EventSubscription?
     private weak var roomSurfaces: RoomSurfaces?
     private let nodeQuery = EntityQuery(where: .has(EPUBNodeIDComponent.self))
-    /// A ball come to rest: its node's place, for the room to keep.
-    var onRest: ((String, SIMD3<Float>) -> Void)?
+    /// A ball come to rest: its node's place, and where it set off from.
+    var onRest: ((String, SIMD3<Float>, SIMD3<Float>) -> Void)?
 
     var isFlying: Bool { !flights.isEmpty }
 
@@ -17218,7 +17441,10 @@ final class RubberBalls {
         if speed > Self.maxThrow { v *= Self.maxThrow / speed }
         // Let go pressed into a wall: the rubber pushes back.
         if let normal { v += normal * Self.pop }
-        flights[id] = Flight(centre: node, velocity: v, began: CACurrentMediaTime())
+        var flight = Flight(centre: node, velocity: v, began: CACurrentMediaTime())
+        flight.start = node
+        flights[id] = flight
+        surfacesRead = 0
     }
 
     /// Taken by the hand in flight: caught, left wherever the hand has it.
@@ -17247,31 +17473,45 @@ final class RubberBalls {
         for node in scene.performQuery(nodeQuery) {
             if let id = node.components[EPUBNodeIDComponent.self]?.id, flights[id] != nil { entities[id] = node }
         }
+        // The balls standing still, read again with the surfaces: they do
+        // not move until struck.
+        if surfacesRead == now { readStanding(scene: scene) }
+        for (id, var flight) in flights where !flight.measured {
+            guard let node = entities[id] else { continue }
+            flight.measured = true
+            if let pivot = Self.pivot(in: node) {
+                flight.offset = pivot.position(relativeTo: nil) - node.position(relativeTo: nil)
+                // The ball as drawn, measured in the room — not reckoned
+                // from the card's sizes — so it rests on the floor, not
+                // above it.
+                let drawn = pivot.visualBounds(relativeTo: nil).extents
+                let measured = min(drawn.x, drawn.y, drawn.z) / 2
+                flight.radius = measured > 0.002 ? measured
+                    : pivot.components[SolidBallComponent.self]?.radius ?? flight.radius
+                flight.centre += flight.offset
+            }
+            flights[id] = flight
+            standing[id] = nil
+        }
         let dt = min(frame, 1 / 20)
         let steps = max(1, Int((dt / 0.004).rounded(.up)))
         let h = dt / Float(steps)
-        for (id, var flight) in flights {
-            if !flight.measured, let node = entities[id] {
-                flight.measured = true
-                if let pivot = Self.pivot(in: node) {
-                    flight.offset = pivot.position(relativeTo: nil) - node.position(relativeTo: nil)
-                    // The ball as drawn, measured in the room — not reckoned
-                    // from the card's sizes — so it rests on the floor, not
-                    // above it.
-                    let drawn = pivot.visualBounds(relativeTo: nil).extents
-                    let measured = min(drawn.x, drawn.y, drawn.z) / 2
-                    flight.radius = measured > 0.002 ? measured
-                        : pivot.components[SolidBallComponent.self]?.radius ?? flight.radius
-                    flight.centre += flight.offset
-                }
+        // Every ball in flight steps together, so two meet as they would.
+        for _ in 0..<steps {
+            for id in Array(flights.keys) {
+                guard var flight = flights[id], flight.measured else { continue }
+                advance(&flight, by: h, floorY: floorY)
+                flights[id] = flight
             }
-            for _ in 0..<steps { advance(&flight, by: h, floorY: floorY) }
+            collide(now: now, entities: &entities)
+        }
+        for (id, var flight) in flights {
             // The squash springs back, a little overshoot and settle.
             flight.squashSpeed += (-flight.squash * 900 - flight.squashSpeed * 22) * dt
             flight.squash += flight.squashSpeed * dt
             let speed = simd_length(flight.velocity)
             flight.still = flight.rolling && speed < 0.03 ? flight.still + Double(dt) : 0
-            if let node = entities[id] {
+            if let node = entities[id], flight.measured {
                 node.setPosition(flight.centre - flight.offset, relativeTo: nil)
                 if let pivot = Self.pivot(in: node) { wear(flight, on: pivot, dt: dt) }
             }
@@ -17279,9 +17519,82 @@ final class RubberBalls {
             if done {
                 flights[id] = nil
                 if let pivot = entities[id].flatMap(Self.pivot(in:)) { pivot.scale = .one }
-                onRest?(id, flight.centre - flight.offset)
+                onRest?(id, flight.centre - flight.offset, flight.start)
             } else {
                 flights[id] = flight
+            }
+        }
+    }
+
+    /// Every Solid Sphere standing still in the room: its node, its ball's
+    /// centre and radius as drawn.
+    private func readStanding(scene: RealityKit.Scene) {
+        standing = [:]
+        for node in scene.performQuery(nodeQuery) {
+            guard let id = node.components[EPUBNodeIDComponent.self]?.id, flights[id] == nil,
+                  node.isEnabled, let pivot = Self.pivot(in: node) else { continue }
+            let centre = pivot.position(relativeTo: nil)
+            let drawn = pivot.visualBounds(relativeTo: nil).extents
+            let measured = min(drawn.x, drawn.y, drawn.z) / 2
+            let radius = measured > 0.002 ? measured : pivot.components[SolidBallComponent.self]?.radius ?? 0.02
+            standing[id] = Standing(node: node, centre: centre,
+                                    offset: centre - node.position(relativeTo: nil), radius: radius)
+        }
+    }
+
+    /// Billiard balls (18 Nov 2026, Frode): a ball in flight that meets one
+    /// standing sets it rolling — equal weights, so it hands over the speed
+    /// it carries along the line between their centres, keeping the rest —
+    /// and two in flight that meet trade theirs along that line.
+    private func collide(now: Double, entities: inout [String: Entity]) {
+        let ids = flights.keys.filter { flights[$0]?.measured == true }
+        // Flying against standing.
+        for id in ids {
+            guard var a = flights[id] else { continue }
+            for (other, ball) in standing {
+                let reach = a.radius + ball.radius
+                var n = ball.centre - a.centre
+                let distance = simd_length(n)
+                guard distance < reach, distance > 1e-5 else { continue }
+                n /= distance
+                let closing = simd_dot(a.velocity, n)
+                guard closing > 0 else { continue }
+                let share = closing * (1 + Self.ballRestitution) / 2
+                a.velocity -= n * share
+                a.centre -= n * (reach - distance)
+                var struck = Flight(centre: ball.centre, velocity: n * share, began: now)
+                struck.measured = true
+                struck.offset = ball.offset
+                struck.radius = ball.radius
+                struck.start = ball.centre - ball.offset
+                flights[other] = struck
+                entities[other] = ball.node
+                standing[other] = nil
+            }
+            flights[id] = a
+        }
+        // Flying against flying.
+        let flying = flights.keys.filter { flights[$0]?.measured == true }.sorted()
+        for (i, first) in flying.enumerated() {
+            for second in flying[(i + 1)...] {
+                guard var a = flights[first], var b = flights[second] else { continue }
+                let reach = a.radius + b.radius
+                var n = b.centre - a.centre
+                let distance = simd_length(n)
+                guard distance < reach, distance > 1e-5 else { continue }
+                n /= distance
+                let closing = simd_dot(a.velocity - b.velocity, n)
+                guard closing > 0 else { continue }
+                let share = closing * (1 + Self.ballRestitution) / 2
+                a.velocity -= n * share
+                b.velocity += n * share
+                let overlap = (reach - distance) / 2
+                a.centre -= n * overlap
+                b.centre += n * overlap
+                a.rolling = false
+                b.rolling = false
+                flights[first] = a
+                flights[second] = b
             }
         }
     }

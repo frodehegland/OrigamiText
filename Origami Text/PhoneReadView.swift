@@ -698,7 +698,7 @@ struct PhoneReaderView: View {
         var word: String {
             switch self {
             case .scroll: "Scroll"
-            case .horizontal: "Horizontal"
+            case .horizontal: "Spread"
             case .focus: "Focus"
             case .outline: "Outline"
             }

@@ -452,14 +452,6 @@ struct EPUBReaderScreen: View {
     @State private var showsFaithfulType = false
 
     /// The foot bar's progress readout, held to one line at its own width.
-    private func progressText(_ words: String) -> some View {
-        Text(words)
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .fixedSize()
-    }
-
     private var readerCSS: String {
         ReaderStyle.css(bodyFont: bodyFont, headingFont: headingFont, theme: theme,
                         fontDelta: fontDelta, lineSpacing: lineSpacing,
@@ -585,16 +577,20 @@ Button { model.toggleTopOfPile(record) } label: {
                 .accessibilityLabel("Stop reading aloud")
             }
             if let progress = bookProgress {
-                // One line always: in a narrow window the readout shortens
-                // to the percentage, then steps aside — it never wraps a
-                // letter a line (which stood the whole foot bar on end).
-                ViewThatFits(in: .horizontal) {
-                    if progress.minutesLeft > 0 {
-                        progressText("\(Int(progress.fraction * 100))% \u{00B7} \(progress.minutesLeft) min left")
-                    }
-                    progressText("\(Int(progress.fraction * 100))%")
-                    Color.clear.frame(width: 0, height: 0)
-                }
+                // One line always — it never wraps a letter a line (which
+                // stood the whole foot bar on end). In a narrow window it is
+                // cut short with … rather than swapped for a shorter form:
+                // a ViewThatFits here re-chose its form on every pass when
+                // the foot's widths shifted, and AppKit's constraint passes
+                // looped until the app crashed (18 Nov 2026).
+                Text(progress.minutesLeft > 0
+                     ? "\(Int(progress.fraction * 100))% \u{00B7} \(progress.minutesLeft) min left"
+                     : "\(Int(progress.fraction * 100))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(-1)
                 .help("Through the book, and reading time left at an average pace")
                 .accessibilityLabel("Through the book, and reading time left at an average pace")
             }
@@ -724,6 +720,8 @@ Button { model.toggleTopOfPile(record) } label: {
     /// reader left off.
     @State private var initialFraction: Double?
     @State private var showsContents = false
+    /// The foot's Annotate composer — the note on the whole document.
+    @State private var showsDocumentAnnotation = false
     @State private var tocEntries: [OrigamiEPUBImporter.TOCEntry] = []
     /// The book's print pages, for Go to Page and cited page numbers.
     @State private var pageTargets: [OrigamiEPUBImporter.PageTarget] = []
@@ -1614,8 +1612,30 @@ Button { model.toggleTopOfPile(record) } label: {
                            contents: { AnyView(faithfulContents) },
                            accessoryContent: { AnyView(faithfulTypeControls) },
                            leadingContent: { AnyView(faithfulPileControls) },
-                           onMap: mapAction)
+                           onMap: mapAction,
+                           annotationAddress: annotationAddress,
+                           onAnnotate: { showsDocumentAnnotation = true })
         }
+        .sheet(isPresented: $showsDocumentAnnotation) {
+            let address = annotationAddress
+            DocumentAnnotationComposer(
+                title: book.title,
+                text: model.documentAnnotation(forAddress: address)?.body?.value ?? "") { text in
+                model.setDocumentAnnotation(text, forAddress: address)
+            } onLift: { draft in
+                openWindow(value: LiftedAnnotation(address: address,
+                                                   title: book.title,
+                                                   draft: draft))
+            }
+        }
+    }
+
+    /// Where the foot's Annotate note lives: the book's address, or an
+    /// article's own id when one is read alone.
+    private var annotationAddress: String {
+        book.article.map {
+            BoundVolume.articleDocID(volume: bookAddress, article: $0.id)
+        } ?? bookAddress
     }
 
     /// The faithful page's contents popover — the TOC, and for a plain

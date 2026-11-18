@@ -35,8 +35,10 @@ struct EPUBRecord: Codable, Identifiable, Hashable, Sendable {
     let folder: String
     /// The content document's path within `folder`, e.g. "content/paper.html".
     let contentSubpath: String
-    /// When it was opened, for ordering the library newest-first.
-    let openedAt: Date
+    /// When it first came onto this device's shelf (named "opened" from
+    /// the days a book was only ever opened from a file), for ordering the
+    /// library newest-first. An updated copy of the same book keeps it.
+    var openedAt: Date
     /// The journal or proceedings the book is part of, when it declares
     /// one. "" means the package was checked and names none; nil means
     /// a record written before venues were kept (not yet checked).
@@ -3403,6 +3405,16 @@ nonisolated struct BoundVolume: Hashable, Sendable {
     }
 
     private static let articleMarker = "#article="
+
+    /// Where the reader's note on a whole document lives, the same on
+    /// the Mac and the headset: a book's in its own sidecar with no
+    /// selectors; an article's in its volume's sidecar, its one fragment
+    /// selector naming the article (18 Nov 2026) — so each article of a
+    /// volume carries a note of its own, and the volume's stays apart.
+    static func documentNoteTarget(for address: String) -> (sidecar: String, selectors: [WebAnnotation.Selector]) {
+        guard let split = split(articleDocID: address) else { return (address, []) }
+        return (split.volume, [.fragment(value: "article=" + split.article, conformsTo: nil)])
+    }
 
     /// The article cut out of the volume's structured document: its own
     /// paragraphs (its file's, from its heading up to the next piece's),

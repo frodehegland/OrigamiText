@@ -4910,22 +4910,26 @@ final class AppModel {
     /// The reader's annotation on the document as a whole — a W3C
     /// "describing" annotation with no selectors. One per book: the
     /// reading header's pill fills when it exists, and the book lists
-    /// print it beneath the author's name.
+    /// print it beneath the author's name. An article of a bound volume
+    /// keeps its own in the volume's sidecar (BoundVolume
+    /// .documentNoteTarget) — the headset's documentNote is the sibling.
     func documentAnnotation(forAddress address: String) -> WebAnnotation? {
         _ = annotationsStamp
-        return AnnotationStore.load(for: address, in: Self.annotationsRoot).first {
+        let target = BoundVolume.documentNoteTarget(for: address)
+        return AnnotationStore.load(for: target.sidecar, in: Self.annotationsRoot).first {
             $0.motivation == WebAnnotation.Motivation.describing
-                && $0.target.selectors.isEmpty
+                && $0.target.selectors == target.selectors
         }
     }
 
     /// Writes or rewrites the document annotation; empty text removes it.
     func setDocumentAnnotation(_ text: String, forAddress address: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
+        let target = BoundVolume.documentNoteTarget(for: address)
+        var all = AnnotationStore.load(for: target.sidecar, in: Self.annotationsRoot)
         if let index = all.firstIndex(where: {
             $0.motivation == WebAnnotation.Motivation.describing
-                && $0.target.selectors.isEmpty
+                && $0.target.selectors == target.selectors
         }) {
             if trimmed.isEmpty {
                 all.remove(at: index)
@@ -4940,10 +4944,10 @@ final class AppModel {
                 motivation: WebAnnotation.Motivation.describing,
                 creator: WebAnnotation.Person(name: authorName),
                 body: WebAnnotation.TextualBody(value: trimmed, purpose: "describing"),
-                target: WebAnnotation.Target(source: "origamitext://open/" + address,
-                                             selectors: [])))
+                target: WebAnnotation.Target(source: "origamitext://open/" + target.sidecar,
+                                             selectors: target.selectors)))
         }
-        persistAnnotations(all, for: address)
+        persistAnnotations(all, for: target.sidecar)
         annotationsStamp += 1
     }
 

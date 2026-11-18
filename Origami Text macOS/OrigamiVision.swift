@@ -3514,7 +3514,14 @@ final class VisionModel {
         userFloors: [String: SankeySpace.FloorHistory],
         acquisitions: Set<String>) {
         let changed = !imported.isEmpty
-        for record in imported {
+        for var record in imported {
+            // An updated copy of a book already here (the Mac re-exported
+            // it, iCloud touched it) is not an arrival (18 Nov 2026): it
+            // keeps the day it first came, or it would stand in Just Added
+            // as new.
+            if let old = epubRecords.first(where: { $0.id == record.id || $0.folder == record.folder }) {
+                record.openedAt = old.openedAt
+            }
             epubRecords.removeAll { $0.id == record.id || $0.folder == record.folder }
             epubRecords.insert(record, at: 0)
         }
@@ -3761,24 +3768,28 @@ final class VisionModel {
     }
 
     /// The reader's one note describing the whole document — a
-    /// "describing" annotation with no selectors, one per book. The
-    /// Mac's documentAnnotation is the sibling; keep in step.
+    /// "describing" annotation, one per book, and one per article of a
+    /// bound volume, kept in the volume's sidecar under the article's
+    /// fragment (BoundVolume.documentNoteTarget). The Mac's
+    /// documentAnnotation is the sibling; keep in step.
     func documentNote(forAddress address: String) -> WebAnnotation? {
         _ = annotationsStamp
-        return AnnotationStore.load(for: Self.annotationAddress(address), in: Self.annotationsRoot).first {
+        let target = BoundVolume.documentNoteTarget(for: address)
+        return AnnotationStore.load(for: Self.annotationAddress(target.sidecar), in: Self.annotationsRoot).first {
             $0.motivation == WebAnnotation.Motivation.describing
-                && $0.target.selectors.isEmpty
+                && $0.target.selectors == target.selectors
         }
     }
 
     /// Writes or rewrites the document note; empty text removes it.
     func setDocumentNote(_ text: String, forAddress address: String) {
-        let address = Self.annotationAddress(address)
+        let target = BoundVolume.documentNoteTarget(for: address)
+        let address = Self.annotationAddress(target.sidecar)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var all = AnnotationStore.load(for: address, in: Self.annotationsRoot)
         if let index = all.firstIndex(where: {
             $0.motivation == WebAnnotation.Motivation.describing
-                && $0.target.selectors.isEmpty
+                && $0.target.selectors == target.selectors
         }) {
             if trimmed.isEmpty {
                 all.remove(at: index)
@@ -3795,7 +3806,7 @@ final class VisionModel {
                 creator: WebAnnotation.Person(name: name),
                 body: WebAnnotation.TextualBody(value: trimmed, purpose: "describing"),
                 target: WebAnnotation.Target(source: "origamitext://open/" + address,
-                                             selectors: [])))
+                                             selectors: target.selectors)))
         }
         AnnotationStore.save(all, for: address, in: Self.annotationsRoot)
         annotationsStamp += 1
@@ -4804,6 +4815,40 @@ struct VisionVolumeToolbar: View {
                         get: { RoomFrames.shared.isShown(kind: kind) },
                         set: { _ in RoomFrames.shared.toggle(kind: kind) }))
                 }
+                // Panels (18 Nov 2026, Frode): frames of no kind, named by
+                // the reader, holding whatever article or concept is stuck
+                // to them. New Panel puts one up; each stands ticked while
+                // in sight, put away and back by choosing it.
+                Divider()
+                Button("New Panel") { RoomFrames.shared.putUpPanel() }
+                ForEach(RoomFrames.shared.panelsHere) { panel in
+                    Toggle(panel.title, isOn: Binding(
+                        get: { panel.isShown },
+                        set: { _ in RoomFrames.shared.toggleShown(panel.id) }))
+                }
+                // Room layouts (18 Nov 2026, Frode): the frames and panels
+                // standing — the room's context — saved, and any saved one
+                // brought back at once. (The articles' and concepts' places,
+                // the sculpture, are the Layout menu's Views.)
+                Section("Room Layouts") {
+                    Button("Save Room Layout") { RoomFrames.shared.saveLayout() }
+                        .disabled(RoomFrames.shared.shownHere.isEmpty)
+                    ForEach(RoomFrames.shared.layoutsHere) { layout in
+                        Button(layout.name) { RoomFrames.shared.loadLayout(layout.id) }
+                    }
+                    Menu("Delete Layout") {
+                        ForEach(RoomFrames.shared.layoutsHere) { layout in
+                            Button(layout.name, role: .destructive) { RoomFrames.shared.deleteLayout(layout.id) }
+                        }
+                    }
+                    .disabled(RoomFrames.shared.layoutsHere.isEmpty)
+                }
+                // The physical room the headset finds itself in (18 Nov
+                // 2026): each keeps its own places for the frames. New Room
+                // Here, should it take one room for another.
+                Section(PhysicalRooms.shared.currentName.map { "Physical Room: \($0)" } ?? "Physical Room: finding…") {
+                    Button("New Room Here") { PhysicalRooms.shared.startNewRoomHere() }
+                }
                 // Every frame in the room into Move & Resize at once, and
                 // out again (16 Nov 2026, Frode). Dimmed with none up.
                 Divider()
@@ -4814,7 +4859,7 @@ struct VisionVolumeToolbar: View {
             } label: {
                 Text("Frames")
             }
-            .help("Put up a frame holding every author, or every concept of one kind")
+            .help("Put up a frame holding every author or every concept of one kind — or a panel of your own, holding what you stick to it")
             // Select (15 Nov 2026, was the one Select All button): every
             // article, nothing, or one category's articles.
             Menu {
@@ -5858,6 +5903,8 @@ struct VisionReaderView: View {
     @State private var modeBeforeFind: String?
     /// The selection a Note… is being written for, and the words typed.
     @State private var annotating: VisionModel.ReaderSelection?
+    /// The Annotate panel — the reader's note on the whole document — is up.
+    @State private var annotatingDocument = false
     @State private var noteDraft = ""
     @Environment(\.colorScheme) private var colorScheme
 
@@ -5908,7 +5955,8 @@ struct VisionReaderView: View {
     }
 
     /// The Mac's reading views, here: Default (the EPUB's own pages),
-    /// Scroll, Horizontal, Focus, Outline, and AI.
+    /// Scroll, Spread, Focus, Outline, and AI. Scroll and Spread are
+    /// Author's words for the column and the pages side by side.
     private enum Mode: String, CaseIterable {
         case faithful, scroll, horizontal, focus, outline, ai, references
 
@@ -5916,7 +5964,7 @@ struct VisionReaderView: View {
             switch self {
             case .faithful: "Scrolling"
             case .scroll: "Scroll"
-            case .horizontal: "Horizontal"
+            case .horizontal: "Spread"
             case .focus: "Focus"
             case .outline: "Outline"
             case .ai: "AI"
@@ -6020,6 +6068,16 @@ struct VisionReaderView: View {
                     // columns render with real depth in front of the
                     // attachment plane, and a flat overlay would sit
                     // behind them.
+                    .offset(z: 40)
+                } else if annotatingDocument {
+                    // Saved empty, the note is removed.
+                    VisionNotePanel(title: "Annotate", quote: doc.title, draft: $noteDraft,
+                                    allowsEmpty: model.documentNote(forAddress: docID) != nil,
+                                    onCancel: { annotatingDocument = false },
+                                    onSave: {
+                        model.setDocumentNote(noteDraft, forAddress: docID)
+                        annotatingDocument = false
+                    })
                     .offset(z: 40)
                 } else if let selection = annotating {
                     VisionNotePanel(quote: selection.text, draft: $noteDraft,
@@ -7516,11 +7574,16 @@ struct VisionReaderView: View {
             Spacer(minLength: 0)
             ForEach(Array(modes.enumerated()), id: \.offset) { index, word in
                 if index > 0 { separator }
-                modeWord(word.word, chosen: mode == word && findTerm.isEmpty && !(word == .horizontal && singlePage)) {
+                // In the room the one word flips between Author's two
+                // (18 Nov 2026, Frode): Spread while the pages stand side
+                // by side, Scroll while one column does.
+                let roomToggle = inRoom && word == .horizontal
+                modeWord(roomToggle && singlePage ? Mode.scroll.word : word.word,
+                         chosen: findTerm.isEmpty && (mode == word || (roomToggle && singlePage))) {
                     findTerm = ""
                     modeBeforeFind = nil
-                    if inRoom, word == .horizontal, mode == .horizontal {
-                        // Horizontal toggles: every page side by side, or one.
+                    if roomToggle, mode == .horizontal {
+                        // Spread toggles: every page side by side, or one.
                         modeRaw = singlePage ? Mode.horizontal.rawValue : Mode.scroll.rawValue
                     } else {
                         modeRaw = inRoom && mode == word ? Mode.horizontal.rawValue : word.rawValue
@@ -7633,6 +7696,19 @@ struct VisionReaderView: View {
                 .accessibilityLabel(aside ? "Bring Back" : "Set Aside")
             }
             separator
+            // Annotate (18 Nov 2026, Frode): the reader's note on the whole
+            // article, in Scroll and Spread — the same note the Mac's
+            // reading header shows. Bold once one is written.
+            if mode == .scroll || mode == .horizontal {
+                let written = model.documentNote(forAddress: docID) != nil
+                modeWord("Annotate", chosen: written) {
+                    noteDraft = model.documentNote(forAddress: docID)?.body?.value ?? ""
+                    annotating = nil
+                    annotatingDocument = true
+                }
+                .help(written ? "Your note on this article — pinch to edit" : "Write a note about this article")
+                separator
+            }
             if findFieldOpen {
                 TextField("Find", text: $findDraft)
                     .textFieldStyle(.roundedBorder)
@@ -9932,15 +10008,19 @@ struct VisionContextPanel: View {
 /// overlay plane (sheets have no window to present in here), the quoted
 /// words above the editor, Save filing the note into the sidecar.
 private struct VisionNotePanel: View {
+    var title = "Note"
     let quote: String
     @Binding var draft: String
+    /// Saving with nothing written is allowed — rewriting an existing
+    /// note to nothing removes it.
+    var allowsEmpty = false
     let onCancel: () -> Void
     let onSave: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Note")
+                Text(title)
                     .font(.headline)
                 Spacer()
                 Button(action: onCancel) {
@@ -9963,13 +10043,17 @@ private struct VisionNotePanel: View {
                                 in: RoundedRectangle(cornerRadius: 12))
                 Button("Save", action: onSave)
                     .buttonStyle(.borderedProminent)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!allowsEmpty && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(16)
         }
         .frame(width: 460, height: 340)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+        // Solid, never glass (18 Nov 2026, Frode): the page behind must not
+        // show through while writing. Dark type on it whatever the
+        // reading's theme, as the paragraph verbs' panel.
+        .background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 24))
+        .environment(\.colorScheme, .dark)
         .shadow(radius: 12)
     }
 }

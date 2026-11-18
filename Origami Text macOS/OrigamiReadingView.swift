@@ -44,7 +44,7 @@ enum EPUBReaderMode: String, CaseIterable, Identifiable {
         switch self {
         case .faithful: "Scroll"
         case .scroll: "Full Width"
-        case .horizontal: "Horizontal"
+        case .horizontal: "Spread"
         case .focus: "Focus"
         case .outline: "Outline"
         case .transcript: "Transcript"
@@ -764,7 +764,9 @@ struct OrigamiReadingView: View {
                 typeMenu: { AnyView(typeMenu) },
                 accessoryContent: { AnyView(accessoryBarContent) },
                 focusContent: { AnyView(focusGroup) },
-                onMap: doc.hasAuthoredMap ? { showsAuthoredMap = true } : nil)
+                onMap: doc.hasAuthoredMap ? { showsAuthoredMap = true } : nil,
+                annotationAddress: doc.id,
+                onAnnotate: { showsDocumentAnnotation = true })
         }
         // The book's Map stands in place of the reading, foot and all,
         // as Author's Map replaces its text; ⌘M or the Map word returns.
@@ -4231,6 +4233,12 @@ struct ReadingFootBar: View {
     /// Replaces the bar's right-hand controls — the Map's Select, Show
     /// and Layout while the Map is up. Nil keeps contents and type.
     var trailingContent: (() -> AnyView)? = nil
+    /// The address of the whole-document note the Annotate word opens —
+    /// an article's own id when one is read alone; the word is bold once
+    /// a note is written. Nil hides the word.
+    var annotationAddress: String? = nil
+    /// Opens the reader's Annotate composer; the reader presents it.
+    var onAnnotate: (() -> Void)? = nil
 
     private var readerMode: EPUBReaderMode {
         EPUBReaderMode(rawValue: readerModeRaw) ?? .faithful
@@ -4285,6 +4293,22 @@ struct ReadingFootBar: View {
                 if let leadingContent {
                     leadingContent()
                 }
+                // Annotate (18 Nov 2026, Frode): the note on the whole
+                // article, in Scroll and Spread — the same note the
+                // headset's Annotate writes. Bold once one is written.
+                if let annotationAddress, let onAnnotate,
+                   [.faithful, .scroll, .horizontal].contains(readerMode) {
+                    let written = !(model.documentAnnotation(forAddress: annotationAddress)?.body?.value ?? "").isEmpty
+                    Button(action: onAnnotate) {
+                        Text("Annotate")
+                            .font(.callout.weight(written ? .semibold : .regular))
+                            .foregroundStyle(written ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                            .fixedSize()
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(written ? "Your note on this article — click to edit" : "Write a note about this article")
+                }
                 if readerMode == .horizontal, let title, !title.isEmpty {
                     Text(title)
                         .font(.caption)
@@ -4302,7 +4326,13 @@ struct ReadingFootBar: View {
                 }
                 Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity)
+            // The sides never set the reading's minimum width (18 Nov
+            // 2026): every word here keeps its natural width, and their
+            // sum became the whole reading column's minimum — wider than
+            // the window gave it, so AppKit and SwiftUI fought over the
+            // width until the app crashed. Squeezed, a side clips.
+            .frame(minWidth: 0, maxWidth: .infinity)
+            .clipped()
             // The mode words, at their natural width in the true
             // centre — the equal flexible sides either side see to it.
             HStack(spacing: 14) {
@@ -4316,7 +4346,9 @@ struct ReadingFootBar: View {
                     if !aiShowsExpanded && !defaultShowsExpanded { separator }
                 }
                 ForEach(Array(modes.enumerated()), id: \.element) { index, mode in
-                    if index > 0 {
+                    // Spread has no word of its own: the Scroll word flips
+                    // to it (below); its groups still follow in its place.
+                    if index > 0, mode != .horizontal {
                         // No | immediately after a ] — suppress when the
                         // preceding mode's group is open.
                         let prev = modes[index - 1]
@@ -4328,9 +4360,8 @@ struct ReadingFootBar: View {
                         if !followsOpen { separator }
                     }
                     if mode == .faithful, !modes.contains(.scroll) {
-                        // OrigamiReadingView: defaultGroup IS the mode word —
-                        // it handles Default display and Full Width nesting.
-                        defaultGroup
+                        // OrigamiReadingView: the one Scroll | Spread word.
+                        scrollSpreadWord
                         if outlineAvailable {
                             // No | after ] (defaultShowsExpanded) or before [
                             // (outlineShape != nil); show | only between two
@@ -4339,7 +4370,11 @@ struct ReadingFootBar: View {
                             outlineGroup
                         }
                     } else {
-                        modeWord(mode)
+                        if mode == .faithful {
+                            scrollSpreadWord
+                        } else if mode != .horizontal {
+                            modeWord(mode)
+                        }
                         // References stands right of Focus — here, where
                         // Focus is a mode word of its own.
                         if mode == .focus, model.openEPUB != nil {
@@ -4438,10 +4473,13 @@ struct ReadingFootBar: View {
                 }
                 }
             }
-            .frame(maxWidth: .infinity)
+            .frame(minWidth: 0, maxWidth: .infinity)
+            .clipped()
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+        // Nor does the bar as a whole: it takes the width it is given.
+        .frame(minWidth: 0, maxWidth: .infinity)
         .background(readerTheme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor))
         .overlay(alignment: .top) { Divider() }
     }
@@ -4495,6 +4533,49 @@ struct ReadingFootBar: View {
         }
         .buttonStyle(.plain)
         .help(mode.help)
+    }
+
+    /// Scroll and Spread as one word, as in Author and on the headset
+    /// (18 Nov 2026, Frode): it names the view standing — Scroll for the
+    /// column (or Full Width hosting a fold), Spread for the pages side
+    /// by side — and a click flips to the other. From any other view
+    /// (Focus, an AI reading, References, the Map) it returns to the one
+    /// it names.
+    private var scrollSpreadWord: some View {
+        let spread = readerMode == .horizontal
+        let foldFree = model.readerFoldLevel == 0 && model.readerFindFoldTerm == nil
+        let isActive = (spread || readerMode == .faithful || readerMode == .scroll)
+            && !mapActive
+            && model.readingAnalysisKind == nil
+            && !model.readingOverviewOn
+            && !model.readingReferencesOn
+            && (spread || foldFree)
+        return Button {
+            if mapActive { onMap?() }
+            let target: EPUBReaderMode = isActive
+                ? (spread ? .faithful : .horizontal)
+                : (spread ? .horizontal : .faithful)
+            withAnimation(Self.modeSwitch) {
+                readerModeRaw = target.rawValue
+                // As every mode word: the chosen view shows itself — any
+                // standing fold, find-fold, or AI reading steps aside.
+                defaultExpanded = false
+                model.readerFoldLevel = 0
+                model.readingAnalysisKind = nil
+                model.readingOverviewOn = false
+                model.readingReferencesOn = false
+                model.readerFindFoldTerm = nil
+            }
+        } label: {
+            Text(spread ? EPUBReaderMode.horizontal.displayName : EPUBReaderMode.faithful.displayName)
+                .font(.callout.weight(isActive ? .semibold : .regular))
+                .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(!isActive ? (spread ? "Back to Spread" : "Back to Scroll")
+              : spread ? "Spread — pages side by side. Click for Scroll, one column"
+                       : "Scroll — one column. Click for Spread, pages side by side")
     }
 
     // MARK: References — the cited works as a page
@@ -5163,7 +5244,7 @@ private struct ReadingCommentComposer: View {
 /// removes the annotation. Lift carries the draft into its own window
 /// (LiftedAnnotationWindow) — room to write, free to browse — still
 /// bound to this document.
-private struct DocumentAnnotationComposer: View {
+struct DocumentAnnotationComposer: View {
     let title: String
     let text: String
     let onSave: (String) -> Void
