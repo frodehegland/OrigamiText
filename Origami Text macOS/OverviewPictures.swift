@@ -190,6 +190,24 @@ nonisolated struct OverviewPictureRecord: Codable, Sendable {
     var pageURL: String?
     /// Deleted by the writer: not looked up again until they ask.
     var deleted: Bool?
+    // Author's fields, kept in step with Author's own record (18 Nov
+    // 2026): without them, every save of the shared index here dropped
+    // them for every record — the writer's "shows a person" ticks, their
+    // dismissed duplicates, and the originals behind cut-outs and
+    // cartoons, left orphaned on disk.
+    /// A person's picture with the background taken out: `file` is the
+    /// cut-out, `originalFile` the picture as it came.
+    var cutout: Bool?
+    var originalFile: String?
+    /// The writer's word on whether it shows a person, over the kind the
+    /// text gave.
+    var isPerson: Bool?
+    /// A duplicate the writer removed: no picture, never looked up again.
+    var dismissed: Bool?
+    /// Make Cartoon's own: `file` is the illustrated version,
+    /// `cartoonOriginalFile` the picture as it came.
+    var cartoon: Bool?
+    var cartoonOriginalFile: String?
 }
 
 /// A picture offered in the Pictures window's Find Alternatives.

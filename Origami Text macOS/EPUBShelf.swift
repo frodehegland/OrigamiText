@@ -5472,6 +5472,21 @@ nonisolated struct OrigamiPortraits: Codable, Sendable, Equatable {
         return words.count == 1 ? first : first + " " + last
     }
 
+    /// Every key a name may be found under (18 Nov 2026): a Defined
+    /// Concept's phrase can carry its aliases — "Doug Engelbart,Douglas
+    /// Carl Engelbart,Doug" — so each alias's own key, in order, then the
+    /// whole phrase's.
+    static func keys(_ name: String) -> [String] {
+        var out: [String] = []
+        for alias in name.components(separatedBy: CharacterSet(charactersIn: ",;/|")) {
+            let k = key(alias)
+            if !k.isEmpty, !out.contains(k) { out.append(k) }
+        }
+        let whole = key(name)
+        if !whole.isEmpty, !out.contains(whole) { out.append(whole) }
+        return out
+    }
+
     static func read(from community: URL) -> OrigamiPortraits? {
         let scoped = community.startAccessingSecurityScopedResource()
         defer { if scoped { community.stopAccessingSecurityScopedResource() } }

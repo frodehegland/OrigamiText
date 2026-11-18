@@ -1677,13 +1677,13 @@ struct EPUBMapView: View {
             // when the Mac has gathered one (4 Nov 2026) — Origami's People,
             // Author's pictures, Knowledge Space's people (PortraitPublisher).
             if Self.isPersonLabel(items[i]) {
-                items[i].imagePath = model.portraitPaths[OrigamiPortraits.key(items[i].title)]
+                items[i].imagePath = model.portraitPaths[model.portraitKey(for: items[i].title)]
             }
             // A concept naming a person stands as their card (16 Nov 2026,
             // Frode): the face, the name, how many of the room's papers are
             // theirs — the same card the bar's Authors raises.
             if !items[i].id.hasPrefix(Self.personItemPrefix), isPersonConcept(items[i]) {
-                let key = OrigamiPortraits.key(items[i].title)
+                let key = model.portraitKey(for: items[i].title)
                 items[i].imagePath = model.portraitPaths[key]
                 if let count = Self.roomAuthorCounts[key] {
                     items[i].author = "\(count) paper\(count == 1 ? "" : "s")"
@@ -3391,7 +3391,18 @@ struct EPUBMapView: View {
                 let frames = RoomFrames.shared
                 let panel = frames.frameID(near: pos, kind: RoomFrame.panelKind)
                 let holder = frames.panelHolding(moved.id)
-                if let panel {
+                // Let go over a frame of its own category (18 Nov 2026,
+                // Frode): put back there — off any panel for good, and the
+                // frames' own code below takes it in.
+                let kindFrame = panel == nil
+                    ? frameKind(of: moved).flatMap { frames.frameID(near: pos, kind: $0) } : nil
+                if let kindFrame, holder != nil || frames.panelLoose.contains(moved.id) {
+                    frames.release(moved.id)
+                    placed[moved.id] = nil
+                    savePlacedNow()
+                    frames.putBack(moved.id, in: kindFrame)
+                    return
+                } else if let panel {
                     // Let go on its own panel: back in its place there.
                     guard panel != holder else { reload(); return }
                     // A paper keeps its slot: off it, its ghost holds the
@@ -4266,7 +4277,7 @@ struct EPUBMapView: View {
             // that face (16 Nov 2026): one thing for one person.
             ConceptPill(name: item.title, colour: model.conceptKindColour(item.title),
                         selected: item.isSelected, scale: s,
-                        picture: model.portraitPaths[OrigamiPortraits.key(item.title)])
+                        picture: model.portraitPaths[model.portraitKey(for: item.title)])
         } else if Self.isSpatialLabel(item) {
             // A label is words in the air, not a card: larger type, no
             // pane, no border — a soft shadow keeps it legible against
@@ -5910,7 +5921,7 @@ struct EPUBMapView: View {
                 let scale = outer ? 1.45 : 1.0
                 let at = CGSize(width: pillRing.width * scale * cos(angle), height: pillRing.height * scale * sin(angle))
                 DraggableConceptPill(name: concept.term, colour: model.conceptKindColour(concept.term),
-                                     picture: model.portraitPaths[OrigamiPortraits.key(concept.term)], scale: 2,
+                                     picture: model.portraitPaths[model.portraitKey(for: concept.term)], scale: 2,
                                      onTap: { model.addSpaceKeyword(concept.term) },
                                      onDrop: { metres in dropConcept(concept.term, from: item.id, at: metres) })
                     .offset(x: at.width, y: at.height)
@@ -5993,7 +6004,7 @@ struct EPUBMapView: View {
                     // Pinch and pull it out into the room, as in Author
                     // (15 Nov 2026); a pinch alone puts it beside the wall.
                     DraggableConceptPill(name: concept.term, colour: model.conceptKindColour(concept.term),
-                                     picture: model.portraitPaths[OrigamiPortraits.key(concept.term)],
+                                     picture: model.portraitPaths[model.portraitKey(for: concept.term)],
                                          onTap: { model.addSpaceKeyword(concept.term) },
                                          onDrop: { metres in dropConcept(concept.term, from: item.id, at: metres) })
                         .offset(x: at.width, y: at.height)
@@ -9836,10 +9847,11 @@ struct EPUBMapView: View {
         if item.id.hasPrefix(Self.personItemPrefix) { return true }
         // A person by their frame, in it or lifted out of it.
         if RoomFrames.shared.isPersonMember(item.id) { return true }
-        let key = OrigamiPortraits.key(item.title)
-        guard !key.isEmpty else { return false }
-        return Self.roomAuthorCounts[key] != nil || model.portraitPaths[key] != nil
-            || model.conceptIsPerson(item.title)
+        // Any of its aliases may name the person (18 Nov 2026).
+        let keys = OrigamiPortraits.keys(item.title)
+        guard !keys.isEmpty else { return false }
+        if keys.contains(where: { Self.roomAuthorCounts[$0] != nil || model.portraitPaths[$0] != nil }) { return true }
+        return model.conceptIsPerson(item.title)
     }
 
     static func isSpatialLabel(_ item: EPUBMapItem) -> Bool {

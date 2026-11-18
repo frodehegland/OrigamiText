@@ -272,7 +272,7 @@ final class RoomFrames {
     private(set) var frames: [RoomFrame] = []
     /// The room open now.
     var venue: String? {
-        didSet { if venue != oldValue { showAll() } }
+        didSet { if venue != oldValue { placeForRoom(); showAll() } }
     }
     /// The frames being moved and resized — one from its own menu, or every
     /// frame in the room from the bar's Frames ▸ Edit & Move.
@@ -396,13 +396,17 @@ final class RoomFrames {
     /// Read again from both homes, merged, and shown.
     func refresh() {
         let merged = Self.read(community: community())
-        if merged != frames { frames = merged }
+        if merged != frames {
+            frames = merged
+            // The file keeps where each last moved, in whichever room:
+            // here, each stands at this room's place again.
+            placeForRoom()
+        }
         refreshLayouts()
         showAll()
     }
 
     private func showAll() {
-        placeForRoom()
         for frame in frames { show(frame) }
         for (id, entity) in entities where !frames.contains(where: { $0.id == id && $0.deleted != true }) {
             entity.removeFromParent()
@@ -504,6 +508,7 @@ final class RoomFrames {
             }
         }
         save()
+        placeForRoom()
         showAll()
         membersChanged()
     }
@@ -603,6 +608,7 @@ final class RoomFrames {
 
     /// The physical room changed — found, or made: every frame to its place.
     func roomChanged() {
+        placeForRoom()
         showAll()
         membersChanged()
     }
@@ -771,6 +777,14 @@ final class RoomFrames {
         if arrangingIDs.contains(id) {
             finishArranging(id)
         } else {
+            // One frame at a time from its own menu (18 Nov 2026, Frode):
+            // any other being moved is done and kept first. (The bar's
+            // Edit & Move takes every frame at once.)
+            for other in arrangingIDs where other != id {
+                arrangingIDs.remove(other)
+                alignToWall(other)
+            }
+            save()
             arrangingIDs.insert(id)
             menuOpenFor = nil
             showAll()
@@ -922,6 +936,8 @@ final class RoomFrames {
         let m = Self.matrix(frames[index].transform)
         guard let pose = wallNear(Self.translation(m), reach) else { return }
         frames[index].transform = Self.columns(Self.matrix(pose.orientation, at: pose.position))
+        // Remembered for this physical room, as every move is.
+        PhysicalRooms.shared.record(frames[index])
         show(frames[index])
     }
 
@@ -990,8 +1006,12 @@ final class RoomFrames {
         update(frameID) { if !$0.pulled.contains(memberID) { $0.pulled.append(memberID) } }
     }
 
-    /// A member put back in its frame.
+    /// A member put back in its frame — out of whichever frame it was
+    /// pulled from, so put back into another of its kind it stands there.
     func putBack(_ memberID: String, in frameID: String) {
+        for other in here where other.id != frameID && other.pulled.contains(memberID) {
+            update(other.id) { $0.pulled.removeAll { $0 == memberID } }
+        }
         update(frameID) { $0.pulled.removeAll { $0 == memberID } }
         forgetLoose([memberID])
         membersChanged()
@@ -1843,8 +1863,10 @@ struct RoomFrameCornerEdit: View {
         } label: {
             Text(open ? "Close" : "Edit")
                 .font(.system(size: 20, weight: .semibold))
-                .frame(width: CGFloat(width * RoomFrames.pointsPerMetre),
-                       height: CGFloat(height * RoomFrames.pointsPerMetre))
+                // The capsule fits the word (18 Nov 2026, Frode).
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .fixedSize()
                 .hoverEffect(isEnabled: !open) { effect, isActive, _ in
                     effect.animation(.easeInOut(duration: 0.2)) { $0.opacity(isActive || open ? 1 : 0.25) }
                 }

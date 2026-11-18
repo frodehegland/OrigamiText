@@ -2516,6 +2516,13 @@ final class VisionModel {
     /// (2 Nov 2026). Cards wear these in place of the names.
     private(set) var portraitPaths: [String: String] = [:]
 
+    /// The key a name's face is found under: the first of its aliases the
+    /// Mac has a face for, else its first alias's (18 Nov 2026).
+    func portraitKey(for name: String) -> String {
+        let keys = OrigamiPortraits.keys(name)
+        return keys.first { portraitPaths[$0] != nil } ?? keys.first ?? ""
+    }
+
     func adoptPortraits(_ faces: [String: String]) {
         guard faces != portraitPaths else { return }
         portraitPaths = faces

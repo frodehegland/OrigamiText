@@ -82,13 +82,43 @@ final class PortraitPublisher {
             let data = image.flatMap { $0.tiffRepresentation }
             for name in [person.displayName] + person.otherNames { offer(name, data, "origami") }
         }
-        // 2. Author's pictures of people.
+        // 2. Author's pictures of people — however the writer filed them
+        //    (18 Nov 2026): a person's record, or one they ticked as showing
+        //    a person; and a concept's or organisation's picture when the
+        //    name is one of the library's authors, or when its person
+        //    duplicate was dismissed in its favour (Ismail Serageldin's,
+        //    cartooned under Concepts). A picture of the writer's own
+        //    counts though it has no Wikipedia title; a deleted or
+        //    dismissed one never.
         let authorFolder = OverviewPictureStore.directoryURL
-        for (key, record) in OverviewPictureStore.readIndex(at: authorFolder.appendingPathComponent("index.json"))
-        where record.kind == .person && record.deleted != true && record.title != nil {
-            guard let file = record.file else { continue }
-            let name = record.name ?? String(key.drop { $0 != ":" }.dropFirst())
-            offer(name, try? Data(contentsOf: authorFolder.appendingPathComponent(file)), "author")
+        let pictures = OverviewPictureStore.readIndex(at: authorFolder.appendingPathComponent("index.json"))
+        func pictureName(_ key: String, _ record: OverviewPictureRecord) -> String {
+            record.name ?? String(key.drop { $0 != ":" }.dropFirst())
+        }
+        func usable(_ record: OverviewPictureRecord) -> Bool {
+            record.deleted != true && record.dismissed != true && record.file != nil
+        }
+        func offerPicture(_ key: String, _ record: OverviewPictureRecord) {
+            guard let file = record.file else { return }
+            offer(pictureName(key, record), try? Data(contentsOf: authorFolder.appendingPathComponent(file)), "author")
+        }
+        for (key, record) in pictures where usable(record) && (record.kind == .person || record.isPerson == true) {
+            offerPicture(key, record)
+        }
+        let authorKeys = Set(model.epubRecords.flatMap { $0.authors ?? [$0.author] }.map(OrigamiPortraits.key))
+        let dismissedPeople = Set(pictures.compactMap { key, record in
+            record.kind == .person && (record.dismissed == true || record.deleted == true)
+                ? OrigamiPortraits.key(pictureName(key, record)) : nil
+        })
+        for (key, record) in pictures where usable(record) && record.kind != .person && record.isPerson != true
+            && record.kind != .place {
+            let face = OrigamiPortraits.key(pictureName(key, record))
+            // A picture the writer gave a full name themselves is of a
+            // person (Mark Anderson's, filed under Concepts); one word —
+            // "epub" — is never taken for a face.
+            let ownOfName = record.source == "user" && face.contains(" ")
+            guard authorKeys.contains(face) || dismissedPeople.contains(face) || ownOfName else { continue }
+            offerPicture(key, record)
         }
         // 3. Knowledge Space: the community folder's own, then a chosen folder.
         var ksCount = 0
