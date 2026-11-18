@@ -2119,10 +2119,13 @@ final class VisionModel {
     /// many papers stays smooth. Opened, a paper is its full card as ever.
     /// Kept across launches.
     enum CardLook: String, CaseIterable {
-        case cards, spheres, titles, blobs, covers, fast, solid
+        case cards, authorCards, spheres, titles, blobs, covers, fast, solid
         var title: String {
             switch self {
-            case .cards: "Cards"
+            case .cards: "Cards with Covers"
+            // The card with its first author's face where the cover stands
+            // (18 Nov 2026, Frode), no cover.
+            case .authorCards: "Card with Author"
             case .spheres: "Color Spheres"
             case .titles: "Color Titles"
             case .blobs: "Blobs"
@@ -2135,6 +2138,8 @@ final class VisionModel {
         /// Solid Spheres (9 Nov 2026), which meet the room's real walls,
         /// tables and floor and spring back off them, never passing through.
         var isRound: Bool { self == .spheres || self == .blobs || self == .solid }
+        /// Drawn as the room's card: with its cover, or with its author.
+        var isCard: Bool { self == .cards || self == .authorCards }
     }
     /// Size by Length (2 Nov 2026): each paper's card scaled by its length
     /// among its plane's papers. Kept across launches.
@@ -2491,6 +2496,8 @@ final class VisionModel {
         var kind: String? = nil
     }
     private(set) var libraryTerms: [LibraryTerm] = []
+    /// The concept the editor opens with: its term and definition.
+    var conceptDraft: (term: String, definition: String)?
     /// What the last import did, in a line.
     var conceptsMessage: String?
 
@@ -4812,7 +4819,9 @@ struct VisionVolumeToolbar: View {
                     .foregroundStyle(model.authorCardsShown ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
             }
             .help(model.authorCardsShown ? "Put away the authors" : "Show a card for each author, with their face")
-            // Frames (16 Nov 2026, Frode): Knowledge Space's side panels — a
+            // Concepts, after Authors and before Panels (18 Nov 2026, Frode).
+            conceptsMenu
+            // Panels (named Frames until 18 Nov 2026, Frode): Knowledge Space's side panels — a
             // frame put up anywhere in the room holding every author, or
             // every concept of one kind. Each kind ticked while its frame
             // stands; chosen again, it is put away (kept where it stood).
@@ -4864,9 +4873,9 @@ struct VisionVolumeToolbar: View {
                     set: { _ in RoomFrames.shared.toggleEditAll() }))
                     .disabled(RoomFrames.shared.shownHere.isEmpty)
             } label: {
-                Text("Frames")
+                Text("Panels")
             }
-            .help("Put up a frame holding every author or every concept of one kind — or a panel of your own, holding what you stick to it")
+            .help("Put up a panel holding every author or every concept of one kind — or one of your own, holding what you stick to it")
             // Select (15 Nov 2026, was the one Select All button): every
             // article, nothing, or one category's articles.
             Menu {
@@ -5032,7 +5041,6 @@ struct VisionVolumeToolbar: View {
                 Text("Shapes")
             }
             .help("The papers' shape: cards, spheres, coloured titles, blobs, covers, Fast plates, or solid spheres that bounce off the room")
-            conceptsMenu
             // While on, each is ringed as well as filled (4 Nov 2026), so a
             // live attribute reads at a glance.
             Toggle("Colours", isOn: Binding(get: { model.coloursShown }, set: { model.coloursShown = $0 }))
@@ -7668,39 +7676,9 @@ struct VisionReaderView: View {
                     }
                 }
                 .help(focusing ? "Back to the pages, and the room" : "Focus — one page or less, and only this document in the room")
-                Button {
-                    switch model.pose(of: docID) {
-                    case .upright: model.panelPoses[docID] = .tilted
-                    case .tilted: model.panelPoses[docID] = .flat
-                    case .flat: model.panelPoses[docID] = nil
-                    }
-                } label: {
-                    Image(systemName: poseIcon).foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help(poseHelp)
-                // Pin and Set Aside, in To Read's place (16 Nov 2026, Frode):
-                // the paper first in the pile, or put aside.
-                let pinned = model.pinnedIDs.contains(docID)
-                Button {
-                    model.togglePinned(docID)
-                } label: {
-                    Image(systemName: pinned ? "pin.fill" : "pin")
-                        .foregroundStyle(pinned ? .primary : .secondary)
-                }
-                .buttonStyle(.plain)
-                .help(pinned ? "Unpin" : "Pin — first in the pile")
-                .accessibilityLabel(pinned ? "Unpin" : "Pin")
-                let aside = model.setAsideIDs.contains(docID)
-                Button {
-                    model.toggleSetAside(docID)
-                } label: {
-                    Image(systemName: aside ? "archivebox.fill" : "archivebox")
-                        .foregroundStyle(aside ? .primary : .secondary)
-                }
-                .buttonStyle(.plain)
-                .help(aside ? "Bring Back" : "Set Aside")
-                .accessibilityLabel(aside ? "Bring Back" : "Set Aside")
+                // (The pose — upright, drafting board, flat — and Pin and Set
+                // Aside stand among the pills under the page now, 18 Nov 2026,
+                // Frode: ReaderPoseButton, ReaderPileButton.)
             }
             separator
             // Annotate (18 Nov 2026, Frode): the reader's note on the whole
@@ -11228,24 +11206,26 @@ struct VisionNewConceptView: View {
     @State private var term = ""
     @State private var definition = ""
     @State private var intoRoom = true
+    /// Opened from a concept's presentation: editing it, not a new one.
+    @State private var editing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New Concept").font(.title2.weight(.semibold))
+            Text(editing ? "Edit Concept" : "New Concept").font(.title2.weight(.semibold))
             TextField("Term", text: $term)
                 .textFieldStyle(.roundedBorder)
                 .font(.title3)
             TextField("Definition", text: $definition, axis: .vertical)
                 .lineLimit(4...10)
                 .textFieldStyle(.roundedBorder)
-            Toggle("Put it into the room", isOn: $intoRoom)
+            if !editing { Toggle("Put it into the room", isOn: $intoRoom) }
             HStack {
                 Button("Cancel") { dismissWindow() }
                 Spacer()
                 Button("Keep Concept") {
                     let kept = term.trimmingCharacters(in: .whitespacesAndNewlines)
                     if model.defineConcept(term: kept, definition: definition, origin: "Origami Text") || !kept.isEmpty {
-                        if intoRoom { model.addSpaceKeyword(kept) }
+                        if intoRoom, !editing { model.addSpaceKeyword(kept) }
                     }
                     dismissWindow()
                 }
@@ -11255,6 +11235,115 @@ struct VisionNewConceptView: View {
         }
         .padding(28)
         .frame(width: 520)
+        // Opened to edit a concept: its term and definition to begin from.
+        .onAppear {
+            if let draft = model.conceptDraft {
+                term = draft.term
+                definition = draft.definition
+                editing = true
+                model.conceptDraft = nil
+            }
+        }
+    }
+}
+
+/// A concept presented (18 Nov 2026, Frode): double-tapped in the room, its
+/// whole definition — the document's own and the library's — its kind, a
+/// person's face, and the room's papers that mention it; Done and Edit at
+/// the foot. It stands in the concept's own place in the room, replacing
+/// the pill until Done — never a window of its own.
+struct VisionConceptPresentation: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    let name: String
+    var onDone: () -> Void
+    var onEdit: () -> Void
+
+    var body: some View {
+        let key = ConceptTerm.normalise(name)
+        let own = model.roomTerms.first { ConceptTerm.normalise($0.term) == key }
+        let library = model.libraryTerms.first { ConceptTerm.normalise($0.term) == key }
+        let kind = own?.kind ?? library?.kind
+        let person = model.conceptIsPerson(name) || kind.flatMap(ConceptKind.init(fileKey:)) == .person
+            || model.portraitPaths[model.portraitKey(for: name)] != nil
+        let face = model.portraitPaths[model.portraitKey(for: name)]
+        let papers = Array(model.roomArticleIDs(mentioningAnyOf: [name])).compactMap { id in
+            model.epubRecords.first { $0.id == id }
+        }.sorted { $0.title < $1.title }
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center, spacing: 22) {
+                if let face, let image = UIImage(contentsOfFile: face) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 120, height: 120)
+                        .clipShape(Circle())
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(name).font(.largeTitle.weight(.semibold))
+                    Text(person ? "Person" : kind.map(VisionModel.conceptKindTitle) ?? "Concept")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let own, !own.definition.isEmpty {
+                        definition(own.definition, from: "In this document")
+                    }
+                    if let library, !library.definition.isEmpty, library.definition != own?.definition {
+                        definition(library.definition, from: "In your library")
+                    }
+                    if (own?.definition ?? "").isEmpty, (library?.definition ?? "").isEmpty {
+                        Text("No definition yet — Edit to write one.")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !papers.isEmpty {
+                        Divider()
+                        Text("In \(papers.count) of the room's papers")
+                            .font(.headline)
+                        ForEach(papers.prefix(12)) { record in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(record.title).font(.body)
+                                Text(record.author).font(.callout).foregroundStyle(.secondary)
+                            }
+                        }
+                        if papers.count > 12 {
+                            Text("and \(papers.count - 12) more").foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Button("Edit") {
+                    model.conceptDraft = (name, own?.definition.isEmpty == false ? own!.definition
+                                                : library?.definition ?? "")
+                    openWindow(id: "new-concept")
+                    onEdit()
+                }
+                Spacer()
+                Button("Done") { onDone() }
+                    .buttonStyle(.borderedProminent)
+            }
+            .font(.title3)
+        }
+        .padding(36)
+        .frame(width: 720, height: 640)
+        // Solid, as the room's other dialogs: read against anything behind.
+        .background(RoundedRectangle(cornerRadius: 36, style: .continuous)
+            .fill(Color(white: 0.13)))
+        .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
+    }
+
+    private func definition(_ text: String, from source: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(source.uppercased())
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(text).font(.title3)
+        }
     }
 }
 /// The colour key (2 Nov 2026): every category the Mac set, its colour and

@@ -77,7 +77,9 @@ struct RoomFrame: Codable, Identifiable, Equatable {
     /// A panel's own name, given and changed by the reader.
     var name: String?
     /// A panel's members: the articles and concepts stuck to it, in the
-    /// order they were stuck.
+    /// order they were stuck. A frame of a kind's: the concepts filed into
+    /// it by hand, whatever their own kind (18 Nov 2026) — they stand in
+    /// it beside those it gathers.
     var members: [String]?
     /// Put away from the bar's Frames: kept where it stands, out of sight.
     var hidden: Bool?
@@ -272,7 +274,13 @@ final class RoomFrames {
     private(set) var frames: [RoomFrame] = []
     /// The room open now.
     var venue: String? {
-        didSet { if venue != oldValue { placeForRoom(); showAll() } }
+        didSet {
+            if venue != oldValue {
+                carryCurrentRoom()
+                placeForRoom()
+                showAll()
+            }
+        }
     }
     /// The frames being moved and resized — one from its own menu, or every
     /// frame in the room from the bar's Frames ▸ Edit & Move.
@@ -388,9 +396,89 @@ final class RoomFrames {
 
     func install(in content: RealityViewContent) {
         if root.parent == nil { content.add(root) }
+        // The shadows' lines follow their concepts each frame.
+        shadowTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
+            MainActor.assumeIsolated { self?.layShadowLines() }
+        }
         guard !installed else { return }
         installed = true
         refresh()
+    }
+
+    // MARK: A shadow's line to its concept (18 Nov 2026, Frode)
+
+    /// Where a member stands in the room now — set by the room.
+    @ObservationIgnored var positionOf: (String) -> SIMD3<Float>? = { _ in nil }
+    /// The concepts of a kind standing loose in the room — in no frame or
+    /// panel — set by the room (18 Nov 2026).
+    @ObservationIgnored var looseConcepts: (String) -> [String] = { _ in [] }
+
+    /// Whether Move All Back has anything to bring: what was carried out,
+    /// or, for a frame of a kind, any concept of its kind loose in the room.
+    func canMoveAllBack(_ frameID: String) -> Bool {
+        guard let frame = frame(frameID) else { return false }
+        if !frame.pulled.isEmpty { return true }
+        return !frame.isPanel && !looseConcepts(frame.kind).isEmpty
+    }
+
+    /// A shadow double-tapped (18 Nov 2026, Frode): its concept back in its
+    /// slot — stuck to its panel again, or put back in its frame.
+    func bringBack(_ memberID: String, to frameID: String) {
+        guard let frame = frame(frameID) else { return }
+        linkedShadows.remove(memberID)
+        if frame.isPanel { stick(memberID, to: frameID) } else { putBack(memberID, in: frameID) }
+    }
+    /// The shadows whose line to their concept is drawn.
+    @ObservationIgnored private var linkedShadows: Set<String> = []
+    @ObservationIgnored private var shadowLines: [String: ModelEntity] = [:]
+    @ObservationIgnored private var shadowTick: EventSubscription?
+
+    /// A shadow pinched: a line from it to where its concept stands loose
+    /// in the room; pinched again, the line goes.
+    func toggleShadowLine(_ memberID: String) {
+        if linkedShadows.remove(memberID) == nil { linkedShadows.insert(memberID) }
+        layShadowLines()
+    }
+
+    private func shadowEntity(_ memberID: String) -> Entity? {
+        for frame in shownHere where frame.pulled.contains(memberID) {
+            if let shadow = entities[frame.id]?.findEntity(named: "shadows")?.findEntity(named: memberID) {
+                return shadow
+            }
+        }
+        return nil
+    }
+
+    /// Each linked shadow's line laid from the shadow to its concept; one
+    /// whose concept is back in its frame, or gone, lets its line go.
+    private func layShadowLines() {
+        for id in linkedShadows {
+            guard let shadow = shadowEntity(id), shadow.isEnabledInHierarchy,
+                  let to = positionOf(id) else {
+                linkedShadows.remove(id)
+                continue
+            }
+            let from = shadow.position(relativeTo: nil)
+            let span = to - from
+            let length = simd_length(span)
+            let line = shadowLines[id] ?? {
+                var ink = UnlitMaterial(color: .white)
+                ink.blending = .transparent(opacity: 0.7)
+                let made = ModelEntity(mesh: .generateCylinder(height: 1, radius: 0.0012), materials: [ink])
+                root.addChild(made)
+                shadowLines[id] = made
+                return made
+            }()
+            guard length > 0.01 else { line.isEnabled = false; continue }
+            line.isEnabled = true
+            line.setPosition((from + to) / 2, relativeTo: nil)
+            line.setOrientation(simd_quatf(from: SIMD3<Float>(0, 1, 0), to: span / length), relativeTo: nil)
+            line.scale = SIMD3<Float>(1, length, 1)
+        }
+        for (id, line) in shadowLines where !linkedShadows.contains(id) {
+            line.removeFromParent()
+            shadowLines[id] = nil
+        }
     }
 
     /// Read again from both homes, merged, and shown.
@@ -459,10 +547,56 @@ final class RoomFrames {
     /// Every layout of every room, tombstones and all.
     private(set) var layouts: [RoomLayout] = []
 
-    /// This room's layouts, newest first.
+    /// Every saved room, newest first — for any journal or volume
+    /// (18 Nov 2026, Frode: rooms are universal, not a volume's).
     var layoutsHere: [RoomLayout] {
-        guard let venue else { return [] }
-        return layouts.filter { $0.venue == venue && $0.deleted != true }.sorted { $0.modified > $1.modified }
+        layouts.filter { $0.deleted != true }.sorted { $0.modified > $1.modified }
+    }
+
+    // The room's name (18 Nov 2026, Frode): the layout it was last saved
+    // as or chosen from — a project — shown on every frame's foot, "Room"
+    // until one is.
+
+    /// The frame whose room menu is open.
+    var roomMenuOpenFor: String?
+
+    /// The room stood in now, whatever journal or volume is open.
+    private var currentLayoutKey: String { "roomLayout.current" }
+
+    /// The layout the room stands as now, if any.
+    var currentLayoutID: String? {
+        get { _ = layouts.count; return UserDefaults.standard.string(forKey: currentLayoutKey) }
+        set { UserDefaults.standard.set(newValue, forKey: currentLayoutKey); layoutsTick += 1 }
+    }
+    /// Bumped when the current layout changes, so the feet show it.
+    private(set) var layoutsTick = 0
+
+    /// The room's name on every frame's foot.
+    var currentRoomName: String {
+        _ = layoutsTick
+        return layoutsHere.first { $0.id == currentLayoutID }?.name ?? "Room"
+    }
+
+    /// The frames standing now saved under a name the reader gave — the
+    /// same name again saves over it — and the room stands as that.
+    func saveLayout(named given: String) {
+        guard let venue else { return }
+        let name = given.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let standing = shownHere
+        let poses = PhysicalRooms.shared.poses(for: Set(standing.map(\.id)))
+        if let index = layouts.firstIndex(where: { $0.deleted != true && $0.name == name }) {
+            layouts[index].frames = standing
+            layouts[index].poses = poses
+            layouts[index].modified = Date()
+            currentLayoutID = layouts[index].id
+        } else {
+            let layout = RoomLayout(id: UUID().uuidString, venue: venue, name: name, frames: standing,
+                                    poses: poses, modified: Date())
+            layouts.append(layout)
+            currentLayoutID = layout.id
+        }
+        Self.writeLayouts(layouts, community: community())
     }
 
     /// The frames standing now, saved as a layout named for what they are.
@@ -481,6 +615,7 @@ final class RoomFrames {
                                 poses: PhysicalRooms.shared.poses(for: Set(standing.map(\.id))),
                                 modified: Date())
         layouts.append(layout)
+        currentLayoutID = layout.id
         Self.writeLayouts(layouts, community: community())
     }
 
@@ -488,8 +623,10 @@ final class RoomFrames {
     /// back from deletion if need be — at their places in this physical
     /// room; every other frame of the room is put away (kept, hidden).
     func loadLayout(_ id: String) {
-        guard let layout = layouts.first(where: { $0.id == id }), layout.venue == venue else { return }
+        guard let venue, let layout = layouts.first(where: { $0.id == id }) else { return }
         menuOpenFor = nil
+        roomMenuOpenFor = nil
+        currentLayoutID = layout.id
         arrangingIDs = []
         let keep = Set(layout.frames.map(\.id))
         for frame in here where !keep.contains(frame.id) && frame.isShown {
@@ -498,6 +635,8 @@ final class RoomFrames {
         PhysicalRooms.shared.adopt(layout.poses)
         for saved in layout.frames {
             var restored = saved
+            // Into whichever journal or volume is open: the room is universal.
+            restored.venue = venue
             restored.hidden = nil
             restored.deleted = nil
             restored.modified = Date()
@@ -513,11 +652,58 @@ final class RoomFrames {
         membersChanged()
     }
 
+    /// A layout's name changed (18 Nov 2026); empty keeps the old one.
+    func renameLayout(_ id: String, to given: String) {
+        let name = given.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let index = layouts.firstIndex(where: { $0.id == id }) else { return }
+        layouts[index].name = name
+        layouts[index].modified = Date()
+        layoutsTick += 1
+        Self.writeLayouts(layouts, community: community())
+    }
+
+    /// Another journal or volume opened (18 Nov 2026, Frode): the room stood
+    /// in comes along — its frames as they stand now, changes and all, or
+    /// as saved where one is gone — and the open one's other frames are put
+    /// away.
+    private func carryCurrentRoom() {
+        guard let venue, let layout = layouts.first(where: { $0.id == currentLayoutID && $0.deleted != true })
+        else { return }
+        let ids = Set(layout.frames.map(\.id))
+        var changed = false
+        for index in frames.indices where frames[index].deleted != true {
+            if ids.contains(frames[index].id) {
+                if frames[index].venue != venue || frames[index].hidden == true {
+                    frames[index].venue = venue
+                    frames[index].hidden = nil
+                    frames[index].modified = Date()
+                    changed = true
+                }
+            } else if frames[index].venue == venue, frames[index].isShown {
+                frames[index].hidden = true
+                frames[index].modified = Date()
+                changed = true
+            }
+        }
+        for saved in layout.frames where !frames.contains(where: { $0.id == saved.id && $0.deleted != true }) {
+            var restored = saved
+            restored.venue = venue
+            restored.hidden = nil
+            restored.deleted = nil
+            restored.modified = Date()
+            frames.removeAll { $0.id == saved.id }
+            frames.append(restored)
+            changed = true
+        }
+        if changed { save() }
+    }
+
     /// A layout let go, on every device.
     func deleteLayout(_ id: String) {
         guard let index = layouts.firstIndex(where: { $0.id == id }) else { return }
         layouts[index].deleted = true
         layouts[index].modified = Date()
+        if currentLayoutID == id { currentLayoutID = nil }
         Self.writeLayouts(layouts, community: community())
     }
 
@@ -573,43 +759,74 @@ final class RoomFrames {
     // MARK: The physical room (18 Nov 2026, Frode)
 
     /// The room's frames where they stand in the physical room the reader
-    /// is in: each at its place remembered for this room; one never placed
-    /// here put up before the reader, in a row, and remembered so. Only
-    /// in memory — the shared file keeps where each last moved.
+    /// is in: each at its place remembered for this room. One never placed
+    /// here stays exactly where it stands, and that is remembered as its
+    /// place here (18 Nov 2026, Frode: frames had swung out before the
+    /// reader, facing them, when a room was found). Only in memory — the
+    /// shared file keeps where each last moved.
     func placeForRoom() {
         let rooms = PhysicalRooms.shared
         guard rooms.current != nil else { return }
-        var unplaced: [Int] = []
         for index in frames.indices where frames[index].venue == venue && frames[index].deleted != true {
             if let pose = rooms.pose(of: frames[index].id) {
                 frames[index].transform = Self.columns(pose.transform)
                 frames[index].width = pose.width
                 frames[index].height = pose.height
-            } else if frames[index].isShown {
-                unplaced.append(index)
+            } else {
+                rooms.record(frames[index])
             }
         }
-        guard !unplaced.isEmpty else { return }
-        let head = headPose() ?? (SIMD3<Float>(0, 1.5, 0), SIMD3<Float>(0, 0, -1))
-        var forward = SIMD3<Float>(head.forward.x, 0, head.forward.z)
-        forward = simd_length(forward) > 1e-4 ? simd_normalize(forward) : SIMD3<Float>(0, 0, -1)
-        let up = SIMD3<Float>(0, 1, 0)
-        let normal = -forward
-        let right = simd_normalize(simd_cross(up, normal))
-        for (place, index) in unplaced.enumerated() {
-            let along = (Float(place) - Float(unplaced.count - 1) / 2) * (frames[index].width + 0.15)
-            let middle = head.position + forward * 2 + right * along
-            let m = simd_float4x4(SIMD4<Float>(right, 0), SIMD4<Float>(up, 0), SIMD4<Float>(normal, 0),
-                                  SIMD4<Float>(middle, 1))
-            frames[index].transform = Self.columns(m)
-            rooms.record(frames[index])
-        }
     }
+
+    /// The frames of the room open now, for choosing which physical room
+    /// knows them best.
+    var frameIDsHere: Set<String> { Set(here.map(\.id)) }
 
     /// The physical room changed — found, or made: every frame to its place.
     func roomChanged() {
         placeForRoom()
         showAll()
+        membersChanged()
+    }
+
+    // MARK: Filed by hand (18 Nov 2026, Frode)
+
+    /// The frame (of a kind, in sight, open) a place is over, within
+    /// `stickDistance` of its face, whatever its kind.
+    func kindFrameID(near position: SIMD3<Float>) -> String? {
+        shownHere.first { !$0.isPanel && frameID(near: position, kind: $0.kind) == $0.id }?.id
+    }
+
+    /// The frame a concept was filed into by hand, and its kind.
+    func filedFrame(of memberID: String) -> String? {
+        here.first { !$0.isPanel && ($0.members ?? []).contains(memberID) }?.id
+    }
+
+    func filedKind(of memberID: String) -> String? {
+        filedFrame(of: memberID).flatMap { frame($0)?.kind }
+    }
+
+    /// The frame a member stands in now, as last laid.
+    func owner(of memberID: String) -> String? { memberFrame[memberID] }
+
+    /// Pushed into a frame of a kind: it is that frame's from now on — off
+    /// any panel, out of every other frame's hand and pulled lists — and
+    /// stands in it.
+    func file(_ memberID: String, into frameID: String) {
+        for other in here where other.id != frameID
+            && ((other.members ?? []).contains(memberID) || other.pulled.contains(memberID)) {
+            update(other.id) {
+                $0.members?.removeAll { $0 == memberID }
+                $0.pulled.removeAll { $0 == memberID }
+            }
+        }
+        update(frameID) {
+            var members = $0.members ?? []
+            if !members.contains(memberID) { members.append(memberID) }
+            $0.members = members
+            $0.pulled.removeAll { $0 == memberID }
+        }
+        forgetLoose([memberID])
         membersChanged()
     }
 
@@ -1056,6 +1273,11 @@ final class RoomFrames {
             }
         } else {
             update(frameID) { $0.pulled = [] }
+            // And every concept of its kind loose in the room, filed here
+            // (18 Nov 2026, Frode): Move All Back gathers them all.
+            for id in looseConcepts(frame.kind) where !ids.contains(id) {
+                file(id, into: frameID)
+            }
         }
         forgetLoose(ids)
         membersChanged()
@@ -1394,7 +1616,7 @@ final class RoomFrames {
     /// Folded, the title alone stands, and opens the menu.
     private func placeCornerEdit(on entity: ModelEntity, for frame: RoomFrame) {
         guard !frame.isFolded else {
-            for name in ["cornerEditBlock", "cornerEdit", "cornerMenu"] {
+            for name in ["cornerEditBlock", "cornerEdit", "cornerMenu", "cornerMoveBack", "roomName", "roomMenu"] {
                 entity.findEntity(named: name)?.removeFromParent()
             }
             cornerKeys[frame.id] = nil
@@ -1405,7 +1627,8 @@ final class RoomFrames {
         let wide = side * 2
         // Mostly over the panel's own corner (18 Nov 2026, Frode): three
         // quarters of it on the picture, a quarter out past the edge.
-        let corner = SIMD2<Float>(-frame.width / 2 + wide / 4, -frame.height / 2 + side / 4)
+        // A little further in from the corner (18 Nov 2026, Frode): 3 cm.
+        let corner = SIMD2<Float>(-frame.width / 2 + wide / 4 + 0.03, -frame.height / 2 + side / 4)
         // No block any more (18 Nov 2026, Frode): one made before goes.
         entity.findEntity(named: "cornerEditBlock")?.removeFromParent()
         let key = "\(side)"
@@ -1424,6 +1647,35 @@ final class RoomFrames {
         }()
         // On the corner, a little before the frame, so the eyes reach it.
         button.position = [corner.x, corner.y, 0.012]
+        // Move All Back at the bottom right (18 Nov 2026, Frode): Edit's
+        // size and manner, three quarters of it on the picture.
+        let back = entity.findEntity(named: "cornerMoveBack") ?? {
+            let made = Entity()
+            made.name = "cornerMoveBack"
+            made.components.set(ViewAttachmentComponent(rootView: RoomFrameCornerMoveBack(frameID: frame.id)))
+            entity.addChild(made)
+            return made
+        }()
+        let backWidth = RoomFrameCornerMoveBack.estimatedWidth
+        // A little further in from its corner too (18 Nov 2026, Frode).
+        back.position = [frame.width / 2 - backWidth / 4 - 0.03, corner.y, 0.012]
+        // The room's name at the foot's middle, and its menu above it.
+        let name = entity.findEntity(named: "roomName") ?? {
+            let made = Entity()
+            made.name = "roomName"
+            made.components.set(ViewAttachmentComponent(rootView: RoomFrameRoomName(frameID: frame.id)))
+            entity.addChild(made)
+            return made
+        }()
+        name.position = [0, corner.y, 0.012]
+        let roomMenu = entity.findEntity(named: "roomMenu") ?? {
+            let made = Entity()
+            made.name = "roomMenu"
+            made.components.set(ViewAttachmentComponent(rootView: RoomFrameRoomMenu(frameID: frame.id)))
+            entity.addChild(made)
+            return made
+        }()
+        roomMenu.position = [0, corner.y + side / 2 + 0.02 + RoomFrameCornerMenu.height / 2, 0.05]
         let menu = entity.findEntity(named: "cornerMenu") ?? {
             let made = Entity()
             made.name = "cornerMenu"
@@ -1447,9 +1699,11 @@ final class RoomFrames {
             entity.addChild(made)
             return made
         }()
+        // Down onto the top of the frame, before its border (18 Nov 2026,
+        // Frode; it stood 2 cm above the border, 7 cm forward).
         title.position = frame.isFolded
             ? [0, 0, Self.frontOffset + 0.02]
-            : [0, frame.height / 2 + borderWidth(of: frame) + 0.022, 0.07]
+            : [0, frame.height / 2 + borderWidth(of: frame) / 2, 0.03]
     }
 
     /// While arranging: a thin light edge, a handle at each corner and side,
@@ -1565,6 +1819,8 @@ final class RoomFrames {
         for (id, at) in names {
             let shadow = Entity()
             shadow.name = id
+            // Pinched, a line to where its concept stands; pinched twice, the
+            // concept back in its slot (18 Nov 2026).
             shadow.components.set(ViewAttachmentComponent(rootView:
                 Text(Self.shadowTitle(id))
                     .font(.system(size: 22 * CGFloat(scale), weight: .medium))
@@ -1572,7 +1828,12 @@ final class RoomFrames {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .background(Capsule().strokeBorder(Color.white.opacity(0.6), lineWidth: 1))
-                    .opacity(0.5)))
+                    .opacity(0.5)
+                    .contentShape(.hoverEffect, Capsule())
+                    .hoverEffect(.highlight)
+                    .contentShape(Capsule())
+                    .onTapGesture(count: 2) { RoomFrames.shared.bringBack(id, to: frameID) }
+                    .onTapGesture { RoomFrames.shared.toggleShadowLine(id) }))
             shadow.position = at
             holder.addChild(shadow)
         }
@@ -1807,6 +2068,7 @@ struct RoomFrameTitle: View {
         let open = frames.menuOpenFor == frameID && !frames.menuAtCorner
         VStack(spacing: 14) {
             Button {
+                frames.roomMenuOpenFor = nil
                 frames.menuAtCorner = false
                 frames.menuOpenFor = open ? nil : frameID
             } label: {
@@ -1853,35 +2115,214 @@ struct RoomFrameCornerEdit: View {
     var body: some View {
         let frames = RoomFrames.shared
         let open = frames.menuOpenFor == frameID && frames.menuAtCorner
-        Button {
-            if open {
-                frames.menuOpenFor = nil
-            } else {
-                frames.menuAtCorner = true
-                frames.menuOpenFor = frameID
+        Text(open ? "Close" : "Edit")
+            .font(.system(size: 20, weight: .semibold))
+            // The capsule fits the word (18 Nov 2026, Frode).
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .fixedSize()
+            .hoverEffect(isEnabled: !open) { effect, isActive, _ in
+                effect.animation(.easeInOut(duration: 0.2)) { $0.opacity(isActive || open ? 1 : 0.25) }
             }
-        } label: {
-            Text(open ? "Close" : "Edit")
-                .font(.system(size: 20, weight: .semibold))
-                // The capsule fits the word (18 Nov 2026, Frode).
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .fixedSize()
-                .hoverEffect(isEnabled: !open) { effect, isActive, _ in
-                    effect.animation(.easeInOut(duration: 0.2)) { $0.opacity(isActive || open ? 1 : 0.25) }
+            // No system button (18 Nov 2026, Frode): nothing drawn
+            // behind the words, looked at or not — they only come up to
+            // full white.
+            .foregroundStyle(.white)
+            .contentShape(.hoverEffect, Rectangle())
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if open {
+                    frames.menuOpenFor = nil
+                } else {
+                    frames.roomMenuOpenFor = nil
+                    frames.menuAtCorner = true
+                    frames.menuOpenFor = frameID
                 }
-                .background {
-                    Color.clear
-                        .glassBackgroundEffect(in: Capsule())
-                        .hoverEffect(isEnabled: !open) { effect, isActive, _ in
-                            effect.animation(.easeInOut(duration: 0.2)) { $0.opacity(isActive || open ? 1 : 0.15) }
+            }
+    }
+}
+
+/// The room's name at a frame's foot (18 Nov 2026, Frode) — the project
+/// it stands as, "Room" until named — in Edit's size and manner. Pinched,
+/// the rooms open above it: choose one and every frame changes to it, or
+/// name the room as it stands and save it.
+struct RoomFrameRoomName: View {
+    let frameID: String
+
+    var body: some View {
+        let frames = RoomFrames.shared
+        let open = frames.roomMenuOpenFor == frameID
+        Text(open ? "Close" : frames.currentRoomName)
+            .font(.system(size: 20, weight: .semibold))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .fixedSize()
+            .hoverEffect(isEnabled: !open) { effect, isActive, _ in
+                effect.animation(.easeInOut(duration: 0.2)) { $0.opacity(isActive || open ? 1 : 0.25) }
+            }
+            // No system button (18 Nov 2026, Frode): nothing drawn
+            // behind the words, looked at or not — they only come up to
+            // full white.
+            .foregroundStyle(.white)
+            .contentShape(.hoverEffect, Rectangle())
+            .contentShape(Rectangle())
+            .onTapGesture {
+                frames.menuOpenFor = nil
+                frames.roomMenuOpenFor = open ? nil : frameID
+            }
+    }
+}
+
+/// The rooms, above a frame's foot: each saved one to change to, the one
+/// standing ticked; and a name to save the room as it stands under.
+struct RoomFrameRoomMenu: View {
+    let frameID: String
+    @State private var name = ""
+    /// Rename's field for the current room, and Delete's second press.
+    @State private var renaming = false
+    @State private var newName = ""
+    @State private var confirmingDelete = false
+
+    var body: some View {
+        let frames = RoomFrames.shared
+        let open = frames.roomMenuOpenFor == frameID
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            if open {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Rooms")
+                        .font(.system(size: 24, weight: .bold))
+                        .padding(.bottom, 4)
+                    if frames.layoutsHere.isEmpty {
+                        Text("None saved yet")
+                            .font(.system(size: 22))
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(frames.layoutsHere) { layout in
+                        if renaming, layout.id == frames.currentLayoutID {
+                            HStack(spacing: 10) {
+                                TextField(layout.name, text: $newName)
+                                    .font(.system(size: 24))
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit { finishRename(layout.id) }
+                                Button("Done") { finishRename(layout.id) }
+                                    .font(.system(size: 22, weight: .semibold))
+                            }
+                        } else {
+                        HStack(spacing: 10) {
+                            Button {
+                                frames.loadLayout(layout.id)
+                            } label: {
+                                HStack(spacing: 14) {
+                                    Image(systemName: "checkmark")
+                                        .opacity(layout.id == frames.currentLayoutID ? 1 : 0)
+                                        .frame(width: 30)
+                                    Text(layout.name)
+                                    Spacer(minLength: 12)
+                                }
+                                .font(.system(size: 24, weight: .medium))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 12))
+                                .hoverEffect(.highlight)
+                            }
+                            .buttonStyle(.plain)
+                            // Update (18 Nov 2026, Frode): the room standing
+                            // now saved over the current one.
+                            if layout.id == frames.currentLayoutID {
+                                Button("Update") {
+                                    frames.saveLayout(named: layout.name)
+                                    frames.roomMenuOpenFor = nil
+                                }
+                                .font(.system(size: 22, weight: .semibold))
+                                // Rename and Delete beside it (18 Nov 2026, Frode).
+                                Button("Rename") {
+                                    newName = layout.name
+                                    confirmingDelete = false
+                                    renaming = true
+                                }
+                                .font(.system(size: 22, weight: .semibold))
+                                Button(confirmingDelete ? "Delete?" : "Delete", role: .destructive) {
+                                    guard confirmingDelete else { confirmingDelete = true; return }
+                                    confirmingDelete = false
+                                    frames.deleteLayout(layout.id)
+                                }
+                                .font(.system(size: 22, weight: .semibold))
+                            }
                         }
+                        }
+                    }
+                    Divider().padding(.vertical, 6)
+                    Text("Save this room as")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        TextField(frames.currentRoomName == "Room" ? "Name" : frames.currentRoomName, text: $name)
+                            .font(.system(size: 24))
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit(save)
+                        Button("Save", action: save)
+                            .font(.system(size: 22, weight: .semibold))
+                            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
                 }
-                .contentShape(.hoverEffect, Capsule())
-                .contentShape(Capsule())
-                .hoverEffectGroup()
+                .padding(24)
+                .frame(width: 560, alignment: .leading)
+                .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 32))
+            }
         }
-        .buttonStyle(.plain)
+        .frame(width: CGFloat(RoomFrameCornerMenu.width * RoomFrames.pointsPerMetre),
+               height: CGFloat(RoomFrameCornerMenu.height * RoomFrames.pointsPerMetre),
+               alignment: .bottom)
+        .allowsHitTesting(open)
+        .onChange(of: open) { _, now in
+            if !now { name = ""; renaming = false; confirmingDelete = false }
+        }
+    }
+
+    private func finishRename(_ id: String) {
+        RoomFrames.shared.renameLayout(id, to: newName)
+        renaming = false
+    }
+
+    private func save() {
+        RoomFrames.shared.saveLayout(named: name)
+        name = ""
+        RoomFrames.shared.roomMenuOpenFor = nil
+    }
+}
+
+/// Move All Back at a frame's bottom right (18 Nov 2026, Frode): Edit's
+/// size and manner — the words on their glass capsule, very faint until
+/// looked at. Pinched, every concept carried out of this frame into the
+/// room comes home to it (Put All Back).
+struct RoomFrameCornerMoveBack: View {
+    let frameID: String
+    /// About as wide as the capsule draws, in metres — for its place.
+    static let estimatedWidth: Float = 0.125
+
+    var body: some View {
+        let frames = RoomFrames.shared
+        let loose = frames.canMoveAllBack(frameID)
+        Text("Move All Back")
+            .font(.system(size: 20, weight: .semibold))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .fixedSize()
+            .hoverEffect { effect, isActive, _ in
+                effect.animation(.easeInOut(duration: 0.2)) { $0.opacity(isActive ? 1 : 0.25) }
+            }
+            // No system button (18 Nov 2026, Frode): nothing drawn
+            // behind the words, looked at or not — they only come up to
+            // full white.
+            .foregroundStyle(.white)
+            .contentShape(.hoverEffect, Rectangle())
+            .contentShape(Rectangle())
+            .onTapGesture {
+                frames.putAllBack(frameID)
+            }
+        // Nothing out in the room: nothing to bring back.
+        .disabled(!loose)
     }
 }
 
@@ -2216,6 +2657,9 @@ final class PhysicalRooms {
     /// Room → frame → its place there.
     @ObservationIgnored private var poses: [UUID: [String: RoomPose]] = [:]
     @ObservationIgnored private var waitingSince: Date?
+    /// A room made this session because none was found in time — merged
+    /// into a remembered one if that is found after all.
+    @ObservationIgnored private var madeThisSession: UUID?
 
     /// Set by the room's surfaces: a world anchor added where asked, its id.
     @ObservationIgnored var addAnchor: (simd_float4x4) async -> UUID? = { _ in nil }
@@ -2225,7 +2669,7 @@ final class PhysicalRooms {
 
     /// How long to look for a remembered room before taking this to be a
     /// new one.
-    static let searchTime: TimeInterval = 8
+    static let searchTime: TimeInterval = 30
 
     private init() { load() }
 
@@ -2254,21 +2698,69 @@ final class PhysicalRooms {
         chooseCurrent()
     }
 
-    /// The nearest found room within a dozen metres of the reader.
+    /// The room the reader stands in, of those found within a dozen metres:
+    /// the one that knows most of this room's frames, then the nearest.
+    /// A room made this session gives way to a remembered one found late.
     private func chooseCurrent() {
         let head = headPosition()
-        let nearest = tracked.min { a, b in
-            distance(a.value, head) < distance(b.value, head)
-        }
-        var choice = nearest.flatMap { distance($0.value, head) < 12 ? $0.key : nil }
-        // Keep the room while it is still found and as near as any.
-        if let current, let here = tracked[current], let choice0 = choice, let there = tracked[choice0],
-           distance(here, head) <= distance(there, head) + 0.5 {
-            choice = current
-        }
-        guard let choice, choice != current else { return }
+        mergeLateFind()
+        let frameIDs = RoomFrames.shared.frameIDsHere
+        func known(_ room: UUID) -> Int { (poses[room] ?? [:]).keys.filter { frameIDs.contains($0) }.count }
+        let near = tracked.filter { distance($0.value, head) < 12 }
+        guard let choice = near.keys.max(by: { a, b in
+            let ka = known(a), kb = known(b)
+            if ka != kb { return ka < kb }
+            return distance(near[a]!, head) > distance(near[b]!, head)
+        }) else { return }
+        // Keep the room while it still knows as many.
+        if let current, near[current] != nil, known(current) >= known(choice) { return }
+        guard choice != current else { return }
         current = choice
         RoomFrames.shared.roomChanged()
+    }
+
+    /// A room made this session as new, when a remembered room is found
+    /// after all within a few metres of it: one room, not two. What was
+    /// placed in the new one is carried over into the remembered one, and
+    /// the new one forgotten.
+    private func mergeLateFind() {
+        func at(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3<Float>(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
+        func created(_ id: UUID) -> Date { rooms.first { $0.id == id }?.created ?? .distantPast }
+        // Two remembered rooms found within a metre and a half of each
+        // other are one room made twice (the early, impatient search):
+        // the younger folds into the elder.
+        for (a, ma) in tracked {
+            for (b, mb) in tracked where a != b && simd_distance(at(ma), at(mb)) < 1.5 {
+                let (young, elder) = created(a) > created(b) ? (a, b) : (b, a)
+                merge(young, into: elder)
+                return
+            }
+        }
+        guard let made = madeThisSession, let madeAnchor = tracked[made] else { return }
+        guard let (old, _) = tracked.first(where: { id, m in
+            id != made && simd_distance(at(m), at(madeAnchor)) < 15
+        }) else { return }
+        merge(made, into: old)
+    }
+
+    /// One room's places carried into another's, and the first forgotten.
+    private func merge(_ made: UUID, into old: UUID) {
+        guard let madeAnchor = tracked[made], let oldAnchor = tracked[old] else { return }
+        // The younger room's places are the more recent — what the reader
+        // last arranged — so they win.
+        for (frame, pose) in poses[made] ?? [:] {
+            let world = madeAnchor * RoomFrames.matrix(pose.transform)
+            let relative = simd_inverse(oldAnchor) * world
+            poses[old, default: [:]][frame] = RoomPose(transform: RoomFrames.columns(relative),
+                                                     width: pose.width, height: pose.height)
+        }
+        poses[made] = nil
+        rooms.removeAll { $0.id == made }
+        tracked[made] = nil
+        madeThisSession = nil
+        if current == made { current = nil }
+        save()
+        Task { @MainActor in await removeAnchor(made) }
     }
 
     private func distance(_ m: simd_float4x4, _ head: SIMD3<Float>?) -> Float {
@@ -2278,7 +2770,9 @@ final class PhysicalRooms {
 
     /// This room remembered as new: an anchor at the reader's feet, upright.
     /// The first room of all keeps every frame where it stands.
-    func makeRoomHere() async {
+    func makeRoomHere(asked: Bool = false) async {
+        // Something found meanwhile: no new room — unless the reader asked.
+        guard asked || tracked.isEmpty || current == nil else { return }
         let head = headPosition() ?? .zero
         var m = matrix_identity_float4x4
         m.columns.3 = SIMD4<Float>(head.x, 0, head.z, 1)
@@ -2287,6 +2781,7 @@ final class PhysicalRooms {
         rooms.append(Room(id: id, name: "Room \(rooms.count + 1)", created: Date()))
         tracked[id] = m
         current = id
+        if !first { madeThisSession = id }
         if first {
             for frame in RoomFrames.shared.allFrames where frame.deleted != true { record(frame) }
         }
@@ -2296,7 +2791,7 @@ final class PhysicalRooms {
 
     /// The reader says this is another room: remembered as new from here.
     func startNewRoomHere() {
-        Task { @MainActor in await makeRoomHere() }
+        Task { @MainActor in await makeRoomHere(asked: true) }
     }
 
     // MARK: Places
@@ -2355,6 +2850,15 @@ final class PhysicalRooms {
         guard let data = try? Data(contentsOf: Self.url),
               let stored = try? JSONDecoder().decode(Stored.self, from: data) else { return }
         rooms = stored.rooms
+        // Once (18 Nov 2026): the places kept before frames stopped being
+        // swung out before the reader held those swung-out places; they go,
+        // and each frame takes where it stands as its place again.
+        let cleared = "physicalRooms.placesCleared.v2"
+        guard UserDefaults.standard.bool(forKey: cleared) else {
+            UserDefaults.standard.set(true, forKey: cleared)
+            save()
+            return
+        }
         for (key, places) in stored.poses {
             if let id = UUID(uuidString: key) { poses[id] = places }
         }

@@ -63,6 +63,9 @@ struct EPUBMapItem: ItemProtocol {
     /// one — full title, every author, its abstract — without being chosen,
     /// so the room's selection and citations are left as they were.
     var isExhibited = false
+    /// A concept presented in its own place (18 Nov 2026, Frode): its
+    /// whole definition stands where the pill stood until Done.
+    var isPresented = false
     /// Snapped off the map with Lift: the card reads as a slightly
     /// extruded object, apart from the flat wall.
     var isLifted = false
@@ -131,7 +134,7 @@ struct EPUBMapItem: ItemProtocol {
     /// Drawn in a look of its own — a sphere or a coloured title — rather
     /// than as a card: a paper standing, not set aside nor opened.
     var wearsLook: Bool {
-        look != .cards && kind == .article && !isAside && !isGhost && !showsAbstract && !isExhibited
+        !look.isCard && kind == .article && !isAside && !isGhost && !showsAbstract && !isExhibited
     }
     struct AuthorFace: Hashable {
         var name: String
@@ -147,7 +150,7 @@ struct EPUBMapItem: ItemProtocol {
         (isSelected && !isGhost && !isFaded
             && (kind == .concept || kind == .article
                 || kind == .cited || kind == .citedDeep))
-            || stanceMark != nil
+            || stanceMark != nil || isPresented
     }
 
     func isVisuallyEqual(to other: EPUBMapItem) -> Bool {
@@ -160,7 +163,7 @@ struct EPUBMapItem: ItemProtocol {
             && isShared == other.isShared && citationCount == other.citationCount
             && abstract == other.abstract && visionTheme == other.visionTheme
             && isGhost == other.isGhost && showsAbstract == other.showsAbstract
-            && isExhibited == other.isExhibited
+            && isExhibited == other.isExhibited && isPresented == other.isPresented
             && isLifted == other.isLifted && lengthShare == other.lengthShare
             && widthScale == other.widthScale
             && isFaded == other.isFaded && warning == other.warning
@@ -909,7 +912,7 @@ struct EPUBMapView: View {
                 item.isLifted = liftedCards[record.id] != nil
                 item.lengthShare = lengthShare(record)
                 item.sizeScale = model.sizeByLength ? Self.lengthScale(item.lengthShare) : 1
-                if model.sizeByLength, model.roomCardLook == .cards {
+                if model.sizeByLength, model.roomCardLook.isCard {
                     item.widthScale = Self.lengthWidth(item.lengthShare)
                 }
                 item.retro = model.retroName
@@ -1381,6 +1384,10 @@ struct EPUBMapView: View {
             // Retro is the whole room's (9 Nov 2026): every card carries it,
             // so a change of palette rebuilds the labels and citations too.
             for index in built.indices { built[index].retro = model.retroName }
+            if let presented = presentedConceptID,
+               let index = built.firstIndex(where: { $0.id == presented }) {
+                built[index].isPresented = true
+            }
             stageExhibition(&built)
             items = built
             // Set aside behind the toolbar, each card faces as the toolbar
@@ -2437,7 +2444,12 @@ struct EPUBMapView: View {
     /// papers that use it, leaving only them standing, or having
     /// gathered them round it. Letting the card go ends it.
     @State private var keywordModes: [String: KeywordMode] = [:]
+    /// The concept standing as its full definition, until Done.
+    @State private var presentedConceptID: String?
     enum KeywordMode { case lines, only, gather }
+    /// Where each paper a concept's Gather drew in stood, and whether it was
+    /// chosen, when the Gather was asked (18 Nov 2026, Frode) — by concept.
+    @State private var gatheredFrom: [String: [String: (place: SIMD3<Float>, chosen: Bool)]] = [:]
     /// The papers each keyword is found in, by keyword, for the room
     /// standing now — cleared when the room changes.
     @State private var keywordMatchCache: [String: Set<String>] = [:]
@@ -3220,9 +3232,33 @@ struct EPUBMapView: View {
                 // chosen closed card shows nothing; the open card's Concepts
                 // brings the pills.)
                 if item.kind == .article, item.isSelected { return AnyView(EmptyView()) }
-                // A chosen concept wears no buttons (16 Nov 2026, Frode): its
-                // lines to what it connects to are all it shows.
-                if Self.isConceptPill(item) { return AnyView(EmptyView()) }
+                // A chosen concept wears Gather under it (18 Nov 2026, Frode;
+                // it wore no buttons from 16 Nov): the papers that use it
+                // drawn round it, and pinched again sent home. Its lines to
+                // what it connects to stand as before.
+                // A presented concept: its definition in the pill's place,
+                // Done turning it back into the pill.
+                if item.isPresented {
+                    return AnyView(
+                        VisionConceptPresentation(name: item.title,
+                                                  onDone: { presentConcept(nil) },
+                                                  onEdit: { presentConcept(nil) })
+                            .environment(model)
+                            .scaleEffect(0.5))
+                }
+                if Self.isConceptPill(item) {
+                    guard item.isSelected, !item.isGhost else { return AnyView(EmptyView()) }
+                    let gathered = keywordModes[item.id] == .gather
+                    return AnyView(
+                        Button(gathered ? "Gathered" : "Gather") { setKeywordMode(.gather, on: item) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .font(.caption)
+                            .tint(gathered ? .accentColor : nil)
+                            .help(gathered ? "Send the gathered papers home"
+                                           : "Gather — draw the papers that use this concept round it")
+                            .scaleEffect(0.5, anchor: .top))
+                }
                 // Any other chosen card shows its verbs beneath it while
                 // it is the one most recently chosen — a citation once
                 // opened, a label, a note, a passage. One card at a time.
@@ -3265,6 +3301,11 @@ struct EPUBMapView: View {
         // glass face — so it reads as a ghost frame around every card.
         view = view.shouldUseHoverNode { _ in false }
         view = view.attachmentAnchorRule { _, item in
+            // A presented concept stands centred on its pill, a little
+            // forward of it — the pill itself hidden behind.
+            if item.isPresented {
+                return AnchorRule(anchor: SIMD3<Float>(0.5, 0.5, 0.5), offset: SIMD3<Float>(0, 0, 0.01))
+            }
             // The mark is stuck to the connected card, at its foot,
             // centred under it (2 Nov 2026, Frode).
             if item.stanceMark != nil {
@@ -3394,13 +3435,18 @@ struct EPUBMapView: View {
                 // Let go over a frame of its own category (18 Nov 2026,
                 // Frode): put back there — off any panel for good, and the
                 // frames' own code below takes it in.
-                let kindFrame = panel == nil
-                    ? frameKind(of: moved).flatMap { frames.frameID(near: pos, kind: $0) } : nil
-                if let kindFrame, holder != nil || frames.panelLoose.contains(moved.id) {
+                let kindFrame = panel == nil ? frames.kindFrameID(near: pos) : nil
+                if let kindFrame, Self.isConceptPill(moved),
+                   holder != nil || frames.panelLoose.contains(moved.id) {
                     frames.release(moved.id)
                     placed[moved.id] = nil
                     savePlacedNow()
-                    frames.putBack(moved.id, in: kindFrame)
+                    if frames.frame(kindFrame)?.kind == frameKind(of: moved) {
+                        frames.putBack(moved.id, in: kindFrame)
+                    } else {
+                        keepAsKeyword(moved)
+                        frames.file(moved.id, into: kindFrame)
+                    }
                     return
                 } else if let panel {
                     // Let go on its own panel: back in its place there.
@@ -3448,6 +3494,17 @@ struct EPUBMapView: View {
             for moved in newItems where Self.isConceptPill(moved) {
                 guard let pos = moved.position, pos.y >= 0.15, let kind = frameKind(of: moved) else { continue }
                 let frames = RoomFrames.shared
+                // Pushed into a frame of another kind (18 Nov 2026, Frode):
+                // it is filed there and stands there — a person the room
+                // took for a concept, pushed into People, is People's.
+                if let other = frames.kindFrameID(near: pos), frames.frame(other)?.kind != kind
+                    || (frames.owner(of: moved.id) != nil && frames.owner(of: moved.id) != other) {
+                    placed[moved.id] = nil
+                    savePlacedNow()
+                    keepAsKeyword(moved)
+                    frames.file(moved.id, into: other)
+                    return
+                }
                 let home = frames.frameID(near: pos, kind: kind)
                 if frames.standsInFrame(moved.id) {
                     if home == nil {
@@ -3885,6 +3942,13 @@ struct EPUBMapView: View {
             installFrames(in: content)
             // The room's main axis for a shaken reading (16 Nov 2026): the
             // normal of its largest wall found.
+            // Pin and Set Aside under a reading, as on the closed card.
+            readerPanels.pileButton = { [model] docID, setAside in
+                AnyView(ReaderPileButton(model: model, docID: docID, setAside: setAside))
+            }
+            readerPanels.poseButton = { [model] docID in
+                AnyView(ReaderPoseButton(model: model, docID: docID))
+            }
             // A reading laid flat rests on the table under it (18 Nov 2026).
             readerPanels.tableBelow = { [roomSurfaces] place in
                 roomSurfaces.tableTop(under: place)
@@ -4386,7 +4450,18 @@ struct EPUBMapView: View {
                 // A paper with pictures wears its first as a thumbnail, so
                 // it is known at a glance as the views change (1 Nov 2026).
                 // Short enough to keep the wall's row pitch clear.
-                if item.kind == .article, !item.isAside, let path = item.imagePath,
+                // Card with Author (18 Nov 2026, Frode): the first author's
+                // face where the cover stands, and no cover.
+                if item.kind == .article, !item.isAside, item.look == .authorCards {
+                    if let path = item.authorFaces.lazy.compactMap(\.path).first,
+                       let face = CardImages.image(path: path, maxPixel: 320) {
+                        Image(uiImage: face)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxHeight: 24 * s)
+                            .clipShape(RoundedRectangle(cornerRadius: 2 * s))
+                    }
+                } else if item.kind == .article, !item.isAside, let path = item.imagePath,
                    let thumbnail = CardImages.image(path: path, maxPixel: 320) {
                     Image(uiImage: thumbnail)
                         .resizable()
@@ -4420,7 +4495,9 @@ struct EPUBMapView: View {
                 // Chosen or open: every author, and where the paper stands
                 // in its series. Closed: the first authors alone, then the
                 // paper's first sentence, small, in serif (1 Nov 2026).
-                if !item.authorFaces.isEmpty {
+                // Card with Author wears the face once, where the cover stands:
+                // no small faces as well — the names (18 Nov 2026, Frode).
+                if !item.authorFaces.isEmpty, item.look != .authorCards {
                     authorFaceRow(item.authorFaces, selected: open, s: s)
                     if open, let stamp = item.stamp {
                         Text(stamp)
@@ -5076,6 +5153,8 @@ struct EPUBMapView: View {
                 // the back carries just the title and byline (shorter,
                 // so it floats centred in the same pinned frame).
                 rootView: cardFace(for: item, withAbstract: !back)
+                    // A presented concept gives its place to its definition.
+                    .opacity(item.isPresented ? 0 : 1)
                     // As the chips do: the face never takes the pinch —
                     // the holder's collision does, and the concept
                     // buttons beneath keep their own taps.
@@ -6618,6 +6697,8 @@ struct EPUBMapView: View {
             .tint(item.isPinned ? .accentColor : nil)
             .help(item.isPinned ? "Unpin" : "Pin")
             .accessibilityLabel(item.isPinned ? "Unpin" : "Pin")
+            // Zoom to Unfold, between Pin and Set Aside (18 Nov 2026, Frode).
+            readButton(for: item)
             Button { performCardVerb("hide", on: item.id) } label: {
                 Image(systemName: "archivebox")
             }
@@ -6805,19 +6886,14 @@ struct EPUBMapView: View {
     /// The row under an open card (16 Nov 2026, Frode): Unfold at its left,
     /// set apart from Pin and Set Aside by a wider gap.
     private func footVerbs(for item: EPUBMapItem) -> some View {
-        HStack(spacing: Self.unfoldGap) {
-            readButton(for: item)
-            pileVerbs(for: item)
-        }
+        pileVerbs(for: item)
     }
 
-    /// The air between Unfold and Pin — three times the row's own 10.
-    private static let unfoldGap: CGFloat = 30
-
-    /// Under an open card, at the left: Unfold, the card opened fully into
-    /// its reading.
+    /// Under an open card, between Pin and Set Aside: Zoom to Unfold, the
+    /// card opened fully into its reading (18 Nov 2026, Frode; was Unfold,
+    /// at the row's left).
     private func readButton(for item: EPUBMapItem) -> some View {
-        Button("Unfold") { performCardVerb("unfold", on: item.id) }
+        Button("Zoom Out to Unfold") { performCardVerb("unfold", on: item.id) }
             .buttonStyle(.bordered)
             .controlSize(.small)
             .font(.caption)
@@ -9609,8 +9685,21 @@ struct EPUBMapView: View {
     /// leaves just them standing; Gather brings them round the card,
     /// free of the timeline (Wall or Undo View sends them home). The
     /// same choice again turns it off.
+    /// Presents a concept in its own place, or (nil) turns it back into
+    /// its pill (18 Nov 2026, Frode: not a separate window).
+    private func presentConcept(_ id: String?) {
+        presentedConceptID = id
+        reload()
+    }
+
     private func setKeywordMode(_ mode: KeywordMode, on item: EPUBMapItem) {
         let turningOff = keywordModes[item.id] == mode
+        // A Gather ending — off, or another mode chosen — sends its papers home.
+        if keywordModes[item.id] == .gather, turningOff || mode != .gather {
+            keywordModes[item.id] = nil
+            returnGathered(from: item.id)
+            if turningOff { return }
+        }
         // Only is the room's concept Focus; any other choice lifts it.
         if focusedConceptID == item.id {
             focusedConceptID = nil
@@ -9680,6 +9769,19 @@ struct EPUBMapView: View {
             for id in ids { placed[id] = nil }
             savePlacedNow()
         }
+        // The concepts of a kind loose in the room, for Move All Back.
+        frames.looseConcepts = { kind in
+            items.filter { item in
+                Self.isConceptPill(item) && !item.isGhost
+                    && !RoomFrames.shared.standsInFrame(item.id)
+                    && RoomFrames.shared.panelHolding(item.id) == nil
+                    && frameKind(of: item) == kind
+            }.map(\.id)
+        }
+        // Where a member stands loose, for its shadow's line (18 Nov 2026).
+        frames.positionOf = { id in
+            items.first(where: { $0.id == id && !$0.isGhost })?.position
+        }
         frames.titleOf = { id in
             items.first(where: { $0.id == id })?.title
                 ?? String(id.split(separator: ":", maxSplits: 1).last ?? Substring(id))
@@ -9693,6 +9795,8 @@ struct EPUBMapView: View {
     /// concepts file it under — a keyword or an unfiled concept, Concepts.
     private func frameKind(of item: EPUBMapItem) -> String? {
         guard Self.isConceptPill(item), !item.isGhost else { return nil }
+        // Filed into a frame by hand: that frame's kind (18 Nov 2026).
+        if let filed = RoomFrames.shared.filedKind(of: item.id) { return filed }
         // A person keeps the frame they came from: Authors or People.
         if let kind = RoomFrames.shared.kind(ofMember: item.id) ?? RoomFrames.shared.kind(ofPulled: item.id),
            kind == RoomFrame.authorsKind || kind == ConceptKind.person.rawValue {
@@ -9733,6 +9837,8 @@ struct EPUBMapView: View {
                 let key = frame.kind == RoomFrame.authorsKind ? OrigamiPortraits.key(item.title) : ConceptTerm.normalise(item.title)
                 guard named.insert(key).inserted else { continue }
                 if onPanels.contains(item.id) { continue }
+                // Filed by hand into another frame of this kind: there only.
+                if let owner = frames.filedFrame(of: item.id), owner != frame.id { continue }
                 members.append((item.id, item.title))
             }
             // Raised for the frame: who or what is not standing yet.
@@ -9741,6 +9847,9 @@ struct EPUBMapView: View {
                 for (key, person) in people where !named.contains(key) {
                     let id = Self.personItemPrefix + key
                     guard !hiddenConceptIDs.contains(id) else { continue }
+                    // Filed by hand into another frame: raised there, not here.
+                    guard frames.filedFrame(of: id).map({ $0 == frame.id }) ?? true,
+                          !items.contains(where: { $0.id == id }) else { continue }
                     named.insert(key)
                     var item = EPUBMapItem(id: id, title: person.name,
                                            author: "\(person.count) paper\(person.count == 1 ? "" : "s")",
@@ -9760,6 +9869,9 @@ struct EPUBMapView: View {
                     if kind == .person, Self.roomAuthorCounts[OrigamiPortraits.key(term.term)] != nil { continue }
                     let id = Self.keywordItemPrefix + term.term.lowercased()
                     guard !hiddenConceptIDs.contains(id) else { continue }
+                    // Filed by hand into another frame: it stands there.
+                    guard frames.filedFrame(of: id).map({ $0 == frame.id }) ?? true,
+                          !items.contains(where: { $0.id == id }) else { continue }
                     named.insert(key)
                     var item = EPUBMapItem(id: id, title: term.term, author: "", kind: .concept,
                                            position: placed[id] ?? middle)
@@ -9767,6 +9879,30 @@ struct EPUBMapView: View {
                     raised.append(item)
                     members.append((id, term.term))
                 }
+            }
+            // Filed here by hand but standing nowhere (an author's card, a
+            // keyword): raised for this frame (18 Nov 2026).
+            for id in frame.members ?? [] where !items.contains(where: { $0.id == id })
+                && !raised.contains(where: { $0.id == id }) && !hiddenConceptIDs.contains(id) {
+                let title: String
+                var face: String?
+                if id.hasPrefix(Self.personItemPrefix) {
+                    let key = String(id.dropFirst(Self.personItemPrefix.count))
+                    guard let person = people[key] else { continue }
+                    title = person.name
+                    face = model.portraitPaths[key]
+                } else if id.hasPrefix(Self.keywordItemPrefix) {
+                    title = model.roomKeywords.first { Self.keywordItemPrefix + $0.lowercased() == id }
+                        ?? String(id.dropFirst(Self.keywordItemPrefix.count))
+                } else {
+                    continue
+                }
+                var item = EPUBMapItem(id: id, title: title, author: "", kind: .concept,
+                                       position: placed[id] ?? middle)
+                item.imagePath = face ?? model.portraitPaths[model.portraitKey(for: title)]
+                item.isSelected = selected.contains(id)
+                raised.append(item)
+                members.append((id, title))
             }
             items += raised
             members.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
@@ -9794,7 +9930,10 @@ struct EPUBMapView: View {
                           selected: Set<String>) {
         let middle = RoomFrames.translation(RoomFrames.matrix(frame.transform))
         var members: [(id: String, size: SIMD2<Float>)] = []
-        for id in (frame.members ?? []).prefix(RoomFrames.memberLimit) {
+        // What was carried off keeps its slot as a shadow, as in a frame of
+        // a kind (18 Nov 2026) — and pinched, the shadow's line finds it.
+        let slots = (frame.members ?? []) + frame.pulled.filter { !(frame.members ?? []).contains($0) }
+        for id in slots.prefix(RoomFrames.memberLimit) {
             if let item = items.first(where: { $0.id == id && !$0.isGhost }) {
                 let estimate: SIMD2<Float> = item.kind == .article
                     ? SIMD2<Float>(0.16, 0.1)
@@ -9910,6 +10049,10 @@ struct EPUBMapView: View {
         let papers = items.filter { ids.contains($0.id) && $0.position != nil && liftedCards[$0.id] == nil }
             .sorted { ($0.citedIDs.count, $1.title) > ($1.citedIDs.count, $0.title) }
         guard !papers.isEmpty else { return }
+        // Where they stood, to send them back when the Gather ends.
+        gatheredFrom[keyword.id] = Dictionary(uniqueKeysWithValues: papers.compactMap { paper in
+            paper.position.map { (paper.id, ($0, paper.isSelected)) }
+        })
         let columns = max(1, Int(ceil(Double(papers.count).squareRoot() * 1.4)))
         var xyz: [String: SIMD3<Float>] = [:]
         for (index, paper) in papers.enumerated() {
@@ -9929,6 +10072,26 @@ struct EPUBMapView: View {
         }
         applyWatchPositions3D(xyz)
         updateStandingChips()
+    }
+
+    /// A concept's Gather ended (18 Nov 2026, Frode): every paper it drew
+    /// in glides back to where it stood when the Gather was asked, chosen
+    /// or not as it was then.
+    private func returnGathered(from conceptID: String) {
+        guard let from = gatheredFrom.removeValue(forKey: conceptID), !from.isEmpty else { return }
+        var moved: [EPUBMapItem] = []
+        for index in items.indices {
+            guard let was = from[items[index].id] else { continue }
+            items[index].position = was.place
+            items[index].isSelected = was.chosen
+            moved.append(items[index])
+        }
+        guard !moved.isEmpty else { return }
+        NodeGlide.open()
+        keepPlacements(of: moved)
+        savePlacedNow()
+        updateStandingChips()
+        reload()
     }
 
     /// Remove: the keyword leaves the room, and whatever it was doing ends.
@@ -10227,8 +10390,10 @@ struct EPUBMapView: View {
             // Letting a keyword go ends its Lines or Only (a Gather has
             // already moved the papers; Wall or Undo View sends them home).
             if !willSelect, keywordModes[item.id] != nil {
+                let wasGathering = keywordModes[item.id] == .gather
                 keywordModes[item.id] = nil
-                reload()
+                // Let go, a Gathering concept sends its papers home too.
+                if wasGathering { returnGathered(from: item.id) } else { reload() }
             }
             switch item.kind {
             case .article:
@@ -10283,6 +10448,12 @@ struct EPUBMapView: View {
                     openNoteEditor(note)
                     return
                 }
+                // A concept presents itself (18 Nov 2026, Frode): its whole
+                // definition, a person's face, the papers using it.
+                if Self.isConceptPill(item) {
+                    presentConcept(presentedConceptID == item.id ? nil : item.id)
+                    return
+                }
                 // A topic magnet or floated passage has no record
                 // behind it — nothing to open.
                 // A label or a gallery picture has no record behind it
@@ -10324,6 +10495,12 @@ struct EPUBMapView: View {
     /// carried — and opened or folded.
     private func setOpen(_ item: EPUBMapItem, _ open: Bool) {
         let current = items.first(where: { $0.id == item.id }) ?? item
+        // The card just chosen before anything of it changes (18 Nov 2026,
+        // Frode): its surround is made as the card changes, and made with
+        // another card as the one chosen it stood bare — no Gather, no
+        // Concepts, no Unfold, Pin or Set Aside — when a double tap opened
+        // a card chosen earlier.
+        cardSizes.barItemID = item.id
         if !current.isSelected { handleTap(count: 1, on: current) }
         if !open {
             abstractOpenIDs.remove(item.id)
@@ -10339,6 +10516,8 @@ struct EPUBMapView: View {
         cardSizes.barItemID = item.id
         syncCardBar()
         if open, item.kind == .article { prepareRelations(for: item.id) }
+        // Its surround made again, now it is the one chosen and open.
+        if open { reload() }
         // Folded off its plane, a paper goes back to its plane's depth now
         // (see reload), not at the room's next rebuild.
         if !open, liftedCards[item.id] != nil { reload() }
@@ -12728,16 +12907,87 @@ private struct ReaderHandleOutline: View {
     }
 }
 
+/// Pin or Set Aside under a reading (18 Nov 2026, Frode): the closed card's
+/// own button — a pin, filled and lit while pinned; an archive box — at
+/// the pills' height.
+private struct ReaderPileButton: View {
+    let model: VisionModel
+    let docID: String
+    let setAside: Bool
+
+    var body: some View {
+        if setAside {
+            Button { model.toggleSetAside(docID) } label: {
+                Image(systemName: "archivebox")
+            }
+            .help("Set Aside")
+            .accessibilityLabel("Set Aside")
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .font(.system(size: 11))
+        } else {
+            let pinned = model.pinnedIDs.contains(docID)
+            Button { model.togglePinned(docID) } label: {
+                Image(systemName: pinned ? "pin.fill" : "pin")
+            }
+            .tint(pinned ? .accentColor : nil)
+            .help(pinned ? "Unpin" : "Pin — first in the pile")
+            .accessibilityLabel(pinned ? "Unpin" : "Pin")
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .font(.system(size: 11))
+        }
+    }
+}
+
+/// The pose under a reading (18 Nov 2026, Frode; was in the reading's own
+/// bar): upright, a drafting board, flat on the table — each pinch the
+/// next — in the closed card's bordered style.
+private struct ReaderPoseButton: View {
+    let model: VisionModel
+    let docID: String
+
+    var body: some View {
+        let pose = model.pose(of: docID)
+        Button {
+            switch pose {
+            case .upright: model.panelPoses[docID] = .tilted
+            case .tilted: model.panelPoses[docID] = .flat
+            case .flat: model.panelPoses[docID] = nil
+            }
+        } label: {
+            Image(systemName: {
+                switch pose {
+                case .upright: "arrow.down.to.line.compact"
+                case .tilted: "arrow.down.to.line"
+                case .flat: "arrow.up.to.line.compact"
+                }
+            }())
+        }
+        .help({
+            switch pose {
+            case .upright: "Tilt the page like a drafting board"
+            case .tilted: "Lay the page flat on the table"
+            case .flat: "Stand the page back up"
+            }
+        }())
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .font(.system(size: 11))
+    }
+}
+
 /// The reading's Scale and Fold (16 Nov 2026, Frode): the word in a
 /// pill's border only. Touches pass to the clear pill beneath.
 private struct ReaderButtonOutline: View {
     let word: String
+    var width: Float = ReaderPanels.buttonWidth
 
     var body: some View {
         Text(word)
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.white.opacity(0.9))
-            .frame(width: CGFloat(ReaderPanels.buttonWidth) * 1360,
+            .frame(width: CGFloat(width) * 1360,
                    height: CGFloat(ReaderPanels.buttonHeight) * 1360)
             .overlay(Capsule().strokeBorder(.white.opacity(0.7), lineWidth: 1.2))
             .allowsHitTesting(false)
@@ -13101,6 +13351,12 @@ final class ReaderPanels {
     // passthrough surface, never a visible hover.
     private static let flatClearance: Float = 0.002
 
+    /// Pin and Set Aside for a reading, drawn by the room (which knows the
+    /// pile): one button each, set among the pills under the page.
+    var pileButton: (_ docID: String, _ setAside: Bool) -> AnyView? = { _, _ in nil }
+    /// The pose — upright, drafting board, flat — in the row's middle.
+    var poseButton: (_ docID: String) -> AnyView? = { _ in nil }
+
     /// The table under a place, as the room's plane detection finds it:
     /// its top's world height, nil where no table is (set by the room).
     var tableBelow: (SIMD3<Float>) -> Float? = { _ in nil }
@@ -13211,17 +13467,21 @@ final class ReaderPanels {
         var material = UnlitMaterial()
         material.color = .init(tint: .white)
         material.blending = .transparent(opacity: 0.001)
+        // Move (18 Nov 2026, Frode): the bar is a pill now, Scale's size,
+        // at the left — Zoom In to Fold in the middle, Scale at the right.
+        // Still only it drags, so the page keeps every touch.
         let bar = ModelEntity(
-            mesh: .generatePlane(width: 0.10, height: 0.008, cornerRadius: 0.004),
+            mesh: .generatePlane(width: Self.buttonWidth, height: Self.buttonHeight,
+                                 cornerRadius: Self.buttonHeight / 2),
             materials: [material])
-        bar.position = SIMD3<Float>(0, -0.305, 0)
+        bar.position = SIMD3<Float>(-Self.outerSpacing, -0.305, 0)
         bar.components.set(CollisionComponent(
-            shapes: [.generateBox(size: SIMD3<Float>(0.14, 0.035, 0.03))]))
+            shapes: [.generateBox(size: SIMD3<Float>(Self.buttonWidth + 0.01, 0.03, 0.02))]))
         bar.components.set(InputTargetComponent())
         bar.components.set(HoverEffectComponent())
         bar.components.set(ReaderHandleComponent(docID: docID))
         let outline = Entity()
-        outline.components.set(ViewAttachmentComponent(rootView: ReaderHandleOutline()))
+        outline.components.set(ViewAttachmentComponent(rootView: ReaderButtonOutline(word: "Move")))
         outline.position = SIMD3<Float>(0, 0, 0.001)
         bar.addChild(outline)
         root.addChild(bar)
@@ -13234,7 +13494,7 @@ final class ReaderPanels {
         let dot = ModelEntity(mesh: .generatePlane(width: Self.buttonWidth, height: Self.buttonHeight,
                                                    cornerRadius: Self.buttonHeight / 2),
                               materials: [material])
-        dot.position = SIMD3<Float>(0.05 + Self.scaleDotGap, -0.305, 0)
+        dot.position = SIMD3<Float>(Self.outerSpacing, -0.305, 0)
         dot.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(Self.buttonWidth + 0.01,
                                                                                       0.03, 0.02))]))
         dot.components.set(InputTargetComponent())
@@ -13247,28 +13507,47 @@ final class ReaderPanels {
         root.addChild(dot)
         // The close, left of the bar for balance (16 Nov 2026, Frode): Fold
         // in the same outline pill; pinched, the reading folds into its card.
-        let close = ModelEntity(mesh: .generatePlane(width: Self.buttonWidth, height: Self.buttonHeight,
+        // Zoom In to Fold (18 Nov 2026, Frode; was Fold): its own wider pill.
+        let close = ModelEntity(mesh: .generatePlane(width: Self.foldWidth, height: Self.buttonHeight,
                                                      cornerRadius: Self.buttonHeight / 2),
                                 materials: [material])
-        close.position = SIMD3<Float>(-0.05 - Self.scaleDotGap, -0.305, 0)
-        close.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(Self.buttonWidth + 0.01,
+        // Zoom In to Fold on a row of its own below (18 Nov 2026, Frode): the
+        // page's width in Scroll, never longer in Spread.
+        close.position = SIMD3<Float>(0, Self.foldRowY, 0)
+        close.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(Self.foldWidth + 0.01,
                                                                                         0.03, 0.02))]))
         close.components.set(InputTargetComponent())
         close.components.set(HoverEffectComponent())
         close.components.set(ReaderCloseComponent(docID: docID))
         let cross = Entity()
-        cross.components.set(ViewAttachmentComponent(rootView: ReaderButtonOutline(word: "Fold")))
+        cross.components.set(ViewAttachmentComponent(rootView: ReaderButtonOutline(word: "Zoom In to Fold",
+                                                                                   width: Self.foldWidth)))
         cross.position = SIMD3<Float>(0, 0, 0.001)
         close.addChild(cross)
         root.addChild(close)
+        // Pin between Move and Zoom In to Fold, Set Aside between it and
+        // Scale (18 Nov 2026, Frode) — the closed card's own buttons.
+        for (setAside, x) in [(false, -Self.pileSpacing), (true, Self.pileSpacing)] {
+            guard let view = pileButton(docID, setAside) else { continue }
+            let pile = Entity()
+            pile.components.set(ViewAttachmentComponent(rootView: view))
+            pile.position = SIMD3<Float>(x, -0.305, 0.002)
+            root.addChild(pile)
+        }
+        // The pose in the middle, where Zoom In to Fold stood.
+        if let view = poseButton(docID) {
+            let pose = Entity()
+            pose.components.set(ViewAttachmentComponent(rootView: view))
+            pose.position = SIMD3<Float>(0, -0.305, 0.002)
+            root.addChild(pose)
+        }
         // One whole document wide (15 Nov 2026, Frode): the bar follows
         // the page's measured width — which changes with the view (the
         // Horizontal pages, the margin) — checked twice a second while the
         // reading stands.
-        Task { @MainActor [weak self, weak bar, weak page, weak outline, weak dot, weak close, weak strip,
-                           weak stripHandle, weak shelf] in
-            var width: Float = 0.10
-            while let bar, let page, let outline, bar.parent != nil {
+        Task { @MainActor [weak self, weak bar, weak page, weak strip, weak stripHandle, weak shelf, weak close, weak cross] in
+            var foldBarWidth: Float = Self.foldWidth
+            while let bar, let page, bar.parent != nil {
                 if let strip, let holder = bar.parent {
                     // The notes' own height: the strip's attachment alone, not
                     // its grab bar (which would push itself up each look).
@@ -13290,25 +13569,25 @@ final class ReaderPanels {
                 if let shelf, let holder = bar.parent {
                     let foot = page.visualBounds(relativeTo: holder).min.y
                     let height = shelf.visualBounds(relativeTo: shelf).extents.y
-                    let y = foot - 0.035 - height / 2
+                    // Clear of the pills' two rows (18 Nov 2026).
+                    let y = foot - 0.065 - height / 2
                     if foot.isFinite, abs(shelf.position.y - y) > 0.002 { shelf.position.y = y }
                 }
-                // Two thirds of the page's width (16 Nov 2026, Frode; was all
-                // of it).
-                // Never longer than half a metre in the room (16 Nov 2026, Frode),
-                // whatever the reading's width or its scale.
-                let roomScale = max(bar.parent?.scale.x ?? 1, 0.01)
-                let measured = min(page.visualBounds(relativeTo: bar.parent).extents.x * 2 / 3,
-                                   Self.barLongest / roomScale)
-                if measured > 0.05, abs(measured - width) > 0.005 {
-                    width = measured
-                    bar.model?.mesh = .generatePlane(width: width, height: 0.008, cornerRadius: 0.004)
-                    bar.components.set(CollisionComponent(
-                        shapes: [.generateBox(size: SIMD3<Float>(width + 0.04, 0.035, 0.03))]))
-                    outline.components.set(ViewAttachmentComponent(
-                        rootView: ReaderHandleOutline(width: CGFloat(width) * 1360)))
-                    dot?.position.x = width / 2 + Self.scaleDotGap
-                    close?.position.x = -width / 2 - Self.scaleDotGap
+                // Zoom In to Fold as wide as the page in Scroll, and no
+                // wider in Spread (18 Nov 2026, Frode).
+                if let close, let cross, let self, let holder = bar.parent {
+                    let flat = self.appliedPoses[docID] == .flat
+                    let measured = min(page.visualBounds(relativeTo: holder).extents.x,
+                                       flat ? Self.scrollPageWidthFlat : Self.scrollPageWidth)
+                    if measured > 0.05, abs(measured - foldBarWidth) > 0.005 {
+                        foldBarWidth = measured
+                        close.model?.mesh = .generatePlane(width: measured, height: Self.buttonHeight,
+                                                           cornerRadius: Self.buttonHeight / 2)
+                        close.components.set(CollisionComponent(shapes: [.generateBox(
+                            size: SIMD3<Float>(measured + 0.01, 0.03, 0.02))]))
+                        cross.components.set(ViewAttachmentComponent(
+                            rootView: ReaderButtonOutline(word: "Zoom In to Fold", width: measured)))
+                    }
                 }
                 try? await Task.sleep(for: .milliseconds(500))
             }
@@ -13650,15 +13929,27 @@ final class ReaderPanels {
 
     /// The panel a touched entity belongs to — the handle bar answers,
     /// walking up parents.
-    /// Scale and Fold, word pills (16 Nov 2026, Frode: "sometimes icons are
-    /// not what we need"): each 4.4 × 1.6 cm, their middles this far past
-    /// the bar's ends.
+    /// Move and Scale, word pills (16 Nov 2026, Frode: "sometimes icons are
+    /// not what we need"): each 4.4 × 1.6 cm.
     static let buttonWidth: Float = 0.044
     static let buttonHeight: Float = 0.016
-    private static let scaleDotGap: Float = 0.034
-    /// The grab bar's longest, in the room's metres: half a metre (16 Nov
-    /// 2026, Frode; was 1 m).
-    private static let barLongest: Float = 0.5
+    /// The row under a reading (18 Nov 2026, Frode): Move · Pin · Zoom In
+    /// to Fold · Set Aside · Scale, a centimetre between each. Pin's and Set
+    /// Aside's middles either side of Zoom In to Fold's; Move's and Scale's
+    /// beyond them.
+    static let pileWidth: Float = 0.026
+    /// The pose button in the middle (18 Nov 2026), about Pin's size.
+    static let poseWidth: Float = 0.026
+    static let pileSpacing: Float = poseWidth / 2 + 0.01 + pileWidth / 2
+    /// Zoom In to Fold's row, under the pills' (18 Nov 2026, Frode).
+    static let foldRowY: Float = -0.331
+    /// The page's width in Scroll, in the reading's own metres: one column
+    /// (560 points, 280 lying flat) and its margins, 1360 to the metre.
+    static let scrollPageWidth: Float = (560 + 24) / 1360
+    static let scrollPageWidthFlat: Float = (280 + 24) / 1360
+    static let outerSpacing: Float = pileSpacing + pileWidth / 2 + 0.01 + buttonWidth / 2
+    /// Zoom In to Fold's pill, wide enough for its words.
+    static let foldWidth: Float = 0.082
     /// An open reading's size when the reader has given it none.
     private static let defaultScale: Float = 0.6
     /// How small and large a reading may be made.
