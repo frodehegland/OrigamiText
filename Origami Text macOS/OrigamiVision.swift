@@ -4864,6 +4864,11 @@ struct VisionVolumeToolbar: View {
                 // Here, should it take one room for another.
                 Section(PhysicalRooms.shared.currentName.map { "Physical Room: \($0)" } ?? "Physical Room: finding…") {
                     Button("New Room Here") { PhysicalRooms.shared.startNewRoomHere() }
+                    // Asked again, and any panels not found brought before the
+                    // reader (19 Nov 2026).
+                    Button("Which Room Is This?") { PhysicalRooms.shared.askAgain() }
+                    Button("Show Panels Not Found") { PhysicalRooms.shared.revealMissing() }
+                        .disabled(!PhysicalRooms.shared.isSettled)
                 }
                 // Every frame in the room into Move & Resize at once, and
                 // out again (16 Nov 2026, Frode). Dimmed with none up.
@@ -5955,7 +5960,9 @@ struct VisionReaderView: View {
 
     private var readingScheme: ColorScheme {
         if readingTheme != nil { return .light }
-        return isDesk ? deskTheme.scheme : colorScheme
+        // Focus keeps the pages' own look (19 Nov 2026, Frode): only the
+        // rest of the room goes, never the reading's dress.
+        return colorScheme
     }
 
     /// A page lying flat on the table is read from above at arm's
@@ -5983,7 +5990,7 @@ struct VisionReaderView: View {
             case .focus: "Focus"
             case .outline: "Outline"
             case .ai: "AI"
-            case .references: "References"
+            case .references: "Ref"
             }
         }
     }
@@ -6041,8 +6048,6 @@ struct VisionReaderView: View {
                 // columns each wear it instead (horizontalView).
                 if let themePage, mode != .horizontal {
                     themePage.ignoresSafeArea()
-                } else if isDesk, readingTheme == nil {
-                    deskTheme.page.ignoresSafeArea()
                 }
             }
             .foregroundStyle(readingTheme?.textColor(for: .light) ?? .primary)
@@ -6336,7 +6341,7 @@ struct VisionReaderView: View {
         let pages = horizontalPages(of: doc)
         let pose = model.pose(of: docID)
         let columnWidth: CGFloat = pose == .flat ? 280 : 560
-        let gap: CGFloat = isDesk ? 0 : 12
+        let gap: CGFloat = 12
         let fullWidth = CGFloat(pages.count) * (columnWidth + gap)
         return ScrollViewReader { pageProxy in
         ScrollView(.horizontal) {
@@ -6370,7 +6375,7 @@ struct VisionReaderView: View {
                         }
                     }
                     .glassBackgroundEffect(in: .rect(cornerRadius: 18),
-                                           displayMode: isDesk || themePage != nil ? .never : .always)
+                                           displayMode: themePage != nil ? .never : .always)
                     // A page not yet unfolded lies folded back against the
                     // one before it, swinging open from that page's edge.
                     .rotation3DEffect(.degrees(index < foldOpen ? 0 : -88),
@@ -7628,12 +7633,7 @@ struct VisionReaderView: View {
                 .help(pictured ? "Media — every picture, object, sound and film in the paper, above the page"
                                : "This paper has no pictures or other media")
                 separator
-                // Linked Abstract (16 Nov 2026, Frode): the abstract's
-                // {→ Section} links into the paper, on or off.
-                modeWord("Linked Abstract", chosen: abstractLinksOn) { abstractLinksOn.toggle() }
-                    .help(abstractLinksOn ? "Hide the abstract's links into the paper"
-                                          : "Link each sentence of the abstract to the parts of the paper that take it up")
-                separator
+                // (Linked Abstract left the bar 19 Nov 2026, Frode.)
                 // C (16 Nov 2026, Frode): the concepts the paper names — or,
                 // with none, the model's reading of them — under the page.
                 // Dimmed only when there are none and no model to ask.
@@ -7654,28 +7654,8 @@ struct VisionReaderView: View {
                 .disabled(!notes)
                 .opacity(notes ? 1 : 0.35)
                 .help(notes ? "Endnotes — above the page" : "This paper has no endnotes")
-                separator
-                // Focus (16 Nov 2026, Frode): everything else in the room put
-                // away — cards, lines, frames, other readings — this reading
-                // alone; pinched again, or the reading folded, all comes back.
-                // (It is the Reading Desk's, which its doc icon was.)
-                // Focus (16 Nov 2026, Frode, as it was): the reading's Focus
-                // view — one page or less — and, with it, the room put away
-                // but for this reading. Pinched again, or folded, both end.
-                let focusing = mode == .focus
-                modeWord("Focus", chosen: focusing) {
-                    findTerm = ""
-                    modeBeforeFind = nil
-                    if focusing {
-                        modeRaw = Mode.horizontal.rawValue
-                        if isDesk { model.readingDeskDocID = nil }
-                    } else {
-                        focusIndex = 0
-                        modeRaw = Mode.focus.rawValue
-                        model.readingDeskDocID = docID
-                    }
-                }
-                .help(focusing ? "Back to the pages, and the room" : "Focus — one page or less, and only this document in the room")
+                // (Focus stands under the page now, 19 Nov 2026, Frode:
+                // ReaderFocusButton.)
                 // (The pose — upright, drafting board, flat — and Pin and Set
                 // Aside stand among the pills under the page now, 18 Nov 2026,
                 // Frode: ReaderPoseButton, ReaderPileButton.)

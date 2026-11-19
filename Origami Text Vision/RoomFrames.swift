@@ -121,9 +121,10 @@ struct RoomFrame: Codable, Identifiable, Equatable {
     var isPanel: Bool { kind == Self.panelKind }
 
     var title: String {
-        guard isPanel else { return Self.title(of: kind) }
+        // A panel made a category frame keeps the name it was given.
         let given = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return given.isEmpty ? Self.unnamedPanel : given
+        if !given.isEmpty { return given }
+        return isPanel ? Self.unnamedPanel : Self.title(of: kind)
     }
 }
 
@@ -353,6 +354,8 @@ final class RoomFrames {
     /// not being moved and resized.
     func laysMembers(_ frame: RoomFrame) -> Bool {
         frame.isShown && !frame.isFolded && !arrangingIDs.contains(frame.id)
+            // Not before its place in this physical room is known.
+            && PhysicalRooms.shared.shouldShow(frame.id)
     }
 
     /// The frame a member belongs to, while it stands in it.
@@ -398,8 +401,12 @@ final class RoomFrames {
         if root.parent == nil { content.add(root) }
         // The shadows' lines follow their concepts each frame.
         shadowTick = content.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
-            MainActor.assumeIsolated { self?.layShadowLines() }
+            MainActor.assumeIsolated {
+                self?.layShadowLines()
+                self?.layQuestion()
+            }
         }
+        PhysicalRooms.shared.spaceOpened()
         guard !installed else { return }
         installed = true
         refresh()
@@ -535,6 +542,7 @@ final class RoomFrames {
                               picture: Self.defaultPicture, frame: Self.defaultStyle.rawValue,
                               frameThickness: Self.defaultThickness.rawValue, modified: Date())
         frames.append(frame)
+        PhysicalRooms.shared.madeNow(frame.id)
         PhysicalRooms.shared.record(frame)
         arrangingIDs.insert(frame.id)
         show(frame)
@@ -766,16 +774,125 @@ final class RoomFrames {
     /// shared file keeps where each last moved.
     func placeForRoom() {
         let rooms = PhysicalRooms.shared
-        guard rooms.current != nil else { return }
+        guard rooms.isSettled else { return }
         for index in frames.indices where frames[index].venue == venue && frames[index].deleted != true {
             if let pose = rooms.pose(of: frames[index].id) {
                 frames[index].transform = Self.columns(pose.transform)
                 frames[index].width = pose.width
                 frames[index].height = pose.height
-            } else {
+            } else if rooms.isNewHere(frames[index].id) {
+                // Never stood in this room: anchored where it stands.
                 rooms.record(frames[index])
             }
         }
+    }
+
+    /// A frame's own anchor found or refined (19 Nov 2026): it stands
+    /// there — unless the reader holds it.
+    func anchorMoved(_ frameID: String, firstTime: Bool) {
+        // Not while it is being moved and resized, nor while its new anchor
+        // is being made — the old one's word would pull it back.
+        guard !arrangingIDs.contains(frameID), !PhysicalRooms.shared.isAnchoring(frameID),
+              dragStart?.id != frameID, resizeStart?.id != frameID, rotateStart != frameID,
+              let index = frames.firstIndex(where: { $0.id == frameID }),
+              let pose = PhysicalRooms.shared.pose(of: frameID) else { return }
+        let before = frames[index].transform.count == 16
+            ? Self.translation(Self.matrix(frames[index].transform)) : nil
+        frames[index].transform = Self.columns(pose.transform)
+        frames[index].width = pose.width
+        frames[index].height = pose.height
+        show(frames[index])
+        // Its concepts are laid again when it first appears or has moved
+        // more than a few centimetres — not for every small refinement.
+        if !firstTime, let before, simd_distance(before, Self.translation(pose.transform)) < 0.005,
+           frames[index].width == pose.width { return }
+        let shift = before.map { simd_distance($0, Self.translation(pose.transform)) } ?? 1
+        if firstTime || shift > 0.05 { membersChanged() }
+    }
+
+    /// Shown again as it stands — its visibility asked afresh.
+    func reshow(_ frameID: String) {
+        if let frame = frame(frameID) { show(frame) }
+    }
+
+    /// An old room's place for a frame, carried over: it stands there and
+    /// is anchored (19 Nov 2026).
+    func place(_ frameID: String, at world: simd_float4x4, width: Float, height: Float) {
+        guard let index = frames.firstIndex(where: { $0.id == frameID }) else { return }
+        frames[index].transform = Self.columns(world)
+        frames[index].width = width
+        frames[index].height = height
+        PhysicalRooms.shared.record(frames[index])
+        show(frames[index])
+        membersChanged()
+    }
+
+    /// Frames whose places here were not found, stood in a row before the
+    /// reader to be carried where they belong (19 Nov 2026).
+    func standBeforeReader(_ ids: Set<String>) {
+        let head = headPose() ?? (SIMD3<Float>(0, 1.5, 0), SIMD3<Float>(0, 0, -1))
+        var forward = SIMD3<Float>(head.forward.x, 0, head.forward.z)
+        forward = simd_length(forward) > 1e-4 ? simd_normalize(forward) : SIMD3<Float>(0, 0, -1)
+        let up = SIMD3<Float>(0, 1, 0)
+        let ordered = frames.filter { ids.contains($0.id) }
+        for (n, frame) in ordered.enumerated() {
+            // Spread round the reader, 2 m away, 25° apart.
+            let angle = (Float(n) - Float(ordered.count - 1) / 2) * (.pi / 7.2)
+            let facing = simd_act(simd_quatf(angle: angle, axis: up), forward)
+            let middle = head.position + facing * 2
+            let normal = -facing
+            let right = simd_normalize(simd_cross(up, normal))
+            let m = simd_float4x4(SIMD4<Float>(right, 0), SIMD4<Float>(up, 0), SIMD4<Float>(normal, 0),
+                                  SIMD4<Float>(middle, 1))
+            guard let index = frames.firstIndex(where: { $0.id == frame.id }) else { continue }
+            frames[index].transform = Self.columns(m)
+            show(frames[index])
+        }
+        membersChanged()
+    }
+
+    // MARK: The room question (19 Nov 2026, Frode)
+
+    @ObservationIgnored private var question: Entity?
+    @ObservationIgnored private var questionShown = false
+
+    /// The question floats before the reader while the room is not known,
+    /// and goes when it is.
+    private func layQuestion() {
+        let asking = !PhysicalRooms.shared.isSettled
+        // Kept in view while it waits: turned away from, or walked away
+        // from, it comes round again before the reader.
+        if asking, questionShown, let entity = question, let head = headPose() {
+            let toQuestion = entity.position - head.position
+            var forward = SIMD3<Float>(head.forward.x, 0, head.forward.z)
+            forward = simd_length(forward) > 1e-4 ? simd_normalize(forward) : SIMD3<Float>(0, 0, -1)
+            let flat = SIMD3<Float>(toQuestion.x, 0, toQuestion.z)
+            let distance = simd_length(flat)
+            let inView = distance > 0.3 && simd_dot(flat / max(distance, 1e-4), forward) > 0.5
+            if !inView || distance > 2.5 { questionShown = false }
+        }
+        guard asking != questionShown else { return }
+        let entity = question ?? {
+            let made = Entity()
+            made.name = "roomQuestion"
+            made.components.set(ViewAttachmentComponent(rootView: RoomQuestionView()))
+            root.addChild(made)
+            question = made
+            return made
+        }()
+        guard asking else {
+            questionShown = false
+            entity.isEnabled = false
+            return
+        }
+        // Laid once the head is known, so it stands before the reader.
+        guard let head = headPose() else { return }
+        questionShown = true
+        entity.isEnabled = true
+        var forward = SIMD3<Float>(head.forward.x, 0, head.forward.z)
+        forward = simd_length(forward) > 1e-4 ? simd_normalize(forward) : SIMD3<Float>(0, 0, -1)
+        entity.position = head.position + forward * 1.1 - SIMD3<Float>(0, 0.15, 0)
+        entity.orientation = simd_quatf(from: SIMD3<Float>(0, 0, 1), to: -forward)
     }
 
     /// The frames of the room open now, for choosing which physical room
@@ -842,6 +959,34 @@ final class RoomFrames {
     func rename(_ id: String, to name: String) {
         let given = name.trimmingCharacters(in: .whitespacesAndNewlines)
         update(id) { $0.name = given.isEmpty ? nil : given }
+    }
+
+    /// A panel made a frame of a category, or back into a plain panel
+    /// (19 Nov 2026, Frode: chosen beside its name). A category frame
+    /// holds concepts only: the articles stuck to the panel are let go
+    /// where they stand, and the concepts stay, filed into it.
+    func setKind(_ id: String, to kind: String) {
+        guard let frame = frame(id), frame.kind != kind else { return }
+        if kind != RoomFrame.panelKind {
+            // Concepts are "person:" and "keyword:" items (EPUBMapView's
+            // personItemPrefix and keywordItemPrefix).
+            func isConcept(_ member: String) -> Bool {
+                member.hasPrefix("person:") || member.hasPrefix("keyword:")
+            }
+            var places: [String: SIMD3<Float>] = [:]
+            for (member, owner) in memberFrame where owner == id && !isConcept(member) {
+                if let slot = slots[member] { places[member] = slot }
+            }
+            update(id) {
+                $0.kind = kind
+                $0.members = ($0.members ?? []).filter(isConcept)
+                $0.pulled = []
+            }
+            if !places.isEmpty { placeLoose(places) }
+        } else {
+            update(id) { $0.kind = kind; $0.pulled = [] }
+        }
+        membersChanged()
     }
 
     /// A frame or panel put away shown again, or one in sight put away.
@@ -1417,8 +1562,12 @@ final class RoomFrames {
         if frame.transform.count == 16 { entity.transform = Transform(matrix: Self.matrix(frame.transform)) }
         entity.components.set(RoomFrameHitComponent(frameID: frame.id))
         entity.components.set(ModelSortGroupComponent(group: .planarUIAlwaysBehind, order: 0))
+        // A frame the reader is moving is never hidden, whatever its anchor
+        // says (19 Nov 2026, Frode: they disappeared when moved).
         let shown = frame.venue == venue && frame.isShown && frame.transform.count == 16
+            && (PhysicalRooms.shared.shouldShow(frame.id) || arrangingIDs.contains(frame.id))
         if entity.isEnabled != shown { entity.isEnabled = shown }
+        if shown { PhysicalRooms.shared.noteShown(frame.id) }
         decorate(entity, for: frame)
         border(entity, for: frame)
         placeTitle(on: entity, for: frame)
@@ -2176,6 +2325,8 @@ struct RoomFrameRoomName: View {
 /// The rooms, above a frame's foot: each saved one to change to, the one
 /// standing ticked; and a name to save the room as it stands under.
 struct RoomFrameRoomMenu: View {
+    /// The attachment's width in metres: the 900-point menu and a margin.
+    static let width: Float = 0.7
     let frameID: String
     @State private var name = ""
     /// Rename's field for the current room, and Delete's second press.
@@ -2217,7 +2368,7 @@ struct RoomFrameRoomMenu: View {
                                     Image(systemName: "checkmark")
                                         .opacity(layout.id == frames.currentLayoutID ? 1 : 0)
                                         .frame(width: 30)
-                                    Text(layout.name)
+                                    Text(layout.name).lineLimit(1).layoutPriority(1)
                                     Spacer(minLength: 12)
                                 }
                                 .font(.system(size: 24, weight: .medium))
@@ -2267,11 +2418,13 @@ struct RoomFrameRoomMenu: View {
                     }
                 }
                 .padding(24)
-                .frame(width: 560, alignment: .leading)
+                // Wide enough that a room's name stands whole beside
+                // Update, Rename and Delete (19 Nov 2026, Frode).
+                .frame(width: 900, alignment: .leading)
                 .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 32))
             }
         }
-        .frame(width: CGFloat(RoomFrameCornerMenu.width * RoomFrames.pointsPerMetre),
+        .frame(width: CGFloat(Self.width * RoomFrames.pointsPerMetre),
                height: CGFloat(RoomFrameCornerMenu.height * RoomFrames.pointsPerMetre),
                alignment: .bottom)
         .allowsHitTesting(open)
@@ -2376,8 +2529,9 @@ struct RoomFrameMenu: View {
         VStack(alignment: .leading, spacing: 4) {
             switch page {
             case .main:
-                // A panel's name is the reader's (18 Nov 2026, Frode).
-                if frame.isPanel {
+                // A panel's name is the reader's (18 Nov 2026, Frode) — and
+                // stays so once it is given a category.
+                if frame.isPanel || frame.name != nil {
                     row("Rename…", systemImage: "character.cursor.ibeam", more: true) {
                         nameDraft = frame.name ?? ""
                         page = .rename
@@ -2456,6 +2610,23 @@ struct RoomFrameMenu: View {
                         page = .main
                     }
                 HStack {
+                    // A category for it (19 Nov 2026, Frode): the panel
+                    // becomes a frame of that kind, showing its concepts.
+                    Menu {
+                        Picker("Category", selection: Binding(
+                            get: { frame.kind },
+                            set: { frames.setKind(frameID, to: $0) })) {
+                            Text("No Category").tag(RoomFrame.panelKind)
+                            ForEach(RoomFrame.kinds, id: \.self) { kind in
+                                Text(RoomFrame.title(of: kind)).tag(kind)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        Label(frame.isPanel ? "Category" : RoomFrame.title(of: frame.kind),
+                              systemImage: "square.grid.2x2")
+                    }
+                    .font(.system(size: 26, weight: .medium))
                     Spacer()
                     Button("Done") {
                         frames.rename(frameID, to: nameDraft)
@@ -2620,21 +2791,32 @@ struct RoomFrameGestures: ViewModifier {
     }
 }
 
-// MARK: - Physical rooms (18 Nov 2026, Frode)
+// MARK: - Physical rooms (18 Nov 2026, Frode; anchors per frame 19 Nov)
 
-/// A frame's place in one physical room: its matrix relative to the room's
-/// anchor, and its size there.
+/// A frame's place in one physical room under the old single-anchor scheme:
+/// its matrix relative to the room's anchor, and its size there. Kept to
+/// read old files (and in layouts, which no longer carry places).
 struct RoomPose: Codable, Equatable {
     var transform: [Float]
     var width: Float
     var height: Float
 }
 
-/// The physical rooms this headset is used in, each remembered by a world
-/// anchor: ARKit keeps it across launches and finds it again only in the
-/// room where it was made (Knowledge Space's way, from Author), so the
-/// room the reader stands in is known without asking. Frames keep a place
-/// in each room relative to its anchor. All of it is this headset's own.
+/// The physical rooms this headset is used in (19 Nov 2026, Frode: "rooms
+/// really are not mapped — open in a different part of the room and the
+/// panels go somewhere else").
+///
+/// Every frame has its OWN world anchor in each room it has stood in, made
+/// on the frame itself — Apple's way (one anchor per placed object) and
+/// Knowledge Space's. ARKit finds an anchor again only in the room where it
+/// was made, so a tracked anchor both says which room this is and where its
+/// frame stands, with no long lever from one anchor on the floor.
+///
+/// Until the room is known, frames that have a place somewhere are kept out
+/// of sight — never shown at the coordinates of another session. If nothing
+/// is recognised in a few seconds the reader is asked which room this is;
+/// a known room is then looked for while the reader looks around, and a new
+/// one starts here.
 @MainActor
 @Observable
 final class PhysicalRooms {
@@ -2644,22 +2826,87 @@ final class PhysicalRooms {
         let id: UUID
         var name: String
         var created: Date
+        /// When the reader last stood in it (19 Nov 2026).
+        var used: Date?
+    }
+
+    /// The rooms to offer, most recently stood in first — a few only.
+    var recentRooms: [Room] {
+        Array(rooms.sorted { ($0.used ?? $0.created) > ($1.used ?? $1.created) }.prefix(5))
+    }
+
+    /// The room the reader most likely stands in while it is being found:
+    /// the one last stood in (19 Nov 2026, Frode: shown lit).
+    var likelyRoom: UUID? {
+        if case .looking(let room) = phase { return room }
+        return recentRooms.first?.id
+    }
+
+    /// A frame's anchor in one room, and its size there.
+    struct Placement: Codable, Equatable {
+        var anchor: UUID
+        var width: Float
+        var height: Float
+    }
+
+    enum Phase: Equatable {
+        /// World tracking just started: looking for any known anchor.
+        case finding
+        /// Nothing recognised: the reader is asked which room this is.
+        case asking
+        /// The reader named a known room: waiting for its anchors.
+        case looking(UUID)
+        /// The room is known.
+        case settled(UUID)
     }
 
     private(set) var rooms: [Room] = []
-    /// The room the reader stands in: the nearest remembered room the
-    /// headset has found itself in. Nil until one is found or made.
-    private(set) var current: UUID?
-    var currentName: String? { rooms.first { $0.id == current }?.name }
+    private(set) var phase: Phase = .finding
 
-    /// Each room's anchor where the headset has found it this time.
+    /// The room the reader stands in, once known or named.
+    var current: UUID? {
+        switch phase {
+        case .looking(let room), .settled(let room): room
+        case .finding, .asking: nil
+        }
+    }
+    var currentName: String? { rooms.first { $0.id == current }?.name }
+    var isSettled: Bool { if case .settled = phase { true } else { false } }
+    var settledRoom: UUID? { if case .settled(let room) = phase { room } else { nil } }
+
+    /// Frame → room → its anchor there.
+    @ObservationIgnored private var placements: [String: [UUID: Placement]] = [:]
+    /// Anchor → its frame and room, from `placements`.
+    @ObservationIgnored private var owners: [UUID: (frame: String, room: UUID)] = [:]
+    /// Anchors found this session, where. Cleared each time tracking starts:
+    /// a transform from an earlier session is in that session's coordinates.
     @ObservationIgnored private var tracked: [UUID: simd_float4x4] = [:]
-    /// Room → frame → its place there.
-    @ObservationIgnored private var poses: [UUID: [String: RoomPose]] = [:]
-    @ObservationIgnored private var waitingSince: Date?
-    /// A room made this session because none was found in time — merged
-    /// into a remembered one if that is found after all.
-    @ObservationIgnored private var madeThisSession: UUID?
+    /// Old rooms' single anchors and their frames' places, carried over to
+    /// per-frame anchors the first time each is found.
+    @ObservationIgnored private var legacy: [UUID: [String: RoomPose]] = [:]
+    /// Frames shown although their anchor here is not found: the reader
+    /// asked, or it was not found in time. Each stands before the reader
+    /// until its anchor is found, or until it is moved and anchored afresh.
+    @ObservationIgnored private var revealed: Set<String> = []
+    /// Frames whose new anchor is being added.
+    @ObservationIgnored private var adding: Set<String> = []
+    /// Frames put up while the room is still being found: seen at once,
+    /// anchored when it is.
+    @ObservationIgnored private var madeThisRun: Set<String> = []
+    func madeNow(_ frameID: String) { madeThisRun.insert(frameID) }
+    /// Frames shown since the room was opened.
+    @ObservationIgnored private var seenThisOpening: Set<String> = []
+    func noteShown(_ frameID: String) { seenThisOpening.insert(frameID) }
+    /// The room opened: its frames' last places belong to the space just
+    /// closed, so none counts as seen.
+    func spaceOpened() { seenThisOpening = [] }
+    /// Whether a frame's new anchor is being made now.
+    func isAnchoring(_ frameID: String) -> Bool { adding.contains(frameID) }
+    /// Anchors of the rooms given up at the fresh start, removed when
+    /// tracking runs.
+    @ObservationIgnored private var retiring: [UUID] = []
+    /// Which tracking run this is, so a late timer from an old one is dropped.
+    @ObservationIgnored private var run = 0
 
     /// Set by the room's surfaces: a world anchor added where asked, its id.
     @ObservationIgnored var addAnchor: (simd_float4x4) async -> UUID? = { _ in nil }
@@ -2667,176 +2914,288 @@ final class PhysicalRooms {
     /// The reader's head.
     @ObservationIgnored var headPosition: () -> SIMD3<Float>? = { nil }
 
-    /// How long to look for a remembered room before taking this to be a
-    /// new one.
-    static let searchTime: TimeInterval = 30
+    /// How long to look for a known anchor before asking.
+    static let askAfter: Duration = .seconds(5)
+    /// How long a known room's missing frames are waited for once it is
+    /// found, before they stand before the reader.
+    static let revealAfter: Duration = .seconds(20)
 
     private init() { load() }
 
-    // MARK: Found and made
+    // MARK: Found, asked, made
 
-    /// World tracking is running: the room is looked for, and if none is
-    /// found in a few seconds, this one is remembered as new.
+    /// World tracking is running — freshly, each time the room is opened.
     func trackingStarted() {
-        waitingSince = Date()
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(Self.searchTime))
-            guard self.current == nil else { return }
-            await self.makeRoomHere()
+        run += 1
+        let thisRun = run
+        tracked = [:]
+        revealed = []
+        adding = []
+        madeThisRun = []
+        RoomLog.write("tracking started (run \(thisRun)); \(rooms.count) rooms, \(owners.count) frame anchors, \(legacy.count) old room anchors")
+        // Old anchors let go after the fresh start: removed once the session
+        // can take them.
+        for anchor in retiring { Task { @MainActor in await removeAnchor(anchor) } }
+        retiring = []
+        if rooms.isEmpty {
+            // No room known: nothing to find — the reader names this one.
+            phase = .asking
+            RoomFrames.shared.roomChanged()
+            return
         }
+        phase = .finding
+        RoomFrames.shared.roomChanged()
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.askAfter)
+            guard self.run == thisRun, self.phase == .finding else { return }
+            RoomLog.write("nothing recognised in \(Self.askAfter) — asking")
+            self.phase = .asking
+        }
+    }
+
+    /// The reader says which room this is: its frames are looked for.
+    func choose(_ room: UUID) {
+        guard rooms.contains(where: { $0.id == room }) else { return }
+        RoomLog.write("reader chose \(name(room))")
+        // One of its frames already found: it is here.
+        if owners.contains(where: { $0.value.room == room && tracked[$0.key] != nil }) {
+            settle(room, why: "chosen, already found")
+            return
+        }
+        phase = .looking(room)
+        RoomFrames.shared.roomChanged()
+    }
+
+    /// The reader says this is a room not yet known: it starts here, every
+    /// frame standing where it is now and anchored there.
+    func startNewRoom(named given: String) {
+        let trimmed = given.trimmingCharacters(in: .whitespacesAndNewlines)
+        let room = Room(id: UUID(), name: trimmed.isEmpty ? "Room \(rooms.count + 1)" : trimmed, created: Date())
+        rooms.append(room)
+        save()
+        RoomLog.write("new room \(room.name)")
+        settle(room.id, why: "new room")
+    }
+
+    /// Bar ▸ Panels ▸ New Room Here.
+    func startNewRoomHere() { startNewRoom(named: "") }
+
+    /// The room looked for is taken as found although none of its frames
+    /// has been: they stand before the reader, to be put where they belong.
+    func placeHereAnyway() {
+        guard case .looking(let room) = phase else { return }
+        settle(room, why: "placed here anyway")
+        revealMissing()
+    }
+
+    /// Back to the question.
+    func askAgain() {
+        RoomLog.write("asked again")
+        phase = .asking
+        RoomFrames.shared.roomChanged()
+    }
+
+    private func settle(_ room: UUID, why: String) {
+        RoomLog.write("settled in \(name(room)) — \(why)")
+        if let index = rooms.firstIndex(where: { $0.id == room }) {
+            rooms[index].used = Date()
+            save()
+        }
+        phase = .settled(room)
+        RoomFrames.shared.roomChanged()
+        let thisRun = run
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.revealAfter)
+            guard self.run == thisRun, self.settledRoom == room else { return }
+            self.revealMissing()
+        }
+    }
+
+    /// Frames with a place in this room whose anchors were not found: shown
+    /// before the reader, their anchors kept in case they are found later.
+    func revealMissing() {
+        guard let room = settledRoom else { return }
+        let missing = RoomFrames.shared.frameIDsHere.filter { id in
+            guard let placement = placements[id]?[room] else { return false }
+            return tracked[placement.anchor] == nil && !revealed.contains(id)
+        }
+        guard !missing.isEmpty else { return }
+        RoomLog.write("not found, shown before the reader: \(missing.sorted().joined(separator: ", "))")
+        revealed.formUnion(missing)
+        RoomFrames.shared.standBeforeReader(missing)
     }
 
     /// A world anchor found, moved or lost.
     func anchorUpdated(id: UUID, transform: simd_float4x4, tracked isTracked: Bool) {
-        guard rooms.contains(where: { $0.id == id }) else { return }
-        tracked[id] = isTracked ? transform : nil
-        chooseCurrent()
+        if let poses = legacy[id] {
+            guard isTracked else { return }
+            migrate(id, poses: poses, anchor: transform)
+            return
+        }
+        guard let owner = owners[id] else { return }
+        let wasTracked = tracked[id] != nil
+        // Once found this session an anchor's last place is kept, tracked
+        // or not (19 Nov 2026: a new anchor's first word is "not tracked",
+        // and taking that as lost hid every panel snapped to a wall).
+        guard isTracked else {
+            if wasTracked { RoomLog.write("tracking paused for \(owner.frame)") }
+            return
+        }
+        tracked[id] = transform
+        if !wasTracked { RoomLog.write("found \(owner.frame) in \(name(owner.room))") }
+        switch phase {
+        case .finding, .asking:
+            settle(owner.room, why: "recognised by \(owner.frame)")
+        case .looking(let room):
+            // ARKit knows better than the answer: an anchor it finds is here.
+            settle(owner.room, why: room == owner.room ? "found as chosen" : "recognised, not the room chosen")
+        case .settled(let room):
+            // Never another room mid-session — its anchors would not be
+            // tracked unless they were here, but one room's word is kept.
+            guard room == owner.room else { return }
+            revealed.remove(owner.frame)
+            RoomFrames.shared.anchorMoved(owner.frame, firstTime: !wasTracked)
+        }
     }
 
     func anchorRemoved(id: UUID) {
+        guard tracked[id] != nil else { return }
         tracked[id] = nil
-        chooseCurrent()
+        if let owner = owners[id] { RoomLog.write("anchor removed for \(owner.frame)") }
     }
 
-    /// The room the reader stands in, of those found within a dozen metres:
-    /// the one that knows most of this room's frames, then the nearest.
-    /// A room made this session gives way to a remembered one found late.
-    private func chooseCurrent() {
-        let head = headPosition()
-        mergeLateFind()
-        let frameIDs = RoomFrames.shared.frameIDsHere
-        func known(_ room: UUID) -> Int { (poses[room] ?? [:]).keys.filter { frameIDs.contains($0) }.count }
-        let near = tracked.filter { distance($0.value, head) < 12 }
-        guard let choice = near.keys.max(by: { a, b in
-            let ka = known(a), kb = known(b)
-            if ka != kb { return ka < kb }
-            return distance(near[a]!, head) > distance(near[b]!, head)
-        }) else { return }
-        // Keep the room while it still knows as many.
-        if let current, near[current] != nil, known(current) >= known(choice) { return }
-        guard choice != current else { return }
-        current = choice
-        RoomFrames.shared.roomChanged()
-    }
-
-    /// A room made this session as new, when a remembered room is found
-    /// after all within a few metres of it: one room, not two. What was
-    /// placed in the new one is carried over into the remembered one, and
-    /// the new one forgotten.
-    private func mergeLateFind() {
-        func at(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3<Float>(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
-        func created(_ id: UUID) -> Date { rooms.first { $0.id == id }?.created ?? .distantPast }
-        // Two remembered rooms found within a metre and a half of each
-        // other are one room made twice (the early, impatient search):
-        // the younger folds into the elder.
-        for (a, ma) in tracked {
-            for (b, mb) in tracked where a != b && simd_distance(at(ma), at(mb)) < 1.5 {
-                let (young, elder) = created(a) > created(b) ? (a, b) : (b, a)
-                merge(young, into: elder)
-                return
-            }
-        }
-        guard let made = madeThisSession, let madeAnchor = tracked[made] else { return }
-        guard let (old, _) = tracked.first(where: { id, m in
-            id != made && simd_distance(at(m), at(madeAnchor)) < 15
-        }) else { return }
-        merge(made, into: old)
-    }
-
-    /// One room's places carried into another's, and the first forgotten.
-    private func merge(_ made: UUID, into old: UUID) {
-        guard let madeAnchor = tracked[made], let oldAnchor = tracked[old] else { return }
-        // The younger room's places are the more recent — what the reader
-        // last arranged — so they win.
-        for (frame, pose) in poses[made] ?? [:] {
-            let world = madeAnchor * RoomFrames.matrix(pose.transform)
-            let relative = simd_inverse(oldAnchor) * world
-            poses[old, default: [:]][frame] = RoomPose(transform: RoomFrames.columns(relative),
-                                                     width: pose.width, height: pose.height)
-        }
-        poses[made] = nil
-        rooms.removeAll { $0.id == made }
-        tracked[made] = nil
-        madeThisSession = nil
-        if current == made { current = nil }
-        save()
-        Task { @MainActor in await removeAnchor(made) }
-    }
-
-    private func distance(_ m: simd_float4x4, _ head: SIMD3<Float>?) -> Float {
-        guard let head else { return 0 }
-        return simd_distance(SIMD3<Float>(m.columns.3.x, m.columns.3.y, m.columns.3.z), head)
-    }
-
-    /// This room remembered as new: an anchor at the reader's feet, upright.
-    /// The first room of all keeps every frame where it stands.
-    func makeRoomHere(asked: Bool = false) async {
-        // Something found meanwhile: no new room — unless the reader asked.
-        guard asked || tracked.isEmpty || current == nil else { return }
-        let head = headPosition() ?? .zero
-        var m = matrix_identity_float4x4
-        m.columns.3 = SIMD4<Float>(head.x, 0, head.z, 1)
-        guard let id = await addAnchor(m) else { return }
-        let first = rooms.isEmpty
-        rooms.append(Room(id: id, name: "Room \(rooms.count + 1)", created: Date()))
-        tracked[id] = m
-        current = id
-        if !first { madeThisSession = id }
-        if first {
-            for frame in RoomFrames.shared.allFrames where frame.deleted != true { record(frame) }
+    /// An old room's single anchor found: each of its frames' places made
+    /// into the frame's own anchor here, and the old anchor let go.
+    private func migrate(_ roomAnchor: UUID, poses: [String: RoomPose], anchor: simd_float4x4) {
+        legacy[roomAnchor] = nil
+        // The old room's id was its anchor's.
+        let room = roomAnchor
+        RoomLog.write("old room \(name(room)) found: \(poses.count) places carried to frame anchors")
+        if !isSettled { settle(room, why: "old room anchor found") }
+        guard settledRoom == room else { save(); return }
+        for (frameID, pose) in poses where pose.transform.count == 16 && placements[frameID]?[room] == nil {
+            let world = anchor * RoomFrames.matrix(pose.transform)
+            RoomFrames.shared.place(frameID, at: world, width: pose.width, height: pose.height)
         }
         save()
-        RoomFrames.shared.roomChanged()
-    }
-
-    /// The reader says this is another room: remembered as new from here.
-    func startNewRoomHere() {
-        Task { @MainActor in await makeRoomHere(asked: true) }
+        Task { @MainActor in await removeAnchor(roomAnchor) }
     }
 
     // MARK: Places
 
-    /// A frame's place in the room the reader stands in, in the world.
+    /// Whether a frame may be seen now: only once its place is known here,
+    /// or it has no place here yet (new to this room), or it was revealed.
+    func shouldShow(_ frameID: String) -> Bool {
+        // Seen once since the room opened, never hidden again (19 Nov 2026,
+        // Frode: panels vanished on Done) — hiding is only for the first
+        // moments, before a frame's place is known.
+        if seenThisOpening.contains(frameID) { return true }
+        guard let room = settledRoom else { return madeThisRun.contains(frameID) }
+        guard let placement = placements[frameID]?[room] else { return true }
+        return tracked[placement.anchor] != nil || revealed.contains(frameID)
+    }
+
+    /// Whether a frame has never stood in this room.
+    func isNewHere(_ frameID: String) -> Bool {
+        guard let room = settledRoom else { return false }
+        return placements[frameID]?[room] == nil
+    }
+
+    /// A frame's place in the room the reader stands in, in the world —
+    /// only once its anchor is found this session.
     func pose(of frameID: String) -> (transform: simd_float4x4, width: Float, height: Float)? {
-        guard let current, let anchor = tracked[current], let pose = poses[current]?[frameID],
-              pose.transform.count == 16 else { return nil }
-        return (anchor * RoomFrames.matrix(pose.transform), pose.width, pose.height)
+        guard let room = settledRoom, let placement = placements[frameID]?[room],
+              let transform = tracked[placement.anchor] else { return nil }
+        return (transform, placement.width, placement.height)
     }
 
-    /// A frame's place now, remembered for the room the reader stands in.
+    /// A frame's place now, kept for this room: a new anchor on the frame,
+    /// the old one let go — only when it has really moved, and never for a
+    /// frame whose place here is not yet found.
     func record(_ frame: RoomFrame) {
-        guard let current, let anchor = tracked[current], frame.transform.count == 16 else { return }
-        let relative = simd_inverse(anchor) * RoomFrames.matrix(frame.transform)
-        let pose = RoomPose(transform: RoomFrames.columns(relative), width: frame.width, height: frame.height)
-        guard poses[current]?[frame.id] != pose else { return }
-        poses[current, default: [:]][frame.id] = pose
+        guard let room = settledRoom, frame.transform.count == 16, frame.deleted != true else { return }
+        let m = RoomFrames.matrix(frame.transform)
+        let old = placements[frame.id]?[room]
+        if let old {
+            if let at = tracked[old.anchor] {
+                if Self.close(at, m), old.width == frame.width, old.height == frame.height { return }
+            } else if !revealed.contains(frame.id) {
+                // Hidden, waiting for its anchor: where it stands means nothing.
+                return
+            }
+        }
+        guard !adding.contains(frame.id) else { return }
+        adding.insert(frame.id)
+        let width = frame.width, height = frame.height
+        Task { @MainActor in
+            defer { self.adding.remove(frame.id) }
+            guard let anchor = await self.addAnchor(m) else {
+                RoomLog.write("anchor NOT added for \(frame.id)")
+                return
+            }
+            guard self.settledRoom == room else {
+                await self.removeAnchor(anchor)
+                return
+            }
+            // The new place first, so the frame is never without one —
+            // shown in between, it would be hidden (19 Nov 2026).
+            let previous = self.placements[frame.id]?[room]?.anchor
+            self.placements[frame.id, default: [:]][room] = Placement(anchor: anchor, width: width, height: height)
+            self.owners[anchor] = (frame.id, room)
+            self.tracked[anchor] = m
+            self.revealed.remove(frame.id)
+            self.save()
+            RoomLog.write("anchored \(frame.id) in \(self.name(room))")
+            RoomFrames.shared.reshow(frame.id)
+            if let previous {
+                self.owners[previous] = nil
+                self.tracked[previous] = nil
+                await self.removeAnchor(previous)
+            }
+            // Moved again while the anchor was being made: anchored again.
+            if let now = RoomFrames.shared.frame(frame.id), now.transform.count == 16,
+               !Self.close(RoomFrames.matrix(now.transform), m) {
+                self.record(now)
+            }
+        }
+    }
+
+    /// A frame deleted: its anchors let go in every room.
+    func forget(_ frameID: String) {
+        guard let rooms = placements.removeValue(forKey: frameID) else { return }
+        for placement in rooms.values {
+            owners[placement.anchor] = nil
+            tracked[placement.anchor] = nil
+            Task { @MainActor in await removeAnchor(placement.anchor) }
+        }
         save()
     }
 
-    /// Every room's places for these frames — a layout keeps them.
-    func poses(for frameIDs: Set<String>) -> [String: [String: RoomPose]] {
-        var out: [String: [String: RoomPose]] = [:]
-        for (room, places) in poses {
-            let kept = places.filter { frameIDs.contains($0.key) }
-            if !kept.isEmpty { out[room.uuidString] = kept }
-        }
-        return out
+    /// Layouts no longer carry places: each frame's anchors are this
+    /// headset's own, found again wherever the frame has stood.
+    func poses(for frameIDs: Set<String>) -> [String: [String: RoomPose]] { [:] }
+    func adopt(_ layoutPoses: [String: [String: RoomPose]]) {}
+
+    /// Within a centimetre and a degree.
+    private static func close(_ a: simd_float4x4, _ b: simd_float4x4) -> Bool {
+        let da = SIMD3<Float>(a.columns.3.x, a.columns.3.y, a.columns.3.z)
+        let db = SIMD3<Float>(b.columns.3.x, b.columns.3.y, b.columns.3.z)
+        guard simd_distance(da, db) < 0.01 else { return false }
+        let za = simd_normalize(SIMD3<Float>(a.columns.2.x, a.columns.2.y, a.columns.2.z))
+        let zb = simd_normalize(SIMD3<Float>(b.columns.2.x, b.columns.2.y, b.columns.2.z))
+        return simd_dot(za, zb) > 0.99985
     }
 
-    /// A layout's places taken back, for the rooms this headset knows.
-    func adopt(_ layoutPoses: [String: [String: RoomPose]]) {
-        for (key, places) in layoutPoses {
-            guard let room = UUID(uuidString: key), rooms.contains(where: { $0.id == room }) else { continue }
-            for (frame, pose) in places { poses[room, default: [:]][frame] = pose }
-        }
-        save()
-    }
+    private func name(_ room: UUID) -> String { rooms.first { $0.id == room }?.name ?? "an unknown room" }
 
     // MARK: Keeping
 
     private struct Stored: Codable {
         var rooms: [Room]
-        var poses: [String: [String: RoomPose]]
+        /// The old scheme's: room (its anchor's id) → frame → place.
+        var poses: [String: [String: RoomPose]]?
+        /// Frame → room → its anchor.
+        var placements: [String: [String: Placement]]?
     }
 
     nonisolated private static var url: URL {
@@ -2849,26 +3208,146 @@ final class PhysicalRooms {
     private func load() {
         guard let data = try? Data(contentsOf: Self.url),
               let stored = try? JSONDecoder().decode(Stored.self, from: data) else { return }
-        rooms = stored.rooms
-        // Once (18 Nov 2026): the places kept before frames stopped being
-        // swung out before the reader held those swung-out places; they go,
-        // and each frame takes where it stands as its place again.
-        let cleared = "physicalRooms.placesCleared.v2"
-        guard UserDefaults.standard.bool(forKey: cleared) else {
-            UserDefaults.standard.set(true, forKey: cleared)
+        // A fresh start (19 Nov 2026, Frode: "we start from scratch today"):
+        // every room known before forgotten, its anchors let go.
+        let fresh = "physicalRooms.freshStart.v3"
+        if !UserDefaults.standard.bool(forKey: fresh) {
+            UserDefaults.standard.set(true, forKey: fresh)
+            retiring = stored.rooms.map(\.id)
+                + (stored.placements ?? [:]).values.flatMap { $0.values.map(\.anchor) }
+            RoomLog.write("fresh start: \(stored.rooms.count) rooms and their anchors forgotten")
             save()
             return
         }
-        for (key, places) in stored.poses {
-            if let id = UUID(uuidString: key) { poses[id] = places }
+        rooms = stored.rooms
+        for (key, places) in stored.poses ?? [:] where !places.isEmpty {
+            if let id = UUID(uuidString: key) { legacy[id] = places }
+        }
+        for (frame, byRoom) in stored.placements ?? [:] {
+            for (key, placement) in byRoom {
+                guard let room = UUID(uuidString: key) else { continue }
+                placements[frame, default: [:]][room] = placement
+                owners[placement.anchor] = (frame, room)
+            }
         }
     }
 
     private func save() {
-        let stored = Stored(rooms: rooms,
-                            poses: Dictionary(uniqueKeysWithValues: poses.map { ($0.key.uuidString, $0.value) }))
+        let stored = Stored(
+            rooms: rooms,
+            poses: legacy.isEmpty ? nil
+                : Dictionary(uniqueKeysWithValues: legacy.map { ($0.key.uuidString, $0.value) }),
+            placements: placements.mapValues { byRoom in
+                Dictionary(uniqueKeysWithValues: byRoom.map { ($0.key.uuidString, $0.value) })
+            })
         guard let data = try? JSONEncoder().encode(stored) else { return }
         try? data.write(to: Self.url, options: .atomic)
+    }
+}
+
+/// What the rooms did, kept on the headset to be read back after a session
+/// (19 Nov 2026): Application Support/origami-room-log.txt, the last 2000
+/// lines.
+enum RoomLog {
+    nonisolated static var url: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("origami-room-log.txt")
+    }
+
+    @MainActor private static var lines: [String] = {
+        ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+            .split(separator: "\n").map(String.init)
+    }()
+
+    @MainActor static func write(_ line: String) {
+        let stamp = Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false))
+        lines.append("\(stamp)  \(line)")
+        if lines.count > 2000 { lines.removeFirst(lines.count - 2000) }
+        print("Map/rooms: \(line)")
+        try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    @MainActor static var text: String { lines.joined(separator: "\n") }
+}
+
+/// The question asked when the room is not recognised (19 Nov 2026, Frode):
+/// which room this is — a known one to look for, or a new one to start —
+/// and while a known one is looked for, what to do: look around.
+struct RoomQuestionView: View {
+    @State private var newName = ""
+
+    var body: some View {
+        let rooms = PhysicalRooms.shared
+        VStack(alignment: .leading, spacing: 16) {
+            switch rooms.phase {
+            case .finding, .asking:
+                if rooms.rooms.isEmpty {
+                    Text("Name this room")
+                        .font(.system(size: 34, weight: .semibold))
+                    Text("Panels you place here will be found in it again.")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.secondary)
+                } else {
+                    // While finding, the room it is most likely lit; pinch
+                    // any to say which it is.
+                    Label(rooms.phase == .finding ? "Finding this room…" : "Which room are you in?",
+                          systemImage: "viewfinder")
+                        .font(.system(size: 30, weight: .semibold))
+                    ForEach(rooms.recentRooms) { room in
+                        let likely = room.id == rooms.likelyRoom
+                        Button {
+                            rooms.choose(room.id)
+                        } label: {
+                            HStack {
+                                Text(room.name)
+                                Spacer()
+                                if likely, rooms.phase == .finding { ProgressView().controlSize(.small) }
+                            }
+                            .font(.system(size: 26, weight: likely ? .semibold : .regular))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: 14)
+                                .fill(Color.accentColor.opacity(likely ? 0.45 : 0)))
+                            .overlay(RoundedRectangle(cornerRadius: 14)
+                                .strokeBorder(.white.opacity(likely ? 0.8 : 0), lineWidth: 2))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Divider().padding(.vertical, 4)
+                    Text("Or a new room, starting here")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    TextField("Room \(rooms.rooms.count + 1)", text: $newName)
+                        .font(.system(size: 24))
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { rooms.startNewRoom(named: newName) }
+                    Button("Start Here") { rooms.startNewRoom(named: newName) }
+                        .font(.system(size: 22, weight: .semibold))
+                }
+            case .looking:
+                Text("Look around \(rooms.currentName ?? "the room")")
+                    .font(.system(size: 34, weight: .semibold))
+                Text("Its panels appear in their places as the headset recognises the room — look at the walls where they stand.")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("Another Room") { rooms.askAgain() }
+                    Spacer()
+                    Button("Place Panels Here") { rooms.placeHereAnyway() }
+                }
+                .font(.system(size: 22, weight: .semibold))
+            case .settled:
+                EmptyView()
+            }
+        }
+        .padding(32)
+        .frame(width: 640, alignment: .leading)
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 36))
     }
 }
 #endif

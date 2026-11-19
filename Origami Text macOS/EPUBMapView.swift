@@ -3049,10 +3049,11 @@ struct EPUBMapView: View {
                             readerPanels.dragStart[docID] = start
                             root.position = start + value.convert(
                                 value.gestureValue.translation3D, from: .local, to: .scene)
-                            // Held by its bar, the page keeps the angle it has
-                            // (16 Nov 2026, Frode: it swivelled too much);
-                            // shaken as it is held, it squares itself to the
-                            // reader along the room's main axis.
+                            // Held by its bar, the page turns to the reader,
+                            // eased (19 Nov 2026, Frode; it kept its angle from
+                            // 16 Nov, when it swivelled too much); shaken as it
+                            // is held, it squares itself to the reader along
+                            // the room's main axis, and stays so this hold.
                             readerPanels.carried(docID: docID,
                                                  hand: value.convert(value.location3D, from: .local, to: .scene),
                                                  head: faceTurner.headPose()?.position)
@@ -3079,6 +3080,7 @@ struct EPUBMapView: View {
                             return
                         }
                         readerPanels.dragStart = [:]
+                        readerPanels.endCarry()
                         // A pad pulled off the wrist: where the hand
                         // let go, a note stands. A pinch that barely
                         // moved is a tap, and leaves the pad alone —
@@ -3649,9 +3651,12 @@ struct EPUBMapView: View {
             } else if !cardTick.facingWhileMoved.contains(item.id) {
                 let openFree = item.isSelected && item.showsAbstract && standsFree(item)
                 // An exhibit turns too, keeping its lean (MapCardTick.leaning).
-                // (A lifted card no longer turns, 15 Nov 2026, Frode: it
-                // stands flat and keeps its angle like any card.)
-                if openFree || item.isExhibited || Self.isSpatialLabel(item)
+                // Every card turns to the reader while held (19 Nov 2026,
+                // Frode; from 15 Nov they kept their angle) — and, let go,
+                // keeps the angle it was carried at.
+                let card = !item.isGhost && !item.isFaded
+                    && (item.kind == .article || item.kind == .cited || item.kind == .citedDeep)
+                if openFree || card || item.isExhibited || Self.isSpatialLabel(item)
                     || item.id.hasPrefix("concept:") || item.id.hasPrefix("float:") {
                     cardTick.facingWhileMoved.insert(item.id)
                     if openFree { cardTick.openTurns.insert(item.id) }
@@ -3949,10 +3954,17 @@ struct EPUBMapView: View {
             readerPanels.poseButton = { [model] docID in
                 AnyView(ReaderPoseButton(model: model, docID: docID))
             }
+            readerPanels.focusButton = { [model] docID in
+                AnyView(ReaderFocusButton(model: model, docID: docID))
+            }
             // A reading laid flat rests on the table under it (18 Nov 2026).
             readerPanels.tableBelow = { [roomSurfaces] place in
                 roomSurfaces.tableTop(under: place)
             }
+            readerPanels.tableSpot = { [roomSurfaces] head, forward in
+                roomSurfaces.tableSpot(before: head, facing: forward)
+            }
+            readerPanels.headPose = { [faceTurner] in faceTurner.headPose() }
             readerPanels.roomAxis = { [roomSurfaces] in
                 roomSurfaces.surfaces()
                     .filter { !$0.isFloor && !$0.isSeatOrTable && abs($0.normal.y) < 0.3 }
@@ -5427,6 +5439,27 @@ struct EPUBMapView: View {
             let named = Set(model.concepts(mentionedIn: card).map { ConceptTerm.normalise($0.term) })
             for pill in pills where named.contains(ConceptTerm.normalise(pill.title)) {
                 edges.append((from: card, to: pill.id))
+            }
+        }
+        // A chosen paper threads to its authors' cards (19 Nov 2026, Frode):
+        // each author standing as a concept in the room or in a panel.
+        let chosenPapers = items.filter { $0.isSelected && $0.kind == .article && !$0.isGhost }
+        if !chosenPapers.isEmpty {
+            let people = items.filter {
+                !$0.isGhost && ($0.id.hasPrefix(Self.personItemPrefix) || isPersonConcept($0))
+            }
+            for card in chosenPapers {
+                let authorKeys = Set(paperAuthors(card.id).flatMap { OrigamiPortraits.keys($0) })
+                guard !authorKeys.isEmpty else { continue }
+                for person in people {
+                    var keys = OrigamiPortraits.keys(person.title)
+                    if person.id.hasPrefix(Self.personItemPrefix) {
+                        keys.append(String(person.id.dropFirst(Self.personItemPrefix.count)))
+                    }
+                    if keys.contains(where: authorKeys.contains) {
+                        edges.append((from: card.id, to: person.id))
+                    }
+                }
             }
         }
         for item in pills where item.isSelected && keywordModes[item.id] != .lines {
@@ -12940,29 +12973,21 @@ private struct ReaderPileButton: View {
     }
 }
 
-/// The pose under a reading (18 Nov 2026, Frode; was in the reading's own
-/// bar): upright, a drafting board, flat on the table — each pinch the
-/// next — in the closed card's bordered style.
+/// Angle under a reading (19 Nov 2026, Frode; the pose button of 18 Nov):
+/// upright, a drafting board, flat on the table — each pinch the next — a
+/// word pill like Fold and Scale.
 private struct ReaderPoseButton: View {
     let model: VisionModel
     let docID: String
 
     var body: some View {
         let pose = model.pose(of: docID)
-        Button {
+        ReaderWordPill(word: "Angle", lit: pose != .upright) {
             switch pose {
             case .upright: model.panelPoses[docID] = .tilted
             case .tilted: model.panelPoses[docID] = .flat
             case .flat: model.panelPoses[docID] = nil
             }
-        } label: {
-            Image(systemName: {
-                switch pose {
-                case .upright: "arrow.down.to.line.compact"
-                case .tilted: "arrow.down.to.line"
-                case .flat: "arrow.up.to.line.compact"
-                }
-            }())
         }
         .help({
             switch pose {
@@ -12971,9 +12996,46 @@ private struct ReaderPoseButton: View {
             case .flat: "Stand the page back up"
             }
         }())
-        .buttonStyle(.bordered)
-        .controlSize(.mini)
-        .font(.system(size: 11))
+    }
+}
+
+/// Focus under a reading (19 Nov 2026, Frode; was in the reading's own
+/// bar): the reading's Focus view — one page or less — and the room put
+/// away but for this reading. Pinched again, both end.
+private struct ReaderFocusButton: View {
+    let model: VisionModel
+    let docID: String
+
+    var body: some View {
+        // Everything else in the room put away, the reading itself as it
+        // was — not the Focus reading view (19 Nov 2026, Frode).
+        let focusing = model.readingDeskDocID == docID
+        ReaderWordPill(word: "Focus", lit: focusing) {
+            model.readingDeskDocID = focusing ? nil : docID
+        }
+        .help(focusing ? "Bring the room back" : "Focus — hide everything else in the room")
+    }
+}
+
+/// A word in an outline pill that answers a pinch itself — Fold's and
+/// Scale's look, lit while on. A tap, not a Button: no system plate.
+private struct ReaderWordPill: View {
+    let word: String
+    var lit = false
+    let action: () -> Void
+
+    var body: some View {
+        Text(word)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: CGFloat(ReaderPanels.buttonWidth) * 1360,
+                   height: CGFloat(ReaderPanels.buttonHeight) * 1360)
+            .background(Capsule().fill(.white.opacity(lit ? 0.22 : 0.001)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.7), lineWidth: 1.2))
+            .contentShape(.hoverEffect, Capsule())
+            .hoverEffect(.highlight)
+            .contentShape(Capsule())
+            .onTapGesture(perform: action)
     }
 }
 
@@ -13356,10 +13418,16 @@ final class ReaderPanels {
     var pileButton: (_ docID: String, _ setAside: Bool) -> AnyView? = { _, _ in nil }
     /// The pose — upright, drafting board, flat — in the row's middle.
     var poseButton: (_ docID: String) -> AnyView? = { _ in nil }
+    /// Focus under a reading (19 Nov 2026), set by the room.
+    var focusButton: (_ docID: String) -> AnyView? = { _ in nil }
 
     /// The table under a place, as the room's plane detection finds it:
     /// its top's world height, nil where no table is (set by the room).
     var tableBelow: (SIMD3<Float>) -> Float? = { _ in nil }
+    /// The table spot before the reader, and the reader's head (set by
+    /// the room, 19 Nov 2026).
+    var tableSpot: (_ head: SIMD3<Float>, _ forward: SIMD3<Float>) -> SIMD3<Float>? = { _, _ in nil }
+    var headPose: () -> (position: SIMD3<Float>, forward: SIMD3<Float>)? = { nil }
 
     /// Where a flat page lies (18 Nov 2026, Frode): on whatever table is
     /// under it — a desk, a counter — so carried across the room it lands
@@ -13467,21 +13535,22 @@ final class ReaderPanels {
         var material = UnlitMaterial()
         material.color = .init(tint: .white)
         material.blending = .transparent(opacity: 0.001)
-        // Move (18 Nov 2026, Frode): the bar is a pill now, Scale's size,
-        // at the left — Zoom In to Fold in the middle, Scale at the right.
-        // Still only it drags, so the page keeps every touch.
+        // The row under a reading (19 Nov 2026, Frode): Angle · Fold · the
+        // grab bar · Focus · Scale. The bar is a long outline again, no
+        // word, in the middle; still only it drags, so the page keeps every
+        // touch.
         let bar = ModelEntity(
-            mesh: .generatePlane(width: Self.buttonWidth, height: Self.buttonHeight,
+            mesh: .generatePlane(width: Self.grabWidth, height: Self.buttonHeight,
                                  cornerRadius: Self.buttonHeight / 2),
             materials: [material])
-        bar.position = SIMD3<Float>(-Self.outerSpacing, -0.305, 0)
+        bar.position = SIMD3<Float>(0, -0.305, 0)
         bar.components.set(CollisionComponent(
-            shapes: [.generateBox(size: SIMD3<Float>(Self.buttonWidth + 0.01, 0.03, 0.02))]))
+            shapes: [.generateBox(size: SIMD3<Float>(Self.grabWidth + 0.01, 0.03, 0.02))]))
         bar.components.set(InputTargetComponent())
         bar.components.set(HoverEffectComponent())
         bar.components.set(ReaderHandleComponent(docID: docID))
         let outline = Entity()
-        outline.components.set(ViewAttachmentComponent(rootView: ReaderButtonOutline(word: "Move")))
+        outline.components.set(ViewAttachmentComponent(rootView: ReaderButtonOutline(word: "", width: Self.grabWidth)))
         outline.position = SIMD3<Float>(0, 0, 0.001)
         bar.addChild(outline)
         root.addChild(bar)
@@ -13494,7 +13563,7 @@ final class ReaderPanels {
         let dot = ModelEntity(mesh: .generatePlane(width: Self.buttonWidth, height: Self.buttonHeight,
                                                    cornerRadius: Self.buttonHeight / 2),
                               materials: [material])
-        dot.position = SIMD3<Float>(Self.outerSpacing, -0.305, 0)
+        dot.position = SIMD3<Float>(Self.scaleX, -0.305, 0)
         dot.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(Self.buttonWidth + 0.01,
                                                                                       0.03, 0.02))]))
         dot.components.set(InputTargetComponent())
@@ -13511,42 +13580,39 @@ final class ReaderPanels {
         let close = ModelEntity(mesh: .generatePlane(width: Self.foldWidth, height: Self.buttonHeight,
                                                      cornerRadius: Self.buttonHeight / 2),
                                 materials: [material])
-        // Zoom In to Fold on a row of its own below (18 Nov 2026, Frode): the
-        // page's width in Scroll, never longer in Spread.
-        close.position = SIMD3<Float>(0, Self.foldRowY, 0)
+        // Fold left of the bar, in the row (19 Nov 2026, Frode).
+        close.position = SIMD3<Float>(Self.foldX, -0.305, 0)
         close.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(Self.foldWidth + 0.01,
                                                                                         0.03, 0.02))]))
         close.components.set(InputTargetComponent())
         close.components.set(HoverEffectComponent())
         close.components.set(ReaderCloseComponent(docID: docID))
         let cross = Entity()
-        cross.components.set(ViewAttachmentComponent(rootView: ReaderButtonOutline(word: "Zoom In to Fold",
+        cross.components.set(ViewAttachmentComponent(rootView: ReaderButtonOutline(word: "Fold",
                                                                                    width: Self.foldWidth)))
         cross.position = SIMD3<Float>(0, 0, 0.001)
         close.addChild(cross)
         root.addChild(close)
-        // Pin between Move and Zoom In to Fold, Set Aside between it and
-        // Scale (18 Nov 2026, Frode) — the closed card's own buttons.
-        for (setAside, x) in [(false, -Self.pileSpacing), (true, Self.pileSpacing)] {
-            guard let view = pileButton(docID, setAside) else { continue }
-            let pile = Entity()
-            pile.components.set(ViewAttachmentComponent(rootView: view))
-            pile.position = SIMD3<Float>(x, -0.305, 0.002)
-            root.addChild(pile)
-        }
-        // The pose in the middle, where Zoom In to Fold stood.
+        // Angle (the pose: upright, drafting board, flat) at the left, and
+        // Focus (moved here from the reading's bar) right of the grab bar
+        // (19 Nov 2026, Frode).
         if let view = poseButton(docID) {
             let pose = Entity()
             pose.components.set(ViewAttachmentComponent(rootView: view))
-            pose.position = SIMD3<Float>(0, -0.305, 0.002)
+            pose.position = SIMD3<Float>(Self.angleX, -0.305, 0.002)
             root.addChild(pose)
+        }
+        if let view = focusButton(docID) {
+            let focus = Entity()
+            focus.components.set(ViewAttachmentComponent(rootView: view))
+            focus.position = SIMD3<Float>(Self.focusX, -0.305, 0.002)
+            root.addChild(focus)
         }
         // One whole document wide (15 Nov 2026, Frode): the bar follows
         // the page's measured width — which changes with the view (the
         // Horizontal pages, the margin) — checked twice a second while the
         // reading stands.
-        Task { @MainActor [weak self, weak bar, weak page, weak strip, weak stripHandle, weak shelf, weak close, weak cross] in
-            var foldBarWidth: Float = Self.foldWidth
+        Task { @MainActor [weak self, weak bar, weak page, weak strip, weak stripHandle, weak shelf] in
             while let bar, let page, bar.parent != nil {
                 if let strip, let holder = bar.parent {
                     // The notes' own height: the strip's attachment alone, not
@@ -13569,25 +13635,9 @@ final class ReaderPanels {
                 if let shelf, let holder = bar.parent {
                     let foot = page.visualBounds(relativeTo: holder).min.y
                     let height = shelf.visualBounds(relativeTo: shelf).extents.y
-                    // Clear of the pills' two rows (18 Nov 2026).
-                    let y = foot - 0.065 - height / 2
+                    // Clear of the pills' row (19 Nov 2026: one row again).
+                    let y = foot - 0.04 - height / 2
                     if foot.isFinite, abs(shelf.position.y - y) > 0.002 { shelf.position.y = y }
-                }
-                // Zoom In to Fold as wide as the page in Scroll, and no
-                // wider in Spread (18 Nov 2026, Frode).
-                if let close, let cross, let self, let holder = bar.parent {
-                    let flat = self.appliedPoses[docID] == .flat
-                    let measured = min(page.visualBounds(relativeTo: holder).extents.x,
-                                       flat ? Self.scrollPageWidthFlat : Self.scrollPageWidth)
-                    if measured > 0.05, abs(measured - foldBarWidth) > 0.005 {
-                        foldBarWidth = measured
-                        close.model?.mesh = .generatePlane(width: measured, height: Self.buttonHeight,
-                                                           cornerRadius: Self.buttonHeight / 2)
-                        close.components.set(CollisionComponent(shapes: [.generateBox(
-                            size: SIMD3<Float>(measured + 0.01, 0.03, 0.02))]))
-                        cross.components.set(ViewAttachmentComponent(
-                            rootView: ReaderButtonOutline(word: "Zoom In to Fold", width: measured)))
-                    }
                 }
                 try? await Task.sleep(for: .milliseconds(500))
             }
@@ -13789,6 +13839,9 @@ final class ReaderPanels {
 
     /// The standing height a posed panel returns to, by document.
     private var uprightY: [String: Float] = [:]
+    /// Where a reading stood before it was laid on the table before the
+    /// reader, to stand there again (19 Nov 2026).
+    private var uprightPlace: [String: SIMD3<Float>] = [:]
     /// Each panel's applied pose, so a repeat apply is a no-op.
     private var appliedPoses: [String: PanelPose] = [:]
     /// The reading surface — a table's height.
@@ -13825,13 +13878,32 @@ final class ReaderPanels {
             switch pose {
             case .upright:
                 root.orientation = leaning(0)
-                root.position.y = uprightY.removeValue(forKey: id) ?? 1.35
+                if let place = uprightPlace.removeValue(forKey: id) {
+                    root.position = place
+                    uprightY[id] = nil
+                } else {
+                    root.position.y = uprightY.removeValue(forKey: id) ?? 1.35
+                }
             case .tilted:
                 root.orientation = leaning(Self.tiltedAngle)
                 root.position.y = Self.tiltedHeight
             case .flat:
-                root.orientation = leaning(-.pi / 2)
-                root.position.y = flatY(for: root)
+                // On the table before the reader (19 Nov 2026, Frode), its
+                // top away from them; with no table near, where it stands.
+                if let head = headPose(), let spot = tableSpot(head.position, head.forward) {
+                    if uprightPlace[id] == nil {
+                        var standing = root.position
+                        if let y = uprightY[id] { standing.y = y }
+                        uprightPlace[id] = standing
+                    }
+                    root.position = spot + SIMD3<Float>(0, Self.flatClearance, 0)
+                    let turn = Self.yaw(facing: head.position - spot)
+                    yaws[id] = turn
+                    root.orientation = simd_mul(turn, simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0)))
+                } else {
+                    root.orientation = leaning(-.pi / 2)
+                    root.position.y = flatY(for: root)
+                }
             }
             appliedPoses[id] = pose
         }
@@ -13858,10 +13930,39 @@ final class ReaderPanels {
         var samples = (shakeSamples[docID] ?? []).filter { now - $0.time < 0.8 }
         samples.append((now, hand))
         shakeSamples[docID] = samples
+        // Billboarded while held (19 Nov 2026, Frode), eased so it never
+        // swivels — unless a shake squared it this hold.
+        if let head, !squaredThisHold.contains(docID) { ease(docID: docID, toward: head) }
         guard let head, now - (lastShake[docID] ?? 0) > 1, Self.isShake(samples.map(\.hand)) else { return }
         lastShake[docID] = now
         shakeSamples[docID] = []
+        squaredThisHold.insert(docID)
         square(docID: docID, toward: head)
+    }
+
+    /// Readings squared by a shake during the hold now: they keep it.
+    private var squaredThisHold: Set<String> = []
+
+    /// The hold over: the next one billboards again.
+    func endCarry() { squaredThisHold = [] }
+
+    /// A step of the turn toward a point, about the vertical only — a
+    /// fifth of the way each move, so the page follows the reader smoothly.
+    private func ease(docID: String, toward point: SIMD3<Float>) {
+        guard let root = roots[docID] else { return }
+        var toHead = point - root.position(relativeTo: nil)
+        toHead.y = 0
+        guard simd_length(toHead) > 0.05 else { return }
+        let target = Self.yaw(facing: toHead)
+        let current = yaws[docID] ?? target
+        let facing = simd_slerp(current, target, 0.2)
+        yaws[docID] = facing
+        let lean: Float = switch appliedPoses[docID] ?? .upright {
+        case .upright: 0
+        case .tilted: Self.tiltedAngle
+        case .flat: -.pi / 2
+        }
+        root.orientation = simd_mul(facing, simd_quatf(angle: lean, axis: SIMD3<Float>(1, 0, 0)))
     }
 
     nonisolated static func isShake(_ points: [SIMD3<Float>]) -> Bool {
@@ -13933,23 +14034,15 @@ final class ReaderPanels {
     /// not what we need"): each 4.4 × 1.6 cm.
     static let buttonWidth: Float = 0.044
     static let buttonHeight: Float = 0.016
-    /// The row under a reading (18 Nov 2026, Frode): Move · Pin · Zoom In
-    /// to Fold · Set Aside · Scale, a centimetre between each. Pin's and Set
-    /// Aside's middles either side of Zoom In to Fold's; Move's and Scale's
-    /// beyond them.
-    static let pileWidth: Float = 0.026
-    /// The pose button in the middle (18 Nov 2026), about Pin's size.
-    static let poseWidth: Float = 0.026
-    static let pileSpacing: Float = poseWidth / 2 + 0.01 + pileWidth / 2
-    /// Zoom In to Fold's row, under the pills' (18 Nov 2026, Frode).
-    static let foldRowY: Float = -0.331
-    /// The page's width in Scroll, in the reading's own metres: one column
-    /// (560 points, 280 lying flat) and its margins, 1360 to the metre.
-    static let scrollPageWidth: Float = (560 + 24) / 1360
-    static let scrollPageWidthFlat: Float = (280 + 24) / 1360
-    static let outerSpacing: Float = pileSpacing + pileWidth / 2 + 0.01 + buttonWidth / 2
-    /// Zoom In to Fold's pill, wide enough for its words.
-    static let foldWidth: Float = 0.082
+    /// The row under a reading (19 Nov 2026, Frode's sketch): Angle · Fold ·
+    /// the grab bar · Focus · Scale, 8 mm apart, the bar in the middle.
+    static let grabWidth: Float = 0.153
+    static let foldWidth: Float = 0.058
+    static let rowGap: Float = 0.008
+    static let foldX: Float = -(grabWidth / 2 + rowGap + foldWidth / 2)
+    static let angleX: Float = foldX - foldWidth / 2 - rowGap - buttonWidth / 2
+    static let focusX: Float = grabWidth / 2 + rowGap + buttonWidth / 2
+    static let scaleX: Float = focusX + buttonWidth + rowGap
     /// An open reading's size when the reader has given it none.
     private static let defaultScale: Float = 0.6
     /// How small and large a reading may be made.
@@ -14921,6 +15014,41 @@ final class RoomSurfaces {
             if y > (best ?? -.infinity) { best = y }
         }
         return best
+    }
+
+    /// Where a page laid flat should lie (19 Nov 2026, Frode: "did not lie
+    /// flat on the table in front of me"): on the table nearest the spot
+    /// 45 cm before the reader, that spot drawn inside the table's top by
+    /// 15 cm — within 1.2 m of the reader, or none.
+    func tableSpot(before head: SIMD3<Float>, facing forward: SIMD3<Float>) -> SIMD3<Float>? {
+        var ahead = SIMD3<Float>(forward.x, 0, forward.z)
+        ahead = simd_length(ahead) > 1e-4 ? simd_normalize(ahead) : SIMD3<Float>(0, 0, -1)
+        let wanted = head + ahead * 0.45
+        var best: (spot: SIMD3<Float>, miss: Float)?
+        for plane in planes.values {
+            let classification = plane.surfaceClassification
+            guard classification != .floor, classification != .ceiling, classification != .seat else { continue }
+            let originFromAnchor = plane.originFromAnchorTransform
+            let normal = SIMD3<Float>(originFromAnchor.columns.1.x, originFromAnchor.columns.1.y,
+                                      originFromAnchor.columns.1.z)
+            guard simd_length(normal) > 1e-4, abs(simd_normalize(normal).y) > 0.85 else { continue }
+            let y = originFromAnchor.columns.3.y
+            guard (0.5...1.2).contains(y) else { continue }
+            let extent = plane.geometry.extent
+            let worldFromExtent = originFromAnchor * extent.anchorFromExtentTransform
+            var local = simd_inverse(worldFromExtent) * SIMD4<Float>(wanted.x, y, wanted.z, 1)
+            let halfX = max(extent.width / 2 - 0.15, 0)
+            let halfZ = max(extent.height / 2 - 0.15, 0)
+            local.x = min(max(local.x, -halfX), halfX)
+            local.z = min(max(local.z, -halfZ), halfZ)
+            let world = worldFromExtent * local
+            let spot = SIMD3<Float>(world.x, y, world.z)
+            let fromHead = SIMD2<Float>(spot.x - head.x, spot.z - head.z)
+            guard simd_length(fromHead) < 1.2 else { continue }
+            let miss = simd_distance(SIMD2<Float>(spot.x, spot.z), SIMD2<Float>(wanted.x, wanted.z))
+            if best == nil || miss < best!.miss { best = (spot, miss) }
+        }
+        return best?.spot
     }
 
     /// The ceiling's height (9 Nov 2026): the lowest plane the headset
@@ -16064,7 +16192,9 @@ struct MapReaderPanel: View {
     }
 
     @ViewBuilder private var shaped: some View {
-        if isDesk {
+        // Focus (the desk) no longer dresses the panel (19 Nov 2026, Frode):
+        // the pages look as they do unfocused; only the room is put away.
+        if false {
             // On the desk the panel wears the chosen theme, whole —
             // one continuous sheet of the theme's page, its light or
             // dark throughout the words. (The Horizontal curve, with
@@ -16085,7 +16215,7 @@ struct MapReaderPanel: View {
 
     /// Whether the panel stands as separate floating pieces — the
     /// room's curved Horizontal — rather than one dressed sheet.
-    private var isLoose: Bool { isHorizontal && !isDesk }
+    private var isLoose: Bool { isHorizontal }
 
     private var panel: some View {
         VStack(spacing: isLoose ? 12 : 0) {
