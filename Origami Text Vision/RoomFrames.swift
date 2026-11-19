@@ -574,15 +574,26 @@ final class RoomFrames {
     /// The layout the room stands as now, if any.
     var currentLayoutID: String? {
         get { _ = layouts.count; return UserDefaults.standard.string(forKey: currentLayoutKey) }
-        set { UserDefaults.standard.set(newValue, forKey: currentLayoutKey); layoutsTick += 1 }
+        set {
+            UserDefaults.standard.set(newValue, forKey: currentLayoutKey)
+            layoutsTick += 1
+            // The room stood in keeps it as its own (19 Nov 2026, Frode).
+            PhysicalRooms.shared.rememberLayout(newValue)
+        }
     }
     /// Bumped when the current layout changes, so the feet show it.
     private(set) var layoutsTick = 0
 
-    /// The room's name on every frame's foot.
+    /// The layout's name (19 Nov 2026, Frode: a layout is the panels, a
+    /// room the physical space).
     var currentRoomName: String {
         _ = layoutsTick
-        return layoutsHere.first { $0.id == currentLayoutID }?.name ?? "Room"
+        return layoutsHere.first { $0.id == currentLayoutID }?.name ?? "Layout"
+    }
+
+    /// Every frame's foot: the room, then the layout — "Study · Hypertext".
+    var footLabel: String {
+        "\(PhysicalRooms.shared.currentName ?? "Room") · \(currentRoomName)"
     }
 
     /// The frames standing now saved under a name the reader gave — the
@@ -859,7 +870,7 @@ final class RoomFrames {
     /// The question floats before the reader while the room is not known,
     /// and goes when it is.
     private func layQuestion() {
-        let asking = !PhysicalRooms.shared.isSettled
+        let asking = !PhysicalRooms.shared.isSettled || PhysicalRooms.shared.scanning
         // Kept in view while it waits: turned away from, or walked away
         // from, it comes round again before the reader.
         if asking, questionShown, let entity = question, let head = headPose() {
@@ -1172,6 +1183,16 @@ final class RoomFrames {
     /// The bar's Frames ▸ Edit & Move (16 Nov 2026, Frode): every frame in
     /// sight into Move & Resize at once — its handles, its buttons — or,
     /// all of them already, every one done and kept.
+    /// Redo Layout: the panels standing all made movable at once, so they
+    /// can be put where they belong in this room — each kept as it is let
+    /// go (its anchor here made afresh). Done from the bar's Edit & Move,
+    /// or each panel's own Done.
+    func redoPlacesHere() {
+        roomMenuOpenFor = nil
+        RoomLog.write("redo layout in \(PhysicalRooms.shared.currentName ?? "the room")")
+        if !isEditingAll { toggleEditAll() }
+    }
+
     func toggleEditAll() {
         if isEditingAll {
             let ids = arrangingIDs
@@ -2301,7 +2322,7 @@ struct RoomFrameRoomName: View {
     var body: some View {
         let frames = RoomFrames.shared
         let open = frames.roomMenuOpenFor == frameID
-        Text(open ? "Close" : frames.currentRoomName)
+        Text(open ? "Close" : frames.footLabel)
             .font(.system(size: 20, weight: .semibold))
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
@@ -2333,15 +2354,73 @@ struct RoomFrameRoomMenu: View {
     @State private var renaming = false
     @State private var newName = ""
     @State private var confirmingDelete = false
+    /// The physical room's rename, and a new room's name.
+    @State private var renamingRoom = false
+    @State private var roomName = ""
+    @State private var newLayoutName = ""
 
     var body: some View {
         let frames = RoomFrames.shared
+        let rooms = PhysicalRooms.shared
         let open = frames.roomMenuOpenFor == frameID
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             if open {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Rooms")
+                    // The room — the physical space (19 Nov 2026, Frode).
+                    Text("Room")
+                        .font(.system(size: 24, weight: .bold))
+                        .padding(.bottom, 4)
+                    if renamingRoom, let current = rooms.current {
+                        HStack(spacing: 10) {
+                            TextField(rooms.currentName ?? "Room", text: $roomName)
+                                .font(.system(size: 24))
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { rooms.renameRoom(current, to: roomName); renamingRoom = false }
+                            Button("Done") { rooms.renameRoom(current, to: roomName); renamingRoom = false }
+                                .font(.system(size: 22, weight: .semibold))
+                        }
+                    } else {
+                        HStack(spacing: 10) {
+                            Text(rooms.currentName ?? "Not found yet")
+                                .font(.system(size: 24, weight: .medium))
+                                .lineLimit(1).layoutPriority(1)
+                                .padding(.horizontal, 12)
+                            Spacer(minLength: 12)
+                            // Redo Layout (19 Nov 2026, Frode): every panel into
+                            // Move & Resize, each new place kept for this room.
+                            Button("Redo Layout") { frames.redoPlacesHere() }
+                                .font(.system(size: 22, weight: .semibold))
+                                .disabled(frames.shownHere.isEmpty || rooms.current == nil)
+                            Button("Rename") {
+                                roomName = rooms.currentName ?? ""
+                                renamingRoom = true
+                            }
+                            .font(.system(size: 22, weight: .semibold))
+                            .disabled(rooms.current == nil)
+                            Button {
+                                frames.roomMenuOpenFor = nil
+                                rooms.scanForRoom()
+                            } label: {
+                                Label("Scan for Room", systemImage: "viewfinder")
+                            }
+                            .font(.system(size: 22, weight: .semibold))
+                        }
+                    }
+                    HStack {
+                        TextField("A new room's name", text: $name)
+                            .font(.system(size: 22))
+                            .textFieldStyle(.roundedBorder)
+                        Button("New Room Here") {
+                            rooms.startNewRoom(named: name)
+                            name = ""
+                            frames.roomMenuOpenFor = nil
+                        }
+                        .font(.system(size: 22, weight: .semibold))
+                    }
+                    Divider().padding(.vertical, 8)
+                    // The layout — which panels stand, and what they hold.
+                    Text("Layout")
                         .font(.system(size: 24, weight: .bold))
                         .padding(.bottom, 4)
                     if frames.layoutsHere.isEmpty {
@@ -2403,19 +2482,16 @@ struct RoomFrameRoomMenu: View {
                         }
                         }
                     }
-                    Divider().padding(.vertical, 6)
-                    Text("Save this room as")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.secondary)
                     HStack {
-                        TextField(frames.currentRoomName == "Room" ? "Name" : frames.currentRoomName, text: $name)
-                            .font(.system(size: 24))
+                        TextField("Save the panels as a layout named…", text: $newLayoutName)
+                            .font(.system(size: 22))
                             .textFieldStyle(.roundedBorder)
                             .onSubmit(save)
-                        Button("Save", action: save)
+                        Button("Save Layout", action: save)
                             .font(.system(size: 22, weight: .semibold))
-                            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .disabled(newLayoutName.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
+                    .padding(.top, 6)
                 }
                 .padding(24)
                 // Wide enough that a room's name stands whole beside
@@ -2429,7 +2505,10 @@ struct RoomFrameRoomMenu: View {
                alignment: .bottom)
         .allowsHitTesting(open)
         .onChange(of: open) { _, now in
-            if !now { name = ""; renaming = false; confirmingDelete = false }
+            if !now {
+                name = ""; newLayoutName = ""; renaming = false; confirmingDelete = false
+                renamingRoom = false
+            }
         }
     }
 
@@ -2439,8 +2518,8 @@ struct RoomFrameRoomMenu: View {
     }
 
     private func save() {
-        RoomFrames.shared.saveLayout(named: name)
-        name = ""
+        RoomFrames.shared.saveLayout(named: newLayoutName)
+        newLayoutName = ""
         RoomFrames.shared.roomMenuOpenFor = nil
     }
 }
@@ -2828,6 +2907,24 @@ final class PhysicalRooms {
         var created: Date
         /// When the reader last stood in it (19 Nov 2026).
         var used: Date?
+        /// The layout last used in it, brought back on entering (19 Nov 2026).
+        var layoutID: String?
+    }
+
+    /// The layout now in use, kept as this room's.
+    func rememberLayout(_ id: String?) {
+        guard let room = settledRoom, let index = rooms.firstIndex(where: { $0.id == room }),
+              rooms[index].layoutID != id else { return }
+        rooms[index].layoutID = id
+        save()
+    }
+
+    /// A room's name changed; empty keeps the old one.
+    func renameRoom(_ id: UUID, to given: String) {
+        let name = given.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let index = rooms.firstIndex(where: { $0.id == id }) else { return }
+        rooms[index].name = name
+        save()
     }
 
     /// The rooms to offer, most recently stood in first — a few only.
@@ -2862,6 +2959,13 @@ final class PhysicalRooms {
 
     private(set) var rooms: [Room] = []
     private(set) var phase: Phase = .finding
+    /// Scanning (19 Nov 2026, Frode: "let the user know what is
+    /// happening"): the room's panels are being looked for — shown with
+    /// how many are in place — until every one is found or the reader is
+    /// done.
+    private(set) var scanning = false
+    private(set) var foundHere = 0
+    private(set) var expectedHere = 0
 
     /// The room the reader stands in, once known or named.
     var current: UUID? {
@@ -2918,7 +3022,7 @@ final class PhysicalRooms {
     static let askAfter: Duration = .seconds(5)
     /// How long a known room's missing frames are waited for once it is
     /// found, before they stand before the reader.
-    static let revealAfter: Duration = .seconds(20)
+    static let revealAfter: Duration = .seconds(30)
 
     private init() { load() }
 
@@ -2932,6 +3036,7 @@ final class PhysicalRooms {
         revealed = []
         adding = []
         madeThisRun = []
+        scanning = true
         RoomLog.write("tracking started (run \(thisRun)); \(rooms.count) rooms, \(owners.count) frame anchors, \(legacy.count) old room anchors")
         // Old anchors let go after the fresh start: removed once the session
         // can take them.
@@ -2957,12 +3062,14 @@ final class PhysicalRooms {
     func choose(_ room: UUID) {
         guard rooms.contains(where: { $0.id == room }) else { return }
         RoomLog.write("reader chose \(name(room))")
+        scanning = true
         // One of its frames already found: it is here.
         if owners.contains(where: { $0.value.room == room && tracked[$0.key] != nil }) {
             settle(room, why: "chosen, already found")
             return
         }
         phase = .looking(room)
+        countFound()
         RoomFrames.shared.roomChanged()
     }
 
@@ -2985,14 +3092,61 @@ final class PhysicalRooms {
     func placeHereAnyway() {
         guard case .looking(let room) = phase else { return }
         settle(room, why: "placed here anyway")
-        revealMissing()
+        stopScanning()
     }
 
     /// Back to the question.
     func askAgain() {
         RoomLog.write("asked again")
+        scanning = true
         phase = .asking
         RoomFrames.shared.roomChanged()
+    }
+
+    /// How many of this room's panels have a place in it, and how many
+    /// of those are found; the scan ends by itself when all are.
+    private func countFound() {
+        guard let room = current else { foundHere = 0; expectedHere = 0; return }
+        let ids = RoomFrames.shared.frameIDsHere
+        let placed = ids.compactMap { placements[$0]?[room] }
+        expectedHere = placed.count
+        foundHere = placed.filter { tracked[$0.anchor] != nil }.count
+        if isSettled, scanning, foundHere >= expectedHere {
+            scanning = false
+            RoomLog.write("scan done: all \(expectedHere) panels found")
+        }
+    }
+
+    /// Scan for Room (19 Nov 2026, Frode): look for the room again — the
+    /// one whose panels the headset has found, or, none found, ask.
+    func scanForRoom() {
+        RoomLog.write("scan for room asked")
+        run += 1
+        let thisRun = run
+        scanning = true
+        // Already found this session: the room with most of them.
+        var counts: [UUID: Int] = [:]
+        for (anchor, owner) in owners where tracked[anchor] != nil { counts[owner.room, default: 0] += 1 }
+        if let best = counts.max(by: { $0.value < $1.value })?.key {
+            settle(best, why: "scan: already found")
+            return
+        }
+        phase = rooms.isEmpty ? .asking : .finding
+        countFound()
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.askAfter)
+            guard self.run == thisRun, self.phase == .finding else { return }
+            self.phase = .asking
+        }
+    }
+
+    /// Done scanning: what is not found stands before the reader, and is
+    /// still put in its place should it be found later.
+    func stopScanning() {
+        guard scanning else { return }
+        scanning = false
+        RoomLog.write("scan stopped: \(foundHere) of \(expectedHere) found")
+        revealMissing()
     }
 
     private func settle(_ room: UUID, why: String) {
@@ -3002,12 +3156,26 @@ final class PhysicalRooms {
             save()
         }
         phase = .settled(room)
-        RoomFrames.shared.roomChanged()
+        // Entering a room brings back the layout last used in it (19 Nov
+        // 2026, Frode) — unless it is the one standing already.
+        let frames = RoomFrames.shared
+        if let layout = rooms.first(where: { $0.id == room })?.layoutID,
+           layout != frames.currentLayoutID, frames.layoutsHere.contains(where: { $0.id == layout }) {
+            RoomLog.write("bringing back \(name(room))'s layout")
+            frames.loadLayout(layout)
+        } else {
+            // A room with none yet takes the one standing.
+            rememberLayout(frames.currentLayoutID)
+        }
+        frames.roomChanged()
+        // Scanning on while any of its panels is still to be found.
+        scanning = true
+        countFound()
         let thisRun = run
         Task { @MainActor in
             try? await Task.sleep(for: Self.revealAfter)
-            guard self.run == thisRun, self.settledRoom == room else { return }
-            self.revealMissing()
+            guard self.run == thisRun, self.settledRoom == room, self.scanning else { return }
+            self.stopScanning()
         }
     }
 
@@ -3042,7 +3210,10 @@ final class PhysicalRooms {
             return
         }
         tracked[id] = transform
-        if !wasTracked { RoomLog.write("found \(owner.frame) in \(name(owner.room))") }
+        if !wasTracked {
+            RoomLog.write("found \(owner.frame) in \(name(owner.room))")
+            defer { countFound() }
+        }
         switch phase {
         case .finding, .asking:
             settle(owner.room, why: "recognised by \(owner.frame)")
@@ -3328,21 +3499,36 @@ struct RoomQuestionView: View {
                     Button("Start Here") { rooms.startNewRoom(named: newName) }
                         .font(.system(size: 22, weight: .semibold))
                 }
-            case .looking:
-                Text("Look around \(rooms.currentName ?? "the room")")
-                    .font(.system(size: 34, weight: .semibold))
-                Text("Its panels appear in their places as the headset recognises the room — look at the walls where they stand.")
-                    .font(.system(size: 22))
+            case .looking, .settled:
+                // Scanning (19 Nov 2026, Frode): what is happening, and how
+                // far it has got.
+                HStack(spacing: 14) {
+                    ProgressView()
+                    Text("Scanning \(rooms.currentName ?? "the room")…")
+                        .font(.system(size: 32, weight: .semibold))
+                }
+                Text(rooms.expectedHere == 0
+                     ? "Looking for the room."
+                     : "\(rooms.foundHere) of \(rooms.expectedHere) panels in their places.")
+                    .font(.system(size: 24, weight: .medium))
+                Text("Look slowly around the walls where the panels stand — each appears in its place as the headset recognises it.")
+                    .font(.system(size: 20))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Another Room") { rooms.askAgain() }
                     Spacer()
-                    Button("Place Panels Here") { rooms.placeHereAnyway() }
+                    if rooms.isSettled {
+                        Button("Done") { rooms.stopScanning() }
+                    } else {
+                        Button("Place Panels Here") { rooms.placeHereAnyway() }
+                    }
                 }
                 .font(.system(size: 22, weight: .semibold))
-            case .settled:
-                EmptyView()
+                Text("Panels not found yet come before you; they still move to their places if found later.")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(32)

@@ -4846,8 +4846,10 @@ struct VisionVolumeToolbar: View {
                 // standing — the room's context — saved, and any saved one
                 // brought back at once. (The articles' and concepts' places,
                 // the sculpture, are the Layout menu's Views.)
-                Section("Room Layouts") {
-                    Button("Save Room Layout") { RoomFrames.shared.saveLayout() }
+                // (19 Nov 2026, Frode: a layout is the panels; a room is the
+                // physical space.)
+                Section("Layouts") {
+                    Button("Save Layout") { RoomFrames.shared.saveLayout() }
                         .disabled(RoomFrames.shared.shownHere.isEmpty)
                     ForEach(RoomFrames.shared.layoutsHere) { layout in
                         Button(layout.name) { RoomFrames.shared.loadLayout(layout.id) }
@@ -4862,10 +4864,11 @@ struct VisionVolumeToolbar: View {
                 // The physical room the headset finds itself in (18 Nov
                 // 2026): each keeps its own places for the frames. New Room
                 // Here, should it take one room for another.
-                Section(PhysicalRooms.shared.currentName.map { "Physical Room: \($0)" } ?? "Physical Room: finding…") {
+                Section(PhysicalRooms.shared.currentName.map { "Room: \($0)" } ?? "Room: finding…") {
                     Button("New Room Here") { PhysicalRooms.shared.startNewRoomHere() }
                     // Asked again, and any panels not found brought before the
                     // reader (19 Nov 2026).
+                    Button("Scan for Room") { PhysicalRooms.shared.scanForRoom() }
                     Button("Which Room Is This?") { PhysicalRooms.shared.askAgain() }
                     Button("Show Panels Not Found") { PhysicalRooms.shared.revealMissing() }
                         .disabled(!PhysicalRooms.shared.isSettled)

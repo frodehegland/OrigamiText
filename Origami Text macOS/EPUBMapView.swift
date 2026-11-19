@@ -4106,6 +4106,9 @@ struct EPUBMapView: View {
                     where entity.components.has(MapSpaceNodeComponent.self) {
                         let id = entity.components[EPUBNodeIDComponent.self]?.id
                         if let id, liftedCards[id]?.stuck != nil { continue }
+                        // What stands in a panel or frame stays with it
+                        // (19 Nov 2026, Frode).
+                        if let id, RoomFrames.shared.standsInFrame(id) { continue }
                         let isDocument = id.map(documents.contains) ?? false
                         switch part {
                         case .everything: break
@@ -10164,13 +10167,16 @@ struct EPUBMapView: View {
         articleYearZ = articleYearZ.mapValues { $0 + delta.z }
         for index in items.indices {
             // A surface-stuck card keeps its wall; everything else —
-            // ghosts and floating lifted cards included — travels.
+            // ghosts and floating lifted cards included — travels. What
+            // stands in a panel or frame stays with it (19 Nov 2026).
             if let position = items[index].position,
-               liftedCards[items[index].id]?.stuck == nil {
+               liftedCards[items[index].id]?.stuck == nil,
+               !RoomFrames.shared.standsInFrame(items[index].id) {
                 items[index].position = position + delta
             }
         }
-        for (id, position) in placed where liftedCards[id]?.stuck == nil {
+        for (id, position) in placed where liftedCards[id]?.stuck == nil
+            && !RoomFrames.shared.standsInFrame(id) {
             placed[id] = position + delta
         }
         // The held homes travel with the space, so each ghost keeps
@@ -10218,7 +10224,9 @@ struct EPUBMapView: View {
     /// Folds a carry into the chosen cards' places, their remembered
     /// placements and their lifted homes — surface-stuck cards keep
     /// their wall — and saves, as the whole-space commit does.
-    private func commitPlaces(_ delta: SIMD3<Float>, of carried: (String) -> Bool) {
+    private func commitPlaces(_ delta: SIMD3<Float>, of given: (String) -> Bool) {
+        // Never what stands in a panel or frame (19 Nov 2026, Frode).
+        func carried(_ id: String) -> Bool { given(id) && !RoomFrames.shared.standsInFrame(id) }
         for index in items.indices where carried(items[index].id) {
             if let position = items[index].position,
                liftedCards[items[index].id]?.stuck == nil {
