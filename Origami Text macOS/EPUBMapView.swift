@@ -1537,6 +1537,15 @@ struct EPUBMapView: View {
         // Frames (16 Nov 2026, Frode): every concept of a frame's kind
         // stands in its columns.
         layFrameMembers(people: people, selected: selected)
+        // The presented concept (19 Nov 2026): marked now the frames have
+        // raised theirs too — and let go once it no longer stands.
+        if let presented = presentedConceptID {
+            if let index = items.firstIndex(where: { $0.id == presented }) {
+                if !items[index].isPresented { items[index].isPresented = true }
+            } else {
+                presentedConceptID = nil
+            }
+        }
         // A paper's gallery, raised from its star menu's Images: each of
         // its pictures a card of its own, standing to the paper's right in
         // rows of four, joined to it by a line each (relationShown).
@@ -2326,6 +2335,10 @@ struct EPUBMapView: View {
     /// builds a card, and must not make the view update again.
     @State private var cardSizes = CardSizes()
     final class CardSizes {
+        /// The nodes a fist hold carries, worked out at its first move.
+        var fistNodes: [(entity: Entity, isDocument: Bool)]?
+        /// Solid Spheres come to rest this frame, sent home together.
+        var resting: [(id: String, start: SIMD3<Float>)] = []
         /// A Sculpture is being placed — its positions are brought within reach.
         var shaping = false
         /// Set-aside cards turned to face the reader as the toolbar does.
@@ -3700,10 +3713,11 @@ struct EPUBMapView: View {
                     cardSizes.solidHits[item.id] = nil
                 }
                 // The hand's last moments, for the throw's speed.
-                var samples = cardSizes.solidSamples[item.id] ?? []
-                samples.append((CACurrentMediaTime(), place))
-                if samples.count > 12 { samples.removeFirst(samples.count - 12) }
-                cardSizes.solidSamples[item.id] = samples
+                // In place: no copy of the list each drag event.
+                cardSizes.solidSamples[item.id, default: []].append((CACurrentMediaTime(), place))
+                if let count = cardSizes.solidSamples[item.id]?.count, count > 12 {
+                    cardSizes.solidSamples[item.id]?.removeFirst(count - 12)
+                }
                 return place
             }
             // The Hallway holds every paper's depth (15 Nov 2026, Frode):
@@ -4001,15 +4015,29 @@ struct EPUBMapView: View {
             // the slot it was taken from, or where it stood when struck — and
             // its ghost goes.
             rubberBalls.onRest = { id, _, start in
-                guard var item = items.first(where: { $0.id == id }) else { return }
-                let home = liftedCards[id]?.home ?? start
-                liftedCards[id] = nil
-                saveLiftedCards()
-                item.position = home
-                NodeGlide.open()
-                keepPlacements(of: [item])
-                savePlacedNow()
-                reload()
+                // Balls that come to rest together go home together: one
+                // save and one rebuild for the lot, not one per ball (19 Nov
+                // 2026 review — a dropped set rebuilt the room once a ball).
+                let first = cardSizes.resting.isEmpty
+                cardSizes.resting.append((id, start))
+                guard first else { return }
+                Task { @MainActor in
+                    let batch = cardSizes.resting
+                    cardSizes.resting = []
+                    var moved: [EPUBMapItem] = []
+                    for (id, start) in batch {
+                        guard var item = items.first(where: { $0.id == id }) else { continue }
+                        item.position = liftedCards[id]?.home ?? start
+                        liftedCards[id] = nil
+                        moved.append(item)
+                    }
+                    guard !moved.isEmpty else { return }
+                    saveLiftedCards()
+                    NodeGlide.open()
+                    keepPlacements(of: moved)
+                    savePlacedNow()
+                    reload()
+                }
             }
             sankeyWallLeft.install(in: content)
             sankeyWallRight.install(in: content)
@@ -4097,6 +4125,7 @@ struct EPUBMapView: View {
             fistGrab.install(
                 in: content,
                 grip: { palm in
+                    cardSizes.fistNodes = nil
                     spaceJelly.grip = palm
                     spaceJelly.takeHold()
                     if FistGrab.offersChits {
@@ -4116,15 +4145,24 @@ struct EPUBMapView: View {
                     // The lines follow on their own each frame. A card
                     // stuck to a real surface stays with the room, not
                     // the carried space.
-                    let documents = Set(items.filter { $0.kind == .article }.map(\.id))
-                    for entity in content.entities
-                    where entity.components.has(MapSpaceNodeComponent.self) {
-                        let id = entity.components[EPUBNodeIDComponent.self]?.id
-                        if let id, liftedCards[id]?.stuck != nil { continue }
-                        // What stands in a panel or frame stays with it
-                        // (19 Nov 2026, Frode).
-                        if let id, RoomFrames.shared.standsInFrame(id) { continue }
-                        let isDocument = id.map(documents.contains) ?? false
+                    // What the fist carries is worked out once a hold, not
+                    // every frame (19 Nov 2026 review): every node of the
+                    // space but a surface-stuck card and what stands in a
+                    // panel or frame (19 Nov 2026, Frode), and which are
+                    // documents.
+                    let carried = cardSizes.fistNodes ?? {
+                        let documents = Set(items.filter { $0.kind == .article }.map(\.id))
+                        let nodes = content.entities.compactMap { entity -> (entity: Entity, isDocument: Bool)? in
+                            guard entity.components.has(MapSpaceNodeComponent.self) else { return nil }
+                            let id = entity.components[EPUBNodeIDComponent.self]?.id
+                            if let id, liftedCards[id]?.stuck != nil { return nil }
+                            if let id, RoomFrames.shared.standsInFrame(id) { return nil }
+                            return (entity, id.map(documents.contains) ?? false)
+                        }
+                        cardSizes.fistNodes = nodes
+                        return nodes
+                    }()
+                    for (entity, isDocument) in carried {
                         switch part {
                         case .everything: break
                         case .documents: if !isDocument { continue }
@@ -4137,6 +4175,7 @@ struct EPUBMapView: View {
                     return delta
                 },
                 release: { carried, part in
+                    cardSizes.fistNodes = nil
                     spaceJelly.letGo()
                     switch part {
                     case .everything: commitSpaceShift(carried)
@@ -5495,20 +5534,21 @@ struct EPUBMapView: View {
         // each author standing as a concept in the room or in a panel.
         let chosenPapers = items.filter { $0.isSelected && $0.kind == .article && !$0.isGhost }
         if !chosenPapers.isEmpty {
-            let people = items.filter {
-                !$0.isGhost && ($0.id.hasPrefix(Self.personItemPrefix) || isPersonConcept($0))
+            // Each person's name forms worked out once, not once per paper.
+            let people: [(id: String, keys: Set<String>)] = items.compactMap { item in
+                guard !item.isGhost,
+                      item.id.hasPrefix(Self.personItemPrefix) || isPersonConcept(item) else { return nil }
+                var keys = Set(OrigamiPortraits.keys(item.title))
+                if item.id.hasPrefix(Self.personItemPrefix) {
+                    keys.insert(String(item.id.dropFirst(Self.personItemPrefix.count)))
+                }
+                return (item.id, keys)
             }
-            for card in chosenPapers {
+            for card in chosenPapers where !people.isEmpty {
                 let authorKeys = Set(paperAuthors(card.id).flatMap { OrigamiPortraits.keys($0) })
                 guard !authorKeys.isEmpty else { continue }
-                for person in people {
-                    var keys = OrigamiPortraits.keys(person.title)
-                    if person.id.hasPrefix(Self.personItemPrefix) {
-                        keys.append(String(person.id.dropFirst(Self.personItemPrefix.count)))
-                    }
-                    if keys.contains(where: authorKeys.contains) {
-                        edges.append((from: card.id, to: person.id))
-                    }
+                for person in people where !person.keys.isDisjoint(with: authorKeys) {
+                    edges.append((from: card.id, to: person.id))
                 }
             }
         }
@@ -10022,9 +10062,12 @@ struct EPUBMapView: View {
             } else if id.hasPrefix(Self.personItemPrefix),
                       let person = people[String(id.dropFirst(Self.personItemPrefix.count))] {
                 let key = String(id.dropFirst(Self.personItemPrefix.count))
+                // One carried off stands where it was let go, not at the
+                // panel's middle (19 Nov 2026 review); its slot keeps a shadow.
+                let pulled = frame.pulled.contains(id)
                 var item = EPUBMapItem(id: id, title: person.name,
                                        author: "\(person.count) paper\(person.count == 1 ? "" : "s")",
-                                       kind: .concept, position: middle)
+                                       kind: .concept, position: pulled ? (placed[id] ?? middle) : middle)
                 item.imagePath = model.portraitPaths[key]
                 item.isSelected = selected.contains(id)
                 items.append(item)
@@ -10630,6 +10673,9 @@ struct EPUBMapView: View {
         // and settles with a brief squeeze.
         readerPanels.closeAnimated(docID: docID) {
             model.openDocIDs.remove(docID)
+            // Folded, it is upright again next time (19 Nov 2026) — said
+            // once it has landed, so the flight home is never re-posed.
+            model.panelPoses[docID] = nil
             // The reading's own lines go with it (the reading view no
             // longer clears them in the room — 16 Nov 2026).
             model.openDocCitations.removeValue(forKey: docID)
@@ -13748,6 +13794,13 @@ final class ReaderPanels {
         dragStart[docID] = nil
         origins[docID] = nil
         closing.remove(docID)
+        // Its pose goes with it (19 Nov 2026): reopened, it stands upright
+        // where it opens, never back at a place from its last opening.
+        appliedPoses[docID] = nil
+        uprightY[docID] = nil
+        uprightPlace[docID] = nil
+        shakeSamples[docID] = nil
+        lastShake[docID] = nil
     }
 
     /// Hands an open reading a fresh attachment, so RealityKit measures
@@ -14005,7 +14058,10 @@ final class ReaderPanels {
         toHead.y = 0
         guard simd_length(toHead) > 0.05 else { return }
         let target = Self.yaw(facing: toHead)
-        let current = yaws[docID] ?? target
+        // A reading opened where its card stood has no turn of its own yet:
+        // it starts from the space's front, as applyPoses takes it, so even
+        // the first move eases rather than snapping round.
+        let current = yaws[docID] ?? simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
         let facing = simd_slerp(current, target, 0.2)
         yaws[docID] = facing
         let lean: Float = switch appliedPoses[docID] ?? .upright {
@@ -18266,8 +18322,13 @@ final class SpaceJelly {
     private func step(dt frame: Float) {
         guard !springs.isEmpty, frame > 0 else { return }
         let dt = min(frame, 1 / 30)
-        for (key, var spring) in springs {
-            guard let body = spring.body, body.parent != nil else { springs[key] = nil; continue }
+        // Changed in place, the finished let go after: writing into the
+        // dictionary while walking it copied every spring each frame.
+        var finished: [ObjectIdentifier] = []
+        for index in springs.indices {
+            let key = springs.keys[index]
+            var spring = springs.values[index]
+            guard let body = spring.body, body.parent != nil else { finished.append(key); continue }
             // Semi-implicit Euler: steady at these stiffnesses and steps.
             // Let go, the spring is stiff and critically damped: home at
             // once, never past it.
@@ -18290,18 +18351,25 @@ final class SpaceJelly {
             let trail = simd_length(spring.offset)
             if !trail.isFinite || !simd_length(spring.velocity).isFinite {
                 body.position = spring.base
-                springs[key] = nil
+                finished.append(key)
                 continue
             }
-            if trail > Self.maxTrail { spring.offset *= Self.maxTrail / trail }
+            if trail > Self.maxTrail {
+                spring.offset *= Self.maxTrail / trail
+                // At the leash it no longer pushes outward.
+                let out = spring.offset / Self.maxTrail
+                let outward = simd_dot(spring.velocity, out)
+                if outward > 0 { spring.velocity -= out * outward }
+            }
             if simd_length(spring.offset) < 0.0003, simd_length(spring.velocity) < 0.003 {
                 body.position = spring.base
-                springs[key] = nil
+                finished.append(key)
                 continue
             }
             body.position = spring.base + spring.offset
-            springs[key] = spring
+            springs.values[index] = spring
         }
+        for key in finished { springs[key] = nil }
     }
 }
 

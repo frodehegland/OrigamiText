@@ -837,6 +837,11 @@ final class RoomFrames {
         if firstTime || shift > 0.05 { membersChanged() }
     }
 
+    /// Whether the hand holds a frame now — carried, resized or turned.
+    func isHeld(_ frameID: String) -> Bool {
+        dragStart?.id == frameID || resizeStart?.id == frameID || rotateStart == frameID
+    }
+
     /// Shown again as it stands — its visibility asked afresh.
     func reshow(_ frameID: String) {
         if let frame = frame(frameID) { show(frame) }
@@ -873,6 +878,7 @@ final class RoomFrames {
                                   SIMD4<Float>(middle, 1))
             guard let index = frames.firstIndex(where: { $0.id == frame.id }) else { continue }
             frames[index].transform = Self.columns(m)
+            PhysicalRooms.shared.noteRevealed(frame.id, at: m)
             show(frames[index])
         }
         membersChanged()
@@ -3020,6 +3026,14 @@ final class PhysicalRooms {
     /// The room opened: its frames' last places belong to the space just
     /// closed, so none counts as seen.
     func spaceOpened() { seenThisOpening = [] }
+    /// Where each revealed frame was stood before the reader: an edit that
+    /// leaves it there (a rename, a picture) is not a move, and must not
+    /// trade its real anchor for that spot (19 Nov 2026 review).
+    @ObservationIgnored private var revealedAt: [String: simd_float4x4] = [:]
+    func noteRevealed(_ frameID: String, at m: simd_float4x4) { revealedAt[frameID] = m }
+    /// Anchors ARKit tracks at this moment — not merely found once this
+    /// session — so Scan for Room counts only the room stood in now.
+    @ObservationIgnored private var trackedNow: Set<UUID> = []
     /// Whether a frame's new anchor is being made now.
     func isAnchoring(_ frameID: String) -> Bool { adding.contains(frameID) }
     /// Anchors of the rooms given up at the fresh start, removed when
@@ -3049,7 +3063,9 @@ final class PhysicalRooms {
         run += 1
         let thisRun = run
         tracked = [:]
+        trackedNow = []
         revealed = []
+        revealedAt = [:]
         adding = []
         madeThisRun = []
         scanning = true
@@ -3142,7 +3158,7 @@ final class PhysicalRooms {
         scanning = true
         // Already found this session: the room with most of them.
         var counts: [UUID: Int] = [:]
-        for (anchor, owner) in owners where tracked[anchor] != nil { counts[owner.room, default: 0] += 1 }
+        for (anchor, owner) in owners where trackedNow.contains(anchor) { counts[owner.room, default: 0] += 1 }
         if let best = counts.max(by: { $0.value < $1.value })?.key {
             settle(best, why: "scan: already found")
             return
@@ -3222,14 +3238,15 @@ final class PhysicalRooms {
         // or not (19 Nov 2026: a new anchor's first word is "not tracked",
         // and taking that as lost hid every panel snapped to a wall).
         guard isTracked else {
-            if wasTracked { RoomLog.write("tracking paused for \(owner.frame)") }
+            // Logged once as it pauses, not on every untracked report.
+            if trackedNow.remove(id) != nil { RoomLog.write("tracking paused for \(owner.frame)") }
             return
         }
+        trackedNow.insert(id)
         tracked[id] = transform
-        if !wasTracked {
-            RoomLog.write("found \(owner.frame) in \(name(owner.room))")
-            defer { countFound() }
-        }
+        if !wasTracked { RoomLog.write("found \(owner.frame) in \(name(owner.room))") }
+        // Counted after the room is settled or the frame placed below.
+        defer { if !wasTracked { countFound() } }
         switch phase {
         case .finding, .asking:
             settle(owner.room, why: "recognised by \(owner.frame)")
@@ -3246,6 +3263,7 @@ final class PhysicalRooms {
     }
 
     func anchorRemoved(id: UUID) {
+        trackedNow.remove(id)
         guard tracked[id] != nil else { return }
         tracked[id] = nil
         if let owner = owners[id] { RoomLog.write("anchor removed for \(owner.frame)") }
@@ -3309,6 +3327,11 @@ final class PhysicalRooms {
             } else if !revealed.contains(frame.id) {
                 // Hidden, waiting for its anchor: where it stands means nothing.
                 return
+            } else if let spot = revealedAt[frame.id], Self.close(spot, m),
+                      old.width == frame.width, old.height == frame.height {
+                // Still where it was stood before the reader: renamed or
+                // repainted, not moved — its wall anchor is kept.
+                return
             }
         }
         guard !adding.contains(frame.id) else { return }
@@ -3330,7 +3353,9 @@ final class PhysicalRooms {
             self.placements[frame.id, default: [:]][room] = Placement(anchor: anchor, width: width, height: height)
             self.owners[anchor] = (frame.id, room)
             self.tracked[anchor] = m
+            self.trackedNow.insert(anchor)
             self.revealed.remove(frame.id)
+            self.revealedAt[frame.id] = nil
             self.save()
             RoomLog.write("anchored \(frame.id) in \(self.name(room))")
             RoomFrames.shared.reshow(frame.id)
@@ -3339,9 +3364,13 @@ final class PhysicalRooms {
                 self.tracked[previous] = nil
                 await self.removeAnchor(previous)
             }
-            // Moved again while the anchor was being made: anchored again.
+            // Moved or resized again while the anchor was being made:
+            // anchored again — unless the hand still holds it, when its
+            // let-go records the final place (no anchor per drag step).
             if let now = RoomFrames.shared.frame(frame.id), now.transform.count == 16,
-               !Self.close(RoomFrames.matrix(now.transform), m) {
+               !RoomFrames.shared.isHeld(frame.id),
+               !Self.close(RoomFrames.matrix(now.transform), m)
+                || now.width != width || now.height != height {
                 self.record(now)
             }
         }
@@ -3419,7 +3448,21 @@ final class PhysicalRooms {
         }
     }
 
+    /// A burst of saves — every panel anchored as a room is settled — made
+    /// one write, a moment later (19 Nov 2026 review).
+    @ObservationIgnored private var savePending = false
+
     private func save() {
+        guard !savePending else { return }
+        savePending = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            self.savePending = false
+            self.saveNow()
+        }
+    }
+
+    private func saveNow() {
         let stored = Stored(
             rooms: rooms,
             poses: legacy.isEmpty ? nil
@@ -3442,20 +3485,31 @@ enum RoomLog {
         return base.appendingPathComponent("origami-room-log.txt")
     }
 
-    @MainActor private static var lines: [String] = {
-        ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
-            .split(separator: "\n").map(String.init)
-    }()
+    /// Trimmed to its last 2000 lines once a launch, at the first write;
+    /// after that each line is appended, never the whole file rewritten
+    /// (19 Nov 2026 review: it was rewritten on every line).
+    @MainActor private static var trimmed = false
 
     @MainActor static func write(_ line: String) {
         let stamp = Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false))
-        lines.append("\(stamp)  \(line)")
-        if lines.count > 2000 { lines.removeFirst(lines.count - 2000) }
         print("Map/rooms: \(line)")
-        try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        if !trimmed {
+            trimmed = true
+            let kept = ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+                .split(separator: "\n").suffix(2000).joined(separator: "\n")
+            try? (kept.isEmpty ? "" : kept + "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+        let entry = Data("\(stamp)  \(line)\n".utf8)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: entry)
+            try? handle.close()
+        } else {
+            try? entry.write(to: url)
+        }
     }
 
-    @MainActor static var text: String { lines.joined(separator: "\n") }
+    @MainActor static var text: String { (try? String(contentsOf: url, encoding: .utf8)) ?? "" }
 }
 
 /// The question asked when the room is not recognised (19 Nov 2026, Frode):
@@ -3463,6 +3517,15 @@ enum RoomLog {
 /// and while a known one is looked for, what to do: look around.
 struct RoomQuestionView: View {
     @State private var newName = ""
+
+    /// One new room per answer: the field's return and Start Here may both
+    /// fire, and only the first is taken (19 Nov 2026 review).
+    private func startHere() {
+        let rooms = PhysicalRooms.shared
+        guard !rooms.isSettled else { return }
+        rooms.startNewRoom(named: newName)
+        newName = ""
+    }
 
     var body: some View {
         let rooms = PhysicalRooms.shared
@@ -3511,8 +3574,8 @@ struct RoomQuestionView: View {
                     TextField("Room \(rooms.rooms.count + 1)", text: $newName)
                         .font(.system(size: 24))
                         .textFieldStyle(.roundedBorder)
-                        .onSubmit { rooms.startNewRoom(named: newName) }
-                    Button("Start Here") { rooms.startNewRoom(named: newName) }
+                        .onSubmit(startHere)
+                    Button("Start Here", action: startHere)
                         .font(.system(size: 22, weight: .semibold))
                 }
             case .looking, .settled:

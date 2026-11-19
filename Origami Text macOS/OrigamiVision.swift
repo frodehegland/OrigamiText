@@ -2302,14 +2302,22 @@ final class VisionModel {
             volumeStamp += 1
         }
     }
+    /// Whether the panels were off when Sphere Simple was chosen.
+    @ObservationIgnored private var panelsOffBeforeSimple: Bool?
     var retro: RetroPalette? { retroName.flatMap { name in RetroPalette.all.first { $0.name == name } } }
     var cardLook = CardLook(rawValue: UserDefaults.standard.string(forKey: "visionCardLook") ?? "") ?? .cards {
         didSet {
             UserDefaults.standard.set(cardLook.rawValue, forKey: "visionCardLook")
             // Sphere Simple puts the panels away, and leaving it brings
             // them back.
-            if cardLook == .sphereSimple { RoomFrames.shared.panelsOff = true }
-            else if oldValue == .sphereSimple { RoomFrames.shared.panelsOff = false }
+            // As they stood before it: panels already off stay off.
+            if cardLook == .sphereSimple, oldValue != .sphereSimple {
+                panelsOffBeforeSimple = RoomFrames.shared.panelsOff
+                RoomFrames.shared.panelsOff = true
+            } else if oldValue == .sphereSimple, cardLook != .sphereSimple {
+                RoomFrames.shared.panelsOff = panelsOffBeforeSimple ?? false
+                panelsOffBeforeSimple = nil
+            }
             volumeStamp += 1
         }
     }
