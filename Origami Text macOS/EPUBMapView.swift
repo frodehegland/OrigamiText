@@ -1716,7 +1716,7 @@ struct EPUBMapView: View {
         rebuildDeepRank()
         updateSankey()
         // Suppress ALL connecting lines while any reading panel is open.
-        let linesActive = model.openDocIDs.isEmpty
+        let linesActive = model.openDocIDs.isEmpty && model.cardLook != .sphereSimple
         // A reading's selected words, connected: lines from its panel to
         // the cards they reach, whatever else is suppressed.
         var panelLines = linesActive ? model.openDocCitations : [:]
@@ -3632,6 +3632,12 @@ struct EPUBMapView: View {
             return moving.kind == .concept && item.kind == .concept
         }
         view = view.constrainMovedNode { item, proposed, startPosition in
+            // Never flung (19 Nov 2026, Frode: spheres flew out, and the
+            // headset fell over): no drag takes a node more than 6 m from
+            // where it began, nor to a place that is not a number.
+            let travel = proposed - startPosition
+            guard travel.x.isFinite, travel.y.isFinite, travel.z.isFinite else { return startPosition }
+            let proposed = simd_length(travel) > 6 ? startPosition + simd_normalize(travel) * 6 : proposed
             // An author's name being pulled off this card: the pinch is the
             // name's, and the card stays where it stands (16 Nov 2026, Frode).
             if AuthorNameHandle.pulling { return startPosition }
@@ -3654,8 +3660,11 @@ struct EPUBMapView: View {
                 // Every card turns to the reader while held (19 Nov 2026,
                 // Frode; from 15 Nov they kept their angle) — and, let go,
                 // keeps the angle it was carried at.
+                // A sphere is round every way — it never turns (19 Nov 2026:
+                // turning them as they moved sent them flying).
                 let card = !item.isGhost && !item.isFaded
                     && (item.kind == .article || item.kind == .cited || item.kind == .citedDeep)
+                    && !(item.wearsLook && item.look.isRound)
                 if openFree || card || item.isExhibited || Self.isSpatialLabel(item)
                     || item.id.hasPrefix("concept:") || item.id.hasPrefix("float:") {
                     cardTick.facingWhileMoved.insert(item.id)
@@ -3791,6 +3800,11 @@ struct EPUBMapView: View {
                 materialMode: .none)
         }
         view = view.shouldEnableNode { item in
+            // Sphere Simple (19 Nov 2026, Frode): the papers alone — for a
+            // screenshot, nothing else drawn.
+            if model.cardLook == .sphereSimple {
+                return item.kind == .article && !item.isGhost && !item.isFaded
+            }
             // Lifted words stand whatever else the room shows — a Focus,
             // a Show Only, the Reading Desk (2 Nov 2026) — unless the bar's
             // Snippets has put them away (9 Nov 2026).
@@ -3815,7 +3829,8 @@ struct EPUBMapView: View {
             // Authors off in the bar (16 Nov 2026, Frode): no loose person's
             // card stands, however it came — pulled from a card or put in. One
             // pulled out of a frame is the frame's, and stands.
-            if !model.authorCardsShown, isPersonConcept(item), !RoomFrames.shared.isPulled(item.id) { return false }
+            // (Since the bar's Authors went, 19 Nov 2026, people stand as
+            // every other concept does.)
             // A concept just pulled out stands where it was let go.
             if pulledConceptIDs.contains(item.id) { return true }
             // The Concepts menu's Hide All Concepts puts every pill away.
@@ -4735,6 +4750,34 @@ struct EPUBMapView: View {
     /// the paper's full card comes back (2 Nov 2026).
     @ViewBuilder private func colorSphere(for item: EPUBMapItem) -> some View {
         let s = Self.crisp
+        // Sphere Simple (19 Nov 2026, Frode): the bare sphere until chosen;
+        // chosen, its title and authors beneath — never a ring.
+        let simple = item.look == .sphereSimple
+        if simple {
+            VStack(spacing: 3 * s) {
+                Color.clear
+                    .frame(width: Self.sphereDiameter * s, height: Self.sphereDiameter * s)
+                if item.isSelected {
+                    Text(item.title)
+                        .font(bodyFont(item, size: 5.5 * s, weight: .regular))
+                        .foregroundStyle(roomInk(item, Color.white))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(4)
+                        .frame(maxWidth: 70 * s)
+                    let names = item.author.components(separatedBy: " \u{00B7} ")[0]
+                    if !names.isEmpty {
+                        Text(names)
+                            .font(roomFont(item, size: Self.sphereBylineSize * s, design: .default))
+                            .foregroundStyle(roomInk(item, Color(white: 0.75), dimmed: 0.75))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(3)
+                            .frame(maxWidth: 70 * s)
+                    }
+                }
+            }
+            .padding(.top, Self.sphereTopPad * s)
+            .padding([.horizontal, .bottom], 2 * s)
+        } else {
         VStack(spacing: 3 * s) {
             Color.clear
                 .frame(width: Self.sphereDiameter * s, height: Self.sphereDiameter * s)
@@ -4748,7 +4791,9 @@ struct EPUBMapView: View {
             Text(item.isSelected && item.showsAbstract ? item.title : shortTitle(item.title))
                 .font(bodyFont(item, size: 5.5 * s, weight: .regular))
                 .foregroundStyle(roomInk(item, Color.white))
-                .shadow(color: .black.opacity(0.6), radius: 1.5 * s)
+                // Sphere Simple: no shadow to render.
+                .shadow(color: .black.opacity(item.look == .sphereSimple ? 0 : 0.6),
+                        radius: item.look == .sphereSimple ? 0 : 1.5 * s)
                 .multilineTextAlignment(.center)
                 .lineLimit(item.isSelected && item.showsAbstract ? 4 : 2)
                 .frame(maxWidth: 70 * s)
@@ -4758,6 +4803,7 @@ struct EPUBMapView: View {
         }
         .padding(.top, Self.sphereTopPad * s)
         .padding([.horizontal, .bottom], 2 * s)
+        }
     }
 
     /// The authors beneath a sphere or a coloured title, in light grey:
@@ -4806,7 +4852,8 @@ struct EPUBMapView: View {
         // solid sphere is hard: glassy-smooth, fully coated, a touch larger.
         let solid = item.look == .solid
         plain.roughness = .init(floatLiteral: blob ? 0.62 : solid ? 0.12 : 0.32)
-        plain.clearcoat = .init(floatLiteral: blob ? 0.15 : solid ? 1 : 0.6)
+        // Sphere Simple: no clear coat to light.
+        plain.clearcoat = .init(floatLiteral: blob ? 0.15 : solid ? 1 : item.look == .sphereSimple ? 0 : 0.6)
         if blob { plain.blending = .transparent(opacity: .init(floatLiteral: 0.86)) }
         let sphere = ModelEntity(mesh: .generateSphere(radius: radius * (blob ? 1.12 : solid ? 1.08 : 1)), materials: [plain])
         sphere.position = SIMD3<Float>(0, y, radius * 0.25)
@@ -5612,10 +5659,6 @@ struct EPUBMapView: View {
     /// records; Authors their cards, put into the room first if away.
     /// Papers chosen so raise their citations, as Select All's do.
     private func selectFamily(_ family: String) {
-        if family == "authors", !model.authorCardsShown {
-            model.authorCardsShown = true
-            reload()
-        }
         let chosen: Set<String> = Set(items.filter { item in
             guard !item.isGhost, !item.isAside, !item.isFaded else { return false }
             switch family {
@@ -18230,10 +18273,27 @@ final class SpaceJelly {
             // once, never past it.
             let omega = calm ? Float(40) : spring.omega
             let damping = calm ? Float(1) : Self.damping
-            let accel = -omega * omega * spring.offset
-                - 2 * damping * omega * spring.velocity
-            spring.velocity += accel * dt
-            spring.offset += spring.velocity * dt
+            // In slices short enough to stay steady however slow the frame
+            // (19 Nov 2026, Frode: a large set let go shook, then flew off
+            // and the headset fell over). At 30 frames a second the let-go
+            // spring's damping step was 2.7 — past the 2 where semi-implicit
+            // Euler holds — so each frame overshot more than the last.
+            let slices = max(1, Int((dt * omega / 0.15).rounded(.up)))
+            let h = dt / Float(slices)
+            for _ in 0..<slices {
+                let accel = -omega * omega * spring.offset
+                    - 2 * damping * omega * spring.velocity
+                spring.velocity += accel * h
+                spring.offset += spring.velocity * h
+            }
+            // Never further than the leash, never not a number.
+            let trail = simd_length(spring.offset)
+            if !trail.isFinite || !simd_length(spring.velocity).isFinite {
+                body.position = spring.base
+                springs[key] = nil
+                continue
+            }
+            if trail > Self.maxTrail { spring.offset *= Self.maxTrail / trail }
             if simd_length(spring.offset) < 0.0003, simd_length(spring.velocity) < 0.003 {
                 body.position = spring.base
                 springs[key] = nil

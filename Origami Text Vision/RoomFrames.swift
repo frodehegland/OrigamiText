@@ -343,7 +343,21 @@ final class RoomFrames {
     }
 
     /// The room's frames in sight.
-    var shownHere: [RoomFrame] { here.filter(\.isShown) }
+    var shownHere: [RoomFrame] { panelsOff ? [] : here.filter(\.isShown) }
+
+    /// Open Without Panels (19 Nov 2026, Frode): this opening of the room
+    /// stands with no panel or frame in sight — each kept as it is, shown
+    /// again from the bar's Panels ▸ Show Panels. The room is still found
+    /// quietly meanwhile.
+    var panelsOff = false {
+        didSet {
+            guard panelsOff != oldValue else { return }
+            RoomLog.write(panelsOff ? "opened without panels" : "panels shown again")
+            if panelsOff { arrangingIDs = []; menuOpenFor = nil; roomMenuOpenFor = nil }
+            showAll()
+            membersChanged()
+        }
+    }
 
     func frame(_ id: String) -> RoomFrame? { frames.first { $0.id == id } }
 
@@ -353,7 +367,7 @@ final class RoomFrames {
     /// Whether a frame's members stand laid in it: in sight, not folded,
     /// not being moved and resized.
     func laysMembers(_ frame: RoomFrame) -> Bool {
-        frame.isShown && !frame.isFolded && !arrangingIDs.contains(frame.id)
+        !panelsOff && frame.isShown && !frame.isFolded && !arrangingIDs.contains(frame.id)
             // Not before its place in this physical room is known.
             && PhysicalRooms.shared.shouldShow(frame.id)
     }
@@ -362,7 +376,7 @@ final class RoomFrames {
     func standsInFrame(_ id: String) -> Bool { memberFrame[id] != nil }
 
     /// Whether a member has been pulled out of one of the room's frames.
-    func isPulled(_ id: String) -> Bool { here.contains { $0.isShown && $0.pulled.contains(id) } }
+    func isPulled(_ id: String) -> Bool { shownHere.contains { $0.pulled.contains(id) } }
 
     /// The kind of frame a member stands in, if it stands in one.
     func kind(ofMember id: String) -> String? {
@@ -371,7 +385,7 @@ final class RoomFrames {
 
     /// The kind of frame a member came out of, while it stands loose.
     func kind(ofPulled id: String) -> String? {
-        here.first { $0.isShown && $0.pulled.contains(id) }?.kind
+        shownHere.first { $0.pulled.contains(id) }?.kind
     }
 
     /// Whether a card is a person by its frame: standing in, or pulled out
@@ -384,7 +398,7 @@ final class RoomFrames {
 
     /// The frame in this room a member was pulled out of, if any.
     func frameID(pulling memberID: String) -> String? {
-        here.first { $0.isShown && $0.pulled.contains(memberID) }?.id
+        shownHere.first { $0.pulled.contains(memberID) }?.id
     }
 
     /// The turn a member wears in its frame: the frame's own.
@@ -407,6 +421,8 @@ final class RoomFrames {
             }
         }
         PhysicalRooms.shared.spaceOpened()
+        // Each opening asks afresh.
+        panelsOff = false
         guard !installed else { return }
         installed = true
         refresh()
@@ -870,7 +886,7 @@ final class RoomFrames {
     /// The question floats before the reader while the room is not known,
     /// and goes when it is.
     private func layQuestion() {
-        let asking = !PhysicalRooms.shared.isSettled || PhysicalRooms.shared.scanning
+        let asking = !panelsOff && (!PhysicalRooms.shared.isSettled || PhysicalRooms.shared.scanning)
         // Kept in view while it waits: turned away from, or walked away
         // from, it comes round again before the reader.
         if asking, questionShown, let entity = question, let head = headPose() {
@@ -1585,7 +1601,7 @@ final class RoomFrames {
         entity.components.set(ModelSortGroupComponent(group: .planarUIAlwaysBehind, order: 0))
         // A frame the reader is moving is never hidden, whatever its anchor
         // says (19 Nov 2026, Frode: they disappeared when moved).
-        let shown = frame.venue == venue && frame.isShown && frame.transform.count == 16
+        let shown = !panelsOff && frame.venue == venue && frame.isShown && frame.transform.count == 16
             && (PhysicalRooms.shared.shouldShow(frame.id) || arrangingIDs.contains(frame.id))
         if entity.isEnabled != shown { entity.isEnabled = shown }
         if shown { PhysicalRooms.shared.noteShown(frame.id) }
@@ -3530,6 +3546,18 @@ struct RoomQuestionView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+        .safeAreaInset(edge: .bottom) {
+            // Open Without Panels (19 Nov 2026, Frode): the room as it is,
+            // nothing on its walls; Panels ▸ Show Panels brings them back.
+            // Centred, a clear button, set apart below the rest (19 Nov 2026).
+            Button("Open Without Panels") { RoomFrames.shared.panelsOff = true }
+                .font(.system(size: 22, weight: .semibold))
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 28)
+                .padding(.bottom, 32)
         }
         .padding(32)
         .frame(width: 640, alignment: .leading)

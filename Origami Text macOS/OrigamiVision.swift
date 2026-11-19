@@ -822,6 +822,16 @@ struct OrigamiVisionApp: App {
             WindowPlacement(.utilityPanel)
         }
 
+        // Concepts ▸ Add Keyword… (19 Nov 2026, Frode: the field left the bar).
+        Window("Add Keyword", id: "add-keyword") {
+            VisionAddKeywordView()
+                .environment(model)
+        }
+        .windowResizability(.contentSize)
+        .defaultWindowPlacement { _, _ in
+            WindowPlacement(.utilityPanel)
+        }
+
         Window("Volume", id: "volume-toolbar") {
             VisionVolumeToolbar()
                 .environment(model)
@@ -2119,7 +2129,7 @@ final class VisionModel {
     /// many papers stays smooth. Opened, a paper is its full card as ever.
     /// Kept across launches.
     enum CardLook: String, CaseIterable {
-        case cards, authorCards, spheres, titles, blobs, covers, fast, solid
+        case cards, authorCards, spheres, sphereSimple, titles, blobs, covers, fast, solid
         var title: String {
             switch self {
             case .cards: "Cards with Covers"
@@ -2127,6 +2137,10 @@ final class VisionModel {
             // (18 Nov 2026, Frode), no cover.
             case .authorCards: "Card with Author"
             case .spheres: "Color Spheres"
+            // Color Spheres with nothing else in the room (19 Nov 2026,
+            // Frode): for screenshots — no panels, concepts, citations or
+            // lines, the spheres plainly lit.
+            case .sphereSimple: "Sphere Simple"
             case .titles: "Color Titles"
             case .blobs: "Blobs"
             case .covers: "Covers"
@@ -2137,7 +2151,7 @@ final class VisionModel {
         /// A ball under the title: Color Spheres, the soft Blobs, or the
         /// Solid Spheres (9 Nov 2026), which meet the room's real walls,
         /// tables and floor and spring back off them, never passing through.
-        var isRound: Bool { self == .spheres || self == .blobs || self == .solid }
+        var isRound: Bool { self == .spheres || self == .sphereSimple || self == .blobs || self == .solid }
         /// Drawn as the room's card: with its cover, or with its author.
         var isCard: Bool { self == .cards || self == .authorCards }
     }
@@ -2183,7 +2197,9 @@ final class VisionModel {
 
     /// The bar's Authors (16 Nov 2026): a card for each author of the
     /// room's papers — the name, and the face when one is known.
-    var authorCardsShown = UserDefaults.standard.bool(forKey: "visionAuthorCardsShown") {
+    /// Off since the bar's Authors went (19 Nov 2026): the people among the
+    /// concepts stand for them.
+    var authorCardsShown = false {
         didSet {
             UserDefaults.standard.set(authorCardsShown, forKey: "visionAuthorCardsShown")
             volumeStamp += 1
@@ -2290,6 +2306,10 @@ final class VisionModel {
     var cardLook = CardLook(rawValue: UserDefaults.standard.string(forKey: "visionCardLook") ?? "") ?? .cards {
         didSet {
             UserDefaults.standard.set(cardLook.rawValue, forKey: "visionCardLook")
+            // Sphere Simple puts the panels away, and leaving it brings
+            // them back.
+            if cardLook == .sphereSimple { RoomFrames.shared.panelsOff = true }
+            else if oldValue == .sphereSimple { RoomFrames.shared.panelsOff = false }
             volumeStamp += 1
         }
     }
@@ -3170,7 +3190,9 @@ final class VisionModel {
         guard let raw = UserDefaults.standard.stringArray(forKey: shownZonesKey) else {
             return Set(BoundVolume.Zone.allCases)
         }
-        return Set(raw.compactMap(BoundVolume.Zone.init(rawValue:)))
+        // Articles stand at every launch (19 Nov 2026, Frode): put away,
+        // they come back the next time the room opens.
+        return Set(raw.compactMap(BoundVolume.Zone.init(rawValue:))).union([.articles])
     }
 
     func showsZone(_ zone: BoundVolume.Zone) -> Bool {
@@ -4606,9 +4628,6 @@ struct VisionVolumeToolbar: View {
     @Environment(VisionModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     @Environment(\.physicalMetrics) private var metrics
-    /// The keyword being spoken or typed — its keyboard's microphone
-    /// takes dictation.
-    @State private var keywordDraft = ""
 
     var body: some View {
         if model.toolbarCollapsed {
@@ -4693,6 +4712,7 @@ struct VisionVolumeToolbar: View {
     private var conceptsMenu: some View {
         Menu {
             Button("New Concept\u{2026}", systemImage: "plus") { openWindow(id: "new-concept") }
+            Button("Add Keyword\u{2026}", systemImage: "text.badge.plus") { openWindow(id: "add-keyword") }
             // Every concept in the room at once (15 Nov 2026).
             Button("Show All Concepts", systemImage: "eye") { model.conceptsShown = true }
                 .disabled(model.conceptsShown)
@@ -4751,6 +4771,64 @@ struct VisionVolumeToolbar: View {
         .help("Make a concept, refresh the library (Knowledge Space's concepts arrive through your Mac), or put one into the room")
     }
 
+    /// Room (19 Nov 2026, Frode): the physical room, its layouts, and the
+    /// panels — what was the bar's Panels menu.
+    private var roomMenu: some View {
+        Menu {
+            // The physical room the headset finds itself in.
+            Section(PhysicalRooms.shared.currentName.map { "Room: \($0)" } ?? "Room: finding…") {
+                Button("Scan for Room") { PhysicalRooms.shared.scanForRoom() }
+                Button("Which Room Is This?") { PhysicalRooms.shared.askAgain() }
+                Button("New Room Here") { PhysicalRooms.shared.startNewRoomHere() }
+                Button("Show Panels Not Found") { PhysicalRooms.shared.revealMissing() }
+                    .disabled(!PhysicalRooms.shared.isSettled)
+                // Opened without panels (19 Nov 2026): they come back here.
+                Toggle("Show Panels", isOn: Binding(
+                    get: { !RoomFrames.shared.panelsOff },
+                    set: { RoomFrames.shared.panelsOff = !$0 }))
+            }
+            // Layouts (18 Nov 2026, Frode): the panels standing — the room's
+            // context — saved, and any saved one brought back at once.
+            Section("Layouts") {
+                Button("Save Layout") { RoomFrames.shared.saveLayout() }
+                    .disabled(RoomFrames.shared.shownHere.isEmpty)
+                ForEach(RoomFrames.shared.layoutsHere) { layout in
+                    Button(layout.name) { RoomFrames.shared.loadLayout(layout.id) }
+                }
+                Menu("Delete Layout") {
+                    ForEach(RoomFrames.shared.layoutsHere) { layout in
+                        Button(layout.name, role: .destructive) { RoomFrames.shared.deleteLayout(layout.id) }
+                    }
+                }
+                .disabled(RoomFrames.shared.layoutsHere.isEmpty)
+            }
+            // Panels (Frames until 18 Nov 2026, Frode): one for each kind —
+            // authors, or a kind of concept — ticked while it stands; and
+            // the reader's own, named, holding what is stuck to them.
+            Section("Panels") {
+                ForEach(RoomFrame.kinds, id: \.self) { kind in
+                    Toggle(RoomFrame.title(of: kind), isOn: Binding(
+                        get: { RoomFrames.shared.isShown(kind: kind) },
+                        set: { _ in RoomFrames.shared.toggle(kind: kind) }))
+                }
+                Button("New Panel") { RoomFrames.shared.putUpPanel() }
+                ForEach(RoomFrames.shared.panelsHere) { panel in
+                    Toggle(panel.title, isOn: Binding(
+                        get: { panel.isShown },
+                        set: { _ in RoomFrames.shared.toggleShown(panel.id) }))
+                }
+                // Every panel into Move & Resize at once (16 Nov 2026).
+                Toggle("Edit & Move", isOn: Binding(
+                    get: { RoomFrames.shared.isEditingAll },
+                    set: { _ in RoomFrames.shared.toggleEditAll() }))
+                    .disabled(RoomFrames.shared.shownHere.isEmpty)
+            }
+        } label: {
+            Text("Room")
+        }
+        .help("The room you are in, its layouts, and the panels on its walls")
+    }
+
     /// The room's row: Documents first and Ask last; between them the
     /// keyword, the zones, and the arranging — Select All, Layout,
     /// Shapes — then where the room stands: Volume (All, or one).
@@ -4761,129 +4839,36 @@ struct VisionVolumeToolbar: View {
             // Back to the document chooser: the library, where another
             // journal, volume or series is chosen (the arm's Documents
             // chip, now the arm chips are away).
-            Button("Documents") { openWindow(id: "library") }
+            // Library (19 Nov 2026, Frode; was Documents).
+            Button("Library") { openWindow(id: "library") }
                 .help("Choose another journal, volume or series")
-            // A keyword into the room: it stands as a card, and chosen,
-            // draws lines to the papers using it, leaves only them, or
-            // gathers them round it.
-            HStack(spacing: 8) {
-                Image(systemName: "text.badge.plus").foregroundStyle(.secondary)
-                TextField("Keyword", text: $keywordDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-                    .submitLabel(.done)
-                    .onSubmit {
-                        model.addSpaceKeyword(keywordDraft)
-                        keywordDraft = ""
-                    }
-            }
-            .help("Speak or type a keyword to put it into the room")
-            // Which of the volume's zones stand in the room — each a word
-            // that reads full while its zone stands and pale grey while it
-            // is put away, so off is never mistaken for on.
-            HStack(spacing: 18) {
+            // Room (19 Nov 2026, Frode): the physical room and the panels.
+            roomMenu
+            // Contents (19 Nov 2026, Frode): which of the volume's zones stand
+            // in the room — ticked while standing; a journal's, which has no
+            // opening pages or appendices, dimmed, never hidden.
+            Menu {
                 ForEach(BoundVolume.Zone.allCases, id: \.self) { zone in
                     let on = model.shownZones.contains(zone)
-                    Button {
-                        if on { model.shownZones.remove(zone) } else { model.shownZones.insert(zone) }
-                    } label: {
-                        // "Other" for the appendices and records here (16 Nov
-                        // 2026, Frode); the Mac keeps its longer name.
-                        Text(zone == .appendices ? "Other" : zone.title)
-                            .foregroundStyle(on ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
-                    }
-                    .help(on ? "Put away \(zone.title)" : "Show \(zone.title)")
-                    // Presentations, after Articles (16 Nov 2026, Frode):
-                    // always in the bar, dimmed in a volume that has none.
+                    Toggle(zone == .appendices ? "Other" : zone.title, isOn: Binding(
+                        get: { on },
+                        set: { if $0 { model.shownZones.insert(zone) } else { model.shownZones.remove(zone) } }))
+                        .disabled(!model.isVolumeRoom)
                     if zone == .articles {
-                        Button {
-                            model.presentationsShown.toggle()
-                        } label: {
-                            Text("Presentations")
-                                .foregroundStyle(model.presentationsShown ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
-                        }
-                        .help(model.presentationsShown ? "Put away the presentations" : "Show the presentations")
-                        .disabled(!model.roomHasPresentations)
+                        Toggle("Presentations", isOn: Binding(
+                            get: { model.presentationsShown },
+                            set: { model.presentationsShown = $0 }))
+                            .disabled(!model.roomHasPresentations)
                     }
                 }
-            }
-            // A journal has no opening pages or appendices to put away:
-            // the zones stay in the bar, dimmed, never hidden.
-            .disabled(!model.isVolumeRoom)
-            // Authors (16 Nov 2026): a card for each author, name and face,
-            // shown or put away — full while shown, pale while away.
-            Button {
-                model.authorCardsShown.toggle()
             } label: {
-                Text("Authors")
-                    .foregroundStyle(model.authorCardsShown ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+                Text("Contents")
             }
-            .help(model.authorCardsShown ? "Put away the authors" : "Show a card for each author, with their face")
-            // Concepts, after Authors and before Panels (18 Nov 2026, Frode).
+            .help("Which parts of the volume stand in the room: its opening pages, articles, presentations and the rest")
+            // (Authors left the bar 19 Nov 2026, Frode: the people among the
+            // concepts cover them.)
+            // Concepts, before Panels (18 Nov 2026, Frode).
             conceptsMenu
-            // Panels (named Frames until 18 Nov 2026, Frode): Knowledge Space's side panels — a
-            // frame put up anywhere in the room holding every author, or
-            // every concept of one kind. Each kind ticked while its frame
-            // stands; chosen again, it is put away (kept where it stood).
-            Menu {
-                ForEach(RoomFrame.kinds, id: \.self) { kind in
-                    Toggle(RoomFrame.title(of: kind), isOn: Binding(
-                        get: { RoomFrames.shared.isShown(kind: kind) },
-                        set: { _ in RoomFrames.shared.toggle(kind: kind) }))
-                }
-                // Panels (18 Nov 2026, Frode): frames of no kind, named by
-                // the reader, holding whatever article or concept is stuck
-                // to them. New Panel puts one up; each stands ticked while
-                // in sight, put away and back by choosing it.
-                Divider()
-                Button("New Panel") { RoomFrames.shared.putUpPanel() }
-                ForEach(RoomFrames.shared.panelsHere) { panel in
-                    Toggle(panel.title, isOn: Binding(
-                        get: { panel.isShown },
-                        set: { _ in RoomFrames.shared.toggleShown(panel.id) }))
-                }
-                // Room layouts (18 Nov 2026, Frode): the frames and panels
-                // standing — the room's context — saved, and any saved one
-                // brought back at once. (The articles' and concepts' places,
-                // the sculpture, are the Layout menu's Views.)
-                // (19 Nov 2026, Frode: a layout is the panels; a room is the
-                // physical space.)
-                Section("Layouts") {
-                    Button("Save Layout") { RoomFrames.shared.saveLayout() }
-                        .disabled(RoomFrames.shared.shownHere.isEmpty)
-                    ForEach(RoomFrames.shared.layoutsHere) { layout in
-                        Button(layout.name) { RoomFrames.shared.loadLayout(layout.id) }
-                    }
-                    Menu("Delete Layout") {
-                        ForEach(RoomFrames.shared.layoutsHere) { layout in
-                            Button(layout.name, role: .destructive) { RoomFrames.shared.deleteLayout(layout.id) }
-                        }
-                    }
-                    .disabled(RoomFrames.shared.layoutsHere.isEmpty)
-                }
-                // The physical room the headset finds itself in (18 Nov
-                // 2026): each keeps its own places for the frames. New Room
-                // Here, should it take one room for another.
-                Section(PhysicalRooms.shared.currentName.map { "Room: \($0)" } ?? "Room: finding…") {
-                    Button("New Room Here") { PhysicalRooms.shared.startNewRoomHere() }
-                    // Asked again, and any panels not found brought before the
-                    // reader (19 Nov 2026).
-                    Button("Scan for Room") { PhysicalRooms.shared.scanForRoom() }
-                    Button("Which Room Is This?") { PhysicalRooms.shared.askAgain() }
-                    Button("Show Panels Not Found") { PhysicalRooms.shared.revealMissing() }
-                        .disabled(!PhysicalRooms.shared.isSettled)
-                }
-                // Every frame in the room into Move & Resize at once, and
-                // out again (16 Nov 2026, Frode). Dimmed with none up.
-                Divider()
-                Toggle("Edit & Move", isOn: Binding(
-                    get: { RoomFrames.shared.isEditingAll },
-                    set: { _ in RoomFrames.shared.toggleEditAll() }))
-                    .disabled(RoomFrames.shared.shownHere.isEmpty)
-            } label: {
-                Text("Panels")
-            }
-            .help("Put up a panel holding every author or every concept of one kind — or one of your own, holding what you stick to it")
             // Select (15 Nov 2026, was the one Select All button): every
             // article, nothing, or one category's articles.
             Menu {
@@ -4896,7 +4881,7 @@ struct VisionVolumeToolbar: View {
                 Button("Articles") { model.volumeBarRequest = .init(action: .selectFamily("articles")) }
                 Button("Other") { model.volumeBarRequest = .init(action: .selectFamily("other")) }
                     .disabled(!model.isVolumeRoom)
-                Button("Authors") { model.volumeBarRequest = .init(action: .selectFamily("authors")) }
+                Button("People") { model.volumeBarRequest = .init(action: .selectFamily("authors")) }
                 Section("By Category") {
                     ForEach(model.tags.tags.filter(\.isOn)) { tag in
                         let count = model.roomTagCounts[tag.color] ?? 0
@@ -4931,7 +4916,7 @@ struct VisionVolumeToolbar: View {
                 Button("Widen") { model.volumeBarRequest = .init(action: .widen) }
                 Button("Widen Depth") { model.volumeBarRequest = .init(action: .widenDepth) }
                 Button("Close In Depth") { model.volumeBarRequest = .init(action: .closeInDepth) }
-                Section("Arrange") {
+                Section("By") {
                     ForEach(model.layoutArrangements) { choice in
                         Button(choice.title) {
                             model.volumeBarRequest = .init(action: .arrange(choice.id))
@@ -4976,7 +4961,7 @@ struct VisionVolumeToolbar: View {
                 // leave in their slots, gone — each card back in its place.
                 Button("Remove Ghosts") { model.volumeBarRequest = .init(action: .removeGhosts) }
             } label: {
-                Text("Layout")
+                Text("Arrange")
             }
             .help("Arrange the selected articles — every article when none is selected — or the whole wall")
             // Sculptures (8 Nov 2026): the room's form — Hallway (the room
@@ -5046,16 +5031,16 @@ struct VisionVolumeToolbar: View {
                     }
                 }
             } label: {
-                Text("Shapes")
+                Text("Objects")
             }
             .help("The papers' shape: cards, spheres, coloured titles, blobs, covers, Fast plates, or solid spheres that bounce off the room")
             // While on, each is ringed as well as filled (4 Nov 2026), so a
             // live attribute reads at a glance.
-            Toggle("Colours", isOn: Binding(get: { model.coloursShown }, set: { model.coloursShown = $0 }))
+            Toggle("Colors", isOn: Binding(get: { model.coloursShown }, set: { model.coloursShown = $0 }))
                 .toggleStyle(.button)
                 .liveRing(model.coloursShown)
                 .help("The colours, beneath the bar: which is which, and lines to every paper of one")
-            Toggle("Relative Size", isOn: Binding(get: { model.sizeByLength },
+            Toggle("Rel. Size", isOn: Binding(get: { model.sizeByLength },
                                                  set: { model.sizeByLength = $0 }))
                 .toggleStyle(.button)
                 .liveRing(model.sizeByLength)
@@ -5100,7 +5085,7 @@ struct VisionVolumeToolbar: View {
                     }
                 }
             } label: {
-                Text("Volume")
+                Text("Vol")
             }
             .disabled(volumes.isEmpty)
             .help("All the series' volumes in one room — or the FOT '26 hallway, the newest 1 m away and each older volume 30 cm behind — or one volume alone")
@@ -5112,6 +5097,43 @@ struct VisionVolumeToolbar: View {
             .disabled(!model.isVolumeRoom)
             .help("Ask about the articles of every volume in this series")
         }
+    }
+}
+
+/// Concepts ▸ Add Keyword… (19 Nov 2026, Frode): a word spoken or typed
+/// into the room, where it stands as a card — the field that was in the
+/// bar.
+struct VisionAddKeywordView: View {
+    @Environment(VisionModel.self) private var model
+    @Environment(\.dismissWindow) private var dismissWindow
+    @State private var keyword = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Add Keyword").font(.title2.weight(.semibold))
+            TextField("Speak or type a keyword", text: $keyword)
+                .textFieldStyle(.roundedBorder)
+                .font(.title3)
+                .submitLabel(.done)
+                .onSubmit(add)
+            HStack {
+                Button("Cancel") { dismissWindow() }
+                Spacer()
+                Button("Add", action: add)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(28)
+        .frame(width: 520)
+    }
+
+    private func add() {
+        let word = keyword.trimmingCharacters(in: .whitespaces)
+        guard !word.isEmpty else { return }
+        model.addSpaceKeyword(word)
+        keyword = ""
+        dismissWindow()
     }
 }
 
@@ -6444,8 +6466,12 @@ struct VisionReaderView: View {
         // a wide child in a 660pt window overflows it and SwiftUI
         // centres the overflow, so Horizontal came out blank, shifted
         // or cut off. There the columns stay inside the width there is.
-        .frame(width: hostGrows ? (singlePage ? min(fullWidth, columnWidth + gap * 2)
+        // One page in Scroll exactly (19 Nov 2026, Frode: a strip of the
+        // next page showed at the right, the frame two gaps wider than
+        // the page): the view is the page's width, clipped to its corners.
+        .frame(width: hostGrows ? (singlePage ? min(fullWidth, columnWidth)
                                               : min(fullWidth, Self.panelWidthCeiling)) : nil)
+        .clipShape(RoundedRectangle(cornerRadius: singlePage ? 18 : 0))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             footBar(doc, proxy: nil)
         }
