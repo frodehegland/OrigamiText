@@ -441,6 +441,16 @@ struct OrigamiReadingView: View {
     // Paragraph-at-a-time
     @State private var paragraphMode = false
     @State private var paragraphIndex = 0
+    // Focus's own options, as Author's Focus has them (20 Nov 2026):
+    // Paragraph, Sentence and Sentence Flow Fade (at most one on; none
+    // on, nothing fades), and Clean and Step, each a toggle of its own.
+    // All remembered across uses of Focus; all display only.
+    @AppStorage("origamiFocusFade") private var focusFadeRaw = FocusFade.none.rawValue
+    @AppStorage("origamiFocusClean") private var focusClean = false
+    @AppStorage("origamiFocusStep") private var focusStep = false
+    /// Where a fade stands — the reader's stand-in for Author's caret: a
+    /// click in the text, or ↑ ↓. Nil is the section's first paragraph.
+    @State private var fadePoint: FadePoint?
     // Read Aloud
     @State private var readAloud = ReadAloudController()
     @AppStorage(AppSettings.readAloudRateKey) private var readAloudRate: Double = 1.0
@@ -883,7 +893,19 @@ struct OrigamiReadingView: View {
                 if let editor = window.firstResponder as? NSTextView, editor.isEditable {
                     return event
                 }
+                // ↑ ↓ with a Focus fade on: the fade's point moves, as
+                // Author's caret does.
+                if event.keyCode == 125 || event.keyCode == 126, self.focusFadeOn {
+                    self.stepFadePoint(forward: event.keyCode == 125)
+                    return nil
+                }
                 if event.keyCode == 53 {   // Esc
+                    // Esc leaves Focus, at its section's heading, as
+                    // Author's Focus does.
+                    if self.readerMode == .focus {
+                        self.leaveFocus(atHeading: self.focusHeadingID)
+                        return nil
+                    }
                     // A journal in focus in the sidebar steps back out
                     // first, as everywhere; full screen is the next Esc.
                     if !window.styleMask.contains(.fullScreen), self.model.leaveVenueFocus() {
@@ -1789,6 +1811,169 @@ Button { model.toggleTopOfPile(record) } label: {
         }
     }
 
+    // MARK: - Focus options (Author's, 20 Nov 2026)
+
+    private var focusFade: FocusFade { FocusFade(rawValue: focusFadeRaw) ?? .none }
+
+    /// Focus's options act only on its own column — not in Spread, nor
+    /// in the Sentence, Paragraph and Word sub-modes, which show one
+    /// piece alone already.
+    private var focusOptionsApply: Bool {
+        readerMode == .focus && !sentenceMode && !paragraphMode && !showsRSVP
+    }
+
+    private var focusFadeOn: Bool { focusOptionsApply && focusFade != .none }
+
+    /// The running-text paragraphs of the section on screen — what a
+    /// fade can stand on.
+    private var fadeParagraphs: [LiquidDoc.Paragraph] {
+        let pages = horizontalPages
+        guard !pages.isEmpty else { return [] }
+        let index = min(max(focusIndex, 0), pages.count - 1)
+        return pages[index].flatMap(\.paragraphs).filter {
+            isPlainText($0) && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// The fade's point, the section's first paragraph standing in when
+    /// none has been chosen (or the chosen one has been turned away).
+    private var resolvedFadePoint: FadePoint? {
+        let paragraphs = fadeParagraphs
+        if let fadePoint, paragraphs.contains(where: { $0.id == fadePoint.paragraphID }) {
+            return fadePoint
+        }
+        return paragraphs.first.map { FadePoint(paragraphID: $0.id, sentence: 0) }
+    }
+
+    /// How this paragraph reads under the fade chosen.
+    private func paragraphFade(for paragraph: LiquidDoc.Paragraph) -> ParagraphFade {
+        guard focusFadeOn, let point = resolvedFadePoint else { return .none }
+        guard point.paragraphID == paragraph.id else { return .faint }
+        switch focusFade {
+        case .none, .paragraph: return .none
+        case .sentence: return .sentence(point.sentence, flow: false)
+        case .sentenceFlow: return .sentence(point.sentence, flow: true)
+        }
+    }
+
+    /// ↑ ↓ with a fade on: the point a sentence (or, for Paragraph Fade,
+    /// a paragraph) on — the reader's caret moving. Past the section's
+    /// last, on into the next section.
+    private func stepFadePoint(forward: Bool) {
+        let paragraphs = fadeParagraphs
+        guard let point = resolvedFadePoint,
+              let index = paragraphs.firstIndex(where: { $0.id == point.paragraphID }) else { return }
+        let bySentence = focusFade == .sentence || focusFade == .sentenceFlow
+        let count = bySentence
+            ? FocusFadeText.sentenceRanges(in: String(rendered(readingText(for: paragraphs[index])).characters)
+                                            as NSString).count
+            : 1
+        var next: FadePoint?
+        if forward {
+            if bySentence, point.sentence + 1 < count {
+                next = FadePoint(paragraphID: point.paragraphID, sentence: point.sentence + 1)
+            } else if index + 1 < paragraphs.count {
+                next = FadePoint(paragraphID: paragraphs[index + 1].id, sentence: 0)
+            } else if focusIndex + 1 < horizontalPages.count {
+                fadePoint = nil
+                turnPages(by: 1)
+                return
+            }
+        } else {
+            if bySentence, point.sentence > 0 {
+                next = FadePoint(paragraphID: point.paragraphID, sentence: min(point.sentence, count) - 1)
+            } else if index > 0 {
+                let previous = paragraphs[index - 1]
+                let last = bySentence
+                    ? FocusFadeText.sentenceRanges(in: String(rendered(readingText(for: previous)).characters)
+                                                    as NSString).count - 1
+                    : 0
+                next = FadePoint(paragraphID: previous.id, sentence: max(last, 0))
+            }
+        }
+        guard let next else { return }
+        if next.paragraphID != point.paragraphID { pendingScrollID = next.paragraphID }
+        fadePoint = next
+    }
+
+    /// A click in a paragraph with a fade on: the point to where it fell.
+    private func placeFadePoint(in paragraph: LiquidDoc.Paragraph, text: String, at location: Int) {
+        guard focusFadeOn else { return }
+        let ranges = FocusFadeText.sentenceRanges(in: text as NSString)
+        let sentence = ranges.firstIndex { location <= NSMaxRange($0) } ?? max(ranges.count - 1, 0)
+        let point = FadePoint(paragraphID: paragraph.id, sentence: sentence)
+        if point != fadePoint { fadePoint = point }
+    }
+
+    /// Leaves Focus for Scroll at a heading (Esc, or a heading
+    /// double-clicked in Focus — Author's Write, 25 Oct and 6 Nov 2026).
+    private func leaveFocus(atHeading headingID: String?) {
+        withAnimation(ReadingFootBar.modeSwitch) {
+            readerModeRaw = EPUBReaderMode.faithful.rawValue
+        }
+        guard let headingID else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            pendingScrollID = headingID
+        }
+    }
+
+    /// The heading of the section on screen in Focus.
+    private var focusHeadingID: String? {
+        let pages = horizontalPages
+        guard !pages.isEmpty else { return nil }
+        let index = min(max(focusIndex, 0), pages.count - 1)
+        return pages[index].first(where: { $0.heading != nil })?.heading?.id
+            ?? pages[index].first?.paragraphs.first?.id
+    }
+
+    /// Paragraph Fade | Sentence Fade | Sentence Flow Fade, then Clean |
+    /// Step after a rule — Author's Focus bar, framed in the page's
+    /// colour, rounded, a hairline. What is on is bold and a point
+    /// larger, as in every bar.
+    private var focusOptionsBar: some View {
+        let enabled = focusOptionsApply
+        func word(_ title: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
+            Button(action: action) {
+                Text(title)
+                    .font(.system(size: on ? 13 : 12, weight: on ? .semibold : .regular))
+                    .foregroundStyle(on ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(help)
+        }
+        func separator() -> some View {
+            Text("|").font(.system(size: 12)).foregroundStyle(.tertiary)
+        }
+        return HStack(spacing: 10) {
+            ForEach(Array(FocusFade.choices.enumerated()), id: \.element) { index, fade in
+                if index > 0 { separator() }
+                word(fade.title, on: focusFade == fade, help: fade.help) {
+                    // Chosen already: click again and nothing fades.
+                    focusFadeRaw = (focusFade == fade ? FocusFade.none : fade).rawValue
+                }
+            }
+            Rectangle().fill(.quaternary).frame(width: 1, height: 14)
+            word("Clean", on: focusClean,
+                 help: "Annotations in the text's own colour, while in Focus") {
+                focusClean.toggle()
+            }
+            separator()
+            word("Step", on: focusStep,
+                 help: "Each sentence on a line of its own, half a line below the last, while in Focus") {
+                focusStep.toggle()
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .background(readerTheme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(.quaternary, lineWidth: 0.5))
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+    }
+
     // MARK: - Sentence mode
 
     private var currentPageSentences: [String] {
@@ -2536,13 +2721,27 @@ Button { model.toggleTopOfPile(record) } label: {
                 Divider()
                 HStack {
                     pageBarPileControls
+                    // ← and → move one panel at a time; ↑ and ↓ jump to
+                    // the previous or next article (top-level heading),
+                    // which then opens the spread at the left.
                     Button {
-                        turnPages(by: -shown)
+                        turnPages(by: -1)
                     } label: {
                         Label("Previous", systemImage: "chevron.left")
                     }
                     .keyboardShortcut(.leftArrow, modifiers: [])
                     .disabled(index == 0)
+                    .help("Back one panel (←)")
+
+                    Button {
+                        jumpToArticle(forward: false, in: pages, from: index)
+                    } label: {
+                        Label("Previous Article", systemImage: "chevron.up")
+                    }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.upArrow, modifiers: [])
+                    .disabled(articleStart(forward: false, in: pages, from: index) == nil)
+                    .help("Previous article or top-level heading (↑)")
 
                     Spacer()
                     Text(pageLabel(pages: pages, index: index, shown: shown))
@@ -2551,12 +2750,23 @@ Button { model.toggleTopOfPile(record) } label: {
                     Spacer()
 
                     Button {
-                        turnPages(by: shown)
+                        jumpToArticle(forward: true, in: pages, from: index)
+                    } label: {
+                        Label("Next Article", systemImage: "chevron.down")
+                    }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.downArrow, modifiers: [])
+                    .disabled(articleStart(forward: true, in: pages, from: index) == nil)
+                    .help("Next article or top-level heading (↓)")
+
+                    Button {
+                        turnPages(by: 1)
                     } label: {
                         Label("Next", systemImage: "chevron.right")
                     }
                     .keyboardShortcut(.rightArrow, modifiers: [])
                     .disabled(index + shown >= pages.count)
+                    .help("Forward one panel (→)")
 
                     Divider().frame(height: 14)
                     pageBarTypeControls
@@ -2597,6 +2807,9 @@ Button { model.toggleTopOfPile(record) } label: {
                     focusColumn(pages[index], annotations: annotations,
                                 closesBook: index == pages.count - 1)
                 }
+                // Focus's options, just above the bar, as in Author.
+                focusOptionsBar
+                    .padding(.vertical, 8)
                 // Nav bar — always present so controls are always reachable
                 Divider()
                 HStack {
@@ -2630,6 +2843,8 @@ Button { model.toggleTopOfPile(record) } label: {
                 .padding(.vertical, 10)
             }
         }
+        // A new section: the fade starts at its top again.
+        .onChange(of: focusIndex) { fadePoint = nil }
     }
 
     /// The sections visible in the current reading mode — used to scope
@@ -2665,13 +2880,38 @@ Button { model.toggleTopOfPile(record) } label: {
         return min(max(Int(width / 460), 2), sections)
     }
 
-    /// One whole spread forward or back, clamped to the document.
+    /// Panels forward or back, clamped to the document.
     private func turnPages(by delta: Int) {
         let count = horizontalPages.count
         guard count > 0 else { return }
         withAnimation(.easeInOut(duration: 0.2)) {
             focusIndex = min(max(focusIndex + delta, 0), count - 1)
         }
+    }
+
+    /// The panel where the next (or previous) article begins: the
+    /// nearest panel carrying a heading at the document's top level —
+    /// level 1 in nearly every book, the shallowest level present in
+    /// one whose producer started at h2.
+    private func articleStart(forward: Bool, in pages: [[OrigamiSection]], from index: Int) -> Int? {
+        let levels = pages.flatMap { $0 }.compactMap { $0.heading?.effectiveHeading }
+        guard let top = levels.min() else { return nil }
+        func opensArticle(_ page: Int) -> Bool {
+            pages[page].contains { $0.heading?.effectiveHeading == top }
+        }
+        if forward {
+            guard index + 1 < pages.count else { return nil }
+            return (index + 1..<pages.count).first(where: opensArticle)
+        }
+        guard index > 0 else { return nil }
+        return (0..<index).last(where: opensArticle)
+    }
+
+    /// Turns so the next (or previous) article stands in the leftmost
+    /// panel, its pages following to the right.
+    private func jumpToArticle(forward: Bool, in pages: [[OrigamiSection]], from index: Int) {
+        guard let target = articleStart(forward: forward, in: pages, from: index) else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { focusIndex = target }
     }
 
     /// "Introduction — 3–5 of 12": the spread's place in the whole.
@@ -2700,6 +2940,13 @@ Button { model.toggleTopOfPile(record) } label: {
                             .font(headingFont(level: section.level))
                             .foregroundStyle(themeHeading.map(AnyShapeStyle.init)
                                              ?? AnyShapeStyle(.primary))
+                            // A fade on: the heading fades with the rest.
+                            .opacity(focusFadeOn ? ParagraphFade.faintAlpha : 1)
+                            // Double-clicked in Focus: out to Scroll at
+                            // this heading, as Author's Focus leaves.
+                            .onTapGesture(count: 2) {
+                                if readerMode == .focus { leaveFocus(atHeading: heading.id) }
+                            }
                             .greyedOut(selectionMode != nil) { selectionMode = nil }
                             .dimmedForStretch(stretchFocus)
                             .id(heading.id)
@@ -3264,7 +3511,10 @@ Button { model.toggleTopOfPile(record) } label: {
             // right-click shows exactly the reading menu — none of the
             // items macOS adds to selectable SwiftUI text.
             SelectableParagraph(
-                attributed: inlineText(paragraph, highlights: annotations,
+                // Focus ▸ Clean: the annotations' inks left off, the
+                // words in the text's own colour — display only.
+                attributed: inlineText(paragraph,
+                                       highlights: focusOptionsApply && focusClean ? [] : annotations,
                                        trailingStretch: trailingStretch,
                                        closeStretch: closeStretch),
                 baseFont: nsFont(for: paragraph),
@@ -3273,6 +3523,8 @@ Button { model.toggleTopOfPile(record) } label: {
                 dimmed: dimmed,
                 dimInk: themeDimmed.map(NSColor.init) ?? .secondaryLabelColor,
                 bionicReading: bionicReading,
+                fade: paragraphFade(for: paragraph),
+                stepsSentences: focusOptionsApply && focusStep,
                 entriesFor: { clicked, windowPoint in
                     menuEntries(for: paragraph, highlights: annotations,
                                 clickedSentence: clicked,
@@ -3281,6 +3533,12 @@ Button { model.toggleTopOfPile(record) } label: {
                 selectionEntries: selectionEntries(for: paragraph),
                 onLink: handleLink,
                 onSelectionChange: { text, range, point in
+                    // A click (not a re-laid text dropping its selection)
+                    // moves a fade's point to where it fell.
+                    if range.length == 0, let event = NSApp.currentEvent,
+                       [.leftMouseDown, .leftMouseUp].contains(event.type) {
+                        placeFadePoint(in: paragraph, text: text, at: range.location)
+                    }
                     reportSelection(in: paragraph, text: text, range: range, at: point)
                 })
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -4012,6 +4270,7 @@ Button { model.toggleTopOfPile(record) } label: {
         parts.append(openInlineNotes.sorted().joined(separator: ","))
         parts.append(openStretch.sorted().joined(separator: ","))
         parts.append(contentsOf: [stretchDisplayRaw, coloringModeRaw, colorRulesRaw])
+        parts.append(String(focusOptionsApply && focusClean))
         let signature = parts.joined(separator: "|")
         // The paragraph's own inputs: its words as the view functions
         // show them (splits and flow included) and its stretch frame.
@@ -6531,6 +6790,87 @@ private enum ParagraphMenuEntry {
 /// into a custom context menu; AppKit lets the menu be replaced whole.
 /// Links route through `onLink`, so citations still open their source
 /// card.
+/// Focus's fades, as Author's Focus has them: how much of the section
+/// stays at full strength around the point while the rest fades.
+enum FocusFade: String {
+    case none, paragraph, sentence, sentenceFlow
+
+    static let choices: [FocusFade] = [.paragraph, .sentence, .sentenceFlow]
+
+    var title: String {
+        switch self {
+        case .none: "No Fade"
+        case .paragraph: "Paragraph Fade"
+        case .sentence: "Sentence Fade"
+        case .sentenceFlow: "Sentence Flow Fade"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .none: "Nothing fades"
+        case .paragraph: "One paragraph at full strength, the rest faded — click a paragraph, or ↑ ↓"
+        case .sentence: "One sentence at full strength, the rest faded — click a sentence, or ↑ ↓"
+        case .sentenceFlow: "One sentence at full strength, the sentences either side partly — click, or ↑ ↓"
+        }
+    }
+}
+
+/// Where a fade stands: a paragraph, and a sentence within it.
+struct FadePoint: Equatable {
+    let paragraphID: String
+    let sentence: Int
+}
+
+/// How one paragraph reads under a fade.
+enum ParagraphFade: Equatable {
+    /// Full strength: no fade, or the paragraph the point is in.
+    case none
+    /// Wholly faded: a paragraph the point is not in.
+    case faint
+    /// The point's paragraph under a sentence fade: that sentence full,
+    /// its neighbours partly faded when `flow`, the rest faint.
+    case sentence(Int, flow: Bool)
+
+    /// Author's faded and partly faded text — the partly sitting 55% of
+    /// the way from full to faint, as there.
+    static let faintAlpha: CGFloat = 0.25
+    static let partlyAlpha: CGFloat = 1 - 0.55 * (1 - faintAlpha)
+}
+
+/// The sentence rule the fades and Step share.
+enum FocusFadeText {
+    static func sentenceRanges(in text: NSString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        text.enumerateSubstrings(in: NSRange(location: 0, length: text.length),
+                                 options: [.bySentences, .substringNotRequired]) { _, range, _, _ in
+            ranges.append(range)
+        }
+        return ranges
+    }
+
+    /// Author's Step rule: the space after a sentence's end — a full
+    /// stop, ! ? or … (closing quotes and brackets after it allowed) —
+    /// with a new sentence after it (a capital, a digit or an opening
+    /// quote), so "e.g. the" and "J. Smith" stay together.
+    static func isStepBreak(at index: Int, in text: NSString) -> Bool {
+        guard index > 0, index + 1 < text.length, text.character(at: index) == 0x20 else { return false }
+        let closers: Set<unichar> = [0x22, 0x27, 0x29, 0x5D, 0x201D, 0x2019, 0xBB]
+        var j = index - 1
+        var skipped = 0
+        while j > 0, closers.contains(text.character(at: j)), skipped < 3 { j -= 1; skipped += 1 }
+        let end = text.character(at: j)
+        guard end == 0x2E || end == 0x21 || end == 0x3F || end == 0x2026 else { return false }
+        if end == 0x2E, j > 0, let before = UnicodeScalar(text.character(at: j - 1)),
+           CharacterSet.uppercaseLetters.contains(before),
+           j < 2 || !CharacterSet.letters.contains(UnicodeScalar(text.character(at: j - 2)) ?? " ") { return false }
+        guard let next = UnicodeScalar(text.character(at: index + 1)) else { return false }
+        let openers: Set<unichar> = [0x22, 0x27, 0x28, 0x5B, 0x201C, 0x2018, 0xAB]
+        return CharacterSet.uppercaseLetters.contains(next) || CharacterSet.decimalDigits.contains(next)
+            || openers.contains(text.character(at: index + 1))
+    }
+}
+
 private struct SelectableParagraph: NSViewRepresentable {
     let attributed: AttributedString
     let baseFont: NSFont
@@ -6546,6 +6886,11 @@ private struct SelectableParagraph: NSViewRepresentable {
     /// Bionic Reading: bold the first half of each word to anchor the
     /// eye and reduce regression — applied after semantic runs are laid.
     var bionicReading: Bool = false
+    /// Focus's fades: how much of this paragraph reads at full strength.
+    var fade: ParagraphFade = .none
+    /// Focus ▸ Step: each sentence on a line of its own, half a line
+    /// below the last, its own lines close together — layout only.
+    var stepsSentences: Bool = false
     /// The paragraph's verbs, built at right-click time with the
     /// sentence under the click (nil when it cannot be told) and the
     /// click's window point — so annotating without a selection takes
@@ -6686,7 +7031,56 @@ private struct SelectableParagraph: NSViewRepresentable {
             out.append(NSAttributedString(string: text, attributes: attributes))
         }
         if bionicReading { Self.applyBionic(to: out) }
+        if stepsSentences { applyStep(to: out) }
+        applyFade(to: out)
         return out
+    }
+
+    /// Step: each sentence-ending space becomes a paragraph separator —
+    /// one character for one, so selection and anchoring ranges hold —
+    /// and the lines of a sentence sit at the font's own height, the
+    /// line spacing and half a line more kept between sentences.
+    private func applyStep(to out: NSMutableAttributedString) {
+        let text = out.mutableString
+        let breaks = (0..<text.length).filter { FocusFadeText.isStepBreak(at: $0, in: text) }
+        guard !breaks.isEmpty else { return }
+        for index in breaks {
+            text.replaceCharacters(in: NSRange(location: index, length: 1), with: "\u{2029}")
+        }
+        let natural = NSLayoutManager().defaultLineHeight(for: baseFont)
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 0
+        style.paragraphSpacing = lineSpacing + (natural * 0.5).rounded()
+        out.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: out.length))
+    }
+
+    /// The fade: the words outside the point faint, the sentences either
+    /// side of it (Sentence Flow) partly so — each run's own ink, its
+    /// strength lowered, so annotation colours fade with the rest.
+    private func applyFade(to out: NSMutableAttributedString) {
+        func lower(_ range: NSRange, to alpha: CGFloat) {
+            guard range.length > 0 else { return }
+            out.enumerateAttribute(.foregroundColor, in: range, options: []) { value, run, _ in
+                let ink = (value as? NSColor) ?? inkColor ?? .labelColor
+                out.addAttribute(.foregroundColor,
+                                 value: ink.withAlphaComponent(ink.alphaComponent * alpha), range: run)
+            }
+        }
+        let all = NSRange(location: 0, length: out.length)
+        switch fade {
+        case .none:
+            return
+        case .faint:
+            lower(all, to: ParagraphFade.faintAlpha)
+        case .sentence(let chosen, let flow):
+            let sentences = FocusFadeText.sentenceRanges(in: out.mutableString)
+            guard !sentences.isEmpty else { return }
+            let current = min(max(chosen, 0), sentences.count - 1)
+            for (index, range) in sentences.enumerated() where index != current {
+                let near = flow && abs(index - current) == 1
+                lower(range, to: near ? ParagraphFade.partlyAlpha : ParagraphFade.faintAlpha)
+            }
+        }
     }
 
     /// Bold the first half of every word — the bionic reading technique.
@@ -6732,9 +7126,11 @@ private struct SelectableParagraph: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             let range = textView.selectedRange()
+            // Step's sentence breaks read as the spaces they stand for.
+            let string = textView.string.replacingOccurrences(of: "\u{2029}", with: " ")
             guard range.length > 0, let layout = textView.layoutManager,
                   let container = textView.textContainer else {
-                onSelectionChange(textView.string, range, nil)
+                onSelectionChange(string, range, nil)
                 return
             }
             // Where the hand is: the mouse event that made the selection
@@ -6755,7 +7151,7 @@ private struct SelectableParagraph: NSViewRepresentable {
                 let corner = NSPoint(x: rect.maxX, y: textView.isFlipped ? rect.maxY : rect.minY)
                 window = textView.convert(corner, to: nil)
             }
-            onSelectionChange(textView.string, range,
+            onSelectionChange(string, range,
                               SelectionContext.globalPoint(fromWindow: window, in: textView.window))
         }
 
@@ -6778,7 +7174,8 @@ private struct SelectableParagraph: NSViewRepresentable {
                     stop.pointee = true
                 }
             }
-            return found?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return found?.replacingOccurrences(of: "\u{2029}", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         /// The context menu, built fresh on each right-click — the
@@ -6860,6 +7257,20 @@ private struct SelectableParagraph: NSViewRepresentable {
                                         height: .greatestFiniteMagnitude)
             }
             super.setFrameSize(newSize)
+        }
+
+        /// Copied words carry Step's sentence breaks as the spaces they
+        /// stand for — Step changes the display, never the text.
+        override func copy(_ sender: Any?) {
+            let range = selectedRange()
+            guard range.length > 0, string.contains("\u{2029}") else {
+                super.copy(sender)
+                return
+            }
+            let words = (string as NSString).substring(with: range)
+                .replacingOccurrences(of: "\u{2029}", with: " ")
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(words, forType: .string)
         }
 
         override func menu(for event: NSEvent) -> NSMenu? {

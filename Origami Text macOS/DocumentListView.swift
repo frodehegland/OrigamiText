@@ -196,7 +196,11 @@ struct EPUBLibraryListView: View {
             }
             return ascending ? sorted : sorted.reversed()
         }
-        sorted = records.sorted { publicationDate($0) < publicationDate($1) }
+        // Each date parsed once, not on every comparison — the list sorts
+        // again on every redraw, and each click on a book redraws it.
+        sorted = records.map { ($0, publicationDate($0)) }
+            .sorted { $0.1 < $1.1 }
+            .map(\.0)
         return ascending ? sorted : sorted.reversed()
     }
 

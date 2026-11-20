@@ -595,7 +595,16 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder private var detailPane: some View {
+    /// The document area, with the spinner over it while a book's page
+    /// is still loading — after a second, so a quick open shows none.
+    private var detailPane: some View {
+        detailPaneContent
+            .overlay {
+                EPUBOpeningSpinner(loading: model.openEPUB != nil && model.epubLoadingPage != nil)
+            }
+    }
+
+    @ViewBuilder private var detailPaneContent: some View {
         if let epub = model.openEPUB {
             // A faithfully-rendered EPUB overrides the rest of the detail
             // pane; its own bar names it, toggles the Visual-Meta, and
@@ -1517,5 +1526,35 @@ struct FormatChoiceSheet: View {
                 }
             }
         }
+    }
+}
+
+/// The document area's "it's coming": a spinner on a quiet plate once a
+/// book's page has been loading for over a second (Frode, 21 Nov 2026 —
+/// a quick open shows nothing). Opacity only — never a move — over the
+/// WebView (the macOS 27 layout crash class), and never in the way of a
+/// click.
+private struct EPUBOpeningSpinner: View {
+    let loading: Bool
+    @State private var active = false
+
+    var body: some View {
+        ProgressView()
+            .controlSize(.large)
+            .padding(22)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .opacity(active ? 1 : 0)
+            .animation(.easeOut(duration: 0.15), value: active)
+            .allowsHitTesting(false)
+            .accessibilityLabel("Opening")
+            .accessibilityHidden(!active)
+            .task(id: loading) {
+                guard loading else {
+                    active = false
+                    return
+                }
+                try? await Task.sleep(for: .seconds(1))
+                if !Task.isCancelled { active = true }
+            }
     }
 }

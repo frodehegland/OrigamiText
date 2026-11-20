@@ -1299,8 +1299,6 @@ Button { model.toggleTopOfPile(record) } label: {
             tocEntries = []
             currentHeadingID = ""
             currentOutlineID = nil
-            // The Outline margin needs the contents from the first page.
-            loadContents()
             chapterWords = []
             pageReader.stopReading()
             // Reopening where the reader left off, when asked for — never
@@ -1318,6 +1316,9 @@ Button { model.toggleTopOfPile(record) } label: {
                     chapterIndex = index
                 }
             }
+            // The Outline margin needs the contents from the first page —
+            // read off the main thread, so the page shows first.
+            await loadContents()
             // The chapters' words, counted off the main thread.
             let files = chapters
             let counts = await Task.detached(priority: .utility) {
@@ -1552,6 +1553,15 @@ Button { model.toggleTopOfPile(record) } label: {
                                           chapter: subpath(of: currentContent),
                                           fraction: fraction)
             },
+            onLoading: { path, loading in
+                // Only the page that began it can end it: a page torn
+                // down late never stops a newer one's spinner.
+                if loading {
+                    if model.epubLoadingPage != path { model.epubLoadingPage = path }
+                } else if model.epubLoadingPage == path {
+                    model.epubLoadingPage = nil
+                }
+            },
             onCitationAnchors: { anchors in
                 model.openDocCitationAnchors = anchors
             },
@@ -1690,7 +1700,7 @@ Button { model.toggleTopOfPile(record) } label: {
             }
         }
         .onAppear {
-            if tocEntries.isEmpty { loadContents() }
+            if tocEntries.isEmpty { Task { await loadContents() } }
         }
     }
 
@@ -1763,12 +1773,22 @@ Button { model.toggleTopOfPile(record) } label: {
         initialFraction = nil
     }
 
-    private func loadContents() {
+    /// The contents and page list, read off the main thread — the page
+    /// list's pass over every chapter held up each book's opening.
+    private func loadContents() async {
         let spine = OrigamiEPUBImporter.BookSpine(
             chapters: chapters.map { subpath(of: $0) },
             nav: book.nav.map { subpath(of: $0) })
-        tocEntries = OrigamiEPUBImporter.tocEntries(inUnpackedFolder: book.base, spine: spine)
-        pageTargets = OrigamiEPUBImporter.pageList(inUnpackedFolder: book.base, spine: spine)
+        let base = book.base
+        let readingID = book.readingID
+        let (toc, pages) = await Task.detached(priority: .userInitiated) {
+            (OrigamiEPUBImporter.tocEntries(inUnpackedFolder: base, spine: spine),
+             OrigamiEPUBImporter.pageList(inUnpackedFolder: base, spine: spine))
+        }.value
+        // Another book opened meanwhile: these contents are not its.
+        guard readingID == book.readingID else { return }
+        tocEntries = toc
+        pageTargets = pages
     }
 
     private func open(_ entry: OrigamiEPUBImporter.TOCEntry) {
@@ -2064,6 +2084,9 @@ struct EPUBReaderView: NSViewRepresentable {
     /// The page's scroll position changed (throttled), as a 0–1 fraction —
     /// the reading-position memory's feed.
     var onProgress: (Double) -> Void = { _ in }
+    /// A page (by its file path) began loading (true) or finished, or
+    /// failed (false) — the document area's spinner follows it.
+    var onLoading: (String, Bool) -> Void = { _, _ in }
     /// The inline citation anchors found on the current page changed —
     /// called after load and after each scroll. The visionOS hallway reads
     /// this to draw lines from `[N]` markers to their hallway cards.
@@ -2428,6 +2451,7 @@ struct EPUBReaderView: NSViewRepresentable {
         coordinator.onPinchOut = onPinchOut
         coordinator.onChapterStep = onChapterStep
         coordinator.onProgress = onProgress
+        coordinator.onLoading = onLoading
         coordinator.onBookLink = onBookLink
         coordinator.chapterPaths = (book.chapters.isEmpty ? [book.content] : book.chapters)
             .map { $0.standardizedFileURL.path }
@@ -2581,10 +2605,24 @@ struct EPUBReaderView: NSViewRepresentable {
         context.coordinator.rightToLeft = rendition.rightToLeft
         context.coordinator.openedBookID = book.id
         context.coordinator.loadedID = (content ?? book.content).path
+        // Told after this view update, never during it.
+        let onLoading = onLoading
+        context.coordinator.onLoading = onLoading
+        let path = (content ?? book.content).path
+        DispatchQueue.main.async { onLoading(path, true) }
         webView.loadFileURL(content ?? book.content, allowingReadAccessTo: book.base)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
+
+    /// A page torn down mid-load (another mode, another book) never
+    /// finishes: its spinner stops with it. A newer page's own load
+    /// turns it on again after this.
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        let onLoading = coordinator.onLoading
+        let path = coordinator.loadingPath
+        DispatchQueue.main.async { onLoading(path, false) }
+    }
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var loadedID: String?
@@ -2636,6 +2674,9 @@ struct EPUBReaderView: NSViewRepresentable {
         var onPinchOut: () -> Void = {}
         var onChapterStep: (Int) -> Void = { _ in }
         var onProgress: (Double) -> Void = { _ in }
+        var onLoading: (String, Bool) -> Void = { _, _ in }
+        /// The page being loaded, as the spinner knows it.
+        var loadingPath: String { loadedID ?? "" }
         var onBookLink: (Int, String?) -> Void = { _, _ in }
         /// The book's chapters as file paths, for telling a link into the
         /// book from one out of it.
@@ -2903,6 +2944,25 @@ struct EPUBReaderView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            onLoading(loadingPath, false)
+            finishedLoading(webView)
+        }
+
+        // A page that fails, or whose process ends, stops the spinner too.
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            onLoading(loadingPath, false)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
+                     withError error: Error) {
+            onLoading(loadingPath, false)
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            onLoading(loadingPath, false)
+        }
+
+        private func finishedLoading(_ webView: WKWebView) {
             finishedLoadID = loadedID
             if let fragment = pendingFragment, !fragment.isEmpty {
                 pendingFragment = nil

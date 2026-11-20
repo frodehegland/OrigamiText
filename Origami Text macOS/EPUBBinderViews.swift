@@ -391,7 +391,10 @@ extension AppModel {
     /// The works a shelved book declares, read from its unpacked folder;
     /// nil when the book cannot be read at all.
     func epubWorks(for record: EPUBRecord) -> EPUBWorks? {
-        EPUBWorks.read(unpackedFolder: Self.unpackedEPUBURL(inFolder: record.folder))
+        if let known = epubWorksCache[record.folder] { return known }
+        let works = EPUBWorks.read(unpackedFolder: Self.unpackedEPUBURL(inFolder: record.folder))
+        epubWorksCache[record.folder] = works
+        return works
     }
 
     static var defaultBinderTitle: String {

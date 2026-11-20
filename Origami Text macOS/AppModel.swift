@@ -2218,12 +2218,20 @@ final class AppModel {
         openStoredEPUB(record)
     }
 
+    /// The page (its file path) loading in the Scroll reader, until it
+    /// has finished — the document area's spinner follows it.
+    var epubLoadingPage: String?
+
     // MARK: - Bound volumes, read as their articles
 
     /// Each book's binding, read once from its unpacked package (nil
     /// remembered too). Keyed by folder; forgotten when a book is
     /// unpacked again.
     @ObservationIgnored private var boundVolumes: [String: BoundVolume?] = [:]
+    /// Each book's works (the Binder's articles), read once — a library
+    /// row's context menu asks on every click of the row. Forgotten with
+    /// the binding when a book is unpacked again.
+    @ObservationIgnored var epubWorksCache: [String: EPUBWorks?] = [:]
     /// Articles cut out of their volumes' documents, by folder and article.
     @ObservationIgnored private var articleDocCache: [String: LiquidDoc] = [:]
 
@@ -2281,8 +2289,11 @@ final class AppModel {
     /// An opened EPUB is unread until it has been opened in the reader —
     /// the Files list shows unread records bold. The user's own authored
     /// EPUBs are never unread.
+    /// The same test as for a document, straight off the record — every
+    /// library row asks it on every redraw, and building a listing
+    /// document for each (dates parsed and all) slowed each click.
     func isUnread(_ record: EPUBRecord) -> Bool {
-        isUnread(epubListingDoc(record))
+        !authorIdentity.matches(author: record.author) && !readDocumentIDs.contains(record.id)
     }
 
     // MARK: Inbox
@@ -2621,6 +2632,7 @@ final class AppModel {
         // A fresh unpack means a new spine — drop the cached one.
         spineCache.removeValue(forKey: prepared.folder)
         boundVolumes.removeValue(forKey: prepared.folder)
+        epubWorksCache.removeValue(forKey: prepared.folder)
         articleDocCache = articleDocCache.filter { !$0.key.hasPrefix(prepared.folder + "|") }
         forgetBookChecks(folder: prepared.folder)
         // The reading cache and any prior failure record must both go:
