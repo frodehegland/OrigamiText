@@ -319,7 +319,14 @@ struct ContentView: View {
     /// In full screen the sidebar is always hover-summoned — it never
     /// pins open. The reading area stays clear until the pointer visits
     /// the left edge.
-    private var peekIsPinned: Bool { false }
+    /// Full screen with nothing open — at launch, or a book closed —
+    /// the sidebar and its list stand open, so documents can be found
+    /// without first knowing to hover the edge (Frode, 21 Nov 2026).
+    /// Opening anything hands the room back and the peek hides again.
+    private var peekIsPinned: Bool {
+        model.isFullScreen && model.openEPUB == nil && model.current == nil
+            && model.draftEditor == nil && !mapFaceWantsWidth
+    }
 
     private var peekSidebar: some View {
         HStack(spacing: 0) {
@@ -343,9 +350,11 @@ struct ContentView: View {
                             }
                             // To Acquire carries whole rows of scholarly
                             // detail — title, byline, the doors to the
-                            // copy — a list's strip cuts them off.
+                            // copy — a list's strip cuts them off. Every
+                            // other list twice the strip it was (Frode,
+                            // 21 Nov 2026), so titles read whole.
                             .frame(width: model.sidebarSelection == .acquisitions
-                                   ? 840 : 240)
+                                   ? 840 : 480)
                     }
                 }
                 .frame(maxHeight: .infinity)

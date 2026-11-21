@@ -451,6 +451,8 @@ struct OrigamiReadingView: View {
     /// Where a fade stands — the reader's stand-in for Author's caret: a
     /// click in the text, or ↑ ↓. Nil is the section's first paragraph.
     @State private var fadePoint: FadePoint?
+    /// The room Focus's page has — what its pages are sized to.
+    @State private var focusAreaSize: CGSize = .zero
     // Read Aloud
     @State private var readAloud = ReadAloudController()
     @AppStorage(AppSettings.readAloudRateKey) private var readAloudRate: Double = 1.0
@@ -687,7 +689,13 @@ struct OrigamiReadingView: View {
         OrigamiContextAction.decodeList(actionsRaw)
     }
 
-    private var sections: [OrigamiSection] { OrigamiSection.build(from: doc) }
+    /// The document's sections and Spread/Focus pages, built once per
+    /// document rather than at every ask — Focus asked several times a
+    /// redraw, and with a fade on once more for every paragraph, each
+    /// time weighing the whole book.
+    @State private var layoutCache = ReadingLayoutCache()
+
+    private var sections: [OrigamiSection] { layoutCache.sections(for: doc) }
 
     var body: some View {
         let annotations = resolvedByParagraph
@@ -743,6 +751,11 @@ struct OrigamiReadingView: View {
             // previous) paragraph carrying the words.
             .onChange(of: findStamp) {
                 stepFind(with: proxy)
+            }
+            // Pages resized (Spread ↔ Focus, the window, the text size):
+            // the same words stay on screen.
+            .onChange(of: wordsPerPage(for: readerMode)) { old, new in
+                keepPlace(fromBudget: old, to: new)
             }
             .onAppear { landOnArrival(proxy) }
             // The document's paragraphs numbered once: headings aside,
@@ -884,8 +897,11 @@ struct OrigamiReadingView: View {
             // Bare p, f, and b — the reading functions — and Esc,
             // Author's door in and out of full screen.
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // The keys a hand holds down. Arrow keys carry .function
+                // and .numericPad on every press, so those never count.
+                let held = event.modifierFlags.intersection([.shift, .control, .option, .command])
                 guard !self.model.isReaderMapShown,
-                      event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                      held.isEmpty || (held == .shift && event.keyCode == 49),
                       let window = NSApp.keyWindow,
                       window.windowNumber == windowState.windowNumber,
                       window.attachedSheet == nil
@@ -893,12 +909,16 @@ struct OrigamiReadingView: View {
                 if let editor = window.firstResponder as? NSTextView, editor.isEditable {
                     return event
                 }
-                // ↑ ↓ with a Focus fade on: the fade's point moves, as
-                // Author's caret does.
-                if event.keyCode == 125 || event.keyCode == 126, self.focusFadeOn {
-                    self.stepFadePoint(forward: event.keyCode == 125)
+                // With a Focus fade on, the fade's point moves, as Author's
+                // caret does: ↓ or Space a unit on (a sentence, or a
+                // paragraph for Paragraph Fade), ↑ or ⇧Space a unit back.
+                if self.focusFadeOn, event.keyCode == 125 || event.keyCode == 126 || event.keyCode == 49 {
+                    let back = event.keyCode == 126 || (event.keyCode == 49 && held == .shift)
+                    self.stepFadePoint(forward: !back)
                     return nil
                 }
+                // ⇧Space means nothing more here.
+                guard held.isEmpty else { return event }
                 if event.keyCode == 53 {   // Esc
                     // Esc leaves Focus, at its section's heading, as
                     // Author's Focus does.
@@ -1928,9 +1948,8 @@ Button { model.toggleTopOfPile(record) } label: {
     }
 
     /// Paragraph Fade | Sentence Fade | Sentence Flow Fade, then Clean |
-    /// Step after a rule — Author's Focus bar, framed in the page's
-    /// colour, rounded, a hairline. What is on is bold and a point
-    /// larger, as in every bar.
+    /// Step after a rule — Author's Focus bar, in the middle of Focus's
+    /// page bar. What is on is bold and a point larger, as in every bar.
     private var focusOptionsBar: some View {
         let enabled = focusOptionsApply
         func word(_ title: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
@@ -1965,11 +1984,6 @@ Button { model.toggleTopOfPile(record) } label: {
                 focusStep.toggle()
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
-        .background(readerTheme.background(for: colorScheme) ?? Color(nsColor: .textBackgroundColor),
-                    in: RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(.quaternary, lineWidth: 0.5))
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.5)
     }
@@ -2806,10 +2820,13 @@ Button { model.toggleTopOfPile(record) } label: {
                 } else {
                     focusColumn(pages[index], annotations: annotations,
                                 closesBook: index == pages.count - 1)
+                        // The page's room, which its pages are sized to.
+                        .onGeometryChange(for: CGSize.self) { proxy in
+                            proxy.size
+                        } action: { size in
+                            focusAreaSize = size
+                        }
                 }
-                // Focus's options, just above the bar, as in Author.
-                focusOptionsBar
-                    .padding(.vertical, 8)
                 // Nav bar — always present so controls are always reachable
                 Divider()
                 HStack {
@@ -2823,9 +2840,11 @@ Button { model.toggleTopOfPile(record) } label: {
                     .disabled(index == 0 || sentenceMode || paragraphMode || showsRSVP)
 
                     Spacer()
-                    Text(pageLabel(pages: pages, index: index, shown: 1))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    // Focus's options in the bar's middle, where the
+                    // book's name and page stood (Frode, 21 Nov 2026) —
+                    // the row they had above the bar given back to the
+                    // page.
+                    focusOptionsBar
                     Spacer()
 
                     Button {
@@ -2869,7 +2888,63 @@ Button { model.toggleTopOfPile(record) } label: {
     /// letter — reading with few headings used to be one page as long
     /// as the document.
     private var horizontalPages: [[OrigamiSection]] {
-        OrigamiReading.horizontalColumns(sections)
+        pages(forMode: readerMode)
+    }
+
+    /// Spread's pages are its columns; Focus's are as many words as its
+    /// page holds on this screen — one column's worth of a page wasted
+    /// most of a full screen.
+    private func pages(forMode mode: EPUBReaderMode) -> [[OrigamiSection]] {
+        layoutCache.pages(for: doc, wordsPerPage: wordsPerPage(for: mode))
+    }
+
+    private func wordsPerPage(for mode: EPUBReaderMode) -> Int {
+        mode == .focus ? focusWordsPerPage : OrigamiReading.wordsPerColumn
+    }
+
+    /// A new page size (into or out of Focus, a resize, a new text
+    /// size): the page that held the first words on screen stays on
+    /// screen — page numbers mean different places at different sizes.
+    private func keepPlace(fromBudget old: Int, to new: Int) {
+        let before = layoutCache.pages(for: doc, wordsPerPage: old)
+        guard !before.isEmpty else { return }
+        let page = before[min(max(focusIndex, 0), before.count - 1)]
+        guard let first = page.first?.heading?.id ?? page.first?.paragraphs.first?.id else { return }
+        let after = layoutCache.pages(for: doc, wordsPerPage: new)
+        if let index = after.firstIndex(where: { page in
+            page.contains { $0.heading?.id == first || $0.paragraphs.contains { $0.id == first } }
+        }), index != focusIndex {
+            focusIndex = index
+        }
+    }
+
+    /// The words a Focus page holds: its lines (the area's height over
+    /// the body's line height, spacing included) times the words in a
+    /// line (the column's width over the body font's own average word),
+    /// less about a quarter for paragraph gaps, headings and longer
+    /// words than the sample's, so a page rarely needs scrolling — and
+    /// with Step on, whose sentences each take fresh lines and a half
+    /// line between, less again. Checked against a full screen of FoT
+    /// Vol 1 (21 Nov 2026): about 650 words fit. In steps of 25, so a
+    /// resize settles; never less than a Spread column.
+    private var focusWordsPerPage: Int {
+        guard focusAreaSize.width > 0, focusAreaSize.height > 0 else {
+            return OrigamiReading.wordsPerColumn
+        }
+        let font = NSFont(name: bodyFontName, size: max(NSFont.preferredFont(forTextStyle: .body).pointSize
+                                                         + CGFloat(fontDelta + 1), 8))
+            ?? NSFont.preferredFont(forTextStyle: .body)
+        let sample = "the reading of a page in focus is quiet and whole "
+        let sampleWidth = (sample as NSString).size(withAttributes: [.font: font]).width
+        let wordWidth = max(sampleWidth / 11, 1)
+        let lineHeight = ceil(font.ascender - font.descender + font.leading) + CGFloat(lineSpacing * 2)
+        let columnWidth = min(focusAreaSize.width - 80,
+                              windowState.isFullScreen ? measure : 560)
+        let lines = (focusAreaSize.height - 80) / max(lineHeight, 1)
+        let fill = focusStep ? 0.45 : 0.73
+        let words = Double(lines * columnWidth / wordWidth) * fill
+        let stepped = Int(words / 25) * 25
+        return max(stepped, OrigamiReading.wordsPerColumn)
     }
 
     /// Pages across the width: two at least, a page more for every 460
@@ -6790,6 +6865,49 @@ private enum ParagraphMenuEntry {
 /// into a custom context menu; AppKit lets the menu be replaced whole.
 /// Links route through `onLink`, so citations still open their source
 /// card.
+/// A reading's sections and pages, kept while the document is the same
+/// one: the same id, paragraph count and first and last paragraphs —
+/// told in constant time, since it is asked many times a redraw. (A
+/// different book is a new reading view altogether.) A reference box,
+/// so filling it during a body pass changes no state.
+final class ReadingLayoutCache {
+    private var key = ""
+    private var cachedSections: [OrigamiSection]?
+    /// Pages by their word budget: Spread's columns, and Focus's pages
+    /// sized to the screen.
+    private var cachedPages: [Int: [[OrigamiSection]]] = [:]
+
+    private func refresh(for doc: LiquidDoc) {
+        let body = doc.body ?? []
+        func mark(_ paragraph: LiquidDoc.Paragraph?) -> String {
+            guard let paragraph else { return "" }
+            return "\(paragraph.id):\(paragraph.text.utf8.count)"
+        }
+        let fresh = "\(doc.id)|\(body.count)|\(mark(body.first))|\(mark(body.last))"
+        if fresh != key {
+            key = fresh
+            cachedSections = nil
+            cachedPages = [:]
+        }
+    }
+
+    func sections(for doc: LiquidDoc) -> [OrigamiSection] {
+        refresh(for: doc)
+        if let cachedSections { return cachedSections }
+        let built = OrigamiSection.build(from: doc)
+        cachedSections = built
+        return built
+    }
+
+    func pages(for doc: LiquidDoc, wordsPerPage: Int = OrigamiReading.wordsPerColumn) -> [[OrigamiSection]] {
+        let sections = sections(for: doc)
+        if let known = cachedPages[wordsPerPage] { return known }
+        let built = OrigamiReading.horizontalColumns(sections, wordsPerColumn: wordsPerPage)
+        cachedPages[wordsPerPage] = built
+        return built
+    }
+}
+
 /// Focus's fades, as Author's Focus has them: how much of the section
 /// stays at full strength around the point while the rest fades.
 enum FocusFade: String {
@@ -6809,9 +6927,9 @@ enum FocusFade: String {
     var help: String {
         switch self {
         case .none: "Nothing fades"
-        case .paragraph: "One paragraph at full strength, the rest faded — click a paragraph, or ↑ ↓"
-        case .sentence: "One sentence at full strength, the rest faded — click a sentence, or ↑ ↓"
-        case .sentenceFlow: "One sentence at full strength, the sentences either side partly — click, or ↑ ↓"
+        case .paragraph: "One paragraph at full strength, the rest faded — click a paragraph, or Space / ⇧Space"
+        case .sentence: "One sentence at full strength, the rest faded — click a sentence, or Space / ⇧Space"
+        case .sentenceFlow: "One sentence at full strength, the sentences either side partly — click, or Space / ⇧Space"
         }
     }
 }
@@ -7040,6 +7158,10 @@ private struct SelectableParagraph: NSViewRepresentable {
     /// one character for one, so selection and anchoring ranges hold —
     /// and the lines of a sentence sit at the font's own height, the
     /// line spacing and half a line more kept between sentences.
+    /// One layout manager for measuring line heights, not one per
+    /// paragraph per redraw.
+    @MainActor private static let measuringLayout = NSLayoutManager()
+
     private func applyStep(to out: NSMutableAttributedString) {
         let text = out.mutableString
         let breaks = (0..<text.length).filter { FocusFadeText.isStepBreak(at: $0, in: text) }
@@ -7047,7 +7169,7 @@ private struct SelectableParagraph: NSViewRepresentable {
         for index in breaks {
             text.replaceCharacters(in: NSRange(location: index, length: 1), with: "\u{2029}")
         }
-        let natural = NSLayoutManager().defaultLineHeight(for: baseFont)
+        let natural = Self.measuringLayout.defaultLineHeight(for: baseFont)
         let style = NSMutableParagraphStyle()
         style.lineSpacing = 0
         style.paragraphSpacing = lineSpacing + (natural * 0.5).rounded()

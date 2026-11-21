@@ -170,8 +170,10 @@ but `sections` returns only `[("", received)]`.
 **Layout variants** (`ContentView.body`):
 - Full screen, or `isListHidden`: no split view at all — only the detail pane (or a venue's wide Map face), plus,
   in full screen, a **peek sidebar**: a 16-pt invisible strip on the left edge; hovering shows the sidebar
-  (300 pt) as a floating panel, and choosing a place unfolds a 240-pt list beside it (840 pt for To Acquire).
-  It hides 400 ms after the pointer leaves; opening anything dismisses it.
+  (300 pt) as a floating panel, and choosing a place unfolds a 480-pt list beside it (840 pt for To Acquire; 240 pt until 21 November 2026).
+  It hides 400 ms after the pointer leaves; opening anything dismisses it. With nothing open (no book,
+  document, draft or wide Map face), it stands pinned open with its list (`peekIsPinned`, 21 November 2026).
+  At launch in full screen the documents are therefore in view; the pin ends once anything opens.
 - A module with `hidesDocumentList = true`: two columns (sidebar, detail).
 - `wideListMode` (toggle in the find bar) or a venue Map face: two columns (sidebar, list).
 - Otherwise three columns. List column width min 260 / ideal 380 / max 900 (760/760/1200 for To Acquire).

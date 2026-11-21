@@ -971,6 +971,9 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// marker written before those facts existed still reads, its media
     /// type taken from the file's extension.
     static func modelReference(in text: String) -> SpatialFigure? {
+        // Nearly every paragraph is words: only one opening "![" can be a
+        // figure, so the rest never meet the regex (compiled per call).
+        guard opensAsFigure(text) else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let regex = try? NSRegularExpression(
             pattern: "^!\\[(.*)\\]\\(model:([^)?]+)(?:\\?([^)]*))?\\)$",
@@ -1014,6 +1017,7 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
     /// The asset id a body paragraph's text points at, when the paragraph is
     /// a lone image marker `![alt](asset:<id>)`. Returns the alt text too.
     static func imageReference(in text: String) -> (id: String, alt: String)? {
+        guard opensAsFigure(text) else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // The alt is greedy: a caption may itself carry brackets (a
         // [cite:key] token from a figure credit) — the trailing
@@ -1026,6 +1030,18 @@ nonisolated struct LiquidDoc: Identifiable, Hashable, Sendable {
               let altRange = Range(match.range(at: 1), in: trimmed),
               let idRange = Range(match.range(at: 2), in: trimmed) else { return nil }
         return (String(trimmed[idRange]), String(trimmed[altRange]))
+    }
+
+    /// Whether the text, past any leading white space, opens "![" — the
+    /// start every image and model reference shares, checked without
+    /// trimming or a regex.
+    static func opensAsFigure(_ text: String) -> Bool {
+        var scalars = text.unicodeScalars.makeIterator()
+        while let scalar = scalars.next() {
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) { continue }
+            return scalar == "!" && scalars.next() == "["
+        }
+        return false
     }
 
     /// A citation record: one work this document rests on, carried as

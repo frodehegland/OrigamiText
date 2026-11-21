@@ -477,10 +477,13 @@ nonisolated struct OrigamiSection: Identifiable, Hashable, Sendable {
     /// A section with something of its own to read — words, a figure, a
     /// table. A bare heading has none, and never takes a column alone.
     var hasBody: Bool {
+        // An image's reference is words on the line too, so any text but
+        // white space is a body — told without trimming a copy.
         paragraphs.contains { paragraph in
             paragraph.tableID != nil
-                || LiquidDoc.imageReference(in: paragraph.text) != nil
-                || !paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || paragraph.text.unicodeScalars.contains {
+                    !CharacterSet.whitespacesAndNewlines.contains($0)
+                }
         }
     }
 
@@ -498,13 +501,29 @@ extension LiquidDoc.Paragraph {
     /// takes a good part of a column — and its marker text is a dozen
     /// characters, so counting words would let five figures share one
     /// column and overflow it.
-    nonisolated var columnWeight: Int {
-        if tableID != nil { return Self.figureColumnWeight }
+    nonisolated var columnWeight: Int { columnWeight(figureWeight: Self.figureColumnWeight) }
+
+    /// The same, with a figure weighed as the page it stands on asks —
+    /// a third of a Spread column, or of a whole Focus page.
+    nonisolated func columnWeight(figureWeight: Int) -> Int {
+        if tableID != nil { return figureWeight }
         if LiquidDoc.imageReference(in: text) != nil
             || LiquidDoc.modelReference(in: text) != nil {
-            return Self.figureColumnWeight
+            return figureWeight
         }
-        return text.split(whereSeparator: \.isWhitespace).count
+        // Words counted in one pass, nothing allocated — a long book's
+        // pages weigh every paragraph each time they are laid out.
+        var count = 0
+        var inWord = false
+        for scalar in text.unicodeScalars {
+            if scalar.properties.isWhitespace {
+                inWord = false
+            } else if !inWord {
+                inWord = true
+                count += 1
+            }
+        }
+        return count
     }
 
     /// Roughly a third of a column.
@@ -754,15 +773,18 @@ nonisolated enum OrigamiReading {
     /// are per-paragraph.
     static func horizontalColumns(_ sections: [OrigamiSection],
                                   wordsPerColumn: Int = wordsPerColumn) -> [[OrigamiSection]] {
+        // A figure takes about a third of whatever page it stands on.
+        let figureWeight = max(wordsPerColumn / 3, 1)
         var columns: [[OrigamiSection]] = []
         // Headings waiting for a body to ride atop.
         var pending: [OrigamiSection] = []
-        for section in sections {
-            guard section.hasBody else {
+        for (position, section) in sections.enumerated() {
+            guard section.hasBody, !leadsIn(section, to: sections, after: position) else {
                 pending.append(section)
                 continue
             }
-            for (index, part) in broken(section, wordsPerColumn: wordsPerColumn).enumerated() {
+            for (index, part) in broken(section, wordsPerColumn: wordsPerColumn,
+                                        figureWeight: figureWeight).enumerated() {
                 if index == 0 {
                     columns.append(pending + [part])
                     pending = []
@@ -781,11 +803,38 @@ nonisolated enum OrigamiReading {
         return columns
     }
 
+    /// A section that only leads into its own first subsection — an
+    /// article's title over its contributor's name, in a volume of many
+    /// hands — rides atop it rather than standing on a page of its own
+    /// (Frode, 21 Nov 2026: never cut right below the title). Short, so
+    /// a real section with words of its own keeps its page; and only into
+    /// a deeper heading, so one article's last short words never ride
+    /// into the next article.
+    private static func leadsIn(_ section: OrigamiSection, to sections: [OrigamiSection],
+                                after position: Int) -> Bool {
+        guard let heading = section.heading,
+              position + 1 < sections.count,
+              let next = sections[position + 1].heading else { return false }
+        let level = heading.effectiveHeading ?? 1
+        let nextLevel = next.effectiveHeading ?? 1
+        guard nextLevel > level else { return false }
+        let words = section.paragraphs.reduce(0) { $0 + $1.columnWeight(figureWeight: leadInWords + 1) }
+        return words <= leadInWords
+    }
+
+    /// The most a lead-in may carry: a name or two, an affiliation, a
+    /// date line.
+    private static let leadInWords = 40
+
     /// One section as the column-fulls it needs: the first keeping the
     /// heading, each continuation carrying none.
     private static func broken(_ section: OrigamiSection,
-                               wordsPerColumn: Int) -> [OrigamiSection] {
-        guard wordsPerColumn > 0, section.columnWeight > wordsPerColumn else {
+                               wordsPerColumn: Int,
+                               figureWeight: Int) -> [OrigamiSection] {
+        // Each paragraph weighed once — the section's total and the
+        // breaks below both read these.
+        let weights = section.paragraphs.map { $0.columnWeight(figureWeight: figureWeight) }
+        guard wordsPerColumn > 0, weights.reduce(0, +) > wordsPerColumn else {
             return [section]
         }
         var parts: [OrigamiSection] = []
@@ -798,12 +847,12 @@ nonisolated enum OrigamiReading {
             run = []
             weight = 0
         }
-        for paragraph in section.paragraphs {
-            if !run.isEmpty, weight + paragraph.columnWeight > wordsPerColumn {
+        for (paragraph, paragraphWeight) in zip(section.paragraphs, weights) {
+            if !run.isEmpty, weight + paragraphWeight > wordsPerColumn {
                 flush()
             }
             run.append(paragraph)
-            weight += paragraph.columnWeight
+            weight += paragraphWeight
         }
         flush()
         return parts
